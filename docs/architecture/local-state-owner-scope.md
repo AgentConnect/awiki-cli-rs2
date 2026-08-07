@@ -3,9 +3,9 @@
 ## 状态
 
 - 本文描述当前 Rust `awiki-cli` / `im-core` 本地 SQLite owner scope 的权威模型。
-- 当前 SQLite schema version：`21`。
+- 当前 SQLite schema version：`31`。
 - 当前 workspace schema version：`4`。
-- 本地业务状态已经收敛到 `owner_identity_id` 分区；`owner_did` 只保留为当前 DID snapshot。
+- 本地业务状态已经收敛到 `owner_identity_id` 分区；业务表中的 `owner_did` 只保留为当前 DID snapshot，可靠同步 checkpoint 另按服务端 `sync_subject_id` 分区。
 
 ## 核心原则
 
@@ -33,7 +33,7 @@
 | `direct_e2ee_signed_prekeys` | `(owner_identity_id, key_id)` |
 | `direct_e2ee_one_time_prekeys` | `(owner_identity_id, key_id)` |
 | `conversation_summaries` | `(owner_identity_id, conversation_id)` |
-| `sync_state` | `(owner_identity_id, scope, checkpoint_kind)` |
+| `sync_state` | `(owner_identity_id, sync_subject_id, scope, checkpoint_kind)` |
 | `thread_read_state` | `(owner_identity_id, thread_kind, thread_id)` |
 
 `conversation_id` 是稳定会话键。私聊会话不能把本地 owner DID 编进 `conversation_id`，否则 DID replace 后会造成会话分裂。
@@ -56,10 +56,13 @@ DID recover 或 replace 的本地状态行为是：
    都必须进入同一个 `local-finalize` 路径。
 2. 记录 DID history transition。
 3. 刷新同一 `owner_identity_id` 下业务表的 `owner_did` snapshot。
-4. 保持 `owner_identity_id` 和业务主键不变。
-5. 为 Handle-backed 群成员生成幂等 group rebind outbox 任务。
-6. 不执行业务行 owner rebind。
-7. 不 reset、merge 或泄露 E2EE private state。
+4. 不改写 `sync_state.sync_subject_id`；当前 message service 以 canonical DID 作为同步主体，因此新 DID 从 checkpoint `0` 开始，旧 DID checkpoint 保留在历史 subject namespace。
+5. 保持 `owner_identity_id` 和业务主键不变。
+6. 为 Handle-backed 群成员生成幂等 group rebind outbox 任务。
+7. 不执行业务行 owner rebind。
+8. 不 reset、merge 或泄露 E2EE private state。
+
+release/0714 schema 31 的 `sync_state.owner_did` 同时承担业务 snapshot 和服务端同步主体。该结构没有足够 provenance 证明 current-DID 行属于旧流还是新流；因此 31→32 迁移在同一 owner 已存在 previous DID 时确定性丢弃 current-DID checkpoint，并从 `0` 幂等补同步。明确属于 previous DID 的历史 checkpoint 和从未轮换身份的 checkpoint 继续保留。
 
 Replace-DID dry-run 的 `store_rebind_counts` 和 `e2ee_cleanup_counts` 保持为兼容字段；在 identity-owned schema 中它们不再通过 `owner_did` 扫描业务表。
 

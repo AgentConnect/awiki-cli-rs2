@@ -26,15 +26,16 @@ struct CacheRead {
 }
 
 pub fn load_metadata(
-    cache_dir: &str,
+    cache_dir: Option<&Path>,
     ttl_seconds: i64,
     prefer_fresh: bool,
     cache_only: bool,
     registry_urls: &[String],
 ) -> Result<Metadata, String> {
-    let mut cached = read_cache(&cache_path(cache_dir), ttl_seconds)
-        .ok()
-        .flatten()
+    let cache_path = cache_path(cache_dir);
+    let mut cached = cache_path
+        .as_deref()
+        .and_then(|path| read_cache(path, ttl_seconds).ok().flatten())
         .filter(|cache| !cache.metadata.latest_version.trim().is_empty());
 
     if let Some(cache) = cached.as_mut() {
@@ -54,7 +55,9 @@ pub fn load_metadata(
 
     match fetch_from_registry(registry_urls) {
         Ok(network) => {
-            let _ = write_cache(&cache_path(cache_dir), &network);
+            if let Some(cache_path) = cache_path.as_deref() {
+                let _ = write_cache(cache_path, &network);
+            }
             Ok(network)
         }
         Err(err) => {
@@ -233,8 +236,10 @@ fn set_dir_permissions(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn cache_path(cache_dir: &str) -> PathBuf {
-    Path::new(cache_dir).join("update").join("metadata.json")
+fn cache_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
+    cache_dir
+        .filter(|cache_dir| !cache_dir.as_os_str().is_empty())
+        .map(|cache_dir| cache_dir.join("update").join("metadata.json"))
 }
 
 fn read_cache(path: &Path, ttl_seconds: i64) -> Result<Option<CacheRead>, String> {
@@ -278,6 +283,17 @@ fn parse_retrieved_at(raw: &str) -> Result<Option<OffsetDateTime>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_cache_directory_never_falls_back_to_the_working_directory() {
+        assert_eq!(cache_path(None), None);
+        assert_eq!(cache_path(Some(Path::new(""))), None);
+        let cache_dir = std::env::temp_dir().join("awiki-cli-cache");
+        assert_eq!(
+            cache_path(Some(&cache_dir)),
+            Some(cache_dir.join("update").join("metadata.json"))
+        );
+    }
 
     #[test]
     fn fetch_from_registry_rejects_missing_version() {

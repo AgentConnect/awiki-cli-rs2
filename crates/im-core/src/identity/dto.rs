@@ -1,6 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentitySelector {
@@ -28,6 +27,69 @@ pub struct IdentityReadiness {
     pub ready_for_auth: bool,
     pub ready_for_messaging: bool,
     pub missing: Vec<IdentityMissingItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceMode {
+    Legacy,
+    VNext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceRole {
+    Member,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceAuthorizationStatus {
+    Active,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIdentityKind {
+    Skill,
+    Daemon,
+    Runtime,
+}
+
+impl AgentIdentityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Skill => "skill",
+            Self::Daemon => "daemon",
+            Self::Runtime => "runtime",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceReadiness {
+    Legacy,
+    MemberReady,
+    AdminAwaitingRoot,
+    AdminReady,
+    Blocked,
+}
+
+/// Safe local device projection. It intentionally excludes Vault references,
+/// private-key presence flags and internal document/Registry checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityDeviceSummary {
+    pub identity: IdentitySummary,
+    pub mode: IdentityDeviceMode,
+    pub protocol_device_id: Option<crate::ids::ProtocolDeviceId>,
+    pub role: Option<IdentityDeviceRole>,
+    pub signing_key_id: Option<String>,
+    pub e2ee_key_id: Option<String>,
+    pub readiness: IdentityDeviceReadiness,
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +140,7 @@ pub struct HostedIdentityMaterial {
     pub display_name: Option<String>,
     pub did_document: serde_json::Value,
     pub default_signing_private_key_pem: String,
-    pub e2ee_agreement_private_key_pem: String,
+    pub e2ee_agreement_private_key_pem: Option<String>,
     pub auth_token: Option<String>,
 }
 
@@ -96,6 +158,148 @@ impl std::fmt::Debug for HostedIdentityMaterial {
                 "auth_token",
                 &self.auth_token.as_ref().map(|_| "<redacted-token>"),
             )
+            .finish()
+    }
+}
+
+/// Fresh vNext Agent identity material produced for a trusted in-process host.
+///
+/// This secret-bearing value intentionally does not implement Serde. Hosts
+/// must move it directly into their SecretVault-backed pending record and must
+/// never log it or persist it as ordinary application data.
+#[derive(Clone, PartialEq)]
+pub struct VNextAgentBootstrapMaterial {
+    pub kind: AgentIdentityKind,
+    pub handle_local_part: String,
+    pub identity_id: String,
+    pub did: crate::ids::Did,
+    pub did_document: serde_json::Value,
+    pub document_hash: String,
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub root_key_id: String,
+    pub root_private_key_pem: String,
+    pub root_public_key_pem: String,
+    pub device_signing_key_id: String,
+    pub device_signing_private_key_pem: String,
+    pub device_signing_public_key_pem: String,
+    pub device_e2ee_key_id: String,
+    pub device_e2ee_private_key_pem: String,
+    pub device_e2ee_public_key_pem: String,
+    pub daemon_subkey_package: Option<DaemonSubkeyPrivatePackage>,
+}
+
+impl std::fmt::Debug for VNextAgentBootstrapMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VNextAgentBootstrapMaterial")
+            .field("kind", &self.kind)
+            .field("handle_local_part", &self.handle_local_part)
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("did_document", &"<redacted-did-document>")
+            .field("document_hash", &self.document_hash)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("root_key_material", &"<redacted-key-material>")
+            .field("device_signing_key_material", &"<redacted-key-material>")
+            .field("device_e2ee_key_material", &"<redacted-key-material>")
+            .field("daemon_subkey_package", &"<redacted-private-package>")
+            .finish()
+    }
+}
+
+/// Crash-recovery classification for a same-DID Legacy Agent upgrade.
+///
+/// `TargetCommitted` means the remote document is byte-for-byte the prepared
+/// target and callers must not issue `update_document` again. `LegacyRebuilt`
+/// preserves the exact pending device identity and keys while refreshing the
+/// target proof and source-owned document extensions from the remote Legacy
+/// document.
+#[derive(Clone, PartialEq)]
+pub enum VNextAgentLegacyUpgradeReconciliation {
+    TargetCommitted,
+    LegacyRebuilt { target: VNextAgentBootstrapMaterial },
+}
+
+impl std::fmt::Debug for VNextAgentLegacyUpgradeReconciliation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TargetCommitted => f.write_str("TargetCommitted"),
+            Self::LegacyRebuilt { target } => f
+                .debug_struct("LegacyRebuilt")
+                .field("target", target)
+                .finish(),
+        }
+    }
+}
+
+/// Exact committed bootstrap-device session recovered after a lost Legacy
+/// upgrade response. The access token is deliberately redacted from `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VNextAgentLegacyUpgradeSession {
+    pub did: crate::ids::Did,
+    pub user_id: String,
+    pub binding_generation: String,
+    pub access_token: String,
+}
+
+impl std::fmt::Debug for VNextAgentLegacyUpgradeSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VNextAgentLegacyUpgradeSession")
+            .field("did", &self.did)
+            .field("user_id", &self.user_id)
+            .field("binding_generation", &self.binding_generation)
+            .field("access_token", &"<redacted-token>")
+            .finish()
+    }
+}
+
+/// Exact vNext Device Identity material owned by a trusted in-process host.
+///
+/// Unlike [`HostedIdentityMaterial`], this type carries a validated account,
+/// device and credential-generation binding. It intentionally does not
+/// implement Serde; the host remains responsible for encrypted-at-rest secret
+/// storage and should construct this value only at the im-core call boundary.
+#[derive(Clone, PartialEq)]
+pub struct HostBackedDeviceIdentityMaterial {
+    pub identity_id: String,
+    pub did: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub account_id: String,
+    pub binding_generation: String,
+    pub did_document: serde_json::Value,
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub device_signing_key_id: String,
+    pub device_signing_private_key_pem: String,
+    pub device_e2ee_key_id: String,
+    pub device_e2ee_private_key_pem: String,
+    pub root_key_id: String,
+    pub root_private_key_pem: String,
+    pub authorization_status: IdentityDeviceAuthorizationStatus,
+    pub role: IdentityDeviceRole,
+    pub management_ready: bool,
+    pub auth_generation: String,
+    pub access_token: String,
+}
+
+impl std::fmt::Debug for HostBackedDeviceIdentityMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostBackedDeviceIdentityMaterial")
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("handle", &self.handle)
+            .field("display_name", &self.display_name)
+            .field("account_id", &self.account_id)
+            .field("binding_generation", &self.binding_generation)
+            .field("did_document", &"<redacted-did-document>")
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("device_signing_key_material", &"<redacted-key-material>")
+            .field("device_e2ee_key_material", &"<redacted-key-material>")
+            .field("root_key_material", &"<redacted-key-material>")
+            .field("authorization_status", &self.authorization_status)
+            .field("role", &self.role)
+            .field("management_ready", &self.management_ready)
+            .field("auth_generation", &self.auth_generation)
+            .field("access_token", &"<redacted-token>")
             .finish()
     }
 }
@@ -304,11 +508,56 @@ pub struct InitialProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRegistrationResult {
     pub identity: Option<IdentitySummary>,
+    pub account_id: Option<String>,
     pub handle: crate::ids::Handle,
     pub method: RegistrationMethod,
     pub state: HandleRegistrationState,
+    pub join_required: Option<HandleRegistrationJoinRequired>,
     pub default_identity_change: Option<DefaultIdentityChange>,
     pub warnings: Vec<String>,
+}
+
+/// Read-only, secret-free binding used to scope account synchronization.
+///
+/// Every field is derived and validated by Core. Hosts cannot construct or
+/// override the active binding used by sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveSyncAccountBinding {
+    pub owner_identity_id: String,
+    pub account_id: String,
+    pub current_did: String,
+    pub protocol_device_id: String,
+    pub identity_generation: String,
+    pub device_auth_generation: String,
+}
+
+/// Secret-free authority for adopting one pre-Recovery Registry epoch into a
+/// product-local store. `provenance_id` is an opaque Core digest; hosts must
+/// never reconstruct or broaden this decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyRegistryEpochAdoptionAuthority {
+    pub owner_identity_id: crate::ids::IdentityId,
+    pub account_user_id: String,
+    pub current_did: crate::ids::Did,
+    pub binding_generation: String,
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub device_auth_generation: String,
+    pub provenance_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRegistrationJoinRequired {
+    pub did: crate::ids::Did,
+    pub account_verification_token: String,
+}
+
+impl std::fmt::Debug for HandleRegistrationJoinRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandleRegistrationJoinRequired")
+            .field("did", &self.did)
+            .field("account_verification_token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +573,16 @@ pub enum HandleRegistrationState {
     EmailSent,
     EmailPending,
     Registered,
+    JoinRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum LegacyUpgradeStatus {
+    Idle,
+    Running,
+    RetryRequired { identity_id: String, code: String },
+    Completed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +615,8 @@ pub struct Profile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_version: Option<String>,
     #[serde(
         default,
         rename = "versionId",
@@ -389,6 +650,7 @@ impl Profile {
             profile_uri: None,
             subject_type: None,
             updated_at: None,
+            profile_version: None,
             version_id: None,
             ttl: None,
             proof: None,
@@ -480,6 +742,12 @@ impl Profile {
             value.insert(
                 "updated".to_string(),
                 serde_json::Value::String(updated_at.clone()),
+            );
+        }
+        if let Some(profile_version) = self.profile_version.as_ref() {
+            value.insert(
+                "profile_version".to_string(),
+                serde_json::Value::String(profile_version.clone()),
             );
         }
         if let Some(version_id) = self.version_id.as_ref() {
@@ -580,159 +848,6 @@ pub enum ContactBindingState {
     EmailSent,
     Pending,
     Completed,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandleRequest {
-    pub handle: crate::ids::Handle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_handle: Option<String>,
-    pub phone: String,
-    pub otp: Option<String>,
-    pub generated_identity: Option<RecoverGeneratedIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_finalize: Option<RecoverHandleLocalFinalizeRequest>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverGeneratedIdentity {
-    pub did: crate::ids::Did,
-    pub unique_id: String,
-    pub did_document: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RecoverHandleLocalFinalizeRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_handle: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_identity_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_file_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecoverHandlePlanRequest {
-    pub handle: crate::ids::Handle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_handle: Option<String>,
-    pub phone: String,
-    pub otp: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandlePlan {
-    pub action: String,
-    pub target_handle: String,
-    pub identity_name: String,
-    pub final_identity_name: String,
-    pub temp_identity_name: String,
-    pub same_handle_candidates: Vec<RecoverLocalIdentitySummary>,
-    pub excluded_identities: Vec<RecoverLocalIdentitySummary>,
-    pub backup_path: String,
-    pub phone: String,
-    pub remote_calls: Vec<String>,
-    pub local_writes: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandleResult {
-    pub handle: crate::ids::Handle,
-    pub phone: String,
-    pub state: RecoverHandleState,
-    pub recovered_identity: Option<RecoveredIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_recovery: Option<RecoverHandleLocalResult>,
-    #[serde(skip)]
-    raw_response: Option<serde_json::Value>,
-    pub warnings: Vec<String>,
-}
-
-impl RecoverHandleResult {
-    pub(crate) fn with_raw_response(
-        handle: crate::ids::Handle,
-        phone: String,
-        state: RecoverHandleState,
-        recovered_identity: Option<RecoveredIdentity>,
-        local_recovery: Option<RecoverHandleLocalResult>,
-        raw_response: Option<serde_json::Value>,
-        warnings: Vec<String>,
-    ) -> Self {
-        Self {
-            handle,
-            phone,
-            state,
-            recovered_identity,
-            local_recovery,
-            raw_response,
-            warnings,
-        }
-    }
-
-    pub fn response_json(&self) -> Option<&serde_json::Value> {
-        self.raw_response.as_ref()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecoverHandleState {
-    OtpSent,
-    Recovered,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoveredIdentity {
-    pub identity: IdentitySummary,
-    pub user_id: Option<String>,
-    pub access_token_present: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandleLocalResult {
-    pub identity: RecoverLocalIdentitySummary,
-    pub backup_path: String,
-    pub archived_identities: Vec<String>,
-    pub archived_dids: Vec<String>,
-    pub full_handle: String,
-    pub final_identity_name: String,
-    pub store_merge_counts: BTreeMap<String, i64>,
-    pub e2ee_cleanup_counts: BTreeMap<String, i64>,
-    pub default_updated: bool,
-    pub active_config_updated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RecoverLocalIdentitySummary {
-    pub identity_name: String,
-    pub did: String,
-    pub unique_id: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub display_name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub handle: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub full_handle: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub created_at: String,
-    pub dir_name: String,
-    pub is_default: bool,
-    pub has_jwt: bool,
-    pub has_did_document: bool,
-    pub has_key1_private: bool,
-    pub has_key1_public: bool,
-    pub has_e2ee_signing_private: bool,
-    pub has_e2ee_agreement_private: bool,
-    pub user_state: RecoverLocalUserState,
-    #[serde(skip)]
-    pub user_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RecoverLocalUserState {
-    pub registration_state: String,
-    pub ready_for_messaging: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub missing: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -857,24 +972,6 @@ mod tests {
         assert!(binding_json.get("raw_response").is_none());
         assert!(binding_json.get("raw_response").is_none());
         assert!(binding_json.get("raw").is_none());
-
-        let recover = RecoverHandleResult::with_raw_response(
-            crate::ids::Handle::parse("alice", "example.test").expect("handle"),
-            "+15551234567".to_string(),
-            RecoverHandleState::OtpSent,
-            None,
-            None,
-            Some(json!({ "sent": true })),
-            Vec::new(),
-        );
-        let recover_json = serde_json::to_value(&recover).expect("serialize recover result");
-        assert_eq!(
-            recover.response_json().and_then(|raw| raw.get("sent")),
-            Some(&json!(true))
-        );
-        assert!(recover_json.get("raw_response").is_none());
-        assert!(recover_json.get("raw_response").is_none());
-        assert!(recover_json.get("raw").is_none());
     }
 
     #[test]

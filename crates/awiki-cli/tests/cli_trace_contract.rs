@@ -1,18 +1,50 @@
 use awiki_cli::cli_trace::{self, Run};
+use std::ffi::OsString;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+struct TimingEnvGuard {
+    previous: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl TimingEnvGuard {
+    fn acquire() -> Self {
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self {
+            previous: std::env::var_os("AWIKI_CLI_TRACE_TIMING"),
+            _lock: lock,
+        }
+    }
+
+    fn set(&self, value: &str) {
+        std::env::set_var("AWIKI_CLI_TRACE_TIMING", value);
+    }
+}
+
+impl Drop for TimingEnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var("AWIKI_CLI_TRACE_TIMING", previous);
+        } else {
+            std::env::remove_var("AWIKI_CLI_TRACE_TIMING");
+        }
+    }
+}
+
 #[test]
 fn trace_timing_env_truthy_values_match_go_contract() {
-    let _guard = ENV_LOCK.lock().expect("env lock");
+    let env = TimingEnvGuard::acquire();
     for value in ["1", "true", "TRUE", " yes ", "on"] {
-        std::env::set_var("AWIKI_CLI_TRACE_TIMING", value);
+        env.set(value);
         assert!(cli_trace::enabled(), "{value:?} should enable tracing");
     }
     for value in ["", "0", "false", "no", "off", "enabled"] {
-        std::env::set_var("AWIKI_CLI_TRACE_TIMING", value);
+        env.set(value);
         assert!(!cli_trace::enabled(), "{value:?} should disable tracing");
     }
     std::env::remove_var("AWIKI_CLI_TRACE_TIMING");
@@ -21,8 +53,8 @@ fn trace_timing_env_truthy_values_match_go_contract() {
 
 #[test]
 fn trace_run_emit_pretty_format_matches_go_contract() {
-    let _guard = ENV_LOCK.lock().expect("env lock");
-    std::env::set_var("AWIKI_CLI_TRACE_TIMING", "1");
+    let env = TimingEnvGuard::acquire();
+    env.set("1");
     let run = Run::new(" awiki-cli test ");
     let mut outer = run.start_phase("outer");
     let mut inner = run.start_phase("inner");
@@ -58,10 +90,10 @@ fn trace_run_emit_pretty_format_matches_go_contract() {
 
 #[test]
 fn trace_phase_detail_sanitizing_and_humanizing_match_go_contract() {
-    let _guard = ENV_LOCK.lock().expect("env lock");
-    std::env::set_var("AWIKI_CLI_TRACE_TIMING", "1");
+    let env = TimingEnvGuard::acquire();
+    env.set("1");
     let run = Run::new("awiki-cli test");
-    let mut done = run.rpc_phase("POST /user-service/auth/email-send");
+    let mut done = run.rpc_phase("POST /user-service/v1/auth/email-send");
     done.finish();
 
     let output = run.emit_to_string().expect("emit trace");
@@ -70,8 +102,12 @@ fn trace_phase_detail_sanitizing_and_humanizing_match_go_contract() {
         "pretty output did not humanize phase name:\n{output}"
     );
     assert_eq!(
-        cli_trace::phase_name("business_rpc", "POST /user-service/auth/email-send"),
+        cli_trace::phase_name("business_rpc", "POST /user-service/v1/auth/email-send"),
         "business_rpc:POST_user-service.auth.email-send"
+    );
+    assert_eq!(
+        cli_trace::phase_name("business_rpc", "sync.v2.foreground_reconcile"),
+        "business_rpc:sync.v2.foreground_reconcile"
     );
     assert_eq!(
         cli_trace::humanize_text("read_history_cache"),
@@ -80,6 +116,10 @@ fn trace_phase_detail_sanitizing_and_humanizing_match_go_contract() {
     assert_eq!(
         cli_trace::humanize_text("custom.stage_name"),
         "custom stage name"
+    );
+    assert_eq!(
+        cli_trace::humanize_phase_name("business_rpc:sync.v2.foreground_reconcile"),
+        "远端 RPC / sync v2 foreground reconcile"
     );
     assert_eq!(cli_trace::humanize_phase_name(""), "未命名阶段");
     assert_eq!(cli_trace::phase_group_label("local_db"), "本地数据库");
@@ -97,8 +137,8 @@ fn trace_phase_detail_sanitizing_and_humanizing_match_go_contract() {
 
 #[test]
 fn trace_fallback_with_cause_formats_cause_in_parentheses() {
-    let _guard = ENV_LOCK.lock().expect("env lock");
-    std::env::set_var("AWIKI_CLI_TRACE_TIMING", "1");
+    let env = TimingEnvGuard::acquire();
+    env.set("1");
     let run = Run::new("awiki-cli test");
     run.mark_fallback(" websocket_to_http ", Some(" dial tcp timeout "));
 
@@ -111,8 +151,8 @@ fn trace_fallback_with_cause_formats_cause_in_parentheses() {
 
 #[test]
 fn trace_disabled_emits_nothing_and_records_no_phases() {
-    let _guard = ENV_LOCK.lock().expect("env lock");
-    std::env::set_var("AWIKI_CLI_TRACE_TIMING", "0");
+    let env = TimingEnvGuard::acquire();
+    env.set("0");
     let run = Run::new("awiki-cli test");
     let mut done = run.local_db_phase("read_mail_notifications");
     done.finish();
@@ -133,8 +173,8 @@ fn message_cutover_trace_call_sites_stay_in_thin_adapter() {
         "message sends should keep a thin adapter RPC phase"
     );
     assert!(
-        adapter.contains("cli_trace::rpc_phase(\"inbox.get\")"),
-        "message inbox should keep a thin adapter RPC phase"
+        adapter.contains("cli_trace::rpc_phase(\"sync.v2.foreground_reconcile\")"),
+        "message inbox should trace its foreground v2 reconciliation"
     );
     assert!(
         !adapter.contains("\"message_fallback_refresh\""),

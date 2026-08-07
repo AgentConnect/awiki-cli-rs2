@@ -83,6 +83,28 @@ fn listener_runner_selection_defaults_foreground_and_service_to_sdk_hosts() {
 }
 
 #[test]
+fn listener_binds_exact_local_alias_and_never_guesses_handle_recovery_transition() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/host_runtime/listener_supervisor_run.rs"),
+    )
+    .unwrap();
+
+    assert!(source.contains("IdentitySelector::LocalAlias(identity_name.clone())"));
+    assert!(source.contains("client.active_sync_account_binding().await"));
+    assert!(source.contains("ListenerSyncDisposition::AuthRevoked"));
+    assert!(source.contains("session.stop().await"));
+    for forbidden in [
+        "HandleRecovery",
+        "handle_recovery",
+        "recover_handle",
+        "recover-handle",
+    ] {
+        assert!(!source.contains(forbidden), "{forbidden}");
+    }
+}
+
+#[test]
 fn pid_error_stops_before_status_write_like_go() {
     let plan = listener_foreground_run_plan(
         "websocket",

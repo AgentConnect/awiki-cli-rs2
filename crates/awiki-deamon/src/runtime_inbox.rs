@@ -240,9 +240,7 @@ fn runtime_agent_client(
     runtime_agent: &AgentDefinition,
 ) -> Result<im_core::ImClient> {
     let im_core = ImCoreAdapter::open(config)?;
-    let identity = state.load_agent_identity(&runtime_agent.agent_did)?;
-    let jwt_token = state.load_agent_auth_token(&runtime_agent.agent_did)?;
-    im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())
+    im_core.client_for_agent(config, state, &runtime_agent.agent_did)
 }
 
 fn refresh_runtime_conversation_projection(
@@ -250,7 +248,7 @@ fn refresh_runtime_conversation_projection(
     scope: RuntimeInboxScope,
     limit: u32,
 ) -> Result<()> {
-    let inbox_limit = limit.max(INBOX_DEFAULT_LIMIT).min(MAX_LIMIT);
+    let inbox_limit = limit.clamp(INBOX_DEFAULT_LIMIT, MAX_LIMIT);
     client.messages().inbox(im_core::messages::InboxQuery {
         scope: scope.inbox_scope(),
         limit: PageLimit(inbox_limit),

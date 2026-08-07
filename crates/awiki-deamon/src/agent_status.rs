@@ -29,6 +29,45 @@ pub const APP_ATTENTION_WINDOW_MS: i64 = 2 * 60 * 1000;
 pub const LATEST_STATUS_CHECK_MS: i64 = 10 * 1000;
 pub const RELEASE_STATUS_CHECK_MS: i64 = 5 * 60 * 1000;
 const GENERIC_CLI_SETUP_PROBE_TTL_MS: i64 = 5 * 60 * 1000;
+pub const CONTROLLER_IDENTITY_CHANGED_EVENT: &str = "daemon.controller_identity_changed";
+pub const CONTROLLER_IDENTITY_CHANGED_ERROR: &str = "controller_identity_changed";
+
+pub fn controller_identity_change_observed(
+    state: &DaemonState,
+    daemon_agent_did: &str,
+) -> Result<bool> {
+    state.audit_event_exists(
+        CONTROLLER_IDENTITY_CHANGED_EVENT,
+        Some(daemon_agent_did),
+        Some(CONTROLLER_IDENTITY_CHANGED_ERROR),
+    )
+}
+
+pub fn ensure_controller_identity_active(
+    state: &DaemonState,
+    daemon_agent_did: &str,
+) -> Result<()> {
+    if controller_identity_change_observed(state, daemon_agent_did)? {
+        bail!(CONTROLLER_IDENTITY_CHANGED_ERROR);
+    }
+    Ok(())
+}
+
+pub fn record_controller_identity_changed(
+    state: &DaemonState,
+    daemon_agent_did: &str,
+    source: &'static str,
+) -> Result<()> {
+    state.insert_agent_audit_event_json_once(
+        CONTROLLER_IDENTITY_CHANGED_EVENT,
+        daemon_agent_did,
+        json!({
+            "reason": CONTROLLER_IDENTITY_CHANGED_ERROR,
+            "source": source,
+        }),
+    )?;
+    bail!(CONTROLLER_IDENTITY_CHANGED_ERROR)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatScheduler {
@@ -151,10 +190,9 @@ impl HeartbeatScheduler {
                 .map(|last| now.saturating_sub(*last) >= interval)
                 .unwrap_or(true);
             let should_write_latest = signature_changed
-                || self
+                || !self
                     .last_user_service_write_at_ms_by_daemon
-                    .get(&daemon.agent_did)
-                    .is_none()
+                    .contains_key(&daemon.agent_did)
                 || write_interval_due;
             if should_write_latest {
                 match update_user_service_latest(config, state, &daemon, latest_items) {
@@ -230,7 +268,7 @@ pub fn daemon_lightweight_payload(config: &DaemonConfig, daemon: &AgentDefinitio
     let now = rfc3339_now();
     let service = service_status(config);
     let release = check_release_status(config);
-    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release)
+    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release, None)
 }
 
 fn daemon_lightweight_payload_with_release(
@@ -239,6 +277,7 @@ fn daemon_lightweight_payload_with_release(
     service: &ServiceStatus,
     now: &str,
     release: &DaemonReleaseStatus,
+    bootstrap_key: Option<&DaemonBootstrapKeySummary>,
 ) -> Value {
     json!({
         "schema": "awiki.agent.status.v1",
@@ -249,7 +288,7 @@ fn daemon_lightweight_payload_with_release(
         "command_id": null,
         "state": "ready",
         "message": "daemon heartbeat",
-        "daemon": daemon_status_payload(config, daemon, service, now, release, None),
+        "daemon": daemon_status_payload(config, daemon, service, now, release, bootstrap_key),
         "runtimes": [],
         "runs": [],
         "details": {
@@ -367,6 +406,7 @@ pub fn sync_controller_scope_from_response(
     daemon_agent_did: &str,
     response: &Value,
 ) -> Result<()> {
+    ensure_controller_identity_active(state, daemon_agent_did)?;
     let Some(controller) = controller_scope_from_response(daemon_agent_did, response) else {
         return Ok(());
     };
@@ -398,19 +438,7 @@ pub fn sync_controller_scope_from_response(
     if local.controller_did == controller.controller_did {
         return Ok(());
     }
-    state.update_controller_did_for_agent_family(daemon_agent_did, &controller.controller_did)?;
-    state.insert_audit_event_json(
-        "daemon.controller_did.synced",
-        Some(daemon_agent_did),
-        None,
-        None,
-        None,
-        json!({
-            "old_controller_did": local.controller_did,
-            "new_controller_did": controller.controller_did,
-        }),
-    )?;
-    Ok(())
+    record_controller_identity_changed(state, daemon_agent_did, "authoritative_status")
 }
 
 pub fn sync_controller_did_from_latest_response(
@@ -477,9 +505,8 @@ fn emit_daemon_heartbeat<O>(
 where
     O: AgentManagementOutbox,
 {
-    let identity = state.load_agent_identity(&daemon.agent_did)?;
-    let jwt_token = state.load_agent_auth_token(&daemon.agent_did)?;
-    let _client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+    ensure_controller_identity_active(state, &daemon.agent_did)?;
+    let _client = im_core.client_for_agent(config, state, &daemon.agent_did)?;
     outbox.send_agent_status(&AgentStatusResponse {
         conversation_id: None,
         agent_did: daemon.agent_did.clone(),
@@ -487,7 +514,14 @@ where
         payload: {
             let service = service_status(config);
             let now = rfc3339_now();
-            daemon_lightweight_payload_with_release(config, daemon, &service, &now, release)
+            daemon_lightweight_payload_with_release(
+                config,
+                daemon,
+                &service,
+                &now,
+                release,
+                daemon_bootstrap_key_summary(state, daemon).as_ref(),
+            )
         },
     })
 }
@@ -607,21 +641,30 @@ fn daemon_bootstrap_key_summary(
     state: &DaemonState,
     daemon: &AgentDefinition,
 ) -> Option<DaemonBootstrapKeySummary> {
-    let identity = state.load_agent_identity(&daemon.agent_did).ok()?;
-    daemon_bootstrap_key_summary_from_did_document(&identity.did_document, &daemon.agent_did)
+    let (did_document, expected_key_id) = match state.load_agent_device_identity(&daemon.agent_did)
+    {
+        Ok(Some(identity)) => (identity.did_document, identity.device_e2ee_key_id),
+        _ => (
+            state
+                .load_agent_identity(&daemon.agent_did)
+                .ok()?
+                .did_document,
+            format!(
+                "{}#{}",
+                daemon.agent_did.trim(),
+                anp::authentication::VM_KEY_E2EE_AGREEMENT
+            ),
+        ),
+    };
+    daemon_bootstrap_key_summary_from_did_document(&did_document, &expected_key_id)
         .ok()
         .flatten()
 }
 
 fn daemon_bootstrap_key_summary_from_did_document(
     did_document: &Value,
-    daemon_agent_did: &str,
+    expected_key_id: &str,
 ) -> Result<Option<DaemonBootstrapKeySummary>> {
-    let expected_key_id = format!(
-        "{}#{}",
-        daemon_agent_did.trim(),
-        anp::authentication::VM_KEY_E2EE_AGREEMENT
-    );
     let Some(methods) = did_document
         .get("verificationMethod")
         .and_then(Value::as_array)
@@ -629,7 +672,7 @@ fn daemon_bootstrap_key_summary_from_did_document(
         return Ok(None);
     };
     let Some(method) = methods.iter().find(|method| {
-        method.get("id").and_then(Value::as_str).map(str::trim) == Some(expected_key_id.as_str())
+        method.get("id").and_then(Value::as_str).map(str::trim) == Some(expected_key_id)
     }) else {
         return Ok(None);
     };
@@ -643,7 +686,7 @@ fn daemon_bootstrap_key_summary_from_did_document(
     let bytes = x25519_public_key_bytes_from_multibase(&public_key_multibase)
         .context("extract daemon bootstrap public key")?;
     Ok(Some(DaemonBootstrapKeySummary {
-        key_id: expected_key_id,
+        key_id: expected_key_id.to_owned(),
         public_key_multibase,
         public_key_b64u: URL_SAFE_NO_PAD.encode(bytes),
         key_algorithm: "x25519".to_string(),
@@ -1918,18 +1961,27 @@ fn sanitize_public_error(message: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the trailing executable writer is a test-only helper used by this inline suite"
+)]
 mod tests {
     use super::*;
-    use crate::agent::{generate_agent_identity, AgentDefinition};
+    use crate::agent::AgentDefinition;
+    use crate::outbox::MemoryRuntimeOutbox;
     use crate::plugins::generic_cli::GENERIC_CLI_RUNTIME_PLUGIN_ID;
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
+    use crate::runtime::{
+        RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeTask, RuntimeTaskTriggerKind,
+    };
     use crate::state::{
-        CliRuntimeProfileRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession,
-        HermesProfileRecord,
+        BootstrapReplayRecord, CliRuntimeProfileRecord, CreateCliRouteMessageQueueReference,
+        CreateCliRouteSession, HermesProfileRecord, UserDelegatedIdentityRecord,
     };
     use crate::workspace::WorkspaceMode;
+    use rusqlite::types::Value as SqlValue;
     use std::collections::BTreeSet;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2195,12 +2247,16 @@ mod tests {
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
-        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
-            .unwrap()
-            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            &config,
+            &state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
         let mut daemon = daemon();
         daemon.agent_did = identity.agent_did.clone();
-        state.store_agent_identity(&identity).unwrap();
+        daemon.handle = identity.full_handle.clone();
         state.upsert_agent_definition(&daemon).unwrap();
 
         let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
@@ -2209,11 +2265,7 @@ mod tests {
         let config_summary = &diagnostics["config_summary"];
         assert_eq!(
             config_summary["bootstrap_key_id"],
-            format!(
-                "{}#{}",
-                daemon.agent_did,
-                anp::authentication::VM_KEY_E2EE_AGREEMENT
-            )
+            identity.device_e2ee_key_id
         );
         assert_eq!(
             diagnostics["config_summary"]["bootstrap_key_status"],
@@ -2246,12 +2298,15 @@ mod tests {
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
-        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
-            .unwrap()
-            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            &config,
+            &state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
         let mut daemon = daemon();
         daemon.agent_did = identity.agent_did.clone();
-        state.store_agent_identity(&identity).unwrap();
         state.upsert_agent_definition(&daemon).unwrap();
 
         let items = latest_status_items(&config, &state, &daemon, 1_700_000_000_000).unwrap();
@@ -2262,11 +2317,7 @@ mod tests {
 
         assert_eq!(
             daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_id"],
-            format!(
-                "{}#{}",
-                daemon.agent_did,
-                anp::authentication::VM_KEY_E2EE_AGREEMENT
-            )
+            identity.device_e2ee_key_id
         );
         assert_eq!(
             daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_status"],
@@ -2281,6 +2332,73 @@ mod tests {
         assert!(!dump.contains("PRIVATE KEY"));
         assert!(!dump.contains("token"));
         assert!(!dump.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn daemon_heartbeat_includes_public_bootstrap_key_without_private_material() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            &config,
+            &state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
+        let mut daemon = daemon();
+        daemon.agent_did = identity.agent_did.clone();
+        state.upsert_agent_definition(&daemon).unwrap();
+        let im_core = ImCoreAdapter::open(&config).unwrap();
+        im_core.initialize_local_state().await.unwrap();
+        let outbox = MemoryRuntimeOutbox::default();
+        let release = DaemonReleaseStatus {
+            current_version: "test".to_string(),
+            latest_version: None,
+            needs_upgrade: false,
+            manifest_url: "test://release".to_string(),
+            error: Some("offline-test".to_string()),
+        };
+
+        emit_daemon_heartbeat(&config, &state, &im_core, &outbox, &daemon, &release).unwrap();
+
+        let statuses = outbox.agent_statuses();
+        assert_eq!(statuses.len(), 1);
+        let payload = &statuses[0].payload;
+        assert_eq!(payload["schema"], "awiki.agent.status.v1");
+        let config_summary = &payload["daemon"]["diagnostics_summary"]["config_summary"];
+        assert_eq!(config_summary["bootstrap_key_status"], "ready");
+        assert_eq!(
+            config_summary["bootstrap_key_id"],
+            identity.device_e2ee_key_id
+        );
+        assert_eq!(config_summary["bootstrap_key_algorithm"], "x25519");
+        assert!(config_summary["bootstrap_public_key_multibase"]
+            .as_str()
+            .unwrap()
+            .starts_with('z'));
+        let public_key = URL_SAFE_NO_PAD
+            .decode(
+                config_summary["bootstrap_public_key_b64u"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(public_key.len(), 32);
+
+        let dump = payload.to_string();
+        assert!(!dump.contains("PRIVATE KEY"));
+        assert!(!dump.contains("token"));
+        assert!(!dump.contains("private"));
+
+        record_controller_identity_changed(&state, &daemon.agent_did, "test_authoritative_status")
+            .unwrap_err();
+        let blocked = emit_daemon_heartbeat(&config, &state, &im_core, &outbox, &daemon, &release)
+            .unwrap_err();
+        assert_eq!(blocked.to_string(), CONTROLLER_IDENTITY_CHANGED_ERROR);
+        assert_eq!(outbox.agent_statuses().len(), 1);
     }
 
     #[test]
@@ -3642,7 +3760,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_status_response_can_rotate_local_controller_did() {
+    fn latest_status_controller_did_change_fails_closed_without_transferring_local_state() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
@@ -3663,7 +3781,103 @@ mod tests {
             )
             .unwrap();
 
-        sync_controller_did_from_latest_response(
+        let task = RuntimeTask {
+            task_id: "task_before_controller_change".to_string(),
+            agent_did: runtime.agent_did.clone(),
+            agent_handle: runtime.handle.clone(),
+            controller_user_id: daemon.controller_user_id.clone(),
+            controller_full_handle: daemon.controller_full_handle.clone(),
+            controller_scope_key: daemon.controller_scope_key.clone(),
+            controller_did: daemon.controller_did.clone(),
+            sender_did: daemon.controller_did.clone(),
+            requester_did: daemon.controller_did.clone(),
+            requester_user_id: Some(daemon.controller_user_id.clone()),
+            requester_full_handle: Some(daemon.controller_full_handle.clone()),
+            trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+            conversation_scope: RuntimeConversationScope::ControllerPrivate {
+                controller_scope_key: daemon.controller_scope_key.clone(),
+            },
+            invocation_authority: RuntimeInvocationAuthority::Controller,
+            reply_recipient_did: daemon.controller_did.clone(),
+            conversation_id: Some(format!("direct:{}", daemon.controller_did)),
+            text: "keep isolated".to_string(),
+        };
+        state.insert_runtime_task(&task).unwrap();
+        state
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE runtime_task SET status='running' WHERE task_id=?1",
+                [&task.task_id],
+            )
+            .unwrap();
+        let route = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "direct:did:human:alice",
+            ))
+            .unwrap();
+        let delegated = UserDelegatedIdentityRecord {
+            user_did: daemon.controller_did.clone(),
+            verification_method: format!("{}#daemon-key-1", daemon.controller_did),
+            app_instance_id: "app-controller-change".to_string(),
+            controller_did: daemon.controller_did.clone(),
+            daemon_agent_did: daemon.agent_did.clone(),
+            public_key_multibase: "z-public".to_string(),
+            private_key_material: "z-private-secret".to_string(),
+            private_key_ref_json: None,
+            allowed_scopes_json: json!(["message.inbox.read.plain"]),
+            status: "paired_key_received".to_string(),
+            expires_at: Some("2026-09-09T00:00:00Z".to_string()),
+            bootstrap_id: "boot-controller-change".to_string(),
+            idempotency_key: "bootstrap-controller-change".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let replay = BootstrapReplayRecord {
+            bootstrap_id: delegated.bootstrap_id.clone(),
+            idempotency_key: delegated.idempotency_key.clone(),
+            payload_hash: "payload-controller-change".to_string(),
+            user_did: delegated.user_did.clone(),
+            verification_method: delegated.verification_method.clone(),
+            app_instance_id: delegated.app_instance_id.clone(),
+            daemon_agent_did: delegated.daemon_agent_did.clone(),
+            status: delegated.status.clone(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        state.store_bootstrap_state(&delegated, &replay).unwrap();
+
+        fn rows(state: &DaemonState, sql: &str) -> Vec<Vec<SqlValue>> {
+            let connection = state.connection().unwrap();
+            let mut statement = connection.prepare(sql).unwrap();
+            let column_count = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..column_count)
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<SqlValue>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        }
+        let agent_rows_before = rows(&state, "SELECT * FROM agent_definition ORDER BY agent_did");
+        let binding_rows_before = rows(
+            &state,
+            "SELECT * FROM runtime_daemon_binding ORDER BY runtime_agent_did",
+        );
+        let task_rows_before = rows(&state, "SELECT * FROM runtime_task ORDER BY task_id");
+        let route_before = state
+            .load_cli_route_session(&route.route_key)
+            .unwrap()
+            .unwrap();
+        let delegated_before = state
+            .load_user_delegated_identity(&delegated.verification_method)
+            .unwrap()
+            .unwrap();
+
+        let error = sync_controller_did_from_latest_response(
             &state,
             &daemon.agent_did,
             &json!({
@@ -3674,30 +3888,137 @@ mod tests {
                 }]
             }),
         )
-        .unwrap();
+        .unwrap_err();
 
+        assert_eq!(error.to_string(), "controller_identity_changed");
         assert_eq!(
-            state
-                .load_agent_definition(&daemon.agent_did)
-                .unwrap()
-                .controller_did,
-            "did:human:alice-new"
+            rows(&state, "SELECT * FROM agent_definition ORDER BY agent_did"),
+            agent_rows_before
+        );
+        assert_eq!(
+            rows(
+                &state,
+                "SELECT * FROM runtime_daemon_binding ORDER BY runtime_agent_did"
+            ),
+            binding_rows_before
+        );
+        assert_eq!(
+            rows(&state, "SELECT * FROM runtime_task ORDER BY task_id"),
+            task_rows_before
         );
         assert_eq!(
             state
-                .load_agent_definition(&runtime.agent_did)
+                .load_cli_route_session(&route.route_key)
                 .unwrap()
-                .controller_did,
-            "did:human:alice-new"
+                .unwrap(),
+            route_before
         );
         assert_eq!(
             state
-                .load_runtime_daemon_binding(&runtime.agent_did)
+                .load_user_delegated_identity(&delegated.verification_method)
                 .unwrap()
-                .unwrap()
-                .controller_did,
-            "did:human:alice-new"
+                .unwrap(),
+            delegated_before
         );
+        assert!(state
+            .load_user_delegated_identity("did:human:alice-new#daemon-key-1")
+            .unwrap()
+            .is_none());
+        assert!(state
+            .audit_event_exists(
+                "daemon.controller_identity_changed",
+                Some(&daemon.agent_did),
+                Some("controller_identity_changed"),
+            )
+            .unwrap());
+        let repeated_error = sync_controller_did_from_latest_response(
+            &state,
+            &daemon.agent_did,
+            &json!({
+                "updated": [{
+                    "agent_did": daemon.agent_did,
+                    "controller_did": "did:human:alice-new",
+                    "status": "ready",
+                }]
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(repeated_error.to_string(), "controller_identity_changed");
+        let event_count: i64 = state
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type=?1 AND agent_did=?2",
+                [CONTROLLER_IDENTITY_CHANGED_EVENT, daemon.agent_did.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_count, 1);
+        let detail_json: String = state
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT detail_json FROM audit_log WHERE event_type=?1 AND agent_did=?2",
+                [CONTROLLER_IDENTITY_CHANGED_EVENT, daemon.agent_did.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&detail_json).unwrap(),
+            json!({
+                "reason": "controller_identity_changed",
+                "source": "authoritative_status",
+            })
+        );
+        assert!(!detail_json.contains("did:human:alice"));
+        assert!(!detail_json.contains("token"));
+        assert!(!detail_json.contains("private"));
+    }
+
+    #[test]
+    fn controller_identity_guard_is_default_clear_restart_durable_and_race_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon_agent_did = "did:agent:daemon-race";
+        ensure_controller_identity_active(&state, daemon_agent_did).unwrap();
+
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|_| {
+                let state = state.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    record_controller_identity_changed(
+                        &state,
+                        daemon_agent_did,
+                        "concurrent_authoritative_status",
+                    )
+                    .unwrap_err()
+                    .to_string()
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), CONTROLLER_IDENTITY_CHANGED_ERROR);
+        }
+        let event_count: i64 = state
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type=?1 AND agent_did=?2",
+                [CONTROLLER_IDENTITY_CHANGED_EVENT, daemon_agent_did],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_count, 1);
+
+        let reopened = DaemonState::open(&config).unwrap();
+        let error = ensure_controller_identity_active(&reopened, daemon_agent_did).unwrap_err();
+        assert_eq!(error.to_string(), CONTROLLER_IDENTITY_CHANGED_ERROR);
     }
 
     #[test]

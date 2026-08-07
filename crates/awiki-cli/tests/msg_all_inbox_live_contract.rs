@@ -1,10 +1,14 @@
 #![cfg(unix)]
 
+use base64::Engine;
 use rusqlite::types::ValueRef;
 use serde_json::{json, Map, Value};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
@@ -16,13 +20,11 @@ use support::{
 #[test]
 fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     let workspace = TempDir::new("msg-all-inbox-no-legacy-cache").expect("workspace");
-    let alice_identity_id =
-        register_ready_msg_identity(workspace.path(), "alice-no-cache", "alice", "jwt-alice");
-    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let alice = register_exact_msg_identity(workspace.path());
     seed_direct_message(
         workspace.path(),
-        &alice_identity_id,
-        alice_did,
+        &alice.identity_id,
+        &alice.did,
         "did:wba:awiki.ai:bob:e1_bob",
         "direct-1",
         "hello direct",
@@ -31,8 +33,8 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     );
     seed_group_message(
         workspace.path(),
-        &alice_identity_id,
-        alice_did,
+        &alice.identity_id,
+        &alice.did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "group-1",
         "hello group",
@@ -41,8 +43,8 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     );
     seed_mail_notification(
         workspace.path(),
-        &alice_identity_id,
-        alice_did,
+        &alice.identity_id,
+        &alice.did,
         "mail-1",
         "mail raw",
         "2026-05-16T10:02:00Z",
@@ -51,14 +53,7 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
 
     let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-no-cache",
-            "msg",
-            "inbox",
-            "--limit",
-            "10",
-        ],
+        &["--identity", "alice", "msg", "inbox", "--limit", "10"],
         workspace.path(),
     );
 
@@ -68,13 +63,11 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
 #[test]
 fn msg_inbox_group_scope_without_target_filter_does_not_fallback_to_legacy_group_cache() {
     let workspace = TempDir::new("msg-group-inbox-no-legacy-cache").expect("workspace");
-    let alice_identity_id =
-        register_ready_msg_identity(workspace.path(), "alice-group-cache", "alice", "jwt-alice");
-    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let alice = register_exact_msg_identity(workspace.path());
     seed_group_message(
         workspace.path(),
-        &alice_identity_id,
-        alice_did,
+        &alice.identity_id,
+        &alice.did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "group-local-1",
         "hello group",
@@ -86,7 +79,7 @@ fn msg_inbox_group_scope_without_target_filter_does_not_fallback_to_legacy_group
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-group-cache",
+            "alice",
             "msg",
             "inbox",
             "--scope",
@@ -256,6 +249,50 @@ fn msg_inbox_mark_read_side_effect_is_cutover_unsupported_and_leaves_local_rows_
     assert_eq!(rows[2]["is_read"], 0);
 }
 
+struct ExactTestIdentity {
+    identity_id: String,
+    did: String,
+}
+
+fn register_exact_msg_identity(workspace: &Path) -> ExactTestIdentity {
+    let server = RegistrationServer::new();
+    write_msg_ws_config(workspace, &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace,
+    );
+    assert_success(&register);
+    let envelope: Value = serde_json::from_slice(&register.stdout).expect("registration JSON");
+    let did = envelope["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered DID")
+        .to_owned();
+    let index: Value = serde_json::from_slice(
+        &std::fs::read(
+            tenant_workspace(workspace)
+                .join("identities")
+                .join("index.json"),
+        )
+        .expect("identity index"),
+    )
+    .expect("identity index JSON");
+    let identity_id = index["credentials"]["alice"]["unique_id"]
+        .as_str()
+        .expect("registered identity ID")
+        .to_owned();
+    drop(server);
+    ExactTestIdentity { identity_id, did }
+}
+
 fn register_ready_msg_identity(
     workspace: &Path,
     identity_name: &str,
@@ -343,6 +380,10 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str) {
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test fixture mirrors one message row"
+)]
 fn seed_direct_message(
     workspace: &Path,
     owner_identity_id: &str,
@@ -363,6 +404,10 @@ fn seed_direct_message(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test fixture mirrors one message row"
+)]
 fn seed_group_message(
     workspace: &Path,
     owner_identity_id: &str,
@@ -521,6 +566,203 @@ fn error_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stderr).expect("error JSON")
+}
+
+struct RegistrationServer {
+    address: String,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl RegistrationServer {
+    fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind registration server");
+        listener
+            .set_nonblocking(true)
+            .expect("set registration server nonblocking");
+        let address = format!(
+            "http://{}",
+            listener.local_addr().expect("registration address")
+        );
+        let join = thread::spawn(move || {
+            for request_index in 0..2 {
+                let Some(mut stream) = accept_with_timeout(&listener) else {
+                    break;
+                };
+                let request = read_http_request(&mut stream);
+                let body = if request_index == 0 {
+                    registration_response(&request)
+                } else {
+                    prekey_publication_response(&request)
+                };
+                write_http_response(&mut stream, &body);
+            }
+        });
+        Self {
+            address,
+            join: Some(join),
+        }
+    }
+
+    fn base_url(&self) -> String {
+        self.address.clone()
+    }
+}
+
+impl Drop for RegistrationServer {
+    fn drop(&mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let count = stream.read(&mut buffer).expect("read registration request");
+        if count == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buffer[..count]);
+        if http_request_complete(&raw) {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&raw).into_owned()
+}
+
+fn http_request_complete(raw: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(raw);
+    let Some((headers, body)) = text.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then_some(value.trim())
+            })
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    body.len() >= content_length
+}
+
+fn request_body(request: &str) -> &str {
+    request.split("\r\n\r\n").nth(1).unwrap_or_default()
+}
+
+fn registration_response(request: &str) -> String {
+    let rpc: Value =
+        serde_json::from_str(request_body(request)).expect("registration request JSON");
+    let params = &rpc["params"];
+    let document = &params["did_document"];
+    let did = document["id"].as_str().expect("registration DID");
+    let device = &document["deviceManifest"]["devices"][0];
+    let device_id = device["device_id"]
+        .as_str()
+        .expect("registration device ID");
+    let key_id = device["signing_key_id"]
+        .as_str()
+        .expect("registration signing key ID");
+    let handle = params["handle"].as_str().expect("registration handle");
+    let account_id = format!("user-{handle}");
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "state": "registered",
+            "did": did,
+            "user_id": account_id,
+            "message": "Registration successful",
+            "access_token": device_access_token(did, &account_id, device_id, key_id),
+            "handle": handle,
+            "domain": "awiki.ai",
+            "full_handle": format!("{handle}.awiki.ai"),
+            "binding_generation": "1"
+        },
+        "id": rpc["id"].clone()
+    })
+    .to_string()
+}
+
+fn prekey_publication_response(request: &str) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("prekey request JSON");
+    let bundle = &rpc["params"]["body"]["prekey_bundle"];
+    let published_opk_count = rpc["params"]["body"]["one_time_prekeys"]
+        .as_array()
+        .map(Vec::len)
+        .expect("one-time prekeys");
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "published": true,
+            "owner_did": bundle["owner_did"].clone(),
+            "owner_device_id": bundle["owner_device_id"].clone(),
+            "bundle_id": bundle["bundle_id"].clone(),
+            "published_at": "2026-08-02T00:00:00Z",
+            "published_opk_count": published_opk_count
+        },
+        "id": rpc["id"].clone()
+    })
+    .to_string()
+}
+
+fn device_access_token(did: &str, account_id: &str, device_id: &str, key_id: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": account_id,
+        "device_id": device_id,
+        "key_id": key_id,
+        "auth_generation": 1,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": format!("msg-all-inbox-{device_id}")
+    });
+    format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("serialize device access token"))
+    )
+}
+
+fn write_http_response(stream: &mut TcpStream, body: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("write registration response");
 }
 
 struct TempDir {

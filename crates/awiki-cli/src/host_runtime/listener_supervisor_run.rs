@@ -14,21 +14,25 @@ use super::listener_shutdown_signal::{
     wait_for_foreground_shutdown_async,
 };
 use crate::host_runtime;
-use crate::host_runtime::listener_im_event_adapter::CliRealtimeEventSink;
+use crate::host_runtime::listener_im_event_adapter::{CliImEventRoute, CliRealtimeEventSink};
 use crate::m_core_cli_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
 };
 use crate::workspace_config::Resolved;
-use rand::RngCore;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
-use time::OffsetDateTime;
+use std::time::{Duration, Instant};
+
+const RELIABLE_SYNC_LIMIT: u32 = 100;
+const RELIABLE_SYNC_RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const RELIABLE_SYNC_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
+const RELIABLE_SYNC_MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved, ListenerRunHostKind::Foreground)
@@ -79,7 +83,7 @@ impl ListenerSupervisor {
         host: ListenerRunHostKind,
     ) -> anyhow::Result<Self> {
         let runtime_paths = listener::paths(&resolved)?;
-        let boot_id = resolve_runtime_boot_id(&resolved)?;
+        let boot_id = super::listener_service::resolve_runtime_boot_id(&resolved)?;
         let (host_notify, host_notify_status) = new_host_notify_sink(&resolved)?;
         let status = Status {
             mode: host_runtime::resolve(&resolved).mode,
@@ -92,8 +96,8 @@ impl ListenerSupervisor {
             status_file: runtime_paths.status_file,
             socket_path: runtime_paths.socket_path,
             service_name: super::listener_service::service_name_for(&resolved),
-            service_platform: if running_in_listener_service_mode() && cfg!(target_os = "linux") {
-                "linux-systemd".to_string()
+            service_platform: if running_in_listener_service_mode() {
+                super::listener_service_manager::service_platform().to_string()
             } else {
                 "rust-local".to_string()
             },
@@ -174,15 +178,44 @@ impl ListenerSupervisor {
     async fn start_known_sessions_async(&self) -> anyhow::Result<()> {
         let core = crate::m_core_cli_adapter::build_im_core_async(&self.resolved).await?;
         let identities = core.identities().list_async().await?;
-        for summary in identities {
-            let identity_name = summary
-                .local_alias
-                .as_deref()
-                .unwrap_or_else(|| summary.id.as_str());
-            let did = summary.did.as_str();
-            if let Err(err) = self.ensure_known_session_async(identity_name, did).await {
-                self.record_session_error(identity_name, did, &err.to_string());
+        let sessions: Vec<(String, String)> = identities
+            .iter()
+            .map(|summary| {
+                (
+                    summary
+                        .local_alias
+                        .clone()
+                        .unwrap_or_else(|| summary.id.as_str().to_owned()),
+                    summary.did.as_str().to_owned(),
+                )
+            })
+            .collect();
+        {
+            let mut status = self.lock_status();
+            for (identity_name, did) in &sessions {
+                upsert_session(
+                    &mut status,
+                    SessionStatus {
+                        identity_name: identity_name.clone(),
+                        did: did.clone(),
+                        connected: false,
+                        last_error: String::new(),
+                    },
+                );
             }
+            status.reliable_sync.v2_subprotocol_negotiated = false;
+            let _ = listener::write_status(&status.status_file, &status);
+        }
+        for (identity_name, did) in sessions {
+            spawn_im_core_runner_session_async(
+                self.resolved.clone(),
+                self.status.clone(),
+                self.host_notify.clone(),
+                self.shutdown.clone(),
+                identity_name,
+                did,
+            )
+            .await;
         }
         self.refresh_status();
         Ok(())
@@ -243,7 +276,8 @@ impl ListenerSupervisor {
     }
 
     fn cleanup_runtime_artifacts(&self) {
-        cleanup_runtime_artifacts(&self.resolved);
+        let status = self.lock_status();
+        cleanup_runtime_artifacts(&self.resolved, &status.boot_id);
     }
 
     fn lock_status(&self) -> std::sync::MutexGuard<'_, Status> {
@@ -337,6 +371,7 @@ async fn spawn_im_core_runner_session_async(
                 last_error: String::new(),
             },
         );
+        guard.reliable_sync.v2_subprotocol_negotiated = false;
         let _ = listener::write_status(&guard.status_file, &guard);
     }
     let selector = im_core::IdentitySelector::LocalAlias(identity_name.clone());
@@ -353,6 +388,33 @@ async fn spawn_im_core_runner_session_async(
         }
     };
     let did = client.did().as_str().to_string();
+    if let Err(error) = client.active_sync_account_binding().await {
+        mark_session_disconnected(
+            &status,
+            &identity_name,
+            did,
+            Some(SessionDisconnectReason::Other(v2_binding_error_text(
+                &error,
+            ))),
+        );
+        return;
+    }
+    // Seed the exact-device notification projection before the realtime
+    // session can report readiness or the first account Sync v2 run can
+    // commit. Sync v2 publishes committed notification changes only to an
+    // initialized Core watch store.
+    let mut system_notifications = match watch_system_notifications(&client).await {
+        Ok(session) => session,
+        Err(error) => {
+            mark_session_disconnected(
+                &status,
+                &identity_name,
+                did,
+                Some(SessionDisconnectReason::Other(error.to_string())),
+            );
+            return;
+        }
+    };
     let mut session = match client
         .realtime()
         .start_async(im_core_realtime_adapter::listener_realtime_options())
@@ -384,13 +446,38 @@ async fn spawn_im_core_runner_session_async(
     };
     tokio::spawn(async move {
         let mut event_error = None;
+        let mut scheduler = ListenerSyncScheduler::new();
+        let mut notification_state = ListenerSystemNotificationState::default();
+        let mut sync_task = None;
+        let mut reconcile_timer = tokio::time::interval_at(
+            tokio::time::Instant::now() + RELIABLE_SYNC_RECONCILE_INTERVAL,
+            RELIABLE_SYNC_RECONCILE_INTERVAL,
+        );
+        reconcile_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             if shutdown.load(Ordering::SeqCst) {
                 let _ = session.stop().await;
                 break;
             }
+            if sync_task.is_none() {
+                if let Some(reason) = scheduler.take_ready(Instant::now()) {
+                    let sync_client = client.clone();
+                    sync_task = Some(tokio::spawn(async move {
+                        sync_client
+                            .messages()
+                            .sync_now_async(im_core::messages::MessageSyncRequest {
+                                reason: reason.as_str().to_owned(),
+                                limit: Some(RELIABLE_SYNC_LIMIT),
+                            })
+                            .await
+                    }));
+                }
+            }
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = reconcile_timer.tick() => {
+                    scheduler.request(ListenerSyncReason::Timer);
+                }
                 event = events.recv() => {
                     let Some(event) = event else {
                         break;
@@ -401,13 +488,122 @@ async fn spawn_im_core_runner_session_async(
                         identity_name: &identity_name,
                         did: &did,
                     };
-                    if let Err(err) = event_sink.emit(event) {
-                        event_error = Some(err.to_string());
-                        let _ = session.stop().await;
-                        break;
+                    match event_sink.emit_remote(event) {
+                        Ok(result) => {
+                            if result.route == CliImEventRoute::ConnectionStateChanged {
+                                record_v2_subprotocol_negotiated(&status);
+                            }
+                            if result.connection_became_connected {
+                                scheduler.observe_connected_transition();
+                            }
+                            if result.reliable_sync_requested {
+                                scheduler.request(ListenerSyncReason::RealtimeHint);
+                            }
+                        }
+                        Err(err) => {
+                            event_error = Some(err.to_string());
+                            let _ = session.stop().await;
+                            break;
+                        }
+                    }
+                }
+                change = system_notifications.next_change() => {
+                    let Some(change) = change else {
+                        match watch_system_notifications(&client).await {
+                            Ok(rebuilt) => {
+                                system_notifications = rebuilt;
+                                continue;
+                            }
+                            Err(error) => {
+                                event_error = Some(error.to_string());
+                                let _ = session.stop().await;
+                                break;
+                            }
+                        }
+                    };
+                    match notification_state.plan(change) {
+                        ListenerSystemNotificationPlan::Emit(items) => {
+                            for item in items {
+                                if let Err(error) = emit_listener_system_notification(
+                                    &status,
+                                    &host_notify,
+                                    &identity_name,
+                                    &did,
+                                    item,
+                                ) {
+                                    event_error = Some(error.to_string());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            }
+                            if event_error.is_some() {
+                                break;
+                            }
+                        }
+                        ListenerSystemNotificationPlan::Rebuild => {
+                            match watch_system_notifications(&client).await {
+                                Ok(rebuilt) => system_notifications = rebuilt,
+                                Err(error) => {
+                                    event_error = Some(error.to_string());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                sync_result = async {
+                    sync_task
+                        .as_mut()
+                        .expect("guarded reliable sync task")
+                        .await
+                }, if sync_task.is_some() => {
+                    sync_task = None;
+                    match sync_result {
+                        Ok(Ok(outcome)) => {
+                            if let Err(error) = emit_committed_sync_messages(
+                                &status,
+                                &host_notify,
+                                &identity_name,
+                                &did,
+                                &outcome,
+                            ) {
+                                event_error = Some(error.to_string());
+                                let _ = session.stop().await;
+                                break;
+                            }
+                            match record_reliable_sync_outcome(&status, outcome.status) {
+                                ListenerSyncDisposition::Success => {
+                                    scheduler.complete_success();
+                                }
+                                ListenerSyncDisposition::Retryable => {
+                                    scheduler.complete_retryable(Instant::now());
+                                }
+                                ListenerSyncDisposition::AuthRevoked => {
+                                    event_error = Some("reliable v2 sync authorization was revoked".to_owned());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            if listener_sync_error_is_terminal(&error) {
+                                event_error = Some("reliable v2 sync authorization is unavailable".to_owned());
+                                let _ = session.stop().await;
+                                break;
+                            }
+                            scheduler.complete_retryable(Instant::now());
+                        }
+                        Err(_) => {
+                            scheduler.complete_retryable(Instant::now());
+                        }
                     }
                 }
             }
+        }
+        if let Some(task) = sync_task.take() {
+            task.abort();
+            let _ = task.await;
         }
         let exit = session
             .join()
@@ -442,6 +638,271 @@ async fn spawn_im_core_runner_session_async(
             Some(SessionDisconnectReason::Other(error)),
         );
     });
+}
+
+fn emit_listener_system_notification(
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    identity_name: &str,
+    did: &str,
+    notification: im_core::system_notifications::SystemNotificationSnapshot,
+) -> im_core::ImResult<()> {
+    let mut event_sink = CliRealtimeEventSink {
+        status,
+        host_notify,
+        identity_name,
+        did,
+    };
+    event_sink.emit_remote(im_core::prelude::ImEvent::SystemNotificationChanged(
+        im_core::prelude::SystemNotificationChangedEvent {
+            notification,
+            sync: None,
+        },
+    ))?;
+    Ok(())
+}
+
+async fn watch_system_notifications(
+    client: &im_core::ImClient,
+) -> im_core::ImResult<im_core::system_notifications::SystemNotificationChangeSession> {
+    client
+        .system_notifications()
+        .watch(im_core::system_notifications::SystemNotificationListQuery {
+            limit: Some(500),
+            include_terminal: false,
+        })
+        .await
+}
+
+#[derive(Debug, Default)]
+struct ListenerSystemNotificationState {
+    latest_session_revision: HashMap<String, u64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ListenerSystemNotificationPlan {
+    Emit(Vec<im_core::system_notifications::SystemNotificationSnapshot>),
+    Rebuild,
+}
+
+impl ListenerSystemNotificationState {
+    fn plan(
+        &mut self,
+        change: im_core::system_notifications::SystemNotificationChange,
+    ) -> ListenerSystemNotificationPlan {
+        use im_core::system_notifications::SystemNotificationChange;
+
+        match change {
+            SystemNotificationChange::Reset { items } => {
+                ListenerSystemNotificationPlan::Emit(self.admit(items))
+            }
+            SystemNotificationChange::Changed { item } => {
+                ListenerSystemNotificationPlan::Emit(self.admit([item]))
+            }
+            SystemNotificationChange::RepairRequired { .. } => {
+                ListenerSystemNotificationPlan::Rebuild
+            }
+        }
+    }
+
+    fn admit(
+        &mut self,
+        items: impl IntoIterator<Item = im_core::system_notifications::SystemNotificationSnapshot>,
+    ) -> Vec<im_core::system_notifications::SystemNotificationSnapshot> {
+        let mut admitted = Vec::new();
+        for item in items {
+            let session_id = item.join_session_id.trim();
+            if session_id.is_empty()
+                || self
+                    .latest_session_revision
+                    .get(session_id)
+                    .is_some_and(|revision| *revision >= item.session_revision)
+            {
+                continue;
+            }
+            self.latest_session_revision
+                .insert(session_id.to_owned(), item.session_revision);
+            admitted.push(item);
+        }
+        admitted
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenerSyncReason {
+    Startup,
+    Reconnect,
+    RealtimeHint,
+    Timer,
+    Retry,
+}
+
+impl ListenerSyncReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Startup => "session_start",
+            Self::Reconnect => "websocket_reconnect",
+            Self::RealtimeHint => "websocket_hint",
+            Self::Timer | Self::Retry => "foreground_reconcile",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ListenerSyncScheduler {
+    pending: Option<ListenerSyncReason>,
+    retry_not_before: Option<Instant>,
+    retry_delay: Duration,
+    observed_connected_transition: bool,
+}
+
+impl ListenerSyncScheduler {
+    fn new() -> Self {
+        Self {
+            pending: Some(ListenerSyncReason::Startup),
+            retry_not_before: None,
+            retry_delay: RELIABLE_SYNC_INITIAL_RETRY_DELAY,
+            observed_connected_transition: false,
+        }
+    }
+
+    fn request(&mut self, reason: ListenerSyncReason) {
+        if self.pending.is_none() {
+            self.pending = Some(reason);
+        }
+    }
+
+    fn observe_connected_transition(&mut self) {
+        if self.observed_connected_transition {
+            self.request(ListenerSyncReason::Reconnect);
+        } else {
+            self.observed_connected_transition = true;
+        }
+    }
+
+    fn take_ready(&mut self, now: Instant) -> Option<ListenerSyncReason> {
+        if self
+            .retry_not_before
+            .is_some_and(|not_before| now < not_before)
+        {
+            return None;
+        }
+        let reason = self.pending.take()?;
+        self.retry_not_before = None;
+        Some(reason)
+    }
+
+    fn complete_success(&mut self) {
+        self.retry_not_before = None;
+        self.retry_delay = RELIABLE_SYNC_INITIAL_RETRY_DELAY;
+    }
+
+    fn complete_retryable(&mut self, now: Instant) {
+        self.pending = Some(ListenerSyncReason::Retry);
+        self.retry_not_before = Some(now + self.retry_delay);
+        self.retry_delay = self
+            .retry_delay
+            .saturating_mul(2)
+            .min(RELIABLE_SYNC_MAX_RETRY_DELAY);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenerSyncDisposition {
+    Success,
+    Retryable,
+    AuthRevoked,
+}
+
+fn listener_sync_disposition(
+    status: im_core::messages::MessageSyncStatus,
+) -> ListenerSyncDisposition {
+    match status {
+        im_core::messages::MessageSyncStatus::Idle
+        | im_core::messages::MessageSyncStatus::Changed => ListenerSyncDisposition::Success,
+        im_core::messages::MessageSyncStatus::RecoveryRequired
+        | im_core::messages::MessageSyncStatus::RetryableFailure => {
+            ListenerSyncDisposition::Retryable
+        }
+        im_core::messages::MessageSyncStatus::AuthRevoked => ListenerSyncDisposition::AuthRevoked,
+    }
+}
+
+fn record_reliable_sync_outcome(
+    listener_status: &Arc<Mutex<Status>>,
+    sync_status: im_core::messages::MessageSyncStatus,
+) -> ListenerSyncDisposition {
+    let disposition = listener_sync_disposition(sync_status);
+    if disposition == ListenerSyncDisposition::Success {
+        record_v2_bootstrap_completed(listener_status);
+    }
+    disposition
+}
+
+fn listener_sync_error_is_terminal(error: &im_core::ImError) -> bool {
+    matches!(
+        error,
+        im_core::ImError::AuthRequired
+            | im_core::ImError::SessionExpired
+            | im_core::ImError::PermissionDenied
+            | im_core::ImError::IdentityBindingConflict { .. }
+            | im_core::ImError::UnsupportedCapability { .. }
+    )
+}
+
+fn emit_committed_sync_messages(
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    identity_name: &str,
+    did: &str,
+    outcome: &im_core::messages::MessageSyncOutcome,
+) -> im_core::ImResult<()> {
+    for committed in &outcome.committed_incoming_messages {
+        let mut event_sink = CliRealtimeEventSink {
+            status,
+            host_notify,
+            identity_name,
+            did,
+        };
+        event_sink.emit_committed_message(committed.message.clone())?;
+    }
+    Ok(())
+}
+
+fn v2_binding_error_text(error: &im_core::ImError) -> String {
+    if matches!(error, im_core::ImError::UnsupportedCapability { .. }) {
+        return "reliable v2 sync requires a VNext device identity; run `awiki-cli onboarding migrate-legacy` for an existing Skill identity".to_owned();
+    }
+    format!("reliable v2 sync binding is unavailable: {error}")
+}
+
+fn record_v2_subprotocol_negotiated(status: &Arc<Mutex<Status>>) {
+    let Ok(mut guard) = status.lock() else {
+        return;
+    };
+    let all_sessions_connected =
+        !guard.sessions.is_empty() && guard.sessions.iter().all(|session| session.connected);
+    guard.reliable_sync.v2_subprotocol_negotiated = all_sessions_connected;
+    let _ = listener::write_status(&guard.status_file, &guard);
+}
+
+fn record_v2_bootstrap_completed(status: &Arc<Mutex<Status>>) {
+    update_reliable_sync_status(status, |reliable_sync| {
+        reliable_sync.v2_bootstrap_completed = true;
+        reliable_sync.last_reconcile_protocol = "sync_v2".to_owned();
+        reliable_sync.legacy_sync_used = false;
+    });
+}
+
+fn update_reliable_sync_status(
+    status: &Arc<Mutex<Status>>,
+    update: impl FnOnce(&mut crate::host_runtime::listener::ReliableSyncStatus),
+) {
+    let Ok(mut guard) = status.lock() else {
+        return;
+    };
+    update(&mut guard.reliable_sync);
+    let _ = listener::write_status(&guard.status_file, &guard);
 }
 
 fn realtime_exit_error_text(exit: &im_core::prelude::RealtimeExit) -> String {
@@ -492,6 +953,7 @@ fn mark_session_disconnected(
             last_error,
         },
     );
+    guard.reliable_sync.v2_subprotocol_negotiated = false;
     let _ = listener::write_status(&guard.status_file, &guard);
 }
 
@@ -526,42 +988,20 @@ fn upsert_session(status: &mut Status, session: SessionStatus) {
         .sort_by(|left, right| left.identity_name.cmp(&right.identity_name));
 }
 
-fn resolve_runtime_boot_id(resolved: &Resolved) -> anyhow::Result<String> {
-    let path = listener::boot_id_path(resolved)?;
-    match listener::read_expected_boot_id(&path) {
-        Ok(boot_id) if !boot_id.trim().is_empty() => Ok(boot_id.trim().to_string()),
-        Ok(_) => Ok(generate_boot_id()),
-        Err(err) if is_not_found(&err) => Ok(generate_boot_id()),
-        Err(err) => Err(anyhow::anyhow!("read expected listener boot id: {err}")),
+fn cleanup_runtime_artifacts(resolved: &Resolved, boot_id: &str) {
+    if let Ok(path) = listener::boot_id_path(resolved) {
+        let expected_boot_id = listener::read_expected_boot_id(&path).ok();
+        if !super::listener_service::runtime_artifacts_belong_to_boot_id(
+            expected_boot_id.as_deref(),
+            boot_id,
+        ) {
+            return;
+        }
     }
-}
-
-fn generate_boot_id() -> String {
-    let mut suffix = [0_u8; 4];
-    rand::thread_rng().fill_bytes(&mut suffix);
-    format!(
-        "boot-{}-{}",
-        now_unix_nanos(),
-        suffix
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    )
-}
-
-fn now_unix_nanos() -> i128 {
-    let now = OffsetDateTime::now_utc();
-    i128::from(now.unix_timestamp()) * 1_000_000_000 + i128::from(now.nanosecond())
-}
-
-fn cleanup_runtime_artifacts(resolved: &Resolved) {
     if let Ok(paths) = listener::paths(resolved) {
         let _ = fs::remove_file(paths.pid_file);
         let _ = fs::remove_file(paths.status_file);
         let _ = fs::remove_file(paths.socket_path);
-    }
-    if let Ok(path) = listener::boot_id_path(resolved) {
-        let _ = fs::remove_file(path);
     }
 }
 
@@ -571,10 +1011,11 @@ fn running_in_listener_service_mode() -> bool {
         return true;
     }
     let args = std::env::args().collect::<Vec<_>>();
-    args.len() >= 4
-        && args[1].eq_ignore_ascii_case("runtime")
-        && args[2].eq_ignore_ascii_case("listener")
-        && args[3].eq_ignore_ascii_case("service-run")
+    args.windows(3).any(|words| {
+        words[0].eq_ignore_ascii_case("runtime")
+            && words[1].eq_ignore_ascii_case("listener")
+            && words[2].eq_ignore_ascii_case("service-run")
+    })
 }
 
 fn wait_for_shutdown_signal(shutdown: Arc<AtomicBool>) {
@@ -585,15 +1026,308 @@ async fn wait_for_shutdown_signal_async(shutdown: Arc<AtomicBool>) {
     wait_for_foreground_shutdown_async(&shutdown).await;
 }
 
-fn is_not_found(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<std::io::Error>()
-        .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound)
-        || err.to_string().contains("No such file")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use im_core::system_notifications::{
+        SystemNotificationChange, SystemNotificationKind, SystemNotificationSnapshot,
+        SystemNotificationState,
+    };
+    use serde_json::Value;
+
+    #[test]
+    fn reliable_sync_scheduler_starts_once_and_coalesces_hints_during_sync() {
+        let now = Instant::now();
+        let mut scheduler = ListenerSyncScheduler::new();
+
+        assert_eq!(scheduler.take_ready(now), Some(ListenerSyncReason::Startup));
+        assert_eq!(scheduler.take_ready(now), None);
+
+        scheduler.request(ListenerSyncReason::RealtimeHint);
+        scheduler.request(ListenerSyncReason::Timer);
+        scheduler.complete_success();
+        assert_eq!(
+            scheduler.take_ready(now),
+            Some(ListenerSyncReason::RealtimeHint),
+            "multiple hints received while a sync is active must coalesce"
+        );
+        assert_eq!(scheduler.take_ready(now), None);
+    }
+
+    #[test]
+    fn sync_v2_committed_notification_emits_one_exact_redacted_join_wake() {
+        let temp = TempDir::new("system-notification-wake");
+        let events_path = temp.path().join("host-events.jsonl");
+        let host_notify = Arc::new(HostNotifySinkImpl::File(
+            super::super::host_notify_sink::new_file_host_notify_sink(
+                events_path.to_str().unwrap(),
+            )
+            .unwrap(),
+        ));
+        let status = Arc::new(Mutex::new(Status {
+            status_file: temp
+                .path()
+                .join("listener-status.json")
+                .display()
+                .to_string(),
+            ..Status::default()
+        }));
+        let mut state = ListenerSystemNotificationState::default();
+        let pending = system_notification("evt-join-1", "join-1", 1, false);
+
+        let ListenerSystemNotificationPlan::Emit(items) =
+            state.plan(SystemNotificationChange::Changed {
+                item: pending.clone(),
+            })
+        else {
+            panic!("committed notification must emit");
+        };
+        assert_eq!(items, vec![pending.clone()]);
+        for item in items {
+            emit_listener_system_notification(&status, &host_notify, "admin", &pending.did, item)
+                .unwrap();
+        }
+        assert_eq!(
+            state.plan(SystemNotificationChange::Changed { item: pending }),
+            ListenerSystemNotificationPlan::Emit(Vec::new()),
+            "a replay of the same committed revision must not wake twice"
+        );
+        let terminal = system_notification("evt-join-terminal", "join-1", 2, true);
+        let ListenerSystemNotificationPlan::Emit(items) =
+            state.plan(SystemNotificationChange::Changed { item: terminal })
+        else {
+            panic!("terminal revision must still advance local dedupe state");
+        };
+        for item in items {
+            emit_listener_system_notification(
+                &status,
+                &host_notify,
+                "admin",
+                "did:wba:example:agents:admin:e1_admin",
+                item,
+            )
+            .unwrap();
+        }
+
+        let lines = fs::read_to_string(&events_path).unwrap();
+        let events = lines
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["topic"], "im.device.join.requested");
+        assert_eq!(events[0]["id"], "evt-join-1");
+        assert_eq!(
+            events[0]["data"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "channel".to_owned(),
+                "event_id".to_owned(),
+                "expires_at".to_owned(),
+                "issued_at".to_owned(),
+                "join_session_id".to_owned(),
+                "recipient_did".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn startup_seed_and_repair_reseed_are_monotonic() {
+        let mut state = ListenerSystemNotificationState::default();
+        let first = system_notification("evt-join-1", "join-1", 1, false);
+        let second = system_notification("evt-join-2", "join-2", 1, false);
+
+        assert_eq!(
+            state.plan(SystemNotificationChange::Reset {
+                items: vec![first.clone()],
+            }),
+            ListenerSystemNotificationPlan::Emit(vec![first.clone()]),
+            "listener startup must recover an already committed pending Join"
+        );
+        assert_eq!(
+            state.plan(SystemNotificationChange::RepairRequired {
+                reason: "subscriber_lag".to_owned(),
+            }),
+            ListenerSystemNotificationPlan::Rebuild,
+            "lag must force an authoritative watch rebuild"
+        );
+        assert_eq!(
+            state.plan(SystemNotificationChange::Reset {
+                items: vec![first, second.clone()],
+            }),
+            ListenerSystemNotificationPlan::Emit(vec![second]),
+            "repair seed must retain unseen work without replaying an old wake"
+        );
+    }
+
+    #[test]
+    fn reliable_sync_scheduler_reconnects_after_first_connected_transition_only() {
+        let now = Instant::now();
+        let mut scheduler = ListenerSyncScheduler::new();
+        assert_eq!(scheduler.take_ready(now), Some(ListenerSyncReason::Startup));
+
+        scheduler.observe_connected_transition();
+        assert_eq!(scheduler.take_ready(now), None);
+        scheduler.observe_connected_transition();
+        assert_eq!(
+            scheduler.take_ready(now),
+            Some(ListenerSyncReason::Reconnect)
+        );
+    }
+
+    #[test]
+    fn reliable_sync_scheduler_applies_bounded_retry_backoff() {
+        let now = Instant::now();
+        let mut scheduler = ListenerSyncScheduler::new();
+        assert_eq!(scheduler.take_ready(now), Some(ListenerSyncReason::Startup));
+
+        scheduler.complete_retryable(now);
+        assert_eq!(scheduler.take_ready(now), None);
+        assert_eq!(
+            scheduler.take_ready(now + RELIABLE_SYNC_INITIAL_RETRY_DELAY),
+            Some(ListenerSyncReason::Retry)
+        );
+        assert_eq!(scheduler.retry_delay, Duration::from_secs(2));
+
+        let mut retry_at = now + RELIABLE_SYNC_INITIAL_RETRY_DELAY;
+        for _ in 0..10 {
+            scheduler.complete_retryable(retry_at);
+            retry_at += scheduler.retry_delay;
+            assert_eq!(
+                scheduler.take_ready(retry_at),
+                Some(ListenerSyncReason::Retry)
+            );
+        }
+        assert_eq!(scheduler.retry_delay, RELIABLE_SYNC_MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn reliable_sync_reasons_use_the_sync_v2_wire_vocabulary() {
+        assert_eq!(ListenerSyncReason::Startup.as_str(), "session_start");
+        assert_eq!(
+            ListenerSyncReason::Reconnect.as_str(),
+            "websocket_reconnect"
+        );
+        assert_eq!(ListenerSyncReason::RealtimeHint.as_str(), "websocket_hint");
+        assert_eq!(ListenerSyncReason::Timer.as_str(), "foreground_reconcile");
+        assert_eq!(ListenerSyncReason::Retry.as_str(), "foreground_reconcile");
+    }
+
+    #[test]
+    fn reliable_sync_status_classification_stops_auth_revocation() {
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::Idle),
+            ListenerSyncDisposition::Success
+        );
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::RetryableFailure),
+            ListenerSyncDisposition::Retryable
+        );
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::AuthRevoked),
+            ListenerSyncDisposition::AuthRevoked
+        );
+        assert!(listener_sync_error_is_terminal(
+            &im_core::ImError::PermissionDenied
+        ));
+    }
+
+    #[test]
+    fn failed_first_sync_does_not_claim_a_successful_v2_reconcile() {
+        let status = Arc::new(Mutex::new(single_connected_session_status()));
+        record_v2_subprotocol_negotiated(&status);
+
+        assert_eq!(
+            record_reliable_sync_outcome(
+                &status,
+                im_core::messages::MessageSyncStatus::RetryableFailure,
+            ),
+            ListenerSyncDisposition::Retryable
+        );
+
+        let guard = status.lock().unwrap();
+        assert!(guard.reliable_sync.v2_subprotocol_negotiated);
+        assert!(!guard.reliable_sync.v2_bootstrap_completed);
+        assert!(guard.reliable_sync.last_reconcile_protocol.is_empty());
+        assert!(!guard.reliable_sync.legacy_sync_used);
+    }
+
+    #[test]
+    fn successful_sync_records_only_v2_runtime_facts() {
+        let status = Arc::new(Mutex::new(single_connected_session_status()));
+        record_v2_subprotocol_negotiated(&status);
+        assert_eq!(
+            record_reliable_sync_outcome(&status, im_core::messages::MessageSyncStatus::Idle),
+            ListenerSyncDisposition::Success
+        );
+
+        let guard = status.lock().unwrap();
+        assert!(guard.reliable_sync.v2_subprotocol_negotiated);
+        assert!(guard.reliable_sync.v2_bootstrap_completed);
+        assert_eq!(guard.reliable_sync.last_reconcile_protocol, "sync_v2");
+        assert!(!guard.reliable_sync.legacy_sync_used);
+    }
+
+    #[test]
+    fn v2_negotiation_is_current_boot_all_session_aggregate() {
+        let status = Arc::new(Mutex::new(Status {
+            sessions: vec![
+                SessionStatus {
+                    identity_name: "skill-a".to_owned(),
+                    connected: true,
+                    ..SessionStatus::default()
+                },
+                SessionStatus {
+                    identity_name: "skill-b".to_owned(),
+                    connected: false,
+                    ..SessionStatus::default()
+                },
+            ],
+            ..Status::default()
+        }));
+
+        record_v2_subprotocol_negotiated(&status);
+        assert!(
+            !status
+                .lock()
+                .unwrap()
+                .reliable_sync
+                .v2_subprotocol_negotiated
+        );
+        status.lock().unwrap().sessions[1].connected = true;
+        record_v2_subprotocol_negotiated(&status);
+        assert!(
+            status
+                .lock()
+                .unwrap()
+                .reliable_sync
+                .v2_subprotocol_negotiated
+        );
+        status.lock().unwrap().sessions[0].connected = false;
+        record_v2_subprotocol_negotiated(&status);
+        assert!(
+            !status
+                .lock()
+                .unwrap()
+                .reliable_sync
+                .v2_subprotocol_negotiated
+        );
+    }
+
+    fn single_connected_session_status() -> Status {
+        Status {
+            sessions: vec![SessionStatus {
+                identity_name: "skill".to_owned(),
+                connected: true,
+                ..SessionStatus::default()
+            }],
+            ..Status::default()
+        }
+    }
 
     #[test]
     fn disconnected_last_error_preserves_shutdown_and_records_reader_errors_like_go() {
@@ -629,5 +1363,62 @@ mod tests {
             "previous reader error",
             "closeCurrentClient-style shutdown does not mutate lastError"
         );
+    }
+
+    fn system_notification(
+        event_id: &str,
+        join_session_id: &str,
+        session_revision: u64,
+        terminal: bool,
+    ) -> SystemNotificationSnapshot {
+        SystemNotificationSnapshot {
+            event_id: event_id.to_owned(),
+            did: "did:wba:example:agents:admin:e1_admin".to_owned(),
+            join_session_id: join_session_id.to_owned(),
+            kind: if terminal {
+                SystemNotificationKind::JoinCompleted
+            } else {
+                SystemNotificationKind::JoinRequested
+            },
+            state: if terminal {
+                SystemNotificationState::Consumed
+            } else {
+                SystemNotificationState::Pending
+            },
+            session_revision,
+            issued_at: "2026-08-02T13:14:00Z".to_owned(),
+            expires_at: "2026-08-02T13:24:00Z".to_owned(),
+            first_seen_at: "2026-08-02T13:14:01Z".to_owned(),
+            terminal,
+        }
+    }
+
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "awiki-listener-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }

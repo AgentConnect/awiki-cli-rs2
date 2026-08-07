@@ -2,11 +2,14 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use awiki_im_core::prelude::*;
 use serde_json::{json, Value};
+
+static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(not(feature = "blocking"))]
 #[test]
@@ -63,31 +66,31 @@ fn directory_relationship_follow_persists_projection_and_status() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "follow",
             json!({ "target_did": "did:example:bob" }),
             json!({ "ok": true, "is_friend": true }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_status",
             json!({ "target_did": "did:example:bob" }),
             json!({
@@ -152,31 +155,31 @@ async fn directory_relationship_follow_async_persists_projection_and_status() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "follow",
             json!({ "target_did": "did:example:bob" }),
             json!({ "ok": true, "is_friend": true }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_status",
             json!({ "target_did": "did:example:bob" }),
             json!({
@@ -242,13 +245,13 @@ async fn directory_relationship_unfollow_async_did_updates_projection() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "unfollow",
             json!({ "target_did": "did:example:bob" }),
             json!({ "ok": true }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_status",
             json!({ "target_did": "did:example:bob" }),
             json!({
@@ -307,7 +310,7 @@ fn directory_relationship_lists_hide_service_user_ids() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_followers",
             json!({ "limit": 2, "offset": 4 }),
             json!({
@@ -321,7 +324,7 @@ fn directory_relationship_lists_hide_service_user_ids() {
             }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_following",
             json!({ "limit": 3, "offset": 0 }),
             json!({
@@ -386,7 +389,7 @@ async fn directory_relationship_async_lists_hide_service_user_ids() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_followers",
             json!({ "limit": 2, "offset": 4 }),
             json!({
@@ -400,7 +403,7 @@ async fn directory_relationship_async_lists_hide_service_user_ids() {
             }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/relationships/rpc",
+            "/user-service/v1/did/relationships/rpc",
             "get_following",
             json!({ "limit": 3, "offset": 0 }),
             json!({
@@ -536,6 +539,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -619,8 +623,9 @@ fn unique_temp_root() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let counter = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "im-core-phase2-relationship-{}-{nanos}",
+        "im-core-phase2-relationship-{}-{nanos}-{counter}",
         std::process::id()
     ))
 }

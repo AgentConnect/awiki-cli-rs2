@@ -45,7 +45,11 @@ cd packages/awiki_im_core
 flutter test
 ```
 
-Choose `--macos-only`, `--ios-only`, or `--android-only` for another platform. Do not commit generated native artifacts without an explicit release policy.
+Choose `--macos-only`, `--ios-only`, or `--android-only` for another platform.
+Those commands build the complete platform artifact by default. Packaging for
+one architecture may additionally use `--macos-arch arm64|x86_64` or
+`--android-abi arm64-v8a`. Do not commit generated native artifacts without an
+explicit release policy.
 
 ## 4. Local workspace state
 

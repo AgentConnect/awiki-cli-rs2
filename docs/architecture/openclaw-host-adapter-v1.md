@@ -216,6 +216,19 @@ The hook prompt stays close to the Python long-form instruction style:
 
 This keeps external channel delivery behavior close to the Python listener while still sourcing values from the normalized event.
 
+### 6.3 Device Join request
+
+`im.device.join.requested` is not sender-controlled chat content. It is emitted
+only from IM Core's verified pending Join snapshot and uses a dedicated prompt:
+
+- identify the request by recipient DID, Join session, issue time, and expiry;
+- allow read-only inspection of the Core Join inbox for display details;
+- ask the user to choose **start verification** or **reject request**;
+- execute neither mutation until the user explicitly chooses;
+- never auto-approve, include a SAS, or offer a role selector;
+- explain that V1 authorization is fixed to `member` and approval is a later
+  foreground verification-code step.
+
 ---
 
 ## 7. `config.yaml` Surface

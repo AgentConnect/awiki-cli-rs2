@@ -56,8 +56,14 @@ fn file_session_provider_reports_missing_token_without_faking_session() {
 
 #[tokio::test]
 async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
+    let fresh_token = legacy_access_token("did:example:alice");
     let server = TestServer::new(
-        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {"access_token": fresh_token},
+            "id": "req-1"
+        })
+        .to_string(),
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
@@ -70,15 +76,18 @@ async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_tok
         update.previous_expires_at.as_deref(),
         Some("2099-05-21T00:00:00Z")
     );
-    assert_eq!(update.new_expires_at, None);
+    assert_eq!(
+        update.new_expires_at.as_deref(),
+        Some("2100-01-01T00:00:00Z")
+    );
     assert!(update.refreshed);
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
-    assert_eq!(auth["jwt_token"], "fresh-token");
+    assert_eq!(auth["jwt_token"], fresh_token);
     assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     assert!(
         !requests[0].contains("Authorization: Bearer stale-token\r\n"),
         "refresh must force a fresh DID auth signature:\n{}",
@@ -93,9 +102,10 @@ async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_tok
 
 #[tokio::test]
 async fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
+    let fresh_token = legacy_access_token("did:example:alice");
     let server = TestServer::with_authorization_header(
-        r#"{"jsonrpc":"2.0","result":{"handle":"alice"},"id":"req-1"}"#,
-        "fresh-header-token",
+        r#"{"jsonrpc":"2.0","result":{"handle":"alice"},"id":"req-1"}"#.to_string(),
+        fresh_token.clone(),
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
@@ -107,7 +117,7 @@ async fn file_session_provider_refreshes_jwt_from_response_authorization_header(
     assert!(update.refreshed);
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
-    assert_eq!(auth["jwt_token"], "fresh-header-token");
+    assert_eq!(auth["jwt_token"], fresh_token);
     assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -120,8 +130,14 @@ async fn file_session_provider_refreshes_jwt_from_response_authorization_header(
 
 #[tokio::test]
 async fn async_file_session_provider_refreshes_jwt_with_async_transport() {
+    let fresh_token = legacy_access_token("did:example:alice");
     let server = TestServer::new(
-        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {"access_token": fresh_token},
+            "id": "req-1"
+        })
+        .to_string(),
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
@@ -137,11 +153,11 @@ async fn async_file_session_provider_refreshes_jwt_with_async_transport() {
     assert!(update.refreshed);
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
-    assert_eq!(auth["jwt_token"], "fresh-token");
+    assert_eq!(auth["jwt_token"], fresh_token);
     assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     let body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
     assert_eq!(body["method"], "get_me");
     assert_eq!(body["params"], serde_json::json!({}));
@@ -192,8 +208,14 @@ fn file_session_provider_reports_expired_token_as_refreshable_session() {
 
 #[tokio::test]
 async fn async_file_session_provider_refreshes_expired_token_during_ensure_session() {
+    let fresh_token = legacy_access_token("did:example:alice");
     let server = TestServer::new(
-        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {"access_token": fresh_token},
+            "id": "req-1"
+        })
+        .to_string(),
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime_with_expires_at(
@@ -213,23 +235,29 @@ async fn async_file_session_provider_refreshes_expired_token_during_ensure_sessi
     assert_eq!(session.subject.as_str(), "did:example:alice");
     assert_eq!(session.scope, AuthScope::Messaging);
     assert!(session.refreshed);
-    assert_eq!(session.bearer_token.as_deref(), Some("fresh-token"));
+    assert_eq!(session.bearer_token.as_deref(), Some(fresh_token.as_str()));
 
     let status = client.auth().status_async().await.unwrap();
     assert!(status.has_session);
     assert!(!status.needs_refresh);
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
-    assert_eq!(auth["jwt_token"], "fresh-token");
+    assert_eq!(auth["jwt_token"], fresh_token);
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
 }
 
 #[tokio::test]
 async fn vault_session_provider_refreshes_jwt_without_rewriting_auth_json() {
+    let fresh_token = legacy_access_token("did:example:alice");
     let server = TestServer::new(
-        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {"access_token": fresh_token},
+            "id": "req-1"
+        })
+        .to_string(),
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_vault_runtime("alice", "did:example:alice", "stale-token");
@@ -240,7 +268,7 @@ async fn vault_session_provider_refreshes_jwt_without_rewriting_auth_json() {
     let update = client.auth().refresh_session_async().await.unwrap();
 
     assert!(update.refreshed);
-    assert_eq!(update.bearer_token.as_deref(), Some("fresh-token"));
+    assert_eq!(update.bearer_token.as_deref(), Some(fresh_token.as_str()));
     assert!(
         !auth_path.exists(),
         "vault-backed refresh must not create auth.json"
@@ -249,7 +277,7 @@ async fn vault_session_provider_refreshes_jwt_without_rewriting_auth_json() {
     assert!(status.has_session);
     assert!(!status.needs_refresh);
     let persisted_text = fixture.collect_identity_text("alice");
-    assert!(!persisted_text.contains("fresh-token"));
+    assert!(!persisted_text.contains(&fresh_token));
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(
@@ -477,6 +505,7 @@ impl AuthFixture {
         fs::write(
             identities.join("registry.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 5,
                 "default_credential_name": alias,
                 "credentials": {
                     alias: {
@@ -522,6 +551,7 @@ impl AuthFixture {
         ImCoreConfig {
             service_base_url: ServiceEndpoint::parse(&self.service_base_url).unwrap(),
             did_domain: "awiki.test".to_string(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -619,15 +649,15 @@ struct TestServer {
 }
 
 impl TestServer {
-    fn new(response_body: &'static str) -> Self {
+    fn new(response_body: String) -> Self {
         Self::new_inner(response_body, None)
     }
 
-    fn with_authorization_header(response_body: &'static str, token: &'static str) -> Self {
+    fn with_authorization_header(response_body: String, token: String) -> Self {
         Self::new_inner(response_body, Some(token))
     }
 
-    fn new_inner(response_body: &'static str, authorization_token: Option<&'static str>) -> Self {
+    fn new_inner(response_body: String, authorization_token: Option<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -640,6 +670,7 @@ impl TestServer {
             let request = read_http_request(&mut stream);
             server_requests.lock().unwrap().push(request);
             let authorization_header = authorization_token
+                .as_deref()
                 .map(|token| format!("Authorization: Bearer {token}\r\n"))
                 .unwrap_or_default();
             let raw = format!(
@@ -793,4 +824,13 @@ fn unsigned_jwt(payload: Value) -> String {
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap()),
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
     )
+}
+
+fn legacy_access_token(did: &str) -> String {
+    unsigned_jwt(serde_json::json!({
+        "iss": "user-service",
+        "sub": did,
+        "type": "access",
+        "exp": 4102444800_i64
+    }))
 }

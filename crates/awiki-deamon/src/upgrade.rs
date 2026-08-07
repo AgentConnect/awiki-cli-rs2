@@ -160,6 +160,18 @@ struct ReleaseHttpTimeoutPolicy {
 
 impl DaemonUpgradeRequest {
     pub fn from_env(config: &DaemonConfig, target_version: impl Into<String>) -> Result<Self> {
+        let bin_root =
+            match std::env::var_os("AWIKI_DAEMON_BIN_ROOT").filter(|value| !value.is_empty()) {
+                Some(value) => PathBuf::from(value),
+                None => default_bin_root()?,
+            };
+        let restart_requested = std::env::var("AWIKI_DAEMON_UPGRADE_SKIP_SERVICE_RESTART")
+            .map(|value| value.trim() != "1")
+            .unwrap_or(true);
+        let restart_service = restart_requested
+            && DaemonConfig::default_product_state_root()
+                .map(|default_root| config.state_root == default_root)
+                .unwrap_or(false);
         Ok(Self {
             target_version: normalize_target_version(&target_version.into())?,
             download_base_url: std::env::var("AWIKI_DAEMON_DOWNLOAD_BASE_URL")
@@ -167,14 +179,8 @@ impl DaemonUpgradeRequest {
                 .map(|value| value.trim().trim_end_matches('/').to_string())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| config.download_base_url.clone()),
-            bin_root: std::env::var_os("AWIKI_DAEMON_BIN_ROOT")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| default_bin_root()),
-            restart_service: std::env::var("AWIKI_DAEMON_UPGRADE_SKIP_SERVICE_RESTART")
-                .map(|value| value.trim() != "1")
-                .unwrap_or(true)
-                && config.state_root == DaemonConfig::default_product_state_root()?,
+            bin_root,
+            restart_service,
         })
     }
 }
@@ -184,7 +190,8 @@ pub fn check_release_status(config: &DaemonConfig) -> DaemonReleaseStatus {
     let request_sources = DaemonUpgradeRequest {
         target_version: "latest".to_string(),
         download_base_url: config.download_base_url.clone(),
-        bin_root: default_bin_root(),
+        // Release status reads remote metadata and never touches an install root.
+        bin_root: PathBuf::new(),
         restart_service: false,
     };
     let sources = configured_download_base_urls(config, &request_sources);
@@ -723,14 +730,11 @@ fn version_components(value: &str) -> Vec<u64> {
         .collect()
 }
 
-fn default_bin_root() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+fn default_bin_root() -> Result<PathBuf> {
+    Ok(awiki_user_dirs::home_dir()?
         .join(".awiki-daemon")
         .join("deamon")
-        .join("bin")
+        .join("bin"))
 }
 
 fn configured_download_base_urls(

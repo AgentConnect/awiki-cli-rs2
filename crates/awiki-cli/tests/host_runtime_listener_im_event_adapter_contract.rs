@@ -2,15 +2,18 @@ use awiki_cli::host_runtime::host_notify::{HostNotificationData, HostNotificatio
 use awiki_cli::host_runtime::host_notify_sink::HostNotifySink;
 use awiki_cli::host_runtime::listener::{HostNotifyStatus, SessionStatus, Status};
 use awiki_cli::host_runtime::listener_im_event_adapter::{
-    handle_im_event, CliImEventRoute, IM_EVENT_UNKNOWN_WARNING_PREFIX,
+    handle_im_event, handle_reliable_remote_event, CliImEventRoute, IM_EVENT_UNKNOWN_WARNING_PREFIX,
 };
 use im_core::prelude::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupRef,
     GroupUpdateKind, GroupUpdatedEvent, ImEvent, Message, MessageBodyView, MessageDirection,
     MessageId, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageReceivedEvent,
-    PeerRef, RealtimeConnectionState, ThreadRef, UnknownNotificationEvent,
+    PeerRef, RealtimeConnectionState, SystemNotificationChangedEvent, SystemNotificationKind,
+    SystemNotificationSnapshot, SystemNotificationState, ThreadRef, UnknownNotificationEvent,
 };
+use im_core::realtime::{RealtimeSyncHint, SyncDomain};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 #[test]
@@ -205,6 +208,176 @@ fn im_event_unknown_notification_records_warning_without_attachment_enrichment()
 }
 
 #[test]
+fn join_requested_system_notification_wakes_host_with_redacted_review_event() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_im_event(
+        Some(&sink),
+        &mut status,
+        ImEvent::SystemNotificationChanged(SystemNotificationChangedEvent {
+            notification: SystemNotificationSnapshot {
+                event_id: "evt-system-1".to_owned(),
+                did: "did:wba:example:agents:bob:e1_bob".to_owned(),
+                join_session_id: "join-system-1".to_owned(),
+                kind: SystemNotificationKind::JoinRequested,
+                state: SystemNotificationState::Pending,
+                session_revision: 1,
+                issued_at: "2026-07-23T02:00:00Z".to_owned(),
+                expires_at: "2026-07-23T02:10:00Z".to_owned(),
+                first_seen_at: "2026-07-23T02:00:01Z".to_owned(),
+                terminal: false,
+            },
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:wba:example:agents:bob:e1_bob"),
+    );
+
+    assert_eq!(result.route, CliImEventRoute::DeviceJoinRequested);
+    assert!(result.dispatched_host_notification);
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].topic, "im.device.join.requested");
+    assert_eq!(events[0].id, "evt-system-1");
+    let HostNotificationData::DeviceJoinRequest(data) =
+        events[0].data.as_ref().expect("device Join data")
+    else {
+        panic!("expected device Join host notification data");
+    };
+    assert_eq!(data.event_id, "evt-system-1");
+    assert_eq!(data.join_session_id, "join-system-1");
+    assert_eq!(data.recipient_did, "did:wba:example:agents:bob:e1_bob");
+    assert_eq!(data.issued_at, "2026-07-23T02:00:00Z");
+    assert_eq!(data.expires_at, "2026-07-23T02:10:00Z");
+
+    let raw = serde_json::to_string(&events[0]).expect("serialize host event");
+    for forbidden in [
+        "sas",
+        "challenge",
+        "proof",
+        "token",
+        "session_revision",
+        "first_seen_at",
+    ] {
+        assert!(
+            !raw.contains(forbidden),
+            "host event leaked forbidden field {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn reliable_remote_join_requested_wakes_host_after_core_commit() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_reliable_remote_event(
+        Some(&sink),
+        &mut status,
+        ImEvent::SystemNotificationChanged(SystemNotificationChangedEvent {
+            notification: SystemNotificationSnapshot {
+                event_id: "evt-system-reliable-1".to_owned(),
+                did: "did:wba:example:agents:bob:e1_bob".to_owned(),
+                join_session_id: "join-system-reliable-1".to_owned(),
+                kind: SystemNotificationKind::JoinRequested,
+                state: SystemNotificationState::Pending,
+                session_revision: 1,
+                issued_at: "2026-07-23T02:00:00Z".to_owned(),
+                expires_at: "2026-07-23T02:10:00Z".to_owned(),
+                first_seen_at: "2026-07-23T02:00:01Z".to_owned(),
+                terminal: false,
+            },
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:wba:example:agents:bob:e1_bob"),
+    );
+
+    assert_eq!(result.route, CliImEventRoute::DeviceJoinRequested);
+    assert!(result.dispatched_host_notification);
+    assert!(!result.reliable_sync_requested);
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].topic, "im.device.join.requested");
+    assert_eq!(events[0].id, "evt-system-reliable-1");
+    let serialized = serde_json::to_value(&events[0]).expect("serialize host event");
+    let data = serialized["data"]
+        .as_object()
+        .expect("device Join host event data");
+    assert_eq!(
+        data.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "channel",
+            "event_id",
+            "expires_at",
+            "issued_at",
+            "join_session_id",
+            "recipient_did",
+        ])
+    );
+    assert_eq!(
+        data.get("join_session_id")
+            .and_then(serde_json::Value::as_str),
+        Some("join-system-reliable-1")
+    );
+    assert_eq!(
+        data.get("recipient_did")
+            .and_then(serde_json::Value::as_str),
+        Some("did:wba:example:agents:bob:e1_bob")
+    );
+    let raw = serde_json::to_string(&events[0]).expect("serialize host event");
+    for forbidden in [
+        "sas",
+        "challenge",
+        "proof",
+        "token",
+        "session_revision",
+        "first_seen_at",
+    ] {
+        assert!(
+            !raw.contains(forbidden),
+            "host event leaked forbidden field {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn non_pending_system_notification_does_not_wake_join_review() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_im_event(
+        Some(&sink),
+        &mut status,
+        ImEvent::SystemNotificationChanged(SystemNotificationChangedEvent {
+            notification: SystemNotificationSnapshot {
+                event_id: "evt-system-completed".to_owned(),
+                did: "did:wba:example:agents:bob:e1_bob".to_owned(),
+                join_session_id: "join-system-1".to_owned(),
+                kind: SystemNotificationKind::JoinCompleted,
+                state: SystemNotificationState::Consumed,
+                session_revision: 4,
+                issued_at: "2026-07-23T02:00:00Z".to_owned(),
+                expires_at: "2026-07-23T02:10:00Z".to_owned(),
+                first_seen_at: "2026-07-23T02:04:00Z".to_owned(),
+                terminal: true,
+            },
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:wba:example:agents:bob:e1_bob"),
+    );
+
+    assert_eq!(result.route, CliImEventRoute::Ignored);
+    assert!(!result.dispatched_host_notification);
+    assert!(sink.events().is_empty());
+}
+
+#[test]
 fn im_event_connection_state_updates_only_named_session() {
     let mut status = status();
     status.sessions = vec![
@@ -235,6 +408,7 @@ fn im_event_connection_state_updates_only_named_session() {
     );
 
     assert_eq!(result.route, CliImEventRoute::ConnectionStateChanged);
+    assert!(result.connection_became_connected);
     let bob = status
         .sessions
         .iter()
@@ -250,6 +424,219 @@ fn im_event_connection_state_updates_only_named_session() {
         .expect("alice session");
     assert!(!alice.connected);
     assert_eq!(alice.last_error, "keep");
+
+    let duplicate = handle_im_event(
+        None,
+        &mut status,
+        ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+            state: RealtimeConnectionState::Connected,
+            reason: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+    assert!(!duplicate.connection_became_connected);
+}
+
+#[test]
+fn dirty_gap_and_unknown_hints_request_reliable_v2_sync() {
+    let mut status = status();
+    let mut event = direct_message_event("msg-dirty-1", "dirty");
+    let ImEvent::MessageReceived(message) = &mut event else {
+        panic!("expected message event");
+    };
+    message.sync = Some(RealtimeSyncHint {
+        event_id: None,
+        event_seq: Some("9".to_owned()),
+        event_type: None,
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason: Some("message_changed".to_owned()),
+        sync_dirty: true,
+        gap_detected: false,
+        has_unknown_domain: false,
+    });
+
+    let dirty =
+        handle_reliable_remote_event(None, &mut status, event, None, Some("bob"), Some("did:bob"));
+    assert!(dirty.reliable_sync_requested);
+    assert_eq!(dirty.route, CliImEventRoute::Ignored);
+    assert!(!dirty.dispatched_host_notification);
+
+    let mut gap_event = direct_message_event("msg-gap-1", "gap");
+    let ImEvent::MessageReceived(message) = &mut gap_event else {
+        panic!("expected message event");
+    };
+    message.sync = Some(RealtimeSyncHint {
+        event_id: None,
+        event_seq: Some("10".to_owned()),
+        event_type: None,
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason: Some("gap_detected".to_owned()),
+        sync_dirty: false,
+        gap_detected: true,
+        has_unknown_domain: false,
+    });
+    let gap = handle_reliable_remote_event(
+        None,
+        &mut status,
+        gap_event,
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+    assert!(gap.reliable_sync_requested);
+    assert_eq!(gap.route, CliImEventRoute::Ignored);
+
+    let unknown = handle_reliable_remote_event(
+        None,
+        &mut status,
+        ImEvent::UnknownNotification(UnknownNotificationEvent {
+            content_type: None,
+            notification_type: Some("future.notification".to_owned()),
+            reason: "unknown notification".to_owned(),
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+    assert!(unknown.reliable_sync_requested);
+    assert_eq!(unknown.route, CliImEventRoute::Ignored);
+}
+
+#[test]
+fn ordinary_v2_remote_message_without_hint_is_fail_safe_sync_only() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_reliable_remote_event(
+        Some(&sink),
+        &mut status,
+        direct_message_event("msg-no-hint-1", "must reconcile first"),
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+
+    assert!(result.reliable_sync_requested);
+    assert_eq!(result.route, CliImEventRoute::Ignored);
+    assert!(!result.dispatched_host_notification);
+    assert!(sink.events.lock().unwrap().is_empty());
+}
+
+#[test]
+fn verified_p5_message_dispatches_without_account_sync_reconcile() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+    let mut event = direct_message_event("msg-p5-verified-1", "verified P5 message");
+    let ImEvent::MessageReceived(received) = &mut event else {
+        panic!("expected message event");
+    };
+    received.message.metadata.attributes.extend([
+        MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "direct-e2ee".to_owned(),
+        },
+        MessageMetadataAttribute {
+            key: "decryption_state".to_owned(),
+            value: "decrypted".to_owned(),
+        },
+    ]);
+
+    let result = handle_reliable_remote_event(
+        Some(&sink),
+        &mut status,
+        event,
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+
+    assert!(!result.reliable_sync_requested);
+    assert_eq!(result.route, CliImEventRoute::DirectIncoming);
+    assert!(result.dispatched_host_notification);
+    assert_eq!(sink.events().len(), 1);
+}
+
+#[test]
+fn outgoing_or_group_p5_projection_stays_on_account_sync_path() {
+    for mut event in [
+        direct_message_event("msg-p5-own-sync-1", "outgoing own-device sync"),
+        group_message_event(),
+    ] {
+        let ImEvent::MessageReceived(received) = &mut event else {
+            panic!("expected message event");
+        };
+        received.message.metadata.attributes.extend([
+            MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: "direct-e2ee".to_owned(),
+            },
+            MessageMetadataAttribute {
+                key: "decryption_state".to_owned(),
+                value: "decrypted".to_owned(),
+            },
+        ]);
+        if matches!(received.message.thread, ThreadRef::Direct(_)) {
+            received.message.direction = MessageDirection::Outgoing;
+        }
+
+        let sink = RecordingHostNotifySink::default();
+        let result = handle_reliable_remote_event(
+            Some(&sink),
+            &mut status(),
+            event,
+            None,
+            Some("bob"),
+            Some("did:bob"),
+        );
+
+        assert!(result.reliable_sync_requested);
+        assert_eq!(result.route, CliImEventRoute::Ignored);
+        assert!(!result.dispatched_host_notification);
+        assert!(sink.events().is_empty());
+    }
+}
+
+#[test]
+fn conflicting_p5_verification_attributes_fail_closed_to_account_sync() {
+    for (key, conflicting_value) in [("security", "plaintext"), ("decryption_state", "failed")] {
+        let sink = RecordingHostNotifySink::default();
+        let mut status = status();
+        let mut event = direct_message_event("msg-p5-conflict-1", "conflicting P5 metadata");
+        let ImEvent::MessageReceived(received) = &mut event else {
+            panic!("expected message event");
+        };
+        received.message.metadata.attributes.extend([
+            MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: "direct-e2ee".to_owned(),
+            },
+            MessageMetadataAttribute {
+                key: "decryption_state".to_owned(),
+                value: "decrypted".to_owned(),
+            },
+            MessageMetadataAttribute {
+                key: key.to_owned(),
+                value: conflicting_value.to_owned(),
+            },
+        ]);
+
+        let result = handle_reliable_remote_event(
+            Some(&sink),
+            &mut status,
+            event,
+            None,
+            Some("bob"),
+            Some("did:bob"),
+        );
+
+        assert!(result.reliable_sync_requested);
+        assert_eq!(result.route, CliImEventRoute::Ignored);
+        assert!(!result.dispatched_host_notification);
+        assert!(sink.events().is_empty());
+    }
 }
 
 #[test]

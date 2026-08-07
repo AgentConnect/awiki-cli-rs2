@@ -485,4 +485,340 @@ as String,
 
 }
 
+/// @nodoc
+mixin _$DartLegacyUpgradeStatus {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartLegacyUpgradeStatus);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'DartLegacyUpgradeStatus()';
+}
+
+
+}
+
+/// @nodoc
+class $DartLegacyUpgradeStatusCopyWith<$Res>  {
+$DartLegacyUpgradeStatusCopyWith(DartLegacyUpgradeStatus _, $Res Function(DartLegacyUpgradeStatus) __);
+}
+
+
+/// Adds pattern-matching-related methods to [DartLegacyUpgradeStatus].
+extension DartLegacyUpgradeStatusPatterns on DartLegacyUpgradeStatus {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DartLegacyUpgradeStatus_Idle value)?  idle,TResult Function( DartLegacyUpgradeStatus_Running value)?  running,TResult Function( DartLegacyUpgradeStatus_RetryRequired value)?  retryRequired,TResult Function( DartLegacyUpgradeStatus_Completed value)?  completed,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case DartLegacyUpgradeStatus_Idle() when idle != null:
+return idle(_that);case DartLegacyUpgradeStatus_Running() when running != null:
+return running(_that);case DartLegacyUpgradeStatus_RetryRequired() when retryRequired != null:
+return retryRequired(_that);case DartLegacyUpgradeStatus_Completed() when completed != null:
+return completed(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DartLegacyUpgradeStatus_Idle value)  idle,required TResult Function( DartLegacyUpgradeStatus_Running value)  running,required TResult Function( DartLegacyUpgradeStatus_RetryRequired value)  retryRequired,required TResult Function( DartLegacyUpgradeStatus_Completed value)  completed,}){
+final _that = this;
+switch (_that) {
+case DartLegacyUpgradeStatus_Idle():
+return idle(_that);case DartLegacyUpgradeStatus_Running():
+return running(_that);case DartLegacyUpgradeStatus_RetryRequired():
+return retryRequired(_that);case DartLegacyUpgradeStatus_Completed():
+return completed(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DartLegacyUpgradeStatus_Idle value)?  idle,TResult? Function( DartLegacyUpgradeStatus_Running value)?  running,TResult? Function( DartLegacyUpgradeStatus_RetryRequired value)?  retryRequired,TResult? Function( DartLegacyUpgradeStatus_Completed value)?  completed,}){
+final _that = this;
+switch (_that) {
+case DartLegacyUpgradeStatus_Idle() when idle != null:
+return idle(_that);case DartLegacyUpgradeStatus_Running() when running != null:
+return running(_that);case DartLegacyUpgradeStatus_RetryRequired() when retryRequired != null:
+return retryRequired(_that);case DartLegacyUpgradeStatus_Completed() when completed != null:
+return completed(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  idle,TResult Function()?  running,TResult Function( String identityId,  String code)?  retryRequired,TResult Function()?  completed,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case DartLegacyUpgradeStatus_Idle() when idle != null:
+return idle();case DartLegacyUpgradeStatus_Running() when running != null:
+return running();case DartLegacyUpgradeStatus_RetryRequired() when retryRequired != null:
+return retryRequired(_that.identityId,_that.code);case DartLegacyUpgradeStatus_Completed() when completed != null:
+return completed();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  idle,required TResult Function()  running,required TResult Function( String identityId,  String code)  retryRequired,required TResult Function()  completed,}) {final _that = this;
+switch (_that) {
+case DartLegacyUpgradeStatus_Idle():
+return idle();case DartLegacyUpgradeStatus_Running():
+return running();case DartLegacyUpgradeStatus_RetryRequired():
+return retryRequired(_that.identityId,_that.code);case DartLegacyUpgradeStatus_Completed():
+return completed();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  idle,TResult? Function()?  running,TResult? Function( String identityId,  String code)?  retryRequired,TResult? Function()?  completed,}) {final _that = this;
+switch (_that) {
+case DartLegacyUpgradeStatus_Idle() when idle != null:
+return idle();case DartLegacyUpgradeStatus_Running() when running != null:
+return running();case DartLegacyUpgradeStatus_RetryRequired() when retryRequired != null:
+return retryRequired(_that.identityId,_that.code);case DartLegacyUpgradeStatus_Completed() when completed != null:
+return completed();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class DartLegacyUpgradeStatus_Idle extends DartLegacyUpgradeStatus {
+  const DartLegacyUpgradeStatus_Idle(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartLegacyUpgradeStatus_Idle);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'DartLegacyUpgradeStatus.idle()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class DartLegacyUpgradeStatus_Running extends DartLegacyUpgradeStatus {
+  const DartLegacyUpgradeStatus_Running(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartLegacyUpgradeStatus_Running);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'DartLegacyUpgradeStatus.running()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class DartLegacyUpgradeStatus_RetryRequired extends DartLegacyUpgradeStatus {
+  const DartLegacyUpgradeStatus_RetryRequired({required this.identityId, required this.code}): super._();
+
+
+ final  String identityId;
+ final  String code;
+
+/// Create a copy of DartLegacyUpgradeStatus
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartLegacyUpgradeStatus_RetryRequiredCopyWith<DartLegacyUpgradeStatus_RetryRequired> get copyWith => _$DartLegacyUpgradeStatus_RetryRequiredCopyWithImpl<DartLegacyUpgradeStatus_RetryRequired>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartLegacyUpgradeStatus_RetryRequired&&(identical(other.identityId, identityId) || other.identityId == identityId)&&(identical(other.code, code) || other.code == code));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,identityId,code);
+
+@override
+String toString() {
+  return 'DartLegacyUpgradeStatus.retryRequired(identityId: $identityId, code: $code)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartLegacyUpgradeStatus_RetryRequiredCopyWith<$Res> implements $DartLegacyUpgradeStatusCopyWith<$Res> {
+  factory $DartLegacyUpgradeStatus_RetryRequiredCopyWith(DartLegacyUpgradeStatus_RetryRequired value, $Res Function(DartLegacyUpgradeStatus_RetryRequired) _then) = _$DartLegacyUpgradeStatus_RetryRequiredCopyWithImpl;
+@useResult
+$Res call({
+ String identityId, String code
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartLegacyUpgradeStatus_RetryRequiredCopyWithImpl<$Res>
+    implements $DartLegacyUpgradeStatus_RetryRequiredCopyWith<$Res> {
+  _$DartLegacyUpgradeStatus_RetryRequiredCopyWithImpl(this._self, this._then);
+
+  final DartLegacyUpgradeStatus_RetryRequired _self;
+  final $Res Function(DartLegacyUpgradeStatus_RetryRequired) _then;
+
+/// Create a copy of DartLegacyUpgradeStatus
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? identityId = null,Object? code = null,}) {
+  return _then(DartLegacyUpgradeStatus_RetryRequired(
+identityId: null == identityId ? _self.identityId : identityId // ignore: cast_nullable_to_non_nullable
+as String,code: null == code ? _self.code : code // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class DartLegacyUpgradeStatus_Completed extends DartLegacyUpgradeStatus {
+  const DartLegacyUpgradeStatus_Completed(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartLegacyUpgradeStatus_Completed);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'DartLegacyUpgradeStatus.completed()';
+}
+
+
+}
+
+
+
+
 // dart format on

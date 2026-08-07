@@ -24,6 +24,7 @@ pub struct ImCoreSecretVaultOptions {
     pub root_key: DeviceVaultRootKey,
     pub vault_dir: PathBuf,
     pub workspace_id: String,
+    /// Local SecretVault context identifier. This is not an ANP protocol device ID.
     pub device_id: String,
 }
 
@@ -32,13 +33,13 @@ impl ImCoreSecretVaultOptions {
         root_key: DeviceVaultRootKey,
         vault_dir: impl Into<PathBuf>,
         workspace_id: impl Into<String>,
-        device_id: impl Into<String>,
+        vault_context_device_id: impl Into<String>,
     ) -> Self {
         Self {
             root_key,
             vault_dir: vault_dir.into(),
             workspace_id: workspace_id.into(),
-            device_id: device_id.into(),
+            device_id: vault_context_device_id.into(),
         }
     }
 }
@@ -49,7 +50,7 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
             .field("root_key", &"<redacted-root-key>")
             .field("vault_dir", &self.vault_dir)
             .field("workspace_id", &self.workspace_id)
-            .field("device_id", &self.device_id)
+            .field("vault_context_device_id", &self.device_id)
             .finish()
     }
 }
@@ -58,6 +59,25 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
 pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
+    /// Enables AWiki-local permanent device revocation.
+    ///
+    /// This rollout gate defaults to `false`. It is independent from Join and
+    /// root transfer, and is never serialized into ANP or a DID Document.
+    pub multi_device_device_revoke_enabled: bool,
+    /// Enables the exact-device P5 v2 Direct product path.
+    ///
+    /// This rollout gate defaults to `false`, is independent from Join and
+    /// root transfer, and is never serialized into ANP, a DID Document, or a
+    /// cross-domain request.
+    pub multi_device_direct_e2ee_enabled: bool,
+    /// Enables the device-scoped P6 v2 group E2EE product path.
+    ///
+    /// This rollout gate defaults to `false`, is independent from Join and is
+    /// never serialized into ANP, a DID Document, or a cross-domain request.
+    pub multi_device_group_e2ee_enabled: bool,
+    /// Enables the hidden same-deployment Manifest Handle Recovery v1 path.
+    /// This gate is local, defaults to false, and does not advertise support.
+    pub multi_device_handle_recovery_enabled: bool,
 }
 
 impl ImCoreOpenOptions {
@@ -74,6 +94,26 @@ impl ImCoreOpenOptions {
         self.identity_secret_vault = Some(identity_secret_vault);
         self
     }
+
+    pub fn with_multi_device_device_revoke_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_device_revoke_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_direct_e2ee_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_direct_e2ee_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_group_e2ee_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_group_e2ee_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_handle_recovery_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_handle_recovery_enabled = enabled;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -81,13 +121,13 @@ pub(crate) struct IdentityVaultContext {
     policy: IdentitySecretStoragePolicy,
     vault: Arc<dyn SecretVault + Send + Sync>,
     workspace_id: String,
-    device_id: String,
+    vault_context_device_id: crate::ids::VaultContextDeviceId,
 }
 
 impl IdentityVaultContext {
     pub(crate) fn from_options(options: ImCoreSecretVaultOptions) -> crate::ImResult<Self> {
         let workspace_id = required_non_empty("workspace_id", options.workspace_id)?;
-        let device_id = required_non_empty("device_id", options.device_id)?;
+        let vault_context_device_id = crate::ids::VaultContextDeviceId::parse(options.device_id)?;
         if options.vault_dir.as_os_str().is_empty() {
             return Err(crate::ImError::invalid_input(
                 Some("vault_dir".to_owned()),
@@ -102,7 +142,7 @@ impl IdentityVaultContext {
             policy: IdentitySecretStoragePolicy::FileCompat,
             vault,
             workspace_id,
-            device_id,
+            vault_context_device_id,
         })
     }
 
@@ -119,8 +159,8 @@ impl IdentityVaultContext {
         &self.workspace_id
     }
 
-    pub(crate) fn device_id(&self) -> &str {
-        &self.device_id
+    pub(crate) fn vault_context_device_id(&self) -> &crate::ids::VaultContextDeviceId {
+        &self.vault_context_device_id
     }
 }
 
@@ -130,7 +170,7 @@ impl fmt::Debug for IdentityVaultContext {
             .field("policy", &self.policy)
             .field("vault", &"<redacted-secret-vault>")
             .field("workspace_id", &self.workspace_id)
-            .field("device_id", &self.device_id)
+            .field("vault_context_device_id", &self.vault_context_device_id)
             .finish()
     }
 }
@@ -144,4 +184,38 @@ fn required_non_empty(field: &str, value: String) -> crate::ImResult<String> {
         ));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_e2ee_v2_rollout_gate_is_local_and_default_off() {
+        let default_options = ImCoreOpenOptions::default();
+        assert!(!default_options.multi_device_group_e2ee_enabled);
+
+        let enabled = ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(true);
+        assert!(enabled.multi_device_group_e2ee_enabled);
+    }
+
+    #[test]
+    fn direct_e2ee_v2_rollout_gate_is_local_and_default_off() {
+        let default_options = ImCoreOpenOptions::default();
+        assert!(!default_options.multi_device_direct_e2ee_enabled);
+
+        let enabled = ImCoreOpenOptions::default().with_multi_device_direct_e2ee_enabled(true);
+        assert!(enabled.multi_device_direct_e2ee_enabled);
+    }
+
+    #[test]
+    fn handle_recovery_rollout_gate_is_local_and_default_off() {
+        let default_options = ImCoreOpenOptions::default();
+        assert!(!default_options.multi_device_handle_recovery_enabled);
+        assert!(
+            ImCoreOpenOptions::default()
+                .with_multi_device_handle_recovery_enabled(true)
+                .multi_device_handle_recovery_enabled
+        );
+    }
 }

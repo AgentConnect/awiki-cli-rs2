@@ -44,12 +44,13 @@ if [[ "$(GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/git/tags/${ta
 fi
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-GH_TOKEN="${GH_TOKEN_VALUE}" gh workflow run "${WORKFLOW}" --repo "${GITHUB_REPO}" --ref main \
+# Keep the workflow definition and the checked-out source on the same immutable release tag.
+GH_TOKEN="${GH_TOKEN_VALUE}" gh workflow run "${WORKFLOW}" --repo "${GITHUB_REPO}" --ref "${TAG}" \
   -f source_ref="${TAG}" -f channel="${CHANNEL}" -f expected_version="${VERSION}"
 run_id=""
 for _ in $(seq 1 60); do
-  run_id="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh run list --repo "${GITHUB_REPO}" --workflow "${WORKFLOW}" --event workflow_dispatch --limit 30 \
-    --json databaseId,displayTitle,createdAt --jq ".[] | select(.displayTitle == \"CLI ${CHANNEL} ${TAG}\" and .createdAt >= \"${started_at}\") | .databaseId" | head -n1)"
+  run_id="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh run list --repo "${GITHUB_REPO}" --workflow "${WORKFLOW}" --limit 30 \
+    --json databaseId,name,createdAt,headSha --jq ".[] | select(.name == \"CLI ${CHANNEL} ${TAG}\" and .headSha == \"${tag_commit}\" and .createdAt >= \"${started_at}\") | .databaseId" | head -n1)"
   [[ -n "${run_id}" ]] && break
   sleep 2
 done
@@ -77,6 +78,7 @@ sudo mkdir -p "$(dirname "${release_dir}")" "${ARCHIVE_ROOT}/channels" "${WEB_RO
 [[ ! -e "${release_dir}" ]] || { echo "Error: release archive already exists at ${release_dir}" >&2; exit 1; }
 sudo rm -rf "${release_dir}.staging"
 sudo cp -R "${tmp}/stage" "${release_dir}.staging"
+sudo chmod -R u=rwX,go=rX "${release_dir}.staging"
 sudo mv "${release_dir}.staging" "${release_dir}"
 link_tmp="${WEB_ROOT}/.${CHANNEL}.${VERSION}.$$"
 sudo ln -s "${release_dir}" "${link_tmp}"
@@ -86,9 +88,9 @@ if [[ "${CHANNEL}" == "stable" ]]; then
   onboarding_tmp="${ARCHIVE_ROOT}/channels/.stable-onboarding.$$"
   sudo ln -s "${release_dir}/onboarding.md" "${onboarding_tmp}"
   sudo mv -Tf "${onboarding_tmp}" "${ARCHIVE_ROOT}/channels/stable-onboarding.md"
-  beta_tmp="${WEB_ROOT}/.beta.${VERSION}.$$"
-  sudo ln -s "${release_dir}" "${beta_tmp}"
-  sudo mv -Tf "${beta_tmp}" "${WEB_ROOT}/beta"
+  public_onboarding_tmp="${WEB_ROOT}/.onboarding.${VERSION}.$$"
+  sudo ln -s "${release_dir}/onboarding.md" "${public_onboarding_tmp}"
+  sudo mv -Tf "${public_onboarding_tmp}" "${WEB_ROOT}/onboarding.md"
 fi
 
 mapfile -t versions < <(sudo find "${ARCHIVE_ROOT}/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | awk '{print $2}')

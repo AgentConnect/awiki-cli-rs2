@@ -77,6 +77,36 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
 }
 
 #[test]
+fn top_level_status_uses_im_core_default_when_config_active_identity_is_blank() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
+    write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "skill-agent",
+            handle: "skill-agent",
+            display_name: "Skill Agent",
+            jwt_token: "jwt-skill-agent",
+            make_default: true,
+        },
+    );
+
+    let identity_status = success_json(&awiki_cmd(&["id", "status"], workspace.path()));
+    assert_eq!(
+        identity_status["data"]["active_identity"]["identity_name"],
+        "skill-agent"
+    );
+
+    let status = success_json(&awiki_cmd(&["status"], workspace.path()));
+    assert_eq!(
+        status["data"]["state"]["active_identity"]["identity_name"],
+        "skill-agent"
+    );
+    assert_eq!(status["data"]["state"]["identity_count"], 1);
+}
+
+#[test]
 fn identity_create_refuses_legacy_plaintext_storage_by_default() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
@@ -721,85 +751,6 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .as_array()
         .unwrap()
         .contains(&json!("auth.json")));
-
-    let recover = success_json(&awiki_cmd(
-        &[
-            "--identity",
-            "ignored-name",
-            "id",
-            "recover",
-            "--dry-run",
-            "--handle",
-            "Alice",
-            "--phone",
-            "13800138000",
-            "--otp",
-            "123456",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(recover["data"]["plan"]["action"], "recover_handle");
-    assert_eq!(recover["data"]["plan"]["target_handle"], "alice.awiki.ai");
-    assert_eq!(recover["data"]["plan"]["identity_name"], "alice");
-    assert_eq!(recover["data"]["plan"]["final_identity_name"], "alice");
-    assert_eq!(
-        recover["data"]["plan"]["temp_identity_name"],
-        "alice-recover-tmp"
-    );
-    assert_eq!(recover["data"]["plan"]["same_handle_candidates"], json!([]));
-    assert_eq!(recover["data"]["plan"]["excluded_identities"], json!([]));
-    assert!(recover["data"]["plan"]["backup_path"]
-        .as_str()
-        .unwrap()
-        .contains(".legacy-backup/recover-handle/<timestamp>-alice.awiki.ai"));
-    assert_eq!(
-        recover["data"]["plan"]["remote_calls"],
-        json!(["did-auth.recover_handle"])
-    );
-    assert!(recover["data"]["plan"]["local_writes"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("sqlite.recover_handle_merge")));
-    assert!(recover["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|warning| warning
-            .as_str()
-            .unwrap()
-            .contains("--identity flag is ignored")));
-
-    let recover_otp = success_json(&awiki_cmd(
-        &[
-            "id",
-            "recover",
-            "--dry-run",
-            "--handle",
-            "Alice",
-            "--phone",
-            "13800138000",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(recover_otp["data"]["plan"]["action"], "send_recover_otp");
-    assert_eq!(
-        recover_otp["data"]["plan"]["remote_calls"],
-        json!(["handle.send_otp"])
-    );
-    assert_eq!(recover_otp["data"]["plan"]["local_writes"], Value::Null);
-    assert_eq!(recover_otp["data"]["plan"]["backup_path"], "");
-
-    let missing_recover_phone = awiki_cmd(
-        &["id", "recover", "--dry-run", "--handle", "Alice"],
-        workspace.path(),
-    );
-    assert_code(&missing_recover_phone, 2);
-    let missing_recover_phone = error_json(&missing_recover_phone);
-    assert_eq!(missing_recover_phone["error"]["code"], "invalid_argument");
-    assert!(missing_recover_phone["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("id recover requires --phone."));
 
     let schema = success_json(&awiki_cmd(
         &["schema", "id", "replace-did"],

@@ -343,6 +343,7 @@ impl GroupLifecycleCredentials {
             identity_name: self.identity_name,
             did_document: self.did_document,
             key1_private_pem: self.key1_private_pem,
+            verification_method: None,
         }
     }
 }

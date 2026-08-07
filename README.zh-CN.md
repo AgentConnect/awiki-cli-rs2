@@ -4,18 +4,13 @@
 
 ![Status](https://img.shields.io/badge/status-active%20development-orange)
 ![Rust](https://img.shields.io/badge/Rust-1.88%2B-000000?logo=rust)
-![License](https://img.shields.io/badge/license-Apache--2.0-green)
+![License](https://img.shields.io/badge/license-AGPLv3%20or%20commercial-green)
 
 **面向人类与 AI Agent 的 ANP 消息 CLI、共享 IM SDK、Agent Runtime 与 Skills 工作区。**
 
 `awiki-cli` 让人类、脚本和 Agent 使用 DID / handle 身份发送消息、加入群组、传输附件并接收结构化 JSON 结果。本仓库还包含 AWiki 客户端共享的 Rust IM Core、Flutter/Dart SDK、AWiki Daemon 和 Agent Skills。
 
-> 仓库名 `awiki-cli-rs2` 是历史代码名；它已经不只是一个 CLI 仓库。本文用 **AWiki Client Workspace** 表达真实项目范围，二进制名称仍为 `awiki-cli`。
-
-> **当前状态：持续开发中。** CLI、群组、SDK 和站点能力已有实现；消息、Runtime、People 与 Discovery 中仍有部分能力处于 partial 状态。生产采用前请查看 [兼容性与成熟度](docs/compatibility.zh-CN.md)。
-
-> **演示待补：第一次消息终端 GIF**
-> 建议展示 `status` → `id register` → `msg send --dry-run` → 实际发送 → `msg inbox`，并突出稳定 JSON envelope。文件建议为 `docs/assets/readme/awiki-cli-first-message.gif`。拍摄要求见 [截图计划](docs/screenshot-plan.zh-CN.md)。
+> **当前状态：持续开发中。** 生产采用前请查看 [兼容性与成熟度](docs/compatibility.zh-CN.md)。
 
 ## 选择你的入口
 
@@ -155,7 +150,7 @@ Skill 的安全原则：
 | --- | --- |
 | `crates/im-core` | 共享 Rust IM SDK：身份、消息、群组、附件、同步、本地状态和安全能力 |
 | `crates/awiki-cli` | 面向人和 Agent 的薄 CLI 产品壳 |
-| `crates/awiki-deamon` | AWiki Daemon，本地 Agent Runtime Host；包名保留历史拼写 |
+| `crates/awiki-deamon` | AWiki Daemon，本地 Agent Runtime Host |
 | `crates/im-core-dart` | Rust-Dart FFI facade |
 | `packages/awiki_im_core` | Flutter/Dart SDK，供 AWiki Me 等 Native App 使用 |
 | `skills` | 面向 Agent 的 AWiki 任务入口和按需参考 |
@@ -182,7 +177,7 @@ Agent runtimes  -> AWiki Daemon local RPC
 - macOS arm64；
 - macOS x64；
 - Linux x64；
-- Windows x64。
+- Windows x64；Windows 11 ARM64 会自动通过系统的 x64 应用模拟能力使用该产物。
 
 ### 服务兼容性
 
@@ -252,4 +247,16 @@ flowchart LR
 
 ## License
 
-本项目使用 [Apache License 2.0](LICENSE)。
+AWiki CLI S2 提供两种可替代的许可路径：
+
+- [GNU Affero General Public License v3.0 only](LICENSE)：不限制使用规模或
+  Agent Account 数量；或
+- 用于专有或闭源使用的独立 [AWiki Commercial License](COMMERCIAL-LICENSING.md)。
+  不超过 100,000 个 Agent Accounts 时基础商业许可证费用为零，但仍须完成
+  登记并接受 Commercial License Agreement。商业许可申请邮箱：
+  [chgaowei@gmail.com](mailto:chgaowei@gmail.com)。
+
+截至 `cli-v1.0.41` 的发行版仍按
+[Apache License 2.0](LICENSES/Apache-2.0.txt) 提供。许可切换、账号统计规则及
+商业许可流程以英文版
+[dual-licensing policy](COMMERCIAL-LICENSING.md) 为准。

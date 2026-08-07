@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct FileSecretVaultStore {
@@ -26,6 +29,57 @@ impl FileSecretVaultStore {
             })?;
         write_secure_file(&path, &raw)?;
         Ok(secret_ref)
+    }
+
+    /// Atomically publishes a complete encrypted record without replacing an
+    /// existing deterministic record. The hard-link is the linearization
+    /// point; the temporary file is fully synced before it becomes visible.
+    pub(crate) fn put_if_absent(
+        &self,
+        record: &VaultSecretRecord,
+    ) -> crate::ImResult<(SecretRef, bool)> {
+        let secret_ref = record.secret_ref();
+        let path = self.record_path(&secret_ref);
+        let raw =
+            serde_json::to_vec_pretty(record).map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| crate::ImError::PathUnavailable {
+                path_kind: "secret_vault_record".to_owned(),
+                detail: "secret vault record path has no parent".to_owned(),
+            })?;
+        fs::create_dir_all(parent)?;
+        set_private_dir_mode(parent)?;
+        let temp = temp_path(&path);
+        let result = (|| -> crate::ImResult<bool> {
+            let mut file = create_private_file(&temp)?;
+            file.write_all(&raw).map_err(crate::ImError::from)?;
+            file.sync_all().map_err(crate::ImError::from)?;
+            drop(file);
+            let created = match fs::hard_link(&temp, &path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) => {
+                    return Err(crate::ImError::Io {
+                        detail: format!(
+                            "publish secret vault record {} without replacement: {error}",
+                            path.display()
+                        ),
+                    });
+                }
+            };
+            if created {
+                set_private_file_mode(&path)?;
+            }
+            if let Ok(directory) = fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
+            Ok(created)
+        })();
+        let _ = fs::remove_file(&temp);
+        result.map(|created| (secret_ref, created))
     }
 
     pub(crate) fn get(&self, secret_ref: &SecretRef) -> crate::ImResult<VaultSecretRecord> {
@@ -170,7 +224,13 @@ fn temp_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("record.json");
-    path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nanos))
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        sequence
+    ))
 }
 
 #[cfg(unix)]

@@ -80,6 +80,11 @@ awiki-cli msg inbox --jq '.data.messages[] | .id'
 - `error.message` 面向人类，但要简短明确。
 - `error.hint` 给下一步操作建议。
 - `error.details` 只放可公开的结构化上下文，不放私钥、JWT、raw secure state 或本机敏感信息。
+- 消息命令不得透传远端 message、data 或其他自由格式详情；服务返回经过校验的稳定公共
+  错误码时，CLI 通常使用顶层 `service_error`，并且只在 `error.details.service_code`
+  中保留该码。授权边界码 `anp.unauthorized` 会归一化为 `auth_required`；
+  `anp.forbidden`、`anp.device_binding_required` 和 `anp.device_not_eligible` 会归一化为
+  `permission_denied`，且都不透传远端自由格式详情。
 
 ## 5. Dry-run
 

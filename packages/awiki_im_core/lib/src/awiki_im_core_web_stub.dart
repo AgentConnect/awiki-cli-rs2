@@ -1,6 +1,7 @@
 import 'models/attachment.dart';
 import 'models/config.dart';
 import 'models/identity.dart';
+import 'models/local_state_upgrade.dart';
 import 'models/message.dart';
 import 'models/secure.dart';
 
@@ -9,6 +10,24 @@ UnsupportedError _unsupported() => UnsupportedError(
 );
 
 class AwikiImCore {
+  static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
+    required AwikiImCorePaths paths,
+  }) async {
+    throw _unsupported();
+  }
+
+  static Future<LocalStateUpgradeResult> upgradeLocalState({
+    required AwikiImCorePaths paths,
+  }) async {
+    throw _unsupported();
+  }
+
+  static Future<LocalStateRestoreResult> restoreLocalStateBackup({
+    required AwikiImCorePaths paths,
+  }) async {
+    throw _unsupported();
+  }
+
   static Future<AwikiImCore> open({
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,
@@ -29,7 +48,168 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<IdentityDeviceSummary> identityDeviceSummary(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyRegistryEpochAdoptionAuthority?>
+  legacyRegistryEpochAdoptionAuthority(IdentitySelector selector) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    required String phone,
+    required String handle,
+    required String operationId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> prepareHandleRecovery({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String operationId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> activateHandleRecovery({
+    required String recoveryId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> resumeHandleRecovery(
+    String recoveryId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> handleRecoveryStatus(
+    String recoveryId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<AuthorizedJoinActivationProgress> activateAuthorizedJoin({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String did,
+    required String operationId,
+    int? ttlSeconds,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<AuthorizedJoinActivationProgress> resumeAuthorizedJoinActivation(
+    String joinSessionId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceRevokeResult> revokeDevice({
+    required IdentitySelector selector,
+    required String targetDeviceId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> beginDeviceJoin({
+    required String did,
+    required String operationId,
+    int ttlSeconds = 600,
+    required DeviceJoinAccountVerificationGrant accountVerificationGrant,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> pollNewDeviceJoin(String joinSessionId) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinSessionSummary> cancelNewDeviceJoin(
+    String joinSessionId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinRegistrySnapshot> identityDeviceRegistry(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<List<DeviceJoinRequestNotice>> localDeviceJoinRequests(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> localDeviceJoinVerificationProgress({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> startDeviceJoinVerification({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required String operationId,
+    int challengeTtlSeconds = 300,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> rejectDeviceJoin({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required DeviceJoinRejectReason reason,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required bool sasConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinApproval({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<IdentityVaultStatus> identityVaultStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyUpgradeStatus> legacyUpgradeStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyUpgradeStatus> upgradeLegacyIdentity(
     IdentitySelector selector,
   ) async {
     throw _unsupported();
@@ -79,7 +259,36 @@ class AwikiImClient {
 
   SecureApi get secure => SecureApi._();
 
+  RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._();
+
+  Future<ActiveSyncAccountBinding> activeSyncAccountBinding() async {
+    throw _unsupported();
+  }
+
   Future<void> dispose() async {}
+}
+
+class RootKeyTransferApi {
+  RootKeyTransferApi._();
+
+  Future<RootKeyTransferPreparation> prepare({
+    required String recipientDeviceId,
+  }) async {
+    throw const RootKeyTransferException(
+      code: 'root_transfer.unsupported',
+      retryable: false,
+    );
+  }
+
+  Future<RootKeyTransferSendResult> confirmAndSend({
+    required RootKeyTransferAuthorizationHandle authorizationHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw const RootKeyTransferException(
+      code: 'root_transfer.unsupported',
+      retryable: false,
+    );
+  }
 }
 
 class MessageApi {
@@ -138,6 +347,14 @@ class MessageApi {
   }
 
   Future<SyncDeltaResult> syncDelta(SyncDeltaRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<MessageSyncDiagnostics> syncDiagnostics() async {
     throw _unsupported();
   }
 

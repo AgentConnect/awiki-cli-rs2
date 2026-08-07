@@ -437,7 +437,7 @@ fn block_on_runtime_message_send(
         .build()?;
     runtime.block_on(async move {
         ensure_messaging_session(&outbox.client).await?;
-        let request = message.to_im_core_request()?;
+        let request = message.into_im_core_request()?;
         Ok(outbox.client.messages().send_async(request).await?)
     })
 }
@@ -713,7 +713,7 @@ impl RuntimeMessageSend {
         }
     }
 
-    fn to_im_core_request(self) -> Result<SendMessageRequest> {
+    fn into_im_core_request(self) -> Result<SendMessageRequest> {
         let target = match &self.target {
             RuntimeMessageTarget::Direct { recipient, .. } => {
                 MessageTarget::Direct(PeerRef::parse(recipient, "")?)

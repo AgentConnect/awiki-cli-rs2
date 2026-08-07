@@ -284,6 +284,9 @@ enum ConversationMigrationState {
 class Message {
   const Message({
     required this.id,
+    required this.conversationId,
+    this.senderPeerPersonaId,
+    required this.senderDidSnapshot,
     required this.threadKind,
     required this.threadId,
     required this.direction,
@@ -297,6 +300,9 @@ class Message {
   });
 
   final String id;
+  final String conversationId;
+  final String? senderPeerPersonaId;
+  final String senderDidSnapshot;
   final String threadKind;
   final String threadId;
   final MessageDirection direction;
@@ -349,6 +355,93 @@ class SyncDeltaResult {
   final List<String> warnings;
 }
 
+class MessageSyncRequest {
+  const MessageSyncRequest({required this.reason, this.limit});
+
+  final String reason;
+  final int? limit;
+}
+
+enum MessageSyncStatus {
+  idle,
+  changed,
+  recoveryRequired,
+  retryableFailure,
+  authRevoked,
+}
+
+enum CommittedMessageSource { liveDelta }
+
+class CommittedIncomingMessage {
+  const CommittedIncomingMessage({
+    required this.eventId,
+    required this.logicalMessageId,
+    required this.source,
+    required this.direction,
+    required this.message,
+  });
+
+  final String eventId;
+  final String logicalMessageId;
+  final CommittedMessageSource source;
+  final MessageDirection direction;
+  final Message message;
+}
+
+class MessageSyncOutcome {
+  const MessageSyncOutcome({
+    required this.status,
+    required this.eventsApplied,
+    required this.pagesFetched,
+    required this.messagesHydrated,
+    required this.duplicatesSkipped,
+    this.changedConversationIds = const [],
+    this.committedIncomingMessages = const [],
+    this.errorCode,
+    this.warnings = const [],
+  });
+
+  final MessageSyncStatus status;
+  final int eventsApplied;
+  final int pagesFetched;
+  final int messagesHydrated;
+  final int duplicatesSkipped;
+  final List<String> changedConversationIds;
+  final List<CommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+  final List<String> warnings;
+}
+
+enum MessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
+
+enum MessageSyncDirtyDomain { messages, readState }
+
+enum MessageSyncRetryState {
+  none,
+  pending,
+  inFlight,
+  scheduled,
+  permanentFailure,
+}
+
+class MessageSyncDiagnostics {
+  const MessageSyncDiagnostics({
+    this.lastSuccessAt,
+    required this.mode,
+    required this.pendingMutationCount,
+    this.dirtyDomains = const [],
+    required this.retryState,
+    this.nextRetryAt,
+  });
+
+  final String? lastSuccessAt;
+  final MessageSyncMode mode;
+  final int pendingMutationCount;
+  final List<MessageSyncDirtyDomain> dirtyDomains;
+  final MessageSyncRetryState retryState;
+  final String? nextRetryAt;
+}
+
 class ConversationListSnapshot {
   const ConversationListSnapshot({
     required this.formatVersion,
@@ -389,9 +482,7 @@ class ConversationStorePatch {
     this.items = const [],
     this.item,
     this.index,
-    this.threadKind,
-    this.threadId,
-    this.conversationIdentity,
+    this.conversationId,
     this.reason,
   });
 
@@ -403,9 +494,7 @@ class ConversationStorePatch {
   final List<ConversationSnapshotItem> items;
   final ConversationSnapshotItem? item;
   final int? index;
-  final String? threadKind;
-  final String? threadId;
-  final ConversationIdentity? conversationIdentity;
+  final String? conversationId;
   final String? reason;
 }
 
@@ -443,8 +532,13 @@ class ThreadMessageStorePatch {
 
 class ConversationSnapshotItem {
   const ConversationSnapshotItem({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
+    this.title,
     this.conversationIdentity,
     this.participants = const [],
     this.lastMessage,
@@ -456,8 +550,13 @@ class ConversationSnapshotItem {
     this.activityAt,
   });
 
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
+  final String? title;
   final ConversationIdentity? conversationIdentity;
   final List<String> participants;
   final ConversationSnapshotMessage? lastMessage;
@@ -468,6 +567,8 @@ class ConversationSnapshotItem {
   final String? lastMessageAt;
   final String? activityAt;
 }
+
+enum ConversationResolutionState { resolved, legacyUnresolved, blockedConflict }
 
 class ConversationSnapshotMessage {
   const ConversationSnapshotMessage({
@@ -563,6 +664,10 @@ class SyncThreadAfterResult {
 
 class Conversation {
   const Conversation({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
     this.conversationIdentity,
@@ -577,6 +682,10 @@ class Conversation {
     this.activityAt,
   });
 
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
   final ConversationIdentity? conversationIdentity;

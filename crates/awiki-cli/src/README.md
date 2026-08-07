@@ -1,6 +1,6 @@
 # aWiki-CLI src Module Map
 
-更新日期：2026-05-26
+更新日期：2026-07-22
 
 本文档记录 `crates/awiki-cli/src` 当前文件系统下的模块数量和职责划分。统计包含本 `README.md` 文件。
 
@@ -8,10 +8,10 @@
 
 | 范围 | 数量 |
 | --- | ---: |
-| `src` 递归文件总数 | 135 |
+| `src` 递归文件总数 | 147 |
 | `src` 递归目录总数，包含 `src` 自身 | 16 |
 | `src` 子目录总数，不包含 `src` 自身 | 15 |
-| `src` 直属文件数 | 9 |
+| `src` 直属文件数 | 10 |
 | `src` 直属文件夹数 | 11 |
 
 ## 顶层结构
@@ -34,12 +34,19 @@
 | `README.md` | 本文档，记录 `src` 模块数量和职责。 |
 | `lib.rs` | crate 的 public module 入口；当前只导出新的模块名，如 `cli_shell`、`m_core_cli_adapter`、`workspace_upgrade` 等，并 `pub use cli_shell::execute`。 |
 | `main.rs` | 二进制入口；调用库里的 CLI 执行入口并处理进程退出。 |
+| `system_test_probe_main.rs` | 仅由 `system-test-probe` feature 启用的多设备系统测试探针；从同一个 `ImCore` 的设备投影读取协议设备 ID 并创建 client，附件票据请求复用生产下载规划以绑定 v2 Profile 和逐设备 wire message，stdin/stdout 只承载闭合 JSONL 动作和脱敏结果。 |
 | `build_info.rs` | 版本、构建信息、目标平台名等 `version` / `status` 需要的 metadata。 |
 | `cli_http.rs` | CLI 自有 HTTP 模块入口；包装 HTTP client / profile 解析。 |
 | `cli_output.rs` | CLI 输出 envelope、JSON / pretty 渲染、`ExitError` / 错误响应结构。 |
 | `cli_shell.rs` | CLI 命令执行核心壳层；解析后的 command dispatch、上下文、handler 聚合。 |
 | `cli_trace.rs` | `AWIKI_TRACE_TIMING` 之类的 CLI trace / timing 记录和输出。 |
 | `durable_fs.rs` | 原子写、目录 fsync、跨平台耐久化文件写入 helper。 |
+
+`system_test_probe_main.rs` 的启动合同由
+[`../tests/system_test_probe_startup_contract.rs`](../tests/system_test_probe_startup_contract.rs)
+覆盖：测试通过生产 CLI Genesis 流程生成真实 vNext Vault workspace，再启动真实探针并执行
+`shutdown` JSONL 动作。fixture 只使用一次性 loopback 控制面，不复制或手写身份私钥、
+Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶段不连接服务端。
 
 ## 顶层文件夹
 
@@ -98,7 +105,6 @@
 | `cli_shell/group_e2ee_handlers.rs` | group E2EE 命令壳层；当前多为 gated / unsupported 或转 M-Core 策略。 |
 | `cli_shell/group_handlers.rs` | group create / join / member / list / update 等命令 handler，主要转 `m_core_cli_adapter`。 |
 | `cli_shell/handle_helpers.rs` | handle 标准化、补全、输入边界 helper。 |
-| `cli_shell/id_recover_handlers.rs` | `id recover` CLI handler，走 M-Core / `im-core` recovery 流程。 |
 | `cli_shell/id_replace_did_handlers.rs` | `id replace-did` handler，计划/执行边界和 warning 输出。 |
 | `cli_shell/mail_handlers.rs` | mail 命令 handler，转 `im-core` email API。 |
 | `cli_shell/msg_handlers.rs` | msg send / inbox / history / mark-read / secure 等命令 handler。 |
@@ -158,11 +164,12 @@
 | `host_runtime/listener_im_event_adapter.rs` | `im-core` realtime events 到 host notify / local notification / 状态更新的适配。 |
 | `host_runtime/listener_json_helpers.rs` | listener JSON map / serialization helper。 |
 | `host_runtime/listener_known_sessions.rs` | 已知 session 加载、启动等待、错误记录。 |
-| `host_runtime/listener_launchd.rs` | macOS launchd service plist / status helper。 |
+| `host_runtime/listener_launchd.rs` | macOS LaunchAgent 安装、启停、重启、卸载和真实状态查询。 |
 | `host_runtime/listener_local_notification_flush.rs` | 本地通知队列 flush 到当前身份/session。 |
 | `host_runtime/listener_local_notifications.rs` | 本地通知队列文件读写。 |
 | `host_runtime/listener_notification_consume.rs` | realtime notification channel 消费循环和 ping / 取消逻辑。 |
-| `host_runtime/listener_service.rs` | listener 后台服务 install / start / stop / status / restart 跨平台计划。 |
+| `host_runtime/listener_service.rs` | listener 服务的共享命名、启动参数、boot ID、就绪等待和运行产物管理。 |
+| `host_runtime/listener_service_manager.rs` | 按目标平台分发 listener 服务生命周期操作。 |
 | `host_runtime/listener_service_did.rs` | 从 listener/session 查询 message service DID。 |
 | `host_runtime/listener_session_bootstrap.rs` | session bootstrap：选择身份、创建 session、等待 ready。 |
 | `host_runtime/listener_session_lookup.rs` | 根据 DID / identity 查找 active session / record。 |
@@ -172,8 +179,8 @@
 | `host_runtime/listener_supervisor_init.rs` | supervisor 初始化计划：打开 store、schema、host notify、remote client。 |
 | `host_runtime/listener_supervisor_run.rs` | supervisor 主运行循环和断连/错误记录。 |
 | `host_runtime/listener_supervisor_shutdown.rs` | supervisor shutdown 顺序：session、listener、notify sink、database。 |
-| `host_runtime/listener_systemd.rs` | Linux systemd unit / status helper。 |
-| `host_runtime/listener_windows_service.rs` | Windows service 配置/status helper。 |
+| `host_runtime/listener_systemd.rs` | Linux user-systemd unit 安装、启停、重启、卸载和真实状态查询。 |
+| `host_runtime/listener_windows_service.rs` | Windows SCM 服务安装、恢复策略、生命周期、用户 IPC 权限和真实状态查询。 |
 | `host_runtime/openclaw_host_notify.rs` | OpenClaw host notify sink，route delivery 和请求构造。 |
 | `host_runtime/openclaw_routes.rs` | OpenClaw route registry / config 解析、增删、probe。 |
 | `host_runtime/openclaw_webhook.rs` | OpenClaw webhook URL / request / confirmation helper。 |

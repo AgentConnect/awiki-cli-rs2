@@ -14,6 +14,7 @@ import 'api/directory.dart';
 import 'api/email.dart';
 import 'api/groups.dart';
 import 'api/identity.dart';
+import 'api/local_state_upgrade.dart';
 import 'api/messages.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
@@ -29,6 +30,7 @@ import 'dto/email.dart';
 import 'dto/error.dart';
 import 'dto/group.dart';
 import 'dto/identity.dart';
+import 'dto/local_state_upgrade.dart';
 import 'dto/message.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
@@ -184,6 +186,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartClientVersionInfo dco_decode_box_autoadd_dart_client_version_info(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationIdentity dco_decode_box_autoadd_dart_conversation_identity(
     dynamic raw,
   );
@@ -220,11 +227,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_delegated_signing_options(dynamic raw);
 
   @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  dco_decode_box_autoadd_dart_device_join_authorized_device_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  dco_decode_box_autoadd_dart_device_revoke_outcome_category(dynamic raw);
+
+  @protected
   DartDownloadAttachmentRequest
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
   @protected
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
+
+  @protected
+  DartHandleRecoveryErrorCode
+  dco_decode_box_autoadd_dart_handle_recovery_error_code(dynamic raw);
+
+  @protected
+  DartHandleRecoveryResetReference
+  dco_decode_box_autoadd_dart_handle_recovery_reset_reference(dynamic raw);
+
+  @protected
+  DartHandleRegistrationJoinRequired
+  dco_decode_box_autoadd_dart_handle_registration_join_required(dynamic raw);
+
+  @protected
+  DartIdentityDeviceRole dco_decode_box_autoadd_dart_identity_device_role(
+    dynamic raw,
+  );
 
   @protected
   DartIdentitySelector dco_decode_box_autoadd_dart_identity_selector(
@@ -269,11 +303,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartLegacyRegistryEpochAdoptionAuthority
+  dco_decode_box_autoadd_dart_legacy_registry_epoch_adoption_authority(
+    dynamic raw,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   dco_decode_box_autoadd_dart_mark_conversation_read_request(dynamic raw);
 
   @protected
   DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
+
+  @protected
+  DartMessageSyncRequest dco_decode_box_autoadd_dart_message_sync_request(
+    dynamic raw,
+  );
 
   @protected
   DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
@@ -359,6 +404,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
+  DartActiveSyncAccountBinding dco_decode_dart_active_sync_account_binding(
+    dynamic raw,
+  );
+
+  @protected
   DartAttachmentDestination dco_decode_dart_attachment_destination(dynamic raw);
 
   @protected
@@ -377,6 +427,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartAuthStatus dco_decode_dart_auth_status(dynamic raw);
+
+  @protected
+  DartAuthorizedJoinActivationProgress
+  dco_decode_dart_authorized_join_activation_progress(dynamic raw);
+
+  @protected
+  DartClientVersionInfo dco_decode_dart_client_version_info(dynamic raw);
+
+  @protected
+  DartCommittedIncomingMessage dco_decode_dart_committed_incoming_message(
+    dynamic raw,
+  );
+
+  @protected
+  DartCommittedMessageSource dco_decode_dart_committed_message_source(
+    dynamic raw,
+  );
 
   @protected
   DartConversation dco_decode_dart_conversation(dynamic raw);
@@ -412,6 +479,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartConversationReadRef dco_decode_dart_conversation_read_ref(dynamic raw);
+
+  @protected
+  DartConversationResolutionState dco_decode_dart_conversation_resolution_state(
+    dynamic raw,
+  );
 
   @protected
   DartConversationSnapshotItem dco_decode_dart_conversation_snapshot_item(
@@ -462,6 +534,70 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDeleteLocalIdentityResult dco_decode_dart_delete_local_identity_result(
     dynamic raw,
   );
+
+  @protected
+  DartDeviceJoinApprovalPrompt dco_decode_dart_device_join_approval_prompt(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizationStatus
+  dco_decode_dart_device_join_authorization_status(dynamic raw);
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  dco_decode_dart_device_join_authorized_device_summary(dynamic raw);
+
+  @protected
+  DartDeviceJoinPhase dco_decode_dart_device_join_phase(dynamic raw);
+
+  @protected
+  DartDeviceJoinProgress dco_decode_dart_device_join_progress(dynamic raw);
+
+  @protected
+  DartDeviceJoinRegistrySnapshot dco_decode_dart_device_join_registry_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRejectReason dco_decode_dart_device_join_reject_reason(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRemoteState dco_decode_dart_device_join_remote_state(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRequestNotice dco_decode_dart_device_join_request_notice(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRole dco_decode_dart_device_join_role(dynamic raw);
+
+  @protected
+  DartDeviceJoinSessionSummary dco_decode_dart_device_join_session_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinSide dco_decode_dart_device_join_side(dynamic raw);
+
+  @protected
+  DartDeviceRegistryAuthorizedDeviceSummary
+  dco_decode_dart_device_registry_authorized_device_summary(dynamic raw);
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  dco_decode_dart_device_revoke_outcome_category(dynamic raw);
+
+  @protected
+  DartDeviceRevokeResult dco_decode_dart_device_revoke_result(dynamic raw);
+
+  @protected
+  DartDeviceRevokeStatus dco_decode_dart_device_revoke_status(dynamic raw);
 
   @protected
   DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw);
@@ -590,7 +726,56 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw);
 
   @protected
+  DartHandleRecoveryErrorCode dco_decode_dart_handle_recovery_error_code(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryImpact dco_decode_dart_handle_recovery_impact(dynamic raw);
+
+  @protected
+  DartHandleRecoveryOtpResult dco_decode_dart_handle_recovery_otp_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryPhase dco_decode_dart_handle_recovery_phase(dynamic raw);
+
+  @protected
+  DartHandleRecoveryProgress dco_decode_dart_handle_recovery_progress(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryResetReference
+  dco_decode_dart_handle_recovery_reset_reference(dynamic raw);
+
+  @protected
+  DartHandleRecoveryTransitionSourceKind
+  dco_decode_dart_handle_recovery_transition_source_kind(dynamic raw);
+
+  @protected
+  DartHandleRegistrationJoinRequired
+  dco_decode_dart_handle_registration_join_required(dynamic raw);
+
+  @protected
   DartHandleRegistrationResult dco_decode_dart_handle_registration_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartIdentityDeviceMode dco_decode_dart_identity_device_mode(dynamic raw);
+
+  @protected
+  DartIdentityDeviceReadiness dco_decode_dart_identity_device_readiness(
+    dynamic raw,
+  );
+
+  @protected
+  DartIdentityDeviceRole dco_decode_dart_identity_device_role(dynamic raw);
+
+  @protected
+  DartIdentityDeviceSummary dco_decode_dart_identity_device_summary(
     dynamic raw,
   );
 
@@ -652,6 +837,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartJoinGroupRequest dco_decode_dart_join_group_request(dynamic raw);
 
   @protected
+  DartLegacyRegistryEpochAdoptionAuthority
+  dco_decode_dart_legacy_registry_epoch_adoption_authority(dynamic raw);
+
+  @protected
+  DartLegacyUpgradeStatus dco_decode_dart_legacy_upgrade_status(dynamic raw);
+
+  @protected
+  DartLocalStateConversationAliasMapping
+  dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw);
+
+  @protected
+  DartLocalStateRestoreResult dco_decode_dart_local_state_restore_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  dco_decode_dart_local_state_upgrade_eligibility(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeInspection
+  dco_decode_dart_local_state_upgrade_inspection(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeResult dco_decode_dart_local_state_upgrade_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartLocalStateUpgradeStatus dco_decode_dart_local_state_upgrade_status(
+    dynamic raw,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   dco_decode_dart_mark_conversation_read_request(dynamic raw);
 
@@ -685,6 +904,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw);
 
   @protected
+  DartMessageSyncDiagnostics dco_decode_dart_message_sync_diagnostics(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageSyncDirtyDomain dco_decode_dart_message_sync_dirty_domain(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageSyncMode dco_decode_dart_message_sync_mode(dynamic raw);
+
+  @protected
+  DartMessageSyncOutcome dco_decode_dart_message_sync_outcome(dynamic raw);
+
+  @protected
+  DartMessageSyncRequest dco_decode_dart_message_sync_request(dynamic raw);
+
+  @protected
+  DartMessageSyncRetryState dco_decode_dart_message_sync_retry_state(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageSyncStatus dco_decode_dart_message_sync_status(dynamic raw);
+
+  @protected
   DartMessageTarget dco_decode_dart_message_target(dynamic raw);
 
   @protected
@@ -714,9 +960,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRealtimeSyncHint dco_decode_dart_realtime_sync_hint(dynamic raw);
 
   @protected
-  DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw);
-
-  @protected
   DartRelationStatus dco_decode_dart_relation_status(dynamic raw);
 
   @protected
@@ -724,6 +967,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
+
+  @protected
+  DartRootKeyTransferError dco_decode_dart_root_key_transfer_error(dynamic raw);
+
+  @protected
+  DartRootKeyTransferPreparation dco_decode_dart_root_key_transfer_preparation(
+    dynamic raw,
+  );
+
+  @protected
+  DartRootKeyTransferRecipientSummary
+  dco_decode_dart_root_key_transfer_recipient_summary(dynamic raw);
+
+  @protected
+  DartRootKeyTransferSendResult dco_decode_dart_root_key_transfer_send_result(
+    dynamic raw,
+  );
 
   @protected
   DartScopedInboxToken dco_decode_dart_scoped_inbox_token(dynamic raw);
@@ -790,6 +1050,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSyncDeltaResult dco_decode_dart_sync_delta_result(dynamic raw);
 
   @protected
+  DartSyncDomain dco_decode_dart_sync_domain(dynamic raw);
+
+  @protected
   DartSyncThreadAfterRequest dco_decode_dart_sync_thread_after_request(
     dynamic raw,
   );
@@ -823,6 +1086,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<DartCommittedIncomingMessage>
+  dco_decode_list_dart_committed_incoming_message(dynamic raw);
+
+  @protected
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
 
   @protected
@@ -833,6 +1100,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartConversationSnapshotItem>
   dco_decode_list_dart_conversation_snapshot_item(dynamic raw);
+
+  @protected
+  List<DartDeviceJoinRequestNotice>
+  dco_decode_list_dart_device_join_request_notice(dynamic raw);
+
+  @protected
+  List<DartDeviceJoinSessionSummary>
+  dco_decode_list_dart_device_join_session_summary(dynamic raw);
+
+  @protected
+  List<DartDeviceRegistryAuthorizedDeviceSummary>
+  dco_decode_list_dart_device_registry_authorized_device_summary(dynamic raw);
 
   @protected
   List<DartDisplayProfile> dco_decode_list_dart_display_profile(dynamic raw);
@@ -868,11 +1147,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
 
   @protected
+  List<DartLocalStateConversationAliasMapping>
+  dco_decode_list_dart_local_state_conversation_alias_mapping(dynamic raw);
+
+  @protected
   List<DartMessage> dco_decode_list_dart_message(dynamic raw);
 
   @protected
   List<DartMessageMetadataAttribute>
   dco_decode_list_dart_message_metadata_attribute(dynamic raw);
+
+  @protected
+  List<DartMessageSyncDirtyDomain>
+  dco_decode_list_dart_message_sync_dirty_domain(dynamic raw);
 
   @protected
   List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
@@ -885,6 +1172,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartSyncDomain> dco_decode_list_dart_sync_domain(dynamic raw);
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -892,6 +1185,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  DartClientVersionInfo? dco_decode_opt_box_autoadd_dart_client_version_info(
+    dynamic raw,
+  );
 
   @protected
   DartConversationIdentity?
@@ -914,7 +1212,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_dart_delegated_signing_options(dynamic raw);
 
   @protected
+  DartDeviceJoinAuthorizedDeviceSummary?
+  dco_decode_opt_box_autoadd_dart_device_join_authorized_device_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory?
+  dco_decode_opt_box_autoadd_dart_device_revoke_outcome_category(dynamic raw);
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryErrorCode?
+  dco_decode_opt_box_autoadd_dart_handle_recovery_error_code(dynamic raw);
+
+  @protected
+  DartHandleRecoveryResetReference?
+  dco_decode_opt_box_autoadd_dart_handle_recovery_reset_reference(dynamic raw);
+
+  @protected
+  DartHandleRegistrationJoinRequired?
+  dco_decode_opt_box_autoadd_dart_handle_registration_join_required(
+    dynamic raw,
+  );
+
+  @protected
+  DartIdentityDeviceRole? dco_decode_opt_box_autoadd_dart_identity_device_role(
     dynamic raw,
   );
 
@@ -938,6 +1265,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartInboxHistoryOptions?
   dco_decode_opt_box_autoadd_dart_inbox_history_options(dynamic raw);
+
+  @protected
+  DartLegacyRegistryEpochAdoptionAuthority?
+  dco_decode_opt_box_autoadd_dart_legacy_registry_epoch_adoption_authority(
+    dynamic raw,
+  );
 
   @protected
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
@@ -1122,6 +1455,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartClientVersionInfo sse_decode_box_autoadd_dart_client_version_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationIdentity sse_decode_box_autoadd_dart_conversation_identity(
     SseDeserializer deserializer,
   );
@@ -1166,6 +1504,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  sse_decode_box_autoadd_dart_device_join_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  sse_decode_box_autoadd_dart_device_revoke_outcome_category(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDownloadAttachmentRequest
   sse_decode_box_autoadd_dart_download_attachment_request(
     SseDeserializer deserializer,
@@ -1173,6 +1523,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryErrorCode
+  sse_decode_box_autoadd_dart_handle_recovery_error_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryResetReference
+  sse_decode_box_autoadd_dart_handle_recovery_reset_reference(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRegistrationJoinRequired
+  sse_decode_box_autoadd_dart_handle_registration_join_required(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceRole sse_decode_box_autoadd_dart_identity_device_role(
     SseDeserializer deserializer,
   );
 
@@ -1233,6 +1606,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartLegacyRegistryEpochAdoptionAuthority
+  sse_decode_box_autoadd_dart_legacy_registry_epoch_adoption_authority(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   sse_decode_box_autoadd_dart_mark_conversation_read_request(
     SseDeserializer deserializer,
@@ -1240,6 +1619,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer);
+
+  @protected
+  DartMessageSyncRequest sse_decode_box_autoadd_dart_message_sync_request(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(
@@ -1349,6 +1733,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
+  DartActiveSyncAccountBinding sse_decode_dart_active_sync_account_binding(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartAttachmentDestination sse_decode_dart_attachment_destination(
     SseDeserializer deserializer,
   );
@@ -1373,6 +1762,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartAuthStatus sse_decode_dart_auth_status(SseDeserializer deserializer);
+
+  @protected
+  DartAuthorizedJoinActivationProgress
+  sse_decode_dart_authorized_join_activation_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartClientVersionInfo sse_decode_dart_client_version_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartCommittedIncomingMessage sse_decode_dart_committed_incoming_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartCommittedMessageSource sse_decode_dart_committed_message_source(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartConversation sse_decode_dart_conversation(SseDeserializer deserializer);
@@ -1414,6 +1824,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartConversationReadRef sse_decode_dart_conversation_read_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationResolutionState sse_decode_dart_conversation_resolution_state(
     SseDeserializer deserializer,
   );
 
@@ -1470,6 +1885,88 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDeleteLocalIdentityResult sse_decode_dart_delete_local_identity_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinApprovalPrompt sse_decode_dart_device_join_approval_prompt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizationStatus
+  sse_decode_dart_device_join_authorization_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  sse_decode_dart_device_join_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinPhase sse_decode_dart_device_join_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinProgress sse_decode_dart_device_join_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRegistrySnapshot sse_decode_dart_device_join_registry_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRejectReason sse_decode_dart_device_join_reject_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRemoteState sse_decode_dart_device_join_remote_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRequestNotice sse_decode_dart_device_join_request_notice(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRole sse_decode_dart_device_join_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinSessionSummary sse_decode_dart_device_join_session_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinSide sse_decode_dart_device_join_side(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRegistryAuthorizedDeviceSummary
+  sse_decode_dart_device_registry_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  sse_decode_dart_device_revoke_outcome_category(SseDeserializer deserializer);
+
+  @protected
+  DartDeviceRevokeResult sse_decode_dart_device_revoke_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeStatus sse_decode_dart_device_revoke_status(
     SseDeserializer deserializer,
   );
 
@@ -1632,7 +2129,68 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer);
 
   @protected
+  DartHandleRecoveryErrorCode sse_decode_dart_handle_recovery_error_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryImpact sse_decode_dart_handle_recovery_impact(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryOtpResult sse_decode_dart_handle_recovery_otp_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryPhase sse_decode_dart_handle_recovery_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryProgress sse_decode_dart_handle_recovery_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryResetReference
+  sse_decode_dart_handle_recovery_reset_reference(SseDeserializer deserializer);
+
+  @protected
+  DartHandleRecoveryTransitionSourceKind
+  sse_decode_dart_handle_recovery_transition_source_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRegistrationJoinRequired
+  sse_decode_dart_handle_registration_join_required(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceMode sse_decode_dart_identity_device_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceReadiness sse_decode_dart_identity_device_readiness(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceRole sse_decode_dart_identity_device_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceSummary sse_decode_dart_identity_device_summary(
     SseDeserializer deserializer,
   );
 
@@ -1712,6 +2270,46 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartLegacyRegistryEpochAdoptionAuthority
+  sse_decode_dart_legacy_registry_epoch_adoption_authority(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLegacyUpgradeStatus sse_decode_dart_legacy_upgrade_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateConversationAliasMapping
+  sse_decode_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateRestoreResult sse_decode_dart_local_state_restore_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  sse_decode_dart_local_state_upgrade_eligibility(SseDeserializer deserializer);
+
+  @protected
+  DartLocalStateUpgradeInspection
+  sse_decode_dart_local_state_upgrade_inspection(SseDeserializer deserializer);
+
+  @protected
+  DartLocalStateUpgradeResult sse_decode_dart_local_state_upgrade_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateUpgradeStatus sse_decode_dart_local_state_upgrade_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   sse_decode_dart_mark_conversation_read_request(SseDeserializer deserializer);
 
@@ -1753,6 +2351,41 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessageSecurityMode sse_decode_dart_message_security_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncDiagnostics sse_decode_dart_message_sync_diagnostics(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncDirtyDomain sse_decode_dart_message_sync_dirty_domain(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncMode sse_decode_dart_message_sync_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncOutcome sse_decode_dart_message_sync_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncRequest sse_decode_dart_message_sync_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncRetryState sse_decode_dart_message_sync_retry_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncStatus sse_decode_dart_message_sync_status(
     SseDeserializer deserializer,
   );
 
@@ -1800,11 +2433,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartRecoverHandleResult sse_decode_dart_recover_handle_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   DartRelationStatus sse_decode_dart_relation_status(
     SseDeserializer deserializer,
   );
@@ -1816,6 +2444,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRelationshipPage sse_decode_dart_relationship_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRootKeyTransferError sse_decode_dart_root_key_transfer_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRootKeyTransferPreparation sse_decode_dart_root_key_transfer_preparation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRootKeyTransferRecipientSummary
+  sse_decode_dart_root_key_transfer_recipient_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRootKeyTransferSendResult sse_decode_dart_root_key_transfer_send_result(
     SseDeserializer deserializer,
   );
 
@@ -1920,6 +2569,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSyncDomain sse_decode_dart_sync_domain(SseDeserializer deserializer);
+
+  @protected
   DartSyncThreadAfterRequest sse_decode_dart_sync_thread_after_request(
     SseDeserializer deserializer,
   );
@@ -1955,6 +2607,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<DartCommittedIncomingMessage>
+  sse_decode_list_dart_committed_incoming_message(SseDeserializer deserializer);
+
+  @protected
   List<DartConversation> sse_decode_list_dart_conversation(
     SseDeserializer deserializer,
   );
@@ -1967,6 +2623,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartConversationSnapshotItem>
   sse_decode_list_dart_conversation_snapshot_item(SseDeserializer deserializer);
+
+  @protected
+  List<DartDeviceJoinRequestNotice>
+  sse_decode_list_dart_device_join_request_notice(SseDeserializer deserializer);
+
+  @protected
+  List<DartDeviceJoinSessionSummary>
+  sse_decode_list_dart_device_join_session_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartDeviceRegistryAuthorizedDeviceSummary>
+  sse_decode_list_dart_device_registry_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<DartDisplayProfile> sse_decode_list_dart_display_profile(
@@ -2012,11 +2684,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartLocalStateConversationAliasMapping>
+  sse_decode_list_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartMessage> sse_decode_list_dart_message(SseDeserializer deserializer);
 
   @protected
   List<DartMessageMetadataAttribute>
   sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
+
+  @protected
+  List<DartMessageSyncDirtyDomain>
+  sse_decode_list_dart_message_sync_dirty_domain(SseDeserializer deserializer);
 
   @protected
   List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
@@ -2029,6 +2711,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartSyncDomain> sse_decode_list_dart_sync_domain(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -2036,6 +2726,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  DartClientVersionInfo? sse_decode_opt_box_autoadd_dart_client_version_info(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartConversationIdentity?
@@ -2068,7 +2763,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceJoinAuthorizedDeviceSummary?
+  sse_decode_opt_box_autoadd_dart_device_join_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory?
+  sse_decode_opt_box_autoadd_dart_device_revoke_outcome_category(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryErrorCode?
+  sse_decode_opt_box_autoadd_dart_handle_recovery_error_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryResetReference?
+  sse_decode_opt_box_autoadd_dart_handle_recovery_reset_reference(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRegistrationJoinRequired?
+  sse_decode_opt_box_autoadd_dart_handle_registration_join_required(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceRole? sse_decode_opt_box_autoadd_dart_identity_device_role(
     SseDeserializer deserializer,
   );
 
@@ -2096,6 +2826,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartInboxHistoryOptions?
   sse_decode_opt_box_autoadd_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLegacyRegistryEpochAdoptionAuthority?
+  sse_decode_opt_box_autoadd_dart_legacy_registry_epoch_adoption_authority(
     SseDeserializer deserializer,
   );
 
@@ -2307,6 +3043,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_client_version_info(
+    DartClientVersionInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_conversation_identity(
     DartConversationIdentity self,
     SseSerializer serializer,
@@ -2355,6 +3097,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_device_join_authorized_device_summary(
+    DartDeviceJoinAuthorizedDeviceSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_download_attachment_request(
     DartDownloadAttachmentRequest self,
     SseSerializer serializer,
@@ -2363,6 +3117,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_handle_recovery_error_code(
+    DartHandleRecoveryErrorCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_handle_recovery_reset_reference(
+    DartHandleRecoveryResetReference self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_handle_registration_join_required(
+    DartHandleRegistrationJoinRequired self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_identity_device_role(
+    DartIdentityDeviceRole self,
     SseSerializer serializer,
   );
 
@@ -2433,6 +3211,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_legacy_registry_epoch_adoption_authority(
+    DartLegacyRegistryEpochAdoptionAuthority self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_mark_conversation_read_request(
     DartMarkConversationReadRequest self,
     SseSerializer serializer,
@@ -2441,6 +3225,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_message(
     DartMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_message_sync_request(
+    DartMessageSyncRequest self,
     SseSerializer serializer,
   );
 
@@ -2568,6 +3358,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
+  void sse_encode_dart_active_sync_account_binding(
+    DartActiveSyncAccountBinding self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_attachment_destination(
     DartAttachmentDestination self,
     SseSerializer serializer,
@@ -2597,6 +3393,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_auth_status(
     DartAuthStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_authorized_join_activation_progress(
+    DartAuthorizedJoinActivationProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_client_version_info(
+    DartClientVersionInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_committed_incoming_message(
+    DartCommittedIncomingMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_committed_message_source(
+    DartCommittedMessageSource self,
     SseSerializer serializer,
   );
 
@@ -2651,6 +3471,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_conversation_read_ref(
     DartConversationReadRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_resolution_state(
+    DartConversationResolutionState self,
     SseSerializer serializer,
   );
 
@@ -2717,6 +3543,102 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_delete_local_identity_result(
     DartDeleteLocalIdentityResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_approval_prompt(
+    DartDeviceJoinApprovalPrompt self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_authorization_status(
+    DartDeviceJoinAuthorizationStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_authorized_device_summary(
+    DartDeviceJoinAuthorizedDeviceSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_phase(
+    DartDeviceJoinPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_progress(
+    DartDeviceJoinProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_registry_snapshot(
+    DartDeviceJoinRegistrySnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_reject_reason(
+    DartDeviceJoinRejectReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_remote_state(
+    DartDeviceJoinRemoteState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_request_notice(
+    DartDeviceJoinRequestNotice self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_role(
+    DartDeviceJoinRole self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_session_summary(
+    DartDeviceJoinSessionSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_side(
+    DartDeviceJoinSide self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_registry_authorized_device_summary(
+    DartDeviceRegistryAuthorizedDeviceSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_revoke_result(
+    DartDeviceRevokeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_revoke_status(
+    DartDeviceRevokeStatus self,
     SseSerializer serializer,
   );
 
@@ -2919,8 +3841,80 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_handle_recovery_error_code(
+    DartHandleRecoveryErrorCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_impact(
+    DartHandleRecoveryImpact self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_otp_result(
+    DartHandleRecoveryOtpResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_phase(
+    DartHandleRecoveryPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_progress(
+    DartHandleRecoveryProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_reset_reference(
+    DartHandleRecoveryResetReference self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_transition_source_kind(
+    DartHandleRecoveryTransitionSourceKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_registration_join_required(
+    DartHandleRegistrationJoinRequired self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_handle_registration_result(
     DartHandleRegistrationResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_mode(
+    DartIdentityDeviceMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_readiness(
+    DartIdentityDeviceReadiness self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_role(
+    DartIdentityDeviceRole self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_summary(
+    DartIdentityDeviceSummary self,
     SseSerializer serializer,
   );
 
@@ -3021,6 +4015,54 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_legacy_registry_epoch_adoption_authority(
+    DartLegacyRegistryEpochAdoptionAuthority self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_legacy_upgrade_status(
+    DartLegacyUpgradeStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_conversation_alias_mapping(
+    DartLocalStateConversationAliasMapping self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_restore_result(
+    DartLocalStateRestoreResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_eligibility(
+    DartLocalStateUpgradeEligibility self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_inspection(
+    DartLocalStateUpgradeInspection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_result(
+    DartLocalStateUpgradeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_status(
+    DartLocalStateUpgradeStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_mark_conversation_read_request(
     DartMarkConversationReadRequest self,
     SseSerializer serializer,
@@ -3074,6 +4116,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_message_security_mode(
     DartMessageSecurityMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_diagnostics(
+    DartMessageSyncDiagnostics self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_dirty_domain(
+    DartMessageSyncDirtyDomain self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_mode(
+    DartMessageSyncMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_outcome(
+    DartMessageSyncOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_request(
+    DartMessageSyncRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_retry_state(
+    DartMessageSyncRetryState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_status(
+    DartMessageSyncStatus self,
     SseSerializer serializer,
   );
 
@@ -3132,12 +4216,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_dart_recover_handle_result(
-    DartRecoverHandleResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_dart_relation_status(
     DartRelationStatus self,
     SseSerializer serializer,
@@ -3152,6 +4230,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_relationship_page(
     DartRelationshipPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_root_key_transfer_error(
+    DartRootKeyTransferError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_root_key_transfer_preparation(
+    DartRootKeyTransferPreparation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_root_key_transfer_recipient_summary(
+    DartRootKeyTransferRecipientSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_root_key_transfer_send_result(
+    DartRootKeyTransferSendResult self,
     SseSerializer serializer,
   );
 
@@ -3276,6 +4378,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_sync_domain(
+    DartSyncDomain self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_sync_thread_after_request(
     DartSyncThreadAfterRequest self,
     SseSerializer serializer,
@@ -3318,6 +4426,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_dart_committed_incoming_message(
+    List<DartCommittedIncomingMessage> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_conversation(
     List<DartConversation> self,
     SseSerializer serializer,
@@ -3332,6 +4446,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_conversation_snapshot_item(
     List<DartConversationSnapshotItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_device_join_request_notice(
+    List<DartDeviceJoinRequestNotice> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_device_join_session_summary(
+    List<DartDeviceJoinSessionSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_device_registry_authorized_device_summary(
+    List<DartDeviceRegistryAuthorizedDeviceSummary> self,
     SseSerializer serializer,
   );
 
@@ -3390,6 +4522,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_local_state_conversation_alias_mapping(
+    List<DartLocalStateConversationAliasMapping> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_message(
     List<DartMessage> self,
     SseSerializer serializer,
@@ -3398,6 +4536,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_message_metadata_attribute(
     List<DartMessageMetadataAttribute> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_message_sync_dirty_domain(
+    List<DartMessageSyncDirtyDomain> self,
     SseSerializer serializer,
   );
 
@@ -3414,6 +4558,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_sync_domain(
+    List<DartSyncDomain> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -3424,6 +4577,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_client_version_info(
+    DartClientVersionInfo? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_dart_conversation_identity(
@@ -3456,8 +4615,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_device_join_authorized_device_summary(
+    DartDeviceJoinAuthorizedDeviceSummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_handle_recovery_error_code(
+    DartHandleRecoveryErrorCode? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_handle_recovery_reset_reference(
+    DartHandleRecoveryResetReference? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_handle_registration_join_required(
+    DartHandleRegistrationJoinRequired? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_identity_device_role(
+    DartIdentityDeviceRole? self,
     SseSerializer serializer,
   );
 
@@ -3488,6 +4683,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_inbox_history_options(
     DartInboxHistoryOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_legacy_registry_epoch_adoption_authority(
+    DartLegacyRegistryEpochAdoptionAuthority? self,
     SseSerializer serializer,
   );
 

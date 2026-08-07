@@ -235,16 +235,45 @@ same durable row with accepted/sent/failed state. AWiki Me renders
 `MessageMetadata.send_state` / retry fields from SDK DTOs; it must not create a
 second durable optimistic message source.
 
+The plain Direct/Group transport boundary performs at most one automatic replay
+after `TransportUnavailable`. This is allowed only after Core has generated both
+`message_id` and `operation_id`, and the second call reuses the exact same signed
+RPC parameters. Core does not replay service errors and does not rebuild a
+request with new identifiers. If the second transport call also fails, callers
+must treat the outcome as unknown and reconcile authoritative message history
+before starting a new operation.
+
+Group lifecycle mutations follow the same rule with their non-empty
+`operation_id` idempotency scope. The retry reuses the original signed RPC
+parameters and payload digest. The rule does not make arbitrary RPC methods
+retryable.
+
+Authoritative Directory lookups used by Direct target resolution are read-only
+RPCs. Core may replay the exact endpoint, method, and parameters once when such
+a lookup returns `TransportUnavailable`; service/application failures are not
+replayed. This read contract is separate from mutation idempotency and does not
+make unaudited mutations retryable.
+
 Direct conversation send keeps a stable peer scope when the conversation is bound
 to a Handle/user identity. The normal send path uses the resolved DID already
 stored for the conversation and does not perform a Handle lookup before every
-message. If message-service rejects the send with JSON-RPC `1406` and
+message. Same-domain AWiki resolution obtains the authority subject from the
+authenticated Directory `user_id`. Cross-domain Direct and target-first attachment
+resolution instead reads the Handle provider's public WNS document and validates only
+the ANP-04 binding fields `handle`, `did`, `status`, and `binding_generation`; the
+normalized permanent full Handle is the authority subject. Public `user_id` /
+`subject_id` fields are ignored whether absent, changed, or conflicting, and the
+canonical positive decimal generation is required without a fixed integer-width limit.
+The same local-part under different domains therefore produces different peer scopes.
+
+If message-service rejects the send with JSON-RPC `1406` and
 `error.data.reason = "stale_did"`, `im-core` treats that as an authoritative
-target-rotation signal from user-service: it reads `current_did` /
-`full_handle` / `user_id` from `error.data`, fills missing data with one Handle
-lookup when a Handle is available, updates the retry target, and retries the
-network send once. Other `1406` reasons and all non-`stale_did` errors are not
-retargeted automatically and are persisted as failed local send state.
+target-rotation signal from user-service: it may use `current_did` / `full_handle`
+to find the target, but never accepts a private subject ID from `error.data`. When a
+Handle is available it repeats the normal authoritative same-domain Directory or
+cross-domain WNS resolution, updates the retry target, and retries the network send
+once. Other `1406` reasons and all non-`stale_did` errors are not retargeted
+automatically and are persisted as failed local send state.
 
 ### 2.1 Delegated Signing Optional 扩展
 
@@ -437,12 +466,36 @@ pub struct MessageMetadataAttribute {
 }
 ```
 
+Flutter 展示 DTO 额外把 canonical identity 提升为顶层强字段：
+
+```text
+conversationId          // required；来自 metadata.conversation_identity
+senderPeerPersonaId?    // verified Persona 已解析时提供
+senderDidSnapshot       // 消息发生时的不可变 sender DID
+```
+
+`threadKind/threadId` 仅保留作 wire/legacy 兼容，不得再作为 App 会话主键。可靠入站
+Direct 在 Persona 解析后把 `sender_peer_persona_id` 写入本地 projection metadata；若发送者
+Persona 尚不可解析，`senderPeerPersonaId` 保持空而 `senderDidSnapshot` 仍必须保留。新 App
+展示路径遇到空 `conversationId` 必须 fail closed，不得退回构造 `dm:<DID>`。
+
 `MessageMetadata` 只承载业务可解释的补充字段。不要把完整 wire payload 塞进 `metadata`。
 `conversation_identity.conversation_id` 是 list/detail/read/send/timeline repair 的跨层 routing
 key；`send_state` 和 `retry_plan` 是 pending/accepted/sent/failed 展示事实，不能由 App memory
 pending rows 替代。
 
 ## 5. Inbox / History Query
+
+Inbox/History and realtime share a fail-closed control projection boundary.
+AWiki's fixed P5 v2 device-session Init/reply is recognized only from the exact
+session operation-ID form plus a strictly valid standard P5 `meta`/`body`.
+Recognized controls (including replays) and malformed strict-ID candidates are
+never returned as ordinary messages, timeline rows, events, or notifications.
+This filtering remains active when root-transfer rollout is off; enablement only
+permits async Inbox/History and realtime to execute the session-control side
+effect before dropping the wire object. A non-reserved operation ID remains
+ordinary P5 traffic. An ID that claims a reserved session prefix but fails the
+exact form is dropped fail-closed and cannot invoke the control side effect.
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -531,6 +584,28 @@ pub struct MarkThreadReadResult {
 
 ### 5.0 Local History 当前补充
 
+Schema 28 的 conversation list/snapshot contract 直接携带：
+
+```text
+conversation_id          // required canonical key
+peer_persona_id?         // resolved Direct required
+canonical_group_did?     // resolved Group required
+resolution_state         // resolved | legacy_unresolved | blocked_conflict
+title?                   // committed Group profile display name; not an App override
+```
+
+新 App 主路径必须使用这些字段，不能再执行 `conversation_id ?? thread_id`。Core 在
+`resolved` 行缺少对应 Persona/Group DID 时返回 typed projection error；显式
+`ensure_conversation` 只接受绑定到 verified Persona 的 Direct route 和以权威 Group DID
+为 key 的 active Group membership。`legacy_unresolved` 仍可用于历史列表/诊断，但不能通过
+ensure/send 边界伪装成 resolved canonical conversation。conversation text、payload 和
+attachment 发送会在写 local echo 或上传对象前执行同一 `ensure_conversation` 校验；
+`dm:<DID>`、缺少 verified Persona route 的 Direct，以及没有 active membership 的 Group
+都 fail closed。target-first legacy send API 的兼容行为不因此改变。
+
+Group member DTO 同时分离 `membership_id`、`peer_persona_id?`、`credential_did` 和
+Handle；Handle binding generation/DID 轮换只更新属性，不改变 membership identity。
+
 `history(thread, query)` 保持远端 history + 本地 projection/reconcile 语义。AWiki Me 首屏读取应使用 `local_conversation_timeline(conversation, query)`；`local_history(thread, query)` 是兼容入口：
 
 ```rust
@@ -548,6 +623,23 @@ pub struct LocalHistoryQuery {
 3. `next_cursor` 是 SDK 生成的不透明 `local-history:v1:*` cursor，只能传回 local timeline/history 翻页。
 4. direct、group 和 raw thread ref 使用与 conversation mark-read 一致的 owner-scoped conversation-id 归一化。
 5. App 首屏应先显示 `local_conversation_timeline`，再后台调用 `sync_conversation_after` 或 repair/load core projection；远端 history/backfill 返回的 messages 只有持久化后才能成为 UI 事实。
+
+独立 P5 gate 开启且 scope 包含 Direct 时，普通 CLI 前台 `msg inbox` 先调用
+`hydrate_exact_device_secure_inbox_async(limit)`，让 Root 等 exact-device 控制消息能在设备权限
+代际变化后先完成本地凭据晋升；CLI 随后按同一个 DID 重新打开 `ImClient`，再用
+`sync_now_async(reason = "foreground_reconcile")` 完成普通消息 v2 bootstrap/delta/hydration，
+避免同一条命令继续携带晋升前的 device authorization generation。该 Rust-only secure hydration 边界要求 exact active vNext
+account/device binding，只发送带闭合 `body.security_profile=direct-e2ee` 的本域
+`inbox.get`，并在客户端再次丢弃所有非 P5 v2 row，只把成功认证解密的业务消息写入本地
+projection。每页本地提交后，Core 只 ACK 已成功消费的 P5 raw message ID，通过
+`inbox.mark_read` 移除该设备 unread 行；ACK 前会重新加载 bearer，避免 Root 晋升后继续使用
+旧 device authorization generation，再按 `has_more` 拉取下一页；循环最多 100 页。
+ACK 失败、部分 ACK、页面无进展或达到硬上限时保留已提交数据但前台调用失败，不能反复读取
+第一页后伪装收敛。最后调用 `local_inbox_projection_with_metadata_async(query)` 读取 exact-owner
+committed projection。本地读取 API 自身仍不发 `inbox.get`，不接受 remote cursor 或
+delegated options，按 scope/unread 在 SQLite 中过滤后再 limit，并以 newest-first 返回。
+普通消息不得通过 secure hydration 回退到 `inbox.get`；任一必需同步为 recovery、retryable、
+auth-revoked 或 secure hydration 失败时 CLI fail closed，不读取旧投影。
 
 P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 `MessageService` 的显式方法，避免 inbox/history 查询和 read ack 语义耦合。
@@ -656,15 +748,26 @@ pub struct RealtimeSyncHint {
 
 `sync_delta(request)` 行为：
 
-1. 从本地 SQLite `sync_state` 读取当前 owner 的 checkpoint。
+1. 从本地 SQLite `sync_state` 读取当前 `owner_identity_id + sync_subject_id` 的 checkpoint。`owner_identity_id` 是稳定的本地业务 owner，`sync_subject_id` 是服务端事件流主体；当前 message service 使用 canonical DID 作为 subject，因此 DID recovery 后新 DID 从 `0` 开始，不能继承旧 DID sequence。
 2. 调用服务端 `sync.delta`，wire request 中的 `since_event_seq` 只能由 Rust runtime
    注入，public API 调用方不能传入。
 3. `limit`、`device_id`、`reason` 只作为分页和诊断输入；`reason` 是字符串，不是封闭
    enum，便于 App 记录 `startup`、`app_resumed`、`reconnect`、`realtime_gap` 等来源。
 4. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
-   projection，并在 apply 成功后写入 `next_event_seq` checkpoint。
+   projection。Direct 的 peer DID 尚未绑定 verified Persona 时，不创建 `dm:<DID>`：先把
+   保留原 WireIdentity 的消息写入 owner-scoped `inbound_resolution_backlog`，成功后才能写入
+   `next_event_seq` checkpoint。后续权威 Handle projection 会幂等重放对应 backlog；冲突保持
+   blocked/conflict-visible，不猜测合并。已经存在 verified Persona 时，Core 先完成消息的
+   canonical conversation 投影，再把服务端 opaque thread key 绑定到同一个 canonical ID；
+   hydration 阶段的 DID 暂定 conversation 不得成为 durable `sync_thread_bindings` 记录。
+   v2 runtime 在事务前仅对本地未解析 DID 执行权威 DID→Handle lookup；lookup 暂时失败时，
+   消息、remote thread binding、event receipt 和 cursor 在同一事务进入 durable backlog，
+   后续 `syncNow` 有界重试并由 verified Persona projection 原子 replay。
 5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
-   `last_applied_event_seq` 不是 public checkpoint setter。
+   `events_applied` 只统计本设备实际可见并应用的事件；`last_applied_event_seq` 是服务端扫描后
+   提交的 owner checkpoint，不是 public checkpoint setter。`sync.delta` 按认证设备投影时，
+   服务端会跳过发给兄弟设备或已过期的 owner 事件，因此可见 `event_seq` 允许严格递增但不连续，
+   空事件页也可以在 `next_event_seq` 前进时提交 checkpoint。
 6. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
    projection，返回 `snapshot_required=true` 和诊断字段。
 7. `has_more=true` 时可由 runtime 或上层 coordinator 继续调度下一页，但每页仍必须走
@@ -697,6 +800,11 @@ checkpoint 边界：
   `storeGlobalCheckpoint`、手动 `since_event_seq` 或手动 checkpoint advance。
 - Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
   realtime projection 成功，也不得推进 checkpoint。
+- 在线收到首条 Direct realtime 消息时，Core 必须先按 wire peer DID 调用权威 Handle
+  lookup，校验返回 DID 与 wire snapshot 一致，并先提交 verified Persona/route，再提交消息。
+  lookup 不可用、响应不合法、发生冲突或 DID 不一致时继续写入
+  `inbound_resolution_backlog`，不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送
+  authoritative patch。
 
 ### 5.3 Conversation / Thread Snapshot And Patch API
 
@@ -733,7 +841,11 @@ snapshot 只用于冷启动 first paint，随后仍必须用 SQLite local projec
 `ConversationStorePatch` stream。patch kind 当前包括 `reset`、`upsert`、`remove`、
 `reorder`、`repairRequired`。subscriber lag、stream drop、session switch 或 version gap
 必须走 `repair_conversation_store()` / Dart `repairConversationStore()`，repair 返回的
-patch version 是后续 patch 连续性判断的基线。
+patch version 是后续 patch 连续性判断的基线。Conversation Store 的唯一 key 是
+`conversation_id`；`remove` / `reorder` 只携带 `conversation_id`，不得用
+`(thread_kind, thread_id)` 或 alias/DID 作为 Store identity。snapshot format v3 同样要求
+每项有 canonical `conversation_id`，并允许携带 owner-scoped Group profile 的 `title`；旧的
+可丢弃 redb snapshot 会直接失效并从 SQLite 重建，避免冷启动先显示 Group DID/ID 再切换群名。
 
 `watch_thread_patches(thread, limit)` / Dart `watchThreadPatches(thread, limit: ...)`
 返回当前 thread 的 versioned `ThreadMessageStorePatch` stream。patch kind 当前包括
@@ -742,13 +854,21 @@ patch version 是后续 patch 连续性判断的基线。
 不得直接生成 authoritative thread patch。
 realtime incoming 消息如果成功写入 SQLite local projection，则按同一规则触发
 conversation patch 和对应 thread patch；如果 projection 不存在或写入失败，不得发
-authoritative patch。
+authoritative patch。首条在线 Direct 的 verified Persona projection 必须先于该消息写入，
+因此首次 patch 直接使用 canonical Persona conversation ID，不允许先发布 DID conversation
+再合并。
 
 `watch_conversation_timeline_patches(conversation, limit)` 和
 `repair_conversation_timeline_store(conversation, limit)` 是 conversationId-first timeline
 patch / repair wrapper，返回同一个 `ThreadMessageStorePatch` DTO。新的 App timeline 主路径
 应使用这些 API；旧 `watch_thread_patches(ThreadRef)` / `repair_thread_store(ThreadRef)` 是
 compatibility adapter，不应继续作为 AWiki Me 消息归属判断的主来源。
+
+Flutter/Dart bridge 的 Patch session 在 stream attach 后仍拥有取消能力。对应 stop API
+必须唤醒 idle `next_patch().await`，等待后台 worker 退出后才完成；conversation list、
+conversation timeline 和 legacy thread stream 使用同一生命周期合同。调用方因此可以把
+stream `cancel()` 当作资源释放完成屏障，但业务事务仍不应把 presentation subscription
+清理作为身份删除等 Core 操作的前置条件。
 
 Conversation snapshot、conversation store patch 和 thread message patch DTO 都必须保持
 core-only，不包含 `awiki-me` presentation overlay 字段或 App domain DTO。

@@ -27,7 +27,7 @@ fn realtime_connect_endpoints_match_legacy_listener_derivation() {
     assert_eq!(endpoints.websocket_url, "ws://127.0.0.1:18080/im/ws");
     assert_eq!(
         endpoints.did_auth_url,
-        "http://127.0.0.1:18080/user-service/did-auth/rpc"
+        "http://127.0.0.1:18080/user-service/v1/did-auth/rpc"
     );
 }
 
@@ -41,7 +41,7 @@ fn realtime_connect_construction_plan_preserves_scope_side_effects() {
         plan.remembered_scope_inputs,
         vec![
             "http://127.0.0.1:18080/".to_string(),
-            "http://127.0.0.1:18080/user-service/did-auth/rpc".to_string(),
+            "http://127.0.0.1:18080/user-service/v1/did-auth/rpc".to_string(),
             "http://127.0.0.1:18080/im/ws".to_string(),
         ]
     );
@@ -191,7 +191,7 @@ fn realtime_connect_with_fake_transport_refreshes_after_401_and_retries() {
     );
     assert_eq!(
         auth.refresh_urls,
-        vec!["https://example.test/user-service/did-auth/rpc".to_string()]
+        vec!["https://example.test/user-service/v1/did-auth/rpc".to_string()]
     );
     let events = handle.events.into_iter().collect::<Vec<_>>();
     assert!(matches!(
@@ -646,6 +646,7 @@ impl<'a> RuntimeCoreBuilder<'a> {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(self.service_base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,

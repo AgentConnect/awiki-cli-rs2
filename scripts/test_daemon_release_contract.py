@@ -69,6 +69,11 @@ def create_fake_daemon_package(source_dir: pathlib.Path, os_name: str, arch: str
     (stage / "awiki-deamon-runtime").symlink_to("awiki-deamon")
     (stage / "README.txt").write_text("fake daemon package\n", encoding="utf-8")
     (stage / "LICENSE").write_text("fake license\n", encoding="utf-8")
+    (stage / "LICENSE-APACHE").write_text("fake Apache license\n", encoding="utf-8")
+    (stage / "COMMERCIAL-LICENSING.md").write_text(
+        "fake commercial licensing policy\n", encoding="utf-8"
+    )
+    (stage / "SOURCE.md").write_text("Commit: fake-commit\n", encoding="utf-8")
     (stage / "checksums.txt").write_text("fake inner checksums\n", encoding="utf-8")
 
     archive = source_dir / f"awiki-deamon-{os_name}-{arch}.tar.gz"
@@ -83,6 +88,9 @@ def create_fake_daemon_package(source_dir: pathlib.Path, os_name: str, arch: str
             "awiki-deamon-runtime",
             "README.txt",
             "LICENSE",
+            "LICENSE-APACHE",
+            "COMMERCIAL-LICENSING.md",
+            "SOURCE.md",
             "checksums.txt",
         ]
     )
@@ -407,6 +415,10 @@ class DaemonReleaseContractTests(unittest.TestCase):
             version_dir = bin_root / "1.2.3"
             self.assertTrue((version_dir / "awiki-deamon").is_file())
             self.assertTrue((version_dir / "README.txt").is_file())
+            self.assertTrue((version_dir / "LICENSE").is_file())
+            self.assertTrue((version_dir / "LICENSE-APACHE").is_file())
+            self.assertTrue((version_dir / "COMMERCIAL-LICENSING.md").is_file())
+            self.assertTrue((version_dir / "SOURCE.md").is_file())
             self.assertEqual(
                 pathlib.Path(readlink(bin_root / "current" / "awiki-deamon")),
                 pathlib.Path("../1.2.3/awiki-deamon"),
@@ -622,6 +634,11 @@ class DaemonReleaseContractTests(unittest.TestCase):
             (stage / "awiki-deamon-runtime").symlink_to("awiki-deamon")
             (stage / "README.txt").write_text("readme\n", encoding="utf-8")
             (stage / "LICENSE").write_text("license\n", encoding="utf-8")
+            (stage / "LICENSE-APACHE").write_text("Apache license\n", encoding="utf-8")
+            (stage / "COMMERCIAL-LICENSING.md").write_text(
+                "commercial policy\n", encoding="utf-8"
+            )
+            (stage / "SOURCE.md").write_text("Commit: bad-commit\n", encoding="utf-8")
             (stage / "checksums.txt").write_text("checksums\n", encoding="utf-8")
             (stage / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
             run_command(
@@ -635,6 +652,9 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "awiki-deamon-runtime",
                     "README.txt",
                     "LICENSE",
+                    "LICENSE-APACHE",
+                    "COMMERCIAL-LICENSING.md",
+                    "SOURCE.md",
                     "checksums.txt",
                     "unexpected.txt",
                 ]

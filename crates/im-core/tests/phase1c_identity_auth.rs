@@ -4,13 +4,14 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anp::authentication::verification_methods::extract_public_key;
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use awiki_im_core::prelude::*;
 use awiki_im_core::vault::DeviceVaultRootKey;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -131,16 +132,15 @@ fn plan_default_identity_change_returns_previous_and_next() {
 
 #[tokio::test]
 async fn register_handle_returns_identity_and_default_change() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:carol:e1_registered",
-        "user_id": "user-carol",
-        "handle": "carol",
-        "full_handle": "carol.awiki.test",
-        "access_token": "jwt-carol"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [40_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -169,29 +169,76 @@ async fn register_handle_returns_identity_and_default_change() {
     assert!(result.default_identity_change.is_some());
 
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "carol");
     assert!(body["params"]["did_document"].is_object());
     assert!(!requests[0].headers.contains_key("authorization"));
+    assert_prekey_publication_request(&requests[1]);
+}
+
+#[tokio::test]
+async fn legacy_recovery_registered_response_commits_the_exact_local_identity() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result_with_message("Legacy Handle recovered successfully"),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [41_u8; 32])
+        .await;
+
+    let result = core
+        .identities()
+        .register_handle_async(RegisterHandleRequest {
+            local_alias: Some("legacy-carol".to_string()),
+            requested_handle: Handle::parse("legacy-carol.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Legacy Carol".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    assert_eq!(result.handle.as_str(), "legacy-carol.awiki.test");
+    let identity = result
+        .identity
+        .expect("recovered identity must commit locally");
+    assert_eq!(identity.local_alias.as_deref(), Some("legacy-carol"));
+    assert_eq!(
+        identity.handle.as_ref().map(Handle::as_str),
+        Some("legacy-carol.awiki.test")
+    );
+    assert!(identity.readiness.ready_for_auth);
+    assert!(result.default_identity_change.is_some());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].json_body()["method"], "register");
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[cfg(feature = "mcp-trusted-registration")]
 #[tokio::test]
 async fn register_handle_with_service_bearer_adds_authorization_header() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:mcp:e1_registered",
-        "user_id": "user-mcp",
-        "handle": "mcp",
-        "full_handle": "mcp.awiki.test",
-        "access_token": "jwt-mcp"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [41_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -214,27 +261,27 @@ async fn register_handle_with_service_bearer_adds_authorization_header() {
 
     assert_eq!(result.state, HandleRegistrationState::Registered);
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     assert_eq!(
         requests[0].headers.get("authorization").map(String::as_str),
         Some("Bearer internal-token")
     );
     assert_eq!(requests[0].json_body()["method"], "register");
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
 async fn register_handle_async_returns_identity_and_default_change() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:dana:e1_registered",
-        "user_id": "user-dana",
-        "handle": "dana",
-        "full_handle": "dana.awiki.test",
-        "access_token": "jwt-dana"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url();
-    let core = fixture.core_async_with_base_url(base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(base_url, [42_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -263,26 +310,27 @@ async fn register_handle_async_returns_identity_and_default_change() {
     assert!(result.default_identity_change.is_some());
 
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "dana");
     assert!(body["params"]["did_document"].is_object());
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
 async fn register_handle_generates_and_saves_daemon_subkey_package() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-daemon",
-        "handle": "daemon",
-        "full_handle": "daemon.awiki.test",
-        "access_token": "jwt-daemon"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [43_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -364,16 +412,15 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
         ),
         "DID Document proof must remain valid after APP-side daemon subkey registration"
     );
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
 async fn register_handle_vault_required_persists_identity_without_plaintext() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-secure",
-        "handle": "secure",
-        "full_handle": "secure.awiki.test",
-        "access_token": "jwt-secure-register"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
     let core = fixture
@@ -418,628 +465,12 @@ async fn register_handle_vault_required_persists_identity_without_plaintext() {
         .starts_with("-----BEGIN PRIVATE KEY-----"));
     assert_secure_identity_dir_has_no_plaintext(
         &fixture.root.join("identities").join(identity.id.as_str()),
-        "jwt-secure-register",
-    );
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 1);
-}
-
-#[tokio::test]
-async fn recover_handle_async_without_otp_sends_recover_otp() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({ "sent": true }))]);
-    let fixture = Fixture::new();
-    let base_url = server.base_url();
-    let core = fixture.core_async_with_base_url(base_url).await;
-
-    let result = core
-        .identities()
-        .recover_handle_async(RecoverHandleRequest {
-            handle: Handle::parse("alice.awiki.test", "").unwrap(),
-            raw_handle: None,
-            phone: "+15551234567".to_string(),
-            otp: None,
-            generated_identity: None,
-            local_finalize: None,
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(result.state, RecoverHandleState::OtpSent);
-    assert_eq!(result.phone, "+15551234567");
-    assert!(result.recovered_identity.is_none());
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
-    let body = requests[0].json_body();
-    assert_eq!(body["method"], "send_otp");
-    assert_eq!(body["params"], json!({ "phone": "+15551234567" }));
-}
-
-#[tokio::test]
-async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-erin",
-        "handle": "erin",
-        "full_handle": "erin.awiki.test",
-        "access_token": "jwt-erin"
-    }))]);
-    let fixture = Fixture::new();
-    let base_url = server.base_url();
-    let core = fixture.core_async_with_base_url(base_url).await;
-
-    let result = core
-        .identities()
-        .recover_handle_async(RecoverHandleRequest {
-            handle: Handle::parse("erin", "").unwrap(),
-            raw_handle: None,
-            phone: "+15551234567".to_string(),
-            otp: Some("654321".to_string()),
-            generated_identity: None,
-            local_finalize: None,
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(result.state, RecoverHandleState::Recovered);
-    assert_eq!(result.handle.as_str(), "erin.awiki.test");
-    let recovered = result.recovered_identity.unwrap();
-    assert_eq!(recovered.identity.local_alias.as_deref(), Some("erin"));
-    let recovered_did = recovered.identity.did.as_str().to_string();
-    assert!(recovered.access_token_present);
-    let default = core
-        .identities()
-        .default_identity_async()
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(default.handle.unwrap().as_str(), "alice.awiki.test");
-    let persisted = core
-        .identities()
-        .resolve_async(IdentitySelector::LocalAlias("erin".to_string()))
-        .await
-        .unwrap();
-    assert_eq!(persisted.did.as_str(), recovered_did);
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
-    let body = requests[0].json_body();
-    assert_eq!(body["method"], "recover_handle");
-    assert_eq!(body["params"]["handle"], "erin.awiki.test");
-    assert_eq!(body["params"]["phone"], "+15551234567");
-    assert_eq!(body["params"]["otp_code"], "654321");
-    assert!(body["params"]["did_document"].is_object());
-    assert_eq!(
-        body["params"]["did_document"]["id"].as_str(),
-        Some(recovered_did.as_str())
-    );
-}
-
-#[tokio::test]
-async fn recover_same_handle_preserves_owner_history_and_enqueues_group_rebind() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-erin",
-        "handle": "erin",
-        "full_handle": "erin.awiki.test",
-        "access_token": "jwt-erin-recovered",
-        "binding_generation": "2"
-    }))]);
-    let fixture = Fixture::new();
-    let previous = fixture.write_generated_identity_with_daemon_key("erin", true, true);
-    let previous_did = previous.did.clone();
-    let stable_owner_identity_id = "erin-id";
-    let sqlite_path = fixture.root.join("local").join("im.sqlite");
-    let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
-    core.bootstrap()
-        .initialize_local_state_async()
-        .await
-        .unwrap();
-
-    let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
-    connection
-        .execute(
-            r#"INSERT INTO messages
-                (msg_id, owner_identity_id, owner_did, thread_id, direction,
-                 content_type, content, stored_at, credential_name)
-               VALUES (?1, ?2, ?3, ?4, 0, 'text', 'before recovery', ?5, 'erin')"#,
-            rusqlite::params![
-                "msg-before-recovery",
-                stable_owner_identity_id,
-                previous_did,
-                "dm:peer-scope:v1:test",
-                "2026-07-13T10:00:00Z"
-            ],
-        )
-        .unwrap();
-    connection
-        .execute(
-            r#"INSERT INTO groups
-                (owner_identity_id, owner_did, group_id, group_did, name,
-                 my_role, membership_status, stored_at, credential_name)
-               VALUES (?1, ?2, ?3, ?3, 'Recovery group', 'member', 'active', ?4, 'erin')"#,
-            rusqlite::params![
-                stable_owner_identity_id,
-                previous_did,
-                "did:wba:awiki.test:groups:recovery-test",
-                "2026-07-13T10:00:00Z"
-            ],
-        )
-        .unwrap();
-    connection
-        .execute(
-            r#"INSERT INTO group_members
-                (owner_identity_id, owner_did, group_id, user_id, member_did,
-                 member_handle, anchor_kind, anchor_value, role, status,
-                 handle_binding_generation, last_synced_at, credential_name)
-               VALUES (?1, ?2, ?3, 'user-erin', ?2, 'erin',
-                       'handle', 'erin', 'member', 'active', '1', ?4, 'erin')"#,
-            rusqlite::params![
-                stable_owner_identity_id,
-                previous_did,
-                "did:wba:awiki.test:groups:recovery-test",
-                "2026-07-13T10:00:00Z"
-            ],
-        )
-        .unwrap();
-    drop(connection);
-
-    let result = core
-        .identities()
-        .recover_handle_async(RecoverHandleRequest {
-            handle: Handle::parse("erin.awiki.test", "").unwrap(),
-            raw_handle: Some("erin.awiki.test".to_string()),
-            phone: "+15551234567".to_string(),
-            otp: Some("654321".to_string()),
-            generated_identity: None,
-            local_finalize: None,
-        })
-        .await
-        .unwrap();
-
-    let recovered = result.recovered_identity.as_ref().unwrap();
-    let recovered_did = recovered.identity.did.as_str();
-    assert_eq!(recovered.identity.id.as_str(), stable_owner_identity_id);
-    assert_ne!(recovered_did, previous_did);
-    let local = result.local_recovery.as_ref().unwrap();
-    assert_eq!(local.identity.unique_id, stable_owner_identity_id);
-    assert_eq!(local.identity.did, recovered_did);
-
-    let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
-    let message_owner: (String, String) = connection
-        .query_row(
-            "SELECT owner_identity_id, owner_did FROM messages WHERE msg_id=?1",
-            ["msg-before-recovery"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(message_owner.0, stable_owner_identity_id);
-    assert_eq!(message_owner.1, recovered_did);
-    let group_owner: (String, String) = connection
-        .query_row(
-            "SELECT owner_identity_id, owner_did FROM groups WHERE group_id=?1",
-            ["did:wba:awiki.test:groups:recovery-test"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(group_owner.0, stable_owner_identity_id);
-    assert_eq!(group_owner.1, recovered_did);
-
-    let history = connection
-        .prepare(
-            "SELECT did, status FROM identity_did_history WHERE owner_identity_id=?1 ORDER BY status, did",
-        )
-        .unwrap()
-        .query_map([stable_owner_identity_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert!(history.contains(&(previous_did.clone(), "previous".to_string())));
-    assert!(history.contains(&(recovered_did.to_string(), "current".to_string())));
-    assert_eq!(history.len(), 2);
-
-    let rebind_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM group_rebind_outbox", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(rebind_count, 1);
-    let rebind: (String, String, String, String, String, String) = connection
-        .query_row(
-            r#"SELECT owner_identity_id, group_did, member_handle,
-                      previous_member_did, new_member_did, binding_generation
-               FROM group_rebind_outbox"#,
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        )
-        .unwrap();
-    assert_eq!(rebind.0, stable_owner_identity_id);
-    assert_eq!(rebind.1, "did:wba:awiki.test:groups:recovery-test");
-    assert_eq!(rebind.2, "erin.awiki.test");
-    assert_eq!(rebind.3, previous_did);
-    assert_eq!(rebind.4, recovered_did);
-    assert_eq!(rebind.5, "2");
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].json_body()["method"], "recover_handle");
-}
-
-#[tokio::test]
-async fn resume_rebind_recovery_reconciles_missing_job_from_authoritative_lookup() {
-    let fixture = Fixture::new();
-    let current = fixture.write_generated_identity_with_daemon_key("erin", true, true);
-    fs::write(
-        fixture
-            .root
-            .join("identities")
-            .join("erin-id")
-            .join("auth.json"),
-        r#"{"jwt_token":"test-token-for-erin","expires_at":"2099-05-21T00:00:00Z"}"#,
-    )
-    .unwrap();
-    let previous_did = "did:wba:awiki.test:erin:e1_previous";
-    let group_did = "did:wba:awiki.test:groups:reconcile-test";
-    let server = TestServer::spawn(vec![
-        ExpectedHttp::json(json!({
-            "did": current.did.clone(),
-            "user_id": "user-erin",
-            "handle": "erin",
-            "full_handle": "erin.awiki.test",
-            "domain": "awiki.test",
-            "status": "active",
-            "binding_generation": "3"
-        })),
-        ExpectedHttp::rpc_result(json!({
-            "accepted": true,
-            "group_did": group_did,
-            "group_state_version": "11"
-        })),
-        ExpectedHttp::rpc_result(json!({
-            "group_snapshot": {
-                "group_did": group_did,
-                "name": "Recovered group",
-                "member_role": "member",
-                "member_status": "active",
-                "member_count": 3,
-                "required_security_profile": "transport-protected"
-            }
-        })),
-    ]);
-    let core = fixture.core_async_with_base_url(server.base_url()).await;
-    core.bootstrap()
-        .initialize_local_state_async()
-        .await
-        .unwrap();
-    let sqlite_path = fixture.root.join("local").join("im.sqlite");
-    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
-    db.execute(
-        r#"INSERT INTO identity_did_history
-           (owner_identity_id,did,status,first_seen_at,last_seen_at)
-           VALUES ('erin-id',?1,'previous','now','now'),
-                  ('erin-id',?2,'current','now','now')"#,
-        rusqlite::params![previous_did, &current.did],
-    )
-    .unwrap();
-    db.execute(
-        r#"INSERT INTO groups
-           (owner_identity_id,owner_did,group_id,group_did,name,my_role,
-            membership_status,metadata,stored_at,credential_name)
-           VALUES ('erin-id',?1,?2,?2,'Recovered group','member','active',?3,'now','erin-id')"#,
-        rusqlite::params![&current.did, group_did, r#"{}"#],
-    )
-    .unwrap();
-    db.execute(
-        r#"INSERT INTO group_members
-           (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,
-            anchor_kind,anchor_value,handle_binding_generation,role,status,last_synced_at,credential_name)
-           VALUES ('erin-id',?1,?2,'user-erin',?3,'erin','handle','erin','2','member','active','now','erin-id')"#,
-        rusqlite::params![&current.did, group_did, previous_did],
-    )
-    .unwrap();
-    drop(db);
-
-    let client = core
-        .client_async(IdentitySelector::LocalAlias("erin".to_owned()))
-        .await
-        .unwrap();
-    let summary = client
-        .groups()
-        .resume_rebind_recovery_async(10)
-        .await
-        .unwrap();
-
-    assert_eq!(summary.processed, 1);
-    assert_eq!(summary.completed, 1);
-    assert_eq!(summary.pending, 0);
-    assert_eq!(summary.blocked, 0);
-    assert!(summary
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("reconciled 1 missing")));
-    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
-    let persisted: (String, String, String) = db
-        .query_row(
-            "SELECT member_handle,binding_generation,phase FROM group_rebind_outbox",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        persisted,
-        (
-            "erin.awiki.test".to_owned(),
-            "3".to_owned(),
-            "complete".to_owned()
-        )
-    );
-    let projected_member: (String, String, String, String) = db
-        .query_row(
-            r#"SELECT member_did,member_handle,anchor_value,handle_binding_generation
-               FROM group_members WHERE owner_identity_id='erin-id' AND group_id=?1"#,
-            [group_did],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        projected_member,
-        (
-            current.did.clone(),
-            "erin.awiki.test".to_owned(),
-            "erin.awiki.test".to_owned(),
-            "3".to_owned(),
-        )
-    );
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].path, "/.well-known/handle/erin");
-    assert_eq!(requests[1].path, "/im/rpc");
-    let rebind = requests[1].json_body();
-    assert_eq!(rebind["method"], "group.rebind_member");
-    assert_eq!(rebind["params"]["body"]["member_handle"], "erin.awiki.test");
-    assert_eq!(
-        rebind["params"]["body"]["previous_member_did"],
-        previous_did
-    );
-    assert_eq!(rebind["params"]["body"]["new_member_did"], current.did);
-    assert_eq!(rebind["params"]["body"]["handle_binding_generation"], "3");
-    assert!(rebind["params"]["auth"]["origin_proof"].is_object());
-    assert_eq!(requests[2].json_body()["method"], "group.get");
-}
-
-#[tokio::test]
-async fn resume_rebind_recovery_completes_transport_job_after_authoritative_group_refresh() {
-    let fixture = Fixture::new();
-    let current = fixture.write_generated_identity_with_daemon_key("erin", true, true);
-    fs::write(
-        fixture
-            .root
-            .join("identities")
-            .join("erin-id")
-            .join("auth.json"),
-        r#"{"jwt_token":"test-token-for-erin","expires_at":"2099-05-21T00:00:00Z"}"#,
-    )
-    .unwrap();
-    let previous_did = "did:wba:awiki.test:erin:e1_previous";
-    let group_did = "did:wba:awiki.test:groups:transport-reconcile-test";
-    let server = TestServer::spawn(vec![
-        ExpectedHttp::json(json!({
-            "did": current.did.clone(),
-            "user_id": "user-erin",
-            "handle": "erin",
-            "full_handle": "erin.awiki.test",
-            "domain": "awiki.test",
-            "status": "active",
-            "binding_generation": "3"
-        })),
-        ExpectedHttp::rpc_result(json!({
-            "group_snapshot": {
-                "group_did": group_did,
-                "name": "Recovered group",
-                "member_role": "member",
-                "member_status": "active",
-                "member_count": 3,
-                "required_security_profile": "transport-protected"
-            }
-        })),
-    ]);
-    let core = fixture.core_async_with_base_url(server.base_url()).await;
-    core.bootstrap()
-        .initialize_local_state_async()
-        .await
-        .unwrap();
-    let sqlite_path = fixture.root.join("local").join("im.sqlite");
-    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
-    db.execute(
-        r#"INSERT INTO identity_did_history
-           (owner_identity_id,did,status,first_seen_at,last_seen_at)
-           VALUES ('erin-id',?1,'previous','now','now'),
-                  ('erin-id',?2,'current','now','now')"#,
-        rusqlite::params![previous_did, &current.did],
-    )
-    .unwrap();
-    db.execute(
-        r#"INSERT INTO groups
-           (owner_identity_id,owner_did,group_id,group_did,name,my_role,
-            membership_status,metadata,stored_at,credential_name)
-           VALUES ('erin-id',?1,?2,?2,'Recovered group','member','active','{}','now','erin-id')"#,
-        rusqlite::params![&current.did, group_did],
-    )
-    .unwrap();
-    db.execute(
-        r#"INSERT INTO group_members
-           (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,
-            anchor_kind,anchor_value,handle_binding_generation,role,status,last_synced_at,credential_name)
-           VALUES ('erin-id',?1,?2,'user-erin',?3,'erin','handle','erin','2','member','active','now','erin-id')"#,
-        rusqlite::params![&current.did, group_did, previous_did],
-    )
-    .unwrap();
-    db.execute(
-        r#"INSERT INTO group_rebind_outbox
-           (job_id,owner_identity_id,group_did,member_handle,previous_member_did,
-            new_member_did,binding_generation,phase,created_at,updated_at)
-           VALUES ('existing-job','erin-id',?1,'erin.awiki.test',?2,?3,'3','awaiting_p6','now','now')"#,
-        rusqlite::params![group_did, previous_did, &current.did],
-    )
-    .unwrap();
-    drop(db);
-
-    let client = core
-        .client_async(IdentitySelector::LocalAlias("erin".to_owned()))
-        .await
-        .unwrap();
-    let summary = client
-        .groups()
-        .resume_rebind_recovery_async(10)
-        .await
-        .unwrap();
-
-    assert_eq!(summary.processed, 1);
-    assert_eq!(summary.completed, 1);
-    assert_eq!(summary.pending, 0);
-    assert_eq!(summary.blocked, 0);
-    assert!(summary.send_paused_groups.is_empty());
-    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
-    let persisted: (String, String) = db
-        .query_row(
-            "SELECT phase,metadata FROM group_rebind_outbox JOIN groups USING(group_did) WHERE job_id='existing-job'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(persisted.0, "complete");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&persisted.1).unwrap()
-            ["required_security_profile"],
-        "transport-protected"
+        "phase1c-secure-access-token",
     );
 
     let requests = server.join();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[1].json_body()["method"], "group.get");
-}
-
-#[tokio::test]
-async fn recover_handle_async_with_otp_persists_daemon_subkey_package() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-erin",
-        "handle": "erin",
-        "full_handle": "erin.awiki.test",
-        "access_token": "jwt-erin"
-    }))]);
-    let fixture = Fixture::new();
-    let base_url = server.base_url();
-    let core = fixture.core_async_with_base_url(base_url).await;
-
-    let result = core
-        .identities()
-        .recover_handle_async(RecoverHandleRequest {
-            handle: Handle::parse("erin", "").unwrap(),
-            raw_handle: None,
-            phone: "+15551234567".to_string(),
-            otp: Some("654321".to_string()),
-            generated_identity: None,
-            local_finalize: None,
-        })
-        .await
-        .unwrap();
-
-    let recovered = result.recovered_identity.unwrap();
-    let package = core
-        .identities()
-        .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("erin".to_string()))
-        .await
-        .unwrap();
-    assert_eq!(package.user_did, recovered.identity.did);
-    assert_eq!(
-        package.verification_method,
-        format!("{}#daemon-key-1", recovered.identity.did.as_str())
-    );
-
-    let requests = server.join();
-    let did_document = &requests[0].json_body()["params"]["did_document"];
-    assert_eq!(did_document["id"].as_str(), Some(package.user_did.as_str()));
-    assert!(did_document["authentication"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
-    let method = did_document["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["id"].as_str() == Some(package.verification_method.as_str()))
-        .unwrap();
-    assert_eq!(
-        method["publicKeyMultibase"].as_str(),
-        Some(package.public_key_multibase.as_str())
-    );
-}
-
-#[tokio::test]
-async fn recover_handle_vault_required_persists_identity_without_plaintext() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-secure-recover",
-        "handle": "secure-recover",
-        "full_handle": "secure-recover.awiki.test",
-        "access_token": "jwt-secure-recover"
-    }))]);
-    let fixture = Fixture::new();
-    let base_url = server.base_url().to_owned();
-    let core = fixture
-        .core_async_with_base_url_vault_required(&base_url, [43_u8; 32])
-        .await;
-
-    let result = core
-        .identities()
-        .recover_handle_async(RecoverHandleRequest {
-            handle: Handle::parse("secure-recover", "").unwrap(),
-            raw_handle: None,
-            phone: "+15551234567".to_string(),
-            otp: Some("654321".to_string()),
-            generated_identity: None,
-            local_finalize: None,
-        })
-        .await
-        .unwrap();
-
-    let recovered = result.recovered_identity.unwrap();
-    let status = core
-        .identities()
-        .vault_status_async(IdentitySelector::LocalAlias("secure-recover".to_string()))
-        .await
-        .unwrap();
-    assert_eq!(status.selected_backend, IdentitySecretStorageBackend::Vault);
-    assert!(status.vault_metadata_verified);
-    assert_eq!(status.plaintext_compat_retained, Some(false));
-    assert_secure_identity_dir_has_no_plaintext(
-        &fixture
-            .root
-            .join("identities")
-            .join(recovered.identity.id.as_str()),
-        "jwt-secure-recover",
-    );
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
@@ -1068,7 +499,7 @@ async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_ide
     );
     let requests = server.join();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "update_document");
     assert_eq!(body["params"].get("is_public"), None);
@@ -1150,7 +581,7 @@ async fn revoke_daemon_subkey_authorization_updates_signed_did_document() {
     );
     let requests = server.join();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "update_document");
     let did_document = &body["params"]["did_document"];
@@ -1269,10 +700,19 @@ async fn register_phone_without_otp_returns_pending_otp_state() {
     let requests = server.join();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "send_otp");
-    assert_eq!(body["params"], json!({ "phone": "+15551234567" }));
+    assert_eq!(
+        body["params"],
+        json!({
+            "phone": "+15551234567",
+            "purpose": "awiki.identity.register.v1",
+            "handle": "carol",
+            "domain": "awiki.test",
+            "full_handle": "carol.awiki.test",
+        })
+    );
 }
 
 #[tokio::test]
@@ -1315,10 +755,10 @@ async fn register_email_without_wait_returns_email_sent_state() {
     assert_eq!(requests[0].method, "GET");
     assert_eq!(
         requests[0].path,
-        "/user-service/auth/email-status?email=carol%40example.test&handle=carol.awiki.test"
+        "/user-service/v1/auth/email-status?email=carol%40example.test&handle=carol.awiki.test"
     );
     assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/user-service/auth/email-send");
+    assert_eq!(requests[1].path, "/user-service/v1/auth/email-send");
     assert_eq!(
         requests[1].json_body(),
         json!({ "email": "carol@example.test", "handle": "carol.awiki.test" })
@@ -1459,6 +899,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -1563,6 +1004,7 @@ impl Fixture {
         ImCoreConfig {
             service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
             did_domain: "awiki.test".to_string(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -1633,6 +1075,15 @@ fn assert_secure_identity_dir_has_no_plaintext(identity_dir: &Path, token_marker
             "secure identity dir leaked marker {marker}"
         );
     }
+}
+
+fn assert_prekey_publication_request(request: &CapturedHttp) {
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path, "/im/rpc");
+    let body = request.json_body();
+    assert_eq!(body["method"], "direct.e2ee.publish_prekey_bundle");
+    assert!(body["params"].get("auth").is_none());
+    assert_eq!(body["params"]["meta"]["target"]["kind"], "service");
 }
 
 fn collect_text_files(root: &Path) -> String {
@@ -1862,7 +1313,11 @@ impl TestServer {
             for response in responses {
                 let mut stream = accept_before_deadline(&listener, deadline);
                 let request = read_http_request(&mut stream);
-                write_json_response(&mut stream, response.status_code, &response.body);
+                let body = response
+                    .responder
+                    .as_ref()
+                    .map_or_else(|| response.body.clone(), |responder| responder(&request));
+                write_json_response(&mut stream, response.status_code, &body);
                 captured.push(request);
             }
             captured
@@ -1882,6 +1337,7 @@ impl TestServer {
 struct ExpectedHttp {
     status_code: u16,
     body: Value,
+    responder: Option<Box<dyn Fn(&CapturedHttp) -> Value + Send>>,
 }
 
 impl ExpectedHttp {
@@ -1889,6 +1345,7 @@ impl ExpectedHttp {
         Self {
             status_code: 200,
             body,
+            responder: None,
         }
     }
 
@@ -1898,6 +1355,106 @@ impl ExpectedHttp {
             "id": "req-1",
             "result": result,
         }))
+    }
+
+    fn registration_result() -> Self {
+        Self::registration_result_with_message("Registration successful")
+    }
+
+    fn registration_result_with_message(message: &'static str) -> Self {
+        Self {
+            status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(move |request| {
+                let rpc = request.json_body();
+                let params = &rpc["params"];
+                let document = &params["did_document"];
+                let did = document["id"]
+                    .as_str()
+                    .expect("registration DID document id");
+                let device = &document["deviceManifest"]["devices"][0];
+                let device_id = device["device_id"]
+                    .as_str()
+                    .expect("registration manifest device_id");
+                let key_id = device["signing_key_id"]
+                    .as_str()
+                    .expect("registration manifest signing_key_id");
+                let handle = params["handle"].as_str().expect("registration handle");
+                let domain = did
+                    .strip_prefix("did:wba:")
+                    .and_then(|suffix| suffix.split(':').next())
+                    .expect("registration DID domain");
+                let user_id = format!("user-{handle}");
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let claims = json!({
+                    "iss": "user-service",
+                    "aud": ["awiki-user-service", "awiki-message-service"],
+                    "sub": did,
+                    "type": "access",
+                    "purpose": "awiki.device.access.v1",
+                    "did": did,
+                    "user_id": user_id,
+                    "device_id": device_id,
+                    "key_id": key_id,
+                    "auth_generation": 1,
+                    "scopes": ["device:manage", "device:read", "message:connect"],
+                    "iat": now,
+                    "nbf": now,
+                    "exp": now + 3600,
+                    "jti": format!("registration-{device_id}"),
+                });
+                let access_token = format!(
+                    "e30.{}.phase1c-{handle}-access-token",
+                    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+                );
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": rpc["id"].clone(),
+                    "result": {
+                        "state": "registered",
+                        "did": did,
+                        "user_id": user_id,
+                        "message": message,
+                        "access_token": access_token,
+                        "handle": handle,
+                        "domain": domain,
+                        "full_handle": format!("{handle}.{domain}"),
+                        "binding_generation": "1",
+                    },
+                })
+            })),
+        }
+    }
+
+    fn prekey_publication_result() -> Self {
+        Self {
+            status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(|request| {
+                let rpc = request.json_body();
+                let body = &rpc["params"]["body"];
+                let bundle = &body["prekey_bundle"];
+                let published_opk_count = body["one_time_prekeys"]
+                    .as_array()
+                    .map(Vec::len)
+                    .expect("P5 publish one_time_prekeys");
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": rpc["id"].clone(),
+                    "result": {
+                        "published": true,
+                        "owner_did": bundle["owner_did"].clone(),
+                        "owner_device_id": bundle["owner_device_id"].clone(),
+                        "bundle_id": bundle["bundle_id"].clone(),
+                        "published_at": "2026-07-29T00:00:00Z",
+                        "published_opk_count": published_opk_count,
+                    },
+                })
+            })),
+        }
     }
 }
 

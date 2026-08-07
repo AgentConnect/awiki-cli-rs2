@@ -125,6 +125,10 @@ done
 VERSION="${VERSION:-$(read_crate_version)}"
 VERSION="${VERSION#v}"
 [[ -n "${VERSION}" ]] || die "version is required"
+commit="${AWIKI_DAEMON_COMMIT:-$(git rev-parse HEAD 2>/dev/null || printf '%s' unknown)}"
+[[ "${commit}" =~ ^[a-fA-F0-9]{40}$ ]] || die "source commit must be a full commit SHA"
+anp_commit="${AWIKI_DAEMON_ANP_COMMIT:-$(git -C ../anp/anp rev-parse HEAD 2>/dev/null || printf '%s' unknown)}"
+[[ "${anp_commit}" =~ ^[a-fA-F0-9]{40}$ ]] || die "ANP source commit must be a full commit SHA"
 OS_NAME="${OS_NAME:-$(host_os)}"
 ARCH_NAME="${ARCH_NAME:-$(host_arch)}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-$(target_for "${OS_NAME}" "${ARCH_NAME}")}"
@@ -153,7 +157,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
 Would run: ${cargo_cmd[*]} build -p awiki-deamon --bin awiki-deamon --release --locked --target ${TARGET_TRIPLE}
 Would archive: ${build_bin} -> ${archive_path}
-Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE checksums.txt
+Would include: awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md checksums.txt
 EOF
   exit 0
 fi
@@ -184,13 +188,31 @@ Install through the official installer:
 curl -fsSL https://<service-domain>/daemon/install.sh | sh -s -- --token <token>
 EOF
 
-if [[ -f LICENSE ]]; then
-  cp LICENSE "${stage_dir}/LICENSE"
-else
-  printf '%s\n' "License: see repository metadata." >"${stage_dir}/LICENSE"
-fi
+cp LICENSE "${stage_dir}/LICENSE"
+cp LICENSES/Apache-2.0.txt "${stage_dir}/LICENSE-APACHE"
+cp COMMERCIAL-LICENSING.md "${stage_dir}/COMMERCIAL-LICENSING.md"
+cat >"${stage_dir}/SOURCE.md" <<EOF
+# AWiki Daemon Corresponding Source
 
-(cd "${stage_dir}" && shasum -a 256 awiki-deamon awiki-deamon-runtime README.txt LICENSE > checksums.txt)
+Version: ${VERSION}
+Commit: ${commit}
+Source: https://github.com/AgentConnect/awiki-cli-rs2/tree/${commit}
+Source archive: https://github.com/AgentConnect/awiki-cli-rs2/archive/${commit}.tar.gz
+Build instructions: https://github.com/AgentConnect/awiki-cli-rs2/blob/${commit}/docs/development.md
+
+ANP dependency commit: ${anp_commit}
+ANP source: https://github.com/agent-network-protocol/anp/tree/${anp_commit}
+
+The source location above identifies the exact revision used to build this
+release. The Corresponding Source is provided under GNU AGPLv3 as described in
+the accompanying LICENSE file.
+EOF
+
+(cd "${stage_dir}" && shasum -a 256 \
+  awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \
+  COMMERCIAL-LICENSING.md SOURCE.md > checksums.txt)
 rm -f "${archive_path}"
-tar -C "${stage_dir}" -czf "${archive_path}" awiki-deamon awiki-deamon-runtime README.txt LICENSE checksums.txt
+tar -C "${stage_dir}" -czf "${archive_path}" \
+  awiki-deamon awiki-deamon-runtime README.txt LICENSE LICENSE-APACHE \
+  COMMERCIAL-LICENSING.md SOURCE.md checksums.txt
 echo "daemon release archive created: ${archive_path}"

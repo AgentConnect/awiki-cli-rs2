@@ -123,7 +123,7 @@ fn refresh_token_error_from_im(
                 "auth_required",
                 3,
                 format!("authentication required: failed to refresh jwt for identity {identity_name}"),
-                "Use an identity with valid DID key material, or run `awiki-cli id register` / `awiki-cli id recover` first.",
+                "Use an identity with valid DID key material, or run `awiki-cli id register` first.",
             )
         }
         err => super::map_im_error(err, context),

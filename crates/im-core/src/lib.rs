@@ -14,12 +14,16 @@ pub mod error;
 pub mod groups;
 pub mod identity;
 pub mod ids;
+#[cfg(feature = "sqlite")]
+pub mod local_state_upgrade;
 pub mod messages;
+pub mod onboarding;
 pub mod paths;
 pub mod prelude;
 pub mod realtime;
 pub mod secure;
 pub mod site;
+pub mod system_notifications;
 pub mod vault;
 
 #[doc(hidden)]
@@ -27,7 +31,9 @@ pub mod compat;
 
 mod internal;
 
-pub use self::config::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
+pub use self::config::{
+    ClientVersionInfo, ImCoreConfig, MessageTransportPolicy, ServiceEndpoint, CLIENT_VERSION_HEADER,
+};
 pub use crate::attachments::AttachmentService;
 pub use crate::content::ContentService;
 pub use crate::core::{
@@ -36,14 +42,32 @@ pub use crate::core::{
 };
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
-pub use crate::error::{IdentityVaultFailure, ImError, ImResult};
+pub use crate::error::{DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
-    DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
-    IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
-    IdentityVaultVerificationReport,
+    ActiveSyncAccountBinding, AgentIdentityKind, DeleteLocalIdentityResult,
+    HostBackedDeviceIdentityMaterial, HostedIdentityMaterial, IdentityDeviceAuthorizationStatus,
+    IdentityDeviceRole, IdentitySecretStorageBackend, IdentitySelector, IdentitySummary,
+    IdentityVaultMigrationReport, IdentityVaultStatus, IdentityVaultVerificationReport,
+    LegacyRegistryEpochAdoptionAuthority, VNextAgentBootstrapMaterial,
+    VNextAgentLegacyUpgradeReconciliation, VNextAgentLegacyUpgradeSession,
+};
+#[cfg(feature = "sqlite")]
+pub use crate::local_state_upgrade::{
+    inspect_local_state_upgrade, restore_local_state_backup, upgrade_local_state,
+    LocalStateConversationAliasMapping, LocalStateRestoreResult, LocalStateUpgradeEligibility,
+    LocalStateUpgradeInspection, LocalStateUpgradeResult, LocalStateUpgradeStatus,
+};
+pub use crate::messages::{
+    IncomingMessageRecoveryItem, IncomingMessageRecoveryPage, IncomingMessageRecoveryPageToken,
+    IncomingMessageRecoveryQuery,
+};
+pub use crate::onboarding::{
+    SkillClaimPhase, SkillClaimRequest, SkillClaimResult, SkillClaimStatus, SkillOnboardingService,
+    SkillOnboardingToken, SkillResumeRequest,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;
 pub use crate::secure::SecureService;
 pub use crate::site::SiteService;
+pub use crate::system_notifications::SystemNotificationService;

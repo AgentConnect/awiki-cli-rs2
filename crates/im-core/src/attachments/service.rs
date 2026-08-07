@@ -22,11 +22,33 @@ impl<'a> AttachmentService<'a> {
         target: crate::messages::MessageTarget,
         request: super::AttachmentSendRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        self.send_with_optional_client_message_id(target, request, None)
+    }
+
+    pub fn send_with_client_message_id(
+        &self,
+        target: crate::messages::MessageTarget,
+        request: super::AttachmentSendRequest,
+        client_message_id: crate::ids::MessageId,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
+        self.send_with_optional_client_message_id(target, request, Some(client_message_id))
+    }
+
+    fn send_with_optional_client_message_id(
+        &self,
+        target: crate::messages::MessageTarget,
+        request: super::AttachmentSendRequest,
+        client_message_id: Option<crate::ids::MessageId>,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
         if attachment_security_is_secure(&request.security) {
-            let result = self
-                .client
-                .messages()
-                .send_secure_attachment(message_request_from_attachment(target, request)?)?;
+            let result =
+                self.client
+                    .messages()
+                    .send_secure_attachment(message_request_from_attachment(
+                        target,
+                        request,
+                        client_message_id,
+                    )?)?;
             return attachment_send_result_from_secure_message(result);
         }
         let resolved_target = resolve_direct_target(self.client, &target)?;
@@ -40,7 +62,7 @@ impl<'a> AttachmentService<'a> {
                 target,
                 request,
                 resolved_target_did: resolved_target.target_did.clone(),
-                client_message_id: None,
+                client_message_id,
                 credentials: None,
             },
         )?;
@@ -210,11 +232,35 @@ impl<'a> AttachmentService<'a> {
         target: crate::messages::MessageTarget,
         request: super::AttachmentSendRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        self.send_async_with_optional_client_message_id(target, request, None)
+            .await
+    }
+
+    pub async fn send_with_client_message_id_async(
+        &self,
+        target: crate::messages::MessageTarget,
+        request: super::AttachmentSendRequest,
+        client_message_id: crate::ids::MessageId,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
+        self.send_async_with_optional_client_message_id(target, request, Some(client_message_id))
+            .await
+    }
+
+    async fn send_async_with_optional_client_message_id(
+        &self,
+        target: crate::messages::MessageTarget,
+        request: super::AttachmentSendRequest,
+        client_message_id: Option<crate::ids::MessageId>,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
         if attachment_security_is_secure(&request.security) {
             let result = self
                 .client
                 .messages()
-                .send_secure_attachment_async(message_request_from_attachment(target, request)?)
+                .send_secure_attachment_async(message_request_from_attachment(
+                    target,
+                    request,
+                    client_message_id,
+                )?)
                 .await?;
             return attachment_send_result_from_secure_message(result);
         }
@@ -229,7 +275,7 @@ impl<'a> AttachmentService<'a> {
                 target,
                 request,
                 resolved_target_did: resolved_target.target_did.clone(),
-                client_message_id: None,
+                client_message_id,
                 credentials: None,
             },
         )
@@ -360,6 +406,7 @@ fn attachment_security_is_secure(security: &crate::messages::MessageSecurityMode
 fn message_request_from_attachment(
     target: crate::messages::MessageTarget,
     request: super::AttachmentSendRequest,
+    client_message_id: Option<crate::ids::MessageId>,
 ) -> crate::ImResult<crate::messages::SendMessageRequest> {
     Ok(crate::messages::SendMessageRequest {
         target,
@@ -371,7 +418,7 @@ fn message_request_from_attachment(
             filename: request.filename,
         },
         security: request.security,
-        client_message_id: None,
+        client_message_id,
         delivery: request.delivery,
         delegated_signing: None,
     })
@@ -721,16 +768,7 @@ fn resolve_peer(
         });
     }
     let lookup = crate::internal::handle_discovery::resolve_direct_handle(client, raw)?;
-    Ok(ResolvedDirectTarget {
-        target_did: Some(lookup.target_did),
-        direct_handle: Some(lookup.full_handle.clone()),
-        peer_scope: Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id,
-                lookup.full_handle,
-            )?,
-        ),
-    })
+    resolved_direct_target_from_handle(lookup)
 }
 
 async fn resolve_peer_async(
@@ -747,14 +785,79 @@ async fn resolve_peer_async(
     }
     let lookup =
         crate::internal::handle_discovery::resolve_direct_handle_async(client, raw).await?;
+    resolved_direct_target_from_handle(lookup)
+}
+
+fn resolved_direct_target_from_handle(
+    lookup: crate::internal::handle_discovery::DirectHandleResolution,
+) -> crate::ImResult<ResolvedDirectTarget> {
+    let peer_scope = lookup.peer_scope()?;
     Ok(ResolvedDirectTarget {
         target_did: Some(lookup.target_did),
-        direct_handle: Some(lookup.full_handle.clone()),
-        peer_scope: Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id,
-                lookup.full_handle,
-            )?,
-        ),
+        direct_handle: Some(lookup.full_handle),
+        peer_scope: Some(peer_scope),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn target_attachment_retry_preserves_core_message_identity() {
+        let target = crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let message_id = crate::ids::MessageId::parse("msg-attachment-retry").unwrap();
+        let request = || crate::attachments::AttachmentSendRequest {
+            input: crate::attachments::AttachmentInput::Bytes {
+                filename: Some("retry.txt".to_owned()),
+                mime_type: Some("text/plain".to_owned()),
+                bytes: b"same logical attachment".to_vec(),
+            },
+            caption: Some("retry".to_owned()),
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            delivery: crate::messages::MessageDeliveryOptions {
+                idempotency_key: Some("op-msg-attachment-retry".to_owned()),
+                wait_for_final_acceptance: false,
+            },
+            security: crate::messages::MessageSecurityMode::E2eeRequired,
+        };
+
+        let first = super::message_request_from_attachment(
+            target.clone(),
+            request(),
+            Some(message_id.clone()),
+        )
+        .unwrap();
+        let retry =
+            super::message_request_from_attachment(target, request(), Some(message_id)).unwrap();
+
+        assert_eq!(retry, first);
+        assert_eq!(
+            first
+                .client_message_id
+                .as_ref()
+                .map(crate::ids::MessageId::as_str),
+            Some("msg-attachment-retry")
+        );
+        assert_eq!(
+            first.delivery.idempotency_key.as_deref(),
+            Some("op-msg-attachment-retry")
+        );
+    }
+
+    #[test]
+    fn attachment_target_preserves_cross_domain_handle_subject() {
+        let resolved = super::resolved_direct_target_from_handle(
+            crate::internal::handle_discovery::DirectHandleResolution {
+                target_did: "did:wba:remote.example:user:peer:e1".to_owned(),
+                full_handle: "peer.remote.example".to_owned(),
+                authority_subject_id: "peer.remote.example".to_owned(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.peer_scope.unwrap().user_id, "peer.remote.example");
+    }
 }

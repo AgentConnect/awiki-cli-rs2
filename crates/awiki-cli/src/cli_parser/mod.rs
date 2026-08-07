@@ -70,6 +70,17 @@ where
             Some(("verbose", _)) => {
                 globals.verbose = true;
             }
+            Some(("internal-service", _)) => {
+                globals.internal_service = true;
+            }
+            Some(("internal-workspace-home", value)) => {
+                globals.internal_workspace_home =
+                    take_flag_value("internal-workspace-home", value, &mut iter)?;
+            }
+            Some(("internal-service-user-sid", value)) => {
+                globals.internal_service_user_sid =
+                    take_flag_value("internal-service-user-sid", value, &mut iter)?;
+            }
             Some(("identity", value)) if !is_id_create_context(&command_words) => {
                 globals.identity = take_flag_value("identity", value, &mut iter)?;
                 globals.identity_changed = true;
@@ -129,6 +140,10 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
             "sync init is disabled in the async cutover.",
             "Use the async CLI entrypoint.",
         )),
+        "onboarding.claim" => app.run_onboarding_claim(command),
+        "onboarding.resume" => app.run_onboarding_resume(command),
+        "onboarding.recover-legacy-claim" => Err(async_only_error(&command.name)),
+        "onboarding.migrate-legacy" => Err(async_only_error(&command.name)),
         "completion.bash" => app.run_completion("bash"),
         "completion.zsh" => app.run_completion("zsh"),
         "completion.fish" => app.run_completion("fish"),
@@ -146,10 +161,19 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.bind" => app.run_id_bind(command),
         "id.refresh-token" => app.run_id_refresh_token(),
         "id.resolve" => app.run_id_resolve(command),
-        "id.recover" => app.run_id_recover(command),
         "id.replace-did" => app.run_id_replace_did(command),
         "id.profile.get" => app.run_id_profile_get(command),
         "id.profile.set" => app.run_id_profile_set(command),
+        "id.device.list"
+        | "id.device.join.sessions"
+        | "id.device.join.requests"
+        | "id.device.join.start"
+        | "id.device.join.poll"
+        | "id.device.join.verify"
+        | "id.device.join.approve"
+        | "id.device.join.reject"
+        | "id.device.join.cancel"
+        | "id.device.revoke" => Err(async_only_error(&command.name)),
         "msg.send" => app.run_msg_send(command),
         "msg.attachment.download" => app.run_msg_attachment_download(command),
         "msg.inbox" => app.run_msg_inbox(command),
@@ -272,6 +296,12 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
 
     match command.name.as_str() {
         "init" => app.run_init_async().await,
+        "onboarding.claim" => app.run_onboarding_claim_async(command).await,
+        "onboarding.resume" => app.run_onboarding_resume_async(command).await,
+        "onboarding.recover-legacy-claim" => {
+            app.run_onboarding_recover_legacy_claim_async(command).await
+        }
+        "onboarding.migrate-legacy" => app.run_onboarding_migrate_legacy_async().await,
         "msg.send" => app.run_msg_send_async(command).await,
         "msg.attachment.download" => app.run_msg_attachment_download_async(command).await,
         "msg.inbox" => app.run_msg_inbox_async(command).await,
@@ -290,9 +320,19 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.bind" => app.run_id_bind_async(command).await,
         "id.refresh-token" => app.run_id_refresh_token_async().await,
         "id.resolve" => app.run_id_resolve_async(command).await,
-        "id.recover" => app.run_id_recover_async(command).await,
         "id.profile.get" => app.run_id_profile_get_async(command).await,
         "id.profile.set" => app.run_id_profile_set_async(command).await,
+        "id.device.list" => app.run_id_device_list_async().await,
+        "id.device.join.sessions" => app.run_id_device_join_sessions_async().await,
+        "id.device.join.requests" => app.run_id_device_join_requests_async().await,
+        "id.device.join.start" => app.run_id_device_join_start_async(command).await,
+        "id.device.join.poll" => app.run_id_device_join_poll_async(command).await,
+        "id.device.join.verify" => app.run_id_device_join_verify_async(command).await,
+        "id.device.join.approve" => app.run_id_device_join_approve_async(command).await,
+        "id.device.join.reject" => app.run_id_device_join_reject_async(command).await,
+        "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
+        "id.device.revoke" => app.run_id_device_revoke_async(command).await,
+        "id.device.root-key.send" => app.run_id_device_root_key_send_async(command).await,
         "group.create" => app.run_group_create_async(command).await,
         "group.get" => app.run_group_get_async(command).await,
         "group.join" => app.run_group_join_async(command).await,
@@ -577,7 +617,9 @@ fn enforce_command_policy(command: &ParsedCommand) -> Result<(), ExitError> {
             }
         }
         command_catalog::DirectInvocationPolicy::RequireInternalServiceGate => {
-            if std::env::var("AWIKI_CLI_INTERNAL_ENTRY").ok().as_deref() == Some("1") {
+            if command.globals.internal_service
+                || std::env::var("AWIKI_CLI_INTERNAL_ENTRY").ok().as_deref() == Some("1")
+            {
                 Ok(())
             } else {
                 Err(internal_command(&command.name))
@@ -691,5 +733,14 @@ fn stub_error(command: &str) -> ExitError {
         1,
         format!("{command} is not implemented in this Rust port slice."),
         format!("Use `awiki-cli schema {command}` to inspect the {target} contract."),
+    )
+}
+
+fn async_only_error(command: &str) -> ExitError {
+    ExitError::new(
+        "unsupported_capability",
+        1,
+        format!("sync {command} is disabled in the async cutover."),
+        "Use the async CLI entrypoint.",
     )
 }

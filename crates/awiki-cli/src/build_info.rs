@@ -5,6 +5,13 @@ pub const VERSION: &str = match option_env!("AWIKI_CLI_VERSION") {
     None => "dev",
 };
 
+pub const RELEASE: &str = match option_env!("AWIKI_CLI_RELEASE") {
+    Some(release) => release,
+    None => "0714",
+};
+
+pub const PRODUCT: &str = "awiki-cli";
+
 pub const COMMIT: &str = match option_env!("AWIKI_CLI_COMMIT") {
     Some(commit) => commit,
     None => "unknown",
@@ -19,6 +26,13 @@ pub const CGO_ENABLED: &str = match option_env!("AWIKI_CLI_CGO_ENABLED") {
     Some(cgo_enabled) => cgo_enabled,
     None => "unknown",
 };
+
+pub fn client_version_info() -> im_core::ImResult<Option<im_core::ClientVersionInfo>> {
+    match option_env!("AWIKI_CLI_VERSION") {
+        Some(_) => im_core::ClientVersionInfo::new(PRODUCT, RELEASE, VERSION, None).map(Some),
+        None => Ok(None),
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildInfo {
@@ -140,6 +154,24 @@ mod tests {
         assert!(!info.go_version.is_empty());
         assert!(!info.goos.is_empty());
         assert!(!info.goarch.is_empty());
+    }
+
+    #[test]
+    fn client_version_metadata_has_fixed_cli_product_and_release() {
+        assert_eq!(PRODUCT, "awiki-cli");
+        assert_eq!(RELEASE, option_env!("AWIKI_CLI_RELEASE").unwrap_or("0714"));
+    }
+
+    #[test]
+    fn client_version_header_is_only_emitted_for_versioned_builds() {
+        let actual = client_version_info().unwrap();
+        match option_env!("AWIKI_CLI_VERSION") {
+            Some(version) => assert_eq!(
+                actual.unwrap().header_value(),
+                format!("awiki-cli/{RELEASE}/{version}")
+            ),
+            None => assert!(actual.is_none()),
+        }
     }
 
     #[test]

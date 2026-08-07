@@ -17,6 +17,17 @@
 - Agent / handle 本地身份默认生成 **e1 profile DID**（例如 `did:wba:example.com:user:e1_xxx`、`did:wba:example.com:alice:e1_xxx`）
 - 当前 **不声明** `anp.direct.e2ee.v1` / `direct-e2ee`
 
+上面的 v1 示例仅描述 legacy identity adapter。新建的 AWiki 多设备 DID 从 genesis
+开始使用 vNext service profile，其中附件控制面使用 `anp.attachment.v2`。附件下载必须
+读取原消息发送者 DID Document，并使用该 `ANPMessageService` 实际声明的精确附件
+Profile；同一服务同时声明 v2 与 v1 时优先使用 v2，只声明 v1 时则显式使用 v1，
+二者不能隐式互换或在 v2 失败后静默降级。
+
+`attachment.get_download_ticket` 的客户端第一跳固定提交到本域 `/im/rpc`，并使用
+本域 ActorUser 会话认证；请求中的 `meta.target.did` 仍绑定原消息发送者公开的
+`serviceDid`，由本域 Home 完成后续联邦调用。客户端不得把本域 bearer 直接发送到
+发现得到的远端绝对 URL。
+
 ## 2. DID 文档填写规则
 
 `awiki-cli` 生成 DID 文档时，固定写入如下语义的 service 条目：

@@ -45,7 +45,7 @@ where
     validate_resolved_did_document(did, document)
 }
 
-fn validate_resolved_did_document(did: &str, document: Value) -> crate::ImResult<Value> {
+pub(crate) fn validate_resolved_did_document(did: &str, document: Value) -> crate::ImResult<Value> {
     if document.get("id").and_then(Value::as_str) != Some(did) {
         return Err(crate::ImError::invalid_input(
             Some("did_document".to_string()),

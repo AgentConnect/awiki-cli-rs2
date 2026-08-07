@@ -71,6 +71,7 @@ pub(crate) struct WsTransport {
     stream: Box<dyn ReadWrite>,
     default_read_timeout: Option<Duration>,
     ping_counter: i32,
+    sync_changed_v2: bool,
 }
 
 trait ReadWrite: Read + Write + Send {
@@ -94,17 +95,20 @@ impl WsTransport {
         websocket_url: &str,
         bearer_token: &str,
         ca_bundle: Option<&str>,
+        require_sync_changed_v2: bool,
+        client_version: Option<&str>,
     ) -> WsResult<Self> {
         let parsed = ParsedWsUrl::parse(websocket_url)?;
         let mut stream = connect_stream(&parsed, ca_bundle)?;
         let key = websocket_key();
-        write_handshake_request(&mut stream, &parsed, bearer_token, &key)?;
+        write_handshake_request(&mut stream, &parsed, bearer_token, &key, client_version)?;
         let headers = read_http_headers(&mut stream)?;
-        validate_handshake_response(&headers, &key)?;
+        let sync_changed_v2 = validate_handshake_response(&headers, &key, require_sync_changed_v2)?;
         Ok(Self {
             stream,
             default_read_timeout: Some(DEFAULT_READ_TIMEOUT),
             ping_counter: 0,
+            sync_changed_v2,
         })
     }
 
@@ -147,8 +151,24 @@ impl WsTransport {
     pub(crate) fn read_json_message(&mut self) -> WsResult<Map<String, Value>> {
         loop {
             match self.read_frame()? {
-                WsFrame::Text(raw) => return decode_json_object(raw.as_bytes()),
-                WsFrame::Binary(raw) => return decode_json_object(&raw),
+                WsFrame::Text(raw) => {
+                    let message = decode_json_object(raw.as_bytes())?;
+                    if crate::internal::realtime::accepts_negotiated_notification(
+                        self.sync_changed_v2,
+                        &message,
+                    ) {
+                        return Ok(message);
+                    }
+                }
+                WsFrame::Binary(raw) => {
+                    let message = decode_json_object(&raw)?;
+                    if crate::internal::realtime::accepts_negotiated_notification(
+                        self.sync_changed_v2,
+                        &message,
+                    ) {
+                        return Ok(message);
+                    }
+                }
                 WsFrame::Ping(payload) => {
                     self.write_frame(0xA, &payload)?;
                 }
@@ -573,21 +593,30 @@ fn write_handshake_request(
     parsed: &ParsedWsUrl,
     bearer_token: &str,
     key: &str,
+    client_version: Option<&str>,
 ) -> WsResult<()> {
-    write!(
-        stream,
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: awiki-im-core\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\n",
-        parsed.path_and_query,
-        parsed.host_header(),
-        key,
-    )
-    .map_err(ws_error)?;
+    stream
+        .write_all(handshake_request_head(parsed, key).as_bytes())
+        .map_err(ws_error)?;
     let bearer_token = bearer_token.trim();
     if !bearer_token.is_empty() {
         write!(stream, "Authorization: Bearer {bearer_token}\r\n").map_err(ws_error)?;
     }
+    if let Some(client_version) = client_version {
+        write!(stream, "X-AWiki-Client-Version: {client_version}\r\n").map_err(ws_error)?;
+    }
     stream.write_all(b"\r\n").map_err(ws_error)?;
     stream.flush().map_err(ws_error)
+}
+
+fn handshake_request_head(parsed: &ParsedWsUrl, key: &str) -> String {
+    format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: awiki-im-core\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Protocol: {}\r\n",
+        parsed.path_and_query,
+        parsed.host_header(),
+        key,
+        crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL,
+    )
 }
 
 fn read_http_headers(stream: &mut Box<dyn ReadWrite>) -> WsResult<String> {
@@ -608,7 +637,11 @@ fn read_http_headers(stream: &mut Box<dyn ReadWrite>) -> WsResult<String> {
     ))
 }
 
-fn validate_handshake_response(headers: &str, key: &str) -> WsResult<()> {
+fn validate_handshake_response(
+    headers: &str,
+    key: &str,
+    require_sync_changed_v2: bool,
+) -> WsResult<bool> {
     let mut lines = headers.lines();
     let status_line = lines
         .next()
@@ -637,7 +670,23 @@ fn validate_handshake_response(headers: &str, key: &str) -> WsResult<()> {
             "websocket upgrade response has invalid Sec-WebSocket-Accept",
         ));
     }
-    Ok(())
+    let selected_subprotocol = header_pairs
+        .iter()
+        .find(|(name, _)| name == "sec-websocket-protocol")
+        .map(|(_, value)| value.as_str());
+    if selected_subprotocol.is_some()
+        && selected_subprotocol != Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL)
+    {
+        return Err(ws_message(
+            "websocket server selected an unsupported sync subprotocol",
+        ));
+    }
+    if require_sync_changed_v2 && selected_subprotocol.is_none() {
+        return Err(ws_message(
+            "exact-device websocket requires awiki.sync.changed.v2",
+        ));
+    }
+    Ok(selected_subprotocol.is_some())
 }
 
 fn parse_status_code(status_line: &str) -> WsResult<u16> {
@@ -762,7 +811,9 @@ fn ws_error(err: std::io::Error) -> WsError {
 
 #[cfg(test)]
 mod tests {
-    use super::{websocket_accept, ParsedWsUrl};
+    use super::{
+        handshake_request_head, validate_handshake_response, websocket_accept, ParsedWsUrl,
+    };
 
     #[test]
     fn websocket_accept_matches_rfc_vector() {
@@ -787,5 +838,32 @@ mod tests {
         assert_eq!(parsed.port, 18080);
         assert_eq!(parsed.path_and_query, "/");
         assert_eq!(parsed.host_header(), "127.0.0.1:18080");
+    }
+
+    #[test]
+    fn websocket_handshake_allows_v1_fallback_and_rejects_wrong_protocol() {
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        let accept = websocket_accept(key);
+        let valid = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v2\r\n\r\n"
+        );
+        assert!(validate_handshake_response(&valid, key, false).unwrap());
+
+        let missing =
+            format!("HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
+        assert!(!validate_handshake_response(&missing, key, false).unwrap());
+        assert!(validate_handshake_response(&missing, key, true).is_err());
+
+        let wrong = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v1\r\n\r\n"
+        );
+        assert!(validate_handshake_response(&wrong, key, false).is_err());
+    }
+
+    #[test]
+    fn websocket_handshake_requests_sync_changed_v2_subprotocol() {
+        let parsed = ParsedWsUrl::parse("wss://example.test/im/ws").unwrap();
+        let request = handshake_request_head(&parsed, "test-key");
+        assert!(request.contains("\r\nSec-WebSocket-Protocol: awiki.sync.changed.v2\r\n"));
     }
 }

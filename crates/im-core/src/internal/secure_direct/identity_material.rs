@@ -44,9 +44,11 @@ pub(crate) fn local_identity_material(
 ) -> crate::ImResult<DirectSecureIdentityMaterial> {
     let runtime = client.runtime();
     let local_did_document = runtime.key_provider.did_document()?;
-    let signing_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let signing_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     let agreement_private_pem = runtime.key_provider.e2ee_agreement_private_pem()?;
     let owner_did = client.did().as_str().to_owned();
+    let (signing_key_id, agreement_key_id) =
+        direct_secure_key_ids(&owner_did, runtime.owner.sync_account.as_ref());
     Ok(DirectSecureIdentityMaterial {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: owner_did.clone(),
@@ -55,8 +57,8 @@ pub(crate) fn local_identity_material(
             .local_alias
             .clone()
             .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
-        signing_key_id: format!("{owner_did}#key-1"),
-        agreement_key_id: format!("{owner_did}#key-3"),
+        signing_key_id,
+        agreement_key_id,
         signing_private_pem,
         agreement_private_pem,
         local_did_document,
@@ -67,21 +69,39 @@ pub(crate) fn agreement_material(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<DirectSecureAgreementMaterial> {
     let owner_did = client.did().as_str().to_owned();
+    let (_, agreement_key_id) =
+        direct_secure_key_ids(&owner_did, client.runtime().owner.sync_account.as_ref());
     Ok(DirectSecureAgreementMaterial {
-        agreement_key_id: format!("{owner_did}#key-3"),
+        agreement_key_id,
         agreement_private_pem: client.runtime().key_provider.e2ee_agreement_private_pem()?,
     })
 }
 
-pub(crate) fn agreement_private_key(
+fn direct_secure_key_ids(
+    owner_did: &str,
+    sync_account: Option<&crate::internal::identity_runtime::SyncAccountSeed>,
+) -> (String, String) {
+    sync_account
+        .map(|account| {
+            (
+                account.device_signing_key_id.clone(),
+                account.device_e2ee_key_id.clone(),
+            )
+        })
+        .unwrap_or_else(|| (format!("{owner_did}#key-1"), format!("{owner_did}#key-3")))
+}
+
+pub(crate) fn agreement_key_material(
     client: &crate::core::ImClient,
-) -> crate::ImResult<PrivateKeyMaterial> {
+) -> crate::ImResult<(String, PrivateKeyMaterial)> {
     let material = agreement_material(client)?;
-    PrivateKeyMaterial::from_pem(&material.agreement_private_pem).map_err(|err| {
-        crate::ImError::Serialization {
-            detail: format!("parse direct E2EE agreement private key: {err}"),
-        }
-    })
+    let private_key =
+        PrivateKeyMaterial::from_pem(&material.agreement_private_pem).map_err(|err| {
+            crate::ImError::Serialization {
+                detail: format!("parse direct E2EE agreement private key: {err}"),
+            }
+        })?;
+    Ok((material.agreement_key_id, private_key))
 }
 
 pub(crate) fn local_did_document(client: &crate::core::ImClient) -> crate::ImResult<Value> {
@@ -90,6 +110,40 @@ pub(crate) fn local_did_document(client: &crate::core::ImClient) -> crate::ImRes
 
 #[cfg(test)]
 mod tests {
+    use super::direct_secure_key_ids;
+
+    #[test]
+    fn direct_secure_key_ids_use_exact_vnext_device_authorization() {
+        let did = "did:wba:awiki.test:user:alice:e1_demo";
+        let seed = crate::internal::identity_runtime::SyncAccountSeed::new(
+            "account-alice".to_owned(),
+            crate::ids::ProtocolDeviceId::parse("dev-device-a").unwrap(),
+            Some("1".to_owned()),
+            "1".to_owned(),
+            format!("{did}#dev-device-a-sign"),
+            format!("{did}#dev-device-a-e2ee"),
+            crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+            true,
+        );
+
+        assert_eq!(
+            direct_secure_key_ids(did, Some(&seed)),
+            (
+                format!("{did}#dev-device-a-sign"),
+                format!("{did}#dev-device-a-e2ee"),
+            )
+        );
+    }
+
+    #[test]
+    fn direct_secure_key_ids_keep_legacy_key_roles_without_device_binding() {
+        let did = "did:wba:awiki.test:user:alice:e1_legacy";
+        assert_eq!(
+            direct_secure_key_ids(did, None),
+            (format!("{did}#key-1"), format!("{did}#key-3"))
+        );
+    }
+
     #[test]
     fn secure_direct_key_material_scanner_rejects_runtime_secret_path_reads() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

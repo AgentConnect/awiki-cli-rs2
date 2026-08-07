@@ -140,6 +140,16 @@ const DEFAULT_NOTIFY_PROMPT: &str = r#"
 10. 命中邮件通知时，不要使用“收到外部IM消息通知”作为标题，也不要套用 IM 模板。
 11. 处理邮件时，如果 `from_addr` 存在且能识别出发件人姓名，优先把姓名写到“发件人”，并把邮箱单独写到“发件邮箱”。
 12. 如果 `preview` 末尾包含类似“姓名 / 邮箱：...”的署名块，应将其从摘要中提取出来，不要原样重复在“邮件摘要”最后。
+13. `topic=im.device.join.requested` 是 Core 已验证的只读唤醒信号。必须让用户明确选择“开始验证”或“拒绝请求”，不得代替用户执行验证、拒绝或批准，不得从本通知臆造或展示验证码，也不得提供设备角色选择；V1 固定加入为普通成员。
+
+如果 topic 是 `im.device.join.requested`，必须使用下面这个模板：
+收到设备加入验证请求
+接收者 DID：<recipient_did>
+请求会话：<join_session_id>
+发起时间：<issued_at 转为 Asia/Shanghai>
+过期时间：<expires_at 转为 Asia/Shanghai>
+请选择：开始验证 / 拒绝请求
+说明：当前仅请求开始验证，最终批准仍需后续前台核对验证码。
 
 如果 data 中 `source_kind=mail`，或存在 `mailbox_address`、`from_addr`、`subject`、`preview` 这类邮件字段，必须使用下面这个模板：
 收到外部邮件通知
@@ -381,11 +391,8 @@ pub fn resolve_hermes_home() -> anyhow::Result<String> {
             return Ok(value.to_string());
         }
     }
-    let home = env::var("HOME").context("resolve user home: HOME is not set")?;
-    Ok(Path::new(home.trim())
-        .join(".hermes")
-        .to_string_lossy()
-        .into_owned())
+    let home = awiki_user_dirs::home_dir()?;
+    Ok(home.join(".hermes").to_string_lossy().into_owned())
 }
 
 pub fn inspect_route(home: &str, route_name: &str) -> anyhow::Result<RouteState> {

@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 

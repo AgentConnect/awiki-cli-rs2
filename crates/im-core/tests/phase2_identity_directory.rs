@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ async fn identity_service_profile_uses_public_http_transport() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_me",
             json!({}),
             json!({
@@ -23,10 +24,11 @@ async fn identity_service_profile_uses_public_http_transport() {
                 "bio": "Rust public API",
                 "tags": ["sdk", "http"],
                 "profile_md": "## Alice",
+                "versionId": "wns-profile-7",
             }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "update_me",
             json!({
                 "nick_name": "Alice Updated",
@@ -41,6 +43,8 @@ async fn identity_service_profile_uses_public_http_transport() {
                 "bio": "sdk profile skeleton",
                 "tags": ["sdk"],
                 "profile_md": "# Alice",
+                "profile_version": "18446744073709551616",
+                "versionId": "wns-profile-8",
             }),
         ),
     ]);
@@ -52,6 +56,8 @@ async fn identity_service_profile_uses_public_http_transport() {
     assert_eq!(profile.display_name.as_deref(), Some("Alice Remote"));
     assert_eq!(profile.bio.as_deref(), Some("Rust public API"));
     assert_eq!(profile.tags, vec!["sdk", "http"]);
+    assert_eq!(profile.profile_version, None);
+    assert_eq!(profile.version_id.as_deref(), Some("wns-profile-7"));
 
     let updated = client
         .identity()
@@ -67,6 +73,11 @@ async fn identity_service_profile_uses_public_http_transport() {
     assert_eq!(updated.subject.as_str(), "did:example:alice");
     assert_eq!(updated.display_name.as_deref(), Some("Alice Updated"));
     assert_eq!(updated.markdown.as_deref(), Some("# Alice"));
+    assert_eq!(
+        updated.profile_version.as_deref(),
+        Some("18446744073709551616")
+    );
+    assert_eq!(updated.version_id.as_deref(), Some("wns-profile-8"));
 
     let requests = server.join();
     assert_eq!(requests.len(), 2);
@@ -79,7 +90,7 @@ async fn identity_service_profile_uses_public_http_transport() {
 async fn identity_service_profile_prefers_full_handle_over_bare_handle() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
-        "/user-service/did/profile/rpc",
+        "/user-service/v1/did/profile/rpc",
         "get_me",
         json!({}),
         json!({
@@ -110,7 +121,7 @@ async fn identity_service_profile_prefers_full_handle_over_bare_handle() {
 async fn identity_service_profile_expands_bare_handle_with_wba_did_domain() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
-        "/user-service/did/profile/rpc",
+        "/user-service/v1/did/profile/rpc",
         "get_me",
         json!({}),
         json!({
@@ -137,7 +148,7 @@ async fn identity_service_profile_expands_bare_handle_with_wba_did_domain() {
 async fn identity_service_profile_uses_domain_qualified_handle_when_full_handle_is_bare() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
-        "/user-service/did/profile/rpc",
+        "/user-service/v1/did/profile/rpc",
         "get_me",
         json!({}),
         json!({
@@ -166,7 +177,7 @@ async fn identity_service_profile_async_uses_public_http_transport() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_me",
             json!({}),
             json!({
@@ -179,7 +190,7 @@ async fn identity_service_profile_async_uses_public_http_transport() {
             }),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "update_me",
             json!({
                 "nick_name": "Alice Async",
@@ -371,19 +382,19 @@ async fn directory_service_exposes_contact_store_and_resolution_api() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
@@ -461,13 +472,13 @@ async fn directory_service_resolves_federated_full_handle_via_current_user_servi
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "agent.remote.example" }),
             federated_handle_lookup_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:wba:remote.example:user:agent:e1" }),
             json!({
@@ -508,12 +519,12 @@ async fn directory_service_resolves_federated_full_handle_via_current_user_servi
 
     let requests = server.join();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     assert_eq!(
         requests[0].params,
         json!({ "handle": "agent.remote.example" })
     );
-    assert_eq!(requests[1].path, "/user-service/did/profile/rpc");
+    assert_eq!(requests[1].path, "/user-service/v1/did/profile/rpc");
     assert_eq!(
         requests[1].params,
         json!({ "did": "did:wba:remote.example:user:agent:e1" })
@@ -525,19 +536,19 @@ async fn directory_service_async_uses_actor_projection_and_resolution_api() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
@@ -605,13 +616,13 @@ async fn directory_resolution_prefers_valid_wns_profile_projection() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_with_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
@@ -652,19 +663,19 @@ async fn directory_resolution_ignores_mismatched_wns_profile_and_falls_back() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_with_mismatched_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
@@ -702,19 +713,19 @@ async fn directory_resolution_ignores_wns_profile_without_subject_and_falls_back
         .remove("subject_did");
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             lookup,
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
@@ -747,13 +758,13 @@ async fn directory_display_profile_hydration_reads_local_cache_only() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_with_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "resolve",
             json!({ "did": "did:example:bob" }),
             json!({ "did": "did:example:bob", "status": "active" }),
@@ -808,6 +819,107 @@ async fn directory_display_profile_hydration_reads_local_cache_only() {
 }
 
 #[tokio::test]
+async fn directory_display_profile_hydration_prefers_persona_profile_without_contact() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/v1/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/v1/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(server.join().len(), 2);
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    connection.execute("DELETE FROM contacts", []).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM peer_profiles", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1
+    );
+    drop(connection);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(hydrated.len(), 1);
+    assert!(hydrated[0].cache_hit);
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob WNS"));
+    assert_eq!(
+        hydrated[0].handle.as_ref().map(Handle::as_str),
+        Some("bob.awiki.test")
+    );
+}
+
+#[cfg(feature = "blocking")]
+#[test]
+fn directory_display_profile_hydration_blocking_prefers_persona_profile_without_contact() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/v1/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/v1/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    client
+        .directory()
+        .resolve_peer(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .unwrap();
+    assert_eq!(server.join().len(), 2);
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    connection.execute("DELETE FROM contacts", []).unwrap();
+    drop(connection);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .unwrap();
+
+    assert_eq!(hydrated.len(), 1);
+    assert!(hydrated[0].cache_hit);
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob WNS"));
+    assert_eq!(
+        hydrated[0].handle.as_ref().map(Handle::as_str),
+        Some("bob.awiki.test")
+    );
+}
+
+#[tokio::test]
 async fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
     let fixture = Fixture::new();
     let old_did = "did:example:bob-old";
@@ -820,7 +932,7 @@ async fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
     );
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_value(),
@@ -883,19 +995,19 @@ async fn directory_service_reads_public_profile_without_resolve_call() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({ "handle": "bob.awiki.test" }),
             handle_lookup_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
         ),
         ExpectedRpc::new(
-            "/user-service/did/profile/rpc",
+            "/user-service/v1/did/profile/rpc",
             "get_public_profile",
             json!({ "did": "did:example:bob" }),
             public_profile_value(),
@@ -1090,6 +1202,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -1121,6 +1234,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -1251,7 +1365,7 @@ impl awiki_im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for 
     ) -> ImResult<Value> {
         self.requests
             .push((endpoint.to_string(), method.to_string(), params.clone()));
-        assert_eq!(endpoint, "/user-service/did/profile/rpc");
+        assert_eq!(endpoint, "/user-service/v1/did/profile/rpc");
         assert_eq!(method, "get_me");
         assert_eq!(params, json!({}));
         Ok(json!({
@@ -1282,7 +1396,7 @@ impl awiki_im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport
         method: &str,
         params: Value,
     ) -> ImResult<Value> {
-        assert_eq!(endpoint, "/user-service/did/profile/rpc");
+        assert_eq!(endpoint, "/user-service/v1/did/profile/rpc");
         assert_eq!(method, "update_me");
         assert_eq!(
             params,
@@ -1336,17 +1450,17 @@ impl awiki_im_core::compat::directory::BridgeDirectoryRpcTransport for Directory
             .push((endpoint.to_string(), method.to_string(), params.clone()));
         match (&self.mode, method) {
             (DirectoryTransportMode::HandleSuccess, "lookup") => {
-                assert_eq!(endpoint, "/user-service/handle/rpc");
+                assert_eq!(endpoint, "/user-service/v1/handle/rpc");
                 assert_eq!(params, json!({ "handle": "bob.awiki.test" }));
                 Ok(handle_lookup_value())
             }
             (DirectoryTransportMode::HandleSuccess, "get_public_profile") => {
-                assert_eq!(endpoint, "/user-service/did/profile/rpc");
+                assert_eq!(endpoint, "/user-service/v1/did/profile/rpc");
                 assert_eq!(params, json!({ "did": "did:example:bob" }));
                 Ok(public_profile_value())
             }
             (DirectoryTransportMode::HandleSuccess, "resolve") => {
-                assert_eq!(endpoint, "/user-service/did/profile/rpc");
+                assert_eq!(endpoint, "/user-service/v1/did/profile/rpc");
                 assert_eq!(params, json!({ "did": "did:example:bob" }));
                 Ok(json!({ "did": "did:example:bob", "status": "active" }))
             }
@@ -1388,6 +1502,7 @@ fn handle_lookup_with_profile_value() -> Value {
     json!({
         "handle": "bob.awiki.test",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.test",
         "status": "active",
         "profile": {
@@ -1410,6 +1525,7 @@ fn handle_lookup_with_mismatched_profile_value() -> Value {
     json!({
         "handle": "bob.awiki.test",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.test",
         "status": "active",
         "profile": {
@@ -1454,11 +1570,16 @@ fn public_profile_value() -> Value {
 }
 
 fn unique_temp_root() -> PathBuf {
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("im-core-phase2-{}-{nanos}", std::process::id()))
+    let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "im-core-phase2-{}-{nanos}-{sequence}",
+        std::process::id()
+    ))
 }
 
 struct RpcTestServer {

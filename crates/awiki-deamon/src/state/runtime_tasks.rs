@@ -440,8 +440,7 @@ WHERE retry_id = ?3
 "#
         .to_string();
         sql.push_str(
-            &std::iter::repeat("?")
-                .take(current_statuses.len())
+            &std::iter::repeat_n("?", current_statuses.len())
                 .collect::<Vec<_>>()
                 .join(", "),
         );
@@ -969,8 +968,7 @@ WHERE run_id = ?6
 "#
         .to_string();
         sql.push_str(
-            &std::iter::repeat("?")
-                .take(current_statuses.len())
+            &std::iter::repeat_n("?", current_statuses.len())
                 .collect::<Vec<_>>()
                 .join(", "),
         );

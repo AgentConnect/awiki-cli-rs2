@@ -136,7 +136,7 @@ fn connect_session_auth_plan_seeds_bearer_scopes_when_stored_jwt_is_nonblank() {
         vec![
             ("https://awiki.example/", " jwt-old "),
             (
-                "https://awiki.example/user-service/did-auth/rpc",
+                "https://awiki.example/user-service/v1/did-auth/rpc",
                 " jwt-old "
             ),
             ("https://awiki.example/im/ws", " jwt-old "),

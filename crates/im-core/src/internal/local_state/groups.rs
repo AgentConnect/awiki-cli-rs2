@@ -63,6 +63,11 @@ mod handle_member_identity_tests {
         let first_id: String = db
             .query_row("SELECT user_id FROM group_members", [], |row| row.get(0))
             .unwrap();
+        let first_membership_id: String = db
+            .query_row("SELECT membership_id FROM group_members", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert!(first_id.starts_with("peer_"));
 
         replace_group_members(
@@ -99,6 +104,14 @@ mod handle_member_identity_tests {
         assert_eq!(handle["user_id"], first_id);
         assert_eq!(handle["member_did"], "did:alice:new");
         assert_ne!(handle["user_id"], did["user_id"]);
+        let rebound_membership_id: String = db
+            .query_row(
+                "SELECT membership_id FROM group_members WHERE anchor_kind = 'handle'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rebound_membership_id, first_membership_id);
 
         let rollback = replace_group_members(
             &mut db,
@@ -118,6 +131,70 @@ mod handle_member_identity_tests {
             .unwrap();
         assert_eq!(preserved, (first_id, "did:alice:new".to_owned()));
     }
+
+    #[test]
+    fn fallback_membership_id_ignores_binding_generation_but_honors_rejoin_epoch() {
+        let first = fallback_membership_id(
+            "did:wba:awiki.info:groups:g1:e1_group",
+            "handle",
+            "alice.awiki.info",
+            None,
+        );
+        let rebound = fallback_membership_id(
+            "did:wba:awiki.info:groups:g1:e1_group",
+            "handle",
+            "alice.awiki.info",
+            None,
+        );
+        let rejoined = fallback_membership_id(
+            "did:wba:awiki.info:groups:g1:e1_group",
+            "handle",
+            "alice.awiki.info",
+            Some("join-event-2"),
+        );
+        assert_eq!(first, rebound);
+        assert_ne!(first, rejoined);
+    }
+
+    #[test]
+    fn active_group_projection_ensures_one_canonical_empty_conversation() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let record = GroupRecord {
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            group_id: "group-storage-id".to_owned(),
+            group_did: "did:example:canonical-group".to_owned(),
+            name: "Empty Group".to_owned(),
+            membership_status: "active".to_owned(),
+            stored_at: "2026-07-15T00:00:00Z".to_owned(),
+            ..GroupRecord::default()
+        };
+
+        upsert_group(&db, record.clone()).unwrap();
+        upsert_group(&db, record).unwrap();
+
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE owner_identity_id = 'owner-id'
+  AND conversation_id = 'group:did:example:canonical-group'
+  AND canonical_group_did = 'did:example:canonical-group'
+  AND lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -126,11 +203,15 @@ pub(crate) struct GroupMemberRecord {
     pub(crate) owner_did: String,
     pub(crate) group_id: String,
     pub(crate) user_id: String,
+    pub(crate) membership_id: String,
+    pub(crate) peer_persona_id: String,
     pub(crate) member_did: String,
+    pub(crate) member_credential_did: String,
     pub(crate) member_handle: String,
     pub(crate) anchor_kind: String,
     pub(crate) anchor_value: String,
     pub(crate) handle_binding_generation: String,
+    pub(crate) membership_epoch: String,
     pub(crate) profile_url: String,
     pub(crate) role: String,
     pub(crate) status: String,
@@ -243,7 +324,56 @@ DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    ensure_active_group_conversation(connection, &owner_identity_id, &group_id)?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn ensure_active_group_conversation(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    group_id: &str,
+) -> crate::ImResult<()> {
+    let projection = connection
+        .query_row(
+            r#"SELECT owner_did, COALESCE(NULLIF(TRIM(group_did), ''), ''),
+                      COALESCE(NULLIF(TRIM(membership_status), ''), 'active'),
+                      COALESCE(NULLIF(TRIM(last_message_at), ''), stored_at)
+FROM groups WHERE owner_identity_id = ?1 AND group_id = ?2"#,
+            (owner_identity_id, group_id),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((owner_did, group_did, membership_status, activity_at)) = projection else {
+        return Ok(());
+    };
+    if matches!(
+        membership_status.trim().to_ascii_lowercase().as_str(),
+        "left" | "removed" | "inactive" | "non_member"
+    ) || crate::ids::Did::parse(&group_did).is_err()
+    {
+        return Ok(());
+    }
+    let conversation_id = super::owner_scope::group_conversation_id(&group_did);
+    super::conversation_registry::ensure(
+        connection,
+        &super::conversation_registry::ConversationRegistryRecord {
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did,
+            conversation_id,
+            thread_kind: "group".to_owned(),
+            thread_id: group_did,
+            activity_at,
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -377,7 +507,7 @@ pub(crate) fn replace_group_members(
     let existing_ids = {
         let mut statement = transaction
             .prepare(
-                "SELECT anchor_kind, anchor_value, user_id, COALESCE(member_did, ''), COALESCE(handle_binding_generation, '') FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2",
+                "SELECT anchor_kind, anchor_value, user_id, COALESCE(member_did, ''), COALESCE(handle_binding_generation, ''), COALESCE(membership_id, '') FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2",
             )
             .map_err(super::local_state_unavailable)?;
         let rows = statement
@@ -390,6 +520,7 @@ pub(crate) fn replace_group_members(
                             row.get::<_, String>(2)?,
                             row.get::<_, String>(3)?,
                             row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
                         ),
                     ))
                 },
@@ -409,16 +540,25 @@ pub(crate) fn replace_group_members(
         )
         .map_err(super::local_state_unavailable)?;
     let now = now_utc();
+    let canonical_group_did = transaction
+        .query_row(
+            r#"SELECT COALESCE(NULLIF(TRIM(group_did), ''), group_id)
+FROM groups WHERE owner_identity_id = ?1 AND group_id = ?2"#,
+            rusqlite::params![owner_identity_id.as_str(), group_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| group_id.clone());
     {
         let mut seen_anchors = std::collections::BTreeSet::new();
         let mut statement = transaction
             .prepare(
                 r#"
 INSERT INTO group_members
-    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, anchor_kind,
-     anchor_value, handle_binding_generation, profile_url, role, status, joined_at,
+    (owner_identity_id, owner_did, group_id, user_id, membership_id, peer_persona_id,
+     member_did, member_credential_did, member_handle, anchor_kind, anchor_value,
+     handle_binding_generation, membership_epoch, profile_url, role, status, joined_at,
      sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"#,
             )
             .map_err(super::local_state_unavailable)?;
         for member in members {
@@ -439,15 +579,25 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
             let existing = existing_ids.get(&(anchor_kind.clone(), anchor_value.clone()));
             if anchor_kind == "handle" {
                 validate_handle_generation_transition(
-                    existing.map(|(_, did, generation)| (did.as_str(), generation.as_str())),
+                    existing.map(|(_, did, generation, _)| (did.as_str(), generation.as_str())),
                     &member.member_did,
                     &member.handle_binding_generation,
                 )?;
             }
+            let membership_id = optional_string(&member.membership_id)
+                .or_else(|| existing.and_then(|(_, _, _, value)| optional_string(value)))
+                .unwrap_or_else(|| {
+                    fallback_membership_id(
+                        &canonical_group_did,
+                        &anchor_kind,
+                        &anchor_value,
+                        optional_string(&member.membership_epoch).as_deref(),
+                    )
+                });
             let user_id = existing
-                .map(|(user_id, _, _)| user_id.clone())
+                .map(|(user_id, _, _, _)| user_id.clone())
                 .or_else(|| optional_string(&member.user_id))
-                .unwrap_or_else(generate_peer_user_id);
+                .unwrap_or_else(|| compatibility_user_id_for_membership(&membership_id));
             let last_synced_at = default_string(member.last_synced_at.clone(), &now);
             statement
                 .execute(rusqlite::params![
@@ -455,11 +605,16 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
                     owner_did.as_str(),
                     group_id.as_str(),
                     user_id,
+                    membership_id,
+                    optional_string(&member.peer_persona_id),
                     optional_string(&member.member_did),
+                    optional_string(&member.member_credential_did)
+                        .or_else(|| optional_string(&member.member_did)),
                     optional_string(&member.member_handle),
                     anchor_kind,
                     anchor_value,
                     optional_string(&member.handle_binding_generation),
+                    optional_string(&member.membership_epoch),
                     optional_string(&member.profile_url),
                     optional_string(&member.role),
                     default_string(member.status.clone(), "active"),
@@ -482,17 +637,35 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
 }
 
 #[cfg(feature = "sqlite")]
-fn generate_peer_user_id() -> String {
-    use rand::RngCore as _;
-    let mut bytes = [0_u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let mut value = String::with_capacity(37);
-    value.push_str("peer_");
-    for byte in bytes {
+fn compatibility_user_id_for_membership(membership_id: &str) -> String {
+    membership_id
+        .strip_prefix("membership:v1:")
+        .map(|value| format!("peer_{value}"))
+        .unwrap_or_else(|| membership_id.to_owned())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn fallback_membership_id(
+    canonical_group_did: &str,
+    anchor_kind: &str,
+    normalized_anchor_value: &str,
+    membership_epoch: Option<&str>,
+) -> String {
+    use sha2::{Digest as _, Sha256};
+    let input = format!(
+        "membership:v1\ngroup:{}\nanchor-kind:{}\nanchor:{}\nepoch:{}",
+        canonical_group_did.trim(),
+        anchor_kind.trim().to_ascii_lowercase(),
+        normalized_anchor_value.trim().to_ascii_lowercase(),
+        membership_epoch.unwrap_or_default().trim(),
+    );
+    let digest = Sha256::digest(input.as_bytes());
+    let mut value = String::with_capacity(64);
+    for byte in digest {
         use std::fmt::Write as _;
         let _ = write!(value, "{byte:02x}");
     }
-    value
+    format!("membership:v1:{value}")
 }
 
 #[cfg(feature = "sqlite")]
@@ -719,6 +892,7 @@ pub(crate) fn list_group_messages_for_owner_identity(
 SELECT *
 FROM messages
 WHERE {} AND (group_did = ?2 OR group_id = ?2)
+  AND hydration_state = 'hydrated'
   AND COALESCE(server_seq, 0) > ?3
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
 LIMIT ?4"#,
@@ -740,6 +914,7 @@ LIMIT ?4"#,
 SELECT *
 FROM messages
 WHERE {} AND (group_did = ?2 OR group_id = ?2)
+  AND hydration_state = 'hydrated'
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
 LIMIT ?3"#,
         owner_predicate("messages")
@@ -1076,6 +1251,19 @@ VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, 'text/plain', 'hello', 7, ?8, ?8, ?9)"#,
             ),
         )
         .unwrap();
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, group_id, group_did, content_type, server_seq, hydration_state,
+     sent_at, stored_at, credential_name)
+VALUES ('msg-group-discovered', 'alice-identity', 'did:owner', 'group:did:group',
+        'group:did:group', 0, 'did:member', 'group-key', 'did:group',
+        'application/json', 8, 'discovered', '2026-05-21T00:00:01Z',
+        '2026-05-21T00:00:01Z', 'alice')"#,
+            [],
+        )
+        .unwrap();
 
         let snapshot =
             get_group_snapshot_for_owner_identity(&db, "alice-identity", "did:owner", "did:group")
@@ -1101,6 +1289,17 @@ VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, 'text/plain', 'hello', 7, ?8, ?8, ?9)"#,
             "did:group",
             10,
             Some(1),
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["msg_id"], "msg-group-1");
+        let messages = list_group_messages_for_owner_identity(
+            &db,
+            "alice-identity",
+            "did:owner",
+            "did:group",
+            10,
+            None,
         )
         .unwrap();
         assert_eq!(messages.len(), 1);

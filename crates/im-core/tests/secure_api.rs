@@ -514,6 +514,7 @@ fn test_config_with_base_url(base_url: &str) -> ImCoreConfig {
     ImCoreConfig {
         service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
         did_domain: "awiki.test".to_owned(),
+        client_version_info: None,
         user_service_endpoint: None,
         message_service_endpoint: None,
         mail_service_endpoint: None,

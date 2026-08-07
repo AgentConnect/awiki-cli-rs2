@@ -470,7 +470,7 @@ fn build_signed_group_e2ee_params(
             identity_name: credentials.identity_name.clone(),
             did_document: credentials.did_document.clone(),
             key1_private_pem: credentials.key1_private_pem.clone(),
-            verification_method: None,
+            verification_method: credentials.verification_method.clone(),
         },
         &payload,
     )?;
@@ -581,7 +581,6 @@ fn group_e2ee_meta(
         content_type.trim()
     };
     let mut meta = json_object(json!({
-        "anp_version": "1.0",
         "profile": GROUP_E2EE_PROFILE,
         "security_profile": if security_profile.trim().is_empty() {
             GROUP_E2EE_SECURITY_PROFILE
@@ -1157,6 +1156,7 @@ mod tests {
         content_type: &str,
     ) {
         assert_eq!(params["meta"]["profile"], GROUP_E2EE_PROFILE);
+        assert!(params["meta"].get("anp_version").is_none());
         assert_eq!(
             params["meta"]["target"],
             json!({"kind": target_kind, "did": target_did})
@@ -1185,6 +1185,7 @@ mod tests {
             identity_name: "alice".to_owned(),
             did_document: Some(bundle.did_document),
             key1_private_pem,
+            verification_method: None,
         }
     }
 

@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 33;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 35;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -261,6 +261,94 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS agent_device_identity (
+            agent_did TEXT PRIMARY KEY,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_kind TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            full_handle TEXT NOT NULL,
+            binding_generation TEXT NOT NULL,
+            did_document_json TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            root_key_id TEXT NOT NULL,
+            root_private_key_ref_json TEXT NOT NULL,
+            device_signing_key_id TEXT NOT NULL,
+            device_signing_private_key_ref_json TEXT NOT NULL,
+            device_e2ee_key_id TEXT NOT NULL,
+            device_e2ee_private_key_ref_json TEXT NOT NULL,
+            daemon_subkey_package_ref_json TEXT,
+            authorization_status TEXT NOT NULL,
+            role TEXT NOT NULL,
+            management_ready INTEGER NOT NULL,
+            auth_generation INTEGER NOT NULL,
+            access_token_ref_json TEXT NOT NULL,
+            document_version INTEGER NOT NULL,
+            document_hash TEXT NOT NULL,
+            registry_version INTEGER NOT NULL,
+            identity_status TEXT NOT NULL,
+            legacy_migration_state TEXT NOT NULL,
+            last_error_code TEXT,
+            identity_id TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(account_id, protocol_device_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_device_identity_status
+        ON agent_device_identity(identity_status, legacy_migration_state);
+
+        CREATE TABLE IF NOT EXISTS agent_registration_pending (
+            registration_id TEXT PRIMARY KEY,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            agent_kind TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            document_digest TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_registration_pending_status
+        ON agent_registration_pending(status, updated_at_ms);
+
+        CREATE TABLE IF NOT EXISTS agent_sync_probe (
+            agent_did TEXT PRIMARY KEY,
+            v2_subprotocol_negotiated INTEGER NOT NULL DEFAULT 0,
+            v2_bootstrap_completed INTEGER NOT NULL DEFAULT 0,
+            last_reconcile_protocol TEXT,
+            legacy_sync_used INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_legacy_upgrade_pending (
+            agent_did TEXT PRIMARY KEY,
+            agent_kind TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            target_document_hash TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_identity_migration_state (
+            agent_did TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            last_error_code TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS hermes_profiles (
             agent_did TEXT PRIMARY KEY,
             runtime_profile_id TEXT NOT NULL,
@@ -471,7 +559,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_secure_bootstrap_replay_sender
         ON secure_bootstrap_replay(sender_human_did, recipient_daemon_did, status);
 
-        CREATE TABLE IF NOT EXISTS app_message_agent_binding (
+        CREATE TABLE IF NOT EXISTS app_personal_agent_binding (
             binding_id TEXT PRIMARY KEY,
             user_did TEXT NOT NULL,
             inbox_auth_verification_method TEXT NOT NULL,
@@ -490,13 +578,13 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             revoked_at_ms INTEGER
         );
 
-        CREATE INDEX IF NOT EXISTS idx_app_message_agent_binding_active
-        ON app_message_agent_binding(user_did, app_instance_id, role, status, revoked_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_app_personal_agent_binding_active
+        ON app_personal_agent_binding(user_did, app_instance_id, role, status, revoked_at_ms);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_app_message_agent_binding_active_role
-        ON app_message_agent_binding(user_did, app_instance_id, role)
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_app_personal_agent_binding_active_role
+        ON app_personal_agent_binding(user_did, app_instance_id, role)
         WHERE revoked_at_ms IS NULL
-          AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
+          AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring');
 
         CREATE TABLE IF NOT EXISTS inbox_cursor (
             owner_did TEXT NOT NULL,
@@ -598,7 +686,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_final_outbox_v14(connection)?;
     migrate_runtime_final_plain_delivery_v15(connection)?;
     migrate_user_delegated_identity_v16(connection)?;
-    migrate_app_message_agent_binding_v17(connection)?;
+    migrate_app_personal_agent_binding_v17(connection)?;
     migrate_user_delegated_inbox_sync_v18(connection)?;
     migrate_controller_scope_v19(connection)?;
     migrate_control_command_state_v20(connection)?;
@@ -615,6 +703,8 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_profile_preferred_language_v31(connection)?;
     migrate_agent_identity_vault_refs_v32(connection)?;
     migrate_user_delegated_identity_vault_refs_v33(connection)?;
+    migrate_legacy_message_agent_binding_v34(connection)?;
+    migrate_agent_device_identity_v35(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -622,6 +712,101 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_agent_device_identity_v35(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_device_identity (
+            agent_did TEXT PRIMARY KEY,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_kind TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            full_handle TEXT NOT NULL,
+            binding_generation TEXT NOT NULL,
+            did_document_json TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            root_key_id TEXT NOT NULL,
+            root_private_key_ref_json TEXT NOT NULL,
+            device_signing_key_id TEXT NOT NULL,
+            device_signing_private_key_ref_json TEXT NOT NULL,
+            device_e2ee_key_id TEXT NOT NULL,
+            device_e2ee_private_key_ref_json TEXT NOT NULL,
+            daemon_subkey_package_ref_json TEXT,
+            authorization_status TEXT NOT NULL,
+            role TEXT NOT NULL,
+            management_ready INTEGER NOT NULL,
+            auth_generation INTEGER NOT NULL,
+            access_token_ref_json TEXT NOT NULL,
+            document_version INTEGER NOT NULL,
+            document_hash TEXT NOT NULL,
+            registry_version INTEGER NOT NULL,
+            identity_status TEXT NOT NULL,
+            legacy_migration_state TEXT NOT NULL,
+            last_error_code TEXT,
+            identity_id TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(account_id, protocol_device_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_device_identity_status
+        ON agent_device_identity(identity_status, legacy_migration_state);
+
+        CREATE TABLE IF NOT EXISTS agent_registration_pending (
+            registration_id TEXT PRIMARY KEY,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            agent_kind TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            document_digest TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_registration_pending_status
+        ON agent_registration_pending(status, updated_at_ms);
+
+        CREATE TABLE IF NOT EXISTS agent_sync_probe (
+            agent_did TEXT PRIMARY KEY,
+            v2_subprotocol_negotiated INTEGER NOT NULL DEFAULT 0,
+            v2_bootstrap_completed INTEGER NOT NULL DEFAULT 0,
+            last_reconcile_protocol TEXT,
+            legacy_sync_used INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_legacy_upgrade_pending (
+            agent_did TEXT PRIMARY KEY,
+            agent_kind TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            target_document_hash TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_identity_migration_state (
+            agent_did TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            last_error_code TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
     )?;
     Ok(())
 }
@@ -655,6 +840,65 @@ fn migrate_user_delegated_identity_vault_refs_v33(connection: &Connection) -> Re
         "private_key_ref_json",
         "TEXT",
     )
+}
+
+fn migrate_legacy_message_agent_binding_v34(connection: &Connection) -> Result<()> {
+    if !table_exists(connection, "app_message_agent_binding")? {
+        return Ok(());
+    }
+
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO app_personal_agent_binding (
+            binding_id,
+            user_did,
+            inbox_auth_verification_method,
+            app_instance_id,
+            bootstrap_id,
+            idempotency_key,
+            daemon_agent_did,
+            runtime_agent_did,
+            runtime_profile_id,
+            role,
+            desired_agent_json,
+            capability_policy_json,
+            status,
+            created_at_ms,
+            updated_at_ms,
+            revoked_at_ms
+        )
+        SELECT
+            binding_id,
+            user_did,
+            inbox_auth_verification_method,
+            app_instance_id,
+            bootstrap_id,
+            idempotency_key,
+            daemon_agent_did,
+            runtime_agent_did,
+            runtime_profile_id,
+            role,
+            desired_agent_json,
+            capability_policy_json,
+            CASE status
+                WHEN 'message_agent_ready' THEN 'personal_agent_ready'
+                WHEN 'message_agent_active' THEN 'personal_agent_active'
+                WHEN 'message_agent_ensuring' THEN 'personal_agent_ensuring'
+                WHEN 'message_agent_disabled' THEN 'personal_agent_disabled'
+                WHEN 'message_agent_revoked' THEN 'personal_agent_revoked'
+                ELSE status
+            END,
+            created_at_ms,
+            updated_at_ms,
+            revoked_at_ms
+        FROM app_message_agent_binding;
+
+        DROP TABLE app_message_agent_binding;
+        "#,
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn migrate_runtime_profile_preferred_language_v31(connection: &Connection) -> Result<()> {
@@ -798,10 +1042,10 @@ fn migrate_user_delegated_identity_v16(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn migrate_app_message_agent_binding_v17(connection: &Connection) -> Result<()> {
+fn migrate_app_personal_agent_binding_v17(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"
-        CREATE TABLE IF NOT EXISTS app_message_agent_binding (
+        CREATE TABLE IF NOT EXISTS app_personal_agent_binding (
             binding_id TEXT PRIMARY KEY,
             user_did TEXT NOT NULL,
             inbox_auth_verification_method TEXT NOT NULL,
@@ -820,13 +1064,13 @@ fn migrate_app_message_agent_binding_v17(connection: &Connection) -> Result<()> 
             revoked_at_ms INTEGER
         );
 
-        CREATE INDEX IF NOT EXISTS idx_app_message_agent_binding_active
-        ON app_message_agent_binding(user_did, app_instance_id, role, status, revoked_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_app_personal_agent_binding_active
+        ON app_personal_agent_binding(user_did, app_instance_id, role, status, revoked_at_ms);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_app_message_agent_binding_active_role
-        ON app_message_agent_binding(user_did, app_instance_id, role)
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_app_personal_agent_binding_active_role
+        ON app_personal_agent_binding(user_did, app_instance_id, role)
         WHERE revoked_at_ms IS NULL
-          AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
+          AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring');
         "#,
     )?;
     Ok(())
@@ -1914,4 +2158,13 @@ fn add_column_if_missing(
         [],
     )?;
     Ok(())
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    let count = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(count > 0)
 }

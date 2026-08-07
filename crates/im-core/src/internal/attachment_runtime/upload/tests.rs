@@ -69,6 +69,12 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
     assert_eq!(calls.len(), 4);
     let create = calls[0].rpc("attachment.create_slot");
     assert_eq!(create.endpoint, MESSAGE_RPC_ENDPOINT);
+    assert_eq!(create.params["meta"]["profile"], "anp.attachment.v1");
+    assert!(create.params["meta"].get("anp_version").is_none());
+    let requested_attachment_id = create.params["body"]["attachment_id"]
+        .as_str()
+        .expect("caller attachment id");
+    assert!(requested_attachment_id.starts_with("att-"));
     assert_eq!(
         create.params["meta"]["target"],
         json!({"kind": "service", "did": "did:example:message-service"})
@@ -90,7 +96,12 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
     assert_eq!(put.body.as_slice(), b"hello");
 
     let commit = calls[2].rpc("attachment.commit_object");
-    assert_eq!(commit.params["body"]["attachment_id"], "att-1");
+    assert_eq!(commit.params["meta"]["profile"], "anp.attachment.v1");
+    assert!(commit.params["meta"].get("anp_version").is_none());
+    assert_eq!(
+        commit.params["body"]["attachment_id"],
+        requested_attachment_id
+    );
     assert_eq!(commit.params["body"]["slot_id"], "slot-1");
     assert_eq!(
         commit.params["body"]["digest"]["value_b64u"],
@@ -104,7 +115,7 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
     );
     assert_eq!(
         send.params["body"]["payload"]["primary_attachment_id"],
-        "att-1"
+        requested_attachment_id
     );
     assert_eq!(send.params["body"]["payload"]["caption"], "caption");
     assert_eq!(
@@ -115,6 +126,104 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
         result.sdk_result.message.metadata.operation_id.as_deref(),
         send.params["meta"]["operation_id"].as_str()
     );
+}
+
+#[test]
+fn attachments_upload_runtime_reuses_one_p7_v1_control_context() {
+    let fixture = Fixture::new(Some("did:example:message-service"));
+    fixture.write_attachment_service_document("did:example:message-service");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+
+    AttachmentUploadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+        },
+    )
+    .send(AttachmentSendInput {
+        target: crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        request: bytes_request(
+            Some("attachment.txt"),
+            Some("text/plain"),
+            b"attachment".to_vec(),
+            None,
+            None,
+            None,
+        ),
+        resolved_target_did: None,
+        client_message_id: None,
+        credentials: Some(fixture.credentials()),
+    })
+    .expect("P7 v1 attachment upload");
+
+    let calls = calls.borrow();
+    let create = calls[0].rpc("attachment.create_slot");
+    let requested_attachment_id = create.params["body"]["attachment_id"]
+        .as_str()
+        .expect("P7 v1 caller attachment id");
+    assert!(requested_attachment_id.starts_with("att-"));
+    assert_eq!(create.params["meta"]["profile"], "anp.attachment.v1");
+    assert!(create.params["meta"].get("anp_version").is_none());
+    assert_eq!(create.endpoint, MESSAGE_RPC_ENDPOINT);
+
+    let commit = calls[2].rpc("attachment.commit_object");
+    assert_eq!(commit.params["meta"]["profile"], "anp.attachment.v1");
+    assert_eq!(
+        commit.params["meta"]["target"],
+        create.params["meta"]["target"]
+    );
+    assert_eq!(
+        commit.params["body"]["attachment_id"],
+        requested_attachment_id
+    );
+}
+
+#[test]
+fn attachments_upload_runtime_rejects_local_service_did_mismatch_before_transport() {
+    let fixture = Fixture::new(Some("did:example:configured-home"));
+    fixture.write_attachment_service_document("did:example:different-home");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+
+    let error = AttachmentUploadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+        },
+    )
+    .send(AttachmentSendInput {
+        target: crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        request: bytes_request(
+            Some("mismatch.txt"),
+            Some("text/plain"),
+            b"mismatch".to_vec(),
+            None,
+            None,
+            None,
+        ),
+        resolved_target_did: None,
+        client_message_id: None,
+        credentials: Some(fixture.credentials()),
+    })
+    .expect_err("mismatched local Home service DID must fail closed");
+
+    assert!(matches!(
+        error,
+        crate::ImError::InvalidInput { field: Some(field), message }
+            if field == "service_did" && message.contains("configured Home")
+    ));
+    assert!(calls.borrow().is_empty());
 }
 
 #[test]
@@ -475,6 +584,121 @@ fn attachments_upload_runtime_direct_handle_requires_resolved_did() {
     ));
 }
 
+#[test]
+fn attachments_upload_runtime_rejects_mismatched_p7_create_id() {
+    let fixture = Fixture::new(Some("did:example:message-service"));
+    fixture.write_attachment_service_document("did:example:message-service");
+    let client = fixture.client();
+
+    let error = AttachmentUploadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        InvalidResponseTransport {
+            invalid: InvalidResponse::CreateAttachmentId,
+        },
+    )
+    .prepare_and_commit_object(secure_prepare_input())
+    .expect_err("create response must echo caller attachment id");
+
+    assert_serialization_error_contains(error, "create_slot response attachment_id");
+}
+
+#[tokio::test]
+async fn attachments_upload_runtime_async_rejects_mismatched_p7_create_id() {
+    let fixture = Fixture::new(Some("did:example:message-service"));
+    fixture.write_attachment_service_document("did:example:message-service");
+    let client = fixture.client();
+
+    let error = AttachmentUploadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        InvalidResponseTransport {
+            invalid: InvalidResponse::CreateAttachmentId,
+        },
+    )
+    .prepare_and_commit_object_async(secure_prepare_input())
+    .await
+    .expect_err("async create response must echo caller attachment id");
+
+    assert_serialization_error_contains(error, "create_slot response attachment_id");
+}
+
+#[test]
+fn attachments_upload_runtime_rejects_uncommitted_and_mismatched_commit_ids() {
+    for (invalid, expected) in [
+        (InvalidResponse::CommitFalse, "committed=true"),
+        (
+            InvalidResponse::CommitAttachmentId,
+            "commit_object response attachment_id",
+        ),
+    ] {
+        let fixture = Fixture::new(Some("did:example:message-service"));
+        fixture.write_attachment_service_document("did:example:message-service");
+        let client = fixture.client();
+        let error = AttachmentUploadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            InvalidResponseTransport { invalid },
+        )
+        .prepare_and_commit_object(secure_prepare_input())
+        .expect_err("invalid commit response must fail closed");
+        assert_serialization_error_contains(error, expected);
+    }
+}
+
+#[tokio::test]
+async fn attachments_upload_runtime_async_rejects_mismatched_commit_object_uri() {
+    let fixture = Fixture::new(Some("did:example:message-service"));
+    fixture.write_attachment_service_document("did:example:message-service");
+    let client = fixture.client();
+
+    let error = AttachmentUploadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        InvalidResponseTransport {
+            invalid: InvalidResponse::CommitObjectUri,
+        },
+    )
+    .prepare_and_commit_object_async(secure_prepare_input())
+    .await
+    .expect_err("async commit object URI mismatch must fail closed");
+
+    assert_serialization_error_contains(error, "commit_object response object_uri");
+}
+
+fn secure_prepare_input() -> AttachmentPrepareObjectInput {
+    AttachmentPrepareObjectInput {
+        target: crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        request: bytes_request(
+            Some("secure.txt"),
+            Some("text/plain"),
+            b"secure attachment".to_vec(),
+            None,
+            None,
+            None,
+        ),
+        resolved_target_did: None,
+        message_security_profile: "direct-e2ee",
+    }
+}
+
+fn assert_serialization_error_contains(error: crate::ImError, expected: &str) {
+    assert!(matches!(
+        error,
+        crate::ImError::Serialization { detail } if detail.contains(expected)
+    ));
+}
+
 #[derive(Clone)]
 struct ReadySessionProvider {
     scopes: Rc<RefCell<Vec<crate::auth::AuthScope>>>,
@@ -528,6 +752,119 @@ impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvid
     }
 }
 
+#[derive(Clone, Copy)]
+enum InvalidResponse {
+    CreateAttachmentId,
+    CommitFalse,
+    CommitAttachmentId,
+    CommitObjectUri,
+}
+
+struct InvalidResponseTransport {
+    invalid: InvalidResponse,
+}
+
+impl AuthenticatedRpcTransport for InvalidResponseTransport {
+    fn authenticated_rpc(
+        &mut self,
+        _endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        let attachment_id = params["body"]["attachment_id"]
+            .as_str()
+            .unwrap_or("att-missing");
+        match method {
+            "attachment.create_slot" => {
+                let response_id = if matches!(self.invalid, InvalidResponse::CreateAttachmentId) {
+                    "att-wrong"
+                } else {
+                    attachment_id
+                };
+                Ok(json!({
+                    "attachment_id": response_id,
+                    "slot_id": "slot-invalid-response",
+                    "upload_uri": "https://upload.example/slot-invalid-response",
+                    "upload_headers": {},
+                    "object_uri": format!("https://objects.example/{attachment_id}"),
+                    "commit_token": "commit-invalid-response",
+                    "expires_at": "2026-05-23T01:00:00Z"
+                }))
+            }
+            "attachment.commit_object" => {
+                let response_id = if matches!(self.invalid, InvalidResponse::CommitAttachmentId) {
+                    "att-wrong".to_owned()
+                } else {
+                    attachment_id.to_owned()
+                };
+                let object_uri = if matches!(self.invalid, InvalidResponse::CommitObjectUri) {
+                    "https://objects.example/wrong".to_owned()
+                } else {
+                    format!("https://objects.example/{attachment_id}")
+                };
+                Ok(json!({
+                    "committed": !matches!(self.invalid, InvalidResponse::CommitFalse),
+                    "attachment_id": response_id,
+                    "object_uri": object_uri,
+                    "committed_at": "2026-05-23T00:00:01Z"
+                }))
+            }
+            _ => Err(crate::ImError::TransportUnavailable {
+                detail: format!("unexpected method {method}"),
+            }),
+        }
+    }
+}
+
+impl AttachmentObjectTransport for InvalidResponseTransport {
+    fn put_attachment_object(
+        &mut self,
+        _upload_uri: &str,
+        _headers: BTreeMap<String, String>,
+        _body: Vec<u8>,
+    ) -> crate::ImResult<()> {
+        Ok(())
+    }
+
+    fn get_attachment_object(
+        &mut self,
+        _object_uri: &str,
+        _download_ticket: &str,
+    ) -> crate::ImResult<crate::internal::transport::AttachmentObjectResponse> {
+        unreachable!("upload runtime should not download objects")
+    }
+}
+
+impl crate::internal::transport::AsyncAuthenticatedRpcTransport for InvalidResponseTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+    }
+}
+
+impl crate::internal::transport::AsyncAttachmentObjectTransport for InvalidResponseTransport {
+    async fn put_attachment_object(
+        &mut self,
+        upload_uri: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> crate::ImResult<()> {
+        AttachmentObjectTransport::put_attachment_object(self, upload_uri, headers, body)
+    }
+
+    async fn get_attachment_object(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+    ) -> crate::ImResult<crate::internal::transport::AttachmentObjectResponse> {
+        AttachmentObjectTransport::get_attachment_object(self, object_uri, download_ticket)
+    }
+}
+
 struct RecordingTransport {
     calls: Rc<RefCell<Vec<RecordedCall>>>,
 }
@@ -545,24 +882,30 @@ impl AuthenticatedRpcTransport for RecordingTransport {
             params: params.clone(),
         });
         match method {
-            "attachment.create_slot" => Ok(json!({
-                "attachment_id": "att-1",
-                "slot_id": "slot-1",
-                "upload_uri": "https://upload.example/slot-1",
-                "upload_headers": {
-                    "X-Upload-Token": "token-1",
-                    "Ignored-Number": 7
-                },
-                "object_uri": "https://objects.example/att-1",
-                "commit_token": "commit-token-1",
-                "expires_at": "2026-05-23T01:00:00Z"
-            })),
-            "attachment.commit_object" => Ok(json!({
-                "committed": true,
-                "attachment_id": "att-1",
-                "object_uri": "https://objects.example/att-1",
-                "committed_at": "2026-05-23T00:00:01Z"
-            })),
+            "attachment.create_slot" => {
+                let attachment_id = params["body"]["attachment_id"].as_str().unwrap_or("att-1");
+                Ok(json!({
+                    "attachment_id": attachment_id,
+                    "slot_id": "slot-1",
+                    "upload_uri": "https://upload.example/slot-1",
+                    "upload_headers": {
+                        "X-Upload-Token": "token-1",
+                        "Ignored-Number": 7
+                    },
+                    "object_uri": format!("https://objects.example/{attachment_id}"),
+                    "commit_token": "commit-token-1",
+                    "expires_at": "2026-05-23T01:00:00Z"
+                }))
+            }
+            "attachment.commit_object" => {
+                let attachment_id = params["body"]["attachment_id"].as_str().unwrap_or("att-1");
+                Ok(json!({
+                    "committed": true,
+                    "attachment_id": attachment_id,
+                    "object_uri": format!("https://objects.example/{attachment_id}"),
+                    "committed_at": "2026-05-23T00:00:01Z"
+                }))
+            }
             "direct.send" => Ok(json!({
                 "accepted": true,
                 "accepted_at": "2026-05-23T00:00:02Z",
@@ -799,6 +1142,7 @@ impl Fixture {
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -833,6 +1177,25 @@ impl Fixture {
         .unwrap()
     }
 
+    fn write_attachment_service_document(&self, service_did: &str) {
+        fs::write(
+            self.root.join("identities/alice/did.json"),
+            serde_json::to_vec_pretty(&json!({
+                "id": "did:example:alice",
+                "service": [{
+                    "id": "#message",
+                    "type": "ANPMessageService",
+                    "serviceEndpoint": "https://public.example/anp-im/rpc",
+                    "serviceDid": service_did,
+                    "profiles": ["anp.core.binding.v1", "anp.attachment.v1"],
+                    "securityProfiles": ["transport-protected"]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn credentials(&self) -> AttachmentUploadCredentials {
         let bundle = anp::authentication::create_did_wba_document(
             "awiki.test",
@@ -848,6 +1211,7 @@ impl Fixture {
             identity_name: "alice".to_string(),
             key1_private_pem: bundle.private_key_pem("key-1").unwrap().to_string(),
             did_document: Some(bundle.did_document),
+            verification_method: None,
         }
     }
 }

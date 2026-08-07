@@ -8,6 +8,11 @@ pub struct ImClient {
     conversation_store:
         Arc<OnceLock<Arc<crate::internal::runtime_store::conversation_store::ConversationStore>>>,
     message_store: Arc<OnceLock<Arc<crate::internal::runtime_store::message_store::MessageStore>>>,
+    system_notification_store: Arc<
+        OnceLock<
+            Arc<crate::internal::runtime_store::system_notification_store::SystemNotificationStore>,
+        >,
+    >,
 }
 
 impl ImClient {
@@ -22,11 +27,176 @@ impl ImClient {
             runtime: Arc::new(runtime),
             conversation_store: Arc::new(OnceLock::new()),
             message_store: Arc::new(OnceLock::new()),
+            system_notification_store: Arc::new(OnceLock::new()),
         }
     }
 
     pub fn current_identity(&self) -> &crate::identity::IdentitySummary {
         &self.identity
+    }
+
+    pub(crate) fn exact_protocol_device_id(&self) -> crate::ImResult<String> {
+        if let Some(seed) = self.runtime.owner.sync_account.as_ref() {
+            return Ok(seed.protocol_device_id.as_str().to_owned());
+        }
+        let summary = self.core_handle().identities().device_summary(
+            crate::identity::IdentitySelector::Id(self.current_identity().id.clone()),
+        )?;
+        if summary.mode != crate::identity::IdentityDeviceMode::VNext
+            || summary.readiness == crate::identity::IdentityDeviceReadiness::Blocked
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        summary
+            .protocol_device_id
+            .map(|device_id| device_id.as_str().to_owned())
+            .ok_or(crate::ImError::PermissionDenied)
+    }
+
+    pub(crate) fn realtime_requires_sync_changed_v2(&self) -> crate::ImResult<bool> {
+        if self.runtime.owner.sync_account.is_none() {
+            return Ok(false);
+        }
+        self.sync_account_context()?;
+        Ok(true)
+    }
+
+    pub(crate) fn sync_account_context(
+        &self,
+    ) -> crate::ImResult<crate::internal::identity_runtime::SyncAccountContext> {
+        let seed = self
+            .runtime
+            .owner
+            .sync_account
+            .as_ref()
+            .ok_or_else(|| crate::ImError::unsupported("active-sync-account-binding"))?;
+        if seed.account_id.trim().is_empty() || seed.account_id.trim() != seed.account_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "active identity account id is not canonical".to_owned(),
+            });
+        }
+        crate::internal::local_state::sync_v2::validate_positive_decimal(
+            "device_auth_generation",
+            &seed.device_auth_generation,
+        )
+        .map_err(|_| crate::ImError::IdentityBindingConflict {
+            detail: "active device auth generation is not canonical".to_owned(),
+        })?;
+        Ok(crate::internal::identity_runtime::SyncAccountContext {
+            account_id: seed.account_id.clone(),
+            protocol_device_id: self.exact_protocol_device_id()?,
+            device_auth_generation: seed.device_auth_generation.clone(),
+        })
+    }
+
+    /// Returns the exact, Core-derived account binding for this local vNext
+    /// client. Legacy and hosted clients fail closed.
+    pub async fn active_sync_account_binding(
+        &self,
+    ) -> crate::ImResult<crate::identity::ActiveSyncAccountBinding> {
+        #[cfg(feature = "sqlite")]
+        {
+            let context = self.sync_account_context()?;
+            let seed = self
+                .runtime
+                .owner
+                .sync_account
+                .as_ref()
+                .ok_or_else(|| crate::ImError::unsupported("active-sync-account-binding"))?;
+            let identity_generation = if let Some(generation) =
+                seed.identity_generation.get().cloned()
+            {
+                generation
+            } else {
+                let handle = self
+                    .handle()
+                    .ok_or_else(|| crate::ImError::unsupported("active-sync-account-binding"))?;
+                let lookup =
+                    crate::internal::handle_discovery::resolve_authoritative_handle_binding_async(
+                        self,
+                        handle.as_str(),
+                    )
+                    .await?;
+                if lookup.handle.as_str() != handle.as_str()
+                    || lookup.did.as_str() != self.did().as_str()
+                {
+                    return Err(crate::ImError::IdentityBindingConflict {
+                        detail: "authoritative Handle binding does not match the active identity"
+                            .to_owned(),
+                    });
+                }
+                let generation = lookup
+                    .binding_generation
+                    .ok_or_else(|| crate::ImError::unsupported("active-sync-account-binding"))?;
+                crate::internal::local_state::sync_v2::validate_positive_decimal(
+                    "identity_generation",
+                    &generation,
+                )?;
+                let local_alias = self
+                    .current_identity()
+                    .local_alias
+                    .as_deref()
+                    .ok_or_else(|| crate::ImError::unsupported("active-sync-account-binding"))?;
+                crate::internal::identity_store::IdentityStore::new(
+                    &self.core_inner().sdk_paths().identities,
+                )
+                .save_binding_generation(
+                    local_alias,
+                    self.current_identity().id.as_str(),
+                    self.did().as_str(),
+                    handle.as_str(),
+                    &generation,
+                )?;
+                if seed.identity_generation.set(generation.clone()).is_err()
+                    && seed.identity_generation.get() != Some(&generation)
+                {
+                    return Err(crate::ImError::IdentityBindingConflict {
+                        detail: "active Handle generation changed concurrently".to_owned(),
+                    });
+                }
+                generation
+            };
+            crate::internal::local_state::sync_v2::validate_positive_decimal(
+                "identity_generation",
+                &identity_generation,
+            )?;
+            let binding = crate::identity::ActiveSyncAccountBinding {
+                owner_identity_id: self.runtime.owner.identity_id.as_str().to_owned(),
+                account_id: context.account_id,
+                current_did: self.runtime.owner.current_did.as_str().to_owned(),
+                protocol_device_id: context.protocol_device_id,
+                identity_generation,
+                device_auth_generation: context.device_auth_generation,
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .try_into()
+                .unwrap_or(i64::MAX);
+            self.core_inner()
+                .local_state_db()
+                .await?
+                .upsert_identity_account_binding(
+                    crate::internal::local_state::sync_v2::IdentityAccountBinding {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        account_id: binding.account_id.clone(),
+                        handle_scope: self.handle().map(|handle| handle.as_str().to_owned()),
+                        current_did: binding.current_did.clone(),
+                        protocol_device_id: binding.protocol_device_id.clone(),
+                        identity_generation: binding.identity_generation.clone(),
+                        device_auth_generation: binding.device_auth_generation.clone(),
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )
+                .await?;
+            Ok(binding)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            Err(crate::ImError::unsupported("active-sync-account-binding"))
+        }
     }
 
     pub fn did(&self) -> &crate::ids::Did {
@@ -85,12 +255,28 @@ impl ImClient {
         crate::secure::SecureService::new(self)
     }
 
+    pub fn system_notifications(
+        &self,
+    ) -> crate::system_notifications::SystemNotificationService<'_> {
+        crate::system_notifications::SystemNotificationService::new(self)
+    }
+
+    pub fn root_key_transfer(&self) -> crate::identity::RootKeyTransferService<'_> {
+        crate::identity::RootKeyTransferService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }
 
     pub(crate) fn core_inner(&self) -> &super::ImCoreInner {
         &self.core
+    }
+
+    pub(crate) fn core_handle(&self) -> super::ImCore {
+        super::ImCore {
+            inner: self.core.clone(),
+        }
     }
 
     pub(crate) fn conversation_store(
@@ -142,5 +328,91 @@ impl ImClient {
             return;
         };
         store.on_committed_sync_invalidation(self, invalidation);
+    }
+
+    pub(crate) fn system_notification_store(
+        &self,
+    ) -> Arc<crate::internal::runtime_store::system_notification_store::SystemNotificationStore>
+    {
+        self.system_notification_store
+            .get_or_init(|| {
+                crate::internal::runtime_store::system_notification_store::SystemNotificationStore::new_for_client(self)
+            })
+            .clone()
+    }
+
+    pub(crate) fn emit_committed_system_notification(
+        &self,
+        item: crate::system_notifications::SystemNotificationSnapshot,
+    ) {
+        let Some(store) = self.system_notification_store.get() else {
+            return;
+        };
+        store.emit_committed(self, item);
+    }
+
+    pub(crate) async fn list_verified_device_join_notifications(
+        &self,
+        include_terminal: bool,
+    ) -> crate::ImResult<Vec<crate::internal::system_notification::wire::JoinNotification>> {
+        #[cfg(feature = "sqlite")]
+        {
+            let protocol_device_id = self.exact_protocol_device_id().map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("identity.protocol_device_id".to_owned()),
+                    "verified Join notifications require an exact-device identity",
+                )
+            })?;
+            self.core_inner()
+                .local_state_db()
+                .await?
+                .list_verified_system_notifications(
+                    self.current_identity().id.as_str(),
+                    self.did().as_str(),
+                    protocol_device_id,
+                    include_terminal,
+                    500,
+                )
+                .await
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = include_terminal;
+            Err(crate::ImError::unsupported(
+                "system-notification-local-state",
+            ))
+        }
+    }
+
+    pub(crate) async fn get_verified_device_join_notification(
+        &self,
+        join_session_id: &str,
+    ) -> crate::ImResult<Option<crate::internal::system_notification::wire::JoinNotification>> {
+        #[cfg(feature = "sqlite")]
+        {
+            let protocol_device_id = self.exact_protocol_device_id().map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("identity.protocol_device_id".to_owned()),
+                    "verified Join notifications require an exact-device identity",
+                )
+            })?;
+            self.core_inner()
+                .local_state_db()
+                .await?
+                .get_verified_system_notification(
+                    self.current_identity().id.as_str(),
+                    self.did().as_str(),
+                    protocol_device_id,
+                    join_session_id,
+                )
+                .await
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = join_session_id;
+            Err(crate::ImError::unsupported(
+                "system-notification-local-state",
+            ))
+        }
     }
 }

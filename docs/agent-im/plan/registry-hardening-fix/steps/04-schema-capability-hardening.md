@@ -152,7 +152,7 @@ Step index：04
 - Commit 时机：本步骤实现、验证、Review 都完成后已提交。
 - Commit 范围：schema/capability 变更按仓库聚焦提交；未混入 ANP SDK Step 05。
 - Commit 前状态：`awiki-cli-rs2` 仅暂存 Step 04 代码/生成文件/设计文档，计划台账未暂存；`awiki-me` 仅暂存 Step 04 Dart 代码和测试，无关 Android generated registrant 已恢复。
-- 纳入文件：`awiki-cli-rs2` commit `94b1c20` 包含 im-core DTO/internal、im-core-dart/generated Flutter package、awiki-deamon bootstrap/action/message_agent/user_delegated/foreground fixture、两篇 agent-im 设计文档；`awiki-me` commit `fc1895f` 包含 bootstrap model、im-core mapper 和对应测试。
+- 纳入文件：`awiki-cli-rs2` commit `94b1c20` 包含 im-core DTO/internal、im-core-dart/generated Flutter package、awiki-deamon bootstrap/action/personal_agent/user_delegated/foreground fixture、两篇 agent-im 设计文档；`awiki-me` commit `fc1895f` 包含 bootstrap model、im-core mapper 和对应测试。
 - Commit 后证据：`awiki-cli-rs2` `94b1c20 agent-im: add daemon subkey package v2`；`awiki-me` `fc1895f agent-im: write daemon subkey package v2`。
 - 遗留未提交变更：仅本计划台账文档待回填并单独提交。
 - 建议消息：已使用 `agent-im: add daemon subkey package v2`、`agent-im: write daemon subkey package v2`。

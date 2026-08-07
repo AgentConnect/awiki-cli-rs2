@@ -11,7 +11,7 @@ use serde_json::json;
 
 #[test]
 fn site_rpc_calls_match_go_methods_profiles_and_params() {
-    assert_eq!(SITE_RPC_ENDPOINT, "/site/rpc");
+    assert_eq!(SITE_RPC_ENDPOINT, "/user-service/v1/site/rpc");
 
     let domain = SiteDomain::parse(" Tenant.Example. ").expect("domain");
     let get_root = build_get_root_rpc_call(domain.clone());

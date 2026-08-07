@@ -306,10 +306,15 @@ impl Fixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
-        crate::core::ImCore::new(
+        self.client_with_group_v2(false)
+    }
+
+    fn client_with_group_v2(&self, enabled: bool) -> crate::core::ImClient {
+        crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "example.test".to_owned(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -332,6 +337,7 @@ impl Fixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
+            crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(enabled),
         )
         .unwrap()
         .client(crate::identity::IdentitySelector::Did(
@@ -346,8 +352,264 @@ impl Fixture {
             identity_name: "alice".to_owned(),
             did_document: Some(self.did_bundle.did_document.clone()),
             key1_private_pem,
+            verification_method: None,
         }
     }
+}
+
+#[test]
+fn public_group_lifecycle_gate_keeps_legacy_off_and_selects_v2_on() {
+    let fixture = Fixture::new();
+    let legacy = fixture.client_with_group_v2(false);
+    let v2 = fixture.client_with_group_v2(true);
+
+    assert!(!super::use_group_e2ee_v2_lifecycle(&legacy));
+    assert!(super::use_group_e2ee_v2_lifecycle(&v2));
+}
+
+#[test]
+fn v2_member_mutation_keeps_p4_base_separate_without_changing_legacy() {
+    let request = crate::groups::GroupMemberMutationRequest {
+        group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+        member: crate::groups::GroupMemberRef::parse("did:example:bob", "").unwrap(),
+        role: None,
+        reason_text: None,
+        leave_request_id: None,
+        security: crate::groups::GroupSecurityRequirement::Required,
+    };
+
+    let v2 = super::p4_member_mutation_request(request.clone(), true);
+    assert_eq!(
+        v2.security,
+        crate::groups::GroupSecurityRequirement::Default
+    );
+    let legacy = super::p4_member_mutation_request(request, false);
+    assert_eq!(
+        legacy.security,
+        crate::groups::GroupSecurityRequirement::Required
+    );
+}
+
+#[test]
+fn v2_cold_cache_route_uses_authoritative_policy_even_for_default_call() {
+    let group = "did:example:group";
+    let owner = authoritative_group(group, "group-e2ee", "owner", "active");
+    assert_eq!(
+        super::v2_member_mutation_route(group, &owner, false).unwrap(),
+        super::V2MemberMutationRoute::OwnerP6,
+        "an E2EE group must not become P4-only merely because the caller used the default hint"
+    );
+
+    let transport = authoritative_group(group, "transport-protected", "admin", "active");
+    assert_eq!(
+        super::v2_member_mutation_route(group, &transport, false).unwrap(),
+        super::V2MemberMutationRoute::BaseOnly
+    );
+    assert!(super::v2_member_mutation_route(group, &transport, true).is_err());
+
+    let unknown = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group,
+                "my_role": "owner",
+                "membership_status": "active",
+                "group_policy": {
+                    "message_security_profile": "future-secure-profile"
+                }
+            }
+        }),
+        Vec::new(),
+    );
+    assert!(matches!(
+        super::v2_member_mutation_route(group, &unknown, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+
+    let conflicting = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group,
+                "my_role": "owner",
+                "membership_status": "active",
+                "group_policy": {
+                    "message_security_profile": "group-e2ee"
+                }
+            },
+            "group_snapshot": {
+                "group_did": group,
+                "group_policy": {
+                    "message_security_profile": "transport-protected"
+                }
+            }
+        }),
+        Vec::new(),
+    );
+    assert!(matches!(
+        super::v2_member_mutation_route(group, &conflicting, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+
+    let malformed = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group,
+                "my_role": "owner",
+                "membership_status": "active",
+                "group_policy": {
+                    "message_security_profile": 42
+                }
+            }
+        }),
+        Vec::new(),
+    );
+    assert!(matches!(
+        super::v2_member_mutation_route(group, &malformed, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+}
+
+#[test]
+fn v2_p4_policy_is_exact_and_overrides_domain_local_projection() {
+    let group = "did:example:group";
+    let result_with_policy = |policy: serde_json::Value| {
+        crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_did": group,
+                "group_policy": policy,
+                "group_snapshot": {
+                    "group_did": group,
+                    "my_role": "owner",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected",
+                    "group_policy": {
+                        "message_security_profile": "transport-protected"
+                    }
+                }
+            }),
+            Vec::new(),
+        )
+    };
+
+    let e2ee = result_with_policy(json!({"message_security_profile": "group-e2ee"}));
+    assert!(super::authoritative_group_e2ee_classification(group, &e2ee).unwrap());
+
+    let transport = result_with_policy(json!({
+        "message_security_profile": "transport-protected"
+    }));
+    assert!(!super::authoritative_group_e2ee_classification(group, &transport).unwrap());
+
+    for invalid in [
+        json!({"message_security_profile": "transport"}),
+        json!({"message_security_profile": "Transport-Protected"}),
+        json!({"message_security_profile": " transport-protected"}),
+        json!({"message_security_profile": "GROUP-E2EE"}),
+        json!({"message_security_profile": "future-secure-profile"}),
+        json!({}),
+        json!({"message_security_profile": 42}),
+    ] {
+        let result = result_with_policy(invalid);
+        assert!(matches!(
+            super::authoritative_group_e2ee_classification(group, &result),
+            Err(crate::ImError::LocalStateUnavailable { .. })
+        ));
+    }
+}
+
+#[test]
+fn v2_admin_is_not_misclassified_as_an_illegal_p4_actor_or_p6_owner() {
+    let group = "did:example:group";
+    let admin = authoritative_group(group, "group-e2ee", "admin", "active");
+    let error = super::v2_member_mutation_route(group, &admin, false)
+        .expect_err("without a durable owner job the combined operation must fail before P4");
+    assert!(matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { .. }
+    ));
+}
+
+#[test]
+fn v2_leave_fails_before_p4_or_legacy_for_e2ee_group() {
+    let group = "did:example:group";
+    let member = authoritative_group(group, "group-e2ee", "member", "active");
+    assert!(matches!(
+        super::require_v2_leave_safe(group, &member, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+    assert!(matches!(
+        super::require_v2_leave_safe(group, &member, true),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+
+    let transport = authoritative_group(group, "transport-protected", "member", "active");
+    assert!(super::require_v2_leave_safe(group, &transport, false).is_ok());
+}
+
+#[test]
+fn v2_idempotent_membership_retries_match_only_structured_service_codes() {
+    let already = crate::ImError::Service {
+        status_code: Some(409),
+        code: Some("group.already_member".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+    let not_member = crate::ImError::Service {
+        status_code: Some(404),
+        code: Some("group.not_member".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+    assert!(super::group_error_is_already_member(&already));
+    assert!(super::group_error_is_not_member(&not_member));
+    assert!(!super::group_error_is_not_member(&already));
+    assert!(!super::group_error_is_already_member(
+        &crate::ImError::TransportUnavailable {
+            detail: "server said already member in an untrusted message".to_owned(),
+        }
+    ));
+}
+
+#[test]
+fn v2_authoritative_roster_matches_a_resolved_handle_by_did() {
+    let did = crate::ids::Did::parse("did:example:bob").unwrap();
+    let requested = crate::groups::GroupMemberResolution {
+        did: did.clone(),
+        handle: Some(crate::ids::Handle::parse("bob", "example.test").unwrap()),
+    };
+    let member = crate::groups::GroupMember {
+        membership_id: None,
+        peer_persona_id: None,
+        did: Some(did),
+        credential_did: None,
+        handle: None,
+        handle_binding_generation: None,
+        role: Some("member".to_owned()),
+        status: Some("active".to_owned()),
+        joined_at: None,
+        subject_type: Some("human".to_owned()),
+    };
+
+    assert!(super::active_member_matches_resolution(&member, &requested));
+}
+
+fn authoritative_group(
+    group_did: &str,
+    security_profile: &str,
+    role: &str,
+    status: &str,
+) -> crate::groups::GroupReadResult {
+    crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group_did,
+                "my_role": role,
+                "membership_status": status,
+                "group_policy": {
+                    "message_security_profile": security_profile
+                }
+            }
+        }),
+        Vec::new(),
+    )
 }
 
 fn test_did_bundle() -> anp::authentication::DidDocumentBundle {
@@ -408,6 +670,209 @@ fn rebind_p6_phase_uses_structured_finalize_outcome() {
         super::p6_phase_after_remove(AcceptedNeedsRepair),
         "remove_repair"
     );
+}
+
+#[test]
+fn handle_recovery_rebind_never_enters_p6() {
+    let recovery_job = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.info",
+        "did:wba:awiki.info:users:alice-old",
+        "did:wba:awiki.info:users:alice-new",
+        "8",
+        "did:wba:awiki.info:groups:engineering",
+    )
+    .unwrap();
+    assert!(!super::p4_rebind_requires_p6(&recovery_job, true));
+    assert!(!super::p4_rebind_requires_p6(&recovery_job, false));
+    assert!(super::p4_rebind_requires_p6("legacy-rebind-job", true));
+}
+
+#[test]
+fn recovery_rebind_authority_is_exact_and_fail_closed() {
+    let job = crate::internal::group_rebind_recovery::P4RebindJob {
+        job_id: "op-rebind-v1-test".to_owned(),
+        owner_identity_id: "owner-1".to_owned(),
+        group_did: "did:wba:awiki.info:groups:engineering".to_owned(),
+        member_handle: "alice.awiki.info".to_owned(),
+        previous_member_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+        new_member_did: "did:wba:awiki.info:users:alice-new".to_owned(),
+        binding_generation: "8".to_owned(),
+        phase: "sending".to_owned(),
+        group_state_ref_json: None,
+        attempt_count: 1,
+    };
+    let member = |did: &str, generation: &str| crate::groups::GroupMember {
+        membership_id: Some("membership-1".to_owned()),
+        peer_persona_id: None,
+        did: Some(crate::ids::Did::parse(did).unwrap()),
+        credential_did: None,
+        handle: Some(crate::ids::Handle::parse("alice.awiki.info", "").unwrap()),
+        handle_binding_generation: Some(generation.to_owned()),
+        role: Some("member".to_owned()),
+        status: Some("active".to_owned()),
+        joined_at: None,
+        subject_type: Some("user".to_owned()),
+    };
+    assert_eq!(
+        super::classify_recovery_rebind_authority(&job, &[member(&job.previous_member_did, "7")],)
+            .unwrap(),
+        super::RecoveryRebindAuthority::Eligible
+    );
+    assert_eq!(
+        super::classify_recovery_rebind_authority(&job, &[member(&job.new_member_did, "8")],)
+            .unwrap(),
+        super::RecoveryRebindAuthority::Converged
+    );
+    assert_eq!(
+        super::classify_recovery_rebind_authority(&job, &[member(&job.previous_member_did, "8")],)
+            .unwrap(),
+        super::RecoveryRebindAuthority::Ineligible
+    );
+    assert_eq!(
+        super::classify_recovery_rebind_authority(
+            &job,
+            &[
+                member(&job.previous_member_did, "7"),
+                member(&job.new_member_did, "8"),
+            ],
+        )
+        .unwrap(),
+        super::RecoveryRebindAuthority::Ineligible
+    );
+    for code in ["group_handle_binding_stale", "group_rebind_not_allowed"] {
+        assert!(super::rebind_error_requires_authoritative_reread(
+            &crate::ImError::Service {
+                status_code: Some(409),
+                code: Some(code.to_owned()),
+                message: code.to_owned(),
+                data: None,
+            }
+        ));
+    }
+}
+
+#[test]
+fn handle_recovery_preflight_not_member_exception_is_contract_exact() {
+    let recovery_job_id = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.info",
+        "did:wba:awiki.info:users:alice-old",
+        "did:wba:awiki.info:users:alice-new",
+        "8",
+        "did:wba:awiki.info:groups:engineering",
+    )
+    .unwrap();
+    let job = crate::internal::group_rebind_recovery::P4RebindJob {
+        job_id: recovery_job_id.clone(),
+        owner_identity_id: "owner-1".to_owned(),
+        group_did: "did:wba:awiki.info:groups:engineering".to_owned(),
+        member_handle: "alice.awiki.info".to_owned(),
+        previous_member_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+        new_member_did: "did:wba:awiki.info:users:alice-new".to_owned(),
+        binding_generation: "8".to_owned(),
+        phase: "sending".to_owned(),
+        group_state_ref_json: None,
+        attempt_count: 1,
+    };
+    let not_member = crate::ImError::Service {
+        status_code: Some(200),
+        code: Some("group.not_member".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+
+    assert!(super::handle_recovery_preflight_allows_rebind(
+        &job,
+        &not_member
+    ));
+
+    for non_recovery in [
+        "legacy-rebind-job".to_owned(),
+        format!("op-rebind-v1-{}", "a".repeat(63)),
+        format!("op-rebind-v1-{}", "g".repeat(64)),
+    ] {
+        let mut non_recovery_job = job.clone();
+        non_recovery_job.job_id = non_recovery;
+        assert!(!super::handle_recovery_preflight_allows_rebind(
+            &non_recovery_job,
+            &not_member
+        ));
+    }
+    for alias in ["group_not_member", "not_member", "not-member"] {
+        let alias_error = crate::ImError::Service {
+            status_code: Some(200),
+            code: Some(alias.to_owned()),
+            message: "group.not_member".to_owned(),
+            data: None,
+        };
+        assert!(!super::handle_recovery_preflight_allows_rebind(
+            &job,
+            &alias_error
+        ));
+    }
+
+    let misleading_transport_error = crate::ImError::TransportUnavailable {
+        detail: "group.not_member".to_owned(),
+    };
+    assert!(!super::handle_recovery_preflight_allows_rebind(
+        &job,
+        &misleading_transport_error
+    ));
+    let other_service_error = crate::ImError::Service {
+        status_code: Some(503),
+        code: Some("temporarily_unavailable".to_owned()),
+        message: "group.not_member".to_owned(),
+        data: None,
+    };
+    assert!(!super::handle_recovery_preflight_allows_rebind(
+        &job,
+        &other_service_error
+    ));
+}
+
+#[test]
+fn handle_recovery_e2ee_guard_rejection_is_terminal_without_p6() {
+    let guard_rejection = crate::ImError::Service {
+        status_code: Some(200),
+        code: Some("group.rebind_not_allowed".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+    let recovery_job_id = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.info",
+        "did:wba:awiki.info:users:alice-old",
+        "did:wba:awiki.info:users:alice-new",
+        "8",
+        "did:wba:awiki.info:groups:engineering",
+    )
+    .unwrap();
+    let recovery_job = crate::internal::group_rebind_recovery::P4RebindJob {
+        job_id: recovery_job_id.clone(),
+        owner_identity_id: "owner-1".to_owned(),
+        group_did: "did:wba:awiki.info:groups:engineering".to_owned(),
+        member_handle: "alice.awiki.info".to_owned(),
+        previous_member_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+        new_member_did: "did:wba:awiki.info:users:alice-new".to_owned(),
+        binding_generation: "8".to_owned(),
+        phase: "sending".to_owned(),
+        group_state_ref_json: None,
+        attempt_count: 1,
+    };
+
+    assert!(!super::rebind_error_requires_authoritative_reread(
+        &guard_rejection
+    ));
+    assert!(!super::rebind_error_is_terminal(&guard_rejection));
+    assert!(super::handle_recovery_rebind_guard_rejected(
+        &recovery_job,
+        &guard_rejection
+    ));
+    let mut legacy_job = recovery_job.clone();
+    legacy_job.job_id = "legacy-rebind-job".to_owned();
+    assert!(!super::handle_recovery_rebind_guard_rejected(
+        &legacy_job,
+        &guard_rejection
+    ));
+    assert!(!super::p4_rebind_requires_p6(&recovery_job_id, true));
 }
 
 #[test]

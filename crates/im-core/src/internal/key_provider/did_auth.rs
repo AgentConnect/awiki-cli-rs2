@@ -27,9 +27,9 @@ impl ProviderBackedDidAuth {
         headers: Option<&BTreeMap<String, String>>,
         body: Option<&[u8]>,
     ) -> crate::ImResult<BTreeMap<String, String>> {
-        let domain = extract_domain(server_url);
+        let token_origin = extract_origin(server_url);
         if !force_new {
-            if let Some(token) = self.tokens.get(&domain) {
+            if let Some(token) = self.tokens.get(&token_origin) {
                 return Ok(BTreeMap::from([(
                     "Authorization".to_string(),
                     format!("Bearer {token}"),
@@ -38,7 +38,7 @@ impl ProviderBackedDidAuth {
         }
 
         let did_document = self.provider.did_document()?;
-        let private_key = self.default_signing_key()?;
+        let (key_id, private_key) = self.device_request_signing_material()?;
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
                 anp::authentication::generate_http_signature_headers(
@@ -48,7 +48,10 @@ impl ProviderBackedDidAuth {
                     &private_key,
                     headers,
                     body,
-                    anp::authentication::HttpSignatureOptions::default(),
+                    anp::authentication::HttpSignatureOptions {
+                        keyid: Some(key_id),
+                        ..anp::authentication::HttpSignatureOptions::default()
+                    },
                 )
                 .map_err(|err| crate::ImError::TransportUnavailable {
                     detail: format!("DID-WBA HTTP signature generation failed: {err}"),
@@ -57,7 +60,7 @@ impl ProviderBackedDidAuth {
             anp::authentication::AuthMode::LegacyDidWba => {
                 let value = anp::authentication::generate_auth_header(
                     &did_document,
-                    &domain,
+                    &extract_domain(server_url),
                     &private_key,
                     "1.1",
                 )
@@ -73,28 +76,46 @@ impl ProviderBackedDidAuth {
         &mut self,
         server_url: &str,
         headers: &BTreeMap<String, String>,
-    ) -> Option<String> {
-        let domain = extract_domain(server_url);
-        if let Some(value) = get_header_case_insensitive(headers, "Authentication-Info") {
-            let parsed = parse_header_params(value);
-            if let Some(token) = parsed.get("access_token").filter(|token| !token.is_empty()) {
-                self.tokens.insert(domain, token.clone());
-                return Some(token.clone());
+    ) -> crate::ImResult<Option<String>> {
+        let token = Self::response_token(headers)?;
+        if let Some(token) = token.as_ref() {
+            self.store_token(server_url, token);
+        }
+        Ok(token)
+    }
+
+    pub(crate) fn response_token(
+        headers: &BTreeMap<String, String>,
+    ) -> crate::ImResult<Option<String>> {
+        let authentication_info = get_header_case_insensitive(headers, "Authentication-Info")
+            .and_then(|value| parse_header_params(value).remove("access_token"))
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let authorization = get_header_case_insensitive(headers, "Authorization")
+            .and_then(|value| {
+                value
+                    .trim()
+                    .strip_prefix("Bearer ")
+                    .or_else(|| value.trim().strip_prefix("bearer "))
+            })
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if let (Some(left), Some(right)) = (&authentication_info, &authorization) {
+            if left != right {
+                return Err(crate::ImError::PermissionDenied);
             }
         }
-        if let Some(value) = get_header_case_insensitive(headers, "Authorization") {
-            if let Some(token) = value.strip_prefix("Bearer ") {
-                let token = token.to_string();
-                self.tokens.insert(domain, token.clone());
-                return Some(token);
-            }
-        }
-        None
+        Ok(authentication_info.or(authorization))
+    }
+
+    pub(crate) fn store_token(&mut self, server_url: &str, token: &str) {
+        self.tokens
+            .insert(extract_origin(server_url), token.to_owned());
     }
 
     pub(crate) fn clear_token(&mut self, server_url: &str) {
-        let domain = extract_domain(server_url);
-        self.tokens.remove(&domain);
+        self.tokens.remove(&extract_origin(server_url));
     }
 
     pub(crate) fn should_retry_after_401(
@@ -107,7 +128,7 @@ impl ProviderBackedDidAuth {
             return false;
         };
         let challenge = parse_www_authenticate(www_authenticate);
-        if challenge.get("nonce").is_some() {
+        if challenge.contains_key("nonce") {
             return true;
         }
         !matches!(
@@ -139,7 +160,7 @@ impl ProviderBackedDidAuth {
         let nonce = challenge.get("nonce").cloned();
 
         let did_document = self.provider.did_document()?;
-        let private_key = self.default_signing_key()?;
+        let (key_id, private_key) = self.device_request_signing_material()?;
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
                 anp::authentication::generate_http_signature_headers(
@@ -152,6 +173,7 @@ impl ProviderBackedDidAuth {
                     anp::authentication::HttpSignatureOptions {
                         nonce,
                         covered_components,
+                        keyid: Some(key_id),
                         ..anp::authentication::HttpSignatureOptions::default()
                     },
                 )
@@ -174,14 +196,33 @@ impl ProviderBackedDidAuth {
         }
     }
 
-    fn default_signing_key(&self) -> crate::ImResult<anp::PrivateKeyMaterial> {
-        let pem = self.provider.default_signing_private_pem()?;
-        anp::PrivateKeyMaterial::from_pem(&pem).map_err(|err| {
-            crate::ImError::TransportUnavailable {
-                detail: format!("DID-WBA private key material is invalid: {err}"),
-            }
-        })
+    fn device_request_signing_material(
+        &self,
+    ) -> crate::ImResult<(String, anp::PrivateKeyMaterial)> {
+        let material = self.provider.device_request_signing_material()?;
+        let private_key =
+            anp::PrivateKeyMaterial::from_pem(&material.private_key_pem).map_err(|err| {
+                crate::ImError::TransportUnavailable {
+                    detail: format!("DID-WBA private key material is invalid: {err}"),
+                }
+            })?;
+        Ok((material.key_id, private_key))
     }
+}
+
+fn extract_origin(server_url: &str) -> String {
+    reqwest::Url::parse(server_url)
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?;
+            let mut origin = format!("{}://{host}", url.scheme().to_ascii_lowercase());
+            if let Some(port) = url.port() {
+                origin.push(':');
+                origin.push_str(&port.to_string());
+            }
+            Some(origin)
+        })
+        .unwrap_or_else(|| server_url.trim().to_ascii_lowercase())
 }
 
 fn extract_domain(server_url: &str) -> String {
@@ -397,7 +438,8 @@ mod tests {
                 "Authentication-Info".to_string(),
                 r#"access_token="cached-token""#.to_string(),
             )]),
-        );
+        )
+        .unwrap();
 
         let headers = auth
             .get_auth_header("https://api.example.com/orders", false, "GET", None, None)
@@ -407,5 +449,61 @@ mod tests {
             headers.get("Authorization").map(String::as_str),
             Some("Bearer cached-token")
         );
+    }
+
+    #[test]
+    fn provider_did_auth_accepts_authorization_bearer_and_scopes_cache_to_origin() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = Arc::new(FileBackedKeyMaterialProvider::new(
+            root.path().join("missing-identity"),
+        ));
+        let mut auth =
+            ProviderBackedDidAuth::new(provider, anp::authentication::AuthMode::HttpSignatures);
+        auth.update_token(
+            "https://api.example.com/first",
+            &BTreeMap::from([(
+                "Authorization".to_owned(),
+                "Bearer response-token".to_owned(),
+            )]),
+        )
+        .unwrap();
+
+        let cached = auth
+            .get_auth_header("https://api.example.com/second", false, "GET", None, None)
+            .unwrap();
+        assert_eq!(
+            cached.get("Authorization").map(String::as_str),
+            Some("Bearer response-token")
+        );
+        assert!(auth
+            .get_auth_header(
+                "https://api.example.com:8443/second",
+                false,
+                "GET",
+                None,
+                None
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn provider_did_auth_rejects_conflicting_response_token_headers() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = Arc::new(FileBackedKeyMaterialProvider::new(
+            root.path().join("missing-identity"),
+        ));
+        let mut auth =
+            ProviderBackedDidAuth::new(provider, anp::authentication::AuthMode::HttpSignatures);
+        let result = auth.update_token(
+            "https://api.example.com/first",
+            &BTreeMap::from([
+                (
+                    "Authentication-Info".to_owned(),
+                    r#"access_token="token-one""#.to_owned(),
+                ),
+                ("Authorization".to_owned(), "Bearer token-two".to_owned()),
+            ]),
+        );
+        assert_eq!(result, Err(crate::ImError::PermissionDenied));
     }
 }

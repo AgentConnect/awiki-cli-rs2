@@ -4,10 +4,10 @@ Pod::Spec.new do |s|
   s.summary          = 'Awiki IM Core Flutter SDK'
   s.description      = 'Flutter FFI bindings for Rust im-core.'
   s.homepage         = 'https://github.com/AgentConnect/awiki-cli-rs2'
-  s.license          = { :type => 'MIT' }
+  s.license          = { :type => 'AGPL-3.0-only', :file => '../LICENSE' }
   s.author           = { 'AgentConnect' => 'dev@awiki.ai' }
   s.source           = { :path => '.' }
-  s.platform         = :ios, '12.0'
+  s.platform         = :ios, '13.0'
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
   s.user_target_xcconfig = {

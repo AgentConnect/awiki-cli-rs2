@@ -7,13 +7,15 @@ cd "${ROOT_DIR}"
 DRY_RUN=0
 BUILD_IOS=1
 BUILD_MACOS=1
+MACOS_ARCH=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/flutter/build-apple.sh [--dry-run] [--ios|--macos]
+Usage: scripts/flutter/build-apple.sh [--dry-run] [--ios|--macos] [--macos-arch arm64|x86_64]
 
 Builds both iOS and macOS Apple native artifacts by default.
 Use --ios or --macos to validate/package only one platform family.
+Use --macos-arch with --macos to build a single-architecture XCFramework.
 USAGE
 }
 
@@ -30,6 +32,14 @@ while [[ $# -gt 0 ]]; do
       BUILD_IOS=0
       BUILD_MACOS=1
       ;;
+    --macos-arch)
+      if [[ "$#" -lt 2 || -z "${2:-}" ]]; then
+        echo "--macos-arch requires arm64 or x86_64." >&2
+        exit 2
+      fi
+      MACOS_ARCH="$2"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -43,7 +53,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 LIB_NAME="awiki_im_core"
-IOS_DEPLOYMENT_TARGET="${AWIKI_IOS_DEPLOYMENT_TARGET:-12.0}"
+IOS_DEPLOYMENT_TARGET="${AWIKI_IOS_DEPLOYMENT_TARGET:-13.0}"
+IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET="${AWIKI_IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET:-14.0}"
 MACOS_X86_64_DEPLOYMENT_TARGET="${AWIKI_MACOS_X86_64_DEPLOYMENT_TARGET:-10.15}"
 MACOS_ARM64_DEPLOYMENT_TARGET="${AWIKI_MACOS_ARM64_DEPLOYMENT_TARGET:-11.0}"
 IOS_FRAMEWORK_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/Frameworks"
@@ -52,6 +63,7 @@ IOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/include"
 MACOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/macos/include"
 IOS_XCFRAMEWORK="${IOS_FRAMEWORK_DIR}/AwikiImCore.xcframework"
 MACOS_XCFRAMEWORK="${MACOS_FRAMEWORK_DIR}/AwikiImCore.xcframework"
+ARTIFACT_MANIFEST_TOOL="${ROOT_DIR}/scripts/flutter/native-artifact-manifest.py"
 IOS_TARGETS=(
   aarch64-apple-ios
   aarch64-apple-ios-sim
@@ -61,6 +73,24 @@ MACOS_TARGETS=(
   aarch64-apple-darwin
   x86_64-apple-darwin
 )
+if [[ -n "${MACOS_ARCH}" ]]; then
+  if [[ "${BUILD_IOS}" == "1" || "${BUILD_MACOS}" != "1" ]]; then
+    echo "--macos-arch requires --macos." >&2
+    exit 2
+  fi
+  case "${MACOS_ARCH}" in
+    arm64)
+      MACOS_TARGETS=(aarch64-apple-darwin)
+      ;;
+    x86_64)
+      MACOS_TARGETS=(x86_64-apple-darwin)
+      ;;
+    *)
+      echo "Unsupported macOS architecture: ${MACOS_ARCH}" >&2
+      exit 2
+      ;;
+  esac
+fi
 TARGETS=()
 if [[ "${BUILD_IOS}" == "1" ]]; then
   TARGETS+=("${IOS_TARGETS[@]}")
@@ -72,7 +102,11 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "Would rustup target add: ${TARGETS[*]}"
   echo "Would use iOS deployment target: ${IOS_DEPLOYMENT_TARGET}"
+  echo "Would use iOS arm64 simulator deployment target: ${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
   echo "Would use macOS deployment targets: arm64=${MACOS_ARM64_DEPLOYMENT_TARGET}, x86_64=${MACOS_X86_64_DEPLOYMENT_TARGET}"
+  if [[ "${BUILD_MACOS}" == "1" ]]; then
+    echo "Would build macOS Rust targets: ${MACOS_TARGETS[*]}"
+  fi
   if [[ "${BUILD_IOS}" == "1" && "${BUILD_MACOS}" == "1" ]]; then
     echo "Would build staticlibs and create iOS/macOS XCFrameworks"
   elif [[ "${BUILD_IOS}" == "1" ]]; then
@@ -117,7 +151,16 @@ for target in "${IOS_TARGETS[@]}"; do
   if [[ "${BUILD_IOS}" != "1" ]]; then
     continue
   fi
-  IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" cargo build \
+  ios_cflags="-mios-simulator-version-min=${IOS_DEPLOYMENT_TARGET}"
+  if [[ "${target}" == "aarch64-apple-ios" ]]; then
+    ios_cflags="-miphoneos-version-min=${IOS_DEPLOYMENT_TARGET}"
+  elif [[ "${target}" == "aarch64-apple-ios-sim" ]]; then
+    ios_cflags="-mios-simulator-version-min=${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
+  fi
+  if [[ -n "${CFLAGS:-}" ]]; then
+    ios_cflags="${CFLAGS} ${ios_cflags}"
+  fi
+  CFLAGS="${ios_cflags}" IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" cargo build \
     -p im-core-dart \
     --release \
     --target "${target}" \
@@ -138,7 +181,7 @@ for target in "${MACOS_TARGETS[@]}"; do
     --release \
     --target "${target}" \
     --no-default-features \
-    --features blocking,sqlite,http,macos
+    --features blocking,sqlite,http,macos,group-e2ee
 done
 
 mkdir -p "${IOS_FRAMEWORK_DIR}" "${MACOS_FRAMEWORK_DIR}" "${IOS_INCLUDE_DIR}" "${MACOS_INCLUDE_DIR}"
@@ -158,6 +201,45 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
     "target/x86_64-apple-ios/release/lib${LIB_NAME}.a" \
     -output "${SIM_DIR}/lib${LIB_NAME}.a"
 
+  verify_ios_archive() {
+    local archive="$1"
+    local arch="$2"
+    local maximum_version="$3"
+    local versions
+    versions="$(xcrun otool -arch "${arch}" -l "${archive}" 2>/dev/null \
+      | awk '/^[[:space:]]+(version|minos) / { print $2 }' \
+      | sort -Vu)"
+    if [[ -z "${versions}" ]]; then
+      echo "No Mach-O deployment versions found in ${archive} (${arch})." >&2
+      return 1
+    fi
+    while IFS= read -r version; do
+      if awk -v actual="${version}" -v maximum="${maximum_version}" '
+        function number(value, parts) {
+          split(value, parts, ".")
+          return (parts[1] + 0) * 1000000 + (parts[2] + 0) * 1000 + (parts[3] + 0)
+        }
+        BEGIN { exit !(number(actual) > number(maximum)) }
+      '; then
+        echo "${archive} (${arch}) contains minimum OS ${version}, above ${maximum_version}." >&2
+        return 1
+      fi
+    done <<< "${versions}"
+  }
+
+  verify_ios_archive \
+    "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
+    arm64 \
+    "${IOS_DEPLOYMENT_TARGET}"
+  verify_ios_archive \
+    "${SIM_DIR}/lib${LIB_NAME}.a" \
+    x86_64 \
+    "${IOS_DEPLOYMENT_TARGET}"
+  verify_ios_archive \
+    "${SIM_DIR}/lib${LIB_NAME}.a" \
+    arm64 \
+    "${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
+
   rm -rf "${IOS_XCFRAMEWORK}"
   xcodebuild -create-xcframework \
     -library "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
@@ -165,18 +247,34 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
     -library "${SIM_DIR}/lib${LIB_NAME}.a" \
     -headers "${IOS_INCLUDE_DIR}" \
     -output "${IOS_XCFRAMEWORK}"
+  ios_targets="$(IFS=,; echo "${IOS_TARGETS[*]}")"
+  python3 "${ARTIFACT_MANIFEST_TOOL}" write \
+    --platform ios \
+    --targets "${ios_targets}" \
+    --features blocking,sqlite,http,ios
 fi
 
 if [[ "${BUILD_MACOS}" == "1" ]]; then
   MACOS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/awiki-macos.XXXXXX")"
-  lipo -create \
-    "target/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
-    "target/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
-    -output "${MACOS_DIR}/lib${LIB_NAME}.a"
+  if [[ "${#MACOS_TARGETS[@]}" -eq 1 ]]; then
+    cp \
+      "target/${MACOS_TARGETS[0]}/release/lib${LIB_NAME}.a" \
+      "${MACOS_DIR}/lib${LIB_NAME}.a"
+  else
+    lipo -create \
+      "target/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
+      "target/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
+      -output "${MACOS_DIR}/lib${LIB_NAME}.a"
+  fi
 
   rm -rf "${MACOS_XCFRAMEWORK}"
   xcodebuild -create-xcframework \
     -library "${MACOS_DIR}/lib${LIB_NAME}.a" \
     -headers "${MACOS_INCLUDE_DIR}" \
     -output "${MACOS_XCFRAMEWORK}"
+  macos_targets="$(IFS=,; echo "${MACOS_TARGETS[*]}")"
+  python3 "${ARTIFACT_MANIFEST_TOOL}" write \
+    --platform macos \
+    --targets "${macos_targets}" \
+    --features blocking,sqlite,http,macos,group-e2ee
 fi

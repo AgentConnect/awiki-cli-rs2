@@ -1422,6 +1422,8 @@ foreground 接收远端消息采用事件驱动模型。每个 active agent DID 
 
 WebSocket notification 只作为唤醒与 dirty hint。daemon 不读取或写入 reliable checkpoint，也不把 `sync.event_seq` 当 checkpoint。可靠同步由 `im-core` 内部 `sync_delta_async` / `sync_thread_after_async` 事务完成；group 消息缺少 recent context 时，daemon 只对 dirty group 调用 targeted `groups().messages_async` 补上下文，不全量扫描所有 group。disconnect、reconnect、gap、unknown notification、session ended 和 channel pressure 会进入 dirty set，并按 reason、backoff 和 jitter 调度低频 fallback。`snapshot_required` 表示本地 checkpoint 不可信，daemon fail-closed 并记录 audit，等待更高层恢复策略。
 
+Runtime 的实际执行属于 data plane，不得占用 foreground 的 realtime / management control loop。foreground 在完成 sender、目标和去重校验后，把会运行外部 Runtime 的 text、attachment、`runtime.task.submit` 或精确 group mention 投递到 Tokio blocking worker；创建、删除、状态查询等 daemon management command 仍在 control loop 中按顺序处理。worker 完成后提交 `processed_message` 状态并唤醒 durable queue scheduler；失败或 retryable 结果释放进程内去重保留，使后续可靠拉取可以重试。这样一个长时间运行的 Codex/Claude 任务不会阻止另一个 Runtime 的归档、状态查询或 realtime reconnect。
+
 ### 9.2 创建 Runtime Agent 流程
 
 ```text
@@ -1489,7 +1491,7 @@ WebSocket notification 只作为唤醒与 dirty hint。daemon 不读取或写入
 
 #### 9.5.1 ANP P9 群消息 mention 触发
 
-用户委托的 App Message Agent 可以拉取 controller 的 direct 与 group inbox。对群消息，daemon 只在消息 body 是合法 ANP P9 `text + mentions` JSON payload，并且 mention 命中当前 runtime agent 时创建 RuntimeTask：
+用户委托的 App Personal Agent 可以拉取 controller 的 direct 与 group inbox。对群消息，daemon 只在消息 body 是合法 ANP P9 `text + mentions` JSON payload，并且 mention 命中当前 runtime agent 时创建 RuntimeTask：
 
 - `target.kind = agent` 时只按 `target.did == runtime_agent_did` 精确命中；`display_name` 只可作为展示快照，不能参与身份判断。
 - `target.kind = group_selector` 不触发 runtime agent，包括 `selector = all` / `agents` / `humans`。当前版本不做群 selector 展开，也不允许 `@agents` / `@all` 作为 Agent 调用入口。

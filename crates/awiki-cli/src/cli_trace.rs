@@ -232,10 +232,45 @@ pub fn phase_name(name: &str, detail: &str) -> String {
 }
 
 pub fn sanitize_phase_detail(detail: &str) -> String {
+    if let Some(detail) = sanitize_http_rpc_detail(detail) {
+        return detail;
+    }
     let mut value = detail.trim().trim_matches('/').replace('/', ".");
     value = value.split_whitespace().collect::<Vec<_>>().join("_");
     value = value.replace("_.", "_").replace("._", "_");
     value.trim_matches(['.', '_']).to_string()
+}
+
+fn sanitize_http_rpc_detail(detail: &str) -> Option<String> {
+    let mut parts = detail.split_whitespace();
+    let method = parts.next()?;
+    let route = parts.next()?;
+    if parts.next().is_some()
+        || !matches!(
+            method,
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+        )
+        || !route.starts_with('/')
+    {
+        return None;
+    }
+
+    let mut segments = route
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments
+        .get(1)
+        .is_some_and(|segment| is_http_api_version(segment))
+    {
+        segments.remove(1);
+    }
+    if segments.is_empty() {
+        Some(method.to_string())
+    } else {
+        Some(format!("{method}_{}", segments.join(".")))
+    }
 }
 
 fn emit_pretty<W: Write>(
@@ -287,13 +322,53 @@ pub fn humanize_phase_name(name: &str) -> String {
         return "未命名阶段".to_string();
     }
     let mut parts = name.splitn(2, ':');
-    let group = phase_group_label(parts.next().unwrap_or_default());
+    let group_name = parts.next().unwrap_or_default();
+    let group = phase_group_label(group_name);
     let detail = parts.next().unwrap_or_default().trim();
     if detail.is_empty() {
         group
     } else {
-        format!("{group} / {}", humanize_text(detail))
+        let detail = if group_name == "business_rpc" {
+            humanize_rpc_detail(detail)
+        } else {
+            humanize_text(detail)
+        };
+        format!("{group} / {detail}")
     }
+}
+
+fn humanize_rpc_detail(detail: &str) -> String {
+    let Some((method, route)) = detail.split_once('_') else {
+        return humanize_text(detail);
+    };
+    if !matches!(
+        method,
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    ) {
+        return humanize_text(detail);
+    }
+
+    let mut segments = route.split('.').filter(|segment| !segment.is_empty());
+    let Some(service) = segments.next() else {
+        return humanize_text(detail);
+    };
+    let mut route_segments = segments.collect::<Vec<_>>();
+    if route_segments
+        .first()
+        .is_some_and(|segment| is_http_api_version(segment))
+    {
+        route_segments.remove(0);
+    }
+
+    let mut words = vec![method, service];
+    words.extend(route_segments);
+    words.join(" ")
+}
+
+fn is_http_api_version(segment: &str) -> bool {
+    segment
+        .strip_prefix('v')
+        .is_some_and(|version| !version.is_empty() && version.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 pub fn phase_group_label(group: &str) -> String {

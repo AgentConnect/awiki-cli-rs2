@@ -1,3 +1,9 @@
+//! Authenticated metadata and kind separation for SecretVault records.
+//!
+//! Secret kinds are local storage labels. They are never protocol capabilities
+//! or wire fields; Join session tokens use a dedicated kind so cancellation and
+//! expiry can delete them without confusing them with long-term device keys.
+
 use super::policy::SecretAccessPolicy;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -8,13 +14,44 @@ pub(crate) const VAULT_RECORD_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum SecretKind {
     IdentityRootPrivate,
+    IdentityDeviceSigningPrivate,
     IdentityE2eeSigningPrivate,
     IdentityE2eeAgreementPrivate,
+    IdentityJoinPairingPrivate,
+    IdentityJoinSessionToken,
+    /// Encrypted, local-only crash recovery state for promotion after Join.
+    /// This label is never serialized into ANP or first-party wire requests.
+    IdentityJoinActivationPending,
+    /// Encrypted, local-only crash recovery state for an in-flight register.
+    /// This label is never serialized into ANP or first-party wire requests.
+    #[serde(alias = "identity_genesis_pending")]
+    IdentityRegistrationPending,
+    /// Encrypted exact-retry state for Manifest Handle Recovery. The record
+    /// may contain a short-lived Recovery grant and newly generated keys.
+    IdentityHandleRecoveryPending,
+    /// Encrypted exact-retry state for the one-device Legacy promotion.
+    IdentityLegacyUpgradePending,
+    /// Canonical 48-byte root PKCS#8 DER awaiting remote completion and exact
+    /// Registry confirmation. Active key providers must never resolve it.
+    IdentityRootImportPending,
+    /// Encrypted access token awaiting local-only auth-state convergence.
+    IdentityAuthCommitPending,
+    /// Encrypted exact-retry intent for one permanent device revocation.
+    /// This is AWiki-local state and never appears in ANP or DID Documents.
+    IdentityDeviceRevokePending,
     IdentityDaemonPrivate,
     AuthJwt,
     DirectE2eeSignedPrekeyPrivate,
     DirectE2eeOneTimePrekeyPrivate,
     DirectE2eeSessionState,
+    /// P5 v2 state is intentionally not compatible with the legacy P5 store.
+    DirectE2eeV2SignedPrekeyPrivate,
+    DirectE2eeV2OneTimePrekeyPrivate,
+    DirectE2eeV2SessionState,
+    DirectE2eeV2PendingOutbound,
+    /// Vault-only full attachment Manifest retained for exact P5 fan-out retry.
+    /// The SQLite delivery ledger stores only this record's opaque reference.
+    DirectE2eeV2AttachmentManifest,
     GroupMlsState,
     RuntimeSecret,
 }
@@ -23,13 +60,28 @@ impl SecretKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::IdentityRootPrivate => "identity.root.private",
+            Self::IdentityDeviceSigningPrivate => "identity.device.signing.private",
             Self::IdentityE2eeSigningPrivate => "identity.e2ee.signing.private",
             Self::IdentityE2eeAgreementPrivate => "identity.e2ee.agreement.private",
+            Self::IdentityJoinPairingPrivate => "identity.join.pairing.private",
+            Self::IdentityJoinSessionToken => "identity.join.session.token",
+            Self::IdentityJoinActivationPending => "identity.join.activation.pending",
+            Self::IdentityRegistrationPending => "identity.registration.pending",
+            Self::IdentityHandleRecoveryPending => "identity.handle_recovery.pending",
+            Self::IdentityLegacyUpgradePending => "identity.legacy_upgrade.pending",
+            Self::IdentityRootImportPending => "identity.root_import.pending",
+            Self::IdentityAuthCommitPending => "identity.auth_commit.pending",
+            Self::IdentityDeviceRevokePending => "identity.device.revoke.pending",
             Self::IdentityDaemonPrivate => "identity.daemon.private",
             Self::AuthJwt => "auth.jwt",
             Self::DirectE2eeSignedPrekeyPrivate => "direct_e2ee.signed_prekey.private",
             Self::DirectE2eeOneTimePrekeyPrivate => "direct_e2ee.one_time_prekey.private",
             Self::DirectE2eeSessionState => "direct_e2ee.session_state",
+            Self::DirectE2eeV2SignedPrekeyPrivate => "direct_e2ee.v2.signed_prekey.private",
+            Self::DirectE2eeV2OneTimePrekeyPrivate => "direct_e2ee.v2.one_time_prekey.private",
+            Self::DirectE2eeV2SessionState => "direct_e2ee.v2.session_state",
+            Self::DirectE2eeV2PendingOutbound => "direct_e2ee.v2.pending_outbound",
+            Self::DirectE2eeV2AttachmentManifest => "direct_e2ee.v2.attachment_manifest",
             Self::GroupMlsState => "group_mls.state",
             Self::RuntimeSecret => "runtime.secret",
         }

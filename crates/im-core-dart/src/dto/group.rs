@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupSummary {
+    pub conversation_id: String,
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
@@ -13,6 +14,7 @@ pub struct DartGroupSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupSnapshot {
+    pub conversation_id: String,
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
@@ -27,7 +29,10 @@ pub struct DartGroupSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupMember {
+    pub membership_id: Option<String>,
+    pub peer_persona_id: Option<String>,
     pub did: Option<String>,
+    pub credential_did: Option<String>,
     pub handle: Option<String>,
     pub role: Option<String>,
     pub status: Option<String>,
@@ -96,6 +101,10 @@ pub struct DartGroupReadResult {
     pub members: Vec<DartGroupMember>,
     pub messages: crate::dto::message::DartMessagePage,
     pub total: Option<u32>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub page_group_did: Option<String>,
+    pub group_state_version: Option<String>,
     pub source: Option<String>,
     pub warnings: Vec<String>,
 }

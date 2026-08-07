@@ -13,6 +13,7 @@ class UserProfile {
     this.profileUri,
     this.subjectType,
     this.updatedAt,
+    this.profileVersion,
     this.versionId,
     this.ttl,
   });
@@ -30,6 +31,7 @@ class UserProfile {
   final String? profileUri;
   final String? subjectType;
   final String? updatedAt;
+  final String? profileVersion;
   final String? versionId;
   final int? ttl;
 }

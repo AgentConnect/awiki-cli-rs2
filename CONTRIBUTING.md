@@ -7,6 +7,9 @@ This repository contains the CLI, shared Rust SDK, AWiki Daemon, Dart/Flutter SD
 ## Before you start
 
 - Search existing issues and pull requests.
+- External contributions are accepted only with prior written approval from
+  the Licensor. An approved contribution cannot be merged until the
+  contributor accepts the contributor agreement designated by the Licensor.
 - Open an issue before substantial API, command-tree, SecretVault, E2EE, Runtime plugin, or release-process changes.
 - Do not combine unrelated crate refactors, documentation moves, and release configuration in one pull request.
 - For changes spanning `awiki-me`, `awiki-open-server`, or ANP, record matching commits and compatibility verification.

@@ -5,10 +5,27 @@ use tokio::sync::broadcast;
 const DEFAULT_LIMIT: u32 = 200;
 const PATCH_BUFFER: usize = 128;
 
+fn subscribe_before_seed<T: Clone, F>(
+    sender: &broadcast::Sender<T>,
+    projection: &Mutex<()>,
+    seed: F,
+) -> crate::ImResult<(broadcast::Receiver<T>, Vec<T>)>
+where
+    F: FnOnce() -> crate::ImResult<Vec<T>>,
+{
+    let receiver = sender.subscribe();
+    let _projection_guard = projection
+        .lock()
+        .expect("conversation projection lock poisoned");
+    let initial = seed()?;
+    Ok((receiver, initial))
+}
+
 #[derive(Debug)]
 pub(crate) struct ConversationStore {
     owner_identity_id: String,
     owner_did: String,
+    projection: Mutex<()>,
     state: Mutex<ConversationStoreState>,
     sender: broadcast::Sender<crate::messages::ConversationStorePatch>,
 }
@@ -26,6 +43,7 @@ impl ConversationStore {
         Arc::new(Self {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
+            projection: Mutex::new(()),
             state: Mutex::new(ConversationStoreState::default()),
             sender,
         })
@@ -36,19 +54,12 @@ impl ConversationStore {
         client: &crate::core::ImClient,
     ) -> crate::ImResult<crate::messages::ConversationPatchSession> {
         self.ensure_owner(client)?;
-        let mut initial = Vec::new();
-        if let Some(snapshot) =
-            crate::internal::snapshot::conversation_snapshot::load_for_client(client)?
-        {
-            let items = snapshot.items;
-            let unread_total = unread_total(&items);
-            let patch = self.replace_items(items, unread_total);
-            initial.push(patch);
-        }
-        initial.push(self.repair_from_client(client)?);
+        let (receiver, initial) = subscribe_before_seed(&self.sender, &self.projection, || {
+            Ok(vec![self.repair_from_client_locked(client)?])
+        })?;
         Ok(crate::messages::ConversationPatchSession::new(
             self.clone(),
-            self.sender.subscribe(),
+            receiver,
             initial,
         ))
     }
@@ -58,6 +69,17 @@ impl ConversationStore {
         client: &crate::core::ImClient,
     ) -> crate::ImResult<crate::messages::ConversationStorePatch> {
         self.ensure_owner(client)?;
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("conversation projection lock poisoned");
+        self.repair_from_client_locked(client)
+    }
+
+    fn repair_from_client_locked(
+        &self,
+        client: &crate::core::ImClient,
+    ) -> crate::ImResult<crate::messages::ConversationStorePatch> {
         let items = committed_items(client)?;
         let unread_total = unread_total(&items);
         Ok(self.replace_items(items, unread_total))
@@ -75,11 +97,17 @@ impl ConversationStore {
         {
             return;
         }
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("conversation projection lock poisoned");
         let patch = match committed_items(client) {
             Ok(items) => self.diff_committed_items(items),
-            Err(_) => self.repair_required_patch("committed_projection_unavailable"),
+            Err(_) => Some(self.repair_required_patch("committed_projection_unavailable")),
         };
-        let _ = self.sender.send(patch);
+        if let Some(patch) = patch {
+            let _ = self.sender.send(patch);
+        }
     }
 
     pub(crate) fn on_committed_local_projection(
@@ -90,11 +118,17 @@ impl ConversationStore {
         if self.ensure_owner(client).is_err() {
             return;
         }
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("conversation projection lock poisoned");
         let patch = match committed_items(client) {
             Ok(items) => self.diff_committed_items(items),
-            Err(_) => self.repair_required_patch(reason),
+            Err(_) => Some(self.repair_required_patch(reason)),
         };
-        let _ = self.sender.send(patch);
+        if let Some(patch) = patch {
+            let _ = self.sender.send(patch);
+        }
     }
 
     pub(crate) fn repair_required_patch(
@@ -141,9 +175,12 @@ impl ConversationStore {
     fn diff_committed_items(
         &self,
         next_items: Vec<crate::messages::ConversationSnapshotItem>,
-    ) -> crate::messages::ConversationStorePatch {
+    ) -> Option<crate::messages::ConversationStorePatch> {
         let next_unread_total = unread_total(&next_items);
         let mut state = self.state.lock().expect("conversation store lock poisoned");
+        if state.items == next_items {
+            return None;
+        }
         state.version = state.version.saturating_add(1);
         let version = state.version;
         let previous_items = std::mem::replace(&mut state.items, next_items.clone());
@@ -157,13 +194,15 @@ impl ConversationStore {
             &previous_items,
             &next_items,
         );
-        patch.unwrap_or_else(|| crate::messages::ConversationStorePatch::Reset {
-            owner_identity_id: self.owner_identity_id.clone(),
-            owner_did: self.owner_did.clone(),
-            version,
-            unread_total: next_unread_total,
-            items: next_items,
-        })
+        Some(
+            patch.unwrap_or_else(|| crate::messages::ConversationStorePatch::Reset {
+                owner_identity_id: self.owner_identity_id.clone(),
+                owner_did: self.owner_did.clone(),
+                version,
+                unread_total: next_unread_total,
+                items: next_items,
+            }),
+        )
     }
 
     fn ensure_owner(&self, client: &crate::core::ImClient) -> crate::ImResult<()> {
@@ -188,13 +227,7 @@ fn diff_patch(
     next: &[crate::messages::ConversationSnapshotItem],
 ) -> Option<crate::messages::ConversationStorePatch> {
     if previous == next {
-        return Some(crate::messages::ConversationStorePatch::Reset {
-            owner_identity_id: owner_identity_id.to_owned(),
-            owner_did: owner_did.to_owned(),
-            version,
-            unread_total,
-            items: next.to_vec(),
-        });
+        return None;
     }
     let previous_keys = previous.iter().map(item_key).collect::<Vec<_>>();
     let next_keys = next.iter().map(item_key).collect::<Vec<_>>();
@@ -212,21 +245,12 @@ fn diff_patch(
         .collect::<Vec<_>>();
 
     if removed.len() == 1 && added_or_changed.is_empty() {
-        let (thread_kind, thread_id) = removed[0].clone();
         return Some(crate::messages::ConversationStorePatch::Remove {
             owner_identity_id: owner_identity_id.to_owned(),
             owner_did: owner_did.to_owned(),
             version,
             unread_total,
-            conversation_identity: Some(
-                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
-                    thread_kind.clone(),
-                    thread_id.clone(),
-                    owner_did,
-                ),
-            ),
-            thread_kind,
-            thread_id,
+            conversation_id: removed[0].clone(),
         });
     }
     if removed.is_empty() && added_or_changed.len() == 1 {
@@ -243,8 +267,8 @@ fn diff_patch(
     None
 }
 
-fn item_key(item: &crate::messages::ConversationSnapshotItem) -> (String, String) {
-    (item.thread_kind.clone(), item.thread_id.clone())
+fn item_key(item: &crate::messages::ConversationSnapshotItem) -> String {
+    item.conversation_id.clone()
 }
 
 fn unread_total(items: &[crate::messages::ConversationSnapshotItem]) -> u32 {
@@ -276,10 +300,288 @@ fn committed_items(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn subscribe_before_seed_keeps_exactly_one_commit_during_seed() {
+        let (sender, _) = broadcast::channel(4);
+        let projection = Mutex::new(());
+        let (mut receiver, initial) = subscribe_before_seed(&sender, &projection, || {
+            sender.send("committed").unwrap();
+            Ok(vec!["seed"])
+        })
+        .unwrap();
+
+        assert_eq!(initial, vec!["seed"]);
+        assert_eq!(receiver.recv().await.unwrap(), "committed");
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn seed_version_fences_the_commit_already_represented_by_seed() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = ConversationStore::new_for_client(&client);
+        let receiver = store.sender.subscribe();
+        let during_seed = store.repair_required_patch("during_seed");
+        store.sender.send(during_seed).unwrap();
+        let seed = store.repair_required_patch("seed_after_commit");
+        let mut session =
+            crate::messages::ConversationPatchSession::new(store.clone(), receiver, vec![seed]);
+
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::RepairRequired {
+                version: 2,
+                reason,
+                ..
+            }) if reason == "seed_after_commit"
+        ));
+        let after_seed = store.repair_required_patch("after_seed");
+        store.sender.send(after_seed).unwrap();
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::RepairRequired {
+                version: 3,
+                reason,
+                ..
+            }) if reason == "after_seed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn watch_ignores_stale_redb_and_delivers_one_canonical_initial_reset() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
+            &client,
+            "did:example:bob",
+            None,
+            None,
+            &send_result("canonical-live"),
+        )
+        .unwrap();
+        crate::internal::snapshot::conversation_snapshot::save_for_client(
+            &client,
+            vec![item(
+                "dm:persona:stale",
+                "direct",
+                "did:example:stale",
+                "stale-redb",
+                1,
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+                .unwrap()
+                .unwrap()
+                .items[0]
+                .last_message
+                .as_ref()
+                .unwrap()
+                .id,
+            "stale-redb"
+        );
+
+        let mut session = client.messages().watch_conversation_patches().unwrap();
+        let initial = session.next_patch().await.expect("canonical initial reset");
+
+        assert!(matches!(
+            initial,
+            crate::messages::ConversationStorePatch::Reset { items, .. }
+                if items.len() == 1
+                    && items[0].last_message.as_ref().map(|message| message.id.as_str())
+                        == Some("canonical-live")
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "bound watch must not deliver a second redb-derived initial reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn seed_first_serializes_commit_projection_without_regression() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = ConversationStore::new_for_client(&client);
+        let old_items = vec![item("dm:persona:a", "direct", "a", "old", 1)];
+        let committed_items = vec![item("dm:persona:a", "direct", "a", "new", 0)];
+        let canonical = Arc::new(Mutex::new(old_items.clone()));
+        let seed_read = Arc::new(std::sync::Barrier::new(2));
+        let release_seed = Arc::new(std::sync::Barrier::new(2));
+
+        let seed_store = store.clone();
+        let seed_canonical = canonical.clone();
+        let seed_read_worker = seed_read.clone();
+        let release_seed_worker = release_seed.clone();
+        let seed_worker = std::thread::spawn(move || {
+            subscribe_before_seed(&seed_store.sender, &seed_store.projection, || {
+                let items = seed_canonical
+                    .lock()
+                    .expect("canonical conversation fixture lock poisoned")
+                    .clone();
+                seed_read_worker.wait();
+                release_seed_worker.wait();
+                let unread_total = unread_total(&items);
+                Ok(vec![seed_store.replace_items(items, unread_total)])
+            })
+            .unwrap()
+        });
+
+        seed_read.wait();
+        *canonical
+            .lock()
+            .expect("canonical conversation fixture lock poisoned") = committed_items.clone();
+
+        let callback_store = store.clone();
+        let callback_canonical = canonical.clone();
+        let (callback_done_tx, callback_done_rx) = std::sync::mpsc::channel();
+        let callback_worker = std::thread::spawn(move || {
+            let _projection_guard = callback_store
+                .projection
+                .lock()
+                .expect("conversation projection lock poisoned");
+            let items = callback_canonical
+                .lock()
+                .expect("canonical conversation fixture lock poisoned")
+                .clone();
+            if let Some(patch) = callback_store.diff_committed_items(items) {
+                let _ = callback_store.sender.send(patch);
+            }
+            callback_done_tx.send(()).unwrap();
+        });
+
+        assert!(
+            callback_done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "commit callback must not overtake a seed holding the projection lock"
+        );
+        release_seed.wait();
+        let (receiver, initial) = seed_worker.join().unwrap();
+        callback_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        callback_worker.join().unwrap();
+
+        let mut session =
+            crate::messages::ConversationPatchSession::new(store.clone(), receiver, initial);
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Reset { items, .. })
+                if items == old_items
+        ));
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Upsert { item, .. })
+                if item == committed_items[0]
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "the commit represented after the seed must be delivered exactly once"
+        );
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .expect("conversation store lock poisoned")
+                .items,
+            committed_items,
+            "the callback must re-read canonical state after the seed and must not regress it"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_first_is_fenced_by_newer_seed_without_duplicate_delivery() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = ConversationStore::new_for_client(&client);
+        let committed_items = vec![item("dm:persona:a", "direct", "a", "new", 0)];
+        let canonical = Arc::new(Mutex::new(committed_items.clone()));
+        let receiver = store.sender.subscribe();
+        let callback_locked = Arc::new(std::sync::Barrier::new(2));
+        let release_callback = Arc::new(std::sync::Barrier::new(2));
+
+        let callback_store = store.clone();
+        let callback_canonical = canonical.clone();
+        let callback_locked_worker = callback_locked.clone();
+        let release_callback_worker = release_callback.clone();
+        let callback_worker = std::thread::spawn(move || {
+            let _projection_guard = callback_store
+                .projection
+                .lock()
+                .expect("conversation projection lock poisoned");
+            let items = callback_canonical
+                .lock()
+                .expect("canonical conversation fixture lock poisoned")
+                .clone();
+            if let Some(patch) = callback_store.diff_committed_items(items) {
+                let _ = callback_store.sender.send(patch);
+            }
+            callback_locked_worker.wait();
+            release_callback_worker.wait();
+        });
+
+        callback_locked.wait();
+        let seed_store = store.clone();
+        let seed_canonical = canonical.clone();
+        let seed_started = Arc::new(std::sync::Barrier::new(2));
+        let seed_started_worker = seed_started.clone();
+        let seed_worker = std::thread::spawn(move || {
+            seed_started_worker.wait();
+            let _projection_guard = seed_store
+                .projection
+                .lock()
+                .expect("conversation projection lock poisoned");
+            let items = seed_canonical
+                .lock()
+                .expect("canonical conversation fixture lock poisoned")
+                .clone();
+            let unread_total = unread_total(&items);
+            vec![seed_store.replace_items(items, unread_total)]
+        });
+        seed_started.wait();
+        release_callback.wait();
+        callback_worker.join().unwrap();
+        let initial = seed_worker.join().unwrap();
+
+        let mut session =
+            crate::messages::ConversationPatchSession::new(store.clone(), receiver, initial);
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Reset {
+                version: 2,
+                items,
+                ..
+            }) if items == committed_items
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "the older queued callback patch must be fenced by the seed"
+        );
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .expect("conversation store lock poisoned")
+                .items,
+            committed_items,
+            "a callback that wins the projection lock must remain represented by the seed"
+        );
+    }
+
     #[test]
     fn conversation_store_diff_emits_upsert_for_single_changed_item() {
-        let previous = vec![item("direct", "a", "old", 1)];
-        let next = vec![item("direct", "a", "new", 0)];
+        let previous = vec![item("dm:persona:a", "direct", "a-old-did", "old", 1)];
+        let next = vec![item("dm:persona:a", "direct", "a-new-did", "new", 0)];
 
         let patch = diff_patch("owner-id", "did:example:owner", 2, 0, &previous, &next)
             .expect("single upsert patch");
@@ -306,7 +608,7 @@ mod tests {
 
     #[test]
     fn conversation_store_diff_emits_remove_for_single_removed_item() {
-        let previous = vec![item("direct", "a", "old", 1)];
+        let previous = vec![item("dm:persona:a", "direct", "a", "old", 1)];
         let next = Vec::new();
 
         let patch = diff_patch("owner-id", "did:example:owner", 3, 0, &previous, &next)
@@ -314,14 +616,12 @@ mod tests {
 
         match patch {
             crate::messages::ConversationStorePatch::Remove {
-                thread_kind,
-                thread_id,
+                conversation_id,
                 version,
                 ..
             } => {
                 assert_eq!(version, 3);
-                assert_eq!(thread_kind, "direct");
-                assert_eq!(thread_id, "a");
+                assert_eq!(conversation_id, "dm:persona:a");
             }
             other => panic!("expected remove, got {other:?}"),
         }
@@ -329,15 +629,25 @@ mod tests {
 
     #[test]
     fn conversation_store_diff_falls_back_to_reset_for_multi_item_change() {
-        let previous = vec![item("direct", "a", "old", 1)];
+        let previous = vec![item("dm:persona:a", "direct", "a", "old", 1)];
         let next = vec![
-            item("direct", "a", "new", 0),
-            item("direct", "b", "other", 1),
+            item("dm:persona:a", "direct", "a", "new", 0),
+            item("dm:persona:b", "direct", "b", "other", 1),
         ];
 
         assert!(
             diff_patch("owner-id", "did:example:owner", 4, 1, &previous, &next).is_none(),
             "multi item changes require reset"
+        );
+    }
+
+    #[test]
+    fn conversation_store_diff_has_no_patch_for_unchanged_items() {
+        let items = vec![item("dm:persona:a", "direct", "a", "same", 1)];
+
+        assert!(
+            diff_patch("owner-id", "did:example:owner", 4, 1, &items, &items,).is_none(),
+            "unchanged items must not produce a patch"
         );
     }
 
@@ -400,15 +710,41 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn conversation_store_ignores_unchanged_local_projection_commit() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = client.conversation_store();
+        let mut session = client.messages().watch_conversation_patches().unwrap();
+        let _initial_hydrate = session.next_patch().await.unwrap();
+        let version_before = store.version_for_test();
+
+        client.emit_committed_conversation_projection("unchanged_projection");
+
+        assert_eq!(store.version_for_test(), version_before);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "unchanged projection must not emit a patch"
+        );
+    }
+
     fn item(
+        conversation_id: &str,
         thread_kind: &str,
         thread_id: &str,
         message_id: &str,
         unread_count: u32,
     ) -> crate::messages::ConversationSnapshotItem {
         crate::messages::ConversationSnapshotItem {
+            conversation_id: conversation_id.to_owned(),
+            peer_persona_id: None,
+            canonical_group_did: None,
+            resolution_state: crate::messages::ConversationResolutionState::LegacyUnresolved,
             thread_kind: thread_kind.to_owned(),
             thread_id: thread_id.to_owned(),
+            title: None,
             conversation_identity: None,
             participants: Vec::new(),
             last_message: Some(crate::messages::ConversationSnapshotMessage {
@@ -506,6 +842,7 @@ mod tests {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,

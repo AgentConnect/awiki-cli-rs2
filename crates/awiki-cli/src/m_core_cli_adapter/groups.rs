@@ -127,7 +127,7 @@ pub fn create_group_via_im_core(
     }
     let result = client
         .groups()
-        .create(group_create_request(request)?)
+        .create(group_create_request(request, client.handle().cloned())?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
@@ -156,7 +156,7 @@ pub async fn create_group_via_im_core_async(
     }
     let result = client
         .groups()
-        .create_async(group_create_request(request)?)
+        .create_async(group_create_request(request, client.handle().cloned())?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -576,9 +576,11 @@ pub fn list_groups_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
     let request = GroupListRequest {
         limit: page_limit(limit, 50)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
@@ -591,6 +593,8 @@ pub fn list_groups_via_im_core(
         data: json!({
             "groups": groups,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} groups"),
@@ -602,9 +606,11 @@ pub async fn list_groups_via_im_core_async(
     resolved: &Resolved,
     client: &im_core::ImClient,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
     let request = GroupListRequest {
         limit: page_limit(limit, 50)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
@@ -618,6 +624,8 @@ pub async fn list_groups_via_im_core_async(
         data: json!({
             "groups": groups,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} groups"),
@@ -630,23 +638,32 @@ pub fn group_members_via_im_core(
     client: &im_core::ImClient,
     group: String,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
+    let requested_group = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let request = GroupMembersRequest {
-        group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
+        group: requested_group.clone(),
         limit: page_limit(limit, 100)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
         .members(request)
         .map_err(im_error_to_message_error)?;
+    let page_group =
+        required_group_member_page_binding(result.page_group.as_ref(), &requested_group)?;
     let raw = group_raw_response(&result);
     let members = group_members_to_cli_json(&result, &raw);
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
-            "group": group,
+            "group": page_group,
+            "page_group": page_group,
             "members": members,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
+            "group_state_version": result.group_state_version.as_deref(),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} group members"),
@@ -659,24 +676,33 @@ pub async fn group_members_via_im_core_async(
     client: &im_core::ImClient,
     group: String,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
+    let requested_group = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let request = GroupMembersRequest {
-        group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
+        group: requested_group.clone(),
         limit: page_limit(limit, 100)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
         .members_async(request)
         .await
         .map_err(im_error_to_message_error)?;
+    let page_group =
+        required_group_member_page_binding(result.page_group.as_ref(), &requested_group)?;
     let raw = group_raw_response(&result);
     let members = group_members_to_cli_json(&result, &raw);
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
-            "group": group,
+            "group": page_group,
+            "page_group": page_group,
             "members": members,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
+            "group_state_version": result.group_state_version.as_deref(),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} group members"),
@@ -1119,13 +1145,14 @@ fn group_e2ee_key_command_result(
 
 fn group_create_request(
     request: GroupCreateRequest,
+    creator_handle: Option<Handle>,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
     let secure_required = request.secure_required
         || request.e2ee
         || request.message_security_profile.trim() == GROUP_E2EE_SECURITY_PROFILE;
     Ok(SdkGroupCreateRequest {
         name: request.name,
-        creator_handle: None,
+        creator_handle,
         description: optional_string(&request.description),
         avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
@@ -1394,7 +1421,7 @@ fn normalize_group_member_json(mut member: Value) -> Value {
 
 fn group_message_to_json(message: &Message) -> Value {
     let content = message_body_content(&message.body);
-    let content_type = message_content_type(&message.body);
+    let content_type = message_content_type(message);
     let mut value = json!({
         "id": message.id.as_str(),
         "msg_id": message.id.as_str(),
@@ -1413,6 +1440,9 @@ fn group_message_to_json(message: &Message) -> Value {
             im_core::prelude::MessageDirection::Unknown => -1,
         },
     });
+    if content_type == im_core::attachments::attachment_manifest_content_type() {
+        value["type"] = json!("attachment_manifest");
+    }
     if let Some(sequence) = message.metadata.server_sequence {
         value["server_seq"] = json!(sequence);
     }
@@ -1438,16 +1468,59 @@ fn message_body_content(body: &im_core::prelude::MessageBodyView) -> Value {
     }
 }
 
-fn message_content_type(body: &im_core::prelude::MessageBodyView) -> &'static str {
-    match body {
+fn message_content_type(message: &Message) -> String {
+    if let Some(content_type) = message
+        .metadata
+        .content_type
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return content_type.to_string();
+    }
+    if matches!(
+        &message.body,
+        im_core::prelude::MessageBodyView::Payload { payload }
+            if is_attachment_manifest_payload(payload)
+    ) {
+        return im_core::attachments::attachment_manifest_content_type().to_string();
+    }
+    match &message.body {
         im_core::prelude::MessageBodyView::Text {
             kind: im_core::prelude::MessageKind::Markdown,
             ..
-        } => "text/markdown",
-        im_core::prelude::MessageBodyView::Text { .. } => "text/plain",
-        im_core::prelude::MessageBodyView::Payload { .. } => "application/json",
-        im_core::prelude::MessageBodyView::Unsupported { .. } => "application/octet-stream",
+        } => "text/markdown".to_string(),
+        im_core::prelude::MessageBodyView::Text { .. } => "text/plain".to_string(),
+        im_core::prelude::MessageBodyView::Payload { .. } => "application/json".to_string(),
+        im_core::prelude::MessageBodyView::Unsupported { content_type } => content_type
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("application/octet-stream")
+            .to_string(),
     }
+}
+
+fn is_attachment_manifest_payload(payload: &Value) -> bool {
+    let Some(primary_attachment_id) = payload
+        .get("primary_attachment_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    payload
+        .get("attachments")
+        .and_then(Value::as_array)
+        .is_some_and(|attachments| {
+            attachments.iter().any(|attachment| {
+                attachment
+                    .get("attachment_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == primary_attachment_id)
+            })
+        })
 }
 
 fn group_message_is_secure(message: &Message) -> bool {
@@ -1518,6 +1591,18 @@ fn optional_string(value: &str) -> Option<String> {
     }
 }
 
+fn required_group_member_page_binding<'a>(
+    page_group: Option<&'a GroupRef>,
+    requested_group: &GroupRef,
+) -> Result<&'a str, MessageAdapterError> {
+    match page_group {
+        Some(page_group) if page_group == requested_group => Ok(page_group.as_str()),
+        Some(_) | None => Err(MessageAdapterError::PublicServiceCode(
+            "group.local_inventory_incomplete".to_owned(),
+        )),
+    }
+}
+
 fn default_string(value: &str, fallback: &str) -> String {
     if value.trim().is_empty() {
         fallback.to_string()
@@ -1549,7 +1634,15 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
         return None;
     }
     if let Some(snapshot) = raw.get("group_snapshot").filter(|value| value.is_object()) {
-        return Some(snapshot.clone());
+        let mut snapshot = snapshot.clone();
+        if let (Some(object), Some(maintenance)) = (
+            snapshot.as_object_mut(),
+            raw.get("e2ee_maintenance")
+                .filter(|value| value.is_object()),
+        ) {
+            object.insert("e2ee_maintenance".to_owned(), maintenance.clone());
+        }
+        return Some(snapshot);
     }
     let group_did = group_did_from_raw(raw);
     if group_did.trim().is_empty() {
@@ -1584,6 +1677,7 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
             "member_count": raw.get("member_count").cloned().unwrap_or(Value::Null),
             "group_profile": profile,
             "group_policy": raw.get("group_policy").cloned().unwrap_or(Value::Null),
+            "e2ee_maintenance": raw.get("e2ee_maintenance").cloned().unwrap_or(Value::Null),
             "created_at": raw.get("created_at").cloned().unwrap_or(Value::Null),
             "updated_at": raw.get("updated_at").cloned().unwrap_or(Value::Null),
         }));
@@ -1674,6 +1768,18 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             MessageAdapterError::GroupRequired
         }
         im_core::ImError::GroupNotFound { .. } => MessageAdapterError::GroupRequired,
+        im_core::ImError::CursorInvalid => {
+            MessageAdapterError::PublicServiceCode("group.local_cursor_invalid".to_owned())
+        }
+        im_core::ImError::CursorStale => {
+            MessageAdapterError::PublicServiceCode("group.local_cursor_stale".to_owned())
+        }
+        im_core::ImError::InventoryIncomplete => {
+            MessageAdapterError::PublicServiceCode("group.local_inventory_incomplete".to_owned())
+        }
+        im_core::ImError::InventoryTooLarge => {
+            MessageAdapterError::PublicServiceCode("group.local_inventory_too_large".to_owned())
+        }
         im_core::ImError::UnsupportedCapability { capability } if capability == "group-e2ee" => {
             MessageAdapterError::GroupNotSupported
         }
@@ -1686,22 +1792,50 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
                 missing.join(", ")
             ))
         }
+        im_core::ImError::PermissionDenied => MessageAdapterError::PermissionDenied,
+        im_core::ImError::LocalStateUnavailable { detail } => {
+            MessageAdapterError::LocalStateUnavailable(detail)
+        }
         im_core::ImError::Service {
             status_code,
             code,
             message,
-            ..
+            data,
         } => {
+            let status_code = status_code.unwrap_or_default();
+            let public_code = code
+                .as_deref()
+                .filter(|value| super::error::is_public_service_code(value))
+                .map(str::to_owned);
             let rpc_code = code
+                .as_deref()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or_default();
-            if group_e2ee_service_unsupported(rpc_code, &message) {
+            if matches!(status_code, 401 | 403) {
+                return MessageAdapterError::Service(ServiceError {
+                    status_code,
+                    rpc_code,
+                    message: "remote service request failed".to_owned(),
+                    data: None,
+                });
+            }
+            let classification_rpc_code = match public_code.as_deref() {
+                Some("anp.not_supported") => {
+                    service_data_json_rpc_code(data.as_ref()).unwrap_or_default()
+                }
+                Some(_) => 0,
+                None => rpc_code,
+            };
+            if group_e2ee_service_unsupported(classification_rpc_code, &message) {
                 return MessageAdapterError::GroupNotSupported;
             }
+            if let Some(public_code) = public_code {
+                return MessageAdapterError::PublicServiceCode(public_code);
+            }
             MessageAdapterError::Service(ServiceError {
-                status_code: status_code.unwrap_or_default(),
+                status_code,
                 rpc_code,
-                message,
+                message: "remote service request failed".to_owned(),
                 data: None,
             })
         }
@@ -1712,6 +1846,10 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
     }
 }
 
+fn service_data_json_rpc_code(data: Option<&Value>) -> Option<i64> {
+    data?.as_object()?.get("json_rpc_code")?.as_i64()
+}
+
 fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
     if rpc_code != 1405 {
         return false;
@@ -1719,4 +1857,260 @@ fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("group e2ee contract-test apis are disabled")
         || message.contains("group e2ee p6 apis are disabled")
+}
+
+#[cfg(test)]
+mod group_message_projection_tests {
+    use serde_json::json;
+
+    use super::{
+        group_create_request, im_error_to_message_error, is_attachment_manifest_payload,
+        normalize_group_snapshot, required_group_member_page_binding, GroupCreateRequest,
+    };
+    use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
+
+    #[test]
+    fn group_create_request_preserves_selected_handle_mode_and_none_compatibility() {
+        let request = GroupCreateRequest {
+            name: "Handle group".to_owned(),
+            ..GroupCreateRequest::default()
+        };
+        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
+
+        assert_eq!(
+            group_create_request(request.clone(), Some(handle.clone()))
+                .unwrap()
+                .creator_handle,
+            Some(handle)
+        );
+        assert_eq!(
+            group_create_request(request, None).unwrap().creator_handle,
+            None
+        );
+    }
+
+    #[test]
+    fn group_adapter_preserves_fail_closed_error_categories() {
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::PermissionDenied),
+            MessageAdapterError::PermissionDenied
+        );
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::LocalStateUnavailable {
+                detail: "authoritative P4 member roster is incomplete".to_owned(),
+            }),
+            MessageAdapterError::LocalStateUnavailable(
+                "authoritative P4 member roster is incomplete".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn group_member_page_binding_is_host_response_owned_and_fail_closed() {
+        let requested = im_core::ids::GroupRef::parse("did:example:requested").unwrap();
+        let returned = im_core::ids::GroupRef::parse("did:example:requested").unwrap();
+        assert_eq!(
+            required_group_member_page_binding(Some(&returned), &requested).unwrap(),
+            returned.as_str()
+        );
+
+        for page_group in [
+            None,
+            Some(im_core::ids::GroupRef::parse("did:example:conflict").unwrap()),
+        ] {
+            assert_eq!(
+                required_group_member_page_binding(page_group.as_ref(), &requested),
+                Err(MessageAdapterError::PublicServiceCode(
+                    "group.local_inventory_incomplete".to_owned()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn group_snapshot_preserves_host_revocation_maintenance_projection() {
+        let maintenance = json!({
+            "reason": "device_revocation_pending",
+            "send_paused": true,
+        });
+        let snapshot = normalize_group_snapshot(&json!({
+            "group_did": "did:example:group",
+            "group_state_version": "41",
+            "group_snapshot": {
+                "group_did": "did:example:group",
+                "group_profile": {"display_name": "Step 4"},
+            },
+            "e2ee_maintenance": maintenance,
+        }))
+        .expect("group snapshot");
+
+        assert_eq!(snapshot["e2ee_maintenance"], maintenance);
+    }
+
+    #[test]
+    fn group_service_public_code_does_not_preserve_private_payload() {
+        let private_marker = "remote-private-group-error";
+        for service_code in ["anp.group_state_changed", "group.device_not_eligible"] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some(service_code.to_owned()),
+                message: private_marker.to_owned(),
+                data: Some(json!({"private": private_marker})),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::PublicServiceCode(service_code.to_owned())
+            );
+            assert!(!format!("{mapped:?}").contains(private_marker));
+            assert!(!mapped.to_string().contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn group_service_private_code_and_payload_are_not_preserved() {
+        let private_marker = "remote-private-group-payload";
+        for private_code in [
+            "secret.token",
+            "anp.token=private",
+            "ANP.group_state_changed",
+            "anp..group_state_changed",
+        ] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some(private_code.to_owned()),
+                message: private_marker.to_owned(),
+                data: Some(json!({"private": private_marker})),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::Service(ServiceError {
+                    status_code: 0,
+                    rpc_code: 0,
+                    message: "remote service request failed".to_owned(),
+                    data: None,
+                })
+            );
+            assert!(!format!("{mapped:?}").contains(private_marker));
+            assert!(!mapped.to_string().contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn group_service_auth_status_precedes_public_and_unsupported_codes() {
+        let private_marker = "remote-private-group-auth-error";
+        for status_code in [401, 403] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: Some(status_code),
+                code: Some("anp.not_supported".to_owned()),
+                message: "group E2EE P6 APIs are disabled; remote-private-group-auth-error"
+                    .to_owned(),
+                data: Some(json!({
+                    "json_rpc_code": 1405,
+                    "private": private_marker,
+                })),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::Service(ServiceError {
+                    status_code,
+                    rpc_code: 0,
+                    message: "remote service request failed".to_owned(),
+                    data: None,
+                })
+            );
+            assert!(!format!("{mapped:?}").contains(private_marker));
+            assert!(!mapped.to_string().contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn group_service_1405_keeps_e2ee_unsupported_compatibility() {
+        for (code, data) in [
+            ("1405", None),
+            (
+                "anp.not_supported",
+                Some(json!({
+                    "json_rpc_code": 1405,
+                    "private": "must-not-be-preserved",
+                })),
+            ),
+        ] {
+            assert_eq!(
+                im_error_to_message_error(im_core::ImError::Service {
+                    status_code: None,
+                    code: Some(code.to_owned()),
+                    message: "group E2EE P6 APIs are disabled".to_owned(),
+                    data,
+                }),
+                MessageAdapterError::GroupNotSupported
+            );
+        }
+    }
+
+    #[test]
+    fn group_service_invalid_data_rpc_code_does_not_trigger_unsupported() {
+        for json_rpc_code in [
+            json!("1405"),
+            json!(1405.0),
+            json!(u64::MAX),
+            json!(null),
+            json!([1405]),
+        ] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some("anp.not_supported".to_owned()),
+                message: "group E2EE P6 APIs are disabled".to_owned(),
+                data: Some(json!({"json_rpc_code": json_rpc_code})),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::PublicServiceCode("anp.not_supported".to_owned())
+            );
+        }
+
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some("group.device_not_eligible".to_owned()),
+                message: "group E2EE P6 APIs are disabled".to_owned(),
+                data: Some(json!({"json_rpc_code": 1405})),
+            }),
+            MessageAdapterError::PublicServiceCode("group.device_not_eligible".to_owned())
+        );
+
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some("secret.not_supported".to_owned()),
+                message: "group E2EE P6 APIs are disabled".to_owned(),
+                data: Some(json!({"json_rpc_code": 1405})),
+            }),
+            MessageAdapterError::Service(ServiceError {
+                status_code: 0,
+                rpc_code: 0,
+                message: "remote service request failed".to_owned(),
+                data: None,
+            })
+        );
+    }
+
+    #[test]
+    fn attachment_manifest_payload_requires_matching_primary_attachment() {
+        assert!(is_attachment_manifest_payload(&json!({
+            "attachments": [{"attachment_id": "att-1"}],
+            "primary_attachment_id": "att-1"
+        })));
+        assert!(!is_attachment_manifest_payload(&json!({
+            "attachments": [{"attachment_id": "att-1"}],
+            "primary_attachment_id": "att-2"
+        })));
+        assert!(!is_attachment_manifest_payload(&json!({
+            "attachments": [],
+            "text": "ordinary payload"
+        })));
+    }
 }

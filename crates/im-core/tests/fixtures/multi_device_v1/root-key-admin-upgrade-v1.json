@@ -1,0 +1,312 @@
+{
+  "fixture_id": "awiki-root-key-admin-upgrade-v1-20260724",
+  "fixture_version": 1,
+  "contract_version": "awiki.device.root-key-admin-upgrade.v1",
+  "synthetic_test_only": true,
+  "test_material_warning": "All key material is synthetic interoperability-test material and must never be used by production configuration.",
+  "source_pins": {
+    "anp_repository_commit": "426028a99ba5c7e5e46953642b1c62d834a0663b",
+    "anp_sdk_commit": "52d3755f13d1e8c082898b89374fcd893e323c3c",
+    "anp_p1_core_binding_zh_sha256_hex": "2e83d2830c38559e2dada15a8be5e596ee757055af0cad5d4d0b279ebfdfc399",
+    "anp_p2_identity_discovery_zh_sha256_hex": "834cc4d757aef6ed14ed448df543345d63bb48b0e91e530de999a3c3dd853959",
+    "anp_p5_direct_e2ee_zh_sha256_hex": "1f5d5125e834381ee57a993b0ffdb9953da78a23f86384cf91ed6ad67ca71e81",
+    "anp_p1_core_binding_en_sha256_hex": "b93387252230673aca1b74fea23969005e78f4eb32ec545684d32e051d475728",
+    "anp_p2_identity_discovery_en_sha256_hex": "a8face29c7f731392bbc6436b3c90b226f479ba026622f8ec97195ba403de928",
+    "anp_p5_direct_e2ee_en_sha256_hex": "9971fb558c4f85a60113afffa92bbdcc67c6057da23783dc2dd2ca66509bbafa",
+    "fixture_generator_raw_sha256_hex": "53bd8a955b83359949b809b64471e561204816d20234acbad293e4332f42bf63",
+    "rust_p5_vector_jcs_sha256_hex": "2decb444f4da28f24267d313442cf8797dfae233260fd9883a2c77bcebda43ca",
+    "awiki_root_contract_raw_sha256_hex": "ac16ddb8f3811decf0e2ed0765eb82468012768816645aca52252344f1e2b88c",
+    "awiki_root_flow_raw_sha256_hex": "4a4a8722f026d38c7f81f5b5cf6cecd4c4844c4a3ac1ee711d9c7bc7dcd3821c",
+    "awiki_registration_auth_raw_sha256_hex": "63f92d917e31439496b468044d2861b4768542b0f9b35ecc685aa34f6d13e2d8"
+  },
+  "digest_policy": {
+    "canonicalization": "RFC8785 JCS",
+    "text_encoding": "UTF-8",
+    "binary_encoding": "Base64URL without padding",
+    "artifact_digest_scope": "complete artifact object with artifact_digest omitted"
+  },
+  "artifacts": [
+    {
+      "path": "root-key-prekey-v1.json",
+      "fixture_id": "awiki-root-key-prekey-v1-20260724",
+      "fixture_version": 1,
+      "content_sha256_b64u": "F1oYMpVcBqDC-zVdGtO4-4i52MF7GwnQzScJS79fL0o",
+      "content_sha256_hex": "175a1832955c06a0c2fb355d1ad3b8fb88b9d8c17b1b09d0cd27094bbf5f2f4a"
+    },
+    {
+      "path": "root-key-envelope-v1.json",
+      "fixture_id": "awiki-root-key-envelope-v1-20260724",
+      "fixture_version": 1,
+      "content_sha256_b64u": "gWvjNqckCu0vPs-84WYE7-wpLTCRq2z7onSZTRHpoN4",
+      "content_sha256_hex": "816be336a7240aed2f3ecfbce16604efec292d3091ab6cfba274994d11e9a0de"
+    },
+    {
+      "path": "root-key-completion-v1.json",
+      "fixture_id": "awiki-root-key-completion-v1-20260724",
+      "fixture_version": 1,
+      "content_sha256_b64u": "JLYlR-qTYBI4RigS8lwFG2BRynp0Ju4YrnnKyd-rqH4",
+      "content_sha256_hex": "24b62547ea93601238462812f25c051b6051ca7a7426ee18ae79cac9dfaba87e"
+    }
+  ],
+  "vector_index": [
+    {
+      "vector_id": "prekey.publish.service_scoped",
+      "artifact": "root-key-prekey-v1.json",
+      "pointer": "/positive_vectors/publish",
+      "consumers": [
+        "message-service-rust",
+        "im-core-rust"
+      ]
+    },
+    {
+      "vector_id": "root.pkcs8.canonical",
+      "artifact": "root-key-envelope-v1.json",
+      "pointer": "/pkcs8",
+      "consumers": [
+        "im-core-rust"
+      ]
+    },
+    {
+      "vector_id": "root.p5.init_and_cipher.crypto",
+      "artifact": "root-key-envelope-v1.json",
+      "pointer": "/p5_vectors",
+      "consumers": [
+        "im-core-rust"
+      ]
+    },
+    {
+      "vector_id": "root.p5.init.wire",
+      "artifact": "root-key-envelope-v1.json",
+      "pointer": "/p5_vectors/init_with_opk/request",
+      "consumers": [
+        "message-service-rust"
+      ]
+    },
+    {
+      "vector_id": "root.p5.cipher.wire",
+      "artifact": "root-key-envelope-v1.json",
+      "pointer": "/p5_vectors/established_session_cipher/request",
+      "consumers": [
+        "message-service-rust"
+      ]
+    },
+    {
+      "vector_id": "root.p5.init.accepted",
+      "artifact": "root-key-envelope-v1.json",
+      "pointer": "/p5_vectors/init_with_opk/accepted_result",
+      "consumers": [
+        "message-service-rust"
+      ]
+    },
+    {
+      "vector_id": "root.p5.cipher.accepted",
+      "artifact": "root-key-envelope-v1.json",
+      "pointer": "/p5_vectors/established_session_cipher/accepted_result",
+      "consumers": [
+        "message-service-rust"
+      ]
+    },
+    {
+      "vector_id": "completion.nested_proofs",
+      "artifact": "root-key-completion-v1.json",
+      "pointer": "/completion",
+      "consumers": [
+        "user-service-python",
+        "im-core-rust"
+      ]
+    },
+    {
+      "vector_id": "host.root_transfer.safe_api",
+      "artifact": "root-key-admin-upgrade-v1.json",
+      "pointer": "/host_api",
+      "consumers": [
+        "im-core-rust",
+        "awiki-me-dart"
+      ]
+    }
+  ],
+  "cross_vector_invariants": {
+    "did": "did:wba:fixture.invalid:users:alice:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+    "sender_device_id": "dev-sender-step3",
+    "recipient_device_id": "dev-recipient-step3",
+    "init_message_id": "root-transfer-fixture-init-001",
+    "operation_id_equals_message_id": true
+  },
+  "host_api": {
+    "prepare_success": {
+      "authorization_handle": "iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg",
+      "recipient": {
+        "did": "did:wba:fixture.invalid:users:alice:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+        "device_id": "dev-recipient-step3",
+        "signing_key_id": "did:wba:fixture.invalid:users:alice:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#dev-recipient-sign",
+        "e2ee_key_id": "did:wba:fixture.invalid:users:alice:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#dev-recipient-e2ee",
+        "registry_version": 7
+      },
+      "expires_at": "2026-07-24T00:02:00Z"
+    },
+    "accepted_receipt": {
+      "did": "did:wba:fixture.invalid:users:alice:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+      "sender_device_id": "dev-sender-step3",
+      "recipient_device_id": "dev-recipient-step3",
+      "message_id": "root-transfer-fixture-init-001",
+      "accepted_at": "2026-07-24T00:01:02.123456Z"
+    },
+    "error_shape": {
+      "fields": [
+        "code",
+        "retryable"
+      ],
+      "additional_properties": false
+    },
+    "error_union": [
+      {
+        "code": "root_transfer.unsupported",
+        "phases": [
+          "prepare",
+          "confirm"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.invalid_request",
+        "phases": [
+          "prepare",
+          "confirm"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.sender_not_eligible",
+        "phases": [
+          "prepare"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.recipient_not_eligible",
+        "phases": [
+          "prepare"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.prekey_unavailable",
+        "phases": [
+          "prepare"
+        ],
+        "retryable": true
+      },
+      {
+        "code": "root_transfer.prekey_invalid",
+        "phases": [
+          "prepare"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.root_vault_unavailable",
+        "phases": [
+          "prepare",
+          "confirm"
+        ],
+        "retryable": true
+      },
+      {
+        "code": "root_transfer.authorization_invalid",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.authorization_expired",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": true
+      },
+      {
+        "code": "root_transfer.authorization_already_consumed",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.user_presence_denied",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.state_changed",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": true
+      },
+      {
+        "code": "root_transfer.transport_pending",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": false
+      },
+      {
+        "code": "root_transfer.transport_rejected",
+        "phases": [
+          "confirm"
+        ],
+        "retryable": true
+      },
+      {
+        "code": "root_transfer.temporarily_unavailable",
+        "phases": [
+          "prepare",
+          "confirm"
+        ],
+        "retryable": true
+      }
+    ],
+    "redacted_fields": [
+      "authorization_handle",
+      "root_private_key_pkcs8_b64u",
+      "prekey",
+      "session",
+      "checkpoint",
+      "proof",
+      "nonce",
+      "ciphertext"
+    ]
+  },
+  "consumer_ownership": {
+    "canonical_owner": "plan/20260718-awiki-multi-device-implementation/refactor/fixtures",
+    "python": [
+      "completion schema",
+      "proof verification",
+      "request hash"
+    ],
+    "rust_core": [
+      "PKCS8",
+      "Root envelope",
+      "P5 Init/Cipher",
+      "AAD"
+    ],
+    "rust_message": [
+      "PreKey",
+      "accepted",
+      "exact lookup/delete"
+    ],
+    "dart": [
+      "manifest digest",
+      "host_api safe DTO/error vectors only"
+    ]
+  },
+  "manifest_digest": {
+    "algorithm": "SHA-256",
+    "scope": "RFC8785 JCS of the complete manifest with manifest_digest omitted",
+    "sha256_b64u": "kSIge7GQO2cL6yjprWWrhRgLfcAZO5mSQjDUPV5myaI",
+    "sha256_hex": "9122207bb1903b670beb28e9ad65ab85180b7dc0193b99924230d43d5e66c9a2"
+  }
+}

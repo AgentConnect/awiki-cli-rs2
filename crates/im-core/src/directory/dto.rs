@@ -40,12 +40,19 @@ pub struct HandleLookupResult {
 
 impl HandleLookupResult {
     pub fn direct_conversation_id(&self) -> String {
-        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
-            &crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                self.user_id.clone(),
-                self.handle.as_str(),
-            )
-            .expect("validated handle lookup must define a direct peer scope"),
+        self.peer_persona()
+            .expect("validated Handle lookup must define a canonical Persona")
+            .direct_conversation_id()
+    }
+
+    pub(crate) fn peer_persona(
+        &self,
+    ) -> crate::ImResult<crate::internal::canonical_identity::PeerPersona> {
+        crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+            self.domain.as_deref().unwrap_or_default(),
+            &self.user_id,
+            self.handle.as_str(),
+            self.status.as_deref(),
         )
     }
 }

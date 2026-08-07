@@ -1,0 +1,51 @@
+{
+  "fixture": {
+    "containsOnlySyntheticData": true,
+    "file": "local-state.sqlite",
+    "sha256": "05c896546b6888536c2dddfc68ce76800918197709f3cccdd1d79e67010688a8"
+  },
+  "formatVersion": 1,
+  "generatedAt": "2026-07-14T12:35:49+00:00",
+  "generator": {
+    "path": "scripts/generate_release_0710_fixture.py",
+    "sha256": "14e31ad5f3b2fe3e5cfa5916b93414af2eb73c01a3483a2797c94dd031e4b1f0"
+  },
+  "oracles": {
+    "counts": {
+      "contact_handle_bindings": 2,
+      "contacts": 2,
+      "conversation_registry": 4,
+      "conversation_summaries": 2,
+      "direct_peer_routes": 1,
+      "e2ee_outbox": 1,
+      "group_members": 2,
+      "group_rebind_outbox": 1,
+      "group_rebind_p6_jobs": 1,
+      "groups": 2,
+      "identity_did_history": 2,
+      "messages": 2,
+      "relationship_events": 1,
+      "sync_state": 1,
+      "thread_read_state": 2
+    },
+    "fingerprints": {
+      "empty_conversations": "fbdb770c9ca33159487fdd1fdbdd9ebfd8c611ec279385f3e46c04f9b1448bb6",
+      "membership_facts": "0c8aa5e84ed8a5ff9e40cff7980cf06f3f79736e052490c64b45e5cf80bcd449",
+      "message_ids": "dae3bcf8a36349a310b6117219162fe28ebb60d06ff5490dafe583468fb3371c",
+      "message_wire_facts": "1617a76dd36af35aefb6b7f6057c419df58bdd59245a22f2506cc79e7a91b0c8",
+      "outbox_facts": "3cfe737a5e6fc58b59159959eeed66bf5366ab2ad6db9ccaf8a1df3ab9944422",
+      "read_facts": "1ba79b9eb855dd77fadc1519f1381ab655e5195a41b7f2c4ea2ab94958dad75e",
+      "rebind_facts": "da9d6eb87336cc2efeb9de9b3dde0ccba15918626ab20859267fe6de7324e99d"
+    }
+  },
+  "sourceArtifact": {
+    "component": "awiki-deamon",
+    "sha256": "3134862f360acb73ca61867fe7d547f4ecd100369ba2bd4153d724251b45ce95",
+    "sourceRef": "d7c853a986a29e0c0457284a6b2c3d81ec637e10",
+    "version": "0.1.76"
+  },
+  "sourceSchema": {
+    "fingerprint": "sha256:0b8b6b902f8460ff1ea6c122d6b8b687722890136d9b7adb6e52d9d636ef6690",
+    "version": 27
+  }
+}

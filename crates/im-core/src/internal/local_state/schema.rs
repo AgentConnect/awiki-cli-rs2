@@ -2,10 +2,85 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 27;
+pub(crate) const SCHEMA_VERSION: i64 = 35;
+pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
+const SYSTEM_NOTIFICATION_SCHEMA_VERSION: i64 = 29;
+const ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION: i64 = 30;
+const LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION: i64 = 31;
+const MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION: i64 = 32;
+const SYNC_INSTALLATION_ID_SCHEMA_VERSION: i64 = 33;
+const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
+const INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION: i64 = 35;
+const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
+    "identity_account_bindings",
+    "message_sync_state",
+    "sync_applied_events",
+    "sync_recovery_state",
+    "local_mutation_outbox",
+];
+const READ_RECOVERY_TABLES: &[&str] = &["sync_thread_bindings", "sync_remote_read_states"];
+const SYNC_V2_REQUIRED_INDEXES: &[&str] = &[
+    "identity_account_device_idx",
+    "message_sync_state_account_device_idx",
+    "sync_applied_events_prune_idx",
+    "sync_applied_events_applied_at_idx",
+    "sync_recovery_state_status_idx",
+    "local_mutation_outbox_drain_idx",
+    "sync_thread_bindings_conversation_idx",
+];
+
+pub(crate) const ROOT_IMPORT_COORDINATOR_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS identity_root_import_completion_v1 (
+    owner_identity_id       TEXT NOT NULL,
+    owner_did               TEXT NOT NULL,
+    local_device_id         TEXT NOT NULL,
+    message_id              TEXT NOT NULL,
+    sender_device_id        TEXT NOT NULL,
+    recipient_device_id     TEXT NOT NULL,
+    sender_e2ee_key_id      TEXT NOT NULL,
+    recipient_e2ee_key_id   TEXT NOT NULL,
+    accepted_at             TEXT NOT NULL,
+    imported_at             TEXT NOT NULL,
+    envelope_expires_at     TEXT NOT NULL,
+    pending_root_ref_json   TEXT NOT NULL,
+    root_key_id             TEXT NOT NULL,
+    root_fingerprint        TEXT NOT NULL,
+    document_version        INTEGER NOT NULL,
+    document_hash           TEXT NOT NULL,
+    registry_version        INTEGER NOT NULL,
+    phase                   TEXT NOT NULL,
+    completion_params_json  TEXT,
+    completion_request_hash TEXT,
+    completion_result_json  TEXT,
+    last_error_code         TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, message_id),
+    CHECK (phase IN (
+        'import_sealed', 'proof_prepared', 'completion_pending',
+        'completion_accepted', 'token_refreshed', 'registry_confirmed',
+        'promoted', 'terminal_failed'
+    ))
+);
+
+CREATE TABLE IF NOT EXISTS identity_root_transfer_sender_v1 (
+    owner_identity_id   TEXT NOT NULL,
+    owner_did           TEXT NOT NULL,
+    local_device_id     TEXT NOT NULL,
+    message_id          TEXT NOT NULL,
+    recipient_device_id TEXT NOT NULL,
+    phase               TEXT NOT NULL,
+    accepted_at         TEXT,
+    failure_code        TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, message_id),
+    CHECK (phase IN ('pending_delivery', 'sent', 'terminal_failed', 'expired'))
+);
+"#;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -246,6 +321,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
     thread_kind             TEXT NOT NULL,
     thread_id               TEXT NOT NULL,
     message_id              TEXT NOT NULL,
+    wire_message_id         TEXT NOT NULL DEFAULT '',
     sender_did              TEXT,
     message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
     content                 TEXT NOT NULL,
@@ -254,20 +330,22 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
 );
 "#;
 
-const SYNC_STATE_SQL: &str = r#"
+const SYNC_STATE_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS sync_state (
     owner_identity_id TEXT NOT NULL,
-    owner_did         TEXT NOT NULL DEFAULT '',
+    sync_subject_id   TEXT NOT NULL,
     scope             TEXT NOT NULL,
     checkpoint_kind   TEXT NOT NULL,
     event_seq         TEXT NOT NULL DEFAULT '0',
     updated_at        TEXT NOT NULL,
     metadata_json     TEXT,
-    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+    PRIMARY KEY (owner_identity_id, sync_subject_id, scope, checkpoint_kind)
 );
+"#;
 
+const SYNC_STATE_INDEX_SQL: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_sync_state_owner_kind
-ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+ON sync_state(owner_identity_id, sync_subject_id, checkpoint_kind, updated_at DESC);
 "#;
 
 const THREAD_READ_STATE_SQL: &str = r#"
@@ -282,6 +360,7 @@ CREATE TABLE IF NOT EXISTS thread_read_state (
     read_watermark_at          TEXT,
     pending_remote_ack         INTEGER NOT NULL DEFAULT 0,
     remote_ack_at              TEXT,
+    remote_state_version       TEXT,
     updated_at                 TEXT NOT NULL,
     PRIMARY KEY (owner_identity_id, thread_scope, thread_id)
 );
@@ -311,6 +390,8 @@ const DIRECT_PEER_ROUTES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS direct_peer_routes (
     owner_identity_id TEXT NOT NULL,
     conversation_id   TEXT NOT NULL,
+    peer_persona_id   TEXT,
+    authority_namespace TEXT,
     peer_user_id      TEXT NOT NULL,
     full_handle       TEXT NOT NULL,
     current_did       TEXT NOT NULL,
@@ -526,7 +607,6 @@ const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
 
 const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
     "conversation_summaries",
-    "sync_state",
     "contacts",
     "contact_handle_bindings",
     "messages",
@@ -929,15 +1009,257 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
-    if version < IDENTITY_OWNED_SCHEMA_VERSION {
+    if (CANONICAL_CONVERSATION_SCHEMA_VERSION..=LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION)
+        .contains(&version)
+    {
+        return migrate_release_predecessor_to_v34(connection, version);
+    }
+    if (MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION..=READ_RECOVERY_SCHEMA_VERSION)
+        .contains(&version)
+    {
+        if version == READ_RECOVERY_SCHEMA_VERSION && merged_v34_shape_is_complete(connection)? {
+            return migrate_v34_to_v35(connection);
+        }
+        return converge_divergent_schema_to_v34(connection, version);
+    }
+    if version == INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION {
+        if !merged_v35_shape_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: format!(
+                    "sqlite schema version {version} has an incomplete inbound resolution binding shape"
+                ),
+            });
+        }
+        return create_schema(connection, false);
+    }
+    if version < SCHEMA_VERSION {
+        return Err(crate::ImError::LocalStateUpgradeRequired {
+            from_version: version,
+            target_version: SCHEMA_VERSION,
+        });
+    }
+    create_schema(connection, false)
+}
+
+fn migrate_release_predecessor_to_v34(
+    connection: &Connection,
+    version: i64,
+) -> crate::ImResult<()> {
+    validate_release_predecessor_shape(connection, version)?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    if version < SYSTEM_NOTIFICATION_SCHEMA_VERSION {
+        crate::internal::system_notification::store::create_schema(&transaction)?;
+    }
+    if version < ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION {
+        transaction
+            .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
+            .map_err(super::local_state_unavailable)?;
+    }
+    if version < LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION {
+        crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+            &transaction,
+        )?;
+    }
+
+    ensure_message_hydration_projection(&transaction)?;
+    migrate_sync_state_subject_scope(&transaction)?;
+    super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
+    create_schema(&transaction, false)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn validate_release_predecessor_shape(
+    connection: &Connection,
+    version: i64,
+) -> crate::ImResult<()> {
+    let development_shape = has_column(connection, "messages", "hydration_state")?
+        || has_column(connection, "sync_state", "sync_subject_id")?;
+    if development_shape {
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
-                "sqlite schema version {version} requires owner-identity migration before schema {SCHEMA_VERSION}"
+                "sqlite schema version {version} matches an incompatible development profile; reset this development local state before opening schema {SCHEMA_VERSION}"
             ),
         });
     }
-    create_schema(connection, version < CONVERSATION_SUMMARIES_SCHEMA_VERSION)?;
-    set_schema_version(connection, SCHEMA_VERSION)
+
+    let has_system_notifications = has_table(connection, "system_notification_receipts")?
+        && has_table(connection, "system_notification_join_state")?;
+    let has_root_import = has_table(connection, "identity_root_import_completion_v1")?
+        && has_table(connection, "identity_root_transfer_sender_v1")?;
+    let has_release_attachment_wire_id =
+        has_column(connection, "attachment_manifest_cache", "wire_message_id")?;
+    let release_shape_matches = version == CANONICAL_CONVERSATION_SCHEMA_VERSION
+        || (version == SYSTEM_NOTIFICATION_SCHEMA_VERSION && has_system_notifications)
+        || (version == ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION
+            && has_system_notifications
+            && has_root_import)
+        || (version == LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION
+            && has_system_notifications
+            && has_root_import
+            && has_release_attachment_wire_id);
+    if !release_shape_matches {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} does not match the release/0714 predecessor shape required by schema {SCHEMA_VERSION}"
+            ),
+        });
+    }
+    if !has_column(connection, "sync_state", "owner_did")? {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an unsupported checkpoint ownership shape"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn converge_divergent_schema_to_v34(connection: &Connection, version: i64) -> crate::ImResult<()> {
+    validate_divergent_schema_shape(connection, version)?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    ensure_message_hydration_projection(&transaction)?;
+    migrate_sync_state_subject_scope(&transaction)?;
+    super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
+    create_schema(&transaction, false)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v34_to_v35(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != READ_RECOVERY_SCHEMA_VERSION
+        || !merged_v34_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "sqlite schema v34 must be complete before adding inbound resolution bindings"
+                .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    super::inbound_resolution_backlog::create_schema(&transaction)?;
+    set_schema_version(
+        &transaction,
+        INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION,
+    )?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn validate_divergent_schema_shape(connection: &Connection, version: i64) -> crate::ImResult<()> {
+    let has_hydration = has_column(connection, "messages", "hydration_state")?;
+    let has_sync_subject = has_column(connection, "sync_state", "sync_subject_id")?;
+    let has_complete_sync_subject = sync_state_subject_scope_schema_is_complete(connection)?;
+    if has_sync_subject && !has_complete_sync_subject {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete subject-scoped checkpoint shape"
+            ),
+        });
+    }
+    if has_hydration != has_sync_subject {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete reliable-sync projection"
+            ),
+        });
+    }
+
+    let sync_v2_table_count = table_presence_count(connection, SYNC_V2_FOUNDATION_TABLES)?;
+    if sync_v2_table_count != 0 && sync_v2_table_count != SYNC_V2_FOUNDATION_TABLES.len() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete multi-device sync foundation"
+            ),
+        });
+    }
+    let read_recovery_table_count = table_presence_count(connection, READ_RECOVERY_TABLES)?;
+    if read_recovery_table_count != 0 && read_recovery_table_count != READ_RECOVERY_TABLES.len() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete read-recovery projection"
+            ),
+        });
+    }
+
+    let current_shape = has_hydration && has_complete_sync_subject;
+    let release_v32_shape = sync_v2_table_count == SYNC_V2_FOUNDATION_TABLES.len();
+    let release_v33_shape = release_v32_shape && has_table(connection, "sync_installation_state")?;
+    let release_v34_shape = release_v33_shape
+        && read_recovery_table_count == READ_RECOVERY_TABLES.len()
+        && has_column(connection, "thread_read_state", "remote_state_version")?;
+    let known_shape = match version {
+        MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION => current_shape || release_v32_shape,
+        SYNC_INSTALLATION_ID_SCHEMA_VERSION => current_shape || release_v33_shape,
+        READ_RECOVERY_SCHEMA_VERSION => current_shape || release_v34_shape,
+        _ => false,
+    };
+    if !known_shape {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} does not match a supported released schema shape"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn merged_v34_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(has_column(connection, "messages", "hydration_state")?
+        && has_index(connection, "idx_messages_owner_hydration_conversation_seq")?
+        && sync_state_subject_scope_schema_is_complete(connection)?
+        && has_index(connection, "idx_sync_state_owner_kind")?
+        && table_presence_count(connection, SYNC_V2_FOUNDATION_TABLES)?
+            == SYNC_V2_FOUNDATION_TABLES.len()
+        && has_table(connection, "sync_installation_state")?
+        && has_column(connection, "thread_read_state", "remote_state_version")?
+        && table_presence_count(connection, READ_RECOVERY_TABLES)? == READ_RECOVERY_TABLES.len()
+        && index_presence_count(connection, SYNC_V2_REQUIRED_INDEXES)?
+            == SYNC_V2_REQUIRED_INDEXES.len())
+}
+
+fn merged_v35_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(merged_v34_shape_is_complete(connection)?
+        && has_table(connection, "inbound_resolution_thread_bindings")?
+        && has_column(
+            connection,
+            "inbound_resolution_thread_bindings",
+            "remote_thread_key",
+        )?
+        && has_column(
+            connection,
+            "inbound_resolution_thread_bindings",
+            "thread_kind",
+        )?
+        && has_column(
+            connection,
+            "inbound_resolution_thread_bindings",
+            "updated_at",
+        )?)
+}
+
+fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {
+    let mut count = 0;
+    for table in tables {
+        if has_table(connection, table)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn index_presence_count(connection: &Connection, indexes: &[&str]) -> crate::ImResult<usize> {
+    let mut count = 0;
+    for index in indexes {
+        if has_index(connection, index)? {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult<i64> {
@@ -946,21 +1268,33 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
         .map_err(super::local_state_unavailable)
 }
 
-fn create_schema(
+pub(super) fn create_schema(
     connection: &Connection,
     backfill_conversation_summaries: bool,
 ) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    ensure_column(connection, "contacts", "peer_persona_id", "TEXT")?;
     ensure_group_member_identity_columns(connection)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
-    connection
-        .execute_batch(SYNC_STATE_SQL)
-        .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        connection,
+        "attachment_manifest_cache",
+        "wire_message_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_sync_state_schema(connection)?;
+    super::sync_v2::create_schema(connection)?;
     connection
         .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        connection,
+        "thread_read_state",
+        "remote_state_version",
+        "TEXT",
+    )?;
     connection
         .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -968,15 +1302,35 @@ fn create_schema(
         .execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
         .map_err(super::local_state_unavailable)?;
     connection
+        .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)
         .map_err(super::local_state_unavailable)?;
+    crate::internal::system_notification::store::create_schema(connection)?;
+    connection
+        .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
+        .map_err(super::local_state_unavailable)?;
+    ensure_column(connection, "direct_peer_routes", "peer_persona_id", "TEXT")?;
+    ensure_column(
+        connection,
+        "direct_peer_routes",
+        "authority_namespace",
+        "TEXT",
+    )?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
+    ensure_message_hydration_projection(connection)?;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
         should_rebuild_conversation_summaries = true;
     }
     super::conversation_summaries::create_schema(connection)?;
     super::conversation_registry::create_schema(connection)?;
+    super::peer_personas::create_schema(connection)?;
+    super::peer_identifiers::create_schema(connection)?;
+    super::peer_profiles::create_schema(connection)?;
+    super::conversation_aliases::create_schema(connection)?;
+    super::inbound_resolution_backlog::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -1015,6 +1369,7 @@ CREATE TABLE IF NOT EXISTS contacts{suffix} (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
     did               TEXT NOT NULL,
+    peer_persona_id   TEXT,
     name              TEXT,
     handle            TEXT,
     nick_name         TEXT,
@@ -1057,6 +1412,9 @@ CREATE TABLE IF NOT EXISTS messages{suffix} (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
     conversation_id   TEXT NOT NULL DEFAULT '',
+    wire_thread_kind  TEXT NOT NULL DEFAULT '',
+    wire_thread_ref   TEXT NOT NULL DEFAULT '',
+    wire_identity_resolution_state TEXT NOT NULL DEFAULT 'legacy_unresolved',
     thread_id         TEXT NOT NULL,
     direction         INTEGER NOT NULL DEFAULT 0,
     sender_did        TEXT,
@@ -1067,6 +1425,7 @@ CREATE TABLE IF NOT EXISTS messages{suffix} (
     content           TEXT,
     title             TEXT,
     server_seq        INTEGER,
+    hydration_state   TEXT NOT NULL DEFAULT 'hydrated',
     sent_at           TEXT,
     stored_at         TEXT NOT NULL,
     is_e2ee           INTEGER DEFAULT 0,
@@ -1115,11 +1474,15 @@ CREATE TABLE IF NOT EXISTS group_members{suffix} (
     owner_did         TEXT NOT NULL DEFAULT '',
     group_id          TEXT NOT NULL,
     user_id           TEXT NOT NULL,
+    membership_id     TEXT,
+    peer_persona_id   TEXT,
     member_did        TEXT,
+    member_credential_did TEXT,
     member_handle     TEXT,
     anchor_kind       TEXT NOT NULL DEFAULT 'did',
     anchor_value      TEXT NOT NULL DEFAULT '',
     handle_binding_generation TEXT,
+    membership_epoch TEXT,
     profile_url       TEXT,
     role              TEXT,
     status            TEXT NOT NULL DEFAULT 'active',
@@ -1128,7 +1491,8 @@ CREATE TABLE IF NOT EXISTS group_members{suffix} (
     last_synced_at    TEXT NOT NULL,
     metadata          TEXT,
     credential_name   TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (owner_identity_id, group_id, user_id)
+    PRIMARY KEY (owner_identity_id, group_id, user_id),
+    UNIQUE (owner_identity_id, group_id, membership_id)
 );
 
 CREATE TABLE IF NOT EXISTS relationship_events{suffix} (
@@ -1231,6 +1595,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache{suffix} (
     thread_kind             TEXT NOT NULL,
     thread_id               TEXT NOT NULL,
     message_id              TEXT NOT NULL,
+    wire_message_id         TEXT NOT NULL DEFAULT '',
     sender_did              TEXT,
     message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
     content                 TEXT NOT NULL,
@@ -1300,6 +1665,7 @@ fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()>
         "credential_name",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    ensure_column(connection, "contacts", "peer_persona_id", "TEXT")?;
     Ok(())
 }
 
@@ -1313,19 +1679,176 @@ fn ensure_direct_e2ee_session_columns(connection: &Connection) -> crate::ImResul
 }
 
 fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult<bool> {
-    if has_column(connection, "messages", "mentions_current_user")? {
-        return Ok(false);
+    let mut changed = false;
+    for (column, definition) in [
+        ("wire_thread_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("wire_thread_ref", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "wire_identity_resolution_state",
+            "TEXT NOT NULL DEFAULT 'legacy_unresolved'",
+        ),
+    ] {
+        if !has_column(connection, "messages", column)? {
+            ensure_column(connection, "messages", column, definition)?;
+            changed = true;
+        }
     }
+    if !has_column(connection, "messages", "mentions_current_user")? {
+        ensure_column(
+            connection,
+            "messages",
+            "mentions_current_user",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn ensure_message_hydration_projection(connection: &Connection) -> crate::ImResult<()> {
+    let added = !has_column(connection, "messages", "hydration_state")?;
     ensure_column(
         connection,
         "messages",
-        "mentions_current_user",
-        "INTEGER NOT NULL DEFAULT 0",
+        "hydration_state",
+        "TEXT NOT NULL DEFAULT 'hydrated'",
     )?;
-    Ok(true)
+    connection
+        .execute_batch(
+            r#"CREATE INDEX IF NOT EXISTS idx_messages_owner_hydration_conversation_seq
+ON messages(owner_identity_id, hydration_state, conversation_id, server_seq);"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    if added && current_schema_version(connection)? != 0 {
+        mark_legacy_hydration_probes(connection)?;
+    }
+    Ok(())
+}
+
+fn mark_legacy_hydration_probes(connection: &Connection) -> crate::ImResult<()> {
+    // Pre-29 rows did not preserve sync.delta provenance. Treat ambiguous empty
+    // rows as one-time probes, not as confirmed metadata-only discoveries.
+    connection
+        .execute(
+            r#"UPDATE messages
+SET hydration_state = 'legacy_probe'
+WHERE server_seq IS NOT NULL
+  AND TRIM(COALESCE(content, '')) = ''
+  AND hydration_state = 'hydrated'"#,
+            [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn ensure_sync_state_schema(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch(SYNC_STATE_TABLE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    // Schemas before v30 still have owner_did. Their index must remain untouched
+    // until the table is rebuilt inside the versioned migration transaction.
+    if has_column(connection, "sync_state", "sync_subject_id")? {
+        if !sync_state_subject_scope_schema_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "sync_state subject-scoped schema is incomplete".to_owned(),
+            });
+        }
+        connection
+            .execute_batch(SYNC_STATE_INDEX_SQL)
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+pub(super) fn migrate_sync_state_subject_scope(connection: &Connection) -> crate::ImResult<()> {
+    ensure_sync_state_schema(connection)?;
+    if has_column(connection, "sync_state", "sync_subject_id")? {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            r#"
+DROP TABLE IF EXISTS sync_state_v30_new;
+CREATE TABLE sync_state_v30_new (
+    owner_identity_id TEXT NOT NULL,
+    sync_subject_id   TEXT NOT NULL,
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, sync_subject_id, scope, checkpoint_kind)
+);
+
+INSERT INTO sync_state_v30_new
+    (owner_identity_id, sync_subject_id, scope, checkpoint_kind,
+     event_seq, updated_at, metadata_json)
+SELECT state.owner_identity_id,
+       TRIM(state.owner_did),
+       state.scope,
+       state.checkpoint_kind,
+       state.event_seq,
+       state.updated_at,
+       state.metadata_json
+FROM sync_state AS state
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM identity_did_history AS current_did
+    WHERE current_did.owner_identity_id = state.owner_identity_id
+      AND current_did.status = 'current'
+      AND TRIM(current_did.did) = TRIM(state.owner_did)
+      AND EXISTS (
+          SELECT 1
+          FROM identity_did_history AS previous_did
+          WHERE previous_did.owner_identity_id = state.owner_identity_id
+            AND previous_did.status = 'previous'
+      )
+);
+
+DROP TABLE sync_state;
+ALTER TABLE sync_state_v30_new RENAME TO sync_state;
+CREATE INDEX idx_sync_state_owner_kind
+ON sync_state(owner_identity_id, sync_subject_id, checkpoint_kind, updated_at DESC);
+"#,
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn sync_state_subject_scope_schema_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    if has_column(connection, "sync_state", "owner_did")? {
+        return Ok(false);
+    }
+    let mut statement = connection
+        .prepare("PRAGMA table_info(sync_state)")
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut primary_key = Vec::new();
+    for row in rows {
+        let (column, position) = row.map_err(super::local_state_unavailable)?;
+        if position > 0 {
+            primary_key.push((position, column));
+        }
+    }
+    primary_key.sort_by_key(|(position, _)| *position);
+    Ok(primary_key.into_iter().map(|(_, column)| column).eq([
+        "owner_identity_id",
+        "sync_subject_id",
+        "scope",
+        "checkpoint_kind",
+    ]
+    .into_iter()
+    .map(str::to_owned)))
 }
 
 fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(connection, "group_members", "membership_id", "TEXT")?;
+    ensure_column(connection, "group_members", "peer_persona_id", "TEXT")?;
+    ensure_column(connection, "group_members", "member_credential_did", "TEXT")?;
     ensure_column(
         connection,
         "group_members",
@@ -1344,6 +1867,7 @@ fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImRes
         "handle_binding_generation",
         "TEXT",
     )?;
+    ensure_column(connection, "group_members", "membership_epoch", "TEXT")?;
     connection
         .execute(
             r#"
@@ -1351,6 +1875,62 @@ UPDATE group_members
 SET anchor_kind = 'did', anchor_value = COALESCE(member_did, user_id)
 WHERE TRIM(COALESCE(anchor_value, '')) = ''"#,
             [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = {
+        let mut statement = connection
+            .prepare(
+                r#"SELECT owner_identity_id, group_id, anchor_kind, anchor_value,
+                          COALESCE(membership_epoch, ''), COALESCE(membership_id, '')
+FROM group_members"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(super::local_state_unavailable)?);
+        }
+        rows
+    };
+    for (owner, group, kind, anchor, epoch, membership_id) in rows {
+        if membership_id.trim().is_empty() {
+            connection
+                .execute(
+                    r#"UPDATE group_members SET membership_id = ?1,
+                           member_credential_did = COALESCE(member_credential_did, member_did)
+WHERE owner_identity_id = ?2 AND group_id = ?3
+  AND anchor_kind = ?4 AND anchor_value = ?5"#,
+                    rusqlite::params![
+                        super::groups::fallback_membership_id(
+                            &group,
+                            &kind,
+                            &anchor,
+                            (!epoch.trim().is_empty()).then_some(epoch.as_str()),
+                        ),
+                        owner,
+                        group,
+                        kind,
+                        anchor,
+                    ],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    connection
+        .execute_batch(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_group_members_owner_membership
+ON group_members(owner_identity_id, group_id, membership_id);"#,
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
@@ -1543,6 +2123,26 @@ fn has_column(connection: &Connection, table: &str, column: &str) -> crate::ImRe
     Ok(false)
 }
 
+fn has_table(connection: &Connection, table: &str) -> crate::ImResult<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn has_index(connection: &Connection, index: &str) -> crate::ImResult<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+            [index],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::local_state_unavailable)
+}
+
 fn backfill_contact_handle_bindings(connection: &Connection) -> crate::ImResult<()> {
     let now = now_utc_like();
     connection
@@ -1613,7 +2213,7 @@ WHERE EXISTS (
     Ok(())
 }
 
-fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
+pub(super) fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
     connection
         .pragma_update(None, "user_version", version)
         .map_err(super::local_state_unavailable)
@@ -1628,4 +2228,4 @@ fn now_utc_like() -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use crate::agent::AgentDefinition;
@@ -39,6 +39,7 @@ pub fn verify_daemon_controller_sender<C>(
 where
     C: AgentInventoryClient,
 {
+    crate::agent_status::ensure_controller_identity_active(state, &daemon_agent.agent_did)?;
     let auth = daemon_auth_material(config, state, daemon_agent)?;
     let scope =
         client.verify_controller_sender(&daemon_agent.agent_did, sender_did.trim(), &auth)?;
@@ -70,11 +71,17 @@ pub fn daemon_auth_material(
     state: &DaemonState,
     daemon_agent: &AgentDefinition,
 ) -> Result<DidAuthMaterial> {
-    let identity = state.load_agent_identity(&daemon_agent.agent_did)?;
+    let identity = state
+        .load_agent_device_identity(&daemon_agent.agent_did)?
+        .context("agent_identity_migration_required: exact daemon device identity is missing")?;
+    identity.validate()?;
+    if identity.identity_status != "active" || identity.authorization_status != "active" {
+        bail!("agent_device_identity_unavailable: daemon device identity is not active");
+    }
     Ok(DidAuthMaterial {
         did_document: identity.did_document,
-        private_key_pem: identity.auth_private_key_pem,
-        bearer_token: state.load_agent_auth_token(&daemon_agent.agent_did)?,
+        private_key_pem: identity.device_signing_private_key_pem,
+        bearer_token: Some(identity.access_token),
     })
 }
 
@@ -103,22 +110,11 @@ fn ensure_scope_matches_daemon(
         bail!("controller_scope_mismatch");
     }
     if daemon_agent.controller_did != verified.controller_did {
-        state.update_controller_did_for_agent_family(
+        return crate::agent_status::record_controller_identity_changed(
+            state,
             &daemon_agent.agent_did,
-            &verified.controller_did,
-        )?;
-        state.insert_audit_event_json(
-            "daemon.controller_did.synced",
-            Some(&daemon_agent.agent_did),
-            None,
-            None,
-            None,
-            json!({
-                "old_controller_did": daemon_agent.controller_did,
-                "new_controller_did": verified.controller_did,
-                "source": "verify_controller_sender",
-            }),
-        )?;
+            "verified_controller_sender",
+        );
     }
     Ok(())
 }

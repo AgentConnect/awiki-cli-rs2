@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -23,8 +24,6 @@ pub(crate) type DirectSecureFileRuntimeResolver = dyn FnMut(&str) -> crate::ImRe
 
 const DIRECT_E2EE_PROFILE: &str = "anp.direct.e2ee.v1";
 const DIRECT_E2EE_SECURITY_PROFILE: &str = "direct-e2ee";
-const DEFAULT_SIGNED_PREKEY_ID: &str = "spk-initial";
-const DEFAULT_SIGNED_PREKEY_EXPIRY: &str = "2030-01-01T00:00:00Z";
 const DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE: usize = 16;
 const SECURE_SESSION_DIR_NAME: &str = "p5-e2ee-sessions";
 const SECURE_SIGNED_PREKEY_DIR_NAME: &str = "p5-signed-prekeys";
@@ -114,14 +113,14 @@ impl DirectSecureFileRuntimeClient {
             .signed_prekey_store
             .load_latest_signed_prekey()
         {
-            Ok(Some((_private_key, metadata))) => metadata,
-            Ok(None) => {
+            Ok(Some((_private_key, metadata)))
+                if !super::prekey_lifecycle::signed_prekey_needs_rotation(&metadata) =>
+            {
+                metadata
+            }
+            Ok(Some(_)) | Ok(None) => {
                 let private_key = generated_x25519_private_key()?;
-                let metadata = signed_prekey_from_private_key(
-                    DEFAULT_SIGNED_PREKEY_ID,
-                    &private_key,
-                    DEFAULT_SIGNED_PREKEY_EXPIRY,
-                )?;
+                let metadata = super::prekey_lifecycle::create_signed_prekey(&private_key)?;
                 self.prepared
                     .signed_prekey_store
                     .save_signed_prekey(&metadata.key_id, &private_key, &metadata)
@@ -511,12 +510,12 @@ impl DirectSecureFileRuntimeClient {
             .one_time_prekey_store
             .list_one_time_prekeys()
             .map_err(map_direct_error)?;
-        let request = anp::direct_e2ee::prekey_bundle_publish_request(
+        let request = super::prekey_lifecycle::prekey_bundle_publish_request(
             &self.prepared.owner_did,
             &self.prepared.local_service_did,
             bundle,
             &one_time_prekeys,
-        );
+        )?;
         self.call_request(request)
     }
 
@@ -524,14 +523,16 @@ impl DirectSecureFileRuntimeClient {
         &self,
         signed_prekey: anp::direct_e2ee::SignedPrekey,
     ) -> crate::ImResult<PrekeyBundle> {
+        let bundle_id = super::prekey_lifecycle::bundle_id(&signed_prekey);
+        let proof_created = super::prekey_lifecycle::bundle_proof_created(&signed_prekey)?;
         anp::direct_e2ee::build_prekey_bundle(
-            &format!("spk-{}-{}", unix_seconds(), signed_prekey.key_id),
+            &bundle_id,
             &self.prepared.owner_did,
             &self.prepared.agreement_key_id,
             signed_prekey,
             &self.prepared.signing_private,
             &self.prepared.signing_key_id,
-            None,
+            Some(&proof_created),
         )
         .map_err(map_direct_error)
     }
@@ -959,6 +960,7 @@ impl FileSessionStore {
             DirectSecretSealInput {
                 owner_identity_id: &self.owner_identity_id,
                 owner_did: &self.owner_did,
+                device_id: None,
                 kind: crate::vault::SecretKind::DirectE2eeSessionState,
                 key_id: direct_secret_key_id(
                     &self.owner_identity_id,
@@ -1099,6 +1101,7 @@ impl FileSignedPrekeyStore {
             DirectSecretSealInput {
                 owner_identity_id: &self.owner_identity_id,
                 owner_did: &self.owner_did,
+                device_id: None,
                 kind: crate::vault::SecretKind::DirectE2eeSignedPrekeyPrivate,
                 key_id: direct_secret_key_id(
                     &self.owner_identity_id,
@@ -1226,6 +1229,7 @@ impl FileOneTimePrekeyStore {
             DirectSecretSealInput {
                 owner_identity_id: &self.owner_identity_id,
                 owner_did: &self.owner_did,
+                device_id: None,
                 kind: crate::vault::SecretKind::DirectE2eeOneTimePrekeyPrivate,
                 key_id: direct_secret_key_id(
                     &self.owner_identity_id,
@@ -1547,8 +1551,7 @@ mod tests {
         let session = direct_session("session-1", "did:bob");
         let private_key = generated_x25519_private_key().unwrap();
         let signed_metadata =
-            signed_prekey_from_private_key("spk-1", &private_key, DEFAULT_SIGNED_PREKEY_EXPIRY)
-                .unwrap();
+            signed_prekey_from_private_key("spk-1", &private_key, "2030-01-01T00:00:00Z").unwrap();
         let one_time_metadata = one_time_prekey_from_private_key("otk-1", &private_key).unwrap();
 
         let mut session_store =
@@ -1622,8 +1625,7 @@ mod tests {
         let session = direct_session("session-1", "did:bob");
         let private_key = generated_x25519_private_key().unwrap();
         let signed_metadata =
-            signed_prekey_from_private_key("spk-1", &private_key, DEFAULT_SIGNED_PREKEY_EXPIRY)
-                .unwrap();
+            signed_prekey_from_private_key("spk-1", &private_key, "2030-01-01T00:00:00Z").unwrap();
         let one_time_metadata = one_time_prekey_from_private_key("otk-1", &private_key).unwrap();
 
         create_store_dir(&session_root).unwrap();

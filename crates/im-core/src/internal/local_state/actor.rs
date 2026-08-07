@@ -13,6 +13,98 @@ enum LocalStateCommand {
     CurrentSchemaVersion {
         reply: oneshot::Sender<crate::ImResult<i64>>,
     },
+    LoadOrCreateSyncClientInstanceId {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<String>>,
+    },
+    UpsertIdentityAccountBinding {
+        binding: super::sync_v2::IdentityAccountBinding,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadIdentityAccountBinding {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::IdentityAccountBinding>>>,
+    },
+    LoadSyncThreadBindingForConversation {
+        owner_identity_id: String,
+        conversation_id: String,
+        thread_kind: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::SyncThreadBinding>>>,
+    },
+    BootstrapMessageSyncState {
+        state: super::sync_v2::MessageSyncState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    ApplyBootstrapV2 {
+        input: super::sync_v2::BootstrapApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadMessageSyncState {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncStateAccess>>,
+    },
+    AdvanceMessageSyncState {
+        state: super::sync_v2::MessageSyncState,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncStateAccess>>,
+    },
+    RecordAppliedSyncEvent {
+        receipt: super::sync_v2::AppliedEventReceipt,
+        reply: oneshot::Sender<crate::ImResult<bool>>,
+    },
+    PruneAppliedSyncEvents {
+        owner_identity_id: String,
+        current_stream_epoch: String,
+        current_scan_seq: String,
+        max_delete: u32,
+        reply: oneshot::Sender<crate::ImResult<usize>>,
+    },
+    LoadSyncDiagnostics {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncDiagnosticsState>>,
+    },
+    CleanupTerminalSyncState {
+        owner_identity_id: String,
+        current_stream_epoch: String,
+        current_scan_seq: String,
+        max_delete: u32,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncCleanupOutcome>>,
+    },
+    UpsertSyncRecoveryState {
+        state: super::sync_v2::RecoveryState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadSyncRecoveryState {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::RecoveryState>>>,
+    },
+    EnqueueLocalMutation {
+        record: super::sync_v2::LocalMutationRecord,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadLocalMutation {
+        owner_identity_id: String,
+        mutation_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
+    ClaimNextReadMutation {
+        owner_identity_id: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
+    ClaimReadMutationByOperationId {
+        owner_identity_id: String,
+        operation_id: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
+    RetryLocalMutation {
+        owner_identity_id: String,
+        mutation_id: String,
+        error_code: String,
+        retry_at: i64,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     EnsureConversation {
         owner_identity_id: String,
         owner_did: String,
@@ -23,13 +115,93 @@ enum LocalStateCommand {
         records: Vec<super::messages::MessageRecord>,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    StoreRemoteMessages {
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: String,
+        reply: oneshot::Sender<
+            crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome>,
+        >,
+    },
+    ListPendingInboundResolutionPeerDids {
+        owner_identity_id: String,
+        limit: u32,
+        reply: oneshot::Sender<crate::ImResult<Vec<String>>>,
+    },
+    FilterUnresolvedPeerDids {
+        owner_identity_id: String,
+        dids: Vec<String>,
+        reply: oneshot::Sender<crate::ImResult<Vec<String>>>,
+    },
+    StoreCatchUpMessages {
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: String,
+        proof: super::messages::CatchUpHydrationProof,
+        reply: oneshot::Sender<
+            crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome>,
+        >,
+    },
     LoadGlobalCheckpoint {
         owner_identity_id: String,
+        sync_subject_id: String,
         reply: oneshot::Sender<crate::ImResult<Option<super::sync_state::GlobalCheckpoint>>>,
     },
     ApplySyncDelta {
         input: super::sync_state::SyncDeltaApplyInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
+    },
+    ApplySyncDeltaV2 {
+        input: super::sync_v2::DeltaApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
+    },
+    ApplySyncSnapshotV2 {
+        input: super::sync_v2::SnapshotApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
+    },
+    ApplySystemNotification {
+        input: crate::internal::system_notification::store::SystemNotificationApplyInput,
+        reply: oneshot::Sender<
+            crate::ImResult<
+                crate::internal::system_notification::store::SystemNotificationApplyOutcome,
+            >,
+        >,
+    },
+    ListSystemNotifications {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        include_terminal: bool,
+        limit: u32,
+        reply: oneshot::Sender<
+            crate::ImResult<Vec<crate::system_notifications::SystemNotificationSnapshot>>,
+        >,
+    },
+    GetSystemNotification {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        event_id: String,
+        reply: oneshot::Sender<
+            crate::ImResult<Option<crate::system_notifications::SystemNotificationSnapshot>>,
+        >,
+    },
+    ListVerifiedSystemNotifications {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        include_terminal: bool,
+        limit: u32,
+        reply: oneshot::Sender<
+            crate::ImResult<Vec<crate::internal::system_notification::wire::JoinNotification>>,
+        >,
+    },
+    GetVerifiedSystemNotification {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        join_session_id: String,
+        reply: oneshot::Sender<
+            crate::ImResult<Option<crate::internal::system_notification::wire::JoinNotification>>,
+        >,
     },
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
@@ -38,6 +210,17 @@ enum LocalStateCommand {
     UpsertDirectPeerRoute {
         record: super::direct_peer_routes::DirectPeerRouteRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    ProjectVerifiedHandle {
+        owner_identity_id: String,
+        owner_did: String,
+        lookup: crate::directory::HandleLookupResult,
+        reply: oneshot::Sender<crate::ImResult<String>>,
+    },
+    GetPersonaDisplayProfile {
+        owner_identity_id: String,
+        peer: crate::ids::PeerRef,
+        reply: oneshot::Sender<crate::ImResult<Option<crate::directory::DisplayProfile>>>,
     },
     GetContactByDid {
         owner_identity_id: String,
@@ -141,6 +324,21 @@ enum LocalStateCommand {
         message_ids: Vec<String>,
         reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
     },
+    ListHydratedIncomingMessages {
+        owner_identity_id: String,
+        owner_did: String,
+        limit: i64,
+        after: Option<super::messages::HydratedIncomingMessageCursor>,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
+    ListLocalInboxMessages {
+        owner_identity_id: String,
+        owner_did: String,
+        scope: crate::messages::InboxScope,
+        unread_only: bool,
+        limit: i64,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
     ListMessagesForThreadRef {
         owner_identity_id: String,
         owner_did: String,
@@ -153,6 +351,17 @@ enum LocalStateCommand {
         owner_identity_id: String,
         owner_did: String,
         thread: crate::messages::ThreadRef,
+        reply: oneshot::Sender<crate::ImResult<Option<i64>>>,
+    },
+    CatchUpServerSeqForThreadRef {
+        owner_identity_id: String,
+        owner_did: String,
+        thread: crate::messages::ThreadRef,
+        reply: oneshot::Sender<crate::ImResult<super::messages::CatchUpCursor>>,
+    },
+    MessageServerSeq {
+        owner_identity_id: String,
+        message_id: String,
         reply: oneshot::Sender<crate::ImResult<Option<i64>>>,
     },
     ListActiveGroupRefs {
@@ -325,18 +534,6 @@ enum LocalStateCommand {
             crate::ImResult<Option<crate::internal::store::e2ee_outbox::E2eeOutboxRecord>>,
         >,
     },
-    MergeRecoveredHandleLocalState {
-        old_owner_dids: Vec<String>,
-        new_owner_did: String,
-        final_owner_identity_id: String,
-        final_credential_name: String,
-        reply: oneshot::Sender<
-            crate::ImResult<(
-                std::collections::BTreeMap<String, i64>,
-                std::collections::BTreeMap<String, i64>,
-            )>,
-        >,
-    },
     BackfillOwnerIdentityIds {
         identities: Vec<super::schema::OwnerIdentityBackfill>,
         reply: oneshot::Sender<crate::ImResult<usize>>,
@@ -384,6 +581,264 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn load_or_create_sync_client_instance_id(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<String> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadOrCreateSyncClientInstanceId {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_identity_account_binding(
+        &self,
+        binding: super::sync_v2::IdentityAccountBinding,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertIdentityAccountBinding { binding, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_identity_account_binding(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::IdentityAccountBinding>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadIdentityAccountBinding {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_thread_binding_for_conversation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        conversation_id: impl Into<String>,
+        thread_kind: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::SyncThreadBinding>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncThreadBindingForConversation {
+            owner_identity_id: owner_identity_id.into(),
+            conversation_id: conversation_id.into(),
+            thread_kind: thread_kind.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn bootstrap_message_sync_state(
+        &self,
+        state: super::sync_v2::MessageSyncState,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::BootstrapMessageSyncState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_bootstrap_v2(
+        &self,
+        input: super::sync_v2::BootstrapApplyInputV2,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplyBootstrapV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_message_sync_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<super::sync_v2::MessageSyncStateAccess> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadMessageSyncState {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn advance_message_sync_state(
+        &self,
+        state: super::sync_v2::MessageSyncState,
+    ) -> crate::ImResult<super::sync_v2::MessageSyncStateAccess> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::AdvanceMessageSyncState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn record_applied_sync_event(
+        &self,
+        receipt: super::sync_v2::AppliedEventReceipt,
+    ) -> crate::ImResult<bool> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RecordAppliedSyncEvent { receipt, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn prune_applied_sync_events(
+        &self,
+        owner_identity_id: impl Into<String>,
+        current_stream_epoch: impl Into<String>,
+        current_scan_seq: impl Into<String>,
+        max_delete: u32,
+    ) -> crate::ImResult<usize> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::PruneAppliedSyncEvents {
+            owner_identity_id: owner_identity_id.into(),
+            current_stream_epoch: current_stream_epoch.into(),
+            current_scan_seq: current_scan_seq.into(),
+            max_delete,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_diagnostics(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<super::sync_v2::SyncDiagnosticsState> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncDiagnostics {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn cleanup_terminal_sync_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+        current_stream_epoch: impl Into<String>,
+        current_scan_seq: impl Into<String>,
+        max_delete: u32,
+        now: i64,
+    ) -> crate::ImResult<super::sync_v2::SyncCleanupOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CleanupTerminalSyncState {
+            owner_identity_id: owner_identity_id.into(),
+            current_stream_epoch: current_stream_epoch.into(),
+            current_scan_seq: current_scan_seq.into(),
+            max_delete,
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_sync_recovery_state(
+        &self,
+        state: super::sync_v2::RecoveryState,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertSyncRecoveryState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_recovery_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::RecoveryState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncRecoveryState {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn enqueue_local_mutation(
+        &self,
+        record: super::sync_v2::LocalMutationRecord,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::EnqueueLocalMutation { record, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_local_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        mutation_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadLocalMutation {
+            owner_identity_id: owner_identity_id.into(),
+            mutation_id: mutation_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn claim_next_read_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ClaimNextReadMutation {
+            owner_identity_id: owner_identity_id.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn claim_read_mutation_by_operation_id(
+        &self,
+        owner_identity_id: impl Into<String>,
+        operation_id: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ClaimReadMutationByOperationId {
+            owner_identity_id: owner_identity_id.into(),
+            operation_id: operation_id.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn retry_local_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        mutation_id: impl Into<String>,
+        error_code: impl Into<String>,
+        retry_at: i64,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RetryLocalMutation {
+            owner_identity_id: owner_identity_id.into(),
+            mutation_id: mutation_id.into(),
+            error_code: error_code.into(),
+            retry_at,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn store_messages(
         &self,
         records: Vec<super::messages::MessageRecord>,
@@ -394,13 +849,77 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn store_remote_messages(
+        &self,
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: impl Into<String>,
+    ) -> crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::StoreRemoteMessages {
+            records,
+            source_event_type: source_event_type.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_pending_inbound_resolution_peer_dids(
+        &self,
+        owner_identity_id: impl Into<String>,
+        limit: u32,
+    ) -> crate::ImResult<Vec<String>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListPendingInboundResolutionPeerDids {
+            owner_identity_id: owner_identity_id.into(),
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn filter_unresolved_peer_dids(
+        &self,
+        owner_identity_id: impl Into<String>,
+        dids: Vec<String>,
+    ) -> crate::ImResult<Vec<String>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::FilterUnresolvedPeerDids {
+            owner_identity_id: owner_identity_id.into(),
+            dids,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn store_catch_up_messages(
+        &self,
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: impl Into<String>,
+        proof: super::messages::CatchUpHydrationProof,
+    ) -> crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::StoreCatchUpMessages {
+            records,
+            source_event_type: source_event_type.into(),
+            proof,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn load_global_checkpoint(
         &self,
         owner_identity_id: impl Into<String>,
+        sync_subject_id: impl Into<String>,
     ) -> crate::ImResult<Option<super::sync_state::GlobalCheckpoint>> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::LoadGlobalCheckpoint {
             owner_identity_id: owner_identity_id.into(),
+            sync_subject_id: sync_subject_id.into(),
             reply,
         })
         .await?;
@@ -414,6 +933,117 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDelta { input, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_sync_delta_v2(
+        &self,
+        input: super::sync_v2::DeltaApplyInputV2,
+    ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySyncDeltaV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_sync_snapshot_v2(
+        &self,
+        input: super::sync_v2::SnapshotApplyInputV2,
+    ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySyncSnapshotV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_system_notification(
+        &self,
+        input: crate::internal::system_notification::store::SystemNotificationApplyInput,
+    ) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyOutcome>
+    {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySystemNotification { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_system_notifications(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        include_terminal: bool,
+        limit: u32,
+    ) -> crate::ImResult<Vec<crate::system_notifications::SystemNotificationSnapshot>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListSystemNotifications {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            include_terminal,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn get_system_notification(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        event_id: impl Into<String>,
+    ) -> crate::ImResult<Option<crate::system_notifications::SystemNotificationSnapshot>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::GetSystemNotification {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            event_id: event_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_verified_system_notifications(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        include_terminal: bool,
+        limit: u32,
+    ) -> crate::ImResult<Vec<crate::internal::system_notification::wire::JoinNotification>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListVerifiedSystemNotifications {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            include_terminal,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn get_verified_system_notification(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        join_session_id: impl Into<String>,
+    ) -> crate::ImResult<Option<crate::internal::system_notification::wire::JoinNotification>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::GetVerifiedSystemNotification {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            join_session_id: join_session_id.into(),
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -434,6 +1064,38 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertDirectPeerRoute { record, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn project_verified_handle(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        lookup: crate::directory::HandleLookupResult,
+    ) -> crate::ImResult<String> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ProjectVerifiedHandle {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            lookup,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn get_persona_display_profile(
+        &self,
+        owner_identity_id: impl Into<String>,
+        peer: crate::ids::PeerRef,
+    ) -> crate::ImResult<Option<crate::directory::DisplayProfile>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::GetPersonaDisplayProfile {
+            owner_identity_id: owner_identity_id.into(),
+            peer,
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -702,6 +1364,46 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn list_hydrated_incoming_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        limit: i64,
+        after: Option<super::messages::HydratedIncomingMessageCursor>,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListHydratedIncomingMessages {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            limit,
+            after,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_local_inbox_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        scope: crate::messages::InboxScope,
+        unread_only: bool,
+        limit: i64,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListLocalInboxMessages {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            scope,
+            unread_only,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn list_messages_for_thread_ref(
         &self,
         owner_identity_id: impl Into<String>,
@@ -734,6 +1436,38 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             thread,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn catch_up_server_seq_for_thread_ref(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+    ) -> crate::ImResult<super::messages::CatchUpCursor> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CatchUpServerSeqForThreadRef {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn message_server_seq(
+        &self,
+        owner_identity_id: impl Into<String>,
+        message_id: impl Into<String>,
+    ) -> crate::ImResult<Option<i64>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::MessageServerSeq {
+            owner_identity_id: owner_identity_id.into(),
+            message_id: message_id.into(),
             reply,
         })
         .await?;
@@ -1116,28 +1850,6 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
-    pub(crate) async fn merge_recovered_handle_local_state(
-        &self,
-        old_owner_dids: Vec<String>,
-        new_owner_did: impl Into<String>,
-        final_owner_identity_id: impl Into<String>,
-        final_credential_name: impl Into<String>,
-    ) -> crate::ImResult<(
-        std::collections::BTreeMap<String, i64>,
-        std::collections::BTreeMap<String, i64>,
-    )> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::MergeRecoveredHandleLocalState {
-            old_owner_dids,
-            new_owner_did: new_owner_did.into(),
-            final_owner_identity_id: final_owner_identity_id.into(),
-            final_credential_name: final_credential_name.into(),
-            reply,
-        })
-        .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
     pub(crate) async fn backfill_owner_identity_ids(
         &self,
         identities: Vec<super::schema::OwnerIdentityBackfill>,
@@ -1166,6 +1878,17 @@ fn run_actor(
 ) {
     let mut connection = match super::open_writable(&sqlite_path) {
         Ok(connection) => {
+            let recovered_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .try_into()
+                .unwrap_or(i64::MAX);
+            if let Err(error) = super::sync_v2::recover_interrupted_work(&connection, recovered_at)
+            {
+                let _ = ready_sender.send(Err(error));
+                return;
+            }
             let _ = ready_sender.send(Ok(()));
             connection
         }
@@ -1179,6 +1902,173 @@ fn run_actor(
         match command {
             LocalStateCommand::CurrentSchemaVersion { reply } => {
                 let result = super::schema::current_schema_version(&connection);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadOrCreateSyncClientInstanceId {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_or_create_sync_client_instance_id(
+                    &connection,
+                    &owner_identity_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertIdentityAccountBinding { binding, reply } => {
+                let result = super::sync_v2::upsert_identity_account_binding(&connection, &binding);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadIdentityAccountBinding {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_identity_account_binding(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncThreadBindingForConversation {
+                owner_identity_id,
+                conversation_id,
+                thread_kind,
+                reply,
+            } => {
+                let result = super::sync_v2::load_sync_thread_binding_for_conversation(
+                    &connection,
+                    &owner_identity_id,
+                    &conversation_id,
+                    &thread_kind,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::BootstrapMessageSyncState { state, reply } => {
+                let result = super::sync_v2::bootstrap_message_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplyBootstrapV2 { input, reply } => {
+                let result = super::sync_v2::apply_bootstrap_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadMessageSyncState {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_message_sync_state(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::AdvanceMessageSyncState { state, reply } => {
+                let result = super::sync_v2::advance_message_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RecordAppliedSyncEvent { receipt, reply } => {
+                let result = super::sync_v2::record_applied_event(&connection, &receipt);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::PruneAppliedSyncEvents {
+                owner_identity_id,
+                current_stream_epoch,
+                current_scan_seq,
+                max_delete,
+                reply,
+            } => {
+                let result = super::sync_v2::prune_applied_events(
+                    &connection,
+                    &owner_identity_id,
+                    &current_stream_epoch,
+                    &current_scan_seq,
+                    max_delete,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncDiagnostics {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_sync_diagnostics(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CleanupTerminalSyncState {
+                owner_identity_id,
+                current_stream_epoch,
+                current_scan_seq,
+                max_delete,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::cleanup_terminal_sync_state(
+                    &connection,
+                    &owner_identity_id,
+                    &current_stream_epoch,
+                    &current_scan_seq,
+                    max_delete,
+                    now,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertSyncRecoveryState { state, reply } => {
+                let result = super::sync_v2::upsert_recovery_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncRecoveryState {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_recovery_state(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::EnqueueLocalMutation { record, reply } => {
+                let result = super::sync_v2::enqueue_local_mutation(&connection, &record);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadLocalMutation {
+                owner_identity_id,
+                mutation_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_local_mutation(
+                    &connection,
+                    &owner_identity_id,
+                    &mutation_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ClaimNextReadMutation {
+                owner_identity_id,
+                now,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::claim_next_read_mutation(&connection, &owner_identity_id, now);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ClaimReadMutationByOperationId {
+                owner_identity_id,
+                operation_id,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::claim_read_mutation_by_operation_id(
+                    &connection,
+                    &owner_identity_id,
+                    &operation_id,
+                    now,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RetryLocalMutation {
+                owner_identity_id,
+                mutation_id,
+                error_code,
+                retry_at,
+                reply,
+            } => {
+                let result = super::sync_v2::retry_local_mutation(
+                    &connection,
+                    &owner_identity_id,
+                    &mutation_id,
+                    &error_code,
+                    retry_at,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::EnsureConversation {
@@ -1199,16 +2089,167 @@ fn run_actor(
                 let result = super::messages::upsert_messages(&connection, &records);
                 let _ = reply.send(result);
             }
-            LocalStateCommand::LoadGlobalCheckpoint {
+            LocalStateCommand::StoreRemoteMessages {
+                records,
+                source_event_type,
+                reply,
+            } => {
+                let result = (|| {
+                    let transaction = connection
+                        .transaction()
+                        .map_err(super::local_state_unavailable)?;
+                    let outcome = super::inbound_resolution_backlog::ingest_remote_messages(
+                        &transaction,
+                        &records,
+                        &source_event_type,
+                    )?;
+                    transaction
+                        .commit()
+                        .map_err(super::local_state_unavailable)?;
+                    Ok(outcome)
+                })();
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListPendingInboundResolutionPeerDids {
                 owner_identity_id,
+                limit,
+                reply,
+            } => {
+                let result = super::inbound_resolution_backlog::list_pending_peer_dids(
+                    &connection,
+                    &owner_identity_id,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::FilterUnresolvedPeerDids {
+                owner_identity_id,
+                dids,
                 reply,
             } => {
                 let result =
-                    super::sync_state::load_global_checkpoint(&connection, &owner_identity_id);
+                    super::peer_personas::unresolved_dids(&connection, &owner_identity_id, &dids);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::StoreCatchUpMessages {
+                records,
+                source_event_type,
+                proof,
+                reply,
+            } => {
+                let result = (|| {
+                    let transaction = connection
+                        .transaction()
+                        .map_err(super::local_state_unavailable)?;
+                    let outcome =
+                        super::inbound_resolution_backlog::ingest_catch_up_remote_messages(
+                            &transaction,
+                            &records,
+                            &source_event_type,
+                            &proof,
+                        )?;
+                    transaction
+                        .commit()
+                        .map_err(super::local_state_unavailable)?;
+                    Ok(outcome)
+                })();
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadGlobalCheckpoint {
+                owner_identity_id,
+                sync_subject_id,
+                reply,
+            } => {
+                let result = super::sync_state::load_global_checkpoint(
+                    &connection,
+                    &owner_identity_id,
+                    &sync_subject_id,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {
                 let result = apply_sync_delta(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySyncDeltaV2 { input, reply } => {
+                let result = super::sync_v2::apply_delta_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySyncSnapshotV2 { input, reply } => {
+                let result = super::sync_v2::apply_snapshot_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySystemNotification { input, reply } => {
+                let result =
+                    crate::internal::system_notification::store::apply(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListSystemNotifications {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                include_terminal,
+                limit,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::list(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    include_terminal,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::GetSystemNotification {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                event_id,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::get_by_event_id(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    &event_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListVerifiedSystemNotifications {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                include_terminal,
+                limit,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::list_verified(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    include_terminal,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::GetVerifiedSystemNotification {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                join_session_id,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::get_verified_by_session(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    &join_session_id,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::UpsertContact { record, reply } => {
@@ -1220,6 +2261,32 @@ fn run_actor(
             }
             LocalStateCommand::UpsertDirectPeerRoute { record, reply } => {
                 let result = super::direct_peer_routes::upsert(&connection, &record);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ProjectVerifiedHandle {
+                owner_identity_id,
+                owner_did,
+                lookup,
+                reply,
+            } => {
+                let result = super::peer_personas::project_verified_handle(
+                    &mut connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &lookup,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::GetPersonaDisplayProfile {
+                owner_identity_id,
+                peer,
+                reply,
+            } => {
+                let result = super::peer_profiles::display_profile_for_peer(
+                    &connection,
+                    &owner_identity_id,
+                    &peer,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::GetContactByDid {
@@ -1434,6 +2501,40 @@ fn run_actor(
                 );
                 let _ = reply.send(result);
             }
+            LocalStateCommand::ListHydratedIncomingMessages {
+                owner_identity_id,
+                owner_did,
+                limit,
+                after,
+                reply,
+            } => {
+                let result = super::messages::list_hydrated_incoming_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    limit,
+                    after.as_ref(),
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListLocalInboxMessages {
+                owner_identity_id,
+                owner_did,
+                scope,
+                unread_only,
+                limit,
+                reply,
+            } => {
+                let result = super::messages::list_local_inbox_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    scope,
+                    unread_only,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
             LocalStateCommand::ListMessagesForThreadRef {
                 owner_identity_id,
                 owner_did,
@@ -1463,6 +2564,32 @@ fn run_actor(
                     &owner_identity_id,
                     &owner_did,
                     &thread,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CatchUpServerSeqForThreadRef {
+                owner_identity_id,
+                owner_did,
+                thread,
+                reply,
+            } => {
+                let result = super::messages::catch_up_server_seq_for_thread_ref_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &thread,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::MessageServerSeq {
+                owner_identity_id,
+                message_id,
+                reply,
+            } => {
+                let result = super::messages::message_server_seq(
+                    &connection,
+                    &owner_identity_id,
+                    &message_id,
                 );
                 let _ = reply.send(result);
             }
@@ -1551,7 +2678,7 @@ fn run_actor(
                 input,
                 reply,
             } => {
-                let result = super::messages::mark_thread_read_watermark_for_owner_identity(
+                let result = super::sync_v2::mark_thread_read_and_update_outbox(
                     &connection,
                     &owner_identity_id,
                     &owner_did,
@@ -1773,23 +2900,6 @@ fn run_actor(
                     &scope,
                     &outbox_id,
                 );
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::MergeRecoveredHandleLocalState {
-                old_owner_dids,
-                new_owner_did,
-                final_owner_identity_id,
-                final_credential_name,
-                reply,
-            } => {
-                let result =
-                    crate::internal::identity_recover_local_state::merge_recovered_handle_local_state_for_connection(
-                        &mut connection,
-                        &old_owner_dids,
-                        &new_owner_did,
-                        &final_owner_identity_id,
-                        &final_credential_name,
-                    );
                 let _ = reply.send(result);
             }
             LocalStateCommand::BackfillOwnerIdentityIds { identities, reply } => {

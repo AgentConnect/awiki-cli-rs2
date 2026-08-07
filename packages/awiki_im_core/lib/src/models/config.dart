@@ -8,6 +8,7 @@ class AwikiImCoreConfig {
   const AwikiImCoreConfig({
     required this.serviceBaseUrl,
     required this.didDomain,
+    this.clientVersionInfo,
     this.userServiceEndpoint,
     this.messageServiceEndpoint,
     this.mailServiceEndpoint,
@@ -18,6 +19,7 @@ class AwikiImCoreConfig {
 
   final String serviceBaseUrl;
   final String didDomain;
+  final AwikiClientVersionInfo? clientVersionInfo;
   final String? userServiceEndpoint;
   final String? messageServiceEndpoint;
   final String? mailServiceEndpoint;
@@ -26,26 +28,60 @@ class AwikiImCoreConfig {
   final MessageTransportPolicy transportPolicy;
 }
 
+class AwikiClientVersionInfo {
+  const AwikiClientVersionInfo({
+    required this.product,
+    required this.release,
+    required this.version,
+    this.build,
+  });
+
+  final String product;
+  final String release;
+  final String version;
+  final int? build;
+}
+
 class AwikiImCoreOpenOptions {
   const AwikiImCoreOpenOptions({
     this.identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
     this.identitySecretVault,
+    this.multiDeviceDeviceRevokeEnabled = false,
+    this.multiDeviceDirectE2eeEnabled = false,
+    this.multiDeviceGroupE2eeEnabled = false,
+    this.multiDeviceHandleRecoveryEnabled = false,
   });
 
   const AwikiImCoreOpenOptions.fileCompat()
     : identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
-      identitySecretVault = null;
+      identitySecretVault = null,
+      multiDeviceDeviceRevokeEnabled = false,
+      multiDeviceDirectE2eeEnabled = false,
+      multiDeviceGroupE2eeEnabled = false,
+      multiDeviceHandleRecoveryEnabled = false;
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
+    this.multiDeviceDeviceRevokeEnabled = false,
+    this.multiDeviceDirectE2eeEnabled = false,
+    this.multiDeviceGroupE2eeEnabled = false,
+    this.multiDeviceHandleRecoveryEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
   const AwikiImCoreOpenOptions.vaultRequired({
     required ImCoreSecretVaultOptions this.identitySecretVault,
+    this.multiDeviceDeviceRevokeEnabled = false,
+    this.multiDeviceDirectE2eeEnabled = false,
+    this.multiDeviceGroupE2eeEnabled = false,
+    this.multiDeviceHandleRecoveryEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
   final ImCoreSecretVaultOptions? identitySecretVault;
+  final bool multiDeviceDeviceRevokeEnabled;
+  final bool multiDeviceDirectE2eeEnabled;
+  final bool multiDeviceGroupE2eeEnabled;
+  final bool multiDeviceHandleRecoveryEnabled;
 }
 
 class ImCoreSecretVaultOptions {

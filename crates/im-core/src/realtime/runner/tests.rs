@@ -14,6 +14,63 @@ use std::collections::VecDeque;
 use super::*;
 
 #[test]
+fn realtime_v2_product_recognition_is_profile_and_method_scoped() {
+    let p5 = json!({
+        "method": "direct.incoming",
+        "params": {"meta": {"profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2}}
+    });
+    let p6_message = json!({
+        "method": "group.incoming",
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+    let p6_notice = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+
+    assert!(is_p5_v2_realtime_candidate(&p5));
+    assert!(is_p6_v2_realtime_candidate(&p6_message));
+    assert!(is_p6_v2_realtime_candidate(&p6_notice));
+
+    let mut wrong_method = p5.clone();
+    wrong_method["method"] = json!("direct.other");
+    assert!(!is_p5_v2_realtime_candidate(&wrong_method));
+
+    let mut wrong_profile = p6_message;
+    wrong_profile["params"]["meta"]["profile"] = json!("anp.group.e2ee.v1");
+    assert!(!is_p6_v2_realtime_candidate(&wrong_profile));
+}
+
+#[test]
+#[cfg(all(feature = "blocking", feature = "group-e2ee"))]
+fn realtime_unknown_group_notice_is_hidden_without_leaking_control_material() {
+    let fixture = TestClientFixture::new("unknown-p6-control");
+    let client = fixture.client();
+    let notification = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {
+            "meta": {"profile": "anp.group.e2ee.unknown"},
+            "body": {"welcome_b64u": "SECRET-UNKNOWN-WELCOME"}
+        }
+    });
+    let mut warnings = Vec::new();
+
+    let projected = normalize_group_e2ee_realtime_notification_async_first(
+        &client,
+        None,
+        notification,
+        &mut warnings,
+    );
+
+    assert!(projected.is_none());
+    assert_eq!(
+        warnings,
+        vec!["unknown group E2EE control notice was rejected"]
+    );
+    assert!(!format!("{warnings:?}").contains("SECRET-UNKNOWN-WELCOME"));
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn realtime_local_state_projector_stores_direct_message_and_contact() {
     let fixture = TestClientFixture::new("direct");
@@ -104,8 +161,14 @@ fn realtime_sync_hint_parses_dirty_and_gap_without_checkpoint_owner_logic() {
     assert_eq!(hint.event_id.as_deref(), Some("sev-12"));
     assert_eq!(hint.event_seq.as_deref(), Some("12"));
     assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+    assert_eq!(
+        hint.domains,
+        std::collections::BTreeSet::from([super::super::SyncDomain::Message])
+    );
+    assert_eq!(hint.reason.as_deref(), Some("message.created"));
     assert!(hint.sync_dirty);
     assert!(hint.gap_detected);
+    assert!(!hint.has_unknown_domain);
     assert!(
         crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("11"))
             .unwrap()
@@ -138,6 +201,67 @@ fn realtime_sync_hint_ignores_non_integral_event_seq() {
 }
 
 #[test]
+fn realtime_sync_hint_v2_exposes_closed_domains_but_keeps_high_water_internal() {
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": "sync.changed",
+        "params": {
+            "domains": ["message", "profile", "future_domain"],
+            "reason": "message_available"
+        },
+        "sync": {
+            "schema_version": 2,
+            "account_scan_seq_hint": "15021",
+            "domain_versions": {
+                "profile": "7",
+                "future_domain": "9"
+            }
+        }
+    });
+
+    let hint = crate::internal::realtime::projection::sync_hint(&notification).unwrap();
+
+    assert_eq!(hint.event_id, None);
+    assert_eq!(hint.event_seq.as_deref(), Some("15021"));
+    assert_eq!(hint.event_type, None);
+    assert_eq!(
+        hint.domains,
+        std::collections::BTreeSet::from([
+            super::super::SyncDomain::Message,
+            super::super::SyncDomain::Profile,
+        ])
+    );
+    assert_eq!(hint.reason.as_deref(), Some("message_available"));
+    assert!(hint.sync_dirty);
+    assert!(!hint.gap_detected);
+    assert!(hint.has_unknown_domain);
+}
+
+#[test]
+fn malformed_realtime_sync_hint_v2_fails_safe_without_raw_cursor() {
+    let notification = json!({
+        "method": "sync.changed",
+        "params": {
+            "domains": ["message"],
+            "reason": "message_available"
+        },
+        "sync": {
+            "schema_version": 2,
+            "account_scan_seq_hint": 15021,
+            "domain_versions": {}
+        }
+    });
+
+    let hint = crate::internal::realtime::projection::sync_hint(&notification).unwrap();
+
+    assert!(hint.domains.is_empty());
+    assert_eq!(hint.event_seq, None);
+    assert!(hint.sync_dirty);
+    assert!(hint.gap_detected);
+    assert!(hint.has_unknown_domain);
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn realtime_gap_hint_projection_does_not_write_sync_checkpoint() {
     let fixture = TestClientFixture::new("realtime-no-checkpoint");
@@ -155,9 +279,12 @@ fn realtime_gap_hint_projection_does_not_write_sync_checkpoint() {
 
     assert!(outcome.warnings.is_empty());
     let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-    let checkpoint =
-        crate::internal::local_state::sync_state::load_global_checkpoint(&connection, "alice")
-            .unwrap();
+    let checkpoint = crate::internal::local_state::sync_state::load_global_checkpoint(
+        &connection,
+        "alice",
+        client.did().as_str(),
+    )
+    .unwrap();
     assert!(checkpoint.is_none());
 }
 
@@ -291,6 +418,53 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
         )
         .unwrap();
     assert_eq!(contact_count, 1);
+}
+
+#[tokio::test]
+async fn realtime_verified_lookup_commits_first_inbound_direct_to_canonical_persona() {
+    let fixture = TestClientFixture::new_without_verified_peer("async-first-inbound-persona");
+    let client = fixture.client();
+    let lookup = verified_bob_lookup();
+    let expected_conversation_id = lookup.direct_conversation_id();
+
+    project_realtime_message_received_async_with_lookup(
+        &client,
+        &direct_message_event(client.did().as_str()),
+        Some(lookup.clone()),
+    )
+    .await
+    .unwrap();
+
+    let db = client.core_inner().local_state_db().await.unwrap();
+    db.shutdown().await.unwrap();
+    let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+    let stored = connection
+        .query_row(
+            r#"SELECT conversation_id FROM messages
+WHERE owner_identity_id = 'alice' AND msg_id = 'msg-direct-1'"#,
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(stored, expected_conversation_id);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM peer_personas WHERE owner_identity_id = 'alice'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(
+            &connection,
+            "alice",
+        )
+        .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -506,7 +680,6 @@ async fn realtime_async_projector_replays_pending_direct_cipher_after_init() {
     assert_eq!(saved_session.recv_n, 2);
     db.shutdown().await.unwrap();
 }
-
 #[cfg(feature = "group-e2ee")]
 #[tokio::test]
 async fn realtime_async_projector_uses_async_group_e2ee_normalizer() {
@@ -629,6 +802,29 @@ async fn realtime_async_runner_uses_tokio_channels_and_status_watch() {
     assert_eq!(
         status_receiver.borrow().state,
         super::super::RealtimeConnectionState::Closed
+    );
+}
+
+#[test]
+fn plain_realtime_projector_never_falls_system_notifications_back_to_chat() {
+    let mut projector = PlainRealtimeNotificationProjector;
+    let outcome = projector.project(json!({
+        "projection_kind": "system_notification",
+        "method": "direct.incoming",
+        "params": {
+            "body": {
+                "payload": {
+                    "type": "awiki.device.join-requested.v1"
+                }
+            }
+        }
+    }));
+
+    assert!(outcome.event.is_none());
+    assert!(outcome.additional_events.is_empty());
+    assert_eq!(
+        outcome.warnings,
+        vec!["system.notification.secure_projector_required".to_owned()]
     );
 }
 
@@ -906,6 +1102,12 @@ struct TestClientFixture {
 
 impl TestClientFixture {
     fn new(name: &str) -> Self {
+        let fixture = Self::new_without_verified_peer(name);
+        fixture.seed_verified_peer();
+        fixture
+    }
+
+    fn new_without_verified_peer(name: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "im-core-realtime-runner-{name}-{}-{}",
             std::process::id(),
@@ -922,6 +1124,18 @@ impl TestClientFixture {
         fixture
     }
 
+    fn seed_verified_peer(&self) {
+        let mut connection =
+            crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut connection,
+            "alice",
+            "did:example:alice",
+            &verified_bob_lookup(),
+        )
+        .unwrap();
+    }
+
     fn client(&self) -> crate::core::ImClient {
         self.core()
             .client(crate::identity::IdentitySelector::LocalAlias(
@@ -931,10 +1145,11 @@ impl TestClientFixture {
     }
 
     fn core(&self) -> crate::core::ImCore {
-        crate::core::ImCore::new(
+        crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "awiki.info".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -957,6 +1172,7 @@ impl TestClientFixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
+            crate::ImCoreOpenOptions::default(),
         )
         .unwrap()
     }
@@ -1058,6 +1274,19 @@ impl TestClientFixture {
             "missing": []
         }));
         std::fs::write(registry_path, registry.to_string()).unwrap();
+    }
+}
+
+fn verified_bob_lookup() -> crate::directory::HandleLookupResult {
+    crate::directory::HandleLookupResult {
+        handle: crate::ids::Handle::parse("bob.awiki.info", "").unwrap(),
+        did: crate::ids::Did::parse("did:example:bob").unwrap(),
+        user_id: "user-bob".to_owned(),
+        domain: Some("awiki.info".to_owned()),
+        status: Some("active".to_owned()),
+        binding_generation: Some("1".to_owned()),
+        profile: None,
+        warnings: Vec::new(),
     }
 }
 
@@ -1308,8 +1537,11 @@ fn direct_message_event_with_sync(
             event_id: Some("sev-99".to_owned()),
             event_seq: Some("99".to_owned()),
             event_type: Some("message.created".to_owned()),
+            domains: std::collections::BTreeSet::from([super::super::SyncDomain::Message]),
+            reason: Some("message.created".to_owned()),
             sync_dirty: true,
             gap_detected: true,
+            has_unknown_domain: false,
         }),
         warnings: Vec::new(),
     }

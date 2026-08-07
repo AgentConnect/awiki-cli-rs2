@@ -62,7 +62,7 @@ async fn content_public_async_api_dispatches_authenticated_content_rpc() {
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/content/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/content/rpc");
     assert_eq!(requests[0].rpc_method, "create");
     assert_eq!(
         requests[0].params,
@@ -74,7 +74,7 @@ async fn content_public_async_api_dispatches_authenticated_content_rpc() {
         })
     );
     assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/content/rpc");
+    assert_eq!(requests[1].path, "/user-service/v1/content/rpc");
     assert_eq!(requests[1].rpc_method, "list");
     assert_eq!(requests[1].params, json!({}));
 }
@@ -143,7 +143,7 @@ async fn content_public_api_dispatches_all_page_rpc_methods() {
         .map(|request| request.rpc_method.as_str())
         .collect::<Vec<_>>();
     assert_eq!(methods, ["get", "update", "rename", "delete"]);
-    assert_eq!(requests[0].path, "/content/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/content/rpc");
     assert_eq!(requests[0].params, json!({ "slug": "hello" }));
     assert_eq!(
         requests[1].params,
@@ -205,6 +205,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_owned(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,

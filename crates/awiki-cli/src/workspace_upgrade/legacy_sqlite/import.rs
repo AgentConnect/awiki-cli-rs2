@@ -153,6 +153,14 @@ impl LegacyOwnerScope {
 }
 
 pub fn scan_legacy_database(paths: &Paths) -> StoreResult<LegacyScan> {
+    if paths.legacy_data_dir.trim().is_empty() {
+        return Ok(LegacyScan {
+            path: String::new(),
+            exists: false,
+            schema_version: 0,
+            tables: Vec::new(),
+        });
+    }
     let legacy_path = legacy_database_path(&paths.legacy_data_dir);
     let mut scan = LegacyScan {
         path: legacy_path.to_string_lossy().into_owned(),

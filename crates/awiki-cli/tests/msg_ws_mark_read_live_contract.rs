@@ -101,7 +101,7 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
         .join("runtime")
         .join("missing.sock");
     let server = TestServer::new(vec![TestResponse::internal_error(
-        r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"http mark-read failed"},"id":"req-1"}"#,
+        r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"http mark-read failed"},"id":"req-1"}"#,
     )]);
     write_msg_ws_config(
         workspace.path(),
@@ -125,7 +125,7 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
     let message = envelope["error"]["message"]
         .as_str()
         .expect("error message");
-    assert_contains_text(message, "http mark-read failed");
+    assert_contains_text(message, "message operation: remote service request failed.");
     assert!(
         !message.contains("local websocket bridge request failed"),
         "legacy bridge fallback should not be used, got: {message}"

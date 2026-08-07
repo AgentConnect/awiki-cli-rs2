@@ -42,6 +42,7 @@ pub(crate) struct AttachmentSigningIdentity {
     pub did: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 pub(crate) fn build_attachment_create_slot_rpc_params(
@@ -67,6 +68,27 @@ pub(crate) fn build_attachment_create_slot_rpc_params_with_security_profile(
     target_kind: &str,
     target_did: &str,
     message_security_profile: &str,
+    prepared: &crate::attachments::manifest::PreparedAttachment,
+) -> crate::ImResult<Value> {
+    let attachment_id = format!("att-{}", super::common::generate_operation_id());
+    build_attachment_create_slot_rpc_params_with_id(
+        sender_did,
+        service_did,
+        target_kind,
+        target_did,
+        message_security_profile,
+        &attachment_id,
+        prepared,
+    )
+}
+
+pub(crate) fn build_attachment_create_slot_rpc_params_with_id(
+    sender_did: &str,
+    service_did: &str,
+    target_kind: &str,
+    target_did: &str,
+    message_security_profile: &str,
+    requested_attachment_id: &str,
     prepared: &crate::attachments::manifest::PreparedAttachment,
 ) -> crate::ImResult<Value> {
     if prepared.filename.trim().is_empty() && prepared.size_string.trim().is_empty() {
@@ -100,23 +122,32 @@ pub(crate) fn build_attachment_create_slot_rpc_params_with_security_profile(
             "object-e2ee attachments require direct-e2ee or group-e2ee message security profile",
         ));
     }
-    Ok(json!({
-        "meta": super::common::message_meta(sender_did, service_did, ATTACHMENT_PROFILE),
-        "body": {
-            "expected_size": prepared.size_string,
-            "expected_digest": {
-                "alg": "sha-256",
-                "value_b64u": prepared.digest_b64u,
-            },
-            "mime_type": prepared.mime_type,
-            "filename": prepared.filename,
-            "intended_message_security_profile": message_security_profile,
-            "intended_target": {
-                "kind": target_kind,
-                "did": target_did,
-            },
-            "object_encryption_mode": prepared.object_encryption_mode(),
+    let mut body = json!({
+        "expected_size": prepared.size_string,
+        "expected_digest": {
+            "alg": "sha-256",
+            "value_b64u": prepared.digest_b64u,
         },
+        "mime_type": prepared.mime_type,
+        "filename": prepared.filename,
+        "intended_message_security_profile": message_security_profile,
+        "intended_target": {
+            "kind": target_kind,
+            "did": target_did,
+        },
+        "object_encryption_mode": prepared.object_encryption_mode(),
+    });
+    let attachment_id = requested_attachment_id.trim();
+    if attachment_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("attachment_id".to_owned()),
+            "attachment create requires a caller-generated attachment_id",
+        ));
+    }
+    body["attachment_id"] = Value::String(attachment_id.to_owned());
+    Ok(json!({
+        "meta": attachment_meta(sender_did, service_did),
+        "body": body,
     }))
 }
 
@@ -164,7 +195,7 @@ pub(crate) fn build_attachment_commit_object_rpc_params(
         );
     }
     Ok(json!({
-        "meta": super::common::message_meta(sender_did, service_did, ATTACHMENT_PROFILE),
+        "meta": attachment_meta(sender_did, service_did),
         "body": Value::Object(body),
     }))
 }
@@ -174,6 +205,44 @@ pub(crate) fn build_attachment_download_ticket_rpc_params(
     service_did: &str,
     sender_did: &str,
     message_id: &str,
+    group_did: &str,
+    selection: &crate::attachments::selection::AttachmentSelection,
+) -> crate::ImResult<Value> {
+    build_attachment_download_ticket_rpc_params_with_target(
+        requester_did,
+        service_did,
+        sender_did,
+        message_id,
+        group_did,
+        selection,
+    )
+}
+
+pub(crate) fn build_attachment_download_ticket_rpc_params_with_target(
+    requester_did: &str,
+    service_did: &str,
+    sender_did: &str,
+    message_id: &str,
+    group_did: &str,
+    selection: &crate::attachments::selection::AttachmentSelection,
+) -> crate::ImResult<Value> {
+    build_attachment_download_ticket_rpc_params_with_explicit_target(
+        requester_did,
+        service_did,
+        sender_did,
+        message_id,
+        requester_did,
+        group_did,
+        selection,
+    )
+}
+
+pub(crate) fn build_attachment_download_ticket_rpc_params_with_explicit_target(
+    requester_did: &str,
+    service_did: &str,
+    sender_did: &str,
+    message_id: &str,
+    message_target_did: &str,
     group_did: &str,
     selection: &crate::attachments::selection::AttachmentSelection,
 ) -> crate::ImResult<Value> {
@@ -205,10 +274,6 @@ pub(crate) fn build_attachment_download_ticket_rpc_params(
         Value::String(selection.object_uri.clone()),
     );
     body.insert(
-        "sender_did".to_string(),
-        Value::String(sender_did.to_string()),
-    );
-    body.insert(
         "requester_did".to_string(),
         Value::String(requester_did.to_string()),
     );
@@ -230,15 +295,25 @@ pub(crate) fn build_attachment_download_ticket_rpc_params(
             Value::String(group_did.to_string()),
         );
     } else {
+        if message_target_did.trim().is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("message_target_did".to_string()),
+                "direct attachment message target did is required",
+            ));
+        }
         body.insert(
             "message_target_did".to_string(),
-            Value::String(requester_did.to_string()),
+            Value::String(message_target_did.to_string()),
         );
     }
     Ok(json!({
-        "meta": super::common::message_meta(requester_did, service_did, ATTACHMENT_PROFILE),
+        "meta": attachment_meta(requester_did, service_did),
         "body": body,
     }))
+}
+
+fn attachment_meta(sender_did: &str, service_did: &str) -> Value {
+    super::common::message_meta(sender_did, service_did, ATTACHMENT_PROFILE)
 }
 
 fn selection_message_security_profile(
@@ -350,7 +425,7 @@ fn build_signed_attachment_send_rpc_params(
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
             key1_private_pem: identity.key1_private_pem.clone(),
-            verification_method: None,
+            verification_method: identity.verification_method.clone(),
         },
         &payload,
     )?;

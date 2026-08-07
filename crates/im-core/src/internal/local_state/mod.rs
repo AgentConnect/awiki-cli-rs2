@@ -2,7 +2,13 @@
 pub(crate) mod actor;
 
 pub(crate) mod attachment_manifest_cache;
+#[cfg(feature = "sqlite")]
+pub(crate) mod canonical_invariants;
+#[cfg(feature = "sqlite")]
+pub(crate) mod canonical_upgrade;
 pub(crate) mod contacts;
+#[cfg(feature = "sqlite")]
+pub(crate) mod conversation_aliases;
 #[cfg(feature = "sqlite")]
 pub(crate) mod conversation_registry;
 #[cfg(feature = "sqlite")]
@@ -12,10 +18,20 @@ pub(crate) mod conversations;
 pub(crate) mod direct_peer_routes;
 pub(crate) mod email;
 pub(crate) mod groups;
+pub(crate) mod inbound_resolution_backlog;
 pub(crate) mod messages;
+#[cfg(feature = "sqlite")]
 pub(crate) mod owner_scope;
+#[cfg(feature = "sqlite")]
+pub(crate) mod peer_identifiers;
+#[cfg(feature = "sqlite")]
+pub(crate) mod peer_personas;
+#[cfg(feature = "sqlite")]
+pub(crate) mod peer_profiles;
 pub(crate) mod read_state;
 pub(crate) mod sync_state;
+#[cfg(feature = "sqlite")]
+pub(crate) mod sync_v2;
 
 #[cfg(feature = "sqlite")]
 pub(crate) mod schema;

@@ -194,6 +194,51 @@ fn tenant_setup_is_idempotent_switches_and_rejects_endpoint_drift() {
 }
 
 #[test]
+fn tenant_setup_reuses_release_default_when_requested_name_has_the_same_endpoints() {
+    let workspace = TempDir::new("tenant-setup-release-default").expect("workspace");
+    let release_tenant_env = [
+        (
+            "AWIKI_CLI_DEFAULT_BACKEND_BASE_URL",
+            "https://agent-connect.cn",
+        ),
+        ("AWIKI_CLI_DEFAULT_DID_HOST", "agent-connect.cn"),
+    ];
+
+    let setup = awiki_cmd_extra(
+        &[
+            "tenant",
+            "setup",
+            "agent-connect-cn",
+            "--backend-base-url",
+            "https://agent-connect.cn",
+            "--did-host",
+            "agent-connect.cn",
+            "--display-name",
+            "agent-connect.cn",
+        ],
+        workspace.path(),
+        &release_tenant_env,
+    );
+
+    assert_success(&setup);
+    let setup = success_json(&setup);
+    assert_eq!(setup["data"]["result"]["action"], "reused");
+    assert_eq!(
+        setup["data"]["result"]["tenant"]["profile"]["name"],
+        "default"
+    );
+    assert_eq!(
+        read_json(&workspace.path().join("global.json"))["active_tenant"],
+        "default"
+    );
+    assert!(!workspace
+        .path()
+        .join("tenants")
+        .join("agent-connect-cn")
+        .exists());
+}
+
+#[test]
 fn tenant_setup_dry_run_does_not_create_target_tenant() {
     let workspace = TempDir::new("tenant-setup-dry-run").expect("workspace");
     let output = awiki_cmd(

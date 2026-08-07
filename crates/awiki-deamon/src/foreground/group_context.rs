@@ -4,7 +4,6 @@ use serde_json::{json, Value};
 use super::{conversation_id, is_opaque_group_e2ee_message};
 
 pub(super) const GROUP_CONTEXT_MESSAGE_LIMIT: usize = 30;
-pub(super) const GROUP_CONTEXT_FETCH_LIMIT: u32 = 50;
 
 const GROUP_CONTEXT_CHAR_LIMIT: usize = 12_000;
 const GROUP_CONTEXT_REDACTED_TEXT: &str = "[已省略疑似敏感内容]";

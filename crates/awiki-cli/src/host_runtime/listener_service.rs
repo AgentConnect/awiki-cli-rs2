@@ -13,11 +13,15 @@ use super::listener::{self, Status};
 pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-listener";
 pub const SERVICE_DISPLAY_NAME_PREFIX: &str = "awiki-cli Listener";
 pub const SERVICE_DESCRIPTION: &str = "awiki-cli realtime websocket listener";
-pub const SERVICE_ARGUMENTS: &[&str] = &["runtime", "listener", "service-run"];
+pub const SERVICE_COMMAND_ARGUMENTS: &[&str] = &["runtime", "listener", "service-run"];
 pub const SERVICE_PID_FILE_NAME: &str = "listener.service.pid";
 pub const WORKSPACE_HOME_ENV: &str = "AWIKI_CLI_WORKSPACE_HOME_DIR";
 pub const LISTENER_SERVICE_MODE_ENV: &str = "AWIKI_LISTENER_SERVICE_MODE";
 pub const INTERNAL_ENTRY_ENV: &str = "AWIKI_CLI_INTERNAL_ENTRY";
+pub const INTERNAL_SERVICE_FLAG: &str = "--internal-service";
+pub const INTERNAL_WORKSPACE_HOME_FLAG: &str = "--internal-workspace-home";
+pub const INTERNAL_SERVICE_USER_SID_FLAG: &str = "--internal-service-user-sid";
+pub const INTERNAL_SERVICE_USER_SID_ENV: &str = "AWIKI_CLI_INTERNAL_SERVICE_USER_SID";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForegroundSignal {
@@ -378,10 +382,7 @@ pub fn service_config_plan_for(resolved: &Resolved, is_windows: bool) -> Listene
         name: service_name_for(resolved),
         display_name: service_display_name_for(Some(resolved)),
         description: SERVICE_DESCRIPTION.to_string(),
-        arguments: SERVICE_ARGUMENTS
-            .iter()
-            .map(|argument| (*argument).to_string())
-            .collect(),
+        arguments: service_arguments_for(resolved),
         working_directory: if is_windows {
             String::new()
         } else {
@@ -390,6 +391,29 @@ pub fn service_config_plan_for(resolved: &Resolved, is_windows: bool) -> Listene
         options,
         env_vars,
     }
+}
+
+pub fn service_arguments_for(resolved: &Resolved) -> Vec<String> {
+    let mut arguments = vec![
+        INTERNAL_SERVICE_FLAG.to_string(),
+        INTERNAL_WORKSPACE_HOME_FLAG.to_string(),
+        product_home_dir(resolved).to_string(),
+    ];
+    if let Some(tenant) = resolved
+        .sources
+        .get("active_tenant")
+        .map(|source| source.value.trim())
+        .filter(|tenant| !tenant.is_empty())
+    {
+        arguments.push("--tenant".to_string());
+        arguments.push(tenant.to_string());
+    }
+    arguments.extend(
+        SERVICE_COMMAND_ARGUMENTS
+            .iter()
+            .map(|argument| (*argument).to_string()),
+    );
+    arguments
 }
 
 pub fn service_status_for_plan(
@@ -530,7 +554,22 @@ pub fn wait_for_service_status_with(
             if let Some(err) = last_err {
                 return Err(err);
             }
-            return Ok(last_status);
+            let expected = if want_running {
+                "running with its local bridge ready"
+            } else {
+                "stopped"
+            };
+            anyhow::bail!(
+                "listener service did not become {expected} before the timeout (installed={}, running={}, bridge_available={}, boot_id={})",
+                last_status.installed,
+                last_status.running,
+                last_status.bridge_available,
+                if last_status.boot_id.is_empty() {
+                    "<none>"
+                } else {
+                    &last_status.boot_id
+                }
+            );
         }
         std::thread::sleep(interval);
     }
@@ -548,6 +587,17 @@ pub fn cleanup_runtime_artifacts(resolved: &Resolved) {
     }
 }
 
+pub fn runtime_artifacts_belong_to_boot_id(
+    expected_boot_id: Option<&str>,
+    process_boot_id: &str,
+) -> bool {
+    expected_boot_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|expected| expected == process_boot_id.trim())
+        .unwrap_or(true)
+}
+
 pub fn running_in_listener_service_mode() -> bool {
     let env_value = env::var(LISTENER_SERVICE_MODE_ENV).ok();
     let args = env::args().collect::<Vec<_>>();
@@ -561,12 +611,13 @@ pub fn running_in_listener_service_mode_with(env_value: Option<&str>, args: &[St
             return true;
         }
     }
-    if args.len() < 4 {
-        return false;
-    }
-    args[1].trim().eq_ignore_ascii_case("runtime")
-        && args[2].trim().eq_ignore_ascii_case("listener")
-        && args[3].trim().eq_ignore_ascii_case("service-run")
+    args.windows(SERVICE_COMMAND_ARGUMENTS.len()).any(|words| {
+        words
+            .iter()
+            .map(|word| word.trim())
+            .zip(SERVICE_COMMAND_ARGUMENTS.iter().copied())
+            .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+    })
 }
 
 pub fn foreground_signal_plan_for_platform(is_windows: bool) -> Vec<ForegroundSignal> {

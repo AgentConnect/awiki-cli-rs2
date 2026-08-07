@@ -5,7 +5,7 @@ use crate::cli_http::Profile;
 use serde_json::{json, Value};
 use std::fmt;
 
-pub const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/did-auth/rpc";
+pub const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/v1/did-auth/rpc";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcCall {

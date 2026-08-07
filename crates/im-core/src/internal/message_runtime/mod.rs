@@ -6,3 +6,4 @@ pub(crate) mod mark_read;
 pub(crate) mod read;
 pub(crate) mod state;
 pub(crate) mod sync;
+pub(crate) mod sync_v2;

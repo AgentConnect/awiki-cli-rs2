@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use im_core::messages::{
+    LocalHistoryQuery, MessageSyncOutcome, MessageSyncRequest, MessageSyncStatus,
+};
 use im_core::prelude::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
     AttachmentSendResult, Cursor, DeliveryState, DownloadAttachmentRequest,
@@ -50,9 +53,19 @@ pub fn send_message_request(
 pub fn send_attachment_request(
     command: &ParsedCommand,
     default_domain: &str,
-) -> Result<(MessageTarget, AttachmentSendRequest, Vec<String>), ExitError> {
+) -> Result<
+    (
+        MessageTarget,
+        AttachmentSendRequest,
+        Option<MessageId>,
+        Vec<String>,
+    ),
+    ExitError,
+> {
     let target = message_target(command, default_domain)?;
     let (security, warnings) = message_security(command, &target)?;
+    let client_message_id = optional_message_id_flag(command, "client-message-id")?;
+    let idempotency_key = optional_string_flag(command, "idempotency-key");
     let file_path = string_flag(command, "file");
     if file_path.trim().is_empty() {
         return Err(ExitError::new(
@@ -76,9 +89,13 @@ pub fn send_attachment_request(
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
             filename: None,
-            delivery: MessageDeliveryOptions::default(),
+            delivery: MessageDeliveryOptions {
+                idempotency_key,
+                wait_for_final_acceptance: false,
+            },
             security,
         },
+        client_message_id,
         warnings,
     ))
 }
@@ -242,12 +259,18 @@ pub fn send_attachment_via_im_core(
     client: &im_core::ImClient,
     target: MessageTarget,
     request: AttachmentSendRequest,
+    client_message_id: Option<MessageId>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let result = client
-        .attachments()
-        .send(target, request)
-        .map_err(im_error_to_message_error)?;
+    let result = match client_message_id {
+        Some(client_message_id) => {
+            client
+                .attachments()
+                .send_with_client_message_id(target, request, client_message_id)
+        }
+        None => client.attachments().send(target, request),
+    }
+    .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
@@ -264,13 +287,19 @@ pub async fn send_attachment_via_im_core_async(
     client: &im_core::ImClient,
     target: MessageTarget,
     request: AttachmentSendRequest,
+    client_message_id: Option<MessageId>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let result = client
-        .attachments()
-        .send_async(target, request)
-        .await
-        .map_err(im_error_to_message_error)?;
+    let result = match client_message_id {
+        Some(client_message_id) => {
+            client
+                .attachments()
+                .send_with_client_message_id_async(target, request, client_message_id)
+                .await
+        }
+        None => client.attachments().send_async(target, request).await,
+    }
+    .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
@@ -471,18 +500,22 @@ pub async fn read_inbox_via_im_core_async(
     _resolved: &Resolved,
     client: &im_core::ImClient,
     query: InboxQuery,
+    secure_warnings: Vec<String>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let mut rpc_phase = crate::cli_trace::rpc_phase("inbox.get");
-    let page = client
-        .messages()
-        .inbox_with_metadata_async(query.clone())
-        .await
-        .map_err(|err| {
-            rpc_phase.finish();
-            im_error_to_message_error(err)
-        })?;
+    let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
+    let reconciled = async {
+        reconcile_foreground_message_sync_async(client).await?;
+        let page = client
+            .messages()
+            .local_inbox_projection_with_metadata_async(query.clone())
+            .await
+            .map_err(im_error_to_message_error)?;
+        Ok::<_, MessageAdapterError>((page, secure_warnings))
+    }
+    .await;
     rpc_phase.finish();
+    let (page, secure_warnings) = reconciled?;
     let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -504,8 +537,78 @@ pub async fn read_inbox_via_im_core_async(
     Ok(CommandResult {
         data,
         summary: format!("Loaded {total} inbox messages"),
-        warnings: Vec::new(),
+        warnings: compact_warnings(secure_warnings),
     })
+}
+
+pub async fn hydrate_secure_inbox_via_im_core_async(
+    client: &im_core::ImClient,
+    query: &InboxQuery,
+) -> Result<Vec<String>, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    if !matches!(&query.scope, InboxScope::DirectOnly | InboxScope::All) {
+        return Ok(Vec::new());
+    }
+    client
+        .messages()
+        .hydrate_exact_device_secure_inbox_async(query.limit)
+        .await
+        .map_err(im_error_to_message_error)
+}
+
+fn foreground_message_sync_reason() -> &'static str {
+    "foreground_reconcile"
+}
+
+fn require_foreground_message_sync(
+    outcome: &MessageSyncOutcome,
+) -> Result<(), MessageAdapterError> {
+    match outcome.status {
+        MessageSyncStatus::Idle | MessageSyncStatus::Changed => Ok(()),
+        MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
+            "foreground message recovery did not complete".to_owned(),
+        )),
+        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::TransportUnavailable(
+            "foreground message reconciliation did not complete".to_owned(),
+        )),
+        MessageSyncStatus::AuthRevoked => Err(MessageAdapterError::IdentityRequired(
+            "foreground message synchronization authorization is unavailable".to_owned(),
+        )),
+    }
+}
+
+fn reconcile_foreground_message_sync(
+    client: &im_core::ImClient,
+) -> Result<(), MessageAdapterError> {
+    let outcome = client
+        .messages()
+        .sync_now(MessageSyncRequest {
+            reason: foreground_message_sync_reason().to_owned(),
+            limit: Some(100),
+        })
+        .map_err(im_error_to_message_error)?;
+    require_foreground_message_sync(&outcome)
+}
+
+async fn reconcile_foreground_message_sync_async(
+    client: &im_core::ImClient,
+) -> Result<(), MessageAdapterError> {
+    let outcome = client
+        .messages()
+        .sync_now_async(MessageSyncRequest {
+            reason: foreground_message_sync_reason().to_owned(),
+            limit: Some(100),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    require_foreground_message_sync(&outcome)
+}
+
+fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {
+    LocalHistoryQuery {
+        limit: query.limit,
+        cursor: query.cursor,
+    }
 }
 
 pub fn read_history_via_im_core(
@@ -549,10 +652,11 @@ fn read_direct_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync(client)?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
-        .history_with_metadata(ThreadRef::Direct(peer.clone()), query.clone())
+        .local_history_with_metadata(ThreadRef::Direct(peer.clone()), local_history_query(query))
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
@@ -580,10 +684,14 @@ async fn read_direct_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync_async(client).await?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
-        .history_with_metadata_async(ThreadRef::Direct(peer.clone()), query.clone())
+        .local_history_with_metadata_async(
+            ThreadRef::Direct(peer.clone()),
+            local_history_query(query),
+        )
         .await
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
@@ -612,9 +720,10 @@ fn read_group_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync(client)?;
     let page = client
         .messages()
-        .history_with_metadata(ThreadRef::Group(group.clone()), query.clone())
+        .local_history_with_metadata(ThreadRef::Group(group.clone()), local_history_query(query))
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
@@ -639,9 +748,13 @@ async fn read_group_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync_async(client).await?;
     let page = client
         .messages()
-        .history_with_metadata_async(ThreadRef::Group(group.clone()), query.clone())
+        .local_history_with_metadata_async(
+            ThreadRef::Group(group.clone()),
+            local_history_query(query),
+        )
         .await
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
@@ -1078,7 +1191,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         "content_type": message_content_type(message),
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
-        "is_read": false,
+        "is_read": message_is_read(message),
         "secure": message_is_secure(message),
         "direction": match message.direction {
             MessageDirection::Outgoing => 1,
@@ -1099,7 +1212,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         value["type"] = json!("attachment_manifest");
     }
     for attribute in &message.metadata.attributes {
-        if attribute.key == "raw_content" {
+        if matches!(attribute.key.as_str(), "raw_content" | "is_read") {
             continue;
         }
         if !attribute.key.trim().is_empty() {
@@ -1148,6 +1261,15 @@ fn message_content_type(message: &im_core::prelude::Message) -> String {
 fn message_is_secure(message: &im_core::prelude::Message) -> bool {
     message_attribute(&message.metadata.attributes, "security")
         .is_some_and(|value| matches!(value.as_str(), "direct-e2ee" | "group-e2ee"))
+}
+
+fn message_is_read(message: &im_core::prelude::Message) -> bool {
+    message_attribute(&message.metadata.attributes, "is_read").is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        )
+    })
 }
 
 fn sdk_send_trace_operation(request: &SendMessageRequest) -> &'static str {
@@ -1608,6 +1730,10 @@ fn message_bool_attribute(attributes: &[MessageMetadataAttribute], key: &str) ->
     })
 }
 
+fn message_u64_attribute(attributes: &[MessageMetadataAttribute], key: &str) -> Option<u64> {
+    message_attribute(attributes, key).and_then(|value| value.trim().parse().ok())
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct DirectSendResult {
     #[serde(default)]
@@ -1624,6 +1750,16 @@ struct DirectSendResult {
     final_acceptance: bool,
     #[serde(default)]
     delivery_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previously_accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    newly_accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failed_device_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -1667,6 +1803,26 @@ impl DirectSendResult {
             )
             .unwrap_or(matches!(result.delivery, DeliveryState::Sent)),
             delivery_state: delivery_state_label(result),
+            attempted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "attempted_device_count",
+            ),
+            previously_accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "previously_accepted_device_count",
+            ),
+            newly_accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "newly_accepted_device_count",
+            ),
+            accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "accepted_device_count",
+            ),
+            failed_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "failed_device_count",
+            ),
         }
     }
 }
@@ -1881,16 +2037,27 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             message,
             ..
         } => {
+            let status_code = status_code.unwrap_or_default();
+            let public_code = code
+                .as_deref()
+                .filter(|value| super::error::is_public_service_code(value))
+                .map(str::to_owned);
+            if !matches!(status_code, 401 | 403) {
+                if let Some(public_code) = public_code {
+                    return MessageAdapterError::PublicServiceCode(public_code);
+                }
+            }
             let rpc_code = code
+                .as_deref()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or_default();
             if group_e2ee_service_unsupported(rpc_code, &message) {
                 return MessageAdapterError::GroupNotSupported;
             }
             MessageAdapterError::Service(ServiceError {
-                status_code: status_code.unwrap_or_default(),
+                status_code,
                 rpc_code,
-                message,
+                message: "remote service request failed".to_owned(),
                 data: None,
             })
         }

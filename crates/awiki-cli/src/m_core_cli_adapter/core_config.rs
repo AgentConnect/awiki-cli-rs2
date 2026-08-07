@@ -43,6 +43,14 @@ pub(crate) fn build_im_core_config_from_parts(
     Ok(ImCoreConfig {
         service_base_url,
         did_domain: did_domain.to_string(),
+        client_version_info: crate::build_info::client_version_info().map_err(|err| {
+            ExitError::new(
+                "invalid_build_info",
+                2,
+                format!("invalid awiki-cli client version metadata: {err}"),
+                "Build awiki-cli with a valid release and version.",
+            )
+        })?,
         user_service_endpoint: optional_endpoint("user_service_endpoint", user_service_endpoint)?,
         message_service_endpoint: optional_endpoint(
             "message_service_endpoint",

@@ -7,11 +7,248 @@ import '../dto/config.dart';
 import '../dto/error.dart';
 import '../dto/identity.dart';
 import '../frb_generated.dart';
+import 'attachments.dart';
 import 'client.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `recover_handle_request`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+
+Future<DartLegacyRegistryEpochAdoptionAuthority?>
+legacyRegistryEpochAdoptionAuthority({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLegacyRegistryEpochAdoptionAuthority(
+  core: core,
+  selector: selector,
+);
+
+Future<DartHandleRecoveryOtpResult> requestHandleRecoveryOtp({
+  required ArcDartImCore core,
+  required String phone,
+  required String handle,
+  required String operationId,
+}) => RustLib.instance.api.crateApiIdentityRequestHandleRecoveryOtp(
+  core: core,
+  phone: phone,
+  handle: handle,
+  operationId: operationId,
+);
+
+Future<DartHandleRecoveryProgress> prepareHandleRecovery({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String phone,
+  required String code,
+  required String handle,
+  required String operationId,
+}) => RustLib.instance.api.crateApiIdentityPrepareHandleRecovery(
+  core: core,
+  selector: selector,
+  phone: phone,
+  code: code,
+  handle: handle,
+  operationId: operationId,
+);
+
+Future<DartHandleRecoveryProgress> activateHandleRecovery({
+  required ArcDartImCore core,
+  required String recoveryId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityActivateHandleRecovery(
+  core: core,
+  recoveryId: recoveryId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartHandleRecoveryProgress> resumeHandleRecovery({
+  required ArcDartImCore core,
+  required String recoveryId,
+}) => RustLib.instance.api.crateApiIdentityResumeHandleRecovery(
+  core: core,
+  recoveryId: recoveryId,
+);
+
+Future<DartHandleRecoveryProgress> handleRecoveryStatus({
+  required ArcDartImCore core,
+  required String recoveryId,
+}) => RustLib.instance.api.crateApiIdentityHandleRecoveryStatus(
+  core: core,
+  recoveryId: recoveryId,
+);
+
+Future<DartAuthorizedJoinActivationProgress> activateAuthorizedJoin({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String phone,
+  required String code,
+  required String handle,
+  required String did,
+  required String operationId,
+  BigInt? ttlSeconds,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityActivateAuthorizedJoin(
+  core: core,
+  selector: selector,
+  phone: phone,
+  code: code,
+  handle: handle,
+  did: did,
+  operationId: operationId,
+  ttlSeconds: ttlSeconds,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartAuthorizedJoinActivationProgress> resumeAuthorizedJoinActivation({
+  required ArcDartImCore core,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityResumeAuthorizedJoinActivation(
+  core: core,
+  joinSessionId: joinSessionId,
+);
+
+Future<DartActiveSyncAccountBinding> activeSyncAccountBinding({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiIdentityActiveSyncAccountBinding(
+  client: client,
+);
+
+Future<DartDeviceRevokeResult> revokeDevice({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String targetDeviceId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityRevokeDevice(
+  core: core,
+  selector: selector,
+  targetDeviceId: targetDeviceId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartRootKeyTransferPreparation> prepareRootKeyTransfer({
+  required ArcDartImClient client,
+  required String recipientDeviceId,
+}) => RustLib.instance.api.crateApiIdentityPrepareRootKeyTransfer(
+  client: client,
+  recipientDeviceId: recipientDeviceId,
+);
+
+Future<DartRootKeyTransferSendResult> confirmAndSendRootKeyTransfer({
+  required ArcDartImClient client,
+  required String authorizationHandle,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityConfirmAndSendRootKeyTransfer(
+  client: client,
+  authorizationHandle: authorizationHandle,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<List<DartDeviceJoinSessionSummary>> localDeviceJoinSessions({
+  required ArcDartImCore core,
+}) => RustLib.instance.api.crateApiIdentityLocalDeviceJoinSessions(core: core);
+
+Future<DartDeviceJoinProgress> beginDeviceJoin({
+  required ArcDartImCore core,
+  required String did,
+  required String operationId,
+  required BigInt ttlSeconds,
+  required List<int> accountVerificationGrant,
+}) => RustLib.instance.api.crateApiIdentityBeginDeviceJoin(
+  core: core,
+  did: did,
+  operationId: operationId,
+  ttlSeconds: ttlSeconds,
+  accountVerificationGrant: accountVerificationGrant,
+);
+
+Future<DartDeviceJoinProgress> pollNewDeviceJoin({
+  required ArcDartImCore core,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityPollNewDeviceJoin(
+  core: core,
+  joinSessionId: joinSessionId,
+);
+
+Future<DartDeviceJoinSessionSummary> cancelNewDeviceJoin({
+  required ArcDartImCore core,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityCancelNewDeviceJoin(
+  core: core,
+  joinSessionId: joinSessionId,
+);
+
+Future<DartDeviceJoinRegistrySnapshot> identityDeviceRegistry({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityDeviceRegistry(
+  core: core,
+  selector: selector,
+);
+
+Future<List<DartDeviceJoinRequestNotice>> localDeviceJoinRequests({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLocalDeviceJoinRequests(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDeviceJoinProgress> localDeviceJoinVerificationProgress({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityLocalDeviceJoinVerificationProgress(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+);
+
+Future<DartDeviceJoinProgress> startDeviceJoinVerification({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+  required String operationId,
+  required BigInt challengeTtlSeconds,
+}) => RustLib.instance.api.crateApiIdentityStartDeviceJoinVerification(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+  operationId: operationId,
+  challengeTtlSeconds: challengeTtlSeconds,
+);
+
+Future<DartDeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+  required bool sasConfirmed,
+}) => RustLib.instance.api.crateApiIdentityPrepareDeviceJoinApproval(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+  sasConfirmed: sasConfirmed,
+);
+
+Future<DartDeviceJoinProgress> confirmDeviceJoinApproval({
+  required ArcDartImCore core,
+  required String approvalHandle,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityConfirmDeviceJoinApproval(
+  core: core,
+  approvalHandle: approvalHandle,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartDeviceJoinProgress> rejectDeviceJoin({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+  required DartDeviceJoinRejectReason reason,
+}) => RustLib.instance.api.crateApiIdentityRejectDeviceJoin(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+  reason: reason,
+);
 
 Future<List<DartIdentitySummary>> listIdentities({
   required ArcDartImCore core,
@@ -28,10 +265,34 @@ Future<DartIdentitySummary> resolveIdentity({
   selector: selector,
 );
 
+Future<DartIdentityDeviceSummary> identityDeviceSummary({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityDeviceSummary(
+  core: core,
+  selector: selector,
+);
+
 Future<DartIdentityVaultStatus> identityVaultStatus({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
 }) => RustLib.instance.api.crateApiIdentityIdentityVaultStatus(
+  core: core,
+  selector: selector,
+);
+
+Future<DartLegacyUpgradeStatus> legacyUpgradeStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLegacyUpgradeStatus(
+  core: core,
+  selector: selector,
+);
+
+Future<DartLegacyUpgradeStatus> upgradeLegacyIdentity({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityUpgradeLegacyIdentity(
   core: core,
   selector: selector,
 );
@@ -141,15 +402,3 @@ Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
       profile: profile,
       makeDefault: makeDefault,
     );
-
-Future<DartRecoverHandleResult> recoverHandle({
-  required ArcDartImCore core,
-  required String handle,
-  required String phone,
-  String? otp,
-}) => RustLib.instance.api.crateApiIdentityRecoverHandle(
-  core: core,
-  handle: handle,
-  phone: phone,
-  otp: otp,
-);

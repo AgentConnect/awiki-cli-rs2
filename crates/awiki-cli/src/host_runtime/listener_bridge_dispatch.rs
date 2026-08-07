@@ -343,15 +343,20 @@ pub fn build_bridge_rpc_call(
         ),
         "group.list" => (
             "group.list",
-            wire::build_group_list_rpc_params(&record.did, int_value(params.get("limit"))),
+            wire::build_group_list_rpc_params_with_cursor(
+                &record.did,
+                int_value(params.get("limit")),
+                optional_string_value(params.get("cursor")).as_deref(),
+            ),
             Vec::new(),
         ),
         "group.list_members" => (
             "group.list_members",
-            wire::build_group_members_rpc_params(
+            wire::build_group_members_rpc_params_with_cursor(
                 &record.did,
                 &string_value(params.get("group")),
                 int_value(params.get("limit")),
+                optional_string_value(params.get("cursor")).as_deref(),
             )?,
             Vec::new(),
         ),

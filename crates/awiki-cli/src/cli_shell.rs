@@ -16,11 +16,12 @@ use std::io::{self, Write};
 use std::path::Path;
 
 mod debug_handlers;
+mod device_join_handlers;
+mod device_revoke_handlers;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
-mod id_recover_handlers;
 mod id_replace_did_handlers;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
@@ -37,8 +38,10 @@ mod legacy_sqlite {
 }
 mod mail_handlers;
 mod msg_handlers;
+mod onboarding_handlers;
 mod page_handlers;
 mod people_handlers;
+mod root_key_transfer_handlers;
 mod runtime_handlers;
 mod runtime_hermes_handlers;
 mod runtime_host_notify_refresh;
@@ -64,6 +67,9 @@ pub struct GlobalOptions {
     pub tenant: String,
     pub tenant_changed: bool,
     pub verbose: bool,
+    pub internal_service: bool,
+    pub internal_workspace_home: String,
+    pub internal_service_user_sid: String,
 }
 
 impl Default for GlobalOptions {
@@ -80,6 +86,9 @@ impl Default for GlobalOptions {
             tenant: String::new(),
             tenant_changed: false,
             verbose: false,
+            internal_service: false,
+            internal_workspace_home: String::new(),
+            internal_service_user_sid: String::new(),
         }
     }
 }
@@ -110,6 +119,22 @@ pub async fn execute_async() -> i32 {
         Ok(command) => command,
         Err(err) => return App::default().handle_error(err),
     };
+    if command.globals.internal_service
+        && !command.globals.internal_workspace_home.trim().is_empty()
+    {
+        std::env::set_var(
+            "AWIKI_CLI_WORKSPACE_HOME_DIR",
+            command.globals.internal_workspace_home.trim(),
+        );
+        std::env::set_var("AWIKI_CLI_INTERNAL_ENTRY", "1");
+        std::env::set_var("AWIKI_LISTENER_SERVICE_MODE", "1");
+        if !command.globals.internal_service_user_sid.trim().is_empty() {
+            std::env::set_var(
+                crate::host_runtime::listener_service::INTERNAL_SERVICE_USER_SID_ENV,
+                command.globals.internal_service_user_sid.trim(),
+            );
+        }
+    }
     let trace_run = cli_trace::Run::new(&command.trace_command());
     cli_trace::set_current(Some(trace_run));
     let mut app = App {
@@ -163,13 +188,26 @@ impl App {
 
     pub fn run_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let identity_state =
+            crate::m_core_cli_adapter::identity::identity_status_via_im_core(&resolved)?;
+        let mut identity_state_data = identity_state.data;
+        if let Some(state) = identity_state_data.as_object_mut() {
+            state.insert(
+                "legacy_scan".to_string(),
+                json!({
+                    "credentials_dir": resolved.paths.legacy_credentials_dir,
+                    "data_dir": resolved.paths.legacy_data_dir,
+                    "identities": [],
+                }),
+            );
+        }
         let data = json!({
             "cli": {
                 "phase": "phase1-shell",
                 "version": BuildInfo::current(),
             },
             "paths": resolved.paths,
-            "state": identity_status(&resolved),
+            "state": identity_state_data,
             "config": {
                 "config_exists": resolved.config_exists,
                 "config_error": resolved.config_error,
@@ -182,7 +220,7 @@ impl App {
             &resolved,
             data,
             "Identity status loaded",
-            Vec::new(),
+            identity_state.warnings,
         )
     }
 
@@ -577,13 +615,7 @@ impl App {
     }
 
     pub fn run_completion(&self, shell: &str) -> Result<(), ExitError> {
-        let script = match shell {
-            "bash" => "_awiki-cli() {\n  COMPREPLY=()\n}\ncomplete -F _awiki-cli awiki-cli\n",
-            "zsh" => "#compdef awiki-cli\n_arguments '*::arg:->args'\n",
-            "fish" => "complete -c awiki-cli -f\n",
-            "powershell" => "Register-ArgumentCompleter -CommandName awiki-cli -ScriptBlock {}\n",
-            _ => "",
-        };
+        let script = crate::cli_completion::render(shell);
         print!("{script}");
         Ok(())
     }
@@ -1257,23 +1289,22 @@ fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
 }
 
-fn identity_status(resolved: &Resolved) -> Value {
-    json!({
-        "active_identity": if resolved.active_identity.is_empty() { Value::Null } else { json!(resolved.active_identity) },
-        "identity_count": count_identity_dirs(&resolved.paths.identity_dir),
-        "legacy_scan": {
-            "credentials_dir": resolved.paths.legacy_credentials_dir,
-            "data_dir": resolved.paths.legacy_data_dir,
-            "identities": [],
-        },
-    })
-}
-
-fn identity_store_snapshot(resolved: &Resolved) -> Value {
+pub(crate) fn identity_store_snapshot(resolved: &Resolved) -> Value {
+    let inspection = crate::m_core_cli_adapter::identity::inspect_identity_store_via_im_core(
+        resolved,
+        "config show identity store",
+    );
+    let (identities, index_error) = match inspection {
+        Ok(identities) => (identities, Value::Null),
+        Err(error) => (Vec::new(), json!(error.detail.message)),
+    };
+    let default_identity = identities.iter().find(|identity| identity.is_default);
     json!({
         "identity_dir": resolved.paths.identity_dir,
         "index_file": Path::new(&resolved.paths.identity_dir).join("index.json").to_string_lossy(),
-        "default_identity": Value::Null,
+        "index_entries": identities.len(),
+        "default_identity": default_identity,
+        "index_error": index_error,
         "legacy_scan": {
             "credentials_dir": resolved.paths.legacy_credentials_dir,
             "data_dir": resolved.paths.legacy_data_dir,
@@ -1390,17 +1421,6 @@ fn identity_meta_from_resolved(resolved: &Resolved) -> Option<IdentityMeta> {
     })
 }
 
-fn count_identity_dirs(path: &str) -> usize {
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.path().is_dir())
-                .count()
-        })
-        .unwrap_or(0)
-}
-
 fn sanitize_public_value(value: Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -1436,7 +1456,11 @@ fn render_root_help() -> String {
         "  --identity <name>    Use a local identity for this command only".to_string(),
         "  --format <format>    Output format for data commands: json, pretty, table, ndjson"
             .to_string(),
+        "  --jq <expression>    Filter the JSON envelope with a jq expression".to_string(),
         "  --dry-run            Show the planned side effects without applying them".to_string(),
+        "  --diagnostic         Allow explicitly gated diagnostic commands".to_string(),
+        "  --migration          Allow explicitly gated migration commands".to_string(),
+        "  --verbose            Include additional diagnostic details when supported".to_string(),
         "  --help, -h           Show help".to_string(),
         String::new(),
         "Use `awiki-cli <command> --help` for command-specific help.".to_string(),
@@ -1488,10 +1512,21 @@ fn command_usage(spec: &command_catalog::CommandSpec) -> String {
 
 fn append_command_rows(lines: &mut Vec<String>, commands: &[command_catalog::CommandSpec]) {
     for spec in commands {
+        let is_leaf = command_catalog::public_help_children_of(spec.name).is_empty();
+        let gate = match (is_leaf, spec.direct_invocation()) {
+            (true, command_catalog::DirectInvocationPolicy::RequireDiagnosticGate) => {
+                " (requires --diagnostic)"
+            }
+            (true, command_catalog::DirectInvocationPolicy::RequireMigrationGate) => {
+                " (requires --migration)"
+            }
+            _ => "",
+        };
         lines.push(format!(
-            "  {:<18} {}",
+            "  {:<18} {}{}",
             command_display_name(spec),
-            spec.short
+            spec.short,
+            gate,
         ));
     }
 }
@@ -1511,7 +1546,7 @@ fn append_flag_rows(lines: &mut Vec<String>, flags: &[command_catalog::FlagSpec]
         }
         let value_hint = match flag.flag_type {
             "bool" => String::new(),
-            value if value.is_empty() => " <value>".to_string(),
+            "" => " <value>".to_string(),
             value => format!(" <{value}>"),
         };
         let required = if flag.required { " (required)" } else { "" };
@@ -1532,6 +1567,9 @@ fn finish_help(mut lines: Vec<String>) -> String {
 fn is_sensitive_public_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase();
     normalized == "jwt_token"
+        || normalized == "approval_handle"
+        || normalized == "account_verification_grant"
+        || normalized == "root_private_key"
         || normalized == "did_document"
         || normalized == "key1_public_pem"
         || normalized == "root_key_material"
@@ -1578,7 +1616,7 @@ fn require_legacy_file_compat_identity_storage(
         "legacy_plaintext_identity_storage_disabled",
         3,
         format!("{command}: legacy plaintext identity storage is disabled."),
-        "Use `awiki-cli id register` or `awiki-cli id recover` for vault-backed identities. Set secret_storage.mode=file_compat only for explicit legacy migration work.",
+        "Use `awiki-cli id register` for vault-backed identities. Set secret_storage.mode=file_compat only for explicit legacy migration work.",
     ))
 }
 
@@ -1608,7 +1646,7 @@ pub(crate) fn identity_exit(err: IdentityError) -> ExitError {
             "auth_required",
             3,
             message,
-            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
         ),
         IdentityError::Service(err) => {
             identity_service_exit(err.status_code, err.rpc_code, err.to_string())
@@ -1646,7 +1684,7 @@ fn identity_service_exit(status_code: u16, rpc_code: i64, message: String) -> Ex
             "auth_required",
             3,
             message,
-            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
         ),
         (404, _) => ExitError::new(
             "not_found",
@@ -1671,7 +1709,7 @@ fn identity_service_exit(status_code: u16, rpc_code: i64, message: String) -> Ex
                 "auth_required",
                 3,
                 message,
-                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
             ),
             -32002 => ExitError::new(
                 "not_found",
@@ -1713,6 +1751,17 @@ fn internal_io(err: std::io::Error) -> ExitError {
 fn internal_anyhow(err: anyhow::Error) -> ExitError {
     if let Some(err) = err.downcast_ref::<workspace_config::WorkspaceConfigError>() {
         return workspace_config_exit(err);
+    }
+    if err
+        .downcast_ref::<awiki_user_dirs::HomeDirUnavailable>()
+        .is_some()
+    {
+        return ExitError::new(
+            "internal_error",
+            1,
+            err.to_string(),
+            "Run awiki-cli from a normal OS user session with a user profile directory available.",
+        );
     }
     let hint = error_hints::refine_workspace_write_hint(
         &err,

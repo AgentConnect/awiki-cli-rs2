@@ -9,7 +9,7 @@ Harness：`awiki-harness`
 ## 1. 目标
 
 - 任务目标：修复 Agent IM MVP 已实现链路中 delegated key registry、DID Document proof、已有身份迁移、Daemon bootstrap 早期校验、key package schema、APP action capability 默认值和 ANP SDK DID Document 扩展方式的残留问题。
-- 预期行为：`awiki-me` / `im-core` 实际 DID auth 注册路径与 `user-service` delegated key registry 闭环一致；任何 DID Document delegated key 新增、撤销、轮换都保持 proof 有效；恢复账号和已有本地身份能幂等生成或迁移 `user_did#daemon-key-1` private package；Daemon 在创建 message agent binding 前验证 private/public/DID Document authentication；key package 编码命名准确；APP action 必须来自显式 capability policy；ANP SDK 提供可选参数生成带额外 authentication verification method 的 DID Document，旧调用不变。
+- 预期行为：`awiki-me` / `im-core` 实际 DID auth 注册路径与 `user-service` delegated key registry 闭环一致；任何 DID Document delegated key 新增、撤销、轮换都保持 proof 有效；恢复账号和已有本地身份能幂等生成或迁移 `user_did#daemon-key-1` private package；Daemon 在创建 personal agent binding 前验证 private/public/DID Document authentication；key package 编码命名准确；APP action 必须来自显式 capability policy；ANP SDK 提供可选参数生成带额外 authentication verification method 的 DID Document，旧调用不变。
 - 非目标：不引入新的 APP ↔ Daemon 传输通道；不在本修复中实现 bootstrap body 加密、secure enclave/keychain、E2EE Agent 处理、Agent DID delegation 或 ANP delegated proof；不改变 message-service MVP 的运行时授权来源，仍以 DID proof、当前 DID Document `authentication`、key owner 一致性和普通非 E2EE scope 为准。
 - 完成标准：所有 Step 已实现、验证、Review、聚焦提交并回填台账；最终全局 Review 完成；身份/auth/secret 相关安全 gate 有明确结论；跨仓库验证和 remote `awiki.info` 系统测试证据已记录。
 
@@ -48,7 +48,7 @@ Harness：`awiki-harness`
 | user-service registry/storage | 需要 registry backfill/reconcile、状态同步、审计字段和无 private material guarantee | `user-service/src/user_service/storage/*` |
 | awiki-cli-rs2 im-core 身份注册/恢复 | 新注册、恢复、已有身份 bootstrap 前都能获得可用 `DaemonSubkeyPrivatePackage`，并同步服务端 DID Document / registry | `awiki-cli-rs2/crates/im-core/src/internal/identity_*`、`awiki-cli-rs2/crates/im-core/src/identity/*` |
 | awiki-me bootstrap 入口 | 当 package 缺失时触发 ensure/migration，而不是直接失败；继续只通过普通消息 JSON 发送 bootstrap | `awiki-me/lib/src/data/im_core/*`、`awiki-me/lib/src/presentation/agents/*` |
-| awiki-deamon bootstrap | 接收 private package 后，在创建 binding/message agent 前验证 key 可解析、private/public 匹配、DID Document authentication 存在且 public key 一致 | `awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/*`、`awiki-cli-rs2/crates/awiki-deamon/src/inbox/*` |
+| awiki-deamon bootstrap | 接收 private package 后，在创建 binding/personal agent 前验证 key 可解析、private/public 匹配、DID Document authentication 存在且 public key 一致 | `awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/*`、`awiki-cli-rs2/crates/awiki-deamon/src/inbox/*` |
 | key package schema | 当前 `private_key_multibase` 承载 PEM 的命名不严谨；需要新 schema 或兼容迁移 | `awiki-cli-rs2/crates/im-core/src/identity/dto.rs`、`awiki-me/lib/src/domain/entities/agent/*`、`awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/bootstrap.rs` |
 | APP action capability | 新 bootstrap 必须显式 capability；空列表表示无能力，Daemon 不再静默补成全部 MVP actions | `awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/action.rs`、`awiki-me/lib/src/domain/entities/agent/*` |
 | ANP SDK | DID Document 生成支持可选 additional authentication verification method，避免产品层 JSON patch 后重签 | `anp/anp/anp/authentication/did_wba.py`、`anp/anp/rust/src/*` |
@@ -162,7 +162,7 @@ Harness：`awiki-harness`
 ### Step 03：awiki-deamon bootstrap private package 早期校验
 
 - 小 Plan：[steps/03-awiki-deamon-bootstrap-key-validation.md](steps/03-awiki-deamon-bootstrap-key-validation.md)
-- 目标：Daemon 在创建 binding/message agent 前拒绝坏 private package。
+- 目标：Daemon 在创建 binding/personal agent 前拒绝坏 private package。
 - 设计方法：parse private key、derive public key、对比 package public key、解析当前 DID Document authentication。
 - 实现方法：扩展 bootstrap validation、DID resolver/im-core client、测试 bad package case。
 - 路径：`awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/bootstrap.rs`、`awiki-cli-rs2/crates/awiki-deamon/src/inbox/user_delegated.rs`。
@@ -269,7 +269,7 @@ Harness：`awiki-harness`
 |---|---|---|
 | registry 与 DID Document 状态不一致 | 以当前 DID Document `authentication` 为授权事实；registry 做 reconcile/backfill；测试覆盖 add/remove/replace | 回滚 registry 同步逻辑时保留 DID Document 授权路径，暂停撤销 UI |
 | unsigned DID Document mutation 破坏 proof | 禁止服务端无签名 patch；REST create 在 proof 前插入或重签；所有路径补 proof verify test | 回滚到只接受 signed update，禁用 REST delegated public registration |
-| 已有身份缺少 main key 无法迁移 | fail closed，提示重新恢复/重新绑定；记录错误码 | 不自动创建 daemon key，禁用 message agent bootstrap |
+| 已有身份缺少 main key 无法迁移 | fail closed，提示重新恢复/重新绑定；记录错误码 | 不自动创建 daemon key，禁用 personal agent bootstrap |
 | bootstrap 早期 DID Document resolve 失败 | 区分 retryable 与 terminal；不创建 binding；保留 bootstrap retry | 回退为仅本地 private/public 校验，但发布前记录风险 |
 | key package v2 破坏旧 bootstrap | 保留 v1 legacy decode，新增 fixture | 临时继续写 v1，先只读 v2 |
 | APP action 默认值收紧导致旧 binding 行为变化 | legacy binding 明确标记 `policy_source=legacy_default` 或迁移；新 bootstrap 强制显式 policy | 回滚新策略但保留审计 warning |

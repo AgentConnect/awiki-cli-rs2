@@ -38,6 +38,15 @@ pub(crate) struct MarkThreadReadRuntimeResult {
     pub local_only_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ClaimedReadSend {
+    mutation_id: String,
+    operation_id: String,
+    thread: crate::messages::ThreadRef,
+    watermark: crate::messages::ReadWatermark,
+    remote_thread_key: String,
+}
+
 impl<'a, P, T> MessageMarkReadRuntime<'a, P, T>
 where
     P: SessionProvider,
@@ -74,6 +83,10 @@ where
             .as_ref()
             .map(|value| value.direct_ids.clone())
             .unwrap_or_else(|_| ids.clone());
+        let remote_direct_ids = classification
+            .as_ref()
+            .map(|value| value.remote_direct_ids.clone())
+            .unwrap_or_else(|_| ids.clone());
         let group_ids = classification
             .as_ref()
             .map(|value| value.group_ids.clone())
@@ -86,12 +99,12 @@ where
         let mut warnings = Vec::new();
         let mut updated_count = 0_i64;
         let mut raw = None;
-        if !direct_ids.is_empty() {
+        if !remote_direct_ids.is_empty() {
             let (updated, response) = mark_direct_ids_remote_sync(
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                &direct_ids,
+                &remote_direct_ids,
             )?;
             updated_count += updated;
             warnings.extend(warnings_from_raw(&response));
@@ -146,41 +159,135 @@ where
             self.client
                 .emit_committed_conversation_projection("local_mark_thread_read_watermark");
         }
+        if !local_result.remote_ack_applicable {
+            return Ok(MarkThreadReadRuntimeResult {
+                sdk_result: crate::messages::MarkThreadReadResult {
+                    updated_count: u32_count_i64(local_result.updated_count),
+                    remote_acknowledged: false,
+                    partial: false,
+                    fallback_used: false,
+                    pending_remote_ack: false,
+                    effective_watermark,
+                    legacy_message_ids: Vec::new(),
+                    warnings,
+                },
+                raw: None,
+                direct_ids: Vec::new(),
+                group_ids: Vec::new(),
+                local_only_ids: Vec::new(),
+            });
+        }
+        let claimed =
+            claim_read_send_sync(self.client, local_result.outbox_operation_id.as_deref())?;
+        if local_result.outbox_operation_id.is_some() && claimed.is_none() {
+            return Ok(waiting_successor_result(
+                local_result.updated_count,
+                effective_watermark,
+            ));
+        }
+        let send_thread = claimed
+            .as_ref()
+            .map(|value| &value.thread)
+            .unwrap_or_else(|| {
+                input
+                    .remote_thread
+                    .as_ref()
+                    .unwrap_or(&input.request.thread)
+            });
+        let send_watermark = claimed
+            .as_ref()
+            .map(|value| &value.watermark)
+            .or(effective_watermark.as_ref());
+        let operation_id = claimed
+            .as_ref()
+            .map(|value| value.operation_id.as_str())
+            .or(local_result.outbox_operation_id.as_deref());
+        let remote_thread_key = claimed
+            .as_ref()
+            .map(|value| value.remote_thread_key.as_str())
+            .or(local_result.remote_thread_key.as_deref());
 
         let (remote_acknowledged, fallback_used, pending_remote_ack, raw, legacy_message_ids) =
             match mark_read_state_remote_sync(
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                input
-                    .remote_thread
-                    .as_ref()
-                    .unwrap_or(&input.request.thread),
-                effective_watermark.as_ref(),
+                send_thread,
+                send_watermark,
                 input.request.fallback_max_message_ids,
+                operation_id,
+                remote_thread_key,
             ) {
                 Ok(response) => {
-                    warnings.extend(warnings_from_raw(&response));
-                    let remote_acknowledged = bool_value(response.get("remote_acknowledged"), true);
-                    let fallback_used = bool_value(response.get("fallback_used"), false);
-                    let pending_remote_ack = bool_value(response.get("pending_remote_ack"), false);
-                    if !pending_remote_ack {
-                        let _ = mark_thread_read_watermark_local(
-                            self.client,
-                            &input.request.thread,
-                            effective_watermark.as_ref(),
-                            false,
-                        );
+                    let validated = send_watermark
+                        .ok_or_else(|| {
+                            read_ack_error("READ_STATE_INVALID_ACK", "sent watermark is missing")
+                        })
+                        .and_then(|requested| {
+                            validate_final_read_response(
+                                self.client,
+                                &response,
+                                send_thread,
+                                remote_thread_key,
+                                requested,
+                            )
+                        });
+                    match validated {
+                        Ok(ack) => {
+                            warnings.extend(ack.warnings.clone());
+                            let fallback_used = ack.fallback_used;
+                            let acknowledged = Some(crate::messages::ReadWatermark {
+                                last_read_message_id: ack
+                                    .read_watermark_message_id
+                                    .as_deref()
+                                    .map(crate::ids::MessageId::parse)
+                                    .transpose()?,
+                                last_read_thread_seq: ack.read_watermark_server_seq,
+                                read_at: Some(
+                                    chrono::DateTime::parse_from_rfc3339(&ack.read_at)
+                                        .expect("strict parser validated read_at")
+                                        .with_timezone(&chrono::Utc),
+                                ),
+                            });
+                            if let Err(error) = mark_thread_read_watermark_local(
+                                self.client,
+                                &input.request.thread,
+                                acknowledged.as_ref(),
+                                false,
+                            ) {
+                                retry_read_send_sync(
+                                    self.client,
+                                    claimed.as_ref(),
+                                    "READ_STATE_LOCAL_ACK_FAILED",
+                                )?;
+                                partial = true;
+                                warnings.push(format!("Failed to commit read-state ACK: {error}"));
+                                (false, false, true, Some(response), Vec::new())
+                            } else {
+                                (true, fallback_used, false, Some(response), Vec::new())
+                            }
+                        }
+                        Err(error) => {
+                            retry_read_send_sync(
+                                self.client,
+                                claimed.as_ref(),
+                                error_service_code(&error).unwrap_or("READ_STATE_INVALID_ACK"),
+                            )?;
+                            partial = true;
+                            warnings.push(format!("Invalid read-state ACK: {error}"));
+                            (false, false, true, Some(response), Vec::new())
+                        }
                     }
-                    (
-                        remote_acknowledged,
-                        fallback_used,
-                        pending_remote_ack,
-                        Some(response),
-                        Vec::new(),
-                    )
                 }
                 Err(error) if is_read_state_unsupported_error(&error) => {
+                    if !legacy_read_state_fallback_allowed(self.client) {
+                        retry_read_send_sync(
+                            self.client,
+                            claimed.as_ref(),
+                            error_service_code(&error).unwrap_or("READ_STATE_UNSUPPORTED"),
+                        )?;
+                        return Err(error);
+                    }
                     let fallback = legacy_fallback_mark_thread_read_sync(
                         self.client,
                         &mut self.session_provider,
@@ -188,26 +295,58 @@ where
                         &input.request.thread,
                         effective_watermark.as_ref(),
                         input.request.fallback_max_message_ids,
-                    )?;
+                    );
+                    let fallback = match fallback {
+                        Ok(fallback) => fallback,
+                        Err(error) => {
+                            retry_read_send_sync(
+                                self.client,
+                                claimed.as_ref(),
+                                error_service_code(&error).unwrap_or("READ_STATE_FALLBACK_RETRY"),
+                            )?;
+                            return Err(error);
+                        }
+                    };
                     warnings.extend(fallback.warnings);
                     partial |= fallback.partial;
+                    let mut fallback_acknowledged = fallback.remote_acknowledged;
                     if fallback.remote_acknowledged {
-                        let _ = mark_thread_read_watermark_local(
+                        if let Err(error) = mark_thread_read_watermark_local(
                             self.client,
                             &input.request.thread,
-                            effective_watermark.as_ref(),
+                            send_watermark,
                             false,
-                        );
+                        ) {
+                            retry_read_send_sync(
+                                self.client,
+                                claimed.as_ref(),
+                                "READ_STATE_LOCAL_ACK_FAILED",
+                            )?;
+                            fallback_acknowledged = false;
+                            partial = true;
+                            warnings.push(format!("Failed to commit fallback ACK: {error}"));
+                        }
+                    } else {
+                        retry_read_send_sync(
+                            self.client,
+                            claimed.as_ref(),
+                            "READ_STATE_FALLBACK_PENDING",
+                        )?;
                     }
                     (
-                        fallback.remote_acknowledged,
+                        fallback_acknowledged,
                         true,
-                        !fallback.remote_acknowledged,
+                        !fallback_acknowledged,
                         fallback.raw,
                         fallback.message_ids,
                     )
                 }
                 Err(error) => {
+                    retry_read_send_sync(
+                        self.client,
+                        claimed.as_ref(),
+                        error_service_code(&error).unwrap_or("READ_STATE_RETRY"),
+                    )?;
                     partial = true;
                     warnings.push(format!("Remote read-state mark-read failed: {error}"));
                     (false, false, true, None, Vec::new())
@@ -257,6 +396,10 @@ where
             .as_ref()
             .map(|value| value.direct_ids.clone())
             .unwrap_or_else(|_| ids.clone());
+        let remote_direct_ids = classification
+            .as_ref()
+            .map(|value| value.remote_direct_ids.clone())
+            .unwrap_or_else(|_| ids.clone());
         let group_ids = classification
             .as_ref()
             .map(|value| value.group_ids.clone())
@@ -269,12 +412,12 @@ where
         let mut warnings = Vec::new();
         let mut updated_count = 0_i64;
         let mut raw = None;
-        if !direct_ids.is_empty() {
+        if !remote_direct_ids.is_empty() {
             let (updated, response) = mark_direct_ids_remote_async(
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                &direct_ids,
+                &remote_direct_ids,
             )
             .await?;
             updated_count += updated;
@@ -334,44 +477,142 @@ where
             self.client
                 .emit_committed_conversation_projection("local_mark_thread_read_watermark");
         }
+        if !local_result.remote_ack_applicable {
+            return Ok(MarkThreadReadRuntimeResult {
+                sdk_result: crate::messages::MarkThreadReadResult {
+                    updated_count: u32_count_i64(local_result.updated_count),
+                    remote_acknowledged: false,
+                    partial: false,
+                    fallback_used: false,
+                    pending_remote_ack: false,
+                    effective_watermark,
+                    legacy_message_ids: Vec::new(),
+                    warnings,
+                },
+                raw: None,
+                direct_ids: Vec::new(),
+                group_ids: Vec::new(),
+                local_only_ids: Vec::new(),
+            });
+        }
+        let claimed =
+            claim_read_send_async(self.client, local_result.outbox_operation_id.as_deref()).await?;
+        if local_result.outbox_operation_id.is_some() && claimed.is_none() {
+            return Ok(waiting_successor_result(
+                local_result.updated_count,
+                effective_watermark,
+            ));
+        }
+        let send_thread = claimed
+            .as_ref()
+            .map(|value| &value.thread)
+            .unwrap_or_else(|| {
+                input
+                    .remote_thread
+                    .as_ref()
+                    .unwrap_or(&input.request.thread)
+            });
+        let send_watermark = claimed
+            .as_ref()
+            .map(|value| &value.watermark)
+            .or(effective_watermark.as_ref());
+        let operation_id = claimed
+            .as_ref()
+            .map(|value| value.operation_id.as_str())
+            .or(local_result.outbox_operation_id.as_deref());
+        let remote_thread_key = claimed
+            .as_ref()
+            .map(|value| value.remote_thread_key.as_str())
+            .or(local_result.remote_thread_key.as_deref());
 
         let (remote_acknowledged, fallback_used, pending_remote_ack, raw, legacy_message_ids) =
             match mark_read_state_remote_async(
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                input
-                    .remote_thread
-                    .as_ref()
-                    .unwrap_or(&input.request.thread),
-                effective_watermark.as_ref(),
+                send_thread,
+                send_watermark,
                 input.request.fallback_max_message_ids,
+                operation_id,
+                remote_thread_key,
             )
             .await
             {
                 Ok(response) => {
-                    warnings.extend(warnings_from_raw(&response));
-                    let remote_acknowledged = bool_value(response.get("remote_acknowledged"), true);
-                    let fallback_used = bool_value(response.get("fallback_used"), false);
-                    let pending_remote_ack = bool_value(response.get("pending_remote_ack"), false);
-                    if !pending_remote_ack {
-                        let _ = mark_thread_read_watermark_local_async(
-                            self.client,
-                            &input.request.thread,
-                            effective_watermark.as_ref(),
-                            false,
-                        )
-                        .await;
+                    let validated = send_watermark
+                        .ok_or_else(|| {
+                            read_ack_error("READ_STATE_INVALID_ACK", "sent watermark is missing")
+                        })
+                        .and_then(|requested| {
+                            validate_final_read_response(
+                                self.client,
+                                &response,
+                                send_thread,
+                                remote_thread_key,
+                                requested,
+                            )
+                        });
+                    match validated {
+                        Ok(ack) => {
+                            warnings.extend(ack.warnings.clone());
+                            let fallback_used = ack.fallback_used;
+                            let acknowledged = Some(crate::messages::ReadWatermark {
+                                last_read_message_id: ack
+                                    .read_watermark_message_id
+                                    .as_deref()
+                                    .map(crate::ids::MessageId::parse)
+                                    .transpose()?,
+                                last_read_thread_seq: ack.read_watermark_server_seq,
+                                read_at: Some(
+                                    chrono::DateTime::parse_from_rfc3339(&ack.read_at)
+                                        .expect("strict parser validated read_at")
+                                        .with_timezone(&chrono::Utc),
+                                ),
+                            });
+                            if let Err(error) = mark_thread_read_watermark_local_async(
+                                self.client,
+                                &input.request.thread,
+                                acknowledged.as_ref(),
+                                false,
+                            )
+                            .await
+                            {
+                                retry_read_send_async(
+                                    self.client,
+                                    claimed.as_ref(),
+                                    "READ_STATE_LOCAL_ACK_FAILED",
+                                )
+                                .await?;
+                                partial = true;
+                                warnings.push(format!("Failed to commit read-state ACK: {error}"));
+                                (false, false, true, Some(response), Vec::new())
+                            } else {
+                                (true, fallback_used, false, Some(response), Vec::new())
+                            }
+                        }
+                        Err(error) => {
+                            retry_read_send_async(
+                                self.client,
+                                claimed.as_ref(),
+                                error_service_code(&error).unwrap_or("READ_STATE_INVALID_ACK"),
+                            )
+                            .await?;
+                            partial = true;
+                            warnings.push(format!("Invalid read-state ACK: {error}"));
+                            (false, false, true, Some(response), Vec::new())
+                        }
                     }
-                    (
-                        remote_acknowledged,
-                        fallback_used,
-                        pending_remote_ack,
-                        Some(response),
-                        Vec::new(),
-                    )
                 }
                 Err(error) if is_read_state_unsupported_error(&error) => {
+                    if !legacy_read_state_fallback_allowed(self.client) {
+                        retry_read_send_async(
+                            self.client,
+                            claimed.as_ref(),
+                            error_service_code(&error).unwrap_or("READ_STATE_UNSUPPORTED"),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
                     let fallback = legacy_fallback_mark_thread_read_async(
                         self.client,
                         &mut self.session_provider,
@@ -380,27 +621,64 @@ where
                         effective_watermark.as_ref(),
                         input.request.fallback_max_message_ids,
                     )
-                    .await?;
+                    .await;
+                    let fallback = match fallback {
+                        Ok(fallback) => fallback,
+                        Err(error) => {
+                            retry_read_send_async(
+                                self.client,
+                                claimed.as_ref(),
+                                error_service_code(&error).unwrap_or("READ_STATE_FALLBACK_RETRY"),
+                            )
+                            .await?;
+                            return Err(error);
+                        }
+                    };
                     warnings.extend(fallback.warnings);
                     partial |= fallback.partial;
+                    let mut fallback_acknowledged = fallback.remote_acknowledged;
                     if fallback.remote_acknowledged {
-                        let _ = mark_thread_read_watermark_local_async(
+                        if let Err(error) = mark_thread_read_watermark_local_async(
                             self.client,
                             &input.request.thread,
-                            effective_watermark.as_ref(),
+                            send_watermark,
                             false,
                         )
-                        .await;
+                        .await
+                        {
+                            retry_read_send_async(
+                                self.client,
+                                claimed.as_ref(),
+                                "READ_STATE_LOCAL_ACK_FAILED",
+                            )
+                            .await?;
+                            fallback_acknowledged = false;
+                            partial = true;
+                            warnings.push(format!("Failed to commit fallback ACK: {error}"));
+                        }
+                    } else {
+                        retry_read_send_async(
+                            self.client,
+                            claimed.as_ref(),
+                            "READ_STATE_FALLBACK_PENDING",
+                        )
+                        .await?;
                     }
                     (
-                        fallback.remote_acknowledged,
+                        fallback_acknowledged,
                         true,
-                        !fallback.remote_acknowledged,
+                        !fallback_acknowledged,
                         fallback.raw,
                         fallback.message_ids,
                     )
                 }
                 Err(error) => {
+                    retry_read_send_async(
+                        self.client,
+                        claimed.as_ref(),
+                        error_service_code(&error).unwrap_or("READ_STATE_RETRY"),
+                    )
+                    .await?;
                     partial = true;
                     warnings.push(format!("Remote read-state mark-read failed: {error}"));
                     (false, false, true, None, Vec::new())
@@ -424,6 +702,10 @@ where
             local_only_ids: Vec::new(),
         })
     }
+}
+
+fn legacy_read_state_fallback_allowed(client: &crate::core::ImClient) -> bool {
+    matches!(client.realtime_requires_sync_changed_v2(), Ok(false))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,6 +840,7 @@ fn classify_mark_read_ids(
 ) -> crate::ImResult<NoSqliteMarkReadClassification> {
     Ok(NoSqliteMarkReadClassification {
         direct_ids: ids.to_vec(),
+        remote_direct_ids: ids.to_vec(),
         group_ids: Vec::new(),
         local_only_ids: Vec::new(),
     })
@@ -587,6 +870,7 @@ async fn classify_mark_read_ids_async(
 ) -> crate::ImResult<NoSqliteMarkReadClassification> {
     Ok(NoSqliteMarkReadClassification {
         direct_ids: ids.to_vec(),
+        remote_direct_ids: ids.to_vec(),
         group_ids: Vec::new(),
         local_only_ids: Vec::new(),
     })
@@ -680,16 +964,309 @@ fn int_value(value: Option<&Value>, fallback: i64) -> i64 {
     }
 }
 
-fn bool_value(value: Option<&Value>, fallback: bool) -> bool {
-    match value {
-        Some(Value::Bool(value)) => *value,
-        Some(Value::String(value)) => match value.trim() {
-            "true" | "1" => true,
-            "false" | "0" => false,
-            _ => fallback,
-        },
-        _ => fallback,
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn claim_read_send_sync(
+    client: &crate::core::ImClient,
+    operation_id: Option<&str>,
+) -> crate::ImResult<Option<ClaimedReadSend>> {
+    let Some(operation_id) = operation_id else {
+        return Ok(None);
+    };
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let record = crate::internal::local_state::sync_v2::claim_read_mutation_by_operation_id(
+        &connection,
+        client.current_identity().id.as_str(),
+        operation_id,
+        unix_time_i64(),
+    )?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    match claimed_read_send(record.clone()) {
+        Ok(claimed) => Ok(Some(claimed)),
+        Err(error) => {
+            crate::internal::local_state::sync_v2::retry_local_mutation(
+                &connection,
+                client.current_identity().id.as_str(),
+                &record.mutation_id,
+                error_service_code(&error).unwrap_or("SYNC_LOCAL_OUTBOX_CORRUPT"),
+                unix_time_i64().saturating_add(5),
+            )?;
+            Err(error)
+        }
     }
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn retry_read_send_sync(
+    client: &crate::core::ImClient,
+    claimed: Option<&ClaimedReadSend>,
+    code: &str,
+) -> crate::ImResult<()> {
+    let Some(claimed) = claimed else {
+        return Ok(());
+    };
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::sync_v2::retry_local_mutation(
+        &connection,
+        client.current_identity().id.as_str(),
+        &claimed.mutation_id,
+        code,
+        unix_time_i64().saturating_add(5),
+    )
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn retry_read_send_sync(
+    _client: &crate::core::ImClient,
+    _claimed: Option<&ClaimedReadSend>,
+    _code: &str,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn claim_read_send_sync(
+    _client: &crate::core::ImClient,
+    _operation_id: Option<&str>,
+) -> crate::ImResult<Option<ClaimedReadSend>> {
+    Ok(None)
+}
+
+#[cfg(feature = "sqlite")]
+async fn claim_read_send_async(
+    client: &crate::core::ImClient,
+    operation_id: Option<&str>,
+) -> crate::ImResult<Option<ClaimedReadSend>> {
+    let Some(operation_id) = operation_id else {
+        return Ok(None);
+    };
+    let db = client.core_inner().local_state_db().await?;
+    let record = db
+        .claim_read_mutation_by_operation_id(
+            client.current_identity().id.as_str(),
+            operation_id,
+            unix_time_i64(),
+        )
+        .await?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    match claimed_read_send(record.clone()) {
+        Ok(claimed) => Ok(Some(claimed)),
+        Err(error) => {
+            db.retry_local_mutation(
+                client.current_identity().id.as_str(),
+                &record.mutation_id,
+                error_service_code(&error).unwrap_or("SYNC_LOCAL_OUTBOX_CORRUPT"),
+                unix_time_i64().saturating_add(5),
+            )
+            .await?;
+            Err(error)
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn retry_read_send_async(
+    client: &crate::core::ImClient,
+    claimed: Option<&ClaimedReadSend>,
+    code: &str,
+) -> crate::ImResult<()> {
+    let Some(claimed) = claimed else {
+        return Ok(());
+    };
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .retry_local_mutation(
+            client.current_identity().id.as_str(),
+            &claimed.mutation_id,
+            code,
+            unix_time_i64().saturating_add(5),
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn retry_read_send_async(
+    _client: &crate::core::ImClient,
+    _claimed: Option<&ClaimedReadSend>,
+    _code: &str,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn claim_read_send_async(
+    _client: &crate::core::ImClient,
+    _operation_id: Option<&str>,
+) -> crate::ImResult<Option<ClaimedReadSend>> {
+    Ok(None)
+}
+
+fn claimed_read_send(
+    record: crate::internal::local_state::sync_v2::LocalMutationRecord,
+) -> crate::ImResult<ClaimedReadSend> {
+    let payload: Value = serde_json::from_str(&record.payload_json).map_err(|error| {
+        read_ack_error(
+            "SYNC_LOCAL_OUTBOX_CORRUPT",
+            format!("read outbox payload is invalid: {error}"),
+        )
+    })?;
+    let field = |name: &str| {
+        payload
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty() && value.trim() == *value)
+            .ok_or_else(|| {
+                read_ack_error(
+                    "SYNC_LOCAL_OUTBOX_CORRUPT",
+                    format!("read outbox payload is missing {name}"),
+                )
+            })
+    };
+    let thread = match field("thread_kind")? {
+        "direct" => {
+            crate::messages::ThreadRef::Thread(crate::ids::ThreadId::parse(field("thread_id")?)?)
+        }
+        "group" => {
+            crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(field("thread_id")?)?)
+        }
+        _ => {
+            return Err(read_ack_error(
+                "SYNC_LOCAL_OUTBOX_CORRUPT",
+                "read outbox thread_kind must be direct or group",
+            ))
+        }
+    };
+    let seq = crate::internal::local_state::sync_state::normalize_decimal_seq(field(
+        "read_watermark_seq",
+    )?)
+    .map_err(|_| {
+        read_ack_error(
+            "SYNC_LOCAL_OUTBOX_CORRUPT",
+            "read outbox watermark must be a canonical decimal",
+        )
+    })?;
+    let message_id = payload
+        .get("read_watermark_message_id")
+        .and_then(Value::as_str)
+        .map(crate::ids::MessageId::parse)
+        .transpose()?;
+    let read_at = payload
+        .get("read_watermark_at")
+        .and_then(Value::as_str)
+        .map(chrono::DateTime::parse_from_rfc3339)
+        .transpose()
+        .map_err(|_| {
+            read_ack_error(
+                "SYNC_LOCAL_OUTBOX_CORRUPT",
+                "read outbox read_at must be RFC3339",
+            )
+        })?
+        .map(|value| value.with_timezone(&chrono::Utc));
+    Ok(ClaimedReadSend {
+        mutation_id: record.mutation_id,
+        operation_id: record.operation_id,
+        thread,
+        watermark: crate::messages::ReadWatermark {
+            last_read_message_id: message_id,
+            last_read_thread_seq: Some(seq),
+            read_at,
+        },
+        remote_thread_key: field("remote_thread_key")?.to_owned(),
+    })
+}
+
+fn validate_final_read_response(
+    client: &crate::core::ImClient,
+    raw: &Value,
+    thread: &crate::messages::ThreadRef,
+    remote_thread_key: Option<&str>,
+    requested: &crate::messages::ReadWatermark,
+) -> crate::ImResult<crate::internal::wire::read_state::MarkReadStateWireResponse> {
+    let expected_thread =
+        crate::internal::wire::read_state::read_state_thread_to_wire(thread, remote_thread_key)?;
+    let response = crate::internal::wire::read_state::parse_mark_read_state_response(
+        raw,
+        client.did().as_str(),
+        &expected_thread,
+    )?;
+    let requested_seq = requested
+        .last_read_thread_seq
+        .as_deref()
+        .ok_or_else(|| read_ack_error("READ_STATE_INVALID_ACK", "request has no watermark"))?;
+    let acknowledged_seq = response
+        .read_watermark_server_seq
+        .as_deref()
+        .ok_or_else(|| read_ack_error("READ_STATE_INCOMPLETE_ACK", "response has no watermark"))?;
+    if !response.remote_acknowledged
+        || response.pending_remote_ack
+        || response.partial
+        || crate::internal::local_state::sync_v2::compare_decimal(acknowledged_seq, requested_seq)?
+            == std::cmp::Ordering::Less
+    {
+        return Err(read_ack_error(
+            "READ_STATE_INCOMPLETE_ACK",
+            "response is not a final ACK for the sent watermark",
+        ));
+    }
+    Ok(response)
+}
+
+fn read_ack_error(code: &str, message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some(code.to_owned()),
+        message: message.into(),
+        data: None,
+    }
+}
+
+fn error_service_code(error: &crate::ImError) -> Option<&str> {
+    match error {
+        crate::ImError::Service {
+            code: Some(code), ..
+        } => Some(code),
+        _ => None,
+    }
+}
+
+fn waiting_successor_result(
+    updated_count: i64,
+    effective_watermark: Option<crate::messages::ReadWatermark>,
+) -> MarkThreadReadRuntimeResult {
+    MarkThreadReadRuntimeResult {
+        sdk_result: crate::messages::MarkThreadReadResult {
+            updated_count: u32_count_i64(updated_count),
+            remote_acknowledged: false,
+            partial: true,
+            fallback_used: false,
+            pending_remote_ack: true,
+            effective_watermark,
+            legacy_message_ids: Vec::new(),
+            warnings: vec!["Read watermark is queued behind an in-flight predecessor".to_owned()],
+        },
+        raw: None,
+        direct_ids: Vec::new(),
+        group_ids: Vec::new(),
+        local_only_ids: Vec::new(),
+    }
+}
+
+fn unix_time_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -812,7 +1389,7 @@ fn mark_thread_read_watermark_local(
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::messages::mark_thread_read_watermark_for_owner_identity(
+    crate::internal::local_state::sync_v2::mark_thread_read_and_update_outbox(
         &connection,
         client.current_identity().id.as_str(),
         client.did().as_str(),
@@ -898,6 +1475,8 @@ fn mark_read_state_remote_sync<P, T>(
     thread: &crate::messages::ThreadRef,
     watermark: Option<&crate::messages::ReadWatermark>,
     fallback_max_message_ids: Option<u32>,
+    operation_id: Option<&str>,
+    remote_thread_key: Option<&str>,
 ) -> crate::ImResult<Value>
 where
     P: SessionProvider,
@@ -924,6 +1503,8 @@ where
             client_observed_at: watermark.read_at.map(|value| value.to_rfc3339()),
             fallback_max_message_ids,
             device_id: client.current_identity().device_id.clone(),
+            operation_id: operation_id.map(ToOwned::to_owned),
+            remote_thread_key: remote_thread_key.map(ToOwned::to_owned),
         },
     )?;
     transport.authenticated_rpc(
@@ -940,6 +1521,8 @@ async fn mark_read_state_remote_async<P, T>(
     thread: &crate::messages::ThreadRef,
     watermark: Option<&crate::messages::ReadWatermark>,
     fallback_max_message_ids: Option<u32>,
+    operation_id: Option<&str>,
+    remote_thread_key: Option<&str>,
 ) -> crate::ImResult<Value>
 where
     P: AsyncSessionProvider,
@@ -968,6 +1551,8 @@ where
             client_observed_at: watermark.read_at.map(|value| value.to_rfc3339()),
             fallback_max_message_ids,
             device_id: client.current_identity().device_id.clone(),
+            operation_id: operation_id.map(ToOwned::to_owned),
+            remote_thread_key: remote_thread_key.map(ToOwned::to_owned),
         },
     )?;
     transport
@@ -1008,9 +1593,9 @@ where
         });
     }
     let classification = classify_mark_read_ids(client, &lookup.message_ids);
-    let direct_ids = classification
+    let remote_direct_ids = classification
         .as_ref()
-        .map(|value| value.direct_ids.clone())
+        .map(|value| value.remote_direct_ids.clone())
         .unwrap_or_else(|_| lookup.message_ids.clone());
     let has_group_or_local = classification
         .as_ref()
@@ -1018,8 +1603,8 @@ where
         .unwrap_or(false);
     let mut remote_acknowledged = false;
     let mut raw = None;
-    if !direct_ids.is_empty() {
-        match mark_direct_ids_remote_sync(client, session_provider, transport, &direct_ids) {
+    if !remote_direct_ids.is_empty() {
+        match mark_direct_ids_remote_sync(client, session_provider, transport, &remote_direct_ids) {
             Ok((_updated, response)) => {
                 warnings.extend(warnings_from_raw(&response));
                 raw = Some(response);
@@ -1069,9 +1654,9 @@ where
         });
     }
     let classification = classify_mark_read_ids_async(client, &lookup.message_ids).await;
-    let direct_ids = classification
+    let remote_direct_ids = classification
         .as_ref()
-        .map(|value| value.direct_ids.clone())
+        .map(|value| value.remote_direct_ids.clone())
         .unwrap_or_else(|_| lookup.message_ids.clone());
     let has_group_or_local = classification
         .as_ref()
@@ -1079,8 +1664,10 @@ where
         .unwrap_or(false);
     let mut remote_acknowledged = false;
     let mut raw = None;
-    if !direct_ids.is_empty() {
-        match mark_direct_ids_remote_async(client, session_provider, transport, &direct_ids).await {
+    if !remote_direct_ids.is_empty() {
+        match mark_direct_ids_remote_async(client, session_provider, transport, &remote_direct_ids)
+            .await
+        {
             Ok((_updated, response)) => {
                 warnings.extend(warnings_from_raw(&response));
                 raw = Some(response);
@@ -1186,10 +1773,7 @@ fn normalize_decimal_seq(value: &str) -> crate::ImResult<String> {
     crate::internal::local_state::sync_state::normalize_decimal_seq(value).map_err(|_| {
         crate::ImError::invalid_input(
             Some("read_watermark_seq".to_owned()),
-            format!(
-                "read_watermark_seq must be a non-negative decimal string, got {:?}",
-                value
-            ),
+            format!("read_watermark_seq must be a non-negative decimal string, got {value:?}"),
         )
     })
 }
@@ -1236,6 +1820,7 @@ fn warnings_from_raw(value: &Value) -> Vec<String> {
 #[cfg(not(feature = "sqlite"))]
 struct NoSqliteMarkReadClassification {
     direct_ids: Vec<String>,
+    remote_direct_ids: Vec<String>,
     group_ids: Vec<String>,
     local_only_ids: Vec<String>,
 }
@@ -1390,6 +1975,91 @@ mod tests {
         assert!(calls[0].params["body"]
             .get("read_up_to_group_event_seq")
             .is_none());
+    }
+
+    #[test]
+    fn mark_thread_read_without_explicit_watermark_stops_at_latest_hydrated_message() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message_with_seq(&client, "hydrated-5", "", "text/plain", "", 0, 5);
+        fixture.seed_message_with_seq(&client, "discovered-10", "", "text/plain", "", 0, 10);
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE messages SET content = '', hydration_state = 'discovered' WHERE owner_identity_id = 'alice-id' AND msg_id = 'discovered-10'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let result = MessageMarkReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"updated_count": 1}),
+            },
+        )
+        .mark_thread_read(MarkThreadReadInput {
+            request: crate::messages::MarkThreadReadRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                watermark: None,
+                fallback_max_message_ids: None,
+            },
+            remote_thread: None,
+        })
+        .unwrap();
+
+        assert_eq!(result.sdk_result.updated_count, 1);
+        assert_eq!(
+            result
+                .sdk_result
+                .effective_watermark
+                .as_ref()
+                .and_then(|watermark| watermark.last_read_thread_seq.as_deref()),
+            Some("5")
+        );
+        assert_eq!(fixture.is_read(&client, "hydrated-5"), 1);
+        assert_eq!(fixture.is_read(&client, "discovered-10"), 0);
+        assert_eq!(
+            calls.borrow()[0].params["body"]["read_up_to_server_seq"],
+            "5"
+        );
+
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        crate::internal::local_state::messages::upsert_message(
+            &connection,
+            &crate::internal::local_state::messages::MessageRecord {
+                msg_id: "discovered-10".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
+                direction: 0,
+                sender_did: "did:example:bob".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "now visible".to_owned(),
+                server_seq: Some(10),
+                hydration_state:
+                    crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+                sent_at: "2026-05-21T00:00:10Z".to_owned(),
+                stored_at: "2026-05-21T00:00:10Z".to_owned(),
+                is_read: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fixture.is_read(&client, "discovered-10"), 0);
     }
 
     #[test]
@@ -1559,6 +2229,52 @@ mod tests {
     }
 
     #[test]
+    fn mark_thread_read_runtime_rejects_pseudo_ack() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message(&client, "direct-thread-pseudo-ack", "", "text/plain", "", 0);
+        let response = json!({
+            "user_did": client.did().as_str(),
+            "thread": {"kind": "direct", "peer_did": "did:example:bob"},
+            "updated_count": 0,
+            "remote_acknowledged": false,
+            "partial": false,
+            "fallback_used": false,
+            "pending_remote_ack": true,
+            "read_watermark_server_seq": "1",
+            "previous_read_watermark_server_seq": null,
+            "read_watermark_message_id": "direct-thread-pseudo-ack",
+            "advanced": false,
+            "read_at": "2026-07-28T12:00:00Z",
+            "unread_count": null,
+            "warnings": []
+        });
+        let result = MessageMarkReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response,
+            },
+        )
+        .mark_thread_read(MarkThreadReadInput {
+            request: crate::messages::MarkThreadReadRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                watermark: None,
+                fallback_max_message_ids: None,
+            },
+            remote_thread: None,
+        })
+        .unwrap();
+        assert!(!result.sdk_result.remote_acknowledged);
+        assert!(result.sdk_result.partial);
+        assert!(result.sdk_result.pending_remote_ack);
+        assert_eq!(fixture.is_read(&client, "direct-thread-pseudo-ack"), 1);
+    }
+
+    #[test]
     fn mark_thread_read_runtime_unsupported_read_state_falls_back_to_legacy_direct() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -1635,7 +2351,23 @@ mod tests {
     async fn mark_read_runtime_async_marks_direct_remote_and_actor_local_rows() {
         let fixture = Fixture::new();
         let client = fixture.client();
-        fixture.seed_message(&client, "direct-async-1", "", "text/plain", "", 0);
+        fixture.seed_message(
+            &client,
+            "direct-async-1",
+            "",
+            "text/plain",
+            &json!({
+                "raw_message_id": "p5-v2-delivery:direct-async-1",
+                "p5_cache_profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+                "p5_cache_sender_did": "did:example:bob",
+                "p5_cache_sender_device_id": "device-bob",
+                "p5_cache_recipient_did": "did:example:alice",
+                "p5_cache_recipient_device_id": "device-alice",
+                "p5_cache_binding_digest": "sha256:test-binding",
+            })
+            .to_string(),
+            0,
+        );
         let calls = Rc::new(RefCell::new(Vec::new()));
 
         let result = MessageMarkReadRuntime::new(
@@ -1661,7 +2393,7 @@ mod tests {
         assert_eq!(calls[0].method, "inbox.mark_read");
         assert_eq!(
             calls[0].params["body"]["message_ids"],
-            json!(["direct-async-1"])
+            json!(["p5-v2-delivery:direct-async-1"])
         );
     }
 
@@ -1763,12 +2495,43 @@ mod tests {
             method: &str,
             params: Value,
         ) -> crate::ImResult<Value> {
+            let response = if method == "read_state.mark_read"
+                && self
+                    .response
+                    .as_object()
+                    .is_some_and(|value| value.len() == 1 && value.contains_key("updated_count"))
+            {
+                json!({
+                    "user_did": params.pointer("/body/user_did").cloned().unwrap_or(Value::Null),
+                    "thread": params.pointer("/body/thread").cloned().unwrap_or(Value::Null),
+                    "updated_count": self.response["updated_count"],
+                    "remote_acknowledged": true,
+                    "partial": false,
+                    "fallback_used": false,
+                    "pending_remote_ack": false,
+                    "read_watermark_server_seq": params
+                        .pointer("/body/read_up_to_server_seq")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    "previous_read_watermark_server_seq": Value::Null,
+                    "read_watermark_message_id": params
+                        .pointer("/body/read_up_to_message_id")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    "advanced": true,
+                    "read_at": "2026-07-28T12:00:00Z",
+                    "unread_count": Value::Null,
+                    "warnings": []
+                })
+            } else {
+                self.response.clone()
+            };
             self.calls.borrow_mut().push(RecordedCall {
                 endpoint: endpoint.to_string(),
                 method: method.to_string(),
                 params,
             });
-            Ok(self.response.clone())
+            Ok(response)
         }
     }
 
@@ -1898,6 +2661,7 @@ mod tests {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_string(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,

@@ -790,31 +790,30 @@ where
 
     if launch_outcome.status == RuntimeRunStatus::Failed
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+        && mark_active_runtime_run_failed(state, &run.run_id)?
     {
-        if mark_active_runtime_run_failed(state, &run.run_id)? {
-            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
-                let failure = generic_cli_failure_detail(&launch_outcome);
-                let metadata = failure.metadata_json();
-                emit_runtime_status_with_metadata(
-                    outbox,
-                    &run,
-                    "failed",
-                    Some("Runtime failed"),
-                    Some(failure.error_code.as_str()),
-                    Some(failure.error_summary.as_str()),
-                    Some(&metadata),
-                )?;
-            } else {
-                let failure_summary = runtime_launch_failure_summary(&launch_outcome);
-                emit_runtime_status(
-                    outbox,
-                    &run,
-                    "failed",
-                    Some("Runtime failed"),
-                    Some("runtime_failed"),
-                    Some(&failure_summary),
-                )?;
-            }
+        if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let failure = generic_cli_failure_detail(&launch_outcome);
+            let metadata = failure.metadata_json();
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some(failure.error_code.as_str()),
+                Some(failure.error_summary.as_str()),
+                Some(&metadata),
+            )?;
+        } else {
+            let failure_summary = runtime_launch_failure_summary(&launch_outcome);
+            emit_runtime_status(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some("runtime_failed"),
+                Some(&failure_summary),
+            )?;
         }
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
@@ -1432,6 +1431,14 @@ pub fn flush_runtime_final_outbox(
     for record in records {
         if record.status != "pending" {
             continue;
+        }
+        if let Some(binding) = state.load_runtime_daemon_binding(&record.agent_did)? {
+            if crate::agent_status::controller_identity_change_observed(
+                state,
+                &binding.daemon_agent_did,
+            )? {
+                continue;
+            }
         }
         if !state.mark_runtime_final_outbox_sending(&record.idempotency_key)? {
             continue;
@@ -2367,7 +2374,7 @@ fn runtime_recipient_policy(
     authority: RuntimeInvocationAuthority,
 ) -> Result<RecipientPolicy> {
     if let Some(binding) =
-        state.load_active_app_message_agent_binding_by_runtime(&profile.agent_did)?
+        state.load_active_app_personal_agent_binding_by_runtime(&profile.agent_did)?
     {
         return Ok(RecipientPolicy::app_message_handler(&binding.user_did));
     }
@@ -2425,6 +2432,8 @@ fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{AgentDefinition, AgentKind};
+    use crate::outbox::MemoryRuntimeOutbox;
 
     #[test]
     fn runtime_requester_authority_cannot_call_outbound_send_methods() {
@@ -2443,5 +2452,135 @@ mod tests {
 
         assert!(methods.contains(&RpcMethod::MsgSend));
         assert!(methods.contains(&RpcMethod::SendAttachment));
+    }
+
+    #[test]
+    fn runtime_final_outbox_stays_pending_after_controller_identity_change() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon = AgentDefinition {
+            agent_did: "did:agent:daemon".to_string(),
+            handle: "alice-daemon".to_string(),
+            agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/daemon/agent.db".to_string(),
+            message_db_path: "agents/daemon/messages.db".to_string(),
+            status: "active".to_string(),
+        };
+        let profile = RuntimeAgentProfile {
+            agent_did: "did:agent:hermes".to_string(),
+            agent_handle: "alice-hermes".to_string(),
+            controller_user_id: daemon.controller_user_id.clone(),
+            controller_full_handle: daemon.controller_full_handle.clone(),
+            controller_scope_key: daemon.controller_scope_key.clone(),
+            controller_did: daemon.controller_did.clone(),
+            runtime_profile_id: "profile-hermes".to_string(),
+            runtime_plugin_id: "hermes".to_string(),
+            display_name: None,
+            preferred_language: "en".to_string(),
+            workspace_id: None,
+            workspace_root: None,
+            workspace_mode: None,
+        };
+        let runtime = AgentDefinition {
+            agent_did: profile.agent_did.clone(),
+            handle: profile.agent_handle.clone(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: profile.controller_did.clone(),
+            runtime_plugin_id: Some(profile.runtime_plugin_id.clone()),
+            runtime_profile_id: Some(profile.runtime_profile_id.clone()),
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/hermes/agent.db".to_string(),
+            message_db_path: "agents/hermes/messages.db".to_string(),
+            status: "active".to_string(),
+        };
+        state.upsert_agent_definition(&daemon).unwrap();
+        state.upsert_agent_definition(&runtime).unwrap();
+        state
+            .upsert_runtime_daemon_binding(
+                &runtime.agent_did,
+                &daemon.agent_did,
+                &daemon.controller_user_id,
+                &daemon.controller_full_handle,
+                &daemon.controller_scope_key,
+                &daemon.controller_did,
+            )
+            .unwrap();
+        let run = RuntimeRun {
+            run_id: "run-before-controller-change".to_string(),
+            task_id: "task-before-controller-change".to_string(),
+            agent_did: runtime.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            runtime_plugin_id: profile.runtime_plugin_id.clone(),
+            workspace_id: None,
+            status: RuntimeRunStatus::Running,
+        };
+        state
+            .insert_runtime_task(&RuntimeTask {
+                task_id: run.task_id.clone(),
+                agent_did: runtime.agent_did.clone(),
+                agent_handle: runtime.handle.clone(),
+                controller_user_id: daemon.controller_user_id.clone(),
+                controller_full_handle: daemon.controller_full_handle.clone(),
+                controller_scope_key: daemon.controller_scope_key.clone(),
+                controller_did: daemon.controller_did.clone(),
+                sender_did: daemon.controller_did.clone(),
+                requester_did: daemon.controller_did.clone(),
+                requester_user_id: Some(daemon.controller_user_id.clone()),
+                requester_full_handle: Some(daemon.controller_full_handle.clone()),
+                trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+                conversation_scope: crate::runtime::RuntimeConversationScope::ControllerPrivate {
+                    controller_scope_key: daemon.controller_scope_key.clone(),
+                },
+                invocation_authority: RuntimeInvocationAuthority::Controller,
+                reply_recipient_did: daemon.controller_did.clone(),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                text: "must remain isolated".to_string(),
+            })
+            .unwrap();
+        state.insert_runtime_run(&run).unwrap();
+        let pending = runtime_final_outbox_record(
+            &profile,
+            &daemon.controller_did,
+            &daemon.controller_did,
+            &run,
+            Some("direct:did:human:alice"),
+            "must remain isolated",
+            "test",
+        )
+        .unwrap();
+        state.upsert_runtime_final_outbox_pending(&pending).unwrap();
+        crate::agent_status::record_controller_identity_changed(
+            &state,
+            &daemon.agent_did,
+            "test_authoritative_status",
+        )
+        .unwrap_err();
+        let outbox = MemoryRuntimeOutbox::default();
+
+        let sent = flush_runtime_final_outbox(&state, &outbox, 8).unwrap();
+
+        assert_eq!(sent, 0);
+        assert!(outbox.records().is_empty());
+        let stored = state
+            .load_runtime_final_outbox_by_run(&run.run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "pending");
+        assert_eq!(stored.controller_did, "did:human:alice");
+        assert_eq!(stored.recipient_did, "did:human:alice");
     }
 }

@@ -21,6 +21,7 @@ pub(crate) struct GroupTextCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,7 +71,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
-                verification_method: None,
+                verification_method: credentials.verification_method,
             },
             &payload,
         )?;
@@ -79,10 +80,12 @@ where
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
             "body": payload.body.clone(),
         });
-        let raw = self.transport.authenticated_rpc(
+        let raw = crate::internal::idempotent_submission::submit_idempotent_rpc(
+            &mut self.transport,
             MESSAGE_RPC_ENDPOINT,
             payload.method.as_str(),
             params,
+            crate::internal::idempotent_submission::RpcReplayIdentity::Message,
         )?;
         let mut result = group_result_from_value(raw.clone())?;
         fill_group_result_defaults(&mut result, &payload.meta, group.as_str());
@@ -128,7 +131,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
-                verification_method: None,
+                verification_method: credentials.verification_method,
             },
             &payload,
         )?;
@@ -137,10 +140,14 @@ where
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
             "body": payload.body.clone(),
         });
-        let raw = self
-            .transport
-            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
-            .await?;
+        let raw = crate::internal::idempotent_submission::submit_idempotent_rpc_async(
+            &mut self.transport,
+            MESSAGE_RPC_ENDPOINT,
+            payload.method.as_str(),
+            params,
+            crate::internal::idempotent_submission::RpcReplayIdentity::Message,
+        )
+        .await?;
         let mut result = group_result_from_value(raw.clone())?;
         fill_group_result_defaults(&mut result, &payload.meta, group.as_str());
         let sdk_result =
@@ -161,11 +168,12 @@ pub(crate) fn load_credentials(
 ) -> crate::ImResult<GroupTextCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(GroupTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
     })
 }
 
@@ -174,11 +182,12 @@ pub(crate) async fn load_credentials_async(
 ) -> crate::ImResult<GroupTextCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(GroupTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
     })
 }
 
@@ -928,6 +937,7 @@ mod tests {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_string(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
@@ -974,6 +984,7 @@ mod tests {
                 identity_name: "alice".to_string(),
                 did_document: Some(bundle.did_document),
                 key1_private_pem,
+                verification_method: None,
             }
         }
     }

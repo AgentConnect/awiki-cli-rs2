@@ -1,1 +1,1 @@
-pub(crate) use crate::workspace_upgrade::legacy_identity::{IdentityError, Manager};
+pub(crate) use crate::workspace_upgrade::legacy_identity::Manager;

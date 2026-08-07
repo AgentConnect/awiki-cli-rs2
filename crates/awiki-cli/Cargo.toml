@@ -10,25 +10,55 @@ repository.workspace = true
 name = "awiki-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "awiki-system-test-probe"
+path = "src/system_test_probe_main.rs"
+required-features = ["system-test-probe"]
+
+[features]
+default = []
+system-test-probe = [
+    "awiki-deamon/system-test-probe",
+    "dep:awiki-deamon",
+    "dep:bs58",
+    "dep:futures-util",
+    "dep:reqwest",
+    "dep:serde_json_canonicalizer",
+    "dep:tokio-tungstenite",
+    "dep:x25519-dalek",
+    "im-core/internal-test-helpers",
+]
+
 [dependencies]
+awiki-deamon = { path = "../awiki-deamon", optional = true }
+awiki-user-dirs.workspace = true
 anyhow.workspace = true
 anp.workspace = true
 base64.workspace = true
-im-core = { package = "awiki-im-core", path = "../im-core", features = ["group-e2ee"] }
+bs58 = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+im-core = { package = "awiki-im-core", path = "../im-core", features = ["group-e2ee", "blocking"] }
 rand.workspace = true
+reqwest = { workspace = true, optional = true }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_json_canonicalizer = { workspace = true, optional = true }
 sha2.workspace = true
 rusqlite.workspace = true
 time.workspace = true
 tokio.workspace = true
+tokio-tungstenite = { workspace = true, optional = true }
 webpki-roots.workspace = true
+zeroize.workspace = true
+x25519-dalek = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",

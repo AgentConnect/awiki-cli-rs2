@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod bridge;
 pub mod hermes_bridge;
@@ -28,6 +28,7 @@ pub mod listener_local_notifications;
 pub mod listener_notification_consume;
 pub mod listener_service;
 pub mod listener_service_did;
+pub mod listener_service_manager;
 pub mod listener_session_bootstrap;
 pub mod listener_session_lookup;
 pub mod listener_session_methods;
@@ -135,7 +136,12 @@ pub fn runtime_value(resolved: &Resolved) -> Value {
 }
 
 pub fn listener_status(resolved: &Resolved, installed: bool, running: bool) -> Value {
-    listener_status_with_platform(resolved, installed, running, "rust-local")
+    listener_status_with_platform(
+        resolved,
+        installed,
+        running,
+        listener_service_manager::service_platform(),
+    )
 }
 
 pub fn listener_status_with_platform(
@@ -159,112 +165,49 @@ pub fn listener_status_with_platform(
 }
 
 pub fn current_listener_status(resolved: &Resolved) -> Value {
-    if listener_systemd::is_supported() {
-        if let Ok(status) = listener_systemd::status_value(resolved) {
-            return status;
-        }
-    }
-    listener_status(
-        resolved,
-        listener_installed(resolved),
-        listener_running(resolved),
-    )
+    listener_service_manager::status_value(resolved)
 }
 
 pub fn apply_runtime_policy(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
-    if listener_systemd::is_supported() {
-        if resolve(resolved).mode != "websocket" || !resolved.runtime_listener_enabled {
-            return Ok(listener::to_value(listener_systemd::stop(resolved)?));
-        }
-        let mut status = if resolved.runtime_listener_auto_install {
-            listener_systemd::install(resolved)?
-        } else {
-            listener_systemd::status(resolved).and_then(|status| {
-                listener::status_for(
-                    resolved,
-                    status.installed,
-                    status.running,
-                    listener_systemd::service_platform(),
-                )
-            })?
-        };
-        if resolved.runtime_listener_auto_start {
-            status = listener_systemd::start(resolved)?;
-        }
-        return Ok(listener::to_value(status));
-    }
-    if resolve(resolved).mode == "websocket" && resolved.runtime_listener_enabled {
-        let installed = resolved.runtime_listener_auto_install || listener_installed(resolved);
-        let running = installed && resolved.runtime_listener_auto_start;
-        write_listener_state(resolved, installed, running)?;
-        Ok(listener_status(resolved, installed, running))
-    } else {
-        write_listener_state(resolved, listener_installed(resolved), false)?;
-        Ok(listener_status(
-            resolved,
-            listener_installed(resolved),
-            false,
-        ))
-    }
+    Ok(listener::to_value(
+        listener_service_manager::apply_runtime_policy(resolved)?,
+    ))
 }
 
 pub fn install_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
-    if listener_systemd::is_supported() {
-        return Ok(listener::to_value(listener_systemd::install(resolved)?));
-    }
-    write_listener_state(resolved, true, false)?;
-    Ok(listener_status(resolved, true, false))
+    Ok(listener::to_value(listener_service_manager::install(
+        resolved,
+    )?))
 }
 
 pub fn start_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
-    if listener_systemd::is_supported() {
-        return Ok(listener::to_value(listener_systemd::start(resolved)?));
-    }
-    if resolve(resolved).mode != "websocket" {
-        anyhow::bail!("runtime mode must be websocket before starting the listener");
-    }
-    write_listener_state(resolved, true, true)?;
-    Ok(listener_status(resolved, true, true))
+    Ok(listener::to_value(listener_service_manager::start(
+        resolved,
+    )?))
 }
 
 pub fn restart_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
-    if listener_systemd::is_supported() {
-        return Ok(listener::to_value(listener_systemd::restart(resolved)?));
-    }
-    if !listener_installed(resolved) {
-        anyhow::bail!("listener service is not installed");
-    }
-    if resolve(resolved).mode != "websocket" {
-        anyhow::bail!("runtime mode must be websocket before starting the listener");
-    }
-    write_listener_state(resolved, true, true)?;
-    Ok(listener_status(resolved, true, true))
+    Ok(listener::to_value(listener_service_manager::restart(
+        resolved,
+    )?))
 }
 
 pub fn stop_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
-    if listener_systemd::is_supported() {
-        return Ok(listener::to_value(listener_systemd::stop(resolved)?));
-    }
-    write_listener_state(resolved, listener_installed(resolved), false)?;
-    Ok(listener_status(
+    Ok(listener::to_value(listener_service_manager::stop(
         resolved,
-        listener_installed(resolved),
-        false,
-    ))
+    )?))
 }
 
 pub fn uninstall_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
-    if listener_systemd::is_supported() {
-        return Ok(listener::to_value(listener_systemd::uninstall(resolved)?));
-    }
-    write_listener_state(resolved, false, false)?;
-    Ok(listener_status(resolved, false, false))
+    Ok(listener::to_value(listener_service_manager::uninstall(
+        resolved,
+    )?))
 }
 
 pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
@@ -447,7 +390,7 @@ fn probe_openclaw_config(default_port: i64, default_hooks_path: &str) -> OpenCla
             probe.gateway_source = "environment".to_string();
         }
     }
-    if let Ok(raw) = fs::read_to_string(config_path) {
+    if let Some(raw) = config_path.and_then(|path| fs::read_to_string(path).ok()) {
         let Ok(payload) = serde_json::from_str::<OpenClawConfigFile>(&raw) else {
             return probe;
         };
@@ -470,29 +413,22 @@ fn parse_openclaw_port(raw: &str) -> Option<i64> {
     raw.parse::<i64>().ok().filter(|port| *port > 0)
 }
 
-fn openclaw_config_path() -> PathBuf {
-    env::var(OPENCLAW_CONFIG_PATH_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
+fn openclaw_config_path() -> Option<PathBuf> {
+    let configured = env::var(OPENCLAW_CONFIG_PATH_ENV).ok();
+    let home = openclaw_home_dir();
+    resolve_openclaw_config_path(configured.as_deref(), home.as_deref())
+}
+
+fn resolve_openclaw_config_path(configured: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    configured
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| openclaw_home_dir().map(|home| home.join(".openclaw/openclaw.json")))
-        .unwrap_or_else(|| PathBuf::from(".openclaw/openclaw.json"))
+        .or_else(|| home.map(|home| home.join(".openclaw/openclaw.json")))
 }
 
 fn openclaw_home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if let Some(home) = env::var_os("USERPROFILE") {
-            return Some(PathBuf::from(home));
-        }
-        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
-            let mut home = PathBuf::from(drive);
-            home.push(path);
-            return Some(home);
-        }
-    }
-    env::var_os("HOME").map(PathBuf::from)
+    awiki_user_dirs::try_home_dir()
 }
 
 fn normalize_openclaw_hooks_base_path(raw: &str) -> String {
@@ -537,39 +473,6 @@ fn ensure_runtime_dirs(resolved: &Resolved) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn write_listener_state(resolved: &Resolved, installed: bool, running: bool) -> anyhow::Result<()> {
-    ensure_runtime_dirs(resolved)?;
-    let state = json!({ "installed": installed, "running": running });
-    fs::write(
-        listener_state_path(resolved),
-        serde_json::to_vec_pretty(&state)?,
-    )?;
-    Ok(())
-}
-
-fn listener_installed(resolved: &Resolved) -> bool {
-    read_listener_state_bool(resolved, "installed")
-}
-
-fn listener_running(resolved: &Resolved) -> bool {
-    read_listener_state_bool(resolved, "running")
-}
-
-fn read_listener_state_bool(resolved: &Resolved, key: &str) -> bool {
-    fs::read(listener_state_path(resolved))
-        .ok()
-        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-        .and_then(|value| value.get(key).and_then(Value::as_bool))
-        .unwrap_or(false)
-}
-
-fn listener_state_path(resolved: &Resolved) -> String {
-    std::path::Path::new(&resolved.paths.state_dir)
-        .join("listener.local-state.json")
-        .to_string_lossy()
-        .into_owned()
-}
-
 fn normalize_runtime_mode(value: &str) -> String {
     if value.trim().eq_ignore_ascii_case("http") {
         "http".to_string()
@@ -583,5 +486,27 @@ fn default_string(value: &str, default: &str) -> String {
         default.to_string()
     } else {
         value.trim().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_openclaw_config_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn openclaw_config_probe_requires_an_explicit_path_or_user_home() {
+        let home = Path::new("/profiles/alice");
+
+        assert_eq!(
+            resolve_openclaw_config_path(None, Some(home)),
+            Some(home.join(".openclaw/openclaw.json"))
+        );
+        assert_eq!(
+            resolve_openclaw_config_path(Some(" /srv/openclaw.json "), None),
+            Some(PathBuf::from("/srv/openclaw.json"))
+        );
+        assert_eq!(resolve_openclaw_config_path(None, None), None);
+        assert_eq!(resolve_openclaw_config_path(Some("  "), None), None);
     }
 }

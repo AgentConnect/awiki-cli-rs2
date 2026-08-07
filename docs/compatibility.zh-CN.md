@@ -2,7 +2,7 @@
 
 [English](compatibility.md) | [简体中文](compatibility.zh-CN.md)
 
-最后整理日期：2026-07-14。对外发布时需写入真实 release version、commit 和验证日期。
+最后整理日期：2026-07-23。对外发布时需写入真实 release version、commit 和验证日期。
 
 ## 1. 能力状态
 
@@ -30,6 +30,8 @@
 | `darwin-amd64` | 发布目标 |
 | `linux-amd64` | 发布目标，Linux artifact 使用静态 musl 策略 |
 | `windows-amd64` | 发布目标 |
+
+在 Windows 11 ARM64 上，安装器会单独识别 ARM64 宿主；当 manifest 未声明原生 `windows-arm64` 条目时，会通过 Windows 的 x64 应用模拟能力选择真实的 `windows-amd64` 产物。已经声明但无效的 ARM64 条目会直接导致安装失败。Manifest 和安装日志仍将所选产物准确标记为 `windows-amd64`；原生 Windows ARM64 当前不是发布目标。
 
 “列为 target”不等于每个 release 已通过完整系统测试。Manifest 应记录实际产出的平台。
 

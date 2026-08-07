@@ -13,15 +13,138 @@ const { _internal } = require('./install.js');
 
 const execFileAsync = promisify(execFile);
 
-test('maps only the four supported release targets', () => {
-  assert.deepEqual(_internal.mapTarget('darwin', 'arm64'), {
-    osName: 'darwin', archName: 'arm64', target: 'darwin-arm64',
+test('normalizes supported executable architectures', () => {
+  assert.equal(_internal.normalizeArchitecture('x64'), 'amd64');
+  assert.equal(_internal.normalizeArchitecture(' X86_64 '), 'amd64');
+  assert.equal(_internal.normalizeArchitecture('amd64'), 'amd64');
+  assert.equal(_internal.normalizeArchitecture('arm64'), 'arm64');
+  assert.equal(_internal.normalizeArchitecture('AARCH64'), 'arm64');
+  assert.equal(_internal.normalizeArchitecture('ia32'), '');
+  assert.equal(_internal.normalizeArchitecture('unknown'), '');
+});
+
+test('prefers a recognized machine architecture over the Node binary architecture', () => {
+  assert.equal(_internal.detectHostArchitecture(() => 'arm64', 'x64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => 'x86_64', 'arm64'), 'amd64');
+});
+
+test('falls back to the Node binary architecture when machine detection is unavailable', () => {
+  assert.equal(_internal.detectHostArchitecture(() => 'unknown', 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => '', 'x64'), 'amd64');
+  assert.equal(_internal.detectHostArchitecture(() => '   ', 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => null, 'x64'), 'amd64');
+  assert.equal(_internal.detectHostArchitecture(() => undefined, 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => 'riscv64', 'x64'), 'amd64');
+  assert.equal(_internal.detectHostArchitecture(null, 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => {
+    throw new Error('machine detection unavailable');
+  }, 'x64'), 'amd64');
+});
+
+test('rejects architecture detection when neither source is supported', () => {
+  assert.equal(_internal.detectHostArchitecture(() => 'unknown', 'ia32'), '');
+  assert.equal(_internal.detectHostArchitecture(() => 'ia32', 'unknown'), '');
+  assert.throws(() => _internal.mapHost('win32', ''), /Unsupported platform: win32\/unknown/);
+});
+
+test('maps the host independently from available release artifacts', () => {
+  assert.deepEqual(_internal.mapHost('darwin', 'arm64'), {
+    osName: 'darwin', archName: 'arm64', hostTarget: 'darwin-arm64',
   });
-  assert.deepEqual(_internal.mapTarget('linux', 'x64'), {
-    osName: 'linux', archName: 'amd64', target: 'linux-amd64',
+  assert.deepEqual(_internal.mapHost('darwin', 'x86_64'), {
+    osName: 'darwin', archName: 'amd64', hostTarget: 'darwin-amd64',
   });
-  assert.throws(() => _internal.mapTarget('linux', 'arm64'), /Unsupported platform/);
-  assert.throws(() => _internal.mapTarget('win32', 'arm64'), /Unsupported platform/);
+  assert.deepEqual(_internal.mapHost('linux', 'x64'), {
+    osName: 'linux', archName: 'amd64', hostTarget: 'linux-amd64',
+  });
+  assert.deepEqual(_internal.mapHost('win32', 'x64'), {
+    osName: 'windows', archName: 'amd64', hostTarget: 'windows-amd64',
+  });
+  assert.deepEqual(_internal.mapHost('win32', 'arm64'), {
+    osName: 'windows', archName: 'arm64', hostTarget: 'windows-arm64',
+  });
+  assert.deepEqual(_internal.mapHost('win32', 'aarch64'), {
+    osName: 'windows', archName: 'arm64', hostTarget: 'windows-arm64',
+  });
+  assert.throws(() => _internal.mapHost('linux', 'arm64'), /Unsupported platform/);
+  assert.throws(() => _internal.mapHost('freebsd', 'x64'), /Unsupported platform/);
+  assert.throws(() => _internal.mapHost('win32', 'ia32'), /Unsupported platform/);
+});
+
+test('prefers a native Windows ARM64 artifact when release metadata provides one', () => {
+  const host = _internal.mapHost('win32', 'arm64');
+  const arm64 = { url: 'https://downloads.example/arm64.zip', sha256: 'a'.repeat(64) };
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+    'windows-arm64': arm64,
+  }), {
+    artifact: arm64,
+    artifactTarget: 'windows-arm64',
+    compatibilityFallback: false,
+  });
+});
+
+test('selects the real Windows x64 artifact as the ARM64 compatibility fallback', () => {
+  const host = _internal.mapHost('win32', 'arm64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+  }), {
+    artifact: amd64,
+    artifactTarget: 'windows-amd64',
+    compatibilityFallback: true,
+  });
+});
+
+test('recovers an unknown Windows machine type and selects the x64 compatibility artifact', () => {
+  const architecture = _internal.detectHostArchitecture(() => 'unknown', 'arm64');
+  const host = _internal.mapHost('win32', architecture);
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+  }), {
+    artifact: amd64,
+    artifactTarget: 'windows-amd64',
+    compatibilityFallback: true,
+  });
+});
+
+test('selects Windows x64 directly without marking it as a compatibility fallback', () => {
+  const host = _internal.mapHost('win32', 'x64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+  }), {
+    artifact: amd64,
+    artifactTarget: 'windows-amd64',
+    compatibilityFallback: false,
+  });
+});
+
+test('fails closed when release metadata declares an invalid Windows ARM64 artifact', () => {
+  const host = _internal.mapHost('win32', 'arm64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.throws(
+    () => _internal.selectArtifactForHost(host, {
+      'windows-amd64': amd64,
+      'windows-arm64': { url: 'https://downloads.example/arm64.zip', sha256: 'invalid' },
+    }),
+    /invalid package entry for windows-arm64/,
+  );
+});
+
+test('rejects a supported host when release metadata has no compatible artifact', () => {
+  const host = _internal.mapHost('darwin', 'arm64');
+  assert.throws(
+    () => _internal.selectArtifactForHost(host, {}),
+    /no valid package entry for darwin-arm64/,
+  );
 });
 
 test('requires structured release metadata', () => {
@@ -36,6 +159,62 @@ test('requires structured release metadata', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('builds strict platform-specific curl arguments', () => {
+  const url = 'https://downloads.example/awiki-cli.zip';
+  const destination = 'awiki-cli.zip';
+  const windowsArgs = _internal.buildCurlArgs(url, destination, 'win32');
+
+  assert.ok(windowsArgs.includes('--ssl-no-revoke'));
+  assert.ok(!windowsArgs.includes('--ssl-revoke-best-effort'));
+  assert.ok(!windowsArgs.includes('--insecure'));
+  assert.ok(!windowsArgs.includes('-k'));
+  assert.ok(!windowsArgs.includes('--proxy-insecure'));
+  assert.deepEqual(windowsArgs.slice(-3), ['--output', destination, url]);
+
+  for (const platform of ['darwin', 'linux']) {
+    const args = _internal.buildCurlArgs(url, destination, platform);
+    assert.ok(!args.includes('--ssl-no-revoke'));
+    assert.ok(!args.includes('--ssl-revoke-best-effort'));
+    assert.deepEqual(args.slice(-3), ['--output', destination, url]);
+  }
+});
+
+test('requires the complete licensing bundle in an extracted artifact', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-license-bundle-'));
+  try {
+    for (const name of ['LICENSE', 'LICENSE-APACHE', 'COMMERCIAL-LICENSING.md', 'SOURCE.md']) {
+      fs.writeFileSync(path.join(root, name), `${name}\n`);
+    }
+    assert.doesNotThrow(() => _internal.validateLicenseBundle(root));
+    fs.rmSync(path.join(root, 'SOURCE.md'));
+    assert.throws(
+      () => _internal.validateLicenseBundle(root),
+      /Archive is missing required licensing files: SOURCE\.md/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('allows HTTPS and local HTTP downloads while rejecting remote HTTP', () => {
+  assert.doesNotThrow(() => _internal.buildCurlArgs(
+    'https://downloads.example/awiki-cli.zip',
+    'awiki-cli.zip',
+  ));
+  assert.doesNotThrow(() => _internal.buildCurlArgs(
+    'http://127.0.0.1:8080/awiki-cli.zip',
+    'awiki-cli.zip',
+  ));
+  assert.doesNotThrow(() => _internal.buildCurlArgs(
+    'http://localhost/awiki-cli.zip',
+    'awiki-cli.zip',
+  ));
+  assert.throws(
+    () => _internal.buildCurlArgs('http://downloads.example/awiki-cli.zip', 'awiki-cli.zip'),
+    /must use HTTPS/,
+  );
 });
 
 test('downloads an artifact, verifies SHA-256, and rejects a mismatched digest', async t => {
@@ -63,11 +242,20 @@ printf '%s\n%s\n%s\n%s\n%s\n' \
 printf 'installer smoke\n'
 `);
   fs.chmodSync(binary, 0o755);
+  for (const [name, contents] of [
+    ['LICENSE', 'AGPL test license\n'],
+    ['LICENSE-APACHE', 'Apache test license\n'],
+    ['COMMERCIAL-LICENSING.md', 'Commercial licensing test policy\n'],
+    ['SOURCE.md', 'Commit: test-commit\n'],
+  ]) fs.writeFileSync(path.join(archiveStage, name), contents);
   const archive = path.join(root, 'awiki-cli.tar.gz');
-  const tar = await execFileAsync('tar', ['-C', archiveStage, '-czf', archive, 'awiki-cli']);
+  const tar = await execFileAsync('tar', [
+    '-C', archiveStage, '-czf', archive,
+    'awiki-cli', 'LICENSE', 'LICENSE-APACHE', 'COMMERCIAL-LICENSING.md', 'SOURCE.md',
+  ]);
   assert.equal(tar.stderr, '');
   const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
-  const target = _internal.mapTarget().target;
+  const target = _internal.mapHost().hostTarget;
 
   const server = http.createServer((request, response) => {
     if (request.url !== '/awiki-cli.tar.gz') {
@@ -117,6 +305,9 @@ printf 'installer smoke\n'
     });
     assert.match(success.stdout, /binary is installed/);
     assert.ok(fs.statSync(path.join(packageRoot, 'bin', 'awiki-cli')).isFile());
+    for (const required of ['LICENSE', 'LICENSE-APACHE', 'COMMERCIAL-LICENSING.md', 'SOURCE.md']) {
+      assert.ok(fs.statSync(path.join(packageRoot, 'bin', required)).isFile());
+    }
     const [probeHome, probeWorkspace, updateBaseUrl, backendBaseUrl, didHost] =
       fs.readFileSync(probeOutput, 'utf8').trim().split('\n');
     assert.notEqual(probeHome, realHome);

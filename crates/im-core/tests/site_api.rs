@@ -51,7 +51,7 @@ fn site_public_sync_api_dispatches_when_blocking_feature_is_enabled() {
     let requests = server.join();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/site/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/site/rpc");
     assert_eq!(requests[0].rpc_method, "get_root");
     assert_eq!(requests[0].params, json!({ "domain": "tenant.example" }));
 }
@@ -102,7 +102,7 @@ async fn site_public_async_api_dispatches_authenticated_site_rpc() {
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/site/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/site/rpc");
     assert_eq!(requests[0].rpc_method, "set_root");
     assert_eq!(
         requests[0].params,
@@ -112,7 +112,7 @@ async fn site_public_async_api_dispatches_authenticated_site_rpc() {
         })
     );
     assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/site/rpc");
+    assert_eq!(requests[1].path, "/user-service/v1/site/rpc");
     assert_eq!(requests[1].rpc_method, "create_page");
     assert_eq!(
         requests[1].params,
@@ -212,7 +212,9 @@ async fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
             "delete_page"
         ]
     );
-    assert!(requests.iter().all(|request| request.path == "/site/rpc"));
+    assert!(requests
+        .iter()
+        .all(|request| request.path == "/user-service/v1/site/rpc"));
     assert_eq!(requests[0].params, json!({ "domain": "tenant.example" }));
     assert_eq!(requests[1].params, json!({ "domain": "tenant.example" }));
     assert_eq!(
@@ -281,6 +283,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_owned(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,

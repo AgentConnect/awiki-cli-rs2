@@ -7,6 +7,8 @@
 ## 开始之前
 
 - 搜索现有 Issue/PR；
+- 外部贡献仅在事先获得许可方书面批准后接受；经批准的贡献者接受许可方指定的
+  贡献者协议之前，贡献不得合并；
 - 大型 API、命令树、SecretVault、E2EE、Runtime plugin 或发布流程变化先开 Issue；
 - 不在同一 PR 混入不相关 crate 重构、文档搬迁和发布配置；
 - 跨 `awiki-me`、`awiki-open-server` 或 ANP 的变化应记录匹配 commit 和兼容性验证。

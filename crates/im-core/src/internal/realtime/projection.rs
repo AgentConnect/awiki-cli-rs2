@@ -1,4 +1,5 @@
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 
 use crate::ids::{GroupRef, MessageId, PeerRef};
 use crate::messages::{
@@ -7,7 +8,8 @@ use crate::messages::{
 };
 use crate::realtime::{
     GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
-    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, UnknownNotificationEvent,
+    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, SyncDomain,
+    UnknownNotificationEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +71,14 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         ),
         "unknown-direct",
     );
-    let thread = ThreadRef::Direct(parse_peer(&sender));
+    let own_device_sync = value_from_object(Some(params), "own_device_sync")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let thread = ThreadRef::Direct(parse_peer(if own_device_sync {
+        &receiver
+    } else {
+        &sender
+    }));
     let attachment_projection =
         crate::internal::realtime::attachment_projection::project_attachment(
             &content_type,
@@ -79,10 +88,12 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         );
     let mut metadata = message_metadata(
         meta,
-        None,
+        int64_value(value_from_object(Some(params), "server_seq")),
         Some(content_type.clone()),
         [("notification_method", "direct.incoming")],
     );
+    add_verified_p5_security_attributes(&mut metadata, params, meta);
+    add_direct_message_identity_attributes(&mut metadata, meta);
     if let Some(attachment) = attachment_projection.as_ref() {
         if let Some(summary) = attachment.summary.as_ref() {
             metadata.attributes.extend(
@@ -95,7 +106,11 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
     let message = Message {
         id: message_id,
         thread,
-        direction: MessageDirection::Incoming,
+        direction: if own_device_sync {
+            MessageDirection::Outgoing
+        } else {
+            MessageDirection::Incoming
+        },
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
         group: None,
@@ -159,6 +174,7 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         message_id.as_str(),
         body,
     );
+    add_verified_p6_security_attributes(&mut metadata, params, meta);
     if let Some(attachment) = attachment_projection.as_ref() {
         if let Some(summary) = attachment.summary.as_ref() {
             metadata.attributes.extend(
@@ -191,6 +207,69 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         route: NotificationProjectionRoute::GroupIncoming,
         event: message_received_event(message, attachment_projection, sync_hint(notification)),
     }
+}
+
+fn add_verified_p5_security_attributes(
+    metadata: &mut MessageMetadata,
+    params: &Map<String, Value>,
+    meta: Option<&Map<String, Value>>,
+) {
+    let is_verified_p5 = params.get("secure").and_then(Value::as_bool) == Some(true)
+        && string_from_object(Some(params), "secure_state") == "decrypted"
+        && string_from_object(meta, "profile") == anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2;
+    if !is_verified_p5 {
+        return;
+    }
+    metadata.attributes.extend([
+        MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "direct-e2ee".to_owned(),
+        },
+        MessageMetadataAttribute {
+            key: "decryption_state".to_owned(),
+            value: "decrypted".to_owned(),
+        },
+    ]);
+}
+
+fn add_direct_message_identity_attributes(
+    metadata: &mut MessageMetadata,
+    meta: Option<&Map<String, Value>>,
+) {
+    for key in ["raw_message_id", "secure_wire_content_type"] {
+        let value = string_from_object(meta, key);
+        if !value.trim().is_empty() {
+            metadata.attributes.push(MessageMetadataAttribute {
+                key: key.to_owned(),
+                value,
+            });
+        }
+    }
+}
+
+fn add_verified_p6_security_attributes(
+    metadata: &mut MessageMetadata,
+    params: &Map<String, Value>,
+    meta: Option<&Map<String, Value>>,
+) {
+    let is_verified_p6 = params.get("secure").and_then(Value::as_bool) == Some(true)
+        && string_from_object(Some(params), "secure_state") == "decrypted"
+        && string_from_object(meta, "profile") == anp::group_e2ee::GROUP_E2EE_PROFILE_V2
+        && string_from_object(meta, "security_profile")
+            == anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2;
+    if !is_verified_p6 {
+        return;
+    }
+    metadata.attributes.extend([
+        MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "group-e2ee".to_owned(),
+        },
+        MessageMetadataAttribute {
+            key: "decryption_state".to_owned(),
+            value: "decrypted".to_owned(),
+        },
+    ]);
 }
 
 fn project_group_state_changed(notification: &Value) -> NotificationProjection {
@@ -303,6 +382,10 @@ fn message_received_event(
 
 pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
     let sync = map_value(notification.get("sync"))?;
+    if sync.contains_key("schema_version") {
+        return Some(sync_hint_v2(notification, sync));
+    }
+
     let event_id = string_from_object(Some(sync), "event_id");
     let event_seq = decimal_event_seq_value(value_from_object(Some(sync), "event_seq"));
     let event_type = string_from_object(Some(sync), "event_type");
@@ -312,10 +395,134 @@ pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
     Some(RealtimeSyncHint {
         event_id: none_if_empty(event_id),
         event_seq,
-        event_type: none_if_empty(event_type),
+        event_type: none_if_empty(event_type.clone()),
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason: none_if_empty(event_type),
         sync_dirty: true,
         gap_detected: false,
+        has_unknown_domain: false,
     })
+}
+
+fn sync_hint_v2(notification: &Value, sync: &Map<String, Value>) -> RealtimeSyncHint {
+    let fail_safe = || RealtimeSyncHint {
+        event_id: None,
+        event_seq: None,
+        event_type: None,
+        domains: BTreeSet::new(),
+        reason: None,
+        sync_dirty: true,
+        gap_detected: true,
+        has_unknown_domain: true,
+    };
+    if notification.get("method").and_then(Value::as_str) != Some("sync.changed")
+        || sync.get("schema_version").and_then(Value::as_u64) != Some(2)
+        || !has_only_keys(
+            sync,
+            &["schema_version", "account_scan_seq_hint", "domain_versions"],
+        )
+    {
+        return fail_safe();
+    }
+    let Some(params) = notification.get("params").and_then(Value::as_object) else {
+        return fail_safe();
+    };
+    if !has_exact_keys(params, &["domains", "reason"]) {
+        return fail_safe();
+    }
+    let Some(raw_domains) = params.get("domains").and_then(Value::as_array) else {
+        return fail_safe();
+    };
+    let Some(reason) = params
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| valid_hint_reason(reason))
+    else {
+        return fail_safe();
+    };
+    let Some(domain_versions) = sync.get("domain_versions").and_then(Value::as_object) else {
+        return fail_safe();
+    };
+    if !domain_versions
+        .values()
+        .all(|value| canonical_decimal_string(value).is_some())
+    {
+        return fail_safe();
+    }
+    let account_scan_seq_hint = match sync.get("account_scan_seq_hint") {
+        Some(Value::Null) | None => None,
+        Some(value) => {
+            let Some(value) = canonical_decimal_string(value) else {
+                return fail_safe();
+            };
+            Some(value.to_owned())
+        }
+    };
+    let mut domains = BTreeSet::new();
+    let mut raw_domain_names = BTreeSet::new();
+    let mut has_unknown_domain = false;
+    for raw_domain in raw_domains {
+        let Some(raw_domain) = raw_domain.as_str() else {
+            return fail_safe();
+        };
+        if !raw_domain_names.insert(raw_domain) {
+            return fail_safe();
+        }
+        match sync_domain(raw_domain) {
+            Some(domain) => {
+                domains.insert(domain);
+            }
+            None => has_unknown_domain = true,
+        }
+    }
+    if raw_domains.is_empty() {
+        return fail_safe();
+    }
+    has_unknown_domain |= domain_versions
+        .keys()
+        .any(|domain| sync_domain(domain).is_none());
+
+    RealtimeSyncHint {
+        event_id: None,
+        event_seq: account_scan_seq_hint,
+        event_type: None,
+        domains,
+        reason: Some(reason.to_owned()),
+        sync_dirty: true,
+        gap_detected: false,
+        has_unknown_domain,
+    }
+}
+
+fn sync_domain(value: &str) -> Option<SyncDomain> {
+    match value {
+        "message" => Some(SyncDomain::Message),
+        "profile" => Some(SyncDomain::Profile),
+        "agent_inventory" => Some(SyncDomain::AgentInventory),
+        "agent_status" => Some(SyncDomain::AgentStatus),
+        "device_registry" => Some(SyncDomain::DeviceRegistry),
+        _ => None,
+    }
+}
+
+fn canonical_decimal_string(value: &Value) -> Option<&str> {
+    let value = value.as_str()?;
+    crate::internal::local_state::sync_state::parse_decimal_seq(value)
+        .ok()
+        .filter(|parsed| parsed.to_string() == value)?;
+    Some(value)
+}
+
+fn valid_hint_reason(reason: &str) -> bool {
+    !reason.is_empty() && reason.len() <= 128 && !reason.chars().any(char::is_control)
+}
+
+fn has_only_keys(object: &Map<String, Value>, keys: &[&str]) -> bool {
+    object.keys().all(|key| keys.contains(&key.as_str()))
+}
+
+fn has_exact_keys(object: &Map<String, Value>, keys: &[&str]) -> bool {
+    object.len() == keys.len() && has_only_keys(object, keys)
 }
 
 pub fn sync_hint_with_gap(
@@ -552,5 +759,110 @@ fn none_if_empty(value: String) -> Option<String> {
         None
     } else {
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_projection_keeps_trusted_realtime_server_sequence_sidecar() {
+        let notification = serde_json::json!({
+            "method": "direct.incoming",
+            "params": {
+                "meta": {
+                    "sender_did": "did:example:bob",
+                    "target": {"kind": "agent", "did": "did:example:alice"},
+                    "message_id": "message-1",
+                    "content_type": "text/plain"
+                },
+                "body": {"text": "hello"},
+                "server_seq": 42
+            }
+        });
+
+        let projection = project_notification(&notification);
+        let ImEvent::MessageReceived(event) = projection.event else {
+            panic!("direct.incoming must project a message");
+        };
+        assert_eq!(event.message.metadata.server_sequence, Some(42));
+    }
+
+    #[test]
+    fn verified_p5_own_sync_projects_outgoing_message_to_external_peer() {
+        let notification = serde_json::json!({
+            "method": "direct.incoming",
+            "params": {
+                "meta": {
+                    "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+                    "sender_did": "did:example:owner",
+                    "target": {"kind": "agent", "did": "did:example:peer"},
+                    "message_id": "logical-message-1",
+                    "raw_message_id": "wire-message-1",
+                    "secure_wire_content_type": anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2,
+                    "content_type": "text/plain"
+                },
+                "body": {"text": "synced outbound"},
+                "secure": true,
+                "secure_state": "decrypted",
+                "own_device_sync": true
+            }
+        });
+
+        let projection = project_notification(&notification);
+        let ImEvent::MessageReceived(event) = projection.event else {
+            panic!("direct.incoming must project a message");
+        };
+
+        assert_eq!(
+            event.message.direction,
+            crate::messages::MessageDirection::Outgoing
+        );
+        assert_eq!(event.message.sender.as_str(), "did:example:owner");
+        assert_eq!(
+            event.message.receiver.as_ref().unwrap().as_str(),
+            "did:example:peer"
+        );
+        assert!(matches!(
+            event.message.thread,
+            ThreadRef::Direct(ref peer) if peer.as_str() == "did:example:peer"
+        ));
+        assert!(event
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "security" && attribute.value == "direct-e2ee" }));
+        assert!(event.message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "raw_message_id" && attribute.value == "wire-message-1"
+        }));
+    }
+
+    #[test]
+    fn verified_p6_projection_marks_decrypted_group_security() {
+        let mut metadata = MessageMetadata::default();
+        let params = serde_json::json!({
+            "secure": true,
+            "secure_state": "decrypted"
+        });
+        let meta = serde_json::json!({
+            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+            "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2
+        });
+
+        add_verified_p6_security_attributes(
+            &mut metadata,
+            params.as_object().unwrap(),
+            meta.as_object(),
+        );
+
+        assert!(metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "security" && attribute.value == "group-e2ee" }));
+        assert!(metadata.attributes.iter().any(|attribute| {
+            attribute.key == "decryption_state" && attribute.value == "decrypted"
+        }));
     }
 }

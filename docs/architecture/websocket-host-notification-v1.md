@@ -63,6 +63,7 @@ V1 normalizes the websocket notifications handled by the listener:
 | `direct.incoming` | `im.message.received` |
 | `group.incoming` | `im.group.message.received` |
 | `group.state_changed` | `im.group.state.changed` |
+| Core-verified `JoinRequested` system notification | `im.device.join.requested` |
 
 Email notification events may reuse `im.message.received` with `data.source_kind = "mail"` and mail-specific fields such as `mailbox_address`, `from_addr`, `subject`, and `preview`.
 
@@ -222,6 +223,51 @@ Explicitly excluded:
 - `server`
 - awiki-cli local system message text
 
+### 4.4 Core-verified `JoinRequested` → `im.device.join.requested`
+
+The listener may emit a host wake only after IM Core has verified and committed a
+typed `SystemNotificationChanged` snapshot whose kind is `JoinRequested`, state
+is `pending`, and terminal flag is false.
+
+For an exact-device account session, the production listener establishes the
+Core `system_notifications().watch(...)` stream before the WebSocket session can
+become ready or its first Account Sync V2 run can commit. The initial `Reset`
+recovers pending requests committed while the listener was offline; subsequent
+`Changed` items carry commits made by Account Sync V2. Both enter the same typed
+adapter below. A `RepairRequired` change rebuilds and reseeds the watch instead
+of silently dropping the gap. The listener fences replayed seeds and changes by
+the Join session's monotonic revision, so the same pending request does not
+produce a second host wake. This path does not hydrate ordinary messages and has
+no Legacy notification fallback.
+
+Normalized `data`:
+
+```json
+{
+  "channel": "device",
+  "event_id": "evt-join-001",
+  "join_session_id": "join-001",
+  "recipient_did": "did:wba:awiki.info:user:alice:e1_alice",
+  "issued_at": "2026-07-23T02:00:00Z",
+  "expires_at": "2026-07-23T02:10:00Z"
+}
+```
+
+This event is a read-only user-interaction wake, not authorization. A host may
+read the Core-verified Join inbox to display the candidate device and
+fingerprint, but it must ask the user to choose **start verification** or
+**reject** before executing either mutation. Starting verification does not
+approve the device; approval remains a later foreground verification-code
+step. V1 always joins as `member` and exposes no role choice.
+
+Explicitly excluded:
+
+- SAS / verification code
+- challenge, proof, token, private key, or approval material
+- Core persistence fields such as `session_revision` and `first_seen_at`
+- terminal, claimed, response-verified, or completed notifications as new
+  approval prompts
+
 ---
 
 ## 5. Notify Sink Contract
@@ -297,6 +343,16 @@ Tests should cover:
 - omission of `auth`, `server`, and non-text `payload`
 - sink invocation from listener notification handling
 - sink failure not blocking SQLite persistence
+- one pending Core-verified `JoinRequested` producing a redacted
+  `im.device.join.requested` event
+- an existing pending request being recovered from the initial watch seed
+- Account Sync V2 committed changes and repaired watch seeds producing no
+  duplicate wake for the same Join revision
+- subscriber lag rebuilding and reseeding the watch without losing a new
+  pending request
+- non-pending/terminal system notifications producing no approval wake
+- OpenClaw/Hermes rendering requiring explicit user choice without auto
+  verification, rejection, approval, role selection, or SAS disclosure
 
 ---
 

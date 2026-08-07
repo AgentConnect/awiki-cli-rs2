@@ -312,11 +312,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
 
     match command.as_str() {
         "install" => {
-            let token = token.context("--token is required")?;
+            let token = token
+                .or_else(|| std::env::var("AWIKI_DAEMON_INSTALL_TOKEN").ok())
+                .context("--token or AWIKI_DAEMON_INSTALL_TOKEN is required")?;
             Ok(DaemonCommand::Install {
                 options: InstallOptions {
                     token,
-                    state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+                    state_root: state_root_or_default(state_root)?,
                     base_url: base_url.unwrap_or_else(|| "https://awiki.ai".to_string()),
                     download_base_url,
                     foreground,
@@ -358,7 +360,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
             state_root: required_state_root(state_root)?,
         }),
         "cli-env-capture" => Ok(DaemonCommand::CliEnvCapture {
-            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            state_root: state_root_or_default(state_root)?,
         }),
         "archive-daemon-finalize" => Ok(DaemonCommand::ArchiveDaemonFinalize {
             state_root: required_state_root(state_root)?,
@@ -385,23 +387,23 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
             })
         }
         "service-status" => Ok(DaemonCommand::Service {
-            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            state_root: state_root_or_default(state_root)?,
             action: ServiceAction::Status,
         }),
         "service-start" => Ok(DaemonCommand::Service {
-            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            state_root: state_root_or_default(state_root)?,
             action: ServiceAction::Start,
         }),
         "service-stop" => Ok(DaemonCommand::Service {
-            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            state_root: state_root_or_default(state_root)?,
             action: ServiceAction::Stop,
         }),
         "service-restart" => Ok(DaemonCommand::Service {
-            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            state_root: state_root_or_default(state_root)?,
             action: ServiceAction::Restart,
         }),
         "service-uninstall" => Ok(DaemonCommand::Service {
-            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            state_root: state_root_or_default(state_root)?,
             action: ServiceAction::Uninstall,
         }),
         "status" => Ok(DaemonCommand::Status {
@@ -413,6 +415,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
 
 fn required_state_root(state_root: Option<PathBuf>) -> Result<PathBuf> {
     state_root.context("--state-root is required")
+}
+
+fn state_root_or_default(state_root: Option<PathBuf>) -> Result<PathBuf> {
+    match state_root {
+        Some(state_root) => Ok(state_root),
+        None => DaemonConfig::default_product_state_root(),
+    }
 }
 
 fn usage_error<T>() -> Result<T> {

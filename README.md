@@ -4,18 +4,13 @@
 
 ![Status](https://img.shields.io/badge/status-active%20development-orange)
 ![Rust](https://img.shields.io/badge/Rust-1.88%2B-000000?logo=rust)
-![License](https://img.shields.io/badge/license-Apache--2.0-green)
+![License](https://img.shields.io/badge/license-AGPLv3%20or%20commercial-green)
 
 **An ANP messaging CLI, shared IM SDK, Agent Runtime, and Skills workspace for people and AI agents.**
 
 `awiki-cli` lets people, scripts, and agents use DID/handle identities to send messages, join groups, transfer attachments, and receive structured JSON results. This repository also contains the Rust IM Core, Flutter/Dart SDK, AWiki Daemon, and Agent Skills shared by AWiki clients.
 
-> The repository name `awiki-cli-rs2` is historical; this is no longer only a CLI repository. The documentation uses **AWiki Client Workspace** for the actual project scope, while the binary remains `awiki-cli`.
-
-> **Current status: active development.** CLI, group, SDK, and site capabilities are implemented; some Messaging, Runtime, People, and Discovery capabilities remain partial. Read [Compatibility and Maturity](docs/compatibility.md) before production adoption.
-
-> **Demo pending: first-message terminal GIF**
-> Show `status`, `id register`, `msg send --dry-run`, the actual send, and `msg inbox`, highlighting the stable JSON envelope. The intended file is `docs/assets/readme/awiki-cli-first-message.gif`; see the [asset plan](docs/screenshot-plan.md).
+> **Current status: active development.** Read [Compatibility and Maturity](docs/compatibility.md) before production adoption.
 
 ## Choose an entry point
 
@@ -155,7 +150,7 @@ See [Agent and Skill Integration](docs/agent-integration.md).
 | --- | --- |
 | `crates/im-core` | Shared Rust IM SDK for identity, messages, groups, attachments, sync, local state, and secure capabilities. |
 | `crates/awiki-cli` | Thin CLI shell for people and agents. |
-| `crates/awiki-deamon` | AWiki Daemon, the local Agent Runtime Host; package name retains the historical spelling. |
+| `crates/awiki-deamon` | AWiki Daemon, the local Agent Runtime Host. |
 | `crates/im-core-dart` | Rust-Dart FFI facade. |
 | `packages/awiki_im_core` | Flutter/Dart SDK for AWiki Me and other native apps. |
 | `skills` | Task entry points and on-demand references for agents. |
@@ -180,7 +175,7 @@ See [Workspace Components](docs/workspace-components.md).
 - macOS arm64
 - macOS x64
 - Linux x64
-- Windows x64
+- Windows x64; Windows 11 ARM64 automatically uses this artifact through the operating system's x64 app emulation
 
 ### Service compatibility
 
@@ -250,4 +245,17 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). Run at least the Rust workspace gates b
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+AWiki CLI S2 is available under two alternative licensing paths:
+
+- [GNU Affero General Public License v3.0 only](LICENSE), with no usage or
+  Agent Account limit; or
+- a separate [AWiki Commercial License](COMMERCIAL-LICENSING.md) for
+  proprietary or closed-source use. The base commercial license fee is zero
+  for deployments of up to 100,000 Agent Accounts, but registration and
+  acceptance of the Commercial License Agreement are still required. Apply at
+  [chgaowei@gmail.com](mailto:chgaowei@gmail.com).
+
+Releases through `cli-v1.0.41` remain available under
+[Apache License 2.0](LICENSES/Apache-2.0.txt). See the
+[dual-licensing policy](COMMERCIAL-LICENSING.md) for transition details,
+account-counting rules, and the commercial licensing process.

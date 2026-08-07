@@ -65,7 +65,7 @@ pub fn capture_and_write(config: &DaemonConfig) -> Result<CliRuntimeEnvCaptureRe
 }
 
 pub fn cli_child_path() -> Option<OsString> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = awiki_user_dirs::try_home_dir();
     build_cli_child_path(home.as_deref(), std::env::var_os("PATH").as_deref())
 }
 

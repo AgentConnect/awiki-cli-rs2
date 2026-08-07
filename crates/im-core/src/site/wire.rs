@@ -5,7 +5,7 @@ use super::{
     SiteRootDraft,
 };
 
-pub(crate) const SITE_RPC_ENDPOINT: &str = "/site/rpc";
+pub(crate) const SITE_RPC_ENDPOINT: &str = "/user-service/v1/site/rpc";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransportProfile {

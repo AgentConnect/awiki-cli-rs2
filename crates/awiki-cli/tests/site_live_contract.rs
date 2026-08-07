@@ -46,7 +46,7 @@ fn site_root_live_command_dispatches_through_im_core_site_rpc() {
         1,
         "site root get should reach site RPC once"
     );
-    assert!(requests[0].contains("POST /site/rpc HTTP/1.1"));
+    assert!(requests[0].contains("POST /user-service/v1/site/rpc HTTP/1.1"));
     assert!(requests[0].contains(r#""method":"get_root""#));
     assert!(requests[0].contains(r#""domain":"tenant.example""#));
     assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice-site");
@@ -88,7 +88,7 @@ fn site_page_live_command_dispatches_through_im_core_site_rpc() {
         1,
         "site page create should reach site RPC once"
     );
-    assert!(requests[0].contains("POST /site/rpc HTTP/1.1"));
+    assert!(requests[0].contains("POST /user-service/v1/site/rpc HTTP/1.1"));
     assert!(requests[0].contains(r#""method":"create_page""#));
     assert!(requests[0].contains(r#""domain":"tenant.example""#));
     assert!(requests[0].contains(r#""slug":"hello""#));

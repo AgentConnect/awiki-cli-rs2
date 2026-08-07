@@ -3,6 +3,59 @@ use im_core::prelude::{Message, MessageMetadata, ThreadId};
 use serde_json::json;
 
 #[test]
+fn foreground_message_reads_use_standard_reconcile_reason() {
+    assert_eq!(foreground_message_sync_reason(), "foreground_reconcile");
+}
+
+#[test]
+fn cli_message_read_state_is_boolean_and_drives_unread_filter() {
+    let read = thread_scoped_send_result(&[("is_read", "true")]).message;
+    let unread = thread_scoped_send_result(&[("is_read", "false")]).message;
+    let read_json = message_to_cli_json(&read);
+    let unread_json = message_to_cli_json(&unread);
+
+    assert_eq!(read_json["is_read"], Value::Bool(true));
+    assert_eq!(unread_json["is_read"], Value::Bool(false));
+    assert_eq!(
+        apply_inbox_filters(vec![read_json, unread_json.clone()], "", true, 20),
+        vec![unread_json]
+    );
+}
+
+#[test]
+fn foreground_message_reads_projection_only_after_terminal_sync_success() {
+    for status in [MessageSyncStatus::Idle, MessageSyncStatus::Changed] {
+        assert!(require_foreground_message_sync(&sync_outcome(status)).is_ok());
+    }
+    assert!(matches!(
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::RecoveryRequired)),
+        Err(MessageAdapterError::LocalStateUnavailable(_))
+    ));
+    assert!(matches!(
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::RetryableFailure)),
+        Err(MessageAdapterError::TransportUnavailable(_))
+    ));
+    assert!(matches!(
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::AuthRevoked)),
+        Err(MessageAdapterError::IdentityRequired(_))
+    ));
+}
+
+fn sync_outcome(status: MessageSyncStatus) -> MessageSyncOutcome {
+    MessageSyncOutcome {
+        status,
+        events_applied: 0,
+        pages_fetched: 0,
+        messages_hydrated: 0,
+        duplicates_skipped: 0,
+        changed_conversation_ids: Vec::new(),
+        committed_incoming_messages: Vec::new(),
+        error_code: None,
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
 fn attachment_transport_warnings_match_legacy_websocket_contract() {
     assert_eq!(
         attachment_transport_warnings_for_mode("websocket", false),
@@ -77,6 +130,45 @@ fn direct_delivery_preserves_final_acceptance_from_core_metadata() {
     assert_eq!(rendered.data["delivery"]["accepted"], true);
     assert_eq!(rendered.data["delivery"]["delivery_state"], "accepted");
     assert_eq!(rendered.data["delivery"]["final_acceptance"], true);
+}
+
+#[test]
+fn direct_partial_delivery_preserves_non_final_acceptance_from_core_metadata() {
+    let mut result = thread_scoped_send_result(&[
+        ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),
+        ("final_acceptance", "false"),
+    ]);
+    result.delivery = DeliveryState::Sent;
+    result.message.metadata.delivery_state = Some("sent".to_owned());
+    let target = direct_target_from_result(&result);
+
+    let rendered = render_send_result(&target, &result, false).expect("render");
+
+    assert_eq!(rendered.data["delivery"]["accepted"], true);
+    assert_eq!(rendered.data["delivery"]["delivery_state"], "sent");
+    assert_eq!(rendered.data["delivery"]["final_acceptance"], false);
+}
+
+#[test]
+fn direct_delivery_projects_internal_partial_retry_counts() {
+    let result = thread_scoped_send_result(&[
+        ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),
+        ("attempted_device_count", "1"),
+        ("previously_accepted_device_count", "1"),
+        ("newly_accepted_device_count", "1"),
+        ("accepted_device_count", "2"),
+        ("failed_device_count", "0"),
+    ]);
+    let target = direct_target_from_result(&result);
+
+    let rendered = render_send_result(&target, &result, true).expect("render");
+    let delivery = &rendered.data["delivery"];
+
+    assert_eq!(delivery["attempted_device_count"], 1);
+    assert_eq!(delivery["previously_accepted_device_count"], 1);
+    assert_eq!(delivery["newly_accepted_device_count"], 1);
+    assert_eq!(delivery["accepted_device_count"], 2);
+    assert_eq!(delivery["failed_device_count"], 0);
 }
 
 #[test]
@@ -158,6 +250,74 @@ fn attachment_destination_errors_map_to_cli_path_errors() {
         }),
         MessageAdapterError::PathUnavailable("write temp file failed".to_string())
     );
+}
+
+#[test]
+fn message_service_public_code_does_not_degrade_to_internal_error() {
+    let private_marker = "remote-private-message-data";
+    for service_code in ["anp.device_not_eligible", "anp.device_state_changed"] {
+        let mapped = im_error_to_message_error(im_core::ImError::Service {
+            status_code: None,
+            code: Some(service_code.to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(json!({"private": private_marker})),
+        });
+
+        assert_eq!(
+            mapped,
+            MessageAdapterError::PublicServiceCode(service_code.to_owned())
+        );
+        assert!(!format!("{mapped:?}").contains(private_marker));
+        assert!(!mapped.to_string().contains(private_marker));
+    }
+}
+
+#[test]
+fn message_service_auth_status_precedes_public_service_code() {
+    let private_marker = "remote-private-auth-error";
+    for status_code in [401, 403] {
+        let mapped = im_error_to_message_error(im_core::ImError::Service {
+            status_code: Some(status_code),
+            code: Some("anp.device_not_eligible".to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(json!({"private": private_marker})),
+        });
+
+        assert_eq!(
+            mapped,
+            MessageAdapterError::Service(ServiceError {
+                status_code,
+                rpc_code: 0,
+                message: "remote service request failed".to_owned(),
+                data: None,
+            })
+        );
+        assert!(!format!("{mapped:?}").contains(private_marker));
+        assert!(!mapped.to_string().contains(private_marker));
+    }
+}
+
+#[test]
+fn message_service_private_code_and_payload_are_not_preserved() {
+    let private_marker = "remote-private-error-payload";
+    let mapped = im_error_to_message_error(im_core::ImError::Service {
+        status_code: None,
+        code: Some("private diagnostic code".to_owned()),
+        message: private_marker.to_owned(),
+        data: Some(json!({"private": private_marker})),
+    });
+
+    assert_eq!(
+        mapped,
+        MessageAdapterError::Service(ServiceError {
+            status_code: 0,
+            rpc_code: 0,
+            message: "remote service request failed".to_owned(),
+            data: None,
+        })
+    );
+    assert!(!format!("{mapped:?}").contains(private_marker));
+    assert!(!mapped.to_string().contains(private_marker));
 }
 
 fn unique_temp_root(name: &str) -> std::path::PathBuf {

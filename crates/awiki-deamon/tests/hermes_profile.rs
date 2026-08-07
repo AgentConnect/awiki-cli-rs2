@@ -17,9 +17,11 @@ use awiki_deamon::registration::{
 };
 use awiki_deamon::state::HermesProfileRecord;
 use awiki_deamon::{DaemonConfig, DaemonState};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::Connection;
 use serde_json::json;
 use std::sync::MutexGuard;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -77,17 +79,49 @@ impl AgentRegistrationClient for MockRegistrationClient {
             .and_then(serde_json::Value::as_str)
             .unwrap()
             .to_string();
+        let account_id = format!("user_{}", request.handle);
+        let manifest = anp::authentication::validate_device_manifest(&request.did_document)
+            .unwrap()
+            .unwrap();
+        let device = manifest.devices.first().unwrap();
+        let response_handle = request.handle.clone();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": did,
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": did,
+            "user_id": account_id,
+            "device_id": device.device_id,
+            "key_id": device.signing_key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 3600,
+            "jti": format!("mock-device-{}", device.device_id),
+        });
+        let access_token = format!(
+            "e30.{}.test-signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        );
         Ok(AgentRegistrationExchangeResult {
             token_id: format!("agtok_{}_{}", request.agent_kind.as_str(), request.handle),
             did,
-            user_id: Some(format!("user_{}", request.handle)),
+            user_id: Some(account_id),
             agent_kind: request.agent_kind,
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
-            handle: request.handle,
+            handle: response_handle,
+            binding_generation: Some("1".to_string()),
             status: "registered".to_string(),
-            access_token: Some("jwt-agent-secret".to_string()),
+            access_token: Some(access_token),
         })
     }
 }
@@ -219,7 +253,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 33);
+    assert_eq!(summary.schema_version, 35);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(

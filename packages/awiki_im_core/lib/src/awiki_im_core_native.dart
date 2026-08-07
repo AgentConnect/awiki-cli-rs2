@@ -9,6 +9,7 @@ import 'generated/api/directory.dart' as gen_directory;
 import 'generated/api/email.dart' as gen_email;
 import 'generated/api/groups.dart' as gen_groups;
 import 'generated/api/identity.dart' as gen_identity_api;
+import 'generated/api/local_state_upgrade.dart' as gen_local_state_upgrade;
 import 'generated/api/messages.dart' as gen_messages;
 import 'generated/api/profile.dart' as gen_profile;
 import 'generated/api/realtime.dart' as gen_realtime;
@@ -21,6 +22,7 @@ import 'generated/dto/email.dart' as gen_email_dto;
 import 'generated/dto/error.dart' as gen_error;
 import 'generated/dto/group.dart' as gen_group_dto;
 import 'generated/dto/identity.dart' as gen_identity;
+import 'generated/dto/local_state_upgrade.dart' as gen_local_state_upgrade_dto;
 import 'generated/dto/message.dart' as gen_message;
 import 'generated/dto/profile.dart' as gen_profile_dto;
 import 'generated/dto/realtime.dart' as gen_realtime_dto;
@@ -34,6 +36,7 @@ import 'models/email.dart';
 import 'models/error.dart';
 import 'models/group.dart';
 import 'models/identity.dart';
+import 'models/local_state_upgrade.dart';
 import 'models/message.dart';
 import 'models/message_payload.dart';
 import 'models/profile.dart';
@@ -61,8 +64,43 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       capability: error.capability,
       serviceCode: error.serviceCode,
       serviceDataJson: error.serviceDataJson,
+      deviceRevokeOutcomeCategory: error.deviceRevokeOutcomeCategory
+          ?._toModel(),
+      handleRecoveryFailureCode: _handleRecoveryFailureCode(
+        error.serviceCode,
+      ),
     );
   }
+}
+
+HandleRecoveryFailureCode? _handleRecoveryFailureCode(String? code) =>
+    switch (code) {
+      'handle_recovery_not_prepared' => HandleRecoveryFailureCode.notPrepared,
+      'handle_recovery_user_presence_required' =>
+        HandleRecoveryFailureCode.userPresenceRequired,
+      'handle_recovery_transition_mismatch' =>
+        HandleRecoveryFailureCode.transitionMismatch,
+      'handle_recovery_transition_chain_unsupported' =>
+        HandleRecoveryFailureCode.transitionChainUnsupported,
+      'handle_recovery_remote_state_changed' =>
+        HandleRecoveryFailureCode.remoteStateChanged,
+      'handle_recovery_outcome_unknown' =>
+        HandleRecoveryFailureCode.outcomeUnknown,
+      'handle_recovery_local_state_unavailable' =>
+        HandleRecoveryFailureCode.localStateUnavailable,
+      'handle_recovery_blocked' => HandleRecoveryFailureCode.blocked,
+      _ => null,
+    };
+
+extension on gen_error.DartDeviceRevokeOutcomeCategory {
+  DeviceRevokeOutcomeCategory _toModel() => switch (this) {
+    gen_error.DartDeviceRevokeOutcomeCategory.cancelledBeforeSubmit =>
+      DeviceRevokeOutcomeCategory.cancelledBeforeSubmit,
+    gen_error.DartDeviceRevokeOutcomeCategory.rejectedBeforeCommit =>
+      DeviceRevokeOutcomeCategory.rejectedBeforeCommit,
+    gen_error.DartDeviceRevokeOutcomeCategory.outcomeUnknown =>
+      DeviceRevokeOutcomeCategory.outcomeUnknown,
+  };
 }
 
 class AwikiImCore {
@@ -85,6 +123,40 @@ class AwikiImCore {
       ),
     );
     return AwikiImCore._(inner);
+  }
+
+  static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.inspectLocalStateUpgrade(
+        paths: paths._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  static Future<LocalStateUpgradeResult> upgradeLocalState({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.upgradeLocalState(paths: paths._toGen()),
+    );
+    return result._toModel();
+  }
+
+  static Future<LocalStateRestoreResult> restoreLocalStateBackup({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.restoreLocalStateBackup(
+        paths: paths._toGen(),
+      ),
+    );
+    return result._toModel();
   }
 
   Future<AwikiImClient> client(IdentitySelector selector) async {
@@ -127,12 +199,364 @@ class AwikiImCore {
     return identity._toModel();
   }
 
+  Future<IdentityDeviceSummary> identityDeviceSummary(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final summary = await _mapNativeErrors(
+      () => gen_identity_api.identityDeviceSummary(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return summary._toModel();
+  }
+
+  Future<LegacyRegistryEpochAdoptionAuthority?>
+  legacyRegistryEpochAdoptionAuthority(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    final authority = await _mapNativeErrors(
+      () => gen_identity_api.legacyRegistryEpochAdoptionAuthority(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return authority?._toModel();
+  }
+
+  Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    required String phone,
+    required String handle,
+    required String operationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.requestHandleRecoveryOtp(
+        core: _inner,
+        phone: phone,
+        handle: handle,
+        operationId: operationId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> prepareHandleRecovery({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String operationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.prepareHandleRecovery(
+        core: _inner,
+        selector: selector._toGen(),
+        phone: phone,
+        code: code,
+        handle: handle,
+        operationId: operationId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> activateHandleRecovery({
+    required String recoveryId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.activateHandleRecovery(
+        core: _inner,
+        recoveryId: recoveryId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> resumeHandleRecovery(
+    String recoveryId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.resumeHandleRecovery(
+        core: _inner,
+        recoveryId: recoveryId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> handleRecoveryStatus(
+    String recoveryId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.handleRecoveryStatus(
+        core: _inner,
+        recoveryId: recoveryId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<AuthorizedJoinActivationProgress> activateAuthorizedJoin({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String did,
+    required String operationId,
+    int? ttlSeconds,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.activateAuthorizedJoin(
+        core: _inner,
+        selector: selector._toGen(),
+        phone: phone,
+        code: code,
+        handle: handle,
+        did: did,
+        operationId: operationId,
+        ttlSeconds: ttlSeconds == null ? null : BigInt.from(ttlSeconds),
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<AuthorizedJoinActivationProgress> resumeAuthorizedJoinActivation(
+    String joinSessionId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.resumeAuthorizedJoinActivation(
+        core: _inner,
+        joinSessionId: joinSessionId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<DeviceRevokeResult> revokeDevice({
+    required IdentitySelector selector,
+    required String targetDeviceId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.revokeDevice(
+        core: _inner,
+        selector: selector._toGen(),
+        targetDeviceId: targetDeviceId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
+    _ensureNotDisposed();
+    final sessions = await _mapNativeErrors(
+      () => gen_identity_api.localDeviceJoinSessions(core: _inner),
+    );
+    return sessions.map((session) => session._toModel()).toList();
+  }
+
+  Future<DeviceJoinProgress> beginDeviceJoin({
+    required String did,
+    required String operationId,
+    int ttlSeconds = 600,
+    required DeviceJoinAccountVerificationGrant accountVerificationGrant,
+  }) async {
+    _ensureNotDisposed();
+    final grantBytes = accountVerificationGrant.takeBytes();
+    try {
+      final progress = await _mapNativeErrors(
+        () => gen_identity_api.beginDeviceJoin(
+          core: _inner,
+          did: did,
+          operationId: operationId,
+          ttlSeconds: BigInt.from(ttlSeconds),
+          accountVerificationGrant: grantBytes,
+        ),
+      );
+      return progress._toModel();
+    } finally {
+      grantBytes.fillRange(0, grantBytes.length, 0);
+    }
+  }
+
+  Future<DeviceJoinProgress> pollNewDeviceJoin(String joinSessionId) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.pollNewDeviceJoin(
+        core: _inner,
+        joinSessionId: joinSessionId,
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinSessionSummary> cancelNewDeviceJoin(
+    String joinSessionId,
+  ) async {
+    _ensureNotDisposed();
+    final session = await _mapNativeErrors(
+      () => gen_identity_api.cancelNewDeviceJoin(
+        core: _inner,
+        joinSessionId: joinSessionId,
+      ),
+    );
+    return session._toModel();
+  }
+
+  Future<DeviceJoinRegistrySnapshot> identityDeviceRegistry(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final snapshot = await _mapNativeErrors(
+      () => gen_identity_api.identityDeviceRegistry(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return snapshot._toModel();
+  }
+
+  Future<List<DeviceJoinRequestNotice>> localDeviceJoinRequests(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final requests = await _mapNativeErrors(
+      () => gen_identity_api.localDeviceJoinRequests(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return requests.map((request) => request._toModel()).toList();
+  }
+
+  Future<DeviceJoinProgress> localDeviceJoinVerificationProgress({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.localDeviceJoinVerificationProgress(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinProgress> startDeviceJoinVerification({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required String operationId,
+    int challengeTtlSeconds = 300,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.startDeviceJoinVerification(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+        operationId: operationId,
+        challengeTtlSeconds: BigInt.from(challengeTtlSeconds),
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinProgress> rejectDeviceJoin({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required DeviceJoinRejectReason reason,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.rejectDeviceJoin(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+        reason: reason._toGen(),
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required bool sasConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final prompt = await _mapNativeErrors(
+      () => gen_identity_api.prepareDeviceJoinApproval(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+        sasConfirmed: sasConfirmed,
+      ),
+    );
+    return prompt._toModel();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinApproval({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.confirmDeviceJoinApproval(
+        core: _inner,
+        approvalHandle: approvalHandle,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return progress._toModel();
+  }
+
   Future<IdentityVaultStatus> identityVaultStatus(
     IdentitySelector selector,
   ) async {
     _ensureNotDisposed();
     final status = await _mapNativeErrors(
       () => gen_identity_api.identityVaultStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return status._toModel();
+  }
+
+  Future<LegacyUpgradeStatus> legacyUpgradeStatus(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.legacyUpgradeStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return status._toModel();
+  }
+
+  Future<LegacyUpgradeStatus> upgradeLegacyIdentity(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.upgradeLegacyIdentity(
         core: _inner,
         selector: selector._toGen(),
       ),
@@ -289,23 +713,6 @@ class AwikiImCore {
     return result._toModel();
   }
 
-  Future<RecoverHandleResult> recoverHandle({
-    required String handle,
-    required String phone,
-    String? otp,
-  }) async {
-    _ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_identity_api.recoverHandle(
-        core: _inner,
-        handle: handle,
-        phone: phone,
-        otp: otp,
-      ),
-    );
-    return result._toModel();
-  }
-
   Future<void> dispose() async {
     if (_disposed) return;
     await _mapNativeErrors(() => gen_core.closeCore(core: _inner));
@@ -344,11 +751,20 @@ class AwikiImClient {
   GroupApi get groups => GroupApi._(this);
   RealtimeApi get realtime => RealtimeApi._(this);
   SecureApi get secure => SecureApi._(this);
+  RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._(this);
 
   Stream<RealtimeEvent> get events => _eventsController.stream;
 
   Stream<RealtimeConnectionState> get connectionStates =>
       _connectionStatesController.stream;
+
+  Future<ActiveSyncAccountBinding> activeSyncAccountBinding() async {
+    _ensureNotDisposed();
+    final binding = await _mapNativeErrors(
+      () => gen_identity_api.activeSyncAccountBinding(client: _inner),
+    );
+    return binding._toModel();
+  }
 
   Future<void> dispose() async {
     if (_disposed) return;
@@ -364,6 +780,67 @@ class AwikiImClient {
       throw const AwikiImCoreException(
         code: 'object_closed',
         message: 'client disposed',
+      );
+    }
+  }
+}
+
+class _NativeRootKeyTransferAuthorizationHandle
+    implements RootKeyTransferAuthorizationHandle {
+  const _NativeRootKeyTransferAuthorizationHandle(this.value);
+
+  final String value;
+
+  @override
+  String toString() => 'RootKeyTransferAuthorizationHandle(<redacted>)';
+}
+
+class RootKeyTransferApi {
+  RootKeyTransferApi._(this._client);
+
+  final AwikiImClient _client;
+
+  Future<RootKeyTransferPreparation> prepare({
+    required String recipientDeviceId,
+  }) async {
+    _ensureAvailable();
+    final preparation = await _mapRootKeyTransferErrors(
+      () => gen_identity_api.prepareRootKeyTransfer(
+        client: _client._inner,
+        recipientDeviceId: recipientDeviceId,
+      ),
+    );
+    return preparation._toModel();
+  }
+
+  Future<RootKeyTransferSendResult> confirmAndSend({
+    required RootKeyTransferAuthorizationHandle authorizationHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureAvailable();
+    if (authorizationHandle case _NativeRootKeyTransferAuthorizationHandle(
+      :final value,
+    )) {
+      final result = await _mapRootKeyTransferErrors(
+        () => gen_identity_api.confirmAndSendRootKeyTransfer(
+          client: _client._inner,
+          authorizationHandle: value,
+          userPresenceConfirmed: userPresenceConfirmed,
+        ),
+      );
+      return result._toModel();
+    }
+    throw const RootKeyTransferException(
+      code: 'root_transfer.authorization_invalid',
+      retryable: false,
+    );
+  }
+
+  void _ensureAvailable() {
+    if (_client._disposed) {
+      throw const RootKeyTransferException(
+        code: 'root_transfer.temporarily_unavailable',
+        retryable: true,
       );
     }
   }
@@ -730,6 +1207,28 @@ class MessageApi {
         client: _client._inner,
         request: request._toGen(),
       ),
+    );
+    return result._toModel();
+  }
+
+  Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncNow(
+        client: _client._inner,
+        request: gen_message.DartMessageSyncRequest(
+          reason: request.reason,
+          limit: request.limit,
+        ),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<MessageSyncDiagnostics> syncDiagnostics() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncDiagnostics(client: _client._inner),
     );
     return result._toModel();
   }
@@ -1114,10 +1613,17 @@ class GroupApi {
     return result._toModel();
   }
 
-  Future<GroupReadResult> listGroups({required int limit}) async {
+  Future<GroupReadResult> listGroups({
+    required int limit,
+    String? cursor,
+  }) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
-      () => gen_groups.listGroups(client: _client._inner, limit: limit),
+      () => gen_groups.listGroups(
+        client: _client._inner,
+        limit: limit,
+        cursor: cursor,
+      ),
     );
     return result._toModel();
   }
@@ -1125,6 +1631,7 @@ class GroupApi {
   Future<GroupReadResult> listMembers(
     String groupDid, {
     required int limit,
+    String? cursor,
   }) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -1132,6 +1639,7 @@ class GroupApi {
         client: _client._inner,
         groupDid: groupDid,
         limit: limit,
+        cursor: cursor,
       ),
     );
     return result._toModel();
@@ -1363,12 +1871,22 @@ extension on gen_realtime_dto.DartRealtimeEvent {
 
 extension on gen_realtime_dto.DartRealtimeSyncHint {
   RealtimeSyncHint _toModel() => RealtimeSyncHint(
-    eventId: eventId,
-    eventSeq: eventSeq,
-    eventType: eventType,
+    domains: domains.map((domain) => domain._toModel()).toSet(),
+    reason: reason,
     syncDirty: syncDirty,
     gapDetected: gapDetected,
+    hasUnknownDomain: hasUnknownDomain,
   );
+}
+
+extension on gen_realtime_dto.DartSyncDomain {
+  SyncDomain _toModel() => switch (this) {
+    gen_realtime_dto.DartSyncDomain.message => SyncDomain.message,
+    gen_realtime_dto.DartSyncDomain.profile => SyncDomain.profile,
+    gen_realtime_dto.DartSyncDomain.agentInventory => SyncDomain.agentInventory,
+    gen_realtime_dto.DartSyncDomain.agentStatus => SyncDomain.agentStatus,
+    gen_realtime_dto.DartSyncDomain.deviceRegistry => SyncDomain.deviceRegistry,
+  };
 }
 
 class SecureApi {
@@ -1487,12 +2005,22 @@ extension on AwikiImCoreConfig {
   gen_config.DartImCoreConfig _toGen() => gen_config.DartImCoreConfig(
     serviceBaseUrl: serviceBaseUrl,
     didDomain: didDomain,
+    clientVersionInfo: clientVersionInfo?._toGen(),
     userServiceEndpoint: userServiceEndpoint,
     messageServiceEndpoint: messageServiceEndpoint,
     mailServiceEndpoint: mailServiceEndpoint,
     anpServiceEndpoint: anpServiceEndpoint,
     anpServiceDid: anpServiceDid,
     transportPolicy: transportPolicy._toGen(),
+  );
+}
+
+extension on AwikiClientVersionInfo {
+  gen_config.DartClientVersionInfo _toGen() => gen_config.DartClientVersionInfo(
+    product: product,
+    release: release,
+    version: version,
+    build: build == null ? null : BigInt.from(build!),
   );
 }
 
@@ -1511,6 +2039,10 @@ extension on AwikiImCoreOpenOptions {
   gen_config.DartImCoreOpenOptions _toGen() => gen_config.DartImCoreOpenOptions(
     identitySecretStoragePolicy: identitySecretStoragePolicy._toGen(),
     identitySecretVault: identitySecretVault?._toGen(),
+    multiDeviceDeviceRevokeEnabled: multiDeviceDeviceRevokeEnabled,
+    multiDeviceDirectE2EeEnabled: multiDeviceDirectE2eeEnabled,
+    multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
+    multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
   );
 }
 
@@ -1527,6 +2059,56 @@ extension on ImCoreSecretVaultOptions {
 extension on DeviceVaultRootKey {
   gen_config.DartDeviceVaultRootKey _toGen() =>
       gen_config.DartDeviceVaultRootKey(bytes: bytes);
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeInspection {
+  LocalStateUpgradeInspection _toModel() => LocalStateUpgradeInspection(
+    eligibility: switch (eligibility) {
+      gen_local_state_upgrade_dto
+          .DartLocalStateUpgradeEligibility
+          .notRequired =>
+        LocalStateUpgradeEligibility.notRequired,
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeEligibility.required_ =>
+        LocalStateUpgradeEligibility.required,
+    },
+    sourceSchemaVersion: sourceSchemaVersion,
+    targetSchemaVersion: targetSchemaVersion,
+  );
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeResult {
+  LocalStateUpgradeResult _toModel() => LocalStateUpgradeResult(
+    status: switch (status) {
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeStatus.notRequired =>
+        LocalStateUpgradeStatus.notRequired,
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeStatus.completed =>
+        LocalStateUpgradeStatus.completed,
+    },
+    sourceSchemaVersion: sourceSchemaVersion,
+    targetSchemaVersion: targetSchemaVersion,
+    migratedPersonas: migratedPersonas.toInt(),
+    migratedConversations: migratedConversations.toInt(),
+    unresolvedMessages: unresolvedMessages.toInt(),
+    aliasCount: aliasCount.toInt(),
+    backupAvailable: backupAvailable,
+    aliasMappings: aliasMappings
+        .map(
+          (mapping) => LocalStateConversationAliasMapping(
+            ownerIdentityId: mapping.ownerIdentityId,
+            ownerDid: mapping.ownerDid,
+            legacyConversationId: mapping.legacyConversationId,
+            canonicalConversationId: mapping.canonicalConversationId,
+          ),
+        )
+        .toList(growable: false),
+  );
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateRestoreResult {
+  LocalStateRestoreResult _toModel() => LocalStateRestoreResult(
+    restoredSchemaVersion: restoredSchemaVersion,
+    targetSafetyCopyAvailable: targetSafetyCopyAvailable,
+  );
 }
 
 extension on MessageTransportPolicy {
@@ -1590,6 +2172,192 @@ extension on gen_identity.DartIdentitySummary {
     readyForAuth: readyForAuth,
     readyForMessaging: readyForMessaging,
     missing: missing,
+  );
+}
+
+extension on gen_identity.DartLegacyUpgradeStatus {
+  LegacyUpgradeStatus _toModel() => switch (this) {
+    gen_identity.DartLegacyUpgradeStatus_Idle() =>
+      const LegacyUpgradeStatus.idle(),
+    gen_identity.DartLegacyUpgradeStatus_Running() =>
+      const LegacyUpgradeStatus.running(),
+    gen_identity.DartLegacyUpgradeStatus_RetryRequired(
+      :final identityId,
+      :final code,
+    ) =>
+      LegacyUpgradeStatus.retryRequired(identityId: identityId, code: code),
+    gen_identity.DartLegacyUpgradeStatus_Completed() =>
+      const LegacyUpgradeStatus.completed(),
+  };
+}
+
+extension on gen_identity.DartIdentityDeviceSummary {
+  IdentityDeviceSummary _toModel() => IdentityDeviceSummary(
+    identity: identity._toModel(),
+    mode: switch (mode) {
+      gen_identity.DartIdentityDeviceMode.legacy => IdentityDeviceMode.legacy,
+      gen_identity.DartIdentityDeviceMode.vNext => IdentityDeviceMode.vNext,
+    },
+    protocolDeviceId: protocolDeviceId,
+    role: switch (role) {
+      gen_identity.DartIdentityDeviceRole.member => IdentityDeviceRole.member,
+      gen_identity.DartIdentityDeviceRole.admin => IdentityDeviceRole.admin,
+      null => null,
+    },
+    signingKeyId: signingKeyId,
+    e2eeKeyId: e2EeKeyId,
+    readiness: switch (readiness) {
+      gen_identity.DartIdentityDeviceReadiness.legacy =>
+        IdentityDeviceReadiness.legacy,
+      gen_identity.DartIdentityDeviceReadiness.memberReady =>
+        IdentityDeviceReadiness.memberReady,
+      gen_identity.DartIdentityDeviceReadiness.adminAwaitingRoot =>
+        IdentityDeviceReadiness.adminAwaitingRoot,
+      gen_identity.DartIdentityDeviceReadiness.adminReady =>
+        IdentityDeviceReadiness.adminReady,
+      gen_identity.DartIdentityDeviceReadiness.blocked =>
+        IdentityDeviceReadiness.blocked,
+    },
+    blockedReason: blockedReason,
+  );
+}
+
+extension on gen_identity.DartDeviceJoinRole {
+  DeviceJoinRole _toModel() => switch (this) {
+    gen_identity.DartDeviceJoinRole.member => DeviceJoinRole.member,
+    gen_identity.DartDeviceJoinRole.admin => DeviceJoinRole.admin,
+  };
+}
+
+extension on gen_identity.DartDeviceJoinAuthorizationStatus {
+  DeviceJoinAuthorizationStatus _toModel() => switch (this) {
+    gen_identity.DartDeviceJoinAuthorizationStatus.active =>
+      DeviceJoinAuthorizationStatus.active,
+    gen_identity.DartDeviceJoinAuthorizationStatus.revoked =>
+      DeviceJoinAuthorizationStatus.revoked,
+  };
+}
+
+extension on gen_identity.DartDeviceJoinSessionSummary {
+  DeviceJoinSessionSummary _toModel() => DeviceJoinSessionSummary(
+    joinSessionId: joinSessionId,
+    did: did,
+    protocolDeviceId: protocolDeviceId,
+    side: switch (side) {
+      gen_identity.DartDeviceJoinSide.newDevice => DeviceJoinSide.newDevice,
+      gen_identity.DartDeviceJoinSide.admin => DeviceJoinSide.admin,
+    },
+    phase: switch (phase) {
+      gen_identity.DartDeviceJoinPhase.pending => DeviceJoinPhase.pending,
+      gen_identity.DartDeviceJoinPhase.challengePrepared =>
+        DeviceJoinPhase.challengePrepared,
+      gen_identity.DartDeviceJoinPhase.responsePrepared =>
+        DeviceJoinPhase.responsePrepared,
+      gen_identity.DartDeviceJoinPhase.responseVerified =>
+        DeviceJoinPhase.responseVerified,
+      gen_identity.DartDeviceJoinPhase.approvalPrepared =>
+        DeviceJoinPhase.approvalPrepared,
+      gen_identity.DartDeviceJoinPhase.authorized => DeviceJoinPhase.authorized,
+      gen_identity.DartDeviceJoinPhase.cancelled => DeviceJoinPhase.cancelled,
+      gen_identity.DartDeviceJoinPhase.expired => DeviceJoinPhase.expired,
+    },
+    expiresAt: expiresAt,
+  );
+}
+
+extension on gen_identity.DartDeviceJoinAuthorizedDeviceSummary {
+  DeviceJoinAuthorizedDeviceSummary _toModel() =>
+      DeviceJoinAuthorizedDeviceSummary(
+        protocolDeviceId: protocolDeviceId,
+        signingKeyId: signingKeyId,
+        e2eeKeyId: e2EeKeyId,
+        status: status._toModel(),
+        role: role._toModel(),
+        managementReady: managementReady,
+        isCurrent: isCurrent,
+      );
+}
+
+extension on gen_identity.DartDeviceJoinRequestNotice {
+  DeviceJoinRequestNotice _toModel() => DeviceJoinRequestNotice(
+    eventId: eventId,
+    joinSessionId: joinSessionId,
+    did: did,
+    protocolDeviceId: protocolDeviceId,
+    candidateKeyFingerprint: candidateKeyFingerprint,
+    issuedAt: issuedAt,
+    expiresAt: expiresAt,
+    state: state._toModel(),
+    claimedByCurrentDevice: claimedByCurrentDevice,
+    canStartVerification: canStartVerification,
+  );
+}
+
+extension on gen_identity.DartDeviceJoinRegistrySnapshot {
+  DeviceJoinRegistrySnapshot _toModel() => DeviceJoinRegistrySnapshot(
+    did: did,
+    registryVersion: registryVersion,
+    devices: devices.map((device) => device._toModel()).toList(),
+  );
+}
+
+extension on gen_identity.DartDeviceRegistryAuthorizedDeviceSummary {
+  DeviceRegistryAuthorizedDeviceSummary _toModel() =>
+      DeviceRegistryAuthorizedDeviceSummary(
+        protocolDeviceId: protocolDeviceId,
+        signingKeyId: signingKeyId,
+        e2eeKeyId: e2EeKeyId,
+        status: status._toModel(),
+        role: role._toModel(),
+        managementReady: managementReady,
+        isCurrent: isCurrent,
+        authGeneration: authGeneration,
+      );
+}
+
+extension on gen_identity.DartDeviceJoinRemoteState {
+  DeviceJoinRemoteState _toModel() => switch (this) {
+    gen_identity.DartDeviceJoinRemoteState.pending =>
+      DeviceJoinRemoteState.pending,
+    gen_identity.DartDeviceJoinRemoteState.challengeSent =>
+      DeviceJoinRemoteState.challengeSent,
+    gen_identity.DartDeviceJoinRemoteState.responseVerified =>
+      DeviceJoinRemoteState.responseVerified,
+    gen_identity.DartDeviceJoinRemoteState.consumed =>
+      DeviceJoinRemoteState.consumed,
+    gen_identity.DartDeviceJoinRemoteState.cancelled =>
+      DeviceJoinRemoteState.cancelled,
+    gen_identity.DartDeviceJoinRemoteState.rejected =>
+      DeviceJoinRemoteState.rejected,
+    gen_identity.DartDeviceJoinRemoteState.expired =>
+      DeviceJoinRemoteState.expired,
+  };
+}
+
+extension on gen_identity.DartDeviceJoinProgress {
+  DeviceJoinProgress _toModel() => DeviceJoinProgress(
+    session: session._toModel(),
+    remoteState: remoteState._toModel(),
+    sas: sas,
+    authorizedDevice: authorizedDevice?._toModel(),
+  );
+}
+
+extension on DeviceJoinRejectReason {
+  gen_identity.DartDeviceJoinRejectReason _toGen() => switch (this) {
+    DeviceJoinRejectReason.userRejected =>
+      gen_identity.DartDeviceJoinRejectReason.userRejected,
+    DeviceJoinRejectReason.sasMismatch =>
+      gen_identity.DartDeviceJoinRejectReason.sasMismatch,
+  };
+}
+
+extension on gen_identity.DartDeviceJoinApprovalPrompt {
+  DeviceJoinApprovalPrompt _toModel() => DeviceJoinApprovalPrompt(
+    approvalHandle: approvalHandle,
+    joinSessionId: joinSessionId,
+    sas: sas,
+    expiresAt: expiresAt,
   );
 }
 
@@ -1689,23 +2457,147 @@ extension on gen_identity.DartDaemonSubkeyAuthorizationRevokeResult {
 extension on gen_identity.DartHandleRegistrationResult {
   HandleRegistrationResult _toModel() => HandleRegistrationResult(
     identity: identity?._toModel(),
+    accountId: accountId,
     handle: handle,
     method: method,
     state: state,
+    joinRequired: joinRequired?._toModel(),
     defaultIdentityChange: defaultIdentityChange?._toModel(),
     warnings: warnings,
   );
 }
 
-extension on gen_identity.DartRecoverHandleResult {
-  RecoverHandleResult _toModel() => RecoverHandleResult(
+extension on gen_identity.DartActiveSyncAccountBinding {
+  ActiveSyncAccountBinding _toModel() => ActiveSyncAccountBinding(
+    ownerIdentityId: ownerIdentityId,
+    accountId: accountId,
+    currentDid: currentDid,
+    protocolDeviceId: protocolDeviceId,
+    identityGeneration: identityGeneration,
+    deviceAuthGeneration: deviceAuthGeneration,
+  );
+}
+
+extension on gen_identity.DartLegacyRegistryEpochAdoptionAuthority {
+  LegacyRegistryEpochAdoptionAuthority _toModel() =>
+      LegacyRegistryEpochAdoptionAuthority(
+        ownerIdentityId: ownerIdentityId,
+        accountUserId: accountUserId,
+        currentDid: currentDid,
+        bindingGeneration: bindingGeneration,
+        protocolDeviceId: protocolDeviceId,
+        deviceAuthGeneration: deviceAuthGeneration,
+        provenanceId: provenanceId,
+      );
+}
+
+extension on gen_identity.DartHandleRecoveryOtpResult {
+  HandleRecoveryOtpResult _toModel() => HandleRecoveryOtpResult(
     handle: handle,
-    phone: phone,
-    state: state,
-    recoveredIdentity: recoveredIdentity?._toModel(),
-    userId: userId,
-    accessTokenPresent: accessTokenPresent,
-    warnings: warnings,
+    operationId: operationId,
+    accepted: accepted,
+    retryAfterSeconds: retryAfterSeconds,
+    retryAt: DateTime.parse(retryAt),
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryImpact {
+  HandleRecoveryImpact _toModel() => HandleRecoveryImpact(
+    localOrdinaryDataWillMigrate: localOrdinaryDataWillMigrate,
+    otherDevicesMustRejoin: otherDevicesMustRejoin,
+    unsupportedE2eeGroupCount: unsupportedE2EeGroupCount,
+    unsupportedDidOnlyGroupCount: unsupportedDidOnlyGroupCount,
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryResetReference {
+  HandleRecoveryRegistryEpochReset _toModel() =>
+      HandleRecoveryRegistryEpochReset(
+        accountUserId: accountUserId,
+        ownerIdentityId: ownerIdentityId,
+        handle: handle,
+        previousDid: previousDid,
+        currentDid: currentDid,
+        bindingGeneration: bindingGeneration,
+        sourceKind: switch (sourceKind) {
+          gen_identity.DartHandleRecoveryTransitionSourceKind.initiator =>
+            HandleRecoveryTransitionSourceKind.initiator,
+          gen_identity.DartHandleRecoveryTransitionSourceKind.joinedDevice =>
+            HandleRecoveryTransitionSourceKind.joinedDevice,
+        },
+        sourceId: sourceId,
+      );
+}
+
+extension on gen_identity.DartHandleRecoveryProgress {
+  HandleRecoveryProgress _toModel() => HandleRecoveryProgress(
+    recoveryId: recoveryId,
+    operationId: operationId,
+    ownerIdentityId: ownerIdentityId,
+    handle: handle,
+    previousDid: previousDid,
+    currentDid: currentDid,
+    bindingGeneration: bindingGeneration,
+    phase: switch (phase) {
+      gen_identity.DartHandleRecoveryPhase.prepared =>
+        HandleRecoveryPhase.prepared,
+      gen_identity.DartHandleRecoveryPhase.remoteCommitPending =>
+        HandleRecoveryPhase.remoteCommitPending,
+      gen_identity.DartHandleRecoveryPhase.remoteCommitted =>
+        HandleRecoveryPhase.remoteCommitted,
+      gen_identity.DartHandleRecoveryPhase.identityTransitionPending =>
+        HandleRecoveryPhase.identityTransitionPending,
+      gen_identity.DartHandleRecoveryPhase.identitySwitched =>
+        HandleRecoveryPhase.identitySwitched,
+      gen_identity.DartHandleRecoveryPhase.completed =>
+        HandleRecoveryPhase.completed,
+      gen_identity.DartHandleRecoveryPhase.blocked =>
+        HandleRecoveryPhase.blocked,
+    },
+    impact: impact._toModel(),
+    registryEpochReset: resetReference?._toModel(),
+    failureCode: switch (blockedCode) {
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryNotPrepared =>
+        HandleRecoveryFailureCode.notPrepared,
+      gen_identity
+            .DartHandleRecoveryErrorCode
+            .handleRecoveryUserPresenceRequired =>
+        HandleRecoveryFailureCode.userPresenceRequired,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryTransitionMismatch =>
+        HandleRecoveryFailureCode.transitionMismatch,
+      gen_identity
+            .DartHandleRecoveryErrorCode
+            .handleRecoveryTransitionChainUnsupported =>
+        HandleRecoveryFailureCode.transitionChainUnsupported,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryRemoteStateChanged =>
+        HandleRecoveryFailureCode.remoteStateChanged,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryOutcomeUnknown =>
+        HandleRecoveryFailureCode.outcomeUnknown,
+      gen_identity
+            .DartHandleRecoveryErrorCode
+            .handleRecoveryLocalStateUnavailable =>
+        HandleRecoveryFailureCode.localStateUnavailable,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryBlocked =>
+        HandleRecoveryFailureCode.blocked,
+      null => null,
+    },
+  );
+}
+
+extension on gen_identity.DartAuthorizedJoinActivationProgress {
+  AuthorizedJoinActivationProgress _toModel() =>
+      AuthorizedJoinActivationProgress(
+        join: join._toModel(),
+        registryEpochReset: resetReference?._toModel(),
+      );
+}
+
+extension on gen_identity.DartHandleRegistrationJoinRequired {
+  HandleRegistrationJoinRequired _toModel() => HandleRegistrationJoinRequired(
+    did: did,
+    accountVerificationGrant: DeviceJoinAccountVerificationGrant.fromToken(
+      accountVerificationToken,
+    ),
   );
 }
 
@@ -1858,6 +2750,7 @@ extension on gen_profile_dto.DartUserProfile {
     profileUri: profileUri,
     subjectType: subjectType,
     updatedAt: updatedAt,
+    profileVersion: profileVersion,
     versionId: versionId,
     ttl: ttl?.toInt(),
   );
@@ -2346,6 +3239,9 @@ extension on gen_message.DartMessageMetadata {
 extension on gen_message.DartMessage {
   Message _toModel() => Message(
     id: id,
+    conversationId: conversationId,
+    senderPeerPersonaId: senderPeerPersonaId,
+    senderDidSnapshot: senderDidSnapshot,
     threadKind: threadKind,
     threadId: threadId,
     direction: direction._toModel(),
@@ -2369,6 +3265,10 @@ extension on gen_message.DartMessagePage {
 
 extension on gen_message.DartConversation {
   Conversation _toModel() => Conversation(
+    conversationId: conversationId,
+    peerPersonaId: peerPersonaId,
+    canonicalGroupDid: canonicalGroupDid,
+    resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
     conversationIdentity: conversationIdentity?._toModel(),
@@ -2382,6 +3282,17 @@ extension on gen_message.DartConversation {
     lastMessageAt: lastMessageAt,
     activityAt: activityAt,
   );
+}
+
+extension on gen_message.DartConversationResolutionState {
+  ConversationResolutionState _toModel() => switch (this) {
+    gen_message.DartConversationResolutionState.resolved =>
+      ConversationResolutionState.resolved,
+    gen_message.DartConversationResolutionState.legacyUnresolved =>
+      ConversationResolutionState.legacyUnresolved,
+    gen_message.DartConversationResolutionState.blockedConflict =>
+      ConversationResolutionState.blockedConflict,
+  };
 }
 
 extension on gen_message.DartConversationPage {
@@ -2430,9 +3341,7 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
-      threadKind: value.threadKind,
-      threadId: value.threadId,
-      conversationIdentity: value.conversationIdentity?._toModel(),
+      conversationId: value.conversationId,
     ),
     reorder: (value) => ConversationStorePatch(
       kind: ConversationStorePatchKind.reorder,
@@ -2440,9 +3349,7 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
-      threadKind: value.threadKind,
-      threadId: value.threadId,
-      conversationIdentity: value.conversationIdentity?._toModel(),
+      conversationId: value.conversationId,
       index: value.index,
     ),
     repairRequired: (value) => ConversationStorePatch(
@@ -2504,8 +3411,13 @@ extension on gen_message.DartThreadMessageStorePatch {
 
 extension on gen_message.DartConversationSnapshotItem {
   ConversationSnapshotItem _toModel() => ConversationSnapshotItem(
+    conversationId: conversationId,
+    peerPersonaId: peerPersonaId,
+    canonicalGroupDid: canonicalGroupDid,
+    resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
+    title: title,
     conversationIdentity: conversationIdentity?._toModel(),
     participants: participants,
     lastMessage: lastMessage?._toModel(),
@@ -2603,6 +3515,97 @@ extension on gen_message.DartSyncDeltaResult {
   );
 }
 
+extension on gen_message.DartMessageSyncStatus {
+  MessageSyncStatus _toModel() => switch (this) {
+    gen_message.DartMessageSyncStatus.idle => MessageSyncStatus.idle,
+    gen_message.DartMessageSyncStatus.changed => MessageSyncStatus.changed,
+    gen_message.DartMessageSyncStatus.recoveryRequired =>
+      MessageSyncStatus.recoveryRequired,
+    gen_message.DartMessageSyncStatus.retryableFailure =>
+      MessageSyncStatus.retryableFailure,
+    gen_message.DartMessageSyncStatus.authRevoked =>
+      MessageSyncStatus.authRevoked,
+  };
+}
+
+extension on gen_message.DartCommittedMessageSource {
+  CommittedMessageSource _toModel() => switch (this) {
+    gen_message.DartCommittedMessageSource.liveDelta =>
+      CommittedMessageSource.liveDelta,
+  };
+}
+
+extension on gen_message.DartCommittedIncomingMessage {
+  CommittedIncomingMessage _toModel() => CommittedIncomingMessage(
+    eventId: eventId,
+    logicalMessageId: logicalMessageId,
+    source: source._toModel(),
+    direction: direction._toModel(),
+    message: message._toModel(),
+  );
+}
+
+extension on gen_message.DartMessageSyncOutcome {
+  MessageSyncOutcome _toModel() => MessageSyncOutcome(
+    status: status._toModel(),
+    eventsApplied: eventsApplied,
+    pagesFetched: pagesFetched,
+    messagesHydrated: messagesHydrated,
+    duplicatesSkipped: duplicatesSkipped,
+    changedConversationIds: changedConversationIds,
+    committedIncomingMessages: committedIncomingMessages
+        .map((message) => message._toModel())
+        .toList(),
+    errorCode: errorCode,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageSyncMode {
+  MessageSyncMode _toModel() => switch (this) {
+    gen_message.DartMessageSyncMode.uninitialized =>
+      MessageSyncMode.uninitialized,
+    gen_message.DartMessageSyncMode.idle => MessageSyncMode.idle,
+    gen_message.DartMessageSyncMode.recovering => MessageSyncMode.recovering,
+    gen_message.DartMessageSyncMode.retryable => MessageSyncMode.retryable,
+    gen_message.DartMessageSyncMode.blocked => MessageSyncMode.blocked,
+  };
+}
+
+extension on gen_message.DartMessageSyncDirtyDomain {
+  MessageSyncDirtyDomain _toModel() => switch (this) {
+    gen_message.DartMessageSyncDirtyDomain.messages =>
+      MessageSyncDirtyDomain.messages,
+    gen_message.DartMessageSyncDirtyDomain.readState =>
+      MessageSyncDirtyDomain.readState,
+  };
+}
+
+extension on gen_message.DartMessageSyncRetryState {
+  MessageSyncRetryState _toModel() => switch (this) {
+    gen_message.DartMessageSyncRetryState.none => MessageSyncRetryState.none,
+    gen_message.DartMessageSyncRetryState.pending =>
+      MessageSyncRetryState.pending,
+    gen_message.DartMessageSyncRetryState.inFlight =>
+      MessageSyncRetryState.inFlight,
+    gen_message.DartMessageSyncRetryState.scheduled =>
+      MessageSyncRetryState.scheduled,
+    gen_message.DartMessageSyncRetryState.permanentFailure =>
+      MessageSyncRetryState.permanentFailure,
+  };
+}
+
+extension on gen_message.DartMessageSyncDiagnostics {
+  MessageSyncDiagnostics _toModel() => MessageSyncDiagnostics(
+    lastSuccessAt: lastSuccessAt,
+    mode: mode._toModel(),
+    pendingMutationCount: pendingMutationCount,
+    dirtyDomains: dirtyDomains.map((domain) => domain._toModel()).toList(),
+    retryState: retryState._toModel(),
+    nextRetryAt: nextRetryAt,
+  );
+}
+
 extension on gen_message.DartSyncThreadAfterResult {
   SyncThreadAfterResult _toModel() => SyncThreadAfterResult(
     messages: messages.map((message) => message._toModel()).toList(),
@@ -2654,6 +3657,7 @@ extension on GroupIdentityMode {
 
 extension on gen_group_dto.DartGroupSummary {
   GroupSummary _toModel() => GroupSummary(
+    conversationId: conversationId,
     id: id,
     did: did,
     name: name,
@@ -2668,6 +3672,7 @@ extension on gen_group_dto.DartGroupSummary {
 
 extension on gen_group_dto.DartGroupSnapshot {
   GroupSnapshot _toModel() => GroupSnapshot(
+    conversationId: conversationId,
     id: id,
     did: did,
     name: name,
@@ -2683,7 +3688,10 @@ extension on gen_group_dto.DartGroupSnapshot {
 
 extension on gen_group_dto.DartGroupMember {
   GroupMember _toModel() => GroupMember(
+    membershipId: membershipId,
+    peerPersonaId: peerPersonaId,
     did: did,
+    credentialDid: credentialDid,
     handle: handle,
     role: role,
     status: status,
@@ -2699,6 +3707,10 @@ extension on gen_group_dto.DartGroupReadResult {
     members: members.map((member) => member._toModel()).toList(),
     messages: messages._toModel(),
     total: total,
+    nextCursor: nextCursor,
+    hasMore: hasMore,
+    pageGroupDid: pageGroupDid,
+    groupStateVersion: groupStateVersion,
     source: source,
     warnings: warnings,
   );
@@ -2846,6 +3858,9 @@ extension on gen_secure_dto.DartGroupSecureRepairResult {
     group: group,
     state: state._toModel(),
     repaired: repaired,
+    addedDevices: addedDevices,
+    removedDevices: removedDevices,
+    remainingDevices: remainingDevices,
     problem: problem?._toModel(),
     warnings: warnings,
   );
@@ -2923,4 +3938,55 @@ extension on gen_message.DartMessageTarget {
     direct: (peer) => MessageTarget.direct(peer),
     group: (group) => MessageTarget.group(group),
   );
+}
+
+extension on gen_identity.DartRootKeyTransferPreparation {
+  RootKeyTransferPreparation _toModel() => RootKeyTransferPreparation(
+    authorizationHandle: _NativeRootKeyTransferAuthorizationHandle(
+      authorizationHandle,
+    ),
+    recipient: recipient._toModel(),
+    expiresAt: expiresAt,
+  );
+}
+
+extension on gen_identity.DartRootKeyTransferRecipientSummary {
+  RootKeyTransferRecipientSummary _toModel() => RootKeyTransferRecipientSummary(
+    did: did,
+    deviceId: deviceId,
+    signingKeyId: signingKeyId,
+    e2eeKeyId: e2EeKeyId,
+    registryVersion: registryVersion.toInt(),
+  );
+}
+
+extension on gen_identity.DartRootKeyTransferSendResult {
+  RootKeyTransferSendResult _toModel() => RootKeyTransferSendResult(
+    did: did,
+    senderDeviceId: senderDeviceId,
+    recipientDeviceId: recipientDeviceId,
+    messageId: messageId,
+    acceptedAt: acceptedAt,
+  );
+}
+
+extension on gen_identity.DartDeviceRevokeResult {
+  DeviceRevokeResult _toModel() => DeviceRevokeResult(
+    did: did,
+    targetDeviceId: targetDeviceId,
+    status: switch (status) {
+      gen_identity.DartDeviceRevokeStatus.revoked => DeviceRevokeStatus.revoked,
+    },
+  );
+}
+
+Future<T> _mapRootKeyTransferErrors<T>(Future<T> Function() action) async {
+  try {
+    return await action();
+  } on gen_identity.DartRootKeyTransferError catch (error) {
+    throw RootKeyTransferException(
+      code: error.code,
+      retryable: error.retryable,
+    );
+  }
 }

@@ -192,6 +192,10 @@ impl ControllerRuntimeOutbox {
 }
 
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "outbox senders are long-lived handles rather than dense collection elements"
+)]
 pub(super) enum ControllerOutboxSender {
     ImCore(ImCoreAgentOutbox),
     Mock,
@@ -412,9 +416,7 @@ fn outbox_sender_for_agent(
     im_core: &ImCoreAdapter,
     agent_did: &str,
 ) -> Result<ControllerOutboxSender> {
-    let identity = state.load_agent_identity(agent_did)?;
-    let jwt_token = state.load_agent_auth_token(agent_did)?;
-    let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+    let client = im_core.client_for_agent(config, state, agent_did)?;
     Ok(ControllerOutboxSender::ImCore(ImCoreAgentOutbox::new(
         client,
     )))
@@ -826,13 +828,9 @@ impl AgentManagementOutbox for RuntimeCallbackOutbox {
         let inner = if self.mock_status_outbox {
             ControllerOutboxSender::Mock
         } else {
-            let identity = self.state.load_agent_identity(&response.agent_did)?;
-            let jwt_token = self.state.load_agent_auth_token(&response.agent_did)?;
-            let client = self.im_core.client_for_agent_identity(
-                &self.config,
-                &identity,
-                jwt_token.as_deref(),
-            )?;
+            let client =
+                self.im_core
+                    .client_for_agent(&self.config, &self.state, &response.agent_did)?;
             ControllerOutboxSender::ImCore(ImCoreAgentOutbox::new(client))
         };
         let message_id = inner.send_payload(&response.recipient_did, response.payload.clone())?;

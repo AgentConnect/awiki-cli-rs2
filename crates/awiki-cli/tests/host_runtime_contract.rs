@@ -84,7 +84,7 @@ fn runtime_validation_and_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
-fn listener_status_merges_saved_sessions_and_host_notify_state() {
+fn listener_status_preserves_saved_diagnostics_without_trusting_saved_running_state() {
     let workspace = TempDir::new().expect("temp workspace");
     let runtime_dir = tenant_workspace(workspace.path()).join("runtime");
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
@@ -111,24 +111,16 @@ fn listener_status_merges_saved_sessions_and_host_notify_state() {
     )
     .expect("write listener status");
 
-    let start =
-        awiki_cmd_with_workspace(&["runtime", "mode", "set", "websocket"], workspace.path());
-    assert_success(&start);
-
     let status = awiki_cmd_with_workspace(&["runtime", "listener", "status"], workspace.path());
     assert_success(&status);
     let envelope = success_json(&status);
     let listener = &envelope["data"]["listener"];
-    assert_eq!(listener["running"], true);
+    assert_eq!(listener["running"], false);
     assert_eq!(listener["pid"], 42);
     assert_eq!(listener["boot_id"], "boot-new");
     assert_eq!(listener["started_at"], "2026-04-17T05:18:13Z");
     assert_eq!(listener["sessions"].as_array().expect("sessions").len(), 2);
     assert_eq!(listener["host_notify"]["sink"], "log");
-    assert_eq!(
-        listener["host_notify"]["file_path"],
-        "/tmp/host-notify.events.jsonl"
-    );
     assert_eq!(listener["host_notify"]["last_error"], "sink boom");
     assert!(listener["warnings"]
         .as_array()

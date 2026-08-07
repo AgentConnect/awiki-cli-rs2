@@ -286,6 +286,52 @@ INSERT INTO audit_log (
         Ok(())
     }
 
+    pub fn insert_agent_audit_event_json_once(
+        &self,
+        event_type: &str,
+        agent_did: &str,
+        detail: serde_json::Value,
+    ) -> Result<bool> {
+        if event_type.trim().is_empty() {
+            bail!("event_type must not be empty");
+        }
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        let mut connection = self.connection()?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM audit_log WHERE event_type=?1 AND agent_did=?2)",
+            rusqlite::params![event_type, agent_did],
+            |row| row.get(0),
+        )?;
+        if exists {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        let now = current_time_millis()?;
+        let sequence = AUDIT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let audit_id = format!("audit_{now}_{sequence}_controller_identity");
+        transaction.execute(
+            r#"
+INSERT INTO audit_log (
+    audit_id,
+    event_type,
+    agent_did,
+    runtime_profile_id,
+    run_id,
+    token_id,
+    detail_json,
+    created_at_ms
+) VALUES (?1, ?2, ?3, NULL, NULL, NULL, ?4, ?5)
+"#,
+            rusqlite::params![audit_id, event_type, agent_did, detail.to_string(), now],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn audit_event_exists(
         &self,
         event_type: &str,

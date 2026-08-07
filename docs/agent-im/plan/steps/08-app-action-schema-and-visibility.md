@@ -22,7 +22,7 @@ Step index：08
 ## 2. 目标
 
 - 结果：实现 MVP 最小 APP action allowlist、action request/result schema、message sync schema 和可见性过滤，避免新 JSON schema 被 Daemon 忽略或被 APP 当普通聊天显示。
-- 用户 / 系统可见行为：Hermes Message Agent 可以总结普通消息、生成草稿、读取联系人、在受控确认下更新联系人显示名/备注；APP 能展示 action 状态和结果，不把系统 payload 混进普通聊天。
+- 用户 / 系统可见行为：Hermes Personal Agent 可以总结普通消息、生成草稿、读取联系人、在受控确认下更新联系人显示名/备注；APP 能展示 action 状态和结果，不把系统 payload 混进普通聊天。
 - 非目标：不开放 `message.send`、E2EE forward、删除/导出/身份密钥变更；不实现完整自动化能力配置、撤销、审计面板；不实现 Phase 4 高级自动化。
 - 完成标准：`awiki.app.capabilities.v1`、`awiki.app.action.v1`、`awiki.app.action.result.v1`、`awiki.message.sync.v1` 在 Daemon 与 APP 两侧可解析、过滤、测试；最小 allowlist 生效。
 
@@ -61,7 +61,7 @@ Step index：08
 
 ## 6. 依赖
 
-- 前置步骤：Step 04 message agent binding；Step 05 message sync/outbox 入口；Step 06 APP bootstrap 与 payload filter 基础。
+- 前置步骤：Step 04 personal agent binding；Step 05 message sync/outbox 入口；Step 06 APP bootstrap 与 payload filter 基础。
 - 外部文档或决策：`agent_im_core_design.md` 第 1.2.5、2.2.3、4、5.7；用户确认 MVP 最小能力清单。
 - 环境前提：awiki-deamon Rust tests 与 awiki-me Flutter tests 可运行。
 

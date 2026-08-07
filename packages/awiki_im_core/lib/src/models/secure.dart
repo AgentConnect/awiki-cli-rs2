@@ -128,6 +128,9 @@ class GroupSecureRepairResult {
     required this.group,
     required this.state,
     required this.repaired,
+    this.addedDevices = 0,
+    this.removedDevices = 0,
+    this.remainingDevices = 0,
     this.problem,
     this.warnings = const [],
   });
@@ -135,6 +138,9 @@ class GroupSecureRepairResult {
   final String group;
   final GroupSecureState state;
   final bool repaired;
+  final int addedDevices;
+  final int removedDevices;
+  final int remainingDevices;
   final SecureProblem? problem;
   final List<String> warnings;
 }

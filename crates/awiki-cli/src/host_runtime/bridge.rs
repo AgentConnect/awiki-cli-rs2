@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
-use std::fs::{self, DirBuilder};
+#[cfg(unix)]
+use std::fs;
+use std::fs::DirBuilder;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 #[cfg(windows)]
@@ -720,7 +722,8 @@ fn windows_create_named_pipe(
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
     use windows_sys::Win32::System::Pipes::{
-        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
 
     let wait_mode = if nonblocking {
@@ -729,22 +732,85 @@ fn windows_create_named_pipe(
         PIPE_WAIT
     };
     let wide = windows_wide_null(path);
+    let mut security = windows_listener_pipe_security()?;
+    let security_attributes = security
+        .as_mut()
+        .map(|security| &mut security.attributes as *mut _)
+        .unwrap_or(std::ptr::null_mut());
     let handle = unsafe {
         CreateNamedPipeW(
             wide.as_ptr(),
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | wait_mode,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS | wait_mode,
             PIPE_UNLIMITED_INSTANCES,
             64 * 1024,
             64 * 1024,
             0,
-            std::ptr::null(),
+            security_attributes,
         )
     };
     if handle == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
     Ok(handle)
+}
+
+#[cfg(windows)]
+struct WindowsPipeSecurity {
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl Drop for WindowsPipeSecurity {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(self.descriptor.cast());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_listener_pipe_security() -> io::Result<Option<WindowsPipeSecurity>> {
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+    let service_mode = std::env::var_os("AWIKI_LISTENER_SERVICE_MODE").is_some();
+    let sid = std::env::var(crate::host_runtime::listener_service::INTERNAL_SERVICE_USER_SID_ENV)
+        .unwrap_or_default();
+    if sid.trim().is_empty() && !service_mode {
+        return Ok(None);
+    }
+    let sddl =
+        crate::host_runtime::listener_windows_service::pipe_security_sddl(&sid).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "listener Windows service user SID is missing or invalid",
+            )
+        })?;
+    let wide = windows_wide_null(&sddl);
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Some(WindowsPipeSecurity {
+        descriptor,
+        attributes: SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        },
+    }))
 }
 
 #[cfg(windows)]

@@ -1,26 +1,56 @@
 pub mod agent;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "status assembly keeps each reported dimension explicit"
+)]
 pub mod agent_status;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "app bridge boundaries keep authorization and encrypted-envelope inputs explicit"
+)]
 pub mod app_bridge;
 pub mod archive;
+pub mod build_info;
 pub mod cli_runtime_env;
 pub mod cli_wrapper;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "command handlers keep authority, request, status, and outbox inputs explicit"
+)]
 pub mod commands;
 pub mod config;
 pub mod controller_scope;
 pub mod daemon_cli;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "foreground routing keeps security, persistence, and delivery dependencies explicit"
+)]
 pub mod foreground;
 pub mod im_core_adapter;
 pub mod inbox;
+mod legacy_migration;
 pub mod local_rpc;
 pub mod outbox;
 pub mod plugins;
 pub mod registration;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "runtime host calls keep plugin, authority, process, and persistence inputs explicit"
+)]
 pub mod runtime;
 pub mod runtime_inbox;
 pub mod secret_vault;
 pub mod security;
 pub mod service;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "state record validation mirrors persisted row contracts"
+)]
 pub mod state;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "upgrade progress helpers keep integrity and destination inputs explicit"
+)]
 pub mod upgrade;
 pub mod workspace;
 
@@ -79,6 +109,10 @@ pub enum DaemonCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing would change the public Rust command output API; serialized output is already stable"
+)]
 pub enum DaemonCommandOutput {
     Status(DaemonStatus),
     AgentList(crate::daemon_cli::AgentListOutput),
@@ -100,6 +134,7 @@ pub struct DaemonStatus {
     pub im_core_sqlite_path: PathBuf,
     pub daemon_schema_version: i64,
     pub im_core_schema_version: Option<u32>,
+    pub sync_probe: crate::state::DaemonSyncProbe,
 }
 
 pub fn run_command(command: DaemonCommand) -> Result<DaemonStatus> {
@@ -218,6 +253,7 @@ async fn initialize_and_report(state_root: PathBuf) -> Result<DaemonStatus> {
         im_core_sqlite_path: config.im_core_sqlite_path,
         daemon_schema_version: state_summary.schema_version,
         im_core_schema_version: im_core_status.schema_version,
+        sync_probe: state.load_sync_probe()?,
     })
 }
 
@@ -240,6 +276,7 @@ async fn initialize_state_for_management(
         im_core_sqlite_path: config.im_core_sqlite_path.clone(),
         daemon_schema_version: state_summary.schema_version,
         im_core_schema_version: im_core_status.schema_version,
+        sync_probe: state.load_sync_probe()?,
     };
     Ok((config, state, status))
 }

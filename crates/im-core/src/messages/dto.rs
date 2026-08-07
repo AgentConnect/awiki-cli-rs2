@@ -519,7 +519,136 @@ pub struct SyncDeltaResult {
     pub snapshot_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_floor_event_seq: Option<String>,
+    /// Product-safe diagnostic warnings emitted while applying or hydrating
+    /// this delta. Values are warning codes/details, not conversation IDs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncRequest {
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncStatus {
+    Idle,
+    Changed,
+    RecoveryRequired,
+    RetryableFailure,
+    AuthRevoked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedIncomingMessage {
+    pub event_id: String,
+    pub logical_message_id: String,
+    pub source: String,
+    pub direction: MessageDirection,
+    pub message: Message,
+}
+
+/// One hydrated incoming message recovered from the active identity's local
+/// projection. Ownership and account binding are derived by Core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncomingMessageRecoveryItem {
+    pub logical_message_id: String,
+    pub message: Message,
+}
+
+/// Core-issued continuation token for local incoming recovery scans.
+///
+/// The token is intentionally opaque to hosts and is bound to the exact
+/// account/device identity that created it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IncomingMessageRecoveryPageToken {
+    pub(crate) owner_identity_id: String,
+    pub(crate) account_id: String,
+    pub(crate) current_did: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) identity_generation: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) timestamp: String,
+    pub(crate) server_sequence_key: i64,
+    pub(crate) logical_message_id: String,
+}
+
+impl std::fmt::Debug for IncomingMessageRecoveryPageToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("IncomingMessageRecoveryPageToken")
+            .field(&"<opaque>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMessageRecoveryQuery {
+    pub limit: u32,
+    pub page_token: Option<IncomingMessageRecoveryPageToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMessageRecoveryPage {
+    pub items: Vec<IncomingMessageRecoveryItem>,
+    pub next_page_token: Option<IncomingMessageRecoveryPageToken>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncOutcome {
+    pub status: MessageSyncStatus,
+    pub events_applied: u32,
+    pub pages_fetched: u32,
+    pub messages_hydrated: u32,
+    pub duplicates_skipped: u32,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<CommittedIncomingMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncMode {
+    Uninitialized,
+    Idle,
+    Recovering,
+    Retryable,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncDirtyDomain {
+    Messages,
+    ReadState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncRetryState {
+    None,
+    Pending,
+    InFlight,
+    Scheduled,
+    PermanentFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<String>,
+    pub mode: MessageSyncMode,
+    pub pending_mutation_count: u32,
+    pub dirty_domains: Vec<MessageSyncDirtyDomain>,
+    pub retry_state: MessageSyncRetryState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,20 +687,14 @@ pub enum ConversationStorePatch {
         owner_did: String,
         version: u64,
         unread_total: u32,
-        thread_kind: String,
-        thread_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        conversation_identity: Option<ConversationIdentity>,
+        conversation_id: String,
     },
     Reorder {
         owner_identity_id: String,
         owner_did: String,
         version: u64,
         unread_total: u32,
-        thread_kind: String,
-        thread_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        conversation_identity: Option<ConversationIdentity>,
+        conversation_id: String,
         index: u32,
     },
     RepairRequired {
@@ -633,6 +756,7 @@ pub struct ConversationPatchSession {
     pub(crate) store: Arc<crate::internal::runtime_store::conversation_store::ConversationStore>,
     pub(crate) receiver: tokio::sync::broadcast::Receiver<ConversationStorePatch>,
     pub(crate) initial: VecDeque<ConversationStorePatch>,
+    last_delivered_version: u64,
     closed: bool,
 }
 
@@ -646,6 +770,7 @@ impl ConversationPatchSession {
             store,
             receiver,
             initial: initial.into(),
+            last_delivered_version: 0,
             closed: false,
         }
     }
@@ -654,14 +779,27 @@ impl ConversationPatchSession {
         if self.closed {
             return None;
         }
-        if let Some(patch) = self.initial.pop_front() {
-            return Some(patch);
+        while let Some(patch) = self.initial.pop_front() {
+            let version = conversation_patch_version(&patch);
+            if version > self.last_delivered_version {
+                self.last_delivered_version = version;
+                return Some(patch);
+            }
         }
         loop {
             match self.receiver.recv().await {
-                Ok(patch) => return Some(patch),
+                Ok(patch) => {
+                    let version = conversation_patch_version(&patch);
+                    if version <= self.last_delivered_version {
+                        continue;
+                    }
+                    self.last_delivered_version = version;
+                    return Some(patch);
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    return Some(self.store.repair_required_patch("subscriber_lag"));
+                    let patch = self.store.repair_required_patch("subscriber_lag");
+                    self.last_delivered_version = conversation_patch_version(&patch);
+                    return Some(patch);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
@@ -681,6 +819,7 @@ pub struct ThreadMessagePatchSession {
     pub(crate) initial: VecDeque<ThreadMessageStorePatch>,
     pub(crate) thread: ThreadRef,
     pub(crate) limit: u32,
+    last_delivered_version: u64,
     closed: bool,
 }
 
@@ -698,6 +837,7 @@ impl ThreadMessagePatchSession {
             initial: initial.into(),
             thread,
             limit,
+            last_delivered_version: 0,
             closed: false,
         }
     }
@@ -706,19 +846,32 @@ impl ThreadMessagePatchSession {
         if self.closed {
             return None;
         }
-        if let Some(patch) = self.initial.pop_front() {
-            return Some(patch);
+        while let Some(patch) = self.initial.pop_front() {
+            let version = thread_message_patch_version(&patch);
+            if version > self.last_delivered_version {
+                self.last_delivered_version = version;
+                return Some(patch);
+            }
         }
         loop {
             match self.receiver.recv().await {
-                Ok(patch) if thread_patch_matches(&patch, &self.thread) => return Some(patch),
+                Ok(patch) if thread_patch_matches(&patch, &self.thread) => {
+                    let version = thread_message_patch_version(&patch);
+                    if version <= self.last_delivered_version {
+                        continue;
+                    }
+                    self.last_delivered_version = version;
+                    return Some(patch);
+                }
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    return Some(self.store.repair_required_patch(
+                    let patch = self.store.repair_required_patch(
                         &self.thread,
                         self.limit,
                         "subscriber_lag",
-                    ));
+                    );
+                    self.last_delivered_version = thread_message_patch_version(&patch);
+                    return Some(patch);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
@@ -729,6 +882,25 @@ impl ThreadMessagePatchSession {
         self.closed = true;
         self.receiver.resubscribe();
         Ok(())
+    }
+}
+
+fn conversation_patch_version(patch: &ConversationStorePatch) -> u64 {
+    match patch {
+        ConversationStorePatch::Reset { version, .. }
+        | ConversationStorePatch::Upsert { version, .. }
+        | ConversationStorePatch::Remove { version, .. }
+        | ConversationStorePatch::Reorder { version, .. }
+        | ConversationStorePatch::RepairRequired { version, .. } => *version,
+    }
+}
+
+fn thread_message_patch_version(patch: &ThreadMessageStorePatch) -> u64 {
+    match patch {
+        ThreadMessageStorePatch::Reset { version, .. }
+        | ThreadMessageStorePatch::Upsert { version, .. }
+        | ThreadMessageStorePatch::Remove { version, .. }
+        | ThreadMessageStorePatch::RepairRequired { version, .. } => *version,
     }
 }
 
@@ -874,8 +1046,16 @@ fn is_old_flutter_direct_alias(id: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationSnapshotItem {
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_persona_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: ConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_identity: Option<ConversationIdentity>,
     pub participants: Vec<String>,
@@ -935,6 +1115,12 @@ pub struct ConversationSnapshotMessageBody {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_persona_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: ConversationResolutionState,
     pub thread: ThreadRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_identity: Option<ConversationIdentity>,
@@ -950,6 +1136,14 @@ pub struct Conversation {
     pub last_message_at: Option<String>,
     /// Durable list ordering time, independent from message aggregation.
     pub activity_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationResolutionState {
+    Resolved,
+    LegacyUnresolved,
+    BlockedConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

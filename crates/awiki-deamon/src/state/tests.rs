@@ -5,6 +5,24 @@ use crate::runtime::{
 };
 use sha2::{Digest, Sha256};
 
+type StoredIdentitySecretColumns = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+#[test]
+fn controller_did_cutover_primitive_is_test_only_and_crate_private() {
+    let source = include_str!("runtime_profiles.rs");
+    assert!(
+        source.contains("#[cfg(test)]\n    pub(crate) fn update_controller_did_for_agent_family(")
+    );
+    assert!(!source.contains("pub fn update_controller_did_for_agent_family("));
+}
+
 #[test]
 fn initialize_creates_required_tables() {
     let root = tempfile::tempdir().unwrap();
@@ -25,6 +43,11 @@ fn initialize_creates_required_tables() {
         "audit_log",
         "agent_identity",
         "agent_auth_state",
+        "agent_device_identity",
+        "agent_registration_pending",
+        "agent_legacy_upgrade_pending",
+        "agent_identity_migration_state",
+        "agent_sync_probe",
         "cli_runtime_profile",
         "cli_driver_run",
         "cli_route_sessions",
@@ -40,7 +63,7 @@ fn initialize_creates_required_tables() {
         "user_delegated_identity",
         "bootstrap_replay",
         "secure_bootstrap_replay",
-        "app_message_agent_binding",
+        "app_personal_agent_binding",
         "inbox_cursor",
         "processed_message",
         "message_event",
@@ -67,6 +90,118 @@ fn initialize_creates_required_tables() {
         )
         .unwrap();
     assert_eq!(salt_count, 1);
+}
+
+#[test]
+fn schema_v34_migrates_legacy_message_agent_binding_without_changing_opaque_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations(version, applied_at) VALUES (33, 'legacy');
+
+            CREATE TABLE app_message_agent_binding (
+                binding_id TEXT PRIMARY KEY,
+                user_did TEXT NOT NULL,
+                inbox_auth_verification_method TEXT NOT NULL,
+                app_instance_id TEXT NOT NULL,
+                bootstrap_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                daemon_agent_did TEXT NOT NULL,
+                runtime_agent_did TEXT NOT NULL,
+                runtime_profile_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                desired_agent_json TEXT NOT NULL,
+                capability_policy_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                revoked_at_ms INTEGER
+            );
+            INSERT INTO app_message_agent_binding (
+                binding_id,
+                user_did,
+                inbox_auth_verification_method,
+                app_instance_id,
+                bootstrap_id,
+                idempotency_key,
+                daemon_agent_did,
+                runtime_agent_did,
+                runtime_profile_id,
+                role,
+                desired_agent_json,
+                capability_policy_json,
+                status,
+                created_at_ms,
+                updated_at_ms,
+                revoked_at_ms
+            ) VALUES (
+                'app-message-agent:did:human:alice:app_1',
+                'did:human:alice',
+                'did:human:alice#daemon-key-1',
+                'app_1',
+                'boot_legacy',
+                'message-agent-bootstrap:did:human:alice:app_1',
+                'did:agent:daemon',
+                'did:agent:existing-runtime',
+                'profile_existing_runtime',
+                'app_message_handler',
+                '{"role":"app_message_handler","runtime_profile":"message_agent"}',
+                '{"allowed_actions":[]}',
+                'message_agent_ready',
+                10,
+                20,
+                NULL
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let state = DaemonState::open(&config).unwrap();
+    let summary = state.initialize().unwrap();
+    assert_eq!(summary.schema_version, DAEMON_SCHEMA_VERSION);
+    state.initialize().unwrap();
+
+    let binding = state
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        binding.binding_id,
+        "app-message-agent:did:human:alice:app_1"
+    );
+    assert_eq!(
+        binding.idempotency_key,
+        "message-agent-bootstrap:did:human:alice:app_1"
+    );
+    assert_eq!(binding.runtime_agent_did, "did:agent:existing-runtime");
+    assert_eq!(binding.runtime_profile_id, "profile_existing_runtime");
+    assert_eq!(binding.status, "personal_agent_ready");
+
+    let connection = state.connection().unwrap();
+    let canonical_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM app_personal_agent_binding",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_table_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_message_agent_binding'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(canonical_count, 1);
+    assert_eq!(legacy_table_count, 0);
 }
 
 fn cli_route_create(workspace: PathBuf, conversation_id: &str) -> CreateCliRouteSession {
@@ -1173,7 +1308,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
         status: "paired_key_received".to_string(),
         expires_at: Some("2026-09-09T00:00:00Z".to_string()),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1"
+        idempotency_key: "personal-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1"
             .to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
@@ -1195,7 +1330,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
 
 fn secure_bootstrap_replay_fixture() -> SecureBootstrapReplayRecord {
     SecureBootstrapReplayRecord {
-        operation_id: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        operation_id: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         nonce: "AQEBAQEBAQEBAQEB".to_string(),
         envelope_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
@@ -1203,7 +1338,7 @@ fn secure_bootstrap_replay_fixture() -> SecureBootstrapReplayRecord {
         recipient_key_id: "did:agent:daemon#key-3".to_string(),
         sender_human_did: "did:human:alice".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         payload_sha256: Some(
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
         ),
@@ -1249,7 +1384,7 @@ fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
     assert!(error.contains("secure daemon bootstrap replay conflict"));
 
     let mut nonce_conflict = replay.clone();
-    nonce_conflict.operation_id = "message-agent-bootstrap:did:human:alice:app_2".to_string();
+    nonce_conflict.operation_id = "personal-agent-bootstrap:did:human:alice:app_2".to_string();
     nonce_conflict.idempotency_key = nonce_conflict.operation_id.clone();
     nonce_conflict.bootstrap_id = "boot_2".to_string();
     nonce_conflict.envelope_hash =
@@ -1259,6 +1394,44 @@ fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("secure daemon bootstrap replay conflict"));
+}
+
+#[test]
+fn secure_bootstrap_replay_exists_for_scope_is_exact_and_rejects_empty_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let replay = secure_bootstrap_replay_fixture();
+
+    assert!(!state
+        .secure_bootstrap_replay_exists_for_scope(
+            &replay.sender_human_did,
+            &replay.recipient_daemon_did,
+        )
+        .unwrap());
+    state.store_secure_bootstrap_replay(&replay).unwrap();
+    assert!(state
+        .secure_bootstrap_replay_exists_for_scope(
+            &replay.sender_human_did,
+            &replay.recipient_daemon_did,
+        )
+        .unwrap());
+    assert!(!state
+        .secure_bootstrap_replay_exists_for_scope(
+            "did:human:different",
+            &replay.recipient_daemon_did,
+        )
+        .unwrap());
+    assert!(!state
+        .secure_bootstrap_replay_exists_for_scope(&replay.sender_human_did, "did:agent:different",)
+        .unwrap());
+    assert!(state
+        .secure_bootstrap_replay_exists_for_scope("", &replay.recipient_daemon_did)
+        .is_err());
+    assert!(state
+        .secure_bootstrap_replay_exists_for_scope(&replay.sender_human_did, " ")
+        .is_err());
 }
 
 #[test]
@@ -1313,6 +1486,39 @@ WHERE verification_method = ?1
         .unwrap()
         .unwrap();
     assert_eq!(recovered.status, "paired_key_received");
+}
+
+#[test]
+fn bootstrap_replay_accepts_explicit_legacy_hash_alias_without_rewriting_stored_hash() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
+    state.initialize().unwrap();
+    let (identity, mut legacy_replay) = delegated_identity_fixture();
+    legacy_replay.payload_hash = "legacy-message-agent-payload-hash".to_string();
+    state
+        .store_bootstrap_state(&identity, &legacy_replay)
+        .unwrap();
+
+    let mut canonical_replay = legacy_replay.clone();
+    canonical_replay.payload_hash = "canonical-personal-agent-payload-hash".to_string();
+    let outcome = state
+        .store_bootstrap_state_with_legacy_payload_hash(
+            &identity,
+            &canonical_replay,
+            &legacy_replay.payload_hash,
+        )
+        .unwrap();
+
+    assert_eq!(outcome, BootstrapStoreOutcome::Duplicate);
+    assert_eq!(
+        state
+            .load_bootstrap_replay(&legacy_replay.bootstrap_id)
+            .unwrap()
+            .unwrap()
+            .payload_hash,
+        legacy_replay.payload_hash
+    );
 }
 
 #[test]
@@ -1446,18 +1652,18 @@ WHERE verification_method = ?1
 }
 
 #[test]
-fn app_message_agent_binding_roundtrips_and_restores_active_record() {
+fn app_personal_agent_binding_roundtrips_and_restores_active_record() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let record = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let record = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: "did:human:alice".to_string(),
         inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
         app_instance_id: "app_1".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         daemon_agent_did: "did:agent:daemon".to_string(),
         runtime_agent_did: "did:agent:runtime-hermes".to_string(),
         runtime_profile_id: "profile_hermes_app_message".to_string(),
@@ -1469,15 +1675,15 @@ fn app_message_agent_binding_roundtrips_and_restores_active_record() {
         capability_policy_json: serde_json::json!({
             "allowed_actions": ["message.summarize_plain"]
         }),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
 
-    state.upsert_app_message_agent_binding(&record).unwrap();
+    state.upsert_app_personal_agent_binding(&record).unwrap();
     let loaded = state
-        .load_active_app_message_agent_binding("did:human:alice", "app_1", "app_message_handler")
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")
         .unwrap()
         .unwrap();
     assert_eq!(loaded.binding_id, record.binding_id);
@@ -1485,56 +1691,56 @@ fn app_message_agent_binding_roundtrips_and_restores_active_record() {
 
     let reopened = DaemonState::open(&config).unwrap();
     let restored = reopened
-        .load_app_message_agent_binding(&record.binding_id)
+        .load_app_personal_agent_binding(&record.binding_id)
         .unwrap()
         .unwrap();
-    assert_eq!(restored.status, "message_agent_ready");
+    assert_eq!(restored.status, "personal_agent_ready");
 }
 
 #[test]
-fn app_message_agent_binding_disable_removes_record_from_active_queries() {
+fn app_personal_agent_binding_disable_removes_record_from_active_queries() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let record = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let record = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: "did:human:alice".to_string(),
         inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
         app_instance_id: "app_1".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         daemon_agent_did: "did:agent:daemon".to_string(),
         runtime_agent_did: "did:agent:runtime-hermes".to_string(),
         runtime_profile_id: "profile_hermes_app_message".to_string(),
         role: "app_message_handler".to_string(),
         desired_agent_json: serde_json::json!({"role": "app_message_handler"}),
         capability_policy_json: serde_json::json!({"allowed_actions": []}),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
 
-    state.upsert_app_message_agent_binding(&record).unwrap();
+    state.upsert_app_personal_agent_binding(&record).unwrap();
     let updated = state
-        .update_app_message_agent_binding_status_by_runtime(
+        .update_app_personal_agent_binding_status_by_runtime(
             "did:agent:runtime-hermes",
-            "message_agent_disabled",
+            "personal_agent_disabled",
             false,
         )
         .unwrap()
         .unwrap();
 
-    assert_eq!(updated.status, "message_agent_disabled");
+    assert_eq!(updated.status, "personal_agent_disabled");
     assert!(updated.revoked_at_ms.is_none());
     assert!(state
-        .load_active_app_message_agent_binding_by_runtime("did:agent:runtime-hermes")
+        .load_active_app_personal_agent_binding_by_runtime("did:agent:runtime-hermes")
         .unwrap()
         .is_none());
     assert_eq!(
         state
-            .list_active_app_message_agent_bindings()
+            .list_active_app_personal_agent_bindings()
             .unwrap()
             .len(),
         0
@@ -1542,18 +1748,18 @@ fn app_message_agent_binding_disable_removes_record_from_active_queries() {
 }
 
 #[test]
-fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
+fn app_personal_agent_binding_revokes_superseded_records_for_same_user_role() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let mut first = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let mut first = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: "did:human:alice".to_string(),
         inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
         app_instance_id: "app_1".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         daemon_agent_did: "did:agent:daemon".to_string(),
         runtime_agent_did: "did:agent:runtime-hermes-1".to_string(),
         runtime_profile_id: "profile_hermes_app_message_1".to_string(),
@@ -1565,31 +1771,33 @@ fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
         capability_policy_json: serde_json::json!({
             "allowed_actions": ["message.summarize_plain"]
         }),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
     let mut second = first.clone();
-    second.binding_id = "app-message-agent:did:human:alice:app_2".to_string();
+    second.binding_id = "app-personal-agent:did:human:alice:app_2".to_string();
     second.app_instance_id = "app_2".to_string();
     second.bootstrap_id = "boot_2".to_string();
-    second.idempotency_key = "message-agent-bootstrap:did:human:alice:app_2".to_string();
+    second.idempotency_key = "personal-agent-bootstrap:did:human:alice:app_2".to_string();
     second.runtime_agent_did = "did:agent:runtime-hermes-2".to_string();
     second.runtime_profile_id = "profile_hermes_app_message_2".to_string();
     let mut other_user = first.clone();
-    other_user.binding_id = "app-message-agent:did:human:bob:app_1".to_string();
+    other_user.binding_id = "app-personal-agent:did:human:bob:app_1".to_string();
     other_user.user_did = "did:human:bob".to_string();
     other_user.inbox_auth_verification_method = "did:human:bob#daemon-key-1".to_string();
     other_user.runtime_agent_did = "did:agent:runtime-hermes-bob".to_string();
     other_user.runtime_profile_id = "profile_hermes_bob".to_string();
 
-    state.upsert_app_message_agent_binding(&first).unwrap();
-    state.upsert_app_message_agent_binding(&second).unwrap();
-    state.upsert_app_message_agent_binding(&other_user).unwrap();
+    state.upsert_app_personal_agent_binding(&first).unwrap();
+    state.upsert_app_personal_agent_binding(&second).unwrap();
+    state
+        .upsert_app_personal_agent_binding(&other_user)
+        .unwrap();
 
     let revoked = state
-        .revoke_other_active_app_message_agent_bindings(
+        .revoke_other_active_app_personal_agent_bindings(
             "did:human:alice",
             "app_message_handler",
             &second.binding_id,
@@ -1597,12 +1805,12 @@ fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
         .unwrap();
     assert_eq!(revoked, 1);
     assert!(state
-        .load_active_app_message_agent_binding("did:human:alice", "app_1", "app_message_handler",)
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler",)
         .unwrap()
         .is_none());
     assert_eq!(
         state
-            .load_active_app_message_agent_binding(
+            .load_active_app_personal_agent_binding(
                 "did:human:alice",
                 "app_2",
                 "app_message_handler",
@@ -1613,11 +1821,11 @@ fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
         second.binding_id
     );
     assert!(state
-        .load_active_app_message_agent_binding("did:human:bob", "app_1", "app_message_handler",)
+        .load_active_app_personal_agent_binding("did:human:bob", "app_1", "app_message_handler",)
         .unwrap()
         .is_some());
     first.revoked_at_ms = state
-        .load_app_message_agent_binding(&first.binding_id)
+        .load_app_personal_agent_binding(&first.binding_id)
         .unwrap()
         .unwrap()
         .revoked_at_ms;
@@ -3349,14 +3557,7 @@ fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
         auth_private_key_ref_json,
         e2ee_signing_private_key_ref_json,
         e2ee_agreement_private_key_ref_json,
-    ): (
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = connection
+    ): StoredIdentitySecretColumns = connection
         .query_row(
             r#"
 SELECT
@@ -3721,4 +3922,745 @@ fn hermes_route_key_uses_stable_scope_not_requester_did() {
     );
     assert!(!route_before_rotation.route_key().contains("bob-old"));
     assert!(!route_after_rotation.route_key().contains("bob-new"));
+}
+
+fn device_identity_fixture(
+    suffix: &str,
+    kind: crate::agent::AgentKind,
+) -> AgentDeviceIdentityRecord {
+    let kind_segment = kind.as_str();
+    let did = format!("did:wba:awiki.info:agent:{kind_segment}:{suffix}");
+    AgentDeviceIdentityRecord {
+        identity_id: suffix.to_owned(),
+        agent_did: did.clone(),
+        handle: format!("{kind_segment}-{suffix}.awiki.info"),
+        display_name: format!("{kind_segment}-{suffix}"),
+        agent_kind: kind,
+        account_id: format!("account-{suffix}"),
+        full_handle: format!("{kind_segment}-{suffix}.awiki.info"),
+        binding_generation: "1".to_owned(),
+        did_document: serde_json::json!({"id": did}),
+        protocol_device_id: format!("device-{suffix}"),
+        root_key_id: format!("{did}#key-1"),
+        root_private_key_pem: format!("root-private-{suffix}"),
+        device_signing_key_id: format!("{did}#device-{suffix}-sign"),
+        device_signing_private_key_pem: format!("sign-private-{suffix}"),
+        device_e2ee_key_id: format!("{did}#device-{suffix}-e2ee"),
+        device_e2ee_private_key_pem: format!("e2ee-private-{suffix}"),
+        daemon_subkey_package_json: None,
+        authorization_status: "active".to_owned(),
+        role: "admin".to_owned(),
+        management_ready: true,
+        auth_generation: 1,
+        access_token: format!("device-access-{suffix}"),
+        document_version: 1,
+        document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        registry_version: 1,
+        identity_status: "active".to_owned(),
+        legacy_migration_state: "not_required".to_owned(),
+        last_error_code: None,
+    }
+}
+
+fn device_agent_definition(identity: &AgentDeviceIdentityRecord) -> AgentDefinition {
+    let is_runtime = identity.agent_kind == crate::agent::AgentKind::Runtime;
+    AgentDefinition {
+        agent_did: identity.agent_did.clone(),
+        handle: identity.handle.clone(),
+        agent_kind: identity.agent_kind,
+        controller_user_id: format!("controller-{}", identity.identity_id),
+        controller_full_handle: "controller.awiki.info".to_owned(),
+        controller_scope_key: format!("controller-scope:v1:{}", identity.identity_id),
+        controller_did: "did:wba:awiki.info:alice".to_owned(),
+        runtime_plugin_id: is_runtime.then(|| "generic-cli".to_owned()),
+        runtime_profile_id: is_runtime.then(|| format!("profile-{}", identity.identity_id)),
+        workspace_id: None,
+        policy_id: "default".to_owned(),
+        local_agent_db_path: format!("agents/{}/agent.db", identity.identity_id),
+        message_db_path: format!("agents/{}/messages.db", identity.identity_id),
+        status: "active".to_owned(),
+    }
+}
+
+#[test]
+fn agent_device_identity_validation_is_closed_before_persistence() {
+    let valid = device_identity_fixture("e1", crate::agent::AgentKind::Daemon);
+    valid.validate().unwrap();
+
+    let mut invalid = valid.clone();
+    invalid.authorization_status = "pending".to_owned();
+    assert!(invalid
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("authorization_status"));
+
+    let mut invalid = valid.clone();
+    invalid.role = "admin".to_owned();
+    invalid.management_ready = false;
+    assert!(invalid
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("ready-admin"));
+
+    let mut invalid = valid.clone();
+    invalid.document_hash = "plain-hash".to_owned();
+    assert!(invalid
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("sha256"));
+
+    let mut invalid = valid.clone();
+    invalid.identity_id = "wrong".to_owned();
+    assert!(invalid
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("final agent DID segment"));
+
+    let mut invalid = valid;
+    invalid.identity_status = "blocked".to_owned();
+    invalid.legacy_migration_state = "not_required".to_owned();
+    invalid.last_error_code = None;
+    assert!(invalid
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("blocked identity"));
+}
+
+#[test]
+fn fresh_device_identity_is_vault_only_and_does_not_write_legacy_identity_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [81_u8; 32]);
+    state.initialize().unwrap();
+    let identity = device_identity_fixture("e1", crate::agent::AgentKind::Daemon);
+    state.store_agent_device_identity(&identity).unwrap();
+
+    let loaded = state
+        .load_agent_device_identity(&identity.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.access_token, identity.access_token);
+    assert!(!format!("{loaded:?}").contains(&identity.access_token));
+    assert!(!format!("{loaded:?}").contains(&identity.root_private_key_pem));
+
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    for table in ["agent_identity", "agent_auth_state"] {
+        let count: i64 = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE agent_did = ?1"),
+                [&identity.agent_did],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "fresh vNext identity leaked into {table}");
+    }
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    let raw_db = String::from_utf8_lossy(&raw_db);
+    assert!(!raw_db.contains(&identity.access_token));
+    assert!(!raw_db.contains(&identity.root_private_key_pem));
+    assert!(!raw_db.contains(&identity.device_signing_private_key_pem));
+    assert!(!raw_db.contains(&identity.device_e2ee_private_key_pem));
+}
+
+#[test]
+fn promoted_registration_survives_definition_crash_window_then_scrubs_pending_secret() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [83_u8; 32]);
+    state.initialize().unwrap();
+    let identity = device_identity_fixture("e3", crate::agent::AgentKind::Daemon);
+    let pending = PendingAgentRegistrationRecord {
+        registration_id: "agentreg-e3".to_owned(),
+        dedupe_key: "dedupe-e3".to_owned(),
+        agent_kind: identity.agent_kind,
+        controller_did: "did:wba:awiki.info:controller".to_owned(),
+        handle: identity.handle.clone(),
+        display_name: identity.display_name.clone(),
+        agent_did: identity.agent_did.clone(),
+        protocol_device_id: identity.protocol_device_id.clone(),
+        document_digest: identity.document_hash.clone(),
+        request_digest: "request-digest-e3".to_owned(),
+        secret_payload_json: serde_json::json!({
+            "registration_token": "pending-secret-token",
+            "root_private_key_pem": "pending-secret-root"
+        }),
+        status: "pending".to_owned(),
+        attempt_count: 0,
+        last_error_code: None,
+        last_error_summary: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    };
+    state.store_pending_agent_registration(&pending).unwrap();
+    state
+        .promote_pending_agent_device_identity(&pending.registration_id, &identity)
+        .unwrap();
+
+    assert!(!state
+        .scrub_completed_agent_registration(&identity.agent_did)
+        .unwrap());
+    let crash_window = state
+        .load_pending_agent_registration(&pending.registration_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(crash_window.status, "completed");
+    state
+        .upsert_agent_definition(&device_agent_definition(&identity))
+        .unwrap();
+    assert!(state
+        .scrub_completed_agent_registration(&identity.agent_did)
+        .unwrap());
+    assert!(state
+        .load_pending_agent_registration(&pending.registration_id)
+        .unwrap()
+        .is_none());
+    assert!(state
+        .secret_vault()
+        .unwrap()
+        .list()
+        .unwrap()
+        .iter()
+        .all(|secret_ref| {
+            secret_ref.kind != im_core::vault::SecretKind::IdentityRegistrationPending
+        }));
+}
+
+#[test]
+fn daemon_sync_probe_requires_every_active_agent_and_revocation_clears_readiness() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [82_u8; 32]);
+    state.initialize().unwrap();
+    let first = device_identity_fixture("e1", crate::agent::AgentKind::Daemon);
+    let second = device_identity_fixture("e2", crate::agent::AgentKind::Runtime);
+    for identity in [&first, &second] {
+        state.store_agent_device_identity(identity).unwrap();
+        state
+            .upsert_agent_definition(&device_agent_definition(identity))
+            .unwrap();
+    }
+
+    state
+        .mark_v2_subprotocol_negotiated(&first.agent_did)
+        .unwrap();
+    state
+        .mark_sync_v2_reconcile_completed(&first.agent_did)
+        .unwrap();
+    let one_of_two = state.load_sync_probe().unwrap();
+    assert!(!one_of_two.v2_subprotocol_negotiated);
+    assert!(!one_of_two.v2_bootstrap_completed);
+    assert_eq!(one_of_two.last_reconcile_protocol, None);
+
+    state
+        .mark_v2_subprotocol_negotiated(&second.agent_did)
+        .unwrap();
+    state
+        .mark_sync_v2_reconcile_completed(&second.agent_did)
+        .unwrap();
+    let both = state.load_sync_probe().unwrap();
+    assert!(both.v2_subprotocol_negotiated);
+    assert!(both.v2_bootstrap_completed);
+    assert_eq!(both.last_reconcile_protocol.as_deref(), Some("sync_v2"));
+
+    state
+        .mark_agent_device_auth_revoked(&second.agent_did)
+        .unwrap();
+    let revoked = state.load_sync_probe().unwrap();
+    assert!(!revoked.v2_subprotocol_negotiated);
+    assert!(!revoked.v2_bootstrap_completed);
+    assert_eq!(revoked.last_reconcile_protocol, None);
+    let reopened = DaemonState::open_with_root_key_bytes(&config, [82_u8; 32]);
+    let fenced = reopened
+        .load_agent_device_identity(&second.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(fenced.identity_status, "revoked");
+    assert_eq!(fenced.authorization_status, "revoked");
+}
+
+#[test]
+fn daemon_sync_probe_negotiation_is_current_boot_but_reconcile_is_durable() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [84_u8; 32]);
+    state.initialize().unwrap();
+    let first = device_identity_fixture("boot-e1", crate::agent::AgentKind::Daemon);
+    let second = device_identity_fixture("boot-e2", crate::agent::AgentKind::Runtime);
+    for identity in [&first, &second] {
+        state.store_agent_device_identity(identity).unwrap();
+        state
+            .upsert_agent_definition(&device_agent_definition(identity))
+            .unwrap();
+        state
+            .mark_v2_subprotocol_negotiated(&identity.agent_did)
+            .unwrap();
+        state
+            .mark_sync_v2_reconcile_completed(&identity.agent_did)
+            .unwrap();
+    }
+    assert!(state.load_sync_probe().unwrap().v2_subprotocol_negotiated);
+
+    assert_eq!(
+        state.reset_v2_subprotocol_negotiation_for_boot().unwrap(),
+        2
+    );
+    let after_restart = state.load_sync_probe().unwrap();
+    assert!(!after_restart.v2_subprotocol_negotiated);
+    assert!(after_restart.v2_bootstrap_completed);
+    assert_eq!(
+        after_restart.last_reconcile_protocol.as_deref(),
+        Some("sync_v2")
+    );
+
+    state
+        .mark_v2_subprotocol_negotiated(&first.agent_did)
+        .unwrap();
+    assert!(!state.load_sync_probe().unwrap().v2_subprotocol_negotiated);
+    state
+        .mark_v2_subprotocol_negotiated(&second.agent_did)
+        .unwrap();
+    assert!(state.load_sync_probe().unwrap().v2_subprotocol_negotiated);
+
+    state
+        .clear_v2_subprotocol_negotiated(&first.agent_did)
+        .unwrap();
+    let after_disconnect = state.load_sync_probe().unwrap();
+    assert!(!after_disconnect.v2_subprotocol_negotiated);
+    assert!(after_disconnect.v2_bootstrap_completed);
+}
+
+fn vault_ref_fingerprints(state: &DaemonState) -> Vec<String> {
+    let mut refs = state
+        .secret_vault()
+        .unwrap()
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|secret_ref| serde_json::to_string(&secret_ref).unwrap())
+        .collect::<Vec<_>>();
+    refs.sort();
+    refs
+}
+
+fn rotated_device_identity(identity: &AgentDeviceIdentityRecord) -> AgentDeviceIdentityRecord {
+    let mut rotated = identity.clone();
+    rotated.root_private_key_pem.push_str("-rotated");
+    rotated.device_signing_private_key_pem.push_str("-rotated");
+    rotated.device_e2ee_private_key_pem.push_str("-rotated");
+    rotated.access_token.push_str("-rotated");
+    rotated
+}
+
+fn pending_registration_fixture(
+    identity: &AgentDeviceIdentityRecord,
+) -> PendingAgentRegistrationRecord {
+    PendingAgentRegistrationRecord {
+        registration_id: format!("agentreg-{}", identity.identity_id),
+        dedupe_key: format!("dedupe-{}", identity.identity_id),
+        agent_kind: identity.agent_kind,
+        controller_did: "did:wba:awiki.info:controller".to_owned(),
+        handle: identity.handle.clone(),
+        display_name: identity.display_name.clone(),
+        agent_did: identity.agent_did.clone(),
+        protocol_device_id: identity.protocol_device_id.clone(),
+        document_digest: identity.document_hash.clone(),
+        request_digest: format!("request-digest-{}", identity.identity_id),
+        secret_payload_json: serde_json::json!({
+            "registration_token": format!("pending-token-{}", identity.identity_id),
+            "root_private_key_pem": format!("pending-root-{}", identity.identity_id),
+        }),
+        status: "pending".to_owned(),
+        attempt_count: 0,
+        last_error_code: None,
+        last_error_summary: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    }
+}
+
+fn pending_legacy_fixture(identity: &AgentDeviceIdentityRecord) -> PendingAgentLegacyUpgradeRecord {
+    PendingAgentLegacyUpgradeRecord {
+        agent_did: identity.agent_did.clone(),
+        agent_kind: identity.agent_kind,
+        protocol_device_id: identity.protocol_device_id.clone(),
+        target_document_hash: identity.document_hash.clone(),
+        secret_payload_json: serde_json::json!({
+            "target_did_document": identity.did_document.clone(),
+            "root_private_key_pem": identity.root_private_key_pem.clone(),
+        }),
+        status: "prepared".to_owned(),
+        attempt_count: 0,
+        last_error_code: None,
+        updated_at_ms: 1,
+    }
+}
+
+#[test]
+fn agent_device_secret_staging_rolls_back_all_refs_on_partial_seal_failure() {
+    use super::device_identity::{
+        with_agent_device_secret_store_fault, AgentDeviceSecretStoreFault,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [85_u8; 32]);
+    state.initialize().unwrap();
+    let original = device_identity_fixture("seal-fail", crate::agent::AgentKind::Daemon);
+    state.store_agent_device_identity(&original).unwrap();
+    let before_refs = vault_ref_fingerprints(&state);
+
+    let rotated = rotated_device_identity(&original);
+    let error =
+        with_agent_device_secret_store_fault(AgentDeviceSecretStoreFault::FailSealAt(2), || {
+            state.store_agent_device_identity(&rotated)
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("seal failure"));
+    assert_eq!(vault_ref_fingerprints(&state), before_refs);
+    assert_eq!(
+        state
+            .load_agent_device_identity(&original.agent_did)
+            .unwrap()
+            .unwrap()
+            .access_token,
+        original.access_token
+    );
+}
+
+#[test]
+fn pending_agent_secret_staging_rolls_back_refs_when_database_insert_fails() {
+    use super::device_identity::{
+        with_agent_device_secret_store_fault, AgentDeviceSecretStoreFault,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [88_u8; 32]);
+    state.initialize().unwrap();
+    let identity = device_identity_fixture("pending-db-fail", crate::agent::AgentKind::Daemon);
+    let registration = pending_registration_fixture(&identity);
+    let legacy = pending_legacy_fixture(&identity);
+    let before_refs = vault_ref_fingerprints(&state);
+
+    let registration_error =
+        with_agent_device_secret_store_fault(AgentDeviceSecretStoreFault::FailBeforeCommit, || {
+            state.store_pending_agent_registration(&registration)
+        })
+        .unwrap_err();
+    assert!(registration_error.to_string().contains("database failure"));
+    assert_eq!(vault_ref_fingerprints(&state), before_refs);
+    assert!(state
+        .load_pending_agent_registration(&registration.registration_id)
+        .unwrap()
+        .is_none());
+
+    let legacy_error =
+        with_agent_device_secret_store_fault(AgentDeviceSecretStoreFault::FailBeforeCommit, || {
+            state.store_pending_agent_legacy_upgrade(&legacy)
+        })
+        .unwrap_err();
+    assert!(legacy_error.to_string().contains("database failure"));
+    assert_eq!(vault_ref_fingerprints(&state), before_refs);
+    assert!(state
+        .load_pending_agent_legacy_upgrade(&legacy.agent_did)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn startup_recovery_preserves_referenced_pending_agent_secrets() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [89_u8; 32]);
+    state.initialize().unwrap();
+    let registration_identity =
+        device_identity_fixture("pending-registration", crate::agent::AgentKind::Daemon);
+    let legacy_identity =
+        device_identity_fixture("pending-legacy", crate::agent::AgentKind::Runtime);
+    let registration = pending_registration_fixture(&registration_identity);
+    let legacy = pending_legacy_fixture(&legacy_identity);
+    state
+        .store_pending_agent_registration(&registration)
+        .unwrap();
+    state.store_pending_agent_legacy_upgrade(&legacy).unwrap();
+    let before_refs = vault_ref_fingerprints(&state);
+
+    assert_eq!(
+        state.recover_unreferenced_staged_agent_secrets().unwrap(),
+        0
+    );
+    assert_eq!(vault_ref_fingerprints(&state), before_refs);
+    assert_eq!(
+        state
+            .load_pending_agent_registration(&registration.registration_id)
+            .unwrap()
+            .unwrap()
+            .secret_payload_json,
+        registration.secret_payload_json
+    );
+    assert_eq!(
+        state
+            .load_pending_agent_legacy_upgrade(&legacy.agent_did)
+            .unwrap()
+            .unwrap()
+            .secret_payload_json,
+        legacy.secret_payload_json
+    );
+}
+
+#[test]
+fn refreshed_legacy_pending_payload_switch_is_atomic_and_crash_recoverable() {
+    use super::device_identity::{
+        with_agent_device_secret_store_fault, AgentDeviceSecretStoreFault,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [96_u8; 32]);
+    state.initialize().unwrap();
+    let identity = device_identity_fixture("legacy-refresh", crate::agent::AgentKind::Daemon);
+    let pending = pending_legacy_fixture(&identity);
+    state.store_pending_agent_legacy_upgrade(&pending).unwrap();
+    let before_refs = vault_ref_fingerprints(&state);
+    let refreshed_hash = "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    let refreshed_payload = serde_json::json!({
+        "target_did_document": identity.did_document,
+        "root_private_key_pem": "fresh-proof-same-device",
+    });
+
+    let error =
+        with_agent_device_secret_store_fault(AgentDeviceSecretStoreFault::FailBeforeCommit, || {
+            state.replace_pending_agent_legacy_upgrade_payload(
+                &pending.agent_did,
+                &pending.protocol_device_id,
+                refreshed_hash,
+                &refreshed_payload,
+            )
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("database failure"));
+    assert_eq!(vault_ref_fingerprints(&state), before_refs);
+    let unchanged = state
+        .load_pending_agent_legacy_upgrade(&pending.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.target_document_hash, pending.target_document_hash);
+    assert_eq!(unchanged.secret_payload_json, pending.secret_payload_json);
+
+    with_agent_device_secret_store_fault(
+        AgentDeviceSecretStoreFault::SkipPostCommitCleanup,
+        || {
+            state.replace_pending_agent_legacy_upgrade_payload(
+                &pending.agent_did,
+                &pending.protocol_device_id,
+                refreshed_hash,
+                &refreshed_payload,
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(vault_ref_fingerprints(&state).len(), before_refs.len() + 1);
+    let refreshed = state
+        .load_pending_agent_legacy_upgrade(&pending.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(refreshed.target_document_hash, refreshed_hash);
+    assert_eq!(refreshed.secret_payload_json, refreshed_payload);
+    assert_eq!(
+        state.recover_unreferenced_staged_agent_secrets().unwrap(),
+        1
+    );
+    assert_eq!(vault_ref_fingerprints(&state).len(), before_refs.len());
+    assert_eq!(
+        state
+            .load_pending_agent_legacy_upgrade(&pending.agent_did)
+            .unwrap()
+            .unwrap()
+            .secret_payload_json,
+        refreshed_payload
+    );
+}
+
+#[test]
+fn startup_recovery_cleans_pending_secrets_left_after_post_commit_crash() {
+    use super::device_identity::{
+        with_agent_device_secret_store_fault, AgentDeviceSecretStoreFault,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [90_u8; 32]);
+    state.initialize().unwrap();
+
+    let registration_identity =
+        device_identity_fixture("registration-scrub", crate::agent::AgentKind::Daemon);
+    let registration = pending_registration_fixture(&registration_identity);
+    state
+        .store_pending_agent_registration(&registration)
+        .unwrap();
+    state
+        .promote_pending_agent_device_identity(
+            &registration.registration_id,
+            &registration_identity,
+        )
+        .unwrap();
+    state
+        .upsert_agent_definition(&device_agent_definition(&registration_identity))
+        .unwrap();
+
+    let mut legacy_identity =
+        device_identity_fixture("legacy-scrub", crate::agent::AgentKind::Runtime);
+    legacy_identity.legacy_migration_state = "completed".to_owned();
+    let mut legacy = pending_legacy_fixture(&legacy_identity);
+    legacy.status = "completed".to_owned();
+    state.store_pending_agent_legacy_upgrade(&legacy).unwrap();
+    state.store_agent_device_identity(&legacy_identity).unwrap();
+
+    let before_scrub = vault_ref_fingerprints(&state);
+    with_agent_device_secret_store_fault(
+        AgentDeviceSecretStoreFault::SkipPostCommitCleanup,
+        || {
+            assert!(state
+                .scrub_completed_agent_registration(&registration_identity.agent_did)
+                .unwrap());
+            assert!(state
+                .scrub_completed_agent_legacy_upgrade(&legacy_identity.agent_did)
+                .unwrap());
+        },
+    );
+    assert_eq!(vault_ref_fingerprints(&state), before_scrub);
+    assert!(state
+        .load_pending_agent_registration(&registration.registration_id)
+        .unwrap()
+        .is_none());
+    assert!(state
+        .load_pending_agent_legacy_upgrade(&legacy.agent_did)
+        .unwrap()
+        .is_none());
+
+    assert_eq!(
+        state.recover_unreferenced_staged_agent_secrets().unwrap(),
+        2
+    );
+    assert_eq!(vault_ref_fingerprints(&state).len(), before_scrub.len() - 2);
+}
+
+#[test]
+fn agent_device_secret_staging_rolls_back_all_refs_on_database_failure() {
+    use super::device_identity::{
+        with_agent_device_secret_store_fault, AgentDeviceSecretStoreFault,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [86_u8; 32]);
+    state.initialize().unwrap();
+    let original = device_identity_fixture("db-fail", crate::agent::AgentKind::Daemon);
+    state.store_agent_device_identity(&original).unwrap();
+    let before_refs = vault_ref_fingerprints(&state);
+
+    let rotated = rotated_device_identity(&original);
+    let error =
+        with_agent_device_secret_store_fault(AgentDeviceSecretStoreFault::FailBeforeCommit, || {
+            state.store_agent_device_identity(&rotated)
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("database failure"));
+    assert_eq!(vault_ref_fingerprints(&state), before_refs);
+    assert_eq!(
+        state
+            .load_agent_device_identity(&original.agent_did)
+            .unwrap()
+            .unwrap()
+            .access_token,
+        original.access_token
+    );
+}
+
+#[test]
+fn startup_recovery_only_removes_unreferenced_post_commit_staged_refs() {
+    use super::device_identity::{
+        with_agent_device_secret_store_fault, AgentDeviceSecretStoreFault,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [87_u8; 32]);
+    state.initialize().unwrap();
+    let original = device_identity_fixture("crash-cleanup", crate::agent::AgentKind::Daemon);
+    state.store_agent_device_identity(&original).unwrap();
+    let original_ref_count = vault_ref_fingerprints(&state).len();
+
+    let rotated = rotated_device_identity(&original);
+    with_agent_device_secret_store_fault(
+        AgentDeviceSecretStoreFault::SkipPostCommitCleanup,
+        || state.store_agent_device_identity(&rotated),
+    )
+    .unwrap();
+    assert_eq!(vault_ref_fingerprints(&state).len(), original_ref_count + 4);
+    assert_eq!(
+        state
+            .load_agent_device_identity(&original.agent_did)
+            .unwrap()
+            .unwrap()
+            .access_token,
+        rotated.access_token
+    );
+
+    let reopened = DaemonState::open_with_root_key_bytes(&config, [87_u8; 32]);
+    assert_eq!(
+        reopened
+            .recover_unreferenced_staged_agent_secrets()
+            .unwrap(),
+        4
+    );
+    assert_eq!(vault_ref_fingerprints(&reopened).len(), original_ref_count);
+    assert_eq!(
+        reopened
+            .load_agent_device_identity(&original.agent_did)
+            .unwrap()
+            .unwrap()
+            .access_token,
+        rotated.access_token
+    );
+    assert_eq!(
+        reopened
+            .recover_unreferenced_staged_agent_secrets()
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn daemon_sync_probe_public_shape_is_closed_and_identity_free() {
+    let value = serde_json::to_value(DaemonSyncProbe {
+        v2_subprotocol_negotiated: true,
+        v2_bootstrap_completed: true,
+        last_reconcile_protocol: Some("sync_v2".to_owned()),
+        legacy_sync_used: false,
+    })
+    .unwrap();
+    let object = value.as_object().unwrap();
+    assert_eq!(object.len(), 4);
+    assert!(object.contains_key("v2_subprotocol_negotiated"));
+    assert!(object.contains_key("v2_bootstrap_completed"));
+    assert!(object.contains_key("last_reconcile_protocol"));
+    assert!(object.contains_key("legacy_sync_used"));
+
+    let serialized = serde_json::to_string(&value).unwrap();
+    for forbidden in [
+        "agent_did",
+        "account_id",
+        "device_id",
+        "access_token",
+        "cursor",
+        "raw_frame",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
 }

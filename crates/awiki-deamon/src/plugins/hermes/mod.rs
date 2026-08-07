@@ -348,10 +348,7 @@ fn base_hermes_dotenv_path() -> Option<PathBuf> {
 }
 
 fn default_hermes_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|home| home.join(".hermes"))
+    awiki_user_dirs::try_home_dir().map(|home| home.join(".hermes"))
 }
 
 fn copy_runtime_config_file(

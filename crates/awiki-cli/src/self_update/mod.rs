@@ -3,6 +3,7 @@ mod version;
 
 use crate::build_info;
 use crate::workspace_config::{self, Resolved};
+use std::path::PathBuf;
 
 const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 43_200;
 
@@ -56,7 +57,7 @@ pub fn check_preflight() -> CheckOutcome {
 struct CheckSettings {
     strict_disabled: bool,
     metadata_cache_ttl_seconds: i64,
-    cache_dir: String,
+    cache_dir: Option<PathBuf>,
 }
 
 impl CheckSettings {
@@ -64,7 +65,9 @@ impl CheckSettings {
         Self {
             strict_disabled: false,
             metadata_cache_ttl_seconds: 0,
-            cache_dir: workspace_config::product_cache_dir().unwrap_or_default(),
+            cache_dir: workspace_config::product_cache_dir()
+                .ok()
+                .and_then(|path| non_empty_path(&path)),
         }
     }
 }
@@ -93,7 +96,7 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
     decision.installer_url =
         installer_url_from_manifest_url(urls.first().map(String::as_str).unwrap_or_default());
     let mut metadata = match cache::load_metadata(
-        &settings.cache_dir,
+        settings.cache_dir.as_deref(),
         ttl_seconds,
         prefer_fresh,
         update_cache_only_enabled(),
@@ -181,16 +184,22 @@ fn metadata_cache_ttl_seconds(configured: i64) -> i64 {
     ttl
 }
 
-fn update_cache_dir(resolved: &Resolved) -> String {
+fn update_cache_dir(resolved: &Resolved) -> Option<PathBuf> {
     if std::env::var("AWIKI_CLI_WORKSPACE_HOME_DIR")
         .ok()
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
     {
         return workspace_config::product_cache_dir()
-            .unwrap_or_else(|_| resolved.paths.cache_dir.clone());
+            .ok()
+            .and_then(|path| non_empty_path(&path))
+            .or_else(|| non_empty_path(&resolved.paths.cache_dir));
     }
-    resolved.paths.cache_dir.clone()
+    non_empty_path(&resolved.paths.cache_dir)
+}
+
+fn non_empty_path(value: &str) -> Option<PathBuf> {
+    (!value.trim().is_empty()).then(|| PathBuf::from(value))
 }
 
 fn update_cache_only_enabled() -> bool {

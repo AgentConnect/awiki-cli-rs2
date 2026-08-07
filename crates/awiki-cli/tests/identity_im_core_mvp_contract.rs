@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -74,9 +75,7 @@ fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() 
 fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
-    let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","result":{"access_token":"jwt-bob-refreshed"},"id":"req-1"}"#,
-    )]);
+    let server = TestServer::new(vec![TestResponse::legacy_get_me()]);
     write_service_config(&workspace_home, &server.base_url());
     write_ready_identity(
         &workspace_home,
@@ -132,7 +131,7 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
 fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::ok(
             r###"{"jsonrpc":"2.0","result":{"nick_name":"Alice Remote","bio":"Rust port","tags":["rust","cli"],"profile_md":"## Alice"},"id":"req-1"}"###,
         ),
@@ -166,10 +165,11 @@ fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() 
     assert_eq!(profile["data"]["profile"]["profile_md"], "## Alice");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
-    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(requests.len(), 3);
+    assert_prekey_publication(&requests[1]);
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
+    assert_has_bearer(&requests[2]);
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(
         body,
         json!({
@@ -186,7 +186,7 @@ fn identity_register_vault_required_persists_without_plaintext_secret_files() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    let server = TestServer::new(vec![TestResponse::registration()]);
     write_service_config_with_secret_storage(&workspace_home, &server.base_url(), "vault_required");
 
     let register = success_json(&awiki_cmd_with_env(
@@ -234,10 +234,14 @@ fn identity_register_vault_required_persists_without_plaintext_secret_files() {
         status["data"]["vault"]["identity"]["plaintext_compat_retained"],
         false
     );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_prekey_publication(&requests[1]);
     let encoded = serde_json::to_string(&status).expect("status json");
     assert!(
         !encoded.contains(root_key)
-            && !encoded.contains("jwt-register")
+            && !encoded.contains("\"access_token\"")
+            && !encoded.contains("\"jwt_token\"")
             && !encoded.contains("-----BEGIN PRIVATE KEY-----"),
         "vault status must be redacted: {encoded}"
     );
@@ -249,7 +253,7 @@ fn identity_default_cutover_profile_set_routes_update_me_through_public_api() {
     let markdown_file = workspace.path().join("profile.md");
     std::fs::write(&markdown_file, " \n# Alice\n\nProfile body\n ").expect("write markdown");
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::ok(
             r###"{"jsonrpc":"2.0","result":{"nick_name":"Alice Updated","bio":"Rust port","tags":["rust","cli"],"profile_md":" \n# Alice\n\nProfile body\n "},"id":"req-1"}"###,
         ),
@@ -304,10 +308,11 @@ fn identity_default_cutover_profile_set_routes_update_me_through_public_api() {
     );
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
-    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(requests.len(), 3);
+    assert_prekey_publication(&requests[1]);
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
+    assert_has_bearer(&requests[2]);
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(
         body,
         json!({
@@ -328,7 +333,7 @@ fn identity_default_cutover_profile_set_routes_update_me_through_public_api() {
 fn identity_default_cutover_bind_phone_routes_authenticated_rest_through_bridge() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::ok(r#"{"sent":true}"#),
     ]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
@@ -367,10 +372,11 @@ fn identity_default_cutover_bind_phone_routes_authenticated_rest_through_bridge(
     assert_eq!(bind["data"]["verification_state"], "otp_sent");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].starts_with("POST /user-service/auth/phone-bind-send HTTP/1.1"));
-    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(requests.len(), 3);
+    assert_prekey_publication(&requests[1]);
+    assert!(requests[2].starts_with("POST /user-service/v1/auth/phone-bind-send HTTP/1.1"));
+    assert_has_bearer(&requests[2]);
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body, json!({ "phone": "+8613800138001" }));
 }
 
@@ -378,7 +384,7 @@ fn identity_default_cutover_bind_phone_routes_authenticated_rest_through_bridge(
 fn identity_default_cutover_bind_email_maps_sent_and_wait_completed_states() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::status(404, "not found"),
         TestResponse::ok(r#"{"sent":true}"#),
     ]);
@@ -418,18 +424,19 @@ fn identity_default_cutover_bind_email_maps_sent_and_wait_completed_states() {
     assert_eq!(sent["data"]["verification_state"], "email_sent");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    assert!(requests[1]
-        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
-    assert!(requests[2].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
-    let send_body: Value = serde_json::from_str(request_body(&requests[2])).expect("send body");
+    assert_eq!(requests.len(), 4);
+    assert_prekey_publication(&requests[1]);
+    assert!(requests[2]
+        .starts_with("GET /user-service/v1/auth/email-status?email=alice%40example.com HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/v1/auth/email-send HTTP/1.1"));
+    let send_body: Value = serde_json::from_str(request_body(&requests[3])).expect("send body");
     assert_eq!(send_body, json!({ "email": "alice@example.com" }));
-    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
-    assert_contains_text(&requests[2], "Authorization: Bearer jwt-register\r\n");
+    assert_has_bearer(&requests[2]);
+    assert_has_bearer(&requests[3]);
 
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::ok(r#"{"verified":true,"verified_at":"2026-05-21T00:00:00Z"}"#),
     ]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
@@ -472,9 +479,9 @@ fn identity_default_cutover_bind_email_maps_sent_and_wait_completed_states() {
 fn identity_default_cutover_resolve_handle_routes_directory_sequence() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","status":"active"},"id":"req-1"}"#,
         ),
         TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice Public"},"id":"req-1"}"#),
         TestResponse::ok(
@@ -519,10 +526,11 @@ fn identity_default_cutover_resolve_handle_routes_directory_sequence() {
     );
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    let lookup_body: Value = serde_json::from_str(request_body(&requests[1])).unwrap();
-    let profile_body: Value = serde_json::from_str(request_body(&requests[2])).unwrap();
-    let resolve_body: Value = serde_json::from_str(request_body(&requests[3])).unwrap();
+    assert_eq!(requests.len(), 5);
+    assert_prekey_publication(&requests[1]);
+    let lookup_body: Value = serde_json::from_str(request_body(&requests[2])).unwrap();
+    let profile_body: Value = serde_json::from_str(request_body(&requests[3])).unwrap();
+    let resolve_body: Value = serde_json::from_str(request_body(&requests[4])).unwrap();
     assert_eq!(lookup_body["method"], "lookup");
     assert_eq!(lookup_body["params"], json!({ "handle": "alice.awiki.ai" }));
     assert_eq!(profile_body["method"], "get_public_profile");
@@ -542,7 +550,7 @@ fn identity_default_cutover_resolve_did_keeps_nonfatal_directory_warnings() {
     let workspace = TempDir::new().expect("workspace");
     let did = "did:wba:awiki.ai:alice:e1_remote";
     let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
+        TestResponse::registration(),
         TestResponse::ok(&format!(
             r#"{{"jsonrpc":"2.0","result":{{"did":"{did}","service_endpoint":"https://service.example"}},"id":"req-1"}}"#
         )),
@@ -586,146 +594,9 @@ fn identity_default_cutover_resolve_did_keeps_nonfatal_directory_warnings() {
 }
 
 #[test]
-fn identity_default_cutover_recover_without_otp_routes_send_otp_through_bridge() {
-    let workspace = TempDir::new().expect("workspace");
-    let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
-        TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"sent":true},"id":"req-1"}"#),
-    ]);
-    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
-
-    let register = awiki_cmd_with_env(
-        &[
-            "id",
-            "register",
-            "--handle",
-            "alice",
-            "--phone",
-            "13800138000",
-            "--otp",
-            "123456",
-        ],
-        workspace.path(),
-        &[],
-    );
-    assert_code(&register, 0);
-
-    let recover = success_json(&awiki_cmd_with_env(
-        &[
-            "id",
-            "recover",
-            "--handle",
-            "Alice",
-            "--phone",
-            "13800138000",
-        ],
-        workspace.path(),
-        &[],
-    ));
-    assert_eq!(
-        recover["summary"],
-        "OTP sent for handle alice.awiki.ai recovery"
-    );
-    assert_eq!(recover["data"]["action"], "send_recover_otp");
-    assert_eq!(recover["data"]["phone"], "+8613800138000");
-    assert_eq!(recover["data"]["verification_state"], "otp_sent");
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
-    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
-    assert_eq!(body["method"], "send_otp");
-    assert_eq!(body["params"], json!({ "phone": "+8613800138000" }));
-}
-
-#[test]
-fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes() {
-    let workspace = TempDir::new().expect("workspace");
-    let server = TestServer::new(vec![
-        TestResponse::ok(register_alice_response()),
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
-        ),
-    ]);
-    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
-
-    let register = awiki_cmd_with_env(
-        &[
-            "id",
-            "register",
-            "--handle",
-            "alice",
-            "--phone",
-            "13800138000",
-            "--otp",
-            "123456",
-        ],
-        workspace.path(),
-        &[],
-    );
-    assert_code(&register, 0);
-
-    let recover = success_json(&awiki_cmd_with_env(
-        &[
-            "id",
-            "recover",
-            "--handle",
-            " Alice ",
-            "--phone",
-            "13800138000",
-            "--otp",
-            " 65 43 21 ",
-        ],
-        workspace.path(),
-        &[],
-    ));
-    assert_eq!(
-        recover["summary"],
-        "Handle alice.awiki.ai recovered successfully"
-    );
-    assert_eq!(recover["data"]["action"], "recover_handle");
-    assert_eq!(recover["data"]["final_identity_name"], "alice");
-    assert_eq!(recover["data"]["archived_identities"], json!(["alice"]));
-    let recovered_did = recover["data"]["identity"]["did"]
-        .as_str()
-        .expect("recovered identity did");
-    assert!(
-        recovered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
-        "recovery should persist the locally generated key-bound DID: {recovered_did}"
-    );
-    assert!(recover["data"].get("temp_identity_name").is_none());
-    assert!(recover["data"].get("old_dids").is_none());
-    assert_eq!(
-        recover["data"]["store_merge_counts"],
-        json!({
-            "messages": 0,
-            "contacts": 0,
-            "contact_handle_bindings": 0,
-            "relationship_events": 0,
-            "groups": 0,
-            "group_members": 0,
-        })
-    );
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
-    assert_eq!(body["method"], "recover_handle");
-    assert_eq!(body["params"]["handle"], "alice.awiki.ai");
-    assert_eq!(body["params"]["phone"], "+8613800138000");
-    assert_eq!(body["params"]["otp_code"], "654321");
-    assert!(body["params"]["did_document"].is_object());
-    assert_eq!(
-        body["params"]["did_document"]["id"].as_str(),
-        Some(recovered_did)
-    );
-}
-
-#[test]
 fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_replace() {
     let workspace = TempDir::new().expect("workspace");
-    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    let server = TestServer::new(vec![TestResponse::registration()]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
 
     let register = success_json(&awiki_cmd_with_env(
@@ -747,7 +618,7 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
         .expect("registered identity did")
         .to_string();
     assert!(
-        registered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        registered_did.starts_with("did:wba:awiki.ai:user:alice:e1_"),
         "registration should persist the locally generated key-bound DID: {registered_did}"
     );
 
@@ -819,9 +690,10 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        1,
+        2,
         "replace-did dry-run must not call remote replace_did"
     );
+    assert_prekey_publication(&requests[1]);
 }
 
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
@@ -871,8 +743,133 @@ fn write_service_config_with_secret_storage(workspace: &Path, base_url: &str, mo
     );
 }
 
-fn register_alice_response() -> &'static str {
-    r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#
+fn json_rpc_result(result: Value) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "result": result,
+        "id": "req-1",
+    })
+    .to_string()
+}
+
+fn legacy_access_token(did: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    encode_test_token(json!({
+        "iss": "user-service",
+        "sub": did,
+        "type": "access",
+        "iat": now,
+        "exp": now + 3600,
+    }))
+}
+
+fn registration_response(request: &str) -> String {
+    let rpc: Value =
+        serde_json::from_str(request_body(request)).expect("registration request JSON");
+    let params = &rpc["params"];
+    let document = &params["did_document"];
+    let did = document["id"]
+        .as_str()
+        .expect("registration DID document id");
+    let device = &document["deviceManifest"]["devices"][0];
+    let device_id = device["device_id"]
+        .as_str()
+        .expect("registration manifest device_id");
+    let key_id = device["signing_key_id"]
+        .as_str()
+        .expect("registration manifest signing_key_id");
+    let handle = params["handle"].as_str().expect("registration handle");
+    let domain = did
+        .strip_prefix("did:wba:")
+        .and_then(|suffix| suffix.split(':').next())
+        .expect("registration DID domain");
+    let user_id = format!("user-{handle}");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let access_token = encode_test_token(json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": user_id,
+        "device_id": device_id,
+        "key_id": key_id,
+        "auth_generation": 1,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": format!("registration-{device_id}"),
+    }));
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "state": "registered",
+            "did": did,
+            "user_id": user_id,
+            "message": "Registration successful",
+            "access_token": access_token,
+            "handle": handle,
+            "domain": domain,
+            "full_handle": format!("{handle}.{domain}"),
+            "binding_generation": "1",
+        },
+        "id": rpc["id"].clone(),
+    })
+    .to_string()
+}
+
+fn legacy_get_me_response(request: &str) -> String {
+    let signature_input = request
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("signature-input:"))
+        .expect("signed get_me request signature-input");
+    let key_id = signature_input
+        .split_once("keyid=\"")
+        .and_then(|(_, value)| value.split_once('"').map(|(key_id, _)| key_id))
+        .expect("signed get_me request keyid");
+    let did = key_id
+        .strip_suffix("#key-1")
+        .expect("legacy get_me signing key");
+    json_rpc_result(json!({"access_token": legacy_access_token(did)}))
+}
+
+fn prekey_publication_response(request: &str) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("P5 publish request JSON");
+    let body = &rpc["params"]["body"];
+    let bundle = &body["prekey_bundle"];
+    let published_opk_count = body["one_time_prekeys"]
+        .as_array()
+        .map(Vec::len)
+        .expect("P5 publish one_time_prekeys");
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "published": true,
+            "owner_did": bundle["owner_did"].clone(),
+            "owner_device_id": bundle["owner_device_id"].clone(),
+            "bundle_id": bundle["bundle_id"].clone(),
+            "published_at": "2026-07-25T00:00:00Z",
+            "published_opk_count": published_opk_count,
+        },
+        "id": rpc["id"].clone(),
+    })
+    .to_string()
+}
+
+fn encode_test_token(claims: Value) -> String {
+    format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("serialize test access token claims"))
+    )
 }
 
 fn success_json(output: &Output) -> Value {
@@ -920,6 +917,30 @@ fn assert_contains_text(haystack: &str, needle: &str) {
     );
 }
 
+fn assert_has_bearer(request: &str) {
+    assert!(
+        request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("authorization")
+                    && value.trim().starts_with("Bearer ")
+                    && value.trim().len() > "Bearer ".len()
+            })
+        }),
+        "expected a non-empty bearer access token, got:\n{request}"
+    );
+}
+
+fn assert_prekey_publication(request: &str) {
+    assert!(
+        request.starts_with("POST /im/rpc HTTP/1.1"),
+        "registration must publish its P5 PreKey bundle through Message Service:\n{request}"
+    );
+    let body: Value = serde_json::from_str(request_body(request)).expect("P5 publish request body");
+    assert_eq!(body["method"], "direct.e2ee.publish_prekey_bundle");
+    assert!(body["params"].get("auth").is_none());
+    assert_eq!(body["params"]["meta"]["target"]["kind"], "service");
+}
+
 #[derive(Clone)]
 struct TestResponse {
     status: u16,
@@ -940,6 +961,18 @@ impl TestResponse {
             body: body.to_string(),
         }
     }
+
+    fn registration() -> Self {
+        Self::ok("__DYNAMIC_REGISTRATION_RESPONSE__")
+    }
+
+    fn prekey_publication() -> Self {
+        Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
+    }
+
+    fn legacy_get_me() -> Self {
+        Self::ok("__DYNAMIC_LEGACY_GET_ME_RESPONSE__")
+    }
 }
 
 struct TestServer {
@@ -959,11 +992,19 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let follows_with_prekey = response.body == "__DYNAMIC_REGISTRATION_RESPONSE__";
                 let stream = accept_with_timeout(&listener);
                 let Some(stream) = stream else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if follows_with_prekey {
+                    let stream = accept_with_timeout(&listener);
+                    let Some(stream) = stream else {
+                        break;
+                    };
+                    handle_connection(stream, &server_requests, TestResponse::prekey_publication());
+                }
             }
         });
         Self {
@@ -1020,13 +1061,22 @@ fn handle_connection(
     response: TestResponse,
 ) {
     let request = read_http_request(&mut stream);
+    let body = if response.body == "__DYNAMIC_REGISTRATION_RESPONSE__" {
+        registration_response(&request)
+    } else if response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" {
+        prekey_publication_response(&request)
+    } else if response.body == "__DYNAMIC_LEGACY_GET_ME_RESPONSE__" {
+        legacy_get_me_response(&request)
+    } else {
+        response.body
+    };
     requests.lock().expect("requests mutex").push(request);
-    let body = response.body.as_bytes();
+    let body_bytes = body.as_bytes();
     let raw = format!(
         "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         response.status,
-        body.len(),
-        response.body
+        body_bytes.len(),
+        body
     );
     stream.write_all(raw.as_bytes()).expect("write response");
 }

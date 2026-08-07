@@ -46,6 +46,7 @@ function main() {
   const outputDir = path.resolve(arg('--output'));
   const sourceTag = arg('--source-tag');
   const sourceCommit = arg('--source-commit');
+  if (!/^[a-f0-9]{40}$/i.test(sourceCommit)) die('source commit must be a full commit SHA');
   const entry = releaseConfig.channels[channel];
   const version = entry.version;
   const channelBaseUrl = `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}`;
@@ -77,7 +78,26 @@ function main() {
 
   const packageStage = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-cli-package-'));
   try {
-    for (const name of ['package.json', 'LICENSE', 'README.md']) fs.copyFileSync(path.join(root, name), path.join(packageStage, name));
+    for (const name of ['package.json', 'LICENSE', 'README.md', 'COMMERCIAL-LICENSING.md']) {
+      fs.copyFileSync(path.join(root, name), path.join(packageStage, name));
+    }
+    fs.cpSync(path.join(root, 'LICENSES'), path.join(packageStage, 'LICENSES'), { recursive: true });
+    fs.writeFileSync(path.join(packageStage, 'SOURCE.md'), `# AWiki CLI S2 Corresponding Source
+
+Version: ${version}
+Tag: ${sourceTag}
+Commit: ${sourceCommit}
+Source: https://github.com/${serverConfig.github_repo}/tree/${sourceCommit}
+Source archive: https://github.com/${serverConfig.github_repo}/archive/${sourceCommit}.tar.gz
+Build instructions: https://github.com/${serverConfig.github_repo}/blob/${sourceCommit}/docs/development.md
+
+ANP dependency commit: ${releaseConfig.anp_commit}
+ANP source: https://github.com/agent-network-protocol/anp/tree/${releaseConfig.anp_commit}
+
+The source location above identifies the exact revision used to build this
+release. The Corresponding Source is provided under GNU AGPLv3 as described in
+the accompanying LICENSE file.
+`);
     fs.cpSync(path.join(root, 'scripts'), path.join(packageStage, 'scripts'), { recursive: true });
     const packageJsonPath = path.join(packageStage, 'package.json');
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));

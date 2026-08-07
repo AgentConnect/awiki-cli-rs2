@@ -7,10 +7,25 @@ const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 200;
 const PATCH_BUFFER: usize = 256;
 
+fn subscribe_before_seed<T: Clone, F>(
+    sender: &broadcast::Sender<T>,
+    projection: &Mutex<()>,
+    seed: F,
+) -> crate::ImResult<(broadcast::Receiver<T>, Vec<T>)>
+where
+    F: FnOnce() -> crate::ImResult<Vec<T>>,
+{
+    let receiver = sender.subscribe();
+    let _projection_guard = projection.lock().expect("message projection lock poisoned");
+    let initial = seed()?;
+    Ok((receiver, initial))
+}
+
 #[derive(Debug)]
 pub(crate) struct MessageStore {
     owner_identity_id: String,
     owner_did: String,
+    projection: Mutex<()>,
     state: Mutex<MessageStoreState>,
     sender: broadcast::Sender<crate::messages::ThreadMessageStorePatch>,
 }
@@ -39,6 +54,7 @@ impl MessageStore {
         Arc::new(Self {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
+            projection: Mutex::new(()),
             state: Mutex::new(MessageStoreState::default()),
             sender,
         })
@@ -52,10 +68,16 @@ impl MessageStore {
     ) -> crate::ImResult<crate::messages::ThreadMessagePatchSession> {
         self.ensure_owner(client)?;
         let limit = normalized_limit(limit);
-        let initial = vec![self.repair_thread_from_client(client, thread.clone(), limit)?];
+        let (receiver, initial) = subscribe_before_seed(&self.sender, &self.projection, || {
+            Ok(vec![self.repair_thread_from_client_locked(
+                client,
+                thread.clone(),
+                limit,
+            )?])
+        })?;
         Ok(crate::messages::ThreadMessagePatchSession::new(
             self.clone(),
-            self.sender.subscribe(),
+            receiver,
             initial,
             thread,
             limit,
@@ -70,6 +92,19 @@ impl MessageStore {
     ) -> crate::ImResult<crate::messages::ThreadMessageStorePatch> {
         self.ensure_owner(client)?;
         let limit = normalized_limit(Some(limit));
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("message projection lock poisoned");
+        self.repair_thread_from_client_locked(client, thread, limit)
+    }
+
+    fn repair_thread_from_client_locked(
+        &self,
+        client: &crate::core::ImClient,
+        thread: crate::messages::ThreadRef,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::ThreadMessageStorePatch> {
         let items = committed_thread_items(client, &thread, limit)?;
         Ok(self.replace_thread_items(&thread, limit, items))
     }
@@ -176,6 +211,10 @@ impl MessageStore {
     }
 
     fn emit_patches_for_tracked_threads(&self, client: &crate::core::ImClient, reason: &str) {
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("message projection lock poisoned");
         let tracked = {
             let state = self.state.lock().expect("message store lock poisoned");
             state
@@ -198,9 +237,11 @@ impl MessageStore {
             };
             let patch = match committed_thread_items(client, &thread, limit) {
                 Ok(items) => self.diff_thread_items(&thread, limit, items),
-                Err(_) => self.repair_required_patch(&thread, limit, reason),
+                Err(_) => Some(self.repair_required_patch(&thread, limit, reason)),
             };
-            let _ = self.sender.send(patch);
+            if let Some(patch) = patch {
+                let _ = self.sender.send(patch);
+            }
         }
     }
 
@@ -209,45 +250,55 @@ impl MessageStore {
         thread: &crate::messages::ThreadRef,
         limit: u32,
         next_items: Vec<crate::messages::Message>,
-    ) -> crate::messages::ThreadMessageStorePatch {
+    ) -> Option<crate::messages::ThreadMessageStorePatch> {
         let key = ThreadKey::from_thread(thread);
         let mut state = self.state.lock().expect("message store lock poisoned");
-        state.version = state.version.saturating_add(1);
-        let version = state.version;
+        let normalized_limit = normalized_limit(Some(limit));
         let previous_items = state
             .threads
-            .insert(
-                key.clone(),
-                ThreadState {
-                    limit: normalized_limit(Some(limit)),
-                    items: next_items.clone(),
-                },
-            )
-            .map(|thread_state| thread_state.items)
+            .get(&key)
+            .map(|thread_state| thread_state.items.clone())
             .unwrap_or_default();
-        diff_patch(
-            &self.owner_identity_id,
-            &self.owner_did,
-            version,
-            &key,
-            &previous_items,
-            &next_items,
-        )
-        .unwrap_or_else(|| crate::messages::ThreadMessageStorePatch::Reset {
-            owner_identity_id: self.owner_identity_id.clone(),
-            owner_did: self.owner_did.clone(),
-            version,
-            conversation_identity: Some(
-                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
-                    key.kind.clone(),
-                    key.id.clone(),
-                    &self.owner_did,
+        if previous_items == next_items {
+            if let Some(thread_state) = state.threads.get_mut(&key) {
+                thread_state.limit = normalized_limit;
+            }
+            return None;
+        }
+        state.version = state.version.saturating_add(1);
+        let version = state.version;
+        state.threads.insert(
+            key.clone(),
+            ThreadState {
+                limit: normalized_limit,
+                items: next_items.clone(),
+            },
+        );
+        Some(
+            diff_patch(
+                &self.owner_identity_id,
+                &self.owner_did,
+                version,
+                &key,
+                &previous_items,
+                &next_items,
+            )
+            .unwrap_or_else(|| crate::messages::ThreadMessageStorePatch::Reset {
+                owner_identity_id: self.owner_identity_id.clone(),
+                owner_did: self.owner_did.clone(),
+                version,
+                conversation_identity: Some(
+                    crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                        key.kind.clone(),
+                        key.id.clone(),
+                        &self.owner_did,
+                    ),
                 ),
-            ),
-            thread_kind: key.kind,
-            thread_id: key.id,
-            items: next_items,
-        })
+                thread_kind: key.kind,
+                thread_id: key.id,
+                items: next_items,
+            }),
+        )
     }
 
     fn repair_required_for_key(
@@ -327,21 +378,7 @@ fn diff_patch(
     next: &[crate::messages::Message],
 ) -> Option<crate::messages::ThreadMessageStorePatch> {
     if previous == next {
-        return Some(crate::messages::ThreadMessageStorePatch::Reset {
-            owner_identity_id: owner_identity_id.to_owned(),
-            owner_did: owner_did.to_owned(),
-            version,
-            conversation_identity: Some(
-                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
-                    key.kind.clone(),
-                    key.id.clone(),
-                    owner_did,
-                ),
-            ),
-            thread_kind: key.kind.clone(),
-            thread_id: key.id.clone(),
-            items: next.to_vec(),
-        });
+        return None;
     }
     let previous_keys = previous.iter().map(message_key).collect::<Vec<_>>();
     let next_keys = next.iter().map(message_key).collect::<Vec<_>>();
@@ -427,11 +464,11 @@ fn committed_thread_items(
                 i64::from(normalized_limit(Some(limit))),
                 None,
             )?;
-        return records
+        records
             .records
             .iter()
             .map(crate::internal::message_runtime::conversations::message_from_record)
-            .collect::<crate::ImResult<Vec<_>>>();
+            .collect::<crate::ImResult<Vec<_>>>()
     }
     #[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
     {
@@ -443,6 +480,269 @@ fn committed_thread_items(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[tokio::test]
+    async fn subscribe_before_seed_keeps_exactly_one_commit_during_seed() {
+        let (sender, _) = tokio::sync::broadcast::channel(4);
+        let projection = std::sync::Mutex::new(());
+        let (mut receiver, initial) = super::subscribe_before_seed(&sender, &projection, || {
+            sender.send("committed").unwrap();
+            Ok(vec!["seed"])
+        })
+        .unwrap();
+
+        assert_eq!(initial, vec!["seed"]);
+        assert_eq!(receiver.recv().await.unwrap(), "committed");
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn seed_version_fences_the_commit_already_represented_by_seed() {
+        let fixture = Fixture::new("message-store-seed-fence");
+        let client = fixture.client();
+        let store = client.message_store();
+        let thread = crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let receiver = store.sender.subscribe();
+        let during_seed = store.repair_required_patch(&thread, 100, "during_seed");
+        store.sender.send(during_seed).unwrap();
+        let seed = store.repair_required_patch(&thread, 100, "seed_after_commit");
+        let mut session = crate::messages::ThreadMessagePatchSession::new(
+            store.clone(),
+            receiver,
+            vec![seed],
+            thread.clone(),
+            100,
+        );
+
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::RepairRequired {
+                version: 2,
+                reason,
+                ..
+            }) if reason == "seed_after_commit"
+        ));
+        let after_seed = store.repair_required_patch(&thread, 100, "after_seed");
+        store.sender.send(after_seed).unwrap();
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::RepairRequired {
+                version: 3,
+                reason,
+                ..
+            }) if reason == "after_seed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn seed_first_serializes_commit_projection_without_regression() {
+        let fixture = Fixture::new("message-store-seed-first-race");
+        let client = fixture.client();
+        let store = client.message_store();
+        let thread = crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let old_items = vec![message("m1", "old")];
+        let committed_items = vec![message("m1", "new")];
+        let canonical = std::sync::Arc::new(std::sync::Mutex::new(old_items.clone()));
+        let seed_read = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release_seed = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let seed_store = store.clone();
+        let seed_thread = thread.clone();
+        let seed_canonical = canonical.clone();
+        let seed_read_worker = seed_read.clone();
+        let release_seed_worker = release_seed.clone();
+        let seed_worker = std::thread::spawn(move || {
+            super::subscribe_before_seed(&seed_store.sender, &seed_store.projection, || {
+                let items = seed_canonical
+                    .lock()
+                    .expect("canonical message fixture lock poisoned")
+                    .clone();
+                seed_read_worker.wait();
+                release_seed_worker.wait();
+                Ok(vec![seed_store.replace_thread_items(
+                    &seed_thread,
+                    100,
+                    items,
+                )])
+            })
+            .unwrap()
+        });
+
+        seed_read.wait();
+        *canonical
+            .lock()
+            .expect("canonical message fixture lock poisoned") = committed_items.clone();
+
+        let callback_store = store.clone();
+        let callback_thread = thread.clone();
+        let callback_canonical = canonical.clone();
+        let (callback_done_tx, callback_done_rx) = std::sync::mpsc::channel();
+        let callback_worker = std::thread::spawn(move || {
+            let _projection_guard = callback_store
+                .projection
+                .lock()
+                .expect("message projection lock poisoned");
+            let items = callback_canonical
+                .lock()
+                .expect("canonical message fixture lock poisoned")
+                .clone();
+            if let Some(patch) = callback_store.diff_thread_items(&callback_thread, 100, items) {
+                let _ = callback_store.sender.send(patch);
+            }
+            callback_done_tx.send(()).unwrap();
+        });
+
+        assert!(
+            callback_done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "commit callback must not overtake a seed holding the projection lock"
+        );
+        release_seed.wait();
+        let (receiver, initial) = seed_worker.join().unwrap();
+        callback_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        callback_worker.join().unwrap();
+
+        let mut session = crate::messages::ThreadMessagePatchSession::new(
+            store.clone(),
+            receiver,
+            initial,
+            thread.clone(),
+            100,
+        );
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::Reset { items, .. })
+                if items == old_items
+        ));
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::Upsert { message, .. })
+                if message == committed_items[0]
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "the commit represented after the seed must be delivered exactly once"
+        );
+        let key = super::ThreadKey::from_thread(&thread);
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .expect("message store lock poisoned")
+                .threads
+                .get(&key)
+                .expect("tracked thread")
+                .items,
+            committed_items,
+            "the callback must re-read canonical state after the seed and must not regress it"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_first_is_fenced_by_newer_seed_without_duplicate_delivery() {
+        let fixture = Fixture::new("message-store-callback-first-race");
+        let client = fixture.client();
+        let store = client.message_store();
+        let thread = crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let committed_items = vec![message("m1", "new")];
+        let canonical = std::sync::Arc::new(std::sync::Mutex::new(committed_items.clone()));
+        let receiver = store.sender.subscribe();
+        let callback_locked = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release_callback = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let callback_store = store.clone();
+        let callback_thread = thread.clone();
+        let callback_canonical = canonical.clone();
+        let callback_locked_worker = callback_locked.clone();
+        let release_callback_worker = release_callback.clone();
+        let callback_worker = std::thread::spawn(move || {
+            let _projection_guard = callback_store
+                .projection
+                .lock()
+                .expect("message projection lock poisoned");
+            let items = callback_canonical
+                .lock()
+                .expect("canonical message fixture lock poisoned")
+                .clone();
+            if let Some(patch) = callback_store.diff_thread_items(&callback_thread, 100, items) {
+                let _ = callback_store.sender.send(patch);
+            }
+            callback_locked_worker.wait();
+            release_callback_worker.wait();
+        });
+
+        callback_locked.wait();
+        let seed_store = store.clone();
+        let seed_thread = thread.clone();
+        let seed_canonical = canonical.clone();
+        let seed_started = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let seed_started_worker = seed_started.clone();
+        let seed_worker = std::thread::spawn(move || {
+            seed_started_worker.wait();
+            let _projection_guard = seed_store
+                .projection
+                .lock()
+                .expect("message projection lock poisoned");
+            let items = seed_canonical
+                .lock()
+                .expect("canonical message fixture lock poisoned")
+                .clone();
+            vec![seed_store.replace_thread_items(&seed_thread, 100, items)]
+        });
+        seed_started.wait();
+        release_callback.wait();
+        callback_worker.join().unwrap();
+        let initial = seed_worker.join().unwrap();
+
+        let mut session = crate::messages::ThreadMessagePatchSession::new(
+            store.clone(),
+            receiver,
+            initial,
+            thread.clone(),
+            100,
+        );
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::Reset {
+                version: 2,
+                items,
+                ..
+            }) if items == committed_items
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "the older queued callback patch must be fenced by the seed"
+        );
+        let key = super::ThreadKey::from_thread(&thread);
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .expect("message store lock poisoned")
+                .threads
+                .get(&key)
+                .expect("tracked thread")
+                .items,
+            committed_items,
+            "a callback that wins the projection lock must remain represented by the seed"
+        );
+    }
 
     #[test]
     fn message_store_diff_emits_upsert_for_single_changed_message() {
@@ -534,6 +834,19 @@ mod tests {
         .is_none());
     }
 
+    #[test]
+    fn message_store_diff_has_no_patch_for_unchanged_items() {
+        let key = super::ThreadKey {
+            kind: "group".to_owned(),
+            id: "group:dev".to_owned(),
+        };
+        let items = vec![message("m1", "one")];
+
+        assert!(
+            super::diff_patch("owner-id", "did:example:alice", 3, &key, &items, &items,).is_none()
+        );
+    }
+
     #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
     #[tokio::test]
     async fn message_store_repair_reads_committed_thread_history() {
@@ -559,7 +872,15 @@ mod tests {
 
         match patch {
             crate::messages::ThreadMessageStorePatch::Reset { items, .. } => {
-                assert_eq!(items, vec![message]);
+                let mut expected = message;
+                expected
+                    .metadata
+                    .attributes
+                    .push(crate::messages::MessageMetadataAttribute {
+                        key: "is_read".to_owned(),
+                        value: "true".to_owned(),
+                    });
+                assert_eq!(items, vec![expected]);
             }
             other => panic!("unexpected patch: {other:?}"),
         }
@@ -597,6 +918,38 @@ mod tests {
             }
             other => panic!("unexpected patch: {other:?}"),
         }
+    }
+
+    #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+    #[tokio::test]
+    async fn message_store_ignores_unchanged_local_projection_commit() {
+        let fixture = Fixture::new("message-store-unchanged-commit");
+        let client = fixture.client();
+        let store = client.message_store();
+        let mut session = store
+            .watch_for_client(
+                &client,
+                crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                Some(100),
+            )
+            .unwrap();
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::Reset { .. })
+        ));
+        let version_before = store.version_for_test();
+
+        client.emit_committed_message_projection("unchanged_projection");
+
+        assert_eq!(store.version_for_test(), version_before);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "unchanged projection must not emit a patch"
+        );
     }
 
     fn message(id: &str, text: &str) -> crate::messages::Message {
@@ -676,6 +1029,7 @@ mod tests {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,

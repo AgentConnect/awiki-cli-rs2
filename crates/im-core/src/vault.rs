@@ -10,8 +10,8 @@ pub use crate::internal::platform_secret::{
     DeviceVaultRootKey, SecretBytes, DEVICE_VAULT_ROOT_KEY_LEN,
 };
 pub use crate::internal::secret_vault::{
-    FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretKind,
-    SecretMetadata, SecretRef, SecretVault,
+    FileSecretVault, FileSecretVaultStore, SealIfAbsentResult, SealSecretRequest,
+    SecretAccessPolicy, SecretKind, SecretMetadata, SecretRef, SecretVault,
 };
 
 pub fn encode_delegated_key_ref(secret_ref: &SecretRef) -> crate::ImResult<String> {

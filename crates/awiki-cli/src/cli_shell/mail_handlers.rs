@@ -2,6 +2,7 @@ use super::App;
 use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::email::{self, CommandResult};
+#[cfg(unix)]
 use std::io::Write;
 use std::path::Path;
 #[cfg(unix)]

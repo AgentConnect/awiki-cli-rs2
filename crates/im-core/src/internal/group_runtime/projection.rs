@@ -464,9 +464,11 @@ fn group_member_record(
         &string_value(member.get("handle")),
         &default_string(
             &string_value(member.get("member_handle")),
-            &use_agent_handle
-                .then(|| string_value(member.get("agent_handle")))
-                .unwrap_or_default(),
+            &if use_agent_handle {
+                string_value(member.get("agent_handle"))
+            } else {
+                String::new()
+            },
         ),
     ));
     let handle_binding_generation = string_value(member.get("handle_binding_generation"));
@@ -560,12 +562,17 @@ fn group_message_record(
         content: message_content(message),
         server_seq: message.metadata.server_sequence,
         sent_at: message.sent_at.clone().unwrap_or_default(),
-        is_e2ee: false,
+        is_e2ee: message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value.contains("e2ee")),
         is_read: false,
         metadata: message_metadata_string(message),
         credential_name: credential_name(scope),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_wire_identity_from_message(&scope.owner_did, message)
 }
 
 #[cfg(feature = "sqlite")]
@@ -778,9 +785,11 @@ fn normalize_group_member_json(mut member: Value) -> Value {
         &string_value(object.get("handle")),
         &default_string(
             &protocol_member_handle,
-            &use_agent_handle
-                .then(|| string_value(object.get("agent_handle")))
-                .unwrap_or_default(),
+            &if use_agent_handle {
+                string_value(object.get("agent_handle"))
+            } else {
+                String::new()
+            },
         ),
     ));
     if !protocol_member_handle.is_empty() {
@@ -939,6 +948,33 @@ mod tests {
     }
 
     #[test]
+    fn group_message_record_preserves_decrypted_secure_cache_metadata() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "messages": [{
+                    "id": "logical-message-14",
+                    "group_did": "did:example:group",
+                    "group_event_seq": "14",
+                    "sender_did": "did:example:bob",
+                    "content_type": "text/plain",
+                    "content": "decrypted",
+                    "secure": true,
+                    "decryption_state": "decrypted"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        let records = group_message_records(&scope(), "did:example:group", &result);
+        let metadata: Value = serde_json::from_str(&records[0].metadata).unwrap();
+
+        assert_eq!(records[0].msg_id, "did:example:group:14");
+        assert!(records[0].is_e2ee);
+        assert_eq!(metadata["decryption_state"], "decrypted");
+        assert_eq!(metadata["raw_message_id"], "logical-message-14");
+    }
+
+    #[test]
     fn group_member_record_prefers_member_identity_over_auxiliary_agent_fields() {
         let result = crate::groups::GroupReadResult::from_raw_response(
             json!({
@@ -978,7 +1014,8 @@ mod tests {
                 "group_snapshot": {
                     "group_did": "did:example:group",
                     "member_role": "member",
-                    "member_status": "active"
+                    "member_status": "active",
+                    "required_security_profile": "transport-protected"
                 },
                 "members": [{
                     "member_did": "did:wba:example.com:alice:e1_old",
@@ -1174,6 +1211,23 @@ fn message_metadata_string(message: &crate::messages::Message) -> String {
             "server_seq".to_string(),
             Value::Number(serde_json::Number::from(server_sequence)),
         );
+    }
+    for attribute in &message.metadata.attributes {
+        if matches!(
+            attribute.key.as_str(),
+            "raw_message_id"
+                | "group_event_seq"
+                | "security"
+                | "message_security_profile"
+                | "decryption_state"
+                | "secure_wire_content_type"
+        ) && !attribute.value.trim().is_empty()
+        {
+            metadata.insert(
+                attribute.key.clone(),
+                Value::String(attribute.value.clone()),
+            );
+        }
     }
     Value::Object(metadata).to_string()
 }

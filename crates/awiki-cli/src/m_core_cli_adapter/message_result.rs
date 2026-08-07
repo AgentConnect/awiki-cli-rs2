@@ -59,6 +59,9 @@ pub enum MessageAdapterError {
     GroupE2eeSelfLeaveUnsupported,
     MessageNotFound,
     IdentityRequired(String),
+    PermissionDenied,
+    LocalStateUnavailable(String),
+    PublicServiceCode(String),
     Service(ServiceError),
     Identity(IdentityError),
     PathUnavailable(String),
@@ -160,8 +163,11 @@ impl fmt::Display for MessageAdapterError {
             }
             Self::MessageNotFound => formatter.write_str("message not found"),
             Self::IdentityRequired(message)
+            | Self::LocalStateUnavailable(message)
             | Self::PathUnavailable(message)
             | Self::Internal(message) => formatter.write_str(message),
+            Self::PermissionDenied => formatter.write_str("permission denied"),
+            Self::PublicServiceCode(_) => formatter.write_str("remote service request failed"),
             Self::Service(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
             Self::InvalidAttachmentServiceEndpoint(message) => {

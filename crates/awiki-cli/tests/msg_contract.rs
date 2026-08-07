@@ -268,7 +268,11 @@ fn msg_dry_run_plans_match_go_contracts() {
         workspace.path(),
     ));
     assert_eq!(history["summary"], "Dry run: direct history read planned");
-    assert_eq!(history["data"]["plan"]["action"], "direct.get_history");
+    assert_eq!(
+        history["data"]["plan"]["action"],
+        "sync.v2.foreground_reconcile_then_local_history"
+    );
+    assert_eq!(history["data"]["plan"]["source"], "local");
     assert_eq!(history["data"]["plan"]["with"], "bob");
     assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.ai");
     assert_eq!(history["data"]["plan"]["limit"], 15);
@@ -526,7 +530,11 @@ fn msg_read_default_cutover_dry_run_routes_inbox_and_history_subset() {
         workspace.path(),
     ));
     assert_eq!(history["summary"], "Dry run: direct history read planned");
-    assert_eq!(history["data"]["plan"]["action"], "direct.get_history");
+    assert_eq!(
+        history["data"]["plan"]["action"],
+        "sync.v2.foreground_reconcile_then_local_history"
+    );
+    assert_eq!(history["data"]["plan"]["source"], "local");
     assert_eq!(history["data"]["plan"]["identity"], "alice");
     assert_eq!(history["data"]["plan"]["with"], "bob");
     assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.ai");

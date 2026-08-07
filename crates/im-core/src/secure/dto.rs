@@ -106,6 +106,12 @@ pub struct GroupSecureRepairResult {
     pub group: crate::ids::GroupRef,
     pub state: GroupSecureState,
     pub repaired: bool,
+    #[serde(default)]
+    pub added_devices: u32,
+    #[serde(default)]
+    pub removed_devices: u32,
+    #[serde(default)]
+    pub remaining_devices: u32,
     pub problem: Option<SecureProblem>,
     pub warnings: Vec<String>,
 }
@@ -181,4 +187,39 @@ pub enum SecureProblemCode {
     TransportUnavailable,
     Unsupported,
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GroupSecureRepairResult;
+
+    #[test]
+    fn group_repair_roster_counts_are_backward_compatible() {
+        let legacy = serde_json::json!({
+            "group": "did:example:group",
+            "state": "Ready",
+            "repaired": false,
+            "problem": null,
+            "warnings": []
+        });
+        let decoded: GroupSecureRepairResult = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.added_devices, 0);
+        assert_eq!(decoded.removed_devices, 0);
+        assert_eq!(decoded.remaining_devices, 0);
+
+        let encoded = serde_json::to_value(GroupSecureRepairResult {
+            group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            state: super::GroupSecureState::Ready,
+            repaired: true,
+            added_devices: 2,
+            removed_devices: 1,
+            remaining_devices: 0,
+            problem: None,
+            warnings: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(encoded["added_devices"], 2);
+        assert_eq!(encoded["removed_devices"], 1);
+        assert_eq!(encoded["remaining_devices"], 0);
+    }
 }

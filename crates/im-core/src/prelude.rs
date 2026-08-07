@@ -36,28 +36,44 @@ pub use crate::groups::{
     GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use crate::identity::{
-    ContactBindingMethod, ContactBindingRequest, ContactBindingState, DaemonSubkeyPrivatePackage,
-    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
-    HandleRegistrationState, HostedIdentityMaterial, IdentityMissingItem, IdentityReadiness,
-    IdentityRegistry, IdentitySecretStorageBackend, IdentitySelector, IdentityService,
-    IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
-    IdentityVaultVerificationReport, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
-    RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
-    RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
-    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
+    ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingRequest,
+    ContactBindingState, DaemonSubkeyPrivatePackage, DefaultIdentityChange,
+    DeleteLocalIdentityResult, DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt,
+    DeviceJoinAuthorizationStatus, DeviceJoinAuthorizedDeviceSummary, DeviceJoinBeginRequest,
+    DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase, DeviceJoinProgress,
+    DeviceJoinRegistrySnapshot, DeviceJoinRejectReason, DeviceJoinRemoteState,
+    DeviceJoinRequestNotice, DeviceJoinRole, DeviceJoinSessionView, DeviceJoinSide,
+    DeviceRegistryAuthorizedDeviceSummary, DeviceRevokeOutcomeCategory, DeviceRevokeRequest,
+    DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus, HandleRegistrationJoinRequired,
+    HandleRegistrationResult, HandleRegistrationState, HostBackedDeviceIdentityMaterial,
+    HostedIdentityMaterial, IdentityDeviceAuthorizationStatus, IdentityDeviceRole,
+    IdentityMissingItem, IdentityReadiness, IdentityRegistry, IdentitySecretStorageBackend,
+    IdentitySelector, IdentityService, IdentitySummary, IdentityVaultMigrationReport,
+    IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile,
+    LegacyRegistryEpochAdoptionAuthority, Profile, ProfileAttribute, ProfilePatch,
+    RegisterHandleRequest, RegistrationMethod, RootKeyTransferAuthorizationHandle,
+    RootKeyTransferError, RootKeyTransferErrorCode, RootKeyTransferPreparation,
+    RootKeyTransferPrepareRequest, RootKeyTransferRecipientSummary, RootKeyTransferResult,
+    RootKeyTransferSendRequest, RootKeyTransferSendResult, RootKeyTransferService,
+    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
+    VNextAgentLegacyUpgradeSession, VerificationInput,
 };
 pub use crate::ids::{
-    Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
+    Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef,
+    ProtocolDeviceId, ThreadId,
 };
 pub use crate::messages::{
     Conversation, ConversationQuery, ConversationReadRef, DelegatedSigningOptions, DeliveryState,
     HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope,
-    MarkConversationReadRequest, MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult,
-    Message, MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
-    MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
+    IncomingMessageRecoveryItem, IncomingMessageRecoveryPage, IncomingMessageRecoveryPageToken,
+    IncomingMessageRecoveryQuery, MarkConversationReadRequest, MarkReadResult,
+    MarkThreadReadRequest, MarkThreadReadResult, Message, MessageBody, MessageBodyView,
+    MessageDeliveryOptions, MessageDirection, MessageKind, MessageMetadata,
+    MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
     MessageService, MessageTarget, ReadWatermark, ScopedInboxToken, SendConversationPayloadRequest,
     SendConversationTextRequest, SendMessageRequest, SendMessageResult, ThreadRef,
+    LOCAL_INCOMING_RECOVERY_LIMIT_MAX,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 #[cfg(feature = "blocking")]
@@ -72,7 +88,8 @@ pub use crate::realtime::{
     LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
     RealtimeConnectionState, RealtimeControl, RealtimeEventStream, RealtimeExit,
     RealtimeExitReason, RealtimeOptions, RealtimeService, RealtimeSession, RealtimeStatus,
-    RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
+    RealtimeSubscription, ReconnectPolicy, ShutdownSignal, SystemNotificationChangedEvent,
+    UnknownNotificationEvent,
 };
 pub use crate::secure::{
     DirectSecureConversation, DirectSecurePrepareResult, DirectSecureRepairResult,
@@ -84,5 +101,10 @@ pub use crate::secure::{
 pub use crate::site::{
     SiteDomain, SitePageDocument, SitePageDraft, SitePageQuery, SitePageRef, SitePageUpdate,
     SiteRootDocument, SiteRootDraft, SiteService,
+};
+pub use crate::system_notifications::{
+    SystemNotificationChange, SystemNotificationChangeSession, SystemNotificationKind,
+    SystemNotificationListQuery, SystemNotificationService, SystemNotificationSnapshot,
+    SystemNotificationState,
 };
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};

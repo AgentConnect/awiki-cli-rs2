@@ -12,6 +12,182 @@ async fn db_actor_initializes_schema_and_returns_version() {
 }
 
 #[tokio::test]
+async fn db_actor_round_trips_exact_sync_account_binding() {
+    let fixture = Fixture::new();
+    let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
+    let binding = super::super::sync_v2::IdentityAccountBinding {
+        owner_identity_id: "alice-id".to_owned(),
+        account_id: "account-alice".to_owned(),
+        handle_scope: Some("alice.awiki.info".to_owned()),
+        current_did: "did:wba:awiki.info:user:alice".to_owned(),
+        protocol_device_id: "device-desktop".to_owned(),
+        identity_generation: "184467440737095516160000000000000000001".to_owned(),
+        device_auth_generation: "184467440737095516160000000000000000002".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    };
+
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.load_identity_account_binding(&binding.owner_identity_id)
+            .await
+            .unwrap(),
+        Some(binding)
+    );
+    db.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn db_actor_exposes_typed_sync_v2_repository_and_generation_fence() {
+    use super::super::sync_v2::{
+        AppliedEventReceipt, LocalMutationRecord, MessageSyncBootstrapReason, MessageSyncState,
+        MessageSyncStateAccess, RecoveryState,
+    };
+
+    let fixture = Fixture::new();
+    let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
+    let mut binding = super::super::sync_v2::IdentityAccountBinding {
+        owner_identity_id: "alice-id".to_owned(),
+        account_id: "account-alice".to_owned(),
+        handle_scope: Some("alice.awiki.info".to_owned()),
+        current_did: "did:wba:awiki.info:user:alice".to_owned(),
+        protocol_device_id: "device-desktop".to_owned(),
+        identity_generation: "10".to_owned(),
+        device_auth_generation: "20".to_owned(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.load_message_sync_state(&binding.owner_identity_id)
+            .await
+            .unwrap(),
+        MessageSyncStateAccess::BootstrapRequired(fence)
+            if fence.reason == MessageSyncBootstrapReason::MissingState
+    ));
+
+    let mut state = MessageSyncState {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        account_id: binding.account_id.clone(),
+        protocol_device_id: binding.protocol_device_id.clone(),
+        device_auth_generation: binding.device_auth_generation.clone(),
+        stream_epoch: "2".to_owned(),
+        scan_seq: "100".to_owned(),
+        bootstrap_state: "tail_bootstrapped".to_owned(),
+        last_server_time: None,
+        last_success_at: Some(2),
+        last_error_code: None,
+        metadata_json: None,
+        updated_at: 2,
+    };
+    db.bootstrap_message_sync_state(state.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        db.load_message_sync_state(&binding.owner_identity_id)
+            .await
+            .unwrap(),
+        MessageSyncStateAccess::Ready(state.clone())
+    );
+    state.scan_seq = "101".to_owned();
+    state.bootstrap_state = "active".to_owned();
+    state.updated_at = 3;
+    assert_eq!(
+        db.advance_message_sync_state(state.clone()).await.unwrap(),
+        MessageSyncStateAccess::Ready(state.clone())
+    );
+
+    let receipt = AppliedEventReceipt {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        event_id: "event-101".to_owned(),
+        stream_epoch: "2".to_owned(),
+        event_seq: "101".to_owned(),
+        applied_at: 3,
+    };
+    assert!(db.record_applied_sync_event(receipt.clone()).await.unwrap());
+    assert!(!db.record_applied_sync_event(receipt).await.unwrap());
+    assert_eq!(
+        db.prune_applied_sync_events(&binding.owner_identity_id, "2", "101", 10)
+            .await
+            .unwrap(),
+        0
+    );
+
+    let recovery = RecoveryState {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        mode: "compact_recovery".to_owned(),
+        requested_from_epoch: "2".to_owned(),
+        requested_from_seq: "101".to_owned(),
+        recovery_id_hash: Some("sha256:recovery".to_owned()),
+        snapshot_scan_seq: None,
+        status: "retryable".to_owned(),
+        retry_count: 1,
+        last_error_code: Some("network".to_owned()),
+        started_at: 4,
+        updated_at: 4,
+    };
+    db.upsert_sync_recovery_state(recovery.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        db.load_sync_recovery_state(&binding.owner_identity_id)
+            .await
+            .unwrap(),
+        Some(recovery)
+    );
+
+    let mutation = LocalMutationRecord {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        mutation_id: "mutation-1".to_owned(),
+        operation_id: "operation-1".to_owned(),
+        mutation_type: "read_state_mark_read".to_owned(),
+        aggregate_id: "dm:alice:bob".to_owned(),
+        payload_json: r#"{"read_up_to":"101"}"#.to_owned(),
+        status: "pending".to_owned(),
+        attempt_count: 0,
+        retry_at: None,
+        in_flight_since: None,
+        last_error_code: None,
+        created_at: 5,
+        updated_at: 5,
+    };
+    db.enqueue_local_mutation(mutation.clone()).await.unwrap();
+    assert_eq!(
+        db.load_local_mutation(&binding.owner_identity_id, &mutation.mutation_id)
+            .await
+            .unwrap(),
+        Some(mutation)
+    );
+
+    binding.device_auth_generation = "21".to_owned();
+    binding.updated_at = 6;
+    db.upsert_identity_account_binding(binding.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.load_message_sync_state(&binding.owner_identity_id)
+            .await
+            .unwrap(),
+        MessageSyncStateAccess::BootstrapRequired(fence)
+            if fence.reason == MessageSyncBootstrapReason::DeviceAuthGenerationChanged
+                && fence.active_device_auth_generation == "21"
+                && fence.stored_device_auth_generation.as_deref() == Some("20")
+    ));
+    state.scan_seq = "102".to_owned();
+    assert!(matches!(
+        db.advance_message_sync_state(state).await.unwrap(),
+        MessageSyncStateAccess::BootstrapRequired(fence)
+            if fence.reason == MessageSyncBootstrapReason::DeviceAuthGenerationChanged
+    ));
+    db.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn db_actor_backfill_owner_identity_ids_is_noop_for_v17_schema() {
     let fixture = Fixture::new();
     let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
@@ -83,6 +259,7 @@ async fn db_actor_stores_classifies_marks_and_lists_messages() {
         .await
         .unwrap();
     assert_eq!(classification.direct_ids, vec!["direct-1"]);
+    assert_eq!(classification.remote_direct_ids, vec!["direct-1"]);
     assert_eq!(classification.group_ids, vec!["group-1"]);
 
     let unread_direct = db
@@ -364,90 +541,6 @@ async fn db_actor_contact_commands_use_existing_store_helpers() {
         .await
         .unwrap();
     assert!(!event_id.trim().is_empty());
-
-    db.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn db_actor_merge_recovered_handle_local_state_uses_actor_connection() {
-    let fixture = Fixture::new();
-    let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
-    let old_did = "did:example:old-alice";
-    let new_did = "did:example:new-alice";
-
-    db.store_messages(vec![super::super::messages::MessageRecord {
-        msg_id: "recover-msg-1".to_string(),
-        owner_identity_id: "old-alice".to_string(),
-        owner_did: old_did.to_string(),
-        conversation_id: "dm:did:example:bob".to_string(),
-        thread_id: "dm:did:example:bob".to_string(),
-        direction: 1,
-        sender_did: old_did.to_string(),
-        receiver_did: "did:example:bob".to_string(),
-        content_type: "text/plain".to_string(),
-        content: "pre recovery".to_string(),
-        sent_at: "2026-05-21T00:00:01Z".to_string(),
-        stored_at: "2026-05-21T00:00:01Z".to_string(),
-        credential_name: "old-alice".to_string(),
-        ..super::super::messages::MessageRecord::default()
-    }])
-    .await
-    .unwrap();
-    db.queue_e2ee_outbox(crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
-        outbox_id: "recover-outbox-1".to_string(),
-        owner_identity_id: "old-alice".to_string(),
-        owner_did: old_did.to_string(),
-        credential_name: "old-alice".to_string(),
-        peer_did: "did:example:bob".to_string(),
-        plaintext: "stale secret".to_string(),
-        local_status: "failed".to_string(),
-        created_at: "2026-05-21T00:00:02Z".to_string(),
-        updated_at: "2026-05-21T00:00:02Z".to_string(),
-        ..crate::internal::store::e2ee_outbox::E2eeOutboxRecord::default()
-    })
-    .await
-    .unwrap();
-
-    let (store_merge, e2ee_cleanup) = db
-        .merge_recovered_handle_local_state(
-            vec![old_did.to_string()],
-            new_did,
-            "alice-recovered-id",
-            "alice-recovered",
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(store_merge.get("messages"), Some(&0));
-    assert_eq!(e2ee_cleanup.get("e2ee_outbox"), Some(&0));
-    let messages = db
-        .list_conversations(
-            "old-alice",
-            old_did,
-            crate::messages::ConversationQuery {
-                limit: crate::ids::PageLimit(10),
-                cursor: None,
-                include_groups: false,
-                include_direct: true,
-                unread_only: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].thread_id, "dm:did:example:bob");
-    let old_outbox = db
-        .list_e2ee_outbox(
-            crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope {
-                owner_identity_id: "old-alice".to_string(),
-                owner_did: old_did.to_string(),
-                credential_name: "old-alice".to_string(),
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(old_outbox.len(), 1);
 
     db.shutdown().await.unwrap();
 }

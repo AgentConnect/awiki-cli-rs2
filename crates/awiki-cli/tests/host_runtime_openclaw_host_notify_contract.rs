@@ -1,6 +1,6 @@
 use awiki_cli::host_runtime::host_notify::{
-    DirectMessageNotificationData, GroupMessageNotificationData, GroupStateChangedNotificationData,
-    HostNotificationData, HostNotificationEvent,
+    DeviceJoinRequestNotificationData, DirectMessageNotificationData, GroupMessageNotificationData,
+    GroupStateChangedNotificationData, HostNotificationData, HostNotificationEvent,
 };
 use awiki_cli::host_runtime::openclaw_host_notify::{
     build_openclaw_agent_hook_message, build_openclaw_event_text, build_openclaw_hook_request,
@@ -17,6 +17,40 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn openclaw_join_request_requires_explicit_user_choice_without_sas() {
+    let event = HostNotificationEvent {
+        version: "1.0".to_string(),
+        id: "evt-join-1".to_string(),
+        topic: "im.device.join.requested".to_string(),
+        received_at: "2026-07-23T02:00:01Z".to_string(),
+        data: Some(HostNotificationData::DeviceJoinRequest(
+            DeviceJoinRequestNotificationData {
+                channel: "device".to_string(),
+                event_id: "evt-join-1".to_string(),
+                join_session_id: "join-1".to_string(),
+                recipient_did: "did:wba:example.com:user:bob:e1_bob".to_string(),
+                issued_at: "2026-07-23T02:00:00Z".to_string(),
+                expires_at: "2026-07-23T02:10:00Z".to_string(),
+            },
+        )),
+    };
+
+    let prompt = build_openclaw_agent_hook_message(&event);
+    assert!(prompt.contains("start verification or reject"));
+    assert!(prompt.contains("explicitly chooses"));
+    assert!(prompt.contains("fixed member role"));
+    assert!(prompt.contains("join-1"));
+    assert!(!prompt.to_ascii_lowercase().contains("sas:"));
+    assert!(!prompt.contains("APPROVE"));
+
+    let text = build_openclaw_event_text(&event);
+    assert!(text.contains("[AWiki Device Join Request]"));
+    assert!(text.contains("join_session_id: join-1"));
+    assert!(text.contains("Start verification / Reject request"));
+    assert!(!text.to_ascii_lowercase().contains("sas"));
+}
 
 #[test]
 fn openclaw_hook_request_includes_channel_delivery_like_go() {

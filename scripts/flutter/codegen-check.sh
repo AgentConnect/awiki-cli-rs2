@@ -44,10 +44,11 @@ CANONICAL_API_IMPORTS = [
     "use crate::api::client::*;",
     "use crate::api::core::DartImCore;",
     "use crate::api::core::*;",
+    "use crate::api::local_state_upgrade::*;",
     "use crate::api::realtime::*;",
 ]
 API_IMPORT_RE = re.compile(
-    r"^use crate::api::(?:attachments::\*|client::\*|core::(?:DartImCore|\*)|realtime::\*);$"
+    r"^use crate::api::(?:attachments::\*|client::\*|core::(?:DartImCore|\*)|local_state_upgrade::\*|realtime::\*);$"
 )
 
 

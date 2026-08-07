@@ -97,7 +97,10 @@ class DartCreateGroupRequest {
 enum DartGroupIdentityMode { handle, didOnly }
 
 class DartGroupMember {
+  final String? membershipId;
+  final String? peerPersonaId;
   final String? did;
+  final String? credentialDid;
   final String? handle;
   final String? role;
   final String? status;
@@ -105,7 +108,10 @@ class DartGroupMember {
   final String? subjectType;
 
   const DartGroupMember({
+    this.membershipId,
+    this.peerPersonaId,
     this.did,
+    this.credentialDid,
     this.handle,
     this.role,
     this.status,
@@ -115,7 +121,10 @@ class DartGroupMember {
 
   @override
   int get hashCode =>
+      membershipId.hashCode ^
+      peerPersonaId.hashCode ^
       did.hashCode ^
+      credentialDid.hashCode ^
       handle.hashCode ^
       role.hashCode ^
       status.hashCode ^
@@ -127,7 +136,10 @@ class DartGroupMember {
       identical(this, other) ||
       other is DartGroupMember &&
           runtimeType == other.runtimeType &&
+          membershipId == other.membershipId &&
+          peerPersonaId == other.peerPersonaId &&
           did == other.did &&
+          credentialDid == other.credentialDid &&
           handle == other.handle &&
           role == other.role &&
           status == other.status &&
@@ -141,6 +153,10 @@ class DartGroupReadResult {
   final List<DartGroupMember> members;
   final DartMessagePage messages;
   final int? total;
+  final String? nextCursor;
+  final bool hasMore;
+  final String? pageGroupDid;
+  final String? groupStateVersion;
   final String? source;
   final List<String> warnings;
 
@@ -150,6 +166,10 @@ class DartGroupReadResult {
     required this.members,
     required this.messages,
     this.total,
+    this.nextCursor,
+    required this.hasMore,
+    this.pageGroupDid,
+    this.groupStateVersion,
     this.source,
     required this.warnings,
   });
@@ -161,6 +181,10 @@ class DartGroupReadResult {
       members.hashCode ^
       messages.hashCode ^
       total.hashCode ^
+      nextCursor.hashCode ^
+      hasMore.hashCode ^
+      pageGroupDid.hashCode ^
+      groupStateVersion.hashCode ^
       source.hashCode ^
       warnings.hashCode;
 
@@ -174,6 +198,10 @@ class DartGroupReadResult {
           members == other.members &&
           messages == other.messages &&
           total == other.total &&
+          nextCursor == other.nextCursor &&
+          hasMore == other.hasMore &&
+          pageGroupDid == other.pageGroupDid &&
+          groupStateVersion == other.groupStateVersion &&
           source == other.source &&
           warnings == other.warnings;
 }
@@ -250,6 +278,7 @@ class DartGroupRebindRecoverySummary {
 }
 
 class DartGroupSnapshot {
+  final String conversationId;
   final String? id;
   final String did;
   final String? name;
@@ -262,6 +291,7 @@ class DartGroupSnapshot {
   final String? lastMessageAt;
 
   const DartGroupSnapshot({
+    required this.conversationId,
     this.id,
     required this.did,
     this.name,
@@ -276,6 +306,7 @@ class DartGroupSnapshot {
 
   @override
   int get hashCode =>
+      conversationId.hashCode ^
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
@@ -292,6 +323,7 @@ class DartGroupSnapshot {
       identical(this, other) ||
       other is DartGroupSnapshot &&
           runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
           id == other.id &&
           did == other.did &&
           name == other.name &&
@@ -305,6 +337,7 @@ class DartGroupSnapshot {
 }
 
 class DartGroupSummary {
+  final String conversationId;
   final String? id;
   final String did;
   final String? name;
@@ -316,6 +349,7 @@ class DartGroupSummary {
   final String? lastMessageAt;
 
   const DartGroupSummary({
+    required this.conversationId,
     this.id,
     required this.did,
     this.name,
@@ -329,6 +363,7 @@ class DartGroupSummary {
 
   @override
   int get hashCode =>
+      conversationId.hashCode ^
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
@@ -344,6 +379,7 @@ class DartGroupSummary {
       identical(this, other) ||
       other is DartGroupSummary &&
           runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
           id == other.id &&
           did == other.did &&
           name == other.name &&

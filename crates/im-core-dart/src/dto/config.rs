@@ -4,12 +4,21 @@ use std::fmt;
 pub struct DartImCoreConfig {
     pub service_base_url: String,
     pub did_domain: String,
+    pub client_version_info: Option<DartClientVersionInfo>,
     pub user_service_endpoint: Option<String>,
     pub message_service_endpoint: Option<String>,
     pub mail_service_endpoint: Option<String>,
     pub anp_service_endpoint: Option<String>,
     pub anp_service_did: Option<String>,
     pub transport_policy: DartMessageTransportPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartClientVersionInfo {
+    pub product: String,
+    pub release: String,
+    pub version: String,
+    pub build: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +42,10 @@ pub struct DartImCorePaths {
 pub struct DartImCoreOpenOptions {
     pub identity_secret_storage_policy: DartIdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<DartImCoreSecretVaultOptions>,
+    pub multi_device_device_revoke_enabled: bool,
+    pub multi_device_direct_e2ee_enabled: bool,
+    pub multi_device_group_e2ee_enabled: bool,
+    pub multi_device_handle_recovery_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

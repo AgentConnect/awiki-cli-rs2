@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -153,101 +154,403 @@ fn msg_send_default_cutover_group_text_posts_im_core_rpc() {
 }
 
 #[test]
-fn msg_inbox_default_cutover_direct_posts_im_core_rpc() {
+fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_projection() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_read_identity(
-        workspace.path(),
-        "alice-inbox-cutover",
-        "alice",
-        "jwt-alice",
-    );
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-inbox-cutover-1",
-            "sender_did": bob_did,
-            "receiver_did": alice.did,
-            "content": "hello inbox",
-            "content_type": "text/plain",
-            "sent_at": "2026-05-21T00:00:00Z",
-            "server_seq": 7,
-            "is_read": false
-        }],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_message(),
+        TestResponse::message_batch(),
+        TestResponse::sync_delta_empty(),
+        TestResponse::error(503, r#"{"error":"temporarily unavailable"}"#),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    let registered = success_json(&register);
+    let alice_did = registered["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered DID");
 
-    let output = awiki_cmd(
+    let first = awiki_cmd(
         &[
             "--identity",
-            "alice-inbox-cutover",
+            "alice",
             "msg",
             "inbox",
             "--scope",
-            "direct",
+            "all",
             "--limit",
             "3",
             "--unread",
         ],
         workspace.path(),
     );
-
-    let envelope = success_json(&output);
+    let envelope = success_json(&first);
     assert_eq!(envelope["summary"], "Loaded 1 inbox messages");
-    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-inbox-cutover-1");
-    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(
+        envelope["data"]["messages"][0]["id"],
+        "did:wba:awiki.ai:groups:sync:e1_group:1"
+    );
+    assert_eq!(envelope["data"]["source"], "local_projection");
+    assert_eq!(
+        envelope["data"]
+            .as_object()
+            .expect("inbox data")
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["messages", "source", "total"].into_iter().collect()
+    );
+    assert_eq!(envelope["data"]["messages"][0]["receiver_did"], alice_did);
+
+    let second = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+            "--unread",
+        ],
+        workspace.path(),
+    );
+    let second_envelope = success_json(&second);
+    assert_eq!(
+        second_envelope["data"]["messages"],
+        envelope["data"]["messages"]
+    );
+    assert_eq!(second_envelope["data"]["total"], 1);
+    let connection = open_local_state(workspace.path());
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE msg_id = 'did:wba:awiki.ai:groups:sync:e1_group:1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "reconciliation must project the logical message exactly once"
+    );
+
+    let failed = awiki_cmd(
+        &["--identity", "alice", "msg", "inbox", "--scope", "all"],
+        workspace.path(),
+    );
+    assert_ne!(failed.status.code(), Some(0));
+    assert!(
+        !String::from_utf8_lossy(&failed.stdout)
+            .contains("did:wba:awiki.ai:groups:sync:e1_group:1"),
+        "a failed foreground reconcile must not return a stale local projection"
+    );
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
-    assert_eq!(body["method"], "inbox.get");
-    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
-    assert_eq!(body["params"]["body"]["user_did"], alice.did);
-    assert_eq!(body["params"]["body"]["limit"], 3);
-    assert_eq!(body["params"]["body"].get("peer_did"), None);
+    let rpc_bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).expect("request JSON"))
+        .collect::<Vec<_>>();
+    let methods = rpc_bodies
+        .iter()
+        .filter_map(|body| body["method"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta",
+            "message.get_batch",
+            "sync.delta",
+            "sync.delta",
+        ]
+    );
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| **method == "inbox.get")
+            .count(),
+        0
+    );
+    for body in rpc_bodies
+        .iter()
+        .filter(|body| body["method"] == "sync.delta")
+    {
+        assert_eq!(body["params"]["body"]["reason"], "foreground_reconcile");
+    }
 }
 
 #[test]
-fn msg_history_default_cutover_direct_posts_im_core_rpc() {
+fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_read_identity(
-        workspace.path(),
-        "alice-history-cutover",
-        "alice",
-        "jwt-alice",
-    );
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-history-cutover-1",
-            "sender_did": alice.did,
-            "receiver_did": bob_did,
-            "content": "hello history",
-            "content_type": "text/plain",
-            "sent_at": "2026-05-21T00:00:00Z",
-            "server_seq": 9
-        }],
-        "total": 1,
-        "source": "remote_http",
-        "resolved_dids": [bob_did]
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [{
+                "id": "msg-ordinary-injected-by-secure-inbox",
+                "sender_did": "did:wba:awiki.ai:user:bob:e1_bob",
+                "receiver_did": "did:wba:awiki.ai:user:alice:e1_alice",
+                "content_type": "text/plain",
+                "content": "must not bypass sync v2",
+                "server_seq": 99
+            }],
+            "has_more": false,
+            "warnings": []
+        }))),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    success_json(&awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    ));
+
+    let output = awiki_cmd_with_direct_e2ee(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "direct",
+            "--limit",
+            "7",
+        ],
+        workspace.path(),
+    );
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["messages"], json!([]));
+    assert_eq!(envelope["data"]["source"], "local_projection");
+
+    let rpc_bodies = server
+        .requests()
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .collect::<Vec<_>>();
+    let methods = rpc_bodies
+        .iter()
+        .filter_map(|body| body["method"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "inbox.get",
+            "sync.bootstrap",
+            "sync.delta"
+        ]
+    );
+    let secure = rpc_bodies
+        .iter()
+        .find(|body| body["method"] == "inbox.get")
+        .unwrap();
+    assert_eq!(secure["params"]["body"]["limit"], 7);
+    assert_eq!(secure["params"]["body"]["security_profile"], "direct-e2ee");
+    assert_eq!(secure["params"]["body"].as_object().unwrap().len(), 3);
+
+    let connection = open_local_state(workspace.path());
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE msg_id = 'msg-ordinary-injected-by-secure-inbox'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0,
+        "secure hydration must not become an ordinary Inbox compatibility path"
+    );
+}
+
+#[test]
+fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_message(),
+        TestResponse::message_batch(),
+        TestResponse::mark_read_state(),
+        TestResponse::sync_delta_empty(),
+        TestResponse::sync_delta_empty(),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    success_json(&register);
+    let inbox = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+        ],
+        workspace.path(),
+    );
+    let inbox = success_json(&inbox);
+    let message_id = inbox["data"]["messages"][0]["id"]
+        .as_str()
+        .expect("projected message id");
+
+    let mark_read = awiki_cmd(
+        &["--identity", "alice", "msg", "mark-read", message_id],
+        workspace.path(),
+    );
+    let envelope = success_json(&mark_read);
+
+    assert_eq!(envelope["summary"], "Marked 1 messages as read");
+    assert_eq!(envelope["data"]["action"], "mark_read");
+    assert_eq!(envelope["data"]["updated_count"], 1);
+    assert_eq!(envelope["data"]["message_ids"], json!([message_id]));
+    let methods = server
+        .requests()
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .filter_map(|body| body["method"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods.last().map(String::as_str),
+        Some("read_state.mark_read")
+    );
+    assert!(!methods.iter().any(|method| method == "inbox.mark_read"));
+    let connection = open_local_state(workspace.path());
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM thread_read_state WHERE read_watermark_seq = '1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+
+    let refreshed = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+        ],
+        workspace.path(),
+    );
+    let refreshed = success_json(&refreshed);
+    assert_eq!(refreshed["data"]["messages"][0]["is_read"], true);
+
+    let unread = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+            "--unread",
+        ],
+        workspace.path(),
+    );
+    let unread = success_json(&unread);
+    assert_eq!(unread["data"]["messages"], json!([]));
+    assert_eq!(unread["data"]["total"], 0);
+}
+
+#[test]
+fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history() {
+    let workspace = TempDir::new().expect("workspace");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    let registered = success_json(&register);
+    let alice_did = registered["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered DID");
+    let alice_identity_id = registered["data"]["identity"]["unique_id"]
+        .as_str()
+        .expect("registered identity ID");
+    seed_message(
+        workspace.path(),
+        alice_identity_id,
+        alice_did,
+        "msg-history-cutover-1",
+        "",
+        "text/plain",
+        "",
+    );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-history-cutover",
+            "alice",
             "msg",
             "history",
             "--with",
             bob_did,
             "--limit",
             "4",
-            "--cursor",
-            "8",
         ],
         workspace.path(),
     );
@@ -259,57 +562,81 @@ fn msg_history_default_cutover_direct_posts_im_core_rpc() {
         "msg-history-cutover-1"
     );
     assert_eq!(envelope["data"]["with"], bob_did);
-    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(envelope["data"]["source"], "local");
+    assert_eq!(envelope["data"]["messages"][0]["direction"], 0);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
-    assert_eq!(body["method"], "direct.get_history");
-    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
-    assert_eq!(body["params"]["body"]["user_did"], alice.did);
-    assert_eq!(body["params"]["body"]["peer_did"], bob_did);
-    assert_eq!(body["params"]["body"]["limit"], 4);
-    assert_eq!(body["params"]["body"]["since_seq"], "8");
+    let methods = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request JSON")["method"]
+                .as_str()
+                .expect("RPC method")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta",
+        ]
+    );
+    assert!(!methods.iter().any(|method| method == "direct.get_history"));
 }
 
 #[test]
-fn msg_history_default_cutover_group_posts_im_core_rpc() {
+fn msg_history_default_cutover_group_reconciles_sync_v2_and_reads_local_history() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_read_identity(
-        workspace.path(),
-        "alice-group-history-cutover",
-        "alice",
-        "jwt-alice",
-    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-group-history-cutover-1",
-            "sender_did": alice.did,
-            "content": "hello group history",
-            "content_type": "text/plain",
-            "sent_at": "2026-05-21T00:00:00Z",
-            "group_event_seq": 12
-        }],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    let registered = success_json(&register);
+    let alice_did = registered["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered DID");
+    let alice_identity_id = registered["data"]["identity"]["unique_id"]
+        .as_str()
+        .expect("registered identity ID");
+    seed_message(
+        workspace.path(),
+        alice_identity_id,
+        alice_did,
+        "msg-group-history-cutover-1",
+        group_did,
+        "text/plain",
+        "",
+    );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-group-history-cutover",
+            "alice",
             "msg",
             "history",
             "--group",
             group_did,
             "--limit",
             "6",
-            "--cursor",
-            "11",
         ],
         workspace.path(),
     );
@@ -318,30 +645,32 @@ fn msg_history_default_cutover_group_posts_im_core_rpc() {
     assert_eq!(envelope["summary"], "Loaded 1 group history messages");
     assert_eq!(
         envelope["data"]["messages"][0]["id"],
-        format!("{group_did}:12")
-    );
-    assert_eq!(
-        envelope["data"]["messages"][0]["raw_message_id"],
         "msg-group-history-cutover-1"
     );
     assert_eq!(envelope["data"]["messages"][0]["group_did"], group_did);
     assert_eq!(envelope["data"]["group"], group_did);
-    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(envelope["data"]["source"], "local");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
-    assert_eq!(body["method"], "group.list_messages");
-    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    let methods = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request JSON")["method"]
+                .as_str()
+                .expect("RPC method")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        body["params"]["meta"]["target"],
-        json!({"kind": "group", "did": group_did})
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta",
+        ]
     );
-    assert_eq!(body["params"]["body"]["group_did"], group_did);
-    assert_eq!(body["params"]["body"]["limit"], 6);
-    assert_eq!(body["params"]["body"]["since_seq"], "11");
+    assert!(!methods.iter().any(|method| method == "group.list_messages"));
 }
 
 #[test]
@@ -469,6 +798,24 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env("HOME", workspace.join("home"))
         .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli")
+}
+
+fn awiki_cmd_with_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")
@@ -633,6 +980,41 @@ impl TestResponse {
             body: body.to_string(),
         }
     }
+
+    fn error(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            body: body.to_string(),
+        }
+    }
+
+    fn registration() -> Self {
+        Self::ok("__DYNAMIC_REGISTRATION_RESPONSE__")
+    }
+
+    fn prekey_publication() -> Self {
+        Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
+    }
+
+    fn sync_bootstrap() -> Self {
+        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
+    }
+
+    fn sync_delta_message() -> Self {
+        Self::ok("__DYNAMIC_SYNC_DELTA_MESSAGE_RESPONSE__")
+    }
+
+    fn message_batch() -> Self {
+        Self::ok("__DYNAMIC_MESSAGE_BATCH_RESPONSE__")
+    }
+
+    fn sync_delta_empty() -> Self {
+        Self::ok("__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__")
+    }
+
+    fn mark_read_state() -> Self {
+        Self::ok("__DYNAMIC_MARK_READ_STATE_RESPONSE__")
+    }
 }
 
 struct TestServer {
@@ -652,10 +1034,17 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let follows_with_prekey = response.body == "__DYNAMIC_REGISTRATION_RESPONSE__";
                 let Some(stream) = accept_with_timeout(&listener) else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if follows_with_prekey {
+                    let Some(stream) = accept_with_timeout(&listener) else {
+                        break;
+                    };
+                    handle_connection(stream, &server_requests, TestResponse::prekey_publication());
+                }
             }
         });
         Self {
@@ -703,6 +1092,254 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     }
 }
 
+fn dynamic_response_body(request: &str, marker: &str) -> String {
+    match marker {
+        "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
+        "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
+        "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
+            let binding = device_binding_from_request(request);
+            rpc_result_for_request(
+                request,
+                json!({
+                    "mode": "tail_only",
+                    "account_id": binding.account_id,
+                    "device_id": binding.device_id,
+                    "server_time": "2026-08-02T00:00:00Z",
+                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                    "read_state_baseline": [],
+                    "group_state_baseline": [],
+                    "warnings": []
+                }),
+            )
+        }
+        "__DYNAMIC_SYNC_DELTA_MESSAGE_RESPONSE__" => {
+            let binding = device_binding_from_request(request);
+            rpc_result_for_request(
+                request,
+                json!({
+                    "mode": "delta",
+                    "server_time": "2026-08-02T00:00:01Z",
+                    "events": [{
+                        "event_id": "event-sync-v2-1",
+                        "stream_epoch": "1",
+                        "event_seq": "1",
+                        "event_type": "message.created",
+                        "schema_version": 1,
+                        "ignore_safe": false,
+                        "account_id": binding.account_id,
+                        "recipient_device_id": null,
+                        "origin_did": "did:wba:awiki.ai:user:bob:e1_bob",
+                        "origin_device_id": "device-bob",
+                        "aggregate_kind": "group_message",
+                        "aggregate_id": "msg-sync-v2-1",
+                        "state_version": null,
+                        "thread_key": "did:wba:awiki.ai:groups:sync:e1_group",
+                        "occurred_at": "2026-08-02T00:00:01Z",
+                        "payload": {
+                            "message_kind": "group_plain",
+                            "direction": "incoming",
+                            "group_did": "did:wba:awiki.ai:groups:sync:e1_group",
+                            "sender_did_snapshot": "did:wba:awiki.ai:user:bob:e1_bob",
+                            "recipient_did_snapshot": binding.did,
+                            "client_message_id": "msg-sync-v2-1"
+                        },
+                        "source": {}
+                    }],
+                    "next_cursor": {"stream_epoch": "1", "scan_seq": "1"},
+                    "has_more": false,
+                    "recovery": null,
+                    "warnings": []
+                }),
+            )
+        }
+        "__DYNAMIC_MESSAGE_BATCH_RESPONSE__" => {
+            let binding = device_binding_from_request(request);
+            rpc_result_for_request(
+                request,
+                json!({
+                    "items": [{
+                        "event_id": "event-sync-v2-1",
+                        "message": {
+                            "id": "msg-sync-v2-1",
+                            "thread_kind": "group",
+                            "group_did": "did:wba:awiki.ai:groups:sync:e1_group",
+                            "sender_did": "did:wba:awiki.ai:user:bob:e1_bob",
+                            "receiver_did": binding.did,
+                            "content_type": "text/plain",
+                            "content": "hello from foreground reconcile",
+                            "server_seq": "1",
+                            "created_at": "2026-08-02T00:00:01Z",
+                            "client_msg_id": "msg-sync-v2-1"
+                        }
+                    }],
+                    "unavailable": []
+                }),
+            )
+        }
+        "__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "mode": "delta",
+                "server_time": "2026-08-02T00:00:02Z",
+                "events": [],
+                "next_cursor": {"stream_epoch": "1", "scan_seq": "1"},
+                "has_more": false,
+                "recovery": null,
+                "warnings": []
+            }),
+        ),
+        "__DYNAMIC_MARK_READ_STATE_RESPONSE__" => {
+            let rpc: Value = serde_json::from_str(request_body(request)).expect("mark-read RPC");
+            let body = &rpc["params"]["body"];
+            rpc_result_for_request(
+                request,
+                json!({
+                    "user_did": body["user_did"].clone(),
+                    "thread": body["thread"].clone(),
+                    "updated_count": 1,
+                    "remote_acknowledged": true,
+                    "partial": false,
+                    "fallback_used": false,
+                    "pending_remote_ack": false,
+                    "read_watermark_server_seq": body["read_up_to_server_seq"].clone(),
+                    "previous_read_watermark_server_seq": null,
+                    "read_watermark_message_id": body["read_up_to_message_id"].clone(),
+                    "advanced": true,
+                    "read_at": "2026-08-02T00:00:03Z",
+                    "unread_count": 0,
+                    "warnings": []
+                }),
+            )
+        }
+        body => body.to_owned(),
+    }
+}
+
+fn registration_response(request: &str) -> String {
+    let rpc: Value =
+        serde_json::from_str(request_body(request)).expect("registration request JSON");
+    let params = &rpc["params"];
+    let document = &params["did_document"];
+    let did = document["id"].as_str().expect("registration DID");
+    let device = &document["deviceManifest"]["devices"][0];
+    let device_id = device["device_id"]
+        .as_str()
+        .expect("registration device_id");
+    let key_id = device["signing_key_id"]
+        .as_str()
+        .expect("registration signing_key_id");
+    let handle = params["handle"].as_str().expect("registration handle");
+    let account_id = format!("user-{handle}");
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "state": "registered",
+            "did": did,
+            "user_id": account_id,
+            "message": "Registration successful",
+            "access_token": device_access_token(did, &account_id, device_id, key_id),
+            "handle": handle,
+            "domain": "awiki.ai",
+            "full_handle": format!("{handle}.awiki.ai"),
+            "binding_generation": "1"
+        },
+        "id": rpc["id"].clone()
+    })
+    .to_string()
+}
+
+fn prekey_publication_response(request: &str) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("prekey request JSON");
+    let bundle = &rpc["params"]["body"]["prekey_bundle"];
+    let published_opk_count = rpc["params"]["body"]["one_time_prekeys"]
+        .as_array()
+        .map(Vec::len)
+        .expect("one_time_prekeys");
+    rpc_result_for_request(
+        request,
+        json!({
+            "published": true,
+            "owner_did": bundle["owner_did"].clone(),
+            "owner_device_id": bundle["owner_device_id"].clone(),
+            "bundle_id": bundle["bundle_id"].clone(),
+            "published_at": "2026-08-02T00:00:00Z",
+            "published_opk_count": published_opk_count
+        }),
+    )
+}
+
+fn rpc_result_for_request(request: &str, result: Value) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("RPC request JSON");
+    json!({"jsonrpc": "2.0", "result": result, "id": rpc["id"].clone()}).to_string()
+}
+
+struct DeviceBinding {
+    did: String,
+    account_id: String,
+    device_id: String,
+}
+
+fn device_binding_from_request(request: &str) -> DeviceBinding {
+    let token = request
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.trim()
+                    .eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim().strip_prefix("Bearer ").map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .expect("device bearer token");
+    let payload = token.split('.').nth(1).expect("JWT payload");
+    let claims: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("decode JWT payload"),
+    )
+    .expect("JWT claims");
+    DeviceBinding {
+        did: claims["did"].as_str().expect("token did").to_owned(),
+        account_id: claims["user_id"]
+            .as_str()
+            .expect("token user_id")
+            .to_owned(),
+        device_id: claims["device_id"]
+            .as_str()
+            .expect("token device_id")
+            .to_owned(),
+    }
+}
+
+fn device_access_token(did: &str, account_id: &str, device_id: &str, key_id: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": account_id,
+        "device_id": device_id,
+        "key_id": key_id,
+        "auth_generation": 1,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": format!("msg-sync-v2-{device_id}")
+    });
+    format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("serialize test access token"))
+    )
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     requests: &Arc<Mutex<Vec<String>>>,
@@ -720,12 +1357,11 @@ fn handle_connection(
             break;
         }
     }
-    requests
-        .lock()
-        .expect("requests mutex")
-        .push(String::from_utf8_lossy(&raw).into_owned());
+    let request = String::from_utf8_lossy(&raw).into_owned();
+    let body = dynamic_response_body(&request, &response.body);
+    requests.lock().expect("requests mutex").push(request);
     let reason = if response.status == 200 { "OK" } else { "ERR" };
-    let body = response.body.as_bytes();
+    let body = body.as_bytes();
     let header = format!(
         "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         response.status,

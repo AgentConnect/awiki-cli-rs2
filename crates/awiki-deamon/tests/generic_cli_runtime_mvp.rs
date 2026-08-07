@@ -4141,7 +4141,7 @@ esac
     let second_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_resume_2.args")).unwrap();
     let second_arg_lines = second_args.lines().collect::<Vec<_>>();
-    assert!(!second_arg_lines.iter().any(|arg| *arg == "resume"));
+    assert!(!second_arg_lines.contains(&"resume"));
     assert!(!second_args.contains("--last"));
     assert!(!second_args.contains("--all"));
     assert_eq!(
@@ -4332,8 +4332,8 @@ fi
     let second_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_last_2.args")).unwrap();
     let second_arg_lines = second_args.lines().collect::<Vec<_>>();
-    assert!(!second_arg_lines.iter().any(|arg| *arg == "resume"));
-    assert!(!second_arg_lines.iter().any(|arg| *arg == "--last"));
+    assert!(!second_arg_lines.contains(&"resume"));
+    assert!(!second_arg_lines.contains(&"--last"));
     assert!(!second_args.contains("--all"));
 }
 

@@ -8,7 +8,48 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'message.freezed.dart';
 
+class DartCommittedIncomingMessage {
+  final String eventId;
+  final String logicalMessageId;
+  final DartCommittedMessageSource source;
+  final DartMessageDirection direction;
+  final DartMessage message;
+
+  const DartCommittedIncomingMessage({
+    required this.eventId,
+    required this.logicalMessageId,
+    required this.source,
+    required this.direction,
+    required this.message,
+  });
+
+  @override
+  int get hashCode =>
+      eventId.hashCode ^
+      logicalMessageId.hashCode ^
+      source.hashCode ^
+      direction.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartCommittedIncomingMessage &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          logicalMessageId == other.logicalMessageId &&
+          source == other.source &&
+          direction == other.direction &&
+          message == other.message;
+}
+
+enum DartCommittedMessageSource { liveDelta }
+
 class DartConversation {
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final DartConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
   final DartConversationIdentity? conversationIdentity;
@@ -23,6 +64,10 @@ class DartConversation {
   final String? activityAt;
 
   const DartConversation({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
     this.conversationIdentity,
@@ -39,6 +84,10 @@ class DartConversation {
 
   @override
   int get hashCode =>
+      conversationId.hashCode ^
+      peerPersonaId.hashCode ^
+      canonicalGroupDid.hashCode ^
+      resolutionState.hashCode ^
       threadKind.hashCode ^
       threadId.hashCode ^
       conversationIdentity.hashCode ^
@@ -57,6 +106,10 @@ class DartConversation {
       identical(this, other) ||
       other is DartConversation &&
           runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
+          peerPersonaId == other.peerPersonaId &&
+          canonicalGroupDid == other.canonicalGroupDid &&
+          resolutionState == other.resolutionState &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
           conversationIdentity == other.conversationIdentity &&
@@ -243,9 +296,20 @@ class DartConversationReadRef {
           conversationId == other.conversationId;
 }
 
+enum DartConversationResolutionState {
+  resolved,
+  legacyUnresolved,
+  blockedConflict,
+}
+
 class DartConversationSnapshotItem {
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final DartConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
+  final String? title;
   final DartConversationIdentity? conversationIdentity;
   final List<String> participants;
   final DartConversationSnapshotMessage? lastMessage;
@@ -257,8 +321,13 @@ class DartConversationSnapshotItem {
   final String? activityAt;
 
   const DartConversationSnapshotItem({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
+    this.title,
     this.conversationIdentity,
     required this.participants,
     this.lastMessage,
@@ -272,8 +341,13 @@ class DartConversationSnapshotItem {
 
   @override
   int get hashCode =>
+      conversationId.hashCode ^
+      peerPersonaId.hashCode ^
+      canonicalGroupDid.hashCode ^
+      resolutionState.hashCode ^
       threadKind.hashCode ^
       threadId.hashCode ^
+      title.hashCode ^
       conversationIdentity.hashCode ^
       participants.hashCode ^
       lastMessage.hashCode ^
@@ -289,8 +363,13 @@ class DartConversationSnapshotItem {
       identical(this, other) ||
       other is DartConversationSnapshotItem &&
           runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
+          peerPersonaId == other.peerPersonaId &&
+          canonicalGroupDid == other.canonicalGroupDid &&
+          resolutionState == other.resolutionState &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
+          title == other.title &&
           conversationIdentity == other.conversationIdentity &&
           participants == other.participants &&
           lastMessage == other.lastMessage &&
@@ -449,18 +528,14 @@ sealed class DartConversationStorePatch with _$DartConversationStorePatch {
     required String ownerDid,
     required BigInt version,
     required int unreadTotal,
-    required String threadKind,
-    required String threadId,
-    DartConversationIdentity? conversationIdentity,
+    required String conversationId,
   }) = DartConversationStorePatch_Remove;
   const factory DartConversationStorePatch.reorder({
     required String ownerIdentityId,
     required String ownerDid,
     required BigInt version,
     required int unreadTotal,
-    required String threadKind,
-    required String threadId,
-    DartConversationIdentity? conversationIdentity,
+    required String conversationId,
     required int index,
   }) = DartConversationStorePatch_Reorder;
   const factory DartConversationStorePatch.repairRequired({
@@ -644,6 +719,9 @@ class DartMarkThreadReadResult {
 
 class DartMessage {
   final String id;
+  final String conversationId;
+  final String? senderPeerPersonaId;
+  final String senderDidSnapshot;
   final String threadKind;
   final String threadId;
   final DartMessageDirection direction;
@@ -657,6 +735,9 @@ class DartMessage {
 
   const DartMessage({
     required this.id,
+    required this.conversationId,
+    this.senderPeerPersonaId,
+    required this.senderDidSnapshot,
     required this.threadKind,
     required this.threadId,
     required this.direction,
@@ -672,6 +753,9 @@ class DartMessage {
   @override
   int get hashCode =>
       id.hashCode ^
+      conversationId.hashCode ^
+      senderPeerPersonaId.hashCode ^
+      senderDidSnapshot.hashCode ^
       threadKind.hashCode ^
       threadId.hashCode ^
       direction.hashCode ^
@@ -689,6 +773,9 @@ class DartMessage {
       other is DartMessage &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          conversationId == other.conversationId &&
+          senderPeerPersonaId == other.senderPeerPersonaId &&
+          senderDidSnapshot == other.senderDidSnapshot &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
           direction == other.direction &&
@@ -833,6 +920,134 @@ enum DartMessageSecurityMode {
   e2EeRequired,
   secureDirect,
   groupE2Ee,
+}
+
+class DartMessageSyncDiagnostics {
+  final String? lastSuccessAt;
+  final DartMessageSyncMode mode;
+  final int pendingMutationCount;
+  final List<DartMessageSyncDirtyDomain> dirtyDomains;
+  final DartMessageSyncRetryState retryState;
+  final String? nextRetryAt;
+
+  const DartMessageSyncDiagnostics({
+    this.lastSuccessAt,
+    required this.mode,
+    required this.pendingMutationCount,
+    required this.dirtyDomains,
+    required this.retryState,
+    this.nextRetryAt,
+  });
+
+  @override
+  int get hashCode =>
+      lastSuccessAt.hashCode ^
+      mode.hashCode ^
+      pendingMutationCount.hashCode ^
+      dirtyDomains.hashCode ^
+      retryState.hashCode ^
+      nextRetryAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncDiagnostics &&
+          runtimeType == other.runtimeType &&
+          lastSuccessAt == other.lastSuccessAt &&
+          mode == other.mode &&
+          pendingMutationCount == other.pendingMutationCount &&
+          dirtyDomains == other.dirtyDomains &&
+          retryState == other.retryState &&
+          nextRetryAt == other.nextRetryAt;
+}
+
+enum DartMessageSyncDirtyDomain { messages, readState }
+
+enum DartMessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
+
+class DartMessageSyncOutcome {
+  final DartMessageSyncStatus status;
+  final int eventsApplied;
+  final int pagesFetched;
+  final int messagesHydrated;
+  final int duplicatesSkipped;
+  final List<String> changedConversationIds;
+  final List<DartCommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+  final List<String> warnings;
+
+  const DartMessageSyncOutcome({
+    required this.status,
+    required this.eventsApplied,
+    required this.pagesFetched,
+    required this.messagesHydrated,
+    required this.duplicatesSkipped,
+    required this.changedConversationIds,
+    required this.committedIncomingMessages,
+    this.errorCode,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      status.hashCode ^
+      eventsApplied.hashCode ^
+      pagesFetched.hashCode ^
+      messagesHydrated.hashCode ^
+      duplicatesSkipped.hashCode ^
+      changedConversationIds.hashCode ^
+      committedIncomingMessages.hashCode ^
+      errorCode.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncOutcome &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          eventsApplied == other.eventsApplied &&
+          pagesFetched == other.pagesFetched &&
+          messagesHydrated == other.messagesHydrated &&
+          duplicatesSkipped == other.duplicatesSkipped &&
+          changedConversationIds == other.changedConversationIds &&
+          committedIncomingMessages == other.committedIncomingMessages &&
+          errorCode == other.errorCode &&
+          warnings == other.warnings;
+}
+
+class DartMessageSyncRequest {
+  final String reason;
+  final int? limit;
+
+  const DartMessageSyncRequest({required this.reason, this.limit});
+
+  @override
+  int get hashCode => reason.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncRequest &&
+          runtimeType == other.runtimeType &&
+          reason == other.reason &&
+          limit == other.limit;
+}
+
+enum DartMessageSyncRetryState {
+  none,
+  pending,
+  inFlight,
+  scheduled,
+  permanentFailure,
+}
+
+enum DartMessageSyncStatus {
+  idle,
+  changed,
+  recoveryRequired,
+  retryableFailure,
+  authRevoked,
 }
 
 @freezed

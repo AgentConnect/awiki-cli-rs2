@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const ANP_MESSAGE_SERVICE_TYPE: &str = "ANPMessageService";
-const ATTACHMENT_PROFILE: &str = "anp.attachment.v1";
+pub(crate) const ATTACHMENT_PROFILE: &str = "anp.attachment.v1";
 const TRANSPORT_PROTECTED_SECURITY_PROFILE: &str = "transport-protected";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +23,13 @@ struct DiscoveredMessageService {
 }
 
 pub(crate) fn select_attachment_rpc_service_from_document(
+    sender_did: &str,
+    document: &Value,
+) -> crate::ImResult<DiscoveredAttachmentService> {
+    select_attachment_rpc_service(sender_did, document)
+}
+
+fn select_attachment_rpc_service(
     sender_did: &str,
     document: &Value,
 ) -> crate::ImResult<DiscoveredAttachmentService> {
@@ -74,6 +81,16 @@ pub(crate) fn select_attachment_rpc_service_from_document(
         service_did: selected.service_did,
         rpc_endpoint: selected.service_endpoint,
     })
+}
+
+pub(crate) fn document_declares_attachment_profile(document: &Value) -> bool {
+    document_declares_profile(document, ATTACHMENT_PROFILE)
+}
+
+fn document_declares_profile(document: &Value, profile: &str) -> bool {
+    service_entries_from_document(document)
+        .iter()
+        .any(|service| service.profiles.iter().any(|value| value == profile))
 }
 
 fn service_entries_from_document(document: &Value) -> Vec<DiscoveredMessageService> {

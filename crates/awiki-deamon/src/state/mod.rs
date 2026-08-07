@@ -19,12 +19,14 @@ use crate::DaemonConfig;
 use im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN;
 
 mod delegated_state;
+mod device_identity;
 mod records;
 mod row_mappers;
 mod runtime_auth;
 mod runtime_profiles;
 mod runtime_tasks;
 mod schema;
+mod sync_probe;
 
 pub use records::*;
 pub use runtime_auth::AuthorizedRuntimeContext;

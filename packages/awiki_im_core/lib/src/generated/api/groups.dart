@@ -55,17 +55,23 @@ Future<DartGroupReadResult> getGroup({
 Future<DartGroupReadResult> listGroups({
   required ArcDartImClient client,
   required int limit,
-}) =>
-    RustLib.instance.api.crateApiGroupsListGroups(client: client, limit: limit);
+  String? cursor,
+}) => RustLib.instance.api.crateApiGroupsListGroups(
+  client: client,
+  limit: limit,
+  cursor: cursor,
+);
 
 Future<DartGroupReadResult> listGroupMembers({
   required ArcDartImClient client,
   required String groupDid,
   required int limit,
+  String? cursor,
 }) => RustLib.instance.api.crateApiGroupsListGroupMembers(
   client: client,
   groupDid: groupDid,
   limit: limit,
+  cursor: cursor,
 );
 
 Future<DartGroupReadResult> addGroupMember({

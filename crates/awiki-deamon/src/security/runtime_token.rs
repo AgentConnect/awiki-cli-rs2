@@ -276,9 +276,8 @@ impl RuntimeTokenScope {
 
 fn normalize_recipient_for_scope(input: &str) -> String {
     let value = input.trim();
-    if value.starts_with("did:") {
-        value.to_string()
-    } else if value == ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE
+    if value.starts_with("did:")
+        || value == ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE
         || value == ANY_DIRECT_RECIPIENT_SCOPE
         || value == ANY_GROUP_RECIPIENT_SCOPE
     {

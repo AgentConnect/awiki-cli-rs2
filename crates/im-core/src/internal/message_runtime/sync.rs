@@ -25,6 +25,18 @@ pub(crate) struct SyncDeltaInput {
     pub(crate) request: crate::messages::SyncDeltaRequest,
 }
 
+#[cfg(feature = "sqlite")]
+pub(super) struct SyncDeltaMessageProjection {
+    pub(super) message: crate::messages::Message,
+    pub(super) hydration_state: crate::internal::local_state::messages::MessageHydrationState,
+}
+
+#[cfg(feature = "sqlite")]
+pub(super) struct SyncDeltaGroupProjection {
+    pub(super) group: crate::internal::local_state::groups::GroupRecord,
+    pub(super) system_message: Option<crate::internal::local_state::messages::MessageRecord>,
+}
+
 impl<'a, P, T, R> MessageSyncRuntime<'a, P, T, R> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
@@ -81,14 +93,35 @@ where
                 result.retention_floor_event_seq = page.retention_floor_event_seq;
                 return Ok(result);
             }
-            reject_invalid_delta_page_shape(&page)?;
-            let apply_input = sync_delta_apply_input(self.client, &page)?;
+            let (hydration_warnings, mut hydrated_message_ids) =
+                self.hydrate_plain_direct_delta_threads(&page, limit)?;
+            result.warnings.extend(hydration_warnings);
+            let (hydration_warnings, hydrated_group_message_ids) =
+                self.hydrate_plain_group_delta_threads(&page, limit)?;
+            result.warnings.extend(hydration_warnings);
+            hydrated_message_ids.extend(hydrated_group_message_ids);
+            let apply_input = sync_delta_apply_input(self.client, &page, &hydrated_message_ids)?;
             let outcome = apply_sync_delta_blocking(self.client, apply_input)?;
             result.events_applied = result
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_events).unwrap_or(u32::MAX));
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
+            append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            #[cfg(feature = "sqlite")]
+            if page_contains_system_notification(&page) {
+                match crate::internal::message_runtime::read::hydrate_system_notifications(
+                    self.client,
+                    &mut self.transport,
+                    &mut self.directory_transport,
+                    i64::from(limit),
+                ) {
+                    Ok(hydration) => result.warnings.extend(hydration.warnings),
+                    Err(_) => result
+                        .warnings
+                        .push("system.notification.hydration_deferred".to_owned()),
+                }
+            }
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -107,98 +140,427 @@ where
         input: SyncThreadAfterInput,
     ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
         let limit = sync_thread_after_limit(input.request.limit)?;
-        let after_server_seq = explicit_after_server_seq(
-            input.request.after_server_seq.as_deref(),
-        )?
-        .unwrap_or_else(|| local_max_server_seq_blocking(self.client, &input.request.thread));
+        let requested_after_server_seq =
+            explicit_after_server_seq(input.request.after_server_seq.as_deref())?;
+        let after_server_seq = effective_after_server_seq(
+            requested_after_server_seq,
+            local_catch_up_server_seq_blocking(self.client, &input.request.thread),
+        );
         match input.request.thread {
-            crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)?;
-                let peer = crate::internal::message_runtime::read::direct_thread(
-                    peer,
-                    input.resolved_peer_did,
-                )?;
-                let params = crate::internal::wire::history::build_history_rpc_params(
-                    &crate::internal::wire::common::WireIdentity {
-                        did: self.client.did().as_str().to_owned(),
-                    },
-                    crate::internal::wire::history::HistoryWireRequest {
-                        peer_did: peer.resolved_did.clone(),
-                        limit: i64::from(limit),
-                        cursor: Some(after_server_seq.to_string()),
-                        skip: 0,
-                        auth: None,
-                    },
-                )?;
-                let mut raw = self.transport.authenticated_rpc(
-                    MESSAGE_RPC_ENDPOINT,
-                    "direct.get_history",
-                    params,
-                )?;
-                crate::internal::message_runtime::read::project_secure_direct_messages(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                );
-                crate::internal::message_runtime::read::annotate_direct_peer_scopes(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                    input.peer_scope.as_ref(),
-                );
-                let page = crate::internal::message_runtime::read::page_from_raw(
-                    self.client,
-                    &raw,
-                    crate::ids::PageLimit(limit),
-                )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages(
-                    self.client,
-                    &result.messages,
-                )?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
-                Ok(result)
-            }
+            crate::messages::ThreadRef::Direct(peer) => self.sync_bound_direct_thread_after(
+                peer,
+                input.resolved_peer_did,
+                input.peer_scope.as_ref(),
+                after_server_seq,
+                limit,
+            ),
             crate::messages::ThreadRef::Group(group) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
-                let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                    self.client.did().as_str(),
-                    group.as_str(),
-                    i64::from(limit),
-                    Some(&after_server_seq.to_string()),
-                    0,
-                )?;
-                let mut raw = self.transport.authenticated_rpc(
-                    MESSAGE_RPC_ENDPOINT,
-                    "group.list_messages",
-                    params,
-                )?;
-                crate::internal::message_runtime::read::project_group_e2ee_messages(
-                    self.client,
-                    &mut raw,
-                );
-                let page = crate::internal::message_runtime::read::page_from_raw_with_group(
-                    self.client,
-                    &raw,
-                    crate::ids::PageLimit(limit),
-                    Some(&group),
-                )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages(
-                    self.client,
-                    &result.messages,
-                )?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
-                Ok(result)
+                self.sync_group_thread_after(group, after_server_seq, limit)
             }
             crate::messages::ThreadRef::Thread(_) => {
                 Err(crate::ImError::unsupported("sync-thread-after-raw-thread"))
             }
         }
+    }
+
+    fn hydrate_plain_direct_delta_threads(
+        &mut self,
+        page: &crate::internal::wire::sync::SyncDeltaPage,
+        limit: u32,
+    ) -> crate::ImResult<(Vec<String>, std::collections::BTreeSet<String>)> {
+        let mut warnings = Vec::new();
+        let mut hydrated_message_ids = std::collections::BTreeSet::new();
+        for (peer_did, targets) in sync_delta_plain_direct_hydration_targets_by_peer(page)? {
+            if direct_delta_targets_are_committed_blocking(self.client, &targets) {
+                continue;
+            }
+            let peer = crate::ids::PeerRef::parse(&peer_did, "")?;
+            let thread = crate::messages::ThreadRef::Direct(peer.clone());
+            let missing_targets = targets
+                .iter()
+                .filter(|target| {
+                    local_message_server_seq_blocking(self.client, &target.message_id)
+                        != Some(target.required_server_seq)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let earliest_required_server_seq = missing_targets
+                .iter()
+                .map(|target| target.required_server_seq)
+                .min()
+                .expect("uncommitted Direct hydration targets must have a sequence");
+            let after_server_seq = local_max_server_seq_blocking(self.client, &thread)
+                .min(earliest_required_server_seq.saturating_sub(1));
+            let mut cursor = after_server_seq;
+            loop {
+                let result = self.sync_legacy_direct_thread_after(
+                    peer.clone(),
+                    Some(peer_did.clone()),
+                    None,
+                    cursor,
+                    limit,
+                )?;
+                let failure_detail = projection_backlog_failure_detail(&result.warnings);
+                warnings.extend(result.warnings);
+                if direct_delta_targets_are_committed_blocking(self.client, &targets) {
+                    hydrated_message_ids.extend(
+                        missing_targets
+                            .iter()
+                            .map(|target| target.message_id.clone()),
+                    );
+                    break;
+                }
+                if !result.has_more {
+                    return Err(sync_invalid_page(format!(
+                        "sync.thread_after did not commit the Direct delta projection: {failure_detail}"
+                    )));
+                }
+                let next = result
+                    .next_after_server_seq
+                    .as_deref()
+                    .map(parse_after_server_seq)
+                    .transpose()?
+                    .unwrap_or(cursor);
+                if next <= cursor {
+                    return Err(sync_invalid_page(
+                        "sync.thread_after did not advance while hydrating Direct delta projections",
+                    ));
+                }
+                cursor = next;
+            }
+        }
+        Ok((warnings, hydrated_message_ids))
+    }
+
+    fn hydrate_plain_group_delta_threads(
+        &mut self,
+        page: &crate::internal::wire::sync::SyncDeltaPage,
+        limit: u32,
+    ) -> crate::ImResult<(Vec<String>, std::collections::BTreeSet<String>)> {
+        let mut warnings = Vec::new();
+        let mut hydrated_message_ids = std::collections::BTreeSet::new();
+        for (group_did, targets) in sync_delta_plain_group_hydration_targets_by_group(page)? {
+            if group_delta_targets_are_committed_blocking(self.client, &targets) {
+                continue;
+            }
+            let group = crate::ids::GroupRef::parse(&group_did)?;
+            let thread = crate::messages::ThreadRef::Group(group.clone());
+            let missing_targets = targets
+                .iter()
+                .filter(|target| {
+                    local_message_server_seq_blocking(self.client, &target.message_id)
+                        != Some(target.required_server_seq)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let earliest_required_server_seq = missing_targets
+                .iter()
+                .map(|target| target.required_server_seq)
+                .min()
+                .expect("uncommitted Group hydration targets must have a sequence");
+            let mut cursor = local_max_server_seq_blocking(self.client, &thread)
+                .min(earliest_required_server_seq.saturating_sub(1));
+            loop {
+                let result = self.sync_legacy_group_thread_after(group.clone(), cursor, limit)?;
+                warnings.extend(result.warnings);
+                if group_delta_targets_are_committed_blocking(self.client, &targets) {
+                    hydrated_message_ids.extend(
+                        missing_targets
+                            .iter()
+                            .map(|target| target.message_id.clone()),
+                    );
+                    break;
+                }
+                if !result.has_more {
+                    return Err(sync_invalid_page(
+                        "group.list_messages did not commit the Group delta projection",
+                    ));
+                }
+                let next = result
+                    .next_after_server_seq
+                    .as_deref()
+                    .map(parse_after_server_seq)
+                    .transpose()?
+                    .unwrap_or(cursor);
+                if next <= cursor {
+                    return Err(sync_invalid_page(
+                        "group.list_messages did not advance while hydrating Group delta projections",
+                    ));
+                }
+                cursor = next;
+            }
+        }
+        Ok((warnings, hydrated_message_ids))
+    }
+
+    fn sync_group_thread_after(
+        &mut self,
+        group: crate::ids::GroupRef,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)?;
+        let params = crate::internal::wire::sync_v2::build_thread_after_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            group.as_str(),
+            &after_server_seq.to_string(),
+            limit,
+        )?;
+        let mut raw =
+            self.transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.thread_after", params)?;
+        crate::internal::wire::sync_v2::validate_thread_after_response(&raw, "group")?;
+        let discarded = retain_ordinary_plain_wire_messages(&mut raw, "group");
+        let page_contract =
+            validate_thread_after_wire_page(&raw, after_server_seq, limit, discarded)?;
+        let page = crate::internal::message_runtime::read::page_from_raw_with_group(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+            Some(&group),
+        )?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let proof = catch_up_hydration_proof(
+            self.client,
+            crate::messages::ThreadRef::Group(group),
+            after_server_seq,
+            &result,
+        )?;
+        let outcome =
+            crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
+                self.client,
+                &result.messages,
+                proof,
+            )?;
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+
+    fn sync_legacy_group_thread_after(
+        &mut self,
+        group: crate::ids::GroupRef,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let cursor = after_server_seq.to_string();
+        let params = crate::internal::wire::group::build_group_messages_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+            i64::from(limit),
+            Some(&cursor),
+            0,
+        )?;
+        let mut raw = self.transport.authenticated_rpc(
+            MESSAGE_RPC_ENDPOINT,
+            "group.list_messages",
+            params,
+        )?;
+        let discarded = retain_ordinary_plain_wire_messages(&mut raw, "group");
+        normalize_legacy_group_history_cursor(&mut raw);
+        let page_contract =
+            validate_thread_after_wire_page(&raw, after_server_seq, limit, discarded)?;
+        let page = crate::internal::message_runtime::read::page_from_raw_with_group(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+            Some(&group),
+        )?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let proof = catch_up_hydration_proof(
+            self.client,
+            crate::messages::ThreadRef::Group(group),
+            after_server_seq,
+            &result,
+        )?;
+        let outcome =
+            crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
+                self.client,
+                &result.messages,
+                proof,
+            )?;
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+
+    fn sync_legacy_direct_thread_after(
+        &mut self,
+        peer: crate::ids::PeerRef,
+        resolved_peer_did: Option<String>,
+        peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)?;
+        let hydration_thread = crate::messages::ThreadRef::Direct(peer.clone());
+        let peer = crate::internal::message_runtime::read::direct_thread(peer, resolved_peer_did)?;
+        let params = crate::internal::wire::history::build_history_rpc_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            crate::internal::wire::history::HistoryWireRequest {
+                peer_did: peer.resolved_did.clone(),
+                limit: i64::from(limit),
+                cursor: Some(after_server_seq.to_string()),
+                skip: 0,
+                auth: None,
+            },
+        )?;
+        let mut raw =
+            self.transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)?;
+        retain_ordinary_plain_wire_messages(&mut raw, "direct");
+        let mut p5_provenance =
+            crate::internal::message_runtime::read::project_secure_direct_messages_for_peer(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+                &peer.resolved_did,
+            );
+        crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+            self.client,
+            &mut raw,
+            &peer.resolved_did,
+            &mut p5_provenance,
+        );
+        crate::internal::message_runtime::read::annotate_direct_peer_scopes(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            peer_scope,
+            Some(&peer.resolved_did),
+            Some(&mut p5_provenance),
+        );
+        let page = crate::internal::message_runtime::read::page_from_raw(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+        )?;
+        let final_projectable_count = page
+            .items
+            .iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .server_sequence
+                    .is_some_and(|sequence| sequence > after_server_seq)
+            })
+            .count();
+        crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+            &raw,
+            final_projectable_count,
+        )?;
+        let mut result = direct_history_after_result(page.items, after_server_seq, raw, limit)?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
+        let outcome =
+            crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
+                self.client,
+                &result.messages,
+                proof,
+            )?;
+        append_projection_backlog_warnings(&mut result.warnings, outcome);
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+
+    fn sync_bound_direct_thread_after(
+        &mut self,
+        peer: crate::ids::PeerRef,
+        resolved_peer_did: Option<String>,
+        peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)?;
+        let hydration_thread = crate::messages::ThreadRef::Direct(peer.clone());
+        let peer = crate::internal::message_runtime::read::direct_thread(peer, resolved_peer_did)?;
+        let conversation_id = peer_scope
+            .map(crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope)
+            .ok_or_else(sync_thread_binding_required)?;
+        let thread_key = load_bound_direct_thread_key_blocking(self.client, &conversation_id)?
+            .ok_or_else(sync_thread_binding_required)?;
+        let params = crate::internal::wire::sync_v2::build_thread_after_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            &thread_key,
+            &after_server_seq.to_string(),
+            limit,
+        )?;
+        let mut raw =
+            self.transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.thread_after", params)?;
+        crate::internal::wire::sync_v2::validate_thread_after_response(&raw, "direct")?;
+        let discarded = retain_ordinary_plain_wire_messages(&mut raw, "direct");
+        let page_contract =
+            validate_thread_after_wire_page(&raw, after_server_seq, limit, discarded)?;
+        let mut p5_provenance =
+            crate::internal::message_runtime::read::DirectP5ProjectionProvenance::default();
+        crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+            self.client,
+            &mut raw,
+            &peer.resolved_did,
+            &mut p5_provenance,
+        );
+        crate::internal::message_runtime::read::annotate_direct_peer_scopes(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            peer_scope,
+            Some(&peer.resolved_did),
+            Some(&mut p5_provenance),
+        );
+        let page = crate::internal::message_runtime::read::page_from_raw(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+        )?;
+        let final_projectable_count = page
+            .items
+            .iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .server_sequence
+                    .is_some_and(|sequence| sequence > after_server_seq)
+            })
+            .count();
+        crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+            &raw,
+            final_projectable_count,
+        )?;
+        let mut result =
+            thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
+        let outcome =
+            crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
+                self.client,
+                &result.messages,
+                proof,
+            )?;
+        append_projection_backlog_warnings(&mut result.warnings, outcome);
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
     }
 }
 
@@ -244,15 +606,40 @@ where
                 result.retention_floor_event_seq = page.retention_floor_event_seq;
                 return Ok(result);
             }
-            reject_invalid_delta_page_shape(&page)?;
-            let apply_input = sync_delta_apply_input(self.client, &page)?;
+            let (hydration_warnings, mut hydrated_message_ids) = self
+                .hydrate_plain_direct_delta_threads_async(&page, limit)
+                .await?;
+            result.warnings.extend(hydration_warnings);
+            let (hydration_warnings, hydrated_group_message_ids) = self
+                .hydrate_plain_group_delta_threads_async(&page, limit)
+                .await?;
+            result.warnings.extend(hydration_warnings);
+            hydrated_message_ids.extend(hydrated_group_message_ids);
+            let apply_input = sync_delta_apply_input(self.client, &page, &hydrated_message_ids)?;
             let db = self.client.core_inner().local_state_db().await?;
             let outcome = db.apply_sync_delta(apply_input).await?;
             result.events_applied = result
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_events).unwrap_or(u32::MAX));
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
+            append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            #[cfg(feature = "sqlite")]
+            if page_contains_system_notification(&page) {
+                match crate::internal::message_runtime::read::hydrate_system_notifications_async(
+                    self.client,
+                    &mut self.transport,
+                    &mut self.directory_transport,
+                    i64::from(limit),
+                )
+                .await
+                {
+                    Ok(hydration) => result.warnings.extend(hydration.warnings),
+                    Err(_) => result
+                        .warnings
+                        .push("system.notification.hydration_deferred".to_owned()),
+                }
+            }
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -271,105 +658,819 @@ where
         input: SyncThreadAfterInput,
     ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
         let limit = sync_thread_after_limit(input.request.limit)?;
-        let after_server_seq =
-            match explicit_after_server_seq(input.request.after_server_seq.as_deref())? {
-                Some(value) => value,
-                None => local_max_server_seq_async(self.client, &input.request.thread).await,
-            };
+        let requested_after_server_seq =
+            explicit_after_server_seq(input.request.after_server_seq.as_deref())?;
+        let after_server_seq = effective_after_server_seq(
+            requested_after_server_seq,
+            local_catch_up_server_seq_async(self.client, &input.request.thread).await,
+        );
         match input.request.thread {
             crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)
-                    .await?;
-                let peer = crate::internal::message_runtime::read::direct_thread(
+                self.sync_bound_direct_thread_after_async(
                     peer,
                     input.resolved_peer_did,
-                )?;
-                let params = crate::internal::wire::history::build_history_rpc_params(
-                    &crate::internal::wire::common::WireIdentity {
-                        did: self.client.did().as_str().to_owned(),
-                    },
-                    crate::internal::wire::history::HistoryWireRequest {
-                        peer_did: peer.resolved_did.clone(),
-                        limit: i64::from(limit),
-                        cursor: Some(after_server_seq.to_string()),
-                        skip: 0,
-                        auth: None,
-                    },
-                )?;
-                let mut raw = self
-                    .transport
-                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
-                    .await?;
-                crate::internal::message_runtime::read::project_secure_direct_messages_async(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                )
-                .await;
-                crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    after_server_seq,
+                    limit,
                 )
-                .await;
-                let page = crate::internal::message_runtime::read::page_from_raw(
-                    self.client,
-                    &raw,
-                    crate::ids::PageLimit(limit),
-                )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages_async(
-                    self.client,
-                    &result.messages,
-                )
-                .await?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
-                Ok(result)
+                .await
             }
             crate::messages::ThreadRef::Group(group) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::GroupMessaging)
-                    .await?;
-                let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                    self.client.did().as_str(),
-                    group.as_str(),
-                    i64::from(limit),
-                    Some(&after_server_seq.to_string()),
-                    0,
-                )?;
-                let mut raw = self
-                    .transport
-                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
-                    .await?;
-                crate::internal::message_runtime::read::project_group_e2ee_messages_async(
-                    self.client,
-                    &mut raw,
-                )
-                .await;
-                let page = crate::internal::message_runtime::read::page_from_raw_with_group(
-                    self.client,
-                    &raw,
-                    crate::ids::PageLimit(limit),
-                    Some(&group),
-                )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages_async(
-                    self.client,
-                    &result.messages,
-                )
-                .await?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
-                Ok(result)
+                self.sync_group_thread_after_async(group, after_server_seq, limit)
+                    .await
             }
             crate::messages::ThreadRef::Thread(_) => {
                 Err(crate::ImError::unsupported("sync-thread-after-raw-thread"))
             }
         }
     }
+
+    async fn hydrate_plain_direct_delta_threads_async(
+        &mut self,
+        page: &crate::internal::wire::sync::SyncDeltaPage,
+        limit: u32,
+    ) -> crate::ImResult<(Vec<String>, std::collections::BTreeSet<String>)> {
+        let mut warnings = Vec::new();
+        let mut hydrated_message_ids = std::collections::BTreeSet::new();
+        for (peer_did, targets) in sync_delta_plain_direct_hydration_targets_by_peer(page)? {
+            if direct_delta_targets_are_committed_async(self.client, &targets).await {
+                continue;
+            }
+            let peer = crate::ids::PeerRef::parse(&peer_did, "")?;
+            let thread = crate::messages::ThreadRef::Direct(peer.clone());
+            let mut earliest_required_server_seq = None;
+            let mut missing_targets = Vec::new();
+            for target in &targets {
+                if local_message_server_seq_async(self.client, &target.message_id).await
+                    != Some(target.required_server_seq)
+                {
+                    missing_targets.push(target.clone());
+                    earliest_required_server_seq = Some(
+                        earliest_required_server_seq
+                            .map_or(target.required_server_seq, |current: i64| {
+                                current.min(target.required_server_seq)
+                            }),
+                    );
+                }
+            }
+            let earliest_required_server_seq = earliest_required_server_seq
+                .expect("uncommitted Direct hydration targets must have a sequence");
+            let after_server_seq = local_max_server_seq_async(self.client, &thread)
+                .await
+                .min(earliest_required_server_seq.saturating_sub(1));
+            let mut cursor = after_server_seq;
+            loop {
+                let result = self
+                    .sync_legacy_direct_thread_after_async(
+                        peer.clone(),
+                        Some(peer_did.clone()),
+                        None,
+                        cursor,
+                        limit,
+                    )
+                    .await?;
+                let failure_detail = projection_backlog_failure_detail(&result.warnings);
+                warnings.extend(result.warnings);
+                if direct_delta_targets_are_committed_async(self.client, &targets).await {
+                    hydrated_message_ids.extend(
+                        missing_targets
+                            .iter()
+                            .map(|target| target.message_id.clone()),
+                    );
+                    break;
+                }
+                if !result.has_more {
+                    return Err(sync_invalid_page(format!(
+                        "sync.thread_after did not commit the Direct delta projection: {failure_detail}"
+                    )));
+                }
+                let next = result
+                    .next_after_server_seq
+                    .as_deref()
+                    .map(parse_after_server_seq)
+                    .transpose()?
+                    .unwrap_or(cursor);
+                if next <= cursor {
+                    return Err(sync_invalid_page(
+                        "sync.thread_after did not advance while hydrating Direct delta projections",
+                    ));
+                }
+                cursor = next;
+            }
+        }
+        Ok((warnings, hydrated_message_ids))
+    }
+
+    async fn hydrate_plain_group_delta_threads_async(
+        &mut self,
+        page: &crate::internal::wire::sync::SyncDeltaPage,
+        limit: u32,
+    ) -> crate::ImResult<(Vec<String>, std::collections::BTreeSet<String>)> {
+        let mut warnings = Vec::new();
+        let mut hydrated_message_ids = std::collections::BTreeSet::new();
+        for (group_did, targets) in sync_delta_plain_group_hydration_targets_by_group(page)? {
+            if group_delta_targets_are_committed_async(self.client, &targets).await {
+                continue;
+            }
+            let group = crate::ids::GroupRef::parse(&group_did)?;
+            let thread = crate::messages::ThreadRef::Group(group.clone());
+            let mut earliest_required_server_seq = None;
+            let mut missing_targets = Vec::new();
+            for target in &targets {
+                if local_message_server_seq_async(self.client, &target.message_id).await
+                    != Some(target.required_server_seq)
+                {
+                    missing_targets.push(target.clone());
+                    earliest_required_server_seq = Some(
+                        earliest_required_server_seq
+                            .map_or(target.required_server_seq, |current: i64| {
+                                current.min(target.required_server_seq)
+                            }),
+                    );
+                }
+            }
+            let earliest_required_server_seq = earliest_required_server_seq
+                .expect("uncommitted Group hydration targets must have a sequence");
+            let mut cursor = local_max_server_seq_async(self.client, &thread)
+                .await
+                .min(earliest_required_server_seq.saturating_sub(1));
+            loop {
+                let result = self
+                    .sync_legacy_group_thread_after_async(group.clone(), cursor, limit)
+                    .await?;
+                warnings.extend(result.warnings);
+                if group_delta_targets_are_committed_async(self.client, &targets).await {
+                    hydrated_message_ids.extend(
+                        missing_targets
+                            .iter()
+                            .map(|target| target.message_id.clone()),
+                    );
+                    break;
+                }
+                if !result.has_more {
+                    return Err(sync_invalid_page(
+                        "group.list_messages did not commit the Group delta projection",
+                    ));
+                }
+                let next = result
+                    .next_after_server_seq
+                    .as_deref()
+                    .map(parse_after_server_seq)
+                    .transpose()?
+                    .unwrap_or(cursor);
+                if next <= cursor {
+                    return Err(sync_invalid_page(
+                        "group.list_messages did not advance while hydrating Group delta projections",
+                    ));
+                }
+                cursor = next;
+            }
+        }
+        Ok((warnings, hydrated_message_ids))
+    }
+
+    async fn sync_group_thread_after_async(
+        &mut self,
+        group: crate::ids::GroupRef,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+        let params = crate::internal::wire::sync_v2::build_thread_after_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            group.as_str(),
+            &after_server_seq.to_string(),
+            limit,
+        )?;
+        let mut raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.thread_after", params)
+            .await?;
+        crate::internal::wire::sync_v2::validate_thread_after_response(&raw, "group")?;
+        let discarded = retain_ordinary_plain_wire_messages(&mut raw, "group");
+        let page_contract =
+            validate_thread_after_wire_page(&raw, after_server_seq, limit, discarded)?;
+        let page = crate::internal::message_runtime::read::page_from_raw_with_group(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+            Some(&group),
+        )?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let proof = catch_up_hydration_proof(
+            self.client,
+            crate::messages::ThreadRef::Group(group),
+            after_server_seq,
+            &result,
+        )?;
+        let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages_async(
+            self.client,
+            &result.messages,
+            proof,
+        )
+        .await?;
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+
+    async fn sync_legacy_group_thread_after_async(
+        &mut self,
+        group: crate::ids::GroupRef,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let cursor = after_server_seq.to_string();
+        let params = crate::internal::wire::group::build_group_messages_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+            i64::from(limit),
+            Some(&cursor),
+            0,
+        )?;
+        let mut raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
+            .await?;
+        let discarded = retain_ordinary_plain_wire_messages(&mut raw, "group");
+        normalize_legacy_group_history_cursor(&mut raw);
+        let page_contract =
+            validate_thread_after_wire_page(&raw, after_server_seq, limit, discarded)?;
+        let page = crate::internal::message_runtime::read::page_from_raw_with_group(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+            Some(&group),
+        )?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let proof = catch_up_hydration_proof(
+            self.client,
+            crate::messages::ThreadRef::Group(group),
+            after_server_seq,
+            &result,
+        )?;
+        let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages_async(
+            self.client,
+            &result.messages,
+            proof,
+        )
+        .await?;
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+
+    async fn sync_legacy_direct_thread_after_async(
+        &mut self,
+        peer: crate::ids::PeerRef,
+        resolved_peer_did: Option<String>,
+        peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+        let hydration_thread = crate::messages::ThreadRef::Direct(peer.clone());
+        let peer = crate::internal::message_runtime::read::direct_thread(peer, resolved_peer_did)?;
+        let params = crate::internal::wire::history::build_history_rpc_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            crate::internal::wire::history::HistoryWireRequest {
+                peer_did: peer.resolved_did.clone(),
+                limit: i64::from(limit),
+                cursor: Some(after_server_seq.to_string()),
+                skip: 0,
+                auth: None,
+            },
+        )?;
+        let mut raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
+            .await?;
+        retain_ordinary_plain_wire_messages(&mut raw, "direct");
+        let mut p5_provenance =
+            crate::internal::message_runtime::read::project_secure_direct_messages_async_for_peer(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+                &peer.resolved_did,
+            )
+            .await;
+        crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+            self.client,
+            &mut raw,
+            &peer.resolved_did,
+            &mut p5_provenance,
+        );
+        crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            peer_scope,
+            Some(&peer.resolved_did),
+            Some(&mut p5_provenance),
+        )
+        .await;
+        let page = crate::internal::message_runtime::read::page_from_raw(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+        )?;
+        let final_projectable_count = page
+            .items
+            .iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .server_sequence
+                    .is_some_and(|sequence| sequence > after_server_seq)
+            })
+            .count();
+        crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+            &raw,
+            final_projectable_count,
+        )?;
+        let mut result = direct_history_after_result(page.items, after_server_seq, raw, limit)?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
+        let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages_async(
+            self.client,
+            &result.messages,
+            proof,
+        )
+        .await?;
+        append_projection_backlog_warnings(&mut result.warnings, outcome);
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+
+    async fn sync_bound_direct_thread_after_async(
+        &mut self,
+        peer: crate::ids::PeerRef,
+        resolved_peer_did: Option<String>,
+        peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+        let hydration_thread = crate::messages::ThreadRef::Direct(peer.clone());
+        let peer = crate::internal::message_runtime::read::direct_thread(peer, resolved_peer_did)?;
+        let conversation_id = peer_scope
+            .map(crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope)
+            .ok_or_else(sync_thread_binding_required)?;
+        let thread_key = load_bound_direct_thread_key_async(self.client, &conversation_id)
+            .await?
+            .ok_or_else(sync_thread_binding_required)?;
+        let params = crate::internal::wire::sync_v2::build_thread_after_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            &thread_key,
+            &after_server_seq.to_string(),
+            limit,
+        )?;
+        let mut raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.thread_after", params)
+            .await?;
+        crate::internal::wire::sync_v2::validate_thread_after_response(&raw, "direct")?;
+        let discarded = retain_ordinary_plain_wire_messages(&mut raw, "direct");
+        let page_contract =
+            validate_thread_after_wire_page(&raw, after_server_seq, limit, discarded)?;
+        let mut p5_provenance =
+            crate::internal::message_runtime::read::DirectP5ProjectionProvenance::default();
+        crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+            self.client,
+            &mut raw,
+            &peer.resolved_did,
+            &mut p5_provenance,
+        );
+        crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            peer_scope,
+            Some(&peer.resolved_did),
+            Some(&mut p5_provenance),
+        )
+        .await;
+        let page = crate::internal::message_runtime::read::page_from_raw(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+        )?;
+        let final_projectable_count = page
+            .items
+            .iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .server_sequence
+                    .is_some_and(|sequence| sequence > after_server_seq)
+            })
+            .count();
+        crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+            &raw,
+            final_projectable_count,
+        )?;
+        let mut result =
+            thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
+        let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages_async(
+            self.client,
+            &result.messages,
+            proof,
+        )
+        .await?;
+        append_projection_backlog_warnings(&mut result.warnings, outcome);
+        if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
+            self.client
+                .emit_committed_local_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectDeltaHydrationTarget {
+    peer_did: String,
+    message_id: String,
+    required_server_seq: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupDeltaHydrationTarget {
+    group_did: String,
+    message_id: String,
+    required_server_seq: i64,
+}
+
+fn retain_ordinary_plain_wire_messages(raw: &mut Value, thread_kind: &str) -> usize {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let original_len = messages.len();
+    messages.retain(|message| {
+        let object = message.as_object();
+        let text = |field: &str| {
+            object
+                .and_then(|value| value.get(field))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+        };
+        let security_profile = text("security_profile");
+        let content_type = text("content_type");
+        if security_profile.contains("e2ee")
+            || security_profile.contains("mls")
+            || anp::direct_e2ee::is_direct_e2ee_wire_content_type(content_type)
+        {
+            return false;
+        }
+        if !security_profile.is_empty() && security_profile != "transport-protected" {
+            return false;
+        }
+        if thread_kind == "group" {
+            let method = text("subject_method");
+            return method.is_empty() || method == "group.send";
+        }
+        for field in [
+            "sender_device_id",
+            "recipient_device_id",
+            "target_device_id",
+        ] {
+            if object
+                .and_then(|value| value.get(field))
+                .is_some_and(|value| !value.is_null())
+            {
+                return false;
+            }
+        }
+        true
+    });
+    original_len.saturating_sub(messages.len())
+}
+
+fn normalize_legacy_group_history_cursor(raw: &mut Value) {
+    if raw.get("next_after_server_seq").is_some() {
+        return;
+    }
+    let Some(next) = raw.get("next_since_seq").cloned() else {
+        return;
+    };
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("next_after_server_seq".to_owned(), next);
+    }
+}
+
+fn sync_delta_plain_direct_hydration_targets(
+    page: &crate::internal::wire::sync::SyncDeltaPage,
+) -> crate::ImResult<Vec<DirectDeltaHydrationTarget>> {
+    let mut targets = std::collections::BTreeMap::<(String, String), i64>::new();
+    for event in &page.events {
+        if !sync_delta_is_metadata_only_plain_direct(event) {
+            continue;
+        }
+        let Some(payload) = event.payload.as_object() else {
+            continue;
+        };
+        let message = map_value(payload.get("message"))
+            .or_else(|| map_value(payload.get("latest_message")))
+            .or_else(|| map_value(payload.get("last_message")))
+            .or_else(|| map_value(payload.get("body")));
+        let Some(message) = message else {
+            continue;
+        };
+        if message
+            .get("content")
+            .is_some_and(|content| !content.is_null())
+        {
+            continue;
+        }
+        let thread = map_value(payload.get("thread"));
+        let thread_kind = string_from_object(thread, "kind")
+            .or_else(|| string_from_object(Some(payload), "thread_kind"))
+            .unwrap_or_default();
+        if thread_kind != "direct" {
+            continue;
+        }
+        let peer_did = string_from_object(thread, "peer_did")
+            .or_else(|| string_from_object(thread, "peer"))
+            .unwrap_or_default();
+        if !peer_did.starts_with("did:") {
+            return Err(sync_invalid_page(
+                "metadata-only Direct sync event is missing peer_did",
+            ));
+        }
+        let required_server_seq =
+            decimal_i64_from_object(message, "server_seq").ok_or_else(|| {
+                sync_invalid_page("metadata-only Direct sync event is missing server_seq")
+            })?;
+        let message_id = string_from_object(Some(message), "id")
+            .or_else(|| string_from_object(Some(message), "message_id"))
+            .ok_or_else(|| {
+                sync_invalid_page("metadata-only Direct sync event is missing message id")
+            })?;
+        targets
+            .entry((peer_did, message_id))
+            .and_modify(|current| *current = (*current).max(required_server_seq))
+            .or_insert(required_server_seq);
+    }
+    Ok(targets
+        .into_iter()
+        .map(
+            |((peer_did, message_id), required_server_seq)| DirectDeltaHydrationTarget {
+                peer_did,
+                message_id,
+                required_server_seq,
+            },
+        )
+        .collect())
+}
+
+fn sync_delta_plain_direct_hydration_targets_by_peer(
+    page: &crate::internal::wire::sync::SyncDeltaPage,
+) -> crate::ImResult<std::collections::BTreeMap<String, Vec<DirectDeltaHydrationTarget>>> {
+    let mut targets_by_peer = std::collections::BTreeMap::new();
+    for target in sync_delta_plain_direct_hydration_targets(page)? {
+        targets_by_peer
+            .entry(target.peer_did.clone())
+            .or_insert_with(Vec::new)
+            .push(target);
+    }
+    Ok(targets_by_peer)
+}
+
+fn direct_delta_targets_are_committed_blocking(
+    client: &crate::core::ImClient,
+    targets: &[DirectDeltaHydrationTarget],
+) -> bool {
+    targets.iter().all(|target| {
+        local_message_server_seq_blocking(client, &target.message_id)
+            == Some(target.required_server_seq)
+    })
+}
+
+async fn direct_delta_targets_are_committed_async(
+    client: &crate::core::ImClient,
+    targets: &[DirectDeltaHydrationTarget],
+) -> bool {
+    for target in targets {
+        if local_message_server_seq_async(client, &target.message_id).await
+            != Some(target.required_server_seq)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn sync_delta_plain_group_hydration_targets_by_group(
+    page: &crate::internal::wire::sync::SyncDeltaPage,
+) -> crate::ImResult<std::collections::BTreeMap<String, Vec<GroupDeltaHydrationTarget>>> {
+    let mut targets =
+        std::collections::BTreeMap::<(String, String), GroupDeltaHydrationTarget>::new();
+    for event in &page.events {
+        if !matches!(
+            event.event_type.as_str(),
+            "message.created" | "conversation.updated"
+        ) || sync_delta_contains_v2_e2ee_message(event)
+            || sync_delta_contains_system_notification_message(event)
+        {
+            continue;
+        }
+        let Some(payload) = event.payload.as_object() else {
+            continue;
+        };
+        let thread = map_value(payload.get("thread"));
+        let thread_kind = string_from_object(thread, "kind")
+            .or_else(|| string_from_object(Some(payload), "thread_kind"))
+            .unwrap_or_default();
+        if thread_kind != "group" {
+            continue;
+        }
+        let message = map_value(payload.get("message"))
+            .or_else(|| map_value(payload.get("latest_message")))
+            .or_else(|| map_value(payload.get("last_message")))
+            .or_else(|| map_value(payload.get("body")));
+        let Some(message) = message else {
+            continue;
+        };
+        if message
+            .get("content")
+            .is_some_and(|content| !content.is_null())
+        {
+            continue;
+        }
+        let group_did = string_from_object(thread, "group_did")
+            .or_else(|| string_from_object(Some(payload), "group_did"))
+            .or_else(|| string_from_object(Some(message), "group_did"))
+            .unwrap_or_default();
+        if !group_did.starts_with("did:") {
+            return Err(sync_invalid_page(
+                "metadata-only Group sync event is missing group_did",
+            ));
+        }
+        let required_server_seq = decimal_i64_from_object(message, "server_seq")
+            .or_else(|| decimal_i64_from_object(message, "group_event_seq"))
+            .ok_or_else(|| {
+                sync_invalid_page("metadata-only Group sync event is missing server_seq")
+            })?;
+        let _source_message_id = string_from_object(Some(message), "id")
+            .or_else(|| string_from_object(Some(message), "message_id"))
+            .ok_or_else(|| {
+                sync_invalid_page("metadata-only Group sync event is missing message id")
+            })?;
+        let message_id = format!("{group_did}:{required_server_seq}");
+        let key = (group_did.clone(), message_id.clone());
+        targets
+            .entry(key)
+            .and_modify(|current| {
+                current.required_server_seq = current.required_server_seq.max(required_server_seq);
+            })
+            .or_insert(GroupDeltaHydrationTarget {
+                group_did,
+                message_id,
+                required_server_seq,
+            });
+    }
+    let mut targets_by_group = std::collections::BTreeMap::new();
+    for (_, target) in targets {
+        targets_by_group
+            .entry(target.group_did.clone())
+            .or_insert_with(Vec::new)
+            .push(target);
+    }
+    Ok(targets_by_group)
+}
+
+fn group_delta_targets_are_committed_blocking(
+    client: &crate::core::ImClient,
+    targets: &[GroupDeltaHydrationTarget],
+) -> bool {
+    targets.iter().all(|target| {
+        local_message_server_seq_blocking(client, &target.message_id)
+            == Some(target.required_server_seq)
+    })
+}
+
+async fn group_delta_targets_are_committed_async(
+    client: &crate::core::ImClient,
+    targets: &[GroupDeltaHydrationTarget],
+) -> bool {
+    for target in targets {
+        if local_message_server_seq_async(client, &target.message_id).await
+            != Some(target.required_server_seq)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn sync_delta_metadata_only_plain_group_message_id(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> Option<String> {
+    let payload = event.payload.as_object()?;
+    let thread = map_value(payload.get("thread"));
+    let thread_kind = string_from_object(thread, "kind")
+        .or_else(|| string_from_object(Some(payload), "thread_kind"))
+        .unwrap_or_default();
+    if thread_kind != "group"
+        || sync_delta_contains_v2_e2ee_message(event)
+        || sync_delta_contains_system_notification_message(event)
+    {
+        return None;
+    }
+    let message = map_value(payload.get("message"))
+        .or_else(|| map_value(payload.get("latest_message")))
+        .or_else(|| map_value(payload.get("last_message")))
+        .or_else(|| map_value(payload.get("body")))?;
+    if message
+        .get("content")
+        .is_some_and(|content| !content.is_null())
+    {
+        return None;
+    }
+    let group_did = string_from_object(thread, "group_did")
+        .or_else(|| string_from_object(Some(payload), "group_did"))
+        .or_else(|| string_from_object(Some(message), "group_did"))?;
+    let server_seq = decimal_i64_from_object(message, "server_seq")
+        .or_else(|| decimal_i64_from_object(message, "group_event_seq"))?;
+    Some(format!("{group_did}:{server_seq}"))
+}
+
+fn sync_delta_is_metadata_only_plain_direct(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    sync_delta_metadata_only_plain_direct_peer(event).is_some()
+}
+
+fn sync_delta_metadata_only_plain_direct_peer(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> Option<String> {
+    if !matches!(
+        event.event_type.as_str(),
+        "message.created" | "conversation.updated"
+    ) || sync_delta_contains_v2_e2ee_message(event)
+        || sync_delta_contains_system_notification_message(event)
+    {
+        return None;
+    }
+    let payload = event.payload.as_object()?;
+    let thread = map_value(payload.get("thread"));
+    let thread_kind = string_from_object(thread, "kind")
+        .or_else(|| string_from_object(Some(payload), "thread_kind"))
+        .unwrap_or_default();
+    if thread_kind != "direct" {
+        return None;
+    }
+    let peer_did = string_from_object(thread, "peer_did")
+        .or_else(|| string_from_object(thread, "peer"))
+        .filter(|peer| peer.starts_with("did:"))?;
+    let message = map_value(payload.get("message"))
+        .or_else(|| map_value(payload.get("latest_message")))
+        .or_else(|| map_value(payload.get("last_message")))
+        .or_else(|| map_value(payload.get("body")));
+    message
+        .is_some_and(|message| {
+            message
+                .get("content")
+                .is_none_or(|content| content.is_null())
+        })
+        .then_some(peer_did)
+}
+
+fn sync_delta_metadata_only_plain_direct_message_id(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> Option<String> {
+    sync_delta_metadata_only_plain_direct_peer(event)?;
+    let payload = event.payload.as_object()?;
+    let message = map_value(payload.get("message"))
+        .or_else(|| map_value(payload.get("latest_message")))
+        .or_else(|| map_value(payload.get("last_message")))
+        .or_else(|| map_value(payload.get("body")))?;
+    string_from_object(Some(message), "id")
+        .or_else(|| string_from_object(Some(message), "message_id"))
 }
 
 fn sync_thread_after_limit(limit: Option<u32>) -> crate::ImResult<u32> {
@@ -405,15 +1506,50 @@ fn empty_sync_delta_result() -> crate::messages::SyncDeltaResult {
     }
 }
 
-fn reject_invalid_delta_page_shape(
-    page: &crate::internal::wire::sync::SyncDeltaPage,
-) -> crate::ImResult<()> {
-    if page.has_more && page.events.is_empty() {
-        return Err(sync_invalid_page(
-            "sync.delta returned has_more=true with no events",
+fn append_backlog_warning(warnings: &mut Vec<String>, backlogged_messages: usize) {
+    if backlogged_messages > 0 {
+        warnings.push(format!("identity_unresolved_backlog:{backlogged_messages}"));
+    }
+}
+
+fn append_projection_backlog_warnings(
+    warnings: &mut Vec<String>,
+    outcome: crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+) {
+    if outcome.resolution_backlogged_messages > 0 {
+        warnings.push(format!(
+            "identity_unresolved_backlog:{}",
+            outcome.resolution_backlogged_messages
         ));
     }
-    Ok(())
+    if outcome.wire_conflict_backlogged_messages > 0 {
+        warnings.push(format!(
+            "message_wire_identity_conflict_backlog:{}",
+            outcome.wire_conflict_backlogged_messages
+        ));
+    }
+}
+
+fn projection_backlog_failure_detail(warnings: &[String]) -> &'static str {
+    if warnings
+        .iter()
+        .any(|warning| warning.starts_with("message_wire_identity_conflict_backlog:"))
+    {
+        return "message_wire_identity_conflict";
+    }
+    if warnings
+        .iter()
+        .any(|warning| warning.starts_with("identity_unresolved_backlog:"))
+    {
+        return "identity_unresolved";
+    }
+    "message_absent_after_history"
+}
+
+fn page_contains_system_notification(page: &crate::internal::wire::sync::SyncDeltaPage) -> bool {
+    page.events
+        .iter()
+        .any(|event| event.event_type == "system.notification")
 }
 
 fn reject_has_more_without_checkpoint_progress(
@@ -429,7 +1565,7 @@ fn reject_has_more_without_checkpoint_progress(
     Ok(())
 }
 
-fn emit_committed_sync_invalidation(
+pub(super) fn emit_committed_sync_invalidation(
     client: &crate::core::ImClient,
     invalidation: &crate::internal::local_state::sync_state::SyncDeltaInvalidation,
 ) {
@@ -455,7 +1591,7 @@ fn record_committed_sync_invalidation_for_test(
 }
 
 #[cfg(test)]
-fn committed_sync_invalidations_for_test(
+pub(super) fn committed_sync_invalidations_for_test(
 ) -> Vec<crate::internal::local_state::sync_state::SyncDeltaInvalidation> {
     committed_sync_invalidation_log_for_test()
         .lock()
@@ -482,6 +1618,7 @@ fn load_global_checkpoint_blocking(client: &crate::core::ImClient) -> crate::ImR
         crate::internal::local_state::sync_state::load_global_checkpoint(
             &connection,
             client.current_identity().id.as_str(),
+            &current_sync_subject_id(client),
         )?
         .map(|checkpoint| checkpoint.event_seq)
         .unwrap_or_else(|| "0".to_owned()),
@@ -491,6 +1628,71 @@ fn load_global_checkpoint_blocking(client: &crate::core::ImClient) -> crate::ImR
 #[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
 fn load_global_checkpoint_blocking(_client: &crate::core::ImClient) -> crate::ImResult<String> {
     Err(crate::ImError::unsupported("sync-delta-local-state"))
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn load_bound_direct_thread_key_blocking(
+    client: &crate::core::ImClient,
+    conversation_id: &str,
+) -> crate::ImResult<Option<String>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    Ok(
+        crate::internal::local_state::sync_v2::load_sync_thread_binding_for_conversation(
+            &connection,
+            client.current_identity().id.as_str(),
+            conversation_id,
+            "direct",
+        )?
+        .map(|binding| binding.remote_thread_key),
+    )
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn load_bound_direct_thread_key_blocking(
+    _client: &crate::core::ImClient,
+    _conversation_id: &str,
+) -> crate::ImResult<Option<String>> {
+    Err(crate::ImError::unsupported(
+        "sync-thread-after-local-binding",
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+async fn load_bound_direct_thread_key_async(
+    client: &crate::core::ImClient,
+    conversation_id: &str,
+) -> crate::ImResult<Option<String>> {
+    let db = client.core_inner().local_state_db().await?;
+    Ok(db
+        .load_sync_thread_binding_for_conversation(
+            client.current_identity().id.as_str(),
+            conversation_id,
+            "direct",
+        )
+        .await?
+        .map(|binding| binding.remote_thread_key))
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn load_bound_direct_thread_key_async(
+    _client: &crate::core::ImClient,
+    _conversation_id: &str,
+) -> crate::ImResult<Option<String>> {
+    Err(crate::ImError::unsupported(
+        "sync-thread-after-local-binding",
+    ))
+}
+
+fn sync_thread_binding_required() -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some("SYNC_THREAD_BINDING_REQUIRED".to_owned()),
+        message: "Direct sync.thread_after requires an authoritative durable thread binding"
+            .to_owned(),
+        data: None,
+    }
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
@@ -524,7 +1726,10 @@ fn apply_sync_delta_blocking(
 async fn load_global_checkpoint_async(client: &crate::core::ImClient) -> crate::ImResult<String> {
     let db = client.core_inner().local_state_db().await?;
     Ok(db
-        .load_global_checkpoint(client.current_identity().id.as_str())
+        .load_global_checkpoint(
+            client.current_identity().id.as_str(),
+            current_sync_subject_id(client),
+        )
         .await?
         .map(|checkpoint| checkpoint.event_seq)
         .unwrap_or_else(|| "0".to_owned()))
@@ -539,15 +1744,21 @@ async fn load_global_checkpoint_async(_client: &crate::core::ImClient) -> crate:
 fn sync_delta_apply_input(
     client: &crate::core::ImClient,
     page: &crate::internal::wire::sync::SyncDeltaPage,
+    hydrated_plain_message_ids: &std::collections::BTreeSet<String>,
 ) -> crate::ImResult<crate::internal::local_state::sync_state::SyncDeltaApplyInput> {
     let mut events = Vec::with_capacity(page.events.len());
     for event in &page.events {
-        events.push(sync_delta_apply_event(client, event)?);
+        events.push(sync_delta_apply_event(
+            client,
+            event,
+            hydrated_plain_message_ids,
+        )?);
     }
     Ok(
         crate::internal::local_state::sync_state::SyncDeltaApplyInput {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
+            sync_subject_id: current_sync_subject_id(client),
             events,
             next_event_seq: page.next_event_seq.clone(),
             metadata_json: Some(sync_delta_checkpoint_metadata(page)),
@@ -555,10 +1766,18 @@ fn sync_delta_apply_input(
     )
 }
 
+// The current message service owns reliable event streams by canonical DID.
+// Keep that server-side subject explicit so a future stable account subject can
+// replace this mapping without changing local identity ownership semantics.
+fn current_sync_subject_id(client: &crate::core::ImClient) -> String {
+    client.did().as_str().to_owned()
+}
+
 #[cfg(not(feature = "sqlite"))]
 fn sync_delta_apply_input(
     _client: &crate::core::ImClient,
     _page: &crate::internal::wire::sync::SyncDeltaPage,
+    _hydrated_plain_message_ids: &std::collections::BTreeSet<String>,
 ) -> crate::ImResult<crate::internal::local_state::sync_state::SyncDeltaApplyInput> {
     Err(crate::ImError::unsupported("sync-delta-local-state"))
 }
@@ -567,40 +1786,62 @@ fn sync_delta_apply_input(
 fn sync_delta_apply_event(
     client: &crate::core::ImClient,
     event: &crate::internal::wire::sync::SyncDeltaEvent,
+    hydrated_plain_message_ids: &std::collections::BTreeSet<String>,
 ) -> crate::ImResult<crate::internal::local_state::sync_state::SyncDeltaApplyEvent> {
     let mut apply = crate::internal::local_state::sync_state::SyncDeltaApplyEvent {
         event_id: event.event_id.clone(),
         event_seq: event.event_seq.clone(),
+        event_type: event.event_type.clone(),
         ..crate::internal::local_state::sync_state::SyncDeltaApplyEvent::default()
     };
 
+    // Reliable Sync must advance its durable checkpoint even when the event
+    // carries a device-scoped ciphertext that this blocking transaction cannot
+    // decrypt. Never persist that wire/control object as an ordinary message;
+    // async Inbox/History or realtime performs the device-scoped projection.
+    if matches!(
+        event.event_type.as_str(),
+        "message.created" | "conversation.updated"
+    ) && (sync_delta_contains_v2_e2ee_message(event)
+        || sync_delta_contains_system_notification_message(event)
+        || sync_delta_metadata_only_plain_direct_message_id(event)
+            .is_some_and(|message_id| hydrated_plain_message_ids.contains(&message_id))
+        || sync_delta_metadata_only_plain_group_message_id(event)
+            .is_some_and(|message_id| hydrated_plain_message_ids.contains(&message_id)))
+    {
+        return Ok(apply);
+    }
+
     match event.event_type.as_str() {
+        // Device-targeted System Notification events are reliable hydration
+        // hints only. Advance the global checkpoint without creating any
+        // chat/conversation/read projection; exact-device Inbox supplies the
+        // full P3 envelope to the shared verifier.
+        "system.notification" => {}
         "message.created" => {
-            let message = sync_delta_message_from_payload(client, event, true)?;
-            apply.messages.push(
+            let projection = sync_delta_message_from_payload(client, event, true)?;
+            let mut record =
                 crate::internal::message_runtime::local_projection::message_record_from_message(
-                    client, &message,
-                )?,
-            );
+                    client,
+                    &projection.message,
+                )?;
+            record.hydration_state = projection.hydration_state;
+            apply.messages.push(record);
         }
         "conversation.updated" => {
-            let message = sync_delta_message_from_payload(client, event, false)?;
-            apply.messages.push(
+            let projection = sync_delta_message_from_payload(client, event, false)?;
+            let mut record =
                 crate::internal::message_runtime::local_projection::message_record_from_message(
-                    client, &message,
-                )?,
-            );
+                    client,
+                    &projection.message,
+                )?;
+            record.hydration_state = projection.hydration_state;
+            apply.messages.push(record);
         }
-        "group.member_changed" => {
-            let group_record = sync_delta_group_record(client, event)?;
-            apply.groups.push(group_record);
-            if let Some(record) = sync_delta_group_system_message_record(client, event)? {
-                apply.messages.push(record);
-            }
-        }
-        "group.profile_updated" => {
-            apply.groups.push(sync_delta_group_record(client, event)?);
-            if let Some(record) = sync_delta_group_profile_system_message_record(client, event)? {
+        "group.member_changed" | "group.profile_updated" => {
+            let projection = sync_delta_group_projection(client, event)?;
+            apply.groups.push(projection.group);
+            if let Some(record) = projection.system_message {
                 apply.messages.push(record);
             }
         }
@@ -612,6 +1853,54 @@ fn sync_delta_apply_event(
     }
 
     Ok(apply)
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_contains_system_notification_message(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    let Some(payload) = event.payload.as_object() else {
+        return false;
+    };
+    let Some(message) = ["message", "latest_message", "last_message", "body"]
+        .into_iter()
+        .find_map(|key| payload.get(key).filter(|value| value.is_object()))
+    else {
+        return false;
+    };
+    if crate::internal::system_notification::wire::is_trusted_delivery_marker(message) {
+        return true;
+    }
+    message
+        .get("content")
+        .and_then(Value::as_object)
+        .and_then(|content| content.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("awiki.device.join-"))
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_contains_v2_e2ee_message(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    let Some(payload) = event.payload.as_object() else {
+        return false;
+    };
+    let message = ["message", "latest_message", "last_message", "body"]
+        .into_iter()
+        .find_map(|key| payload.get(key).filter(|value| value.is_object()));
+    let Some(message) = message else {
+        return false;
+    };
+    let profile = message
+        .pointer("/meta/profile")
+        .or_else(|| message.pointer("/params/meta/profile"))
+        .and_then(Value::as_str);
+    matches!(
+        profile,
+        Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+            | Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -712,11 +2001,11 @@ fn sync_delta_group_profile_system_message_record(
 }
 
 #[cfg(feature = "sqlite")]
-fn sync_delta_message_from_payload(
+pub(super) fn sync_delta_message_from_payload(
     client: &crate::core::ImClient,
     event: &crate::internal::wire::sync::SyncDeltaEvent,
     require_message: bool,
-) -> crate::ImResult<crate::messages::Message> {
+) -> crate::ImResult<SyncDeltaMessageProjection> {
     let payload = event
         .payload
         .as_object()
@@ -755,6 +2044,18 @@ fn sync_delta_message_from_payload(
         .or_else(|| decimal_i64_from_object(message, "group_event_seq"));
     let content_type = string_from_object(Some(message), "content_type")
         .unwrap_or_else(|| "text/plain".to_owned());
+    let hydration_state = if message.contains_key("content") {
+        crate::internal::local_state::messages::MessageHydrationState::Hydrated
+    } else {
+        crate::internal::local_state::messages::MessageHydrationState::Discovered
+    };
+    if hydration_state == crate::internal::local_state::messages::MessageHydrationState::Discovered
+        && server_seq.is_none()
+    {
+        return Err(sync_invalid_page(
+            "metadata-only message discovery missing thread-local server_seq",
+        ));
+    }
     let body = sync_delta_message_body(message.get("content"), &content_type);
     let is_group = !group_did.trim().is_empty() || thread_kind == "group";
     let direction = if sender_did.trim() == client.did().as_str() {
@@ -796,28 +2097,31 @@ fn sync_delta_message_from_payload(
         crate::messages::ThreadRef::Direct(crate::ids::PeerRef::parse(peer, "")?)
     };
 
-    Ok(crate::messages::Message {
-        id: crate::ids::MessageId::parse(message_id)?,
-        thread,
-        direction,
-        sender: crate::ids::PeerRef::parse(sender_did, "")?,
-        receiver: (!receiver_did.trim().is_empty())
-            .then(|| crate::ids::PeerRef::parse(&receiver_did, ""))
-            .transpose()?,
-        group: is_group
-            .then(|| crate::ids::GroupRef::parse(&group_did))
-            .transpose()?,
-        body,
-        sent_at: string_from_object(Some(message), "sent_at")
-            .or_else(|| string_from_object(Some(message), "accepted_at"))
-            .or_else(|| event.created_at.clone()),
-        received_at: string_from_object(Some(message), "received_at"),
-        metadata: crate::messages::MessageMetadata {
-            operation_id: string_from_object(Some(message), "operation_id"),
-            server_sequence: server_seq,
-            content_type: Some(content_type),
-            attributes,
-            ..crate::messages::MessageMetadata::default()
+    Ok(SyncDeltaMessageProjection {
+        hydration_state,
+        message: crate::messages::Message {
+            id: crate::ids::MessageId::parse(message_id)?,
+            thread,
+            direction,
+            sender: crate::ids::PeerRef::parse(sender_did, "")?,
+            receiver: (!receiver_did.trim().is_empty())
+                .then(|| crate::ids::PeerRef::parse(&receiver_did, ""))
+                .transpose()?,
+            group: is_group
+                .then(|| crate::ids::GroupRef::parse(&group_did))
+                .transpose()?,
+            body,
+            sent_at: string_from_object(Some(message), "sent_at")
+                .or_else(|| string_from_object(Some(message), "accepted_at"))
+                .or_else(|| event.created_at.clone()),
+            received_at: string_from_object(Some(message), "received_at"),
+            metadata: crate::messages::MessageMetadata {
+                operation_id: string_from_object(Some(message), "operation_id"),
+                server_sequence: server_seq,
+                content_type: Some(content_type),
+                attributes,
+                ..crate::messages::MessageMetadata::default()
+            },
         },
     })
 }
@@ -869,8 +2173,41 @@ fn is_payload_content_type(content_type: &str) -> bool {
 }
 
 #[cfg(feature = "sqlite")]
-fn sync_delta_group_record(
+pub(super) fn sync_delta_group_record(
     client: &crate::core::ImClient,
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> crate::ImResult<crate::internal::local_state::groups::GroupRecord> {
+    sync_delta_group_record_for_owner(
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        event,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+pub(super) fn sync_delta_group_projection(
+    client: &crate::core::ImClient,
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> crate::ImResult<SyncDeltaGroupProjection> {
+    let system_message = match event.event_type.as_str() {
+        "group.member_changed" => sync_delta_group_system_message_record(client, event)?,
+        "group.profile_updated" => sync_delta_group_profile_system_message_record(client, event)?,
+        unsupported => {
+            return Err(sync_invalid_page(format!(
+                "unsupported Group state event_type {unsupported:?}"
+            )));
+        }
+    };
+    Ok(SyncDeltaGroupProjection {
+        group: sync_delta_group_record(client, event)?,
+        system_message,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+pub(super) fn sync_delta_group_record_for_owner(
+    owner_identity_id: &str,
+    owner_did: &str,
     event: &crate::internal::wire::sync::SyncDeltaEvent,
 ) -> crate::ImResult<crate::internal::local_state::groups::GroupRecord> {
     let payload = event
@@ -889,8 +2226,11 @@ fn sync_delta_group_record(
     let profile = group.and_then(|group| map_value(group.get("profile")));
     let subject_did = string_from_object(membership, "subject_did").unwrap_or_default();
     let membership_status = string_from_object(membership, "status")
-        .filter(|_| subject_did.trim() == client.did().as_str())
-        .unwrap_or_else(|| "active".to_owned());
+        .filter(|_| subject_did.trim() == owner_did)
+        .unwrap_or_default();
+    let my_role = string_from_object(membership, "role")
+        .filter(|_| subject_did.trim().is_empty() || subject_did.trim() == owner_did)
+        .unwrap_or_default();
     let mut metadata = Map::new();
     metadata.insert(
         "source".to_owned(),
@@ -931,8 +2271,8 @@ fn sync_delta_group_record(
     );
 
     Ok(crate::internal::local_state::groups::GroupRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_owned(),
-        owner_did: client.did().as_str().to_owned(),
+        owner_identity_id: owner_identity_id.to_owned(),
+        owner_did: owner_did.to_owned(),
         group_id: group_did.trim().to_owned(),
         group_did: group_did.trim().to_owned(),
         name: string_from_object(profile, "display_name")
@@ -944,12 +2284,13 @@ fn sync_delta_group_record(
         rules: string_from_object(profile, "rules").unwrap_or_default(),
         message_prompt: string_from_object(profile, "message_prompt").unwrap_or_default(),
         doc_url: string_from_object(profile, "doc_url").unwrap_or_default(),
+        my_role,
         membership_status,
         last_synced_seq: group_event_seq,
         remote_updated_at: event.created_at.clone().unwrap_or_default(),
         stored_at: event.created_at.clone().unwrap_or_default(),
         metadata: Value::Object(metadata).to_string(),
-        credential_name: client.current_identity().id.as_str().to_owned(),
+        credential_name: owner_identity_id.to_owned(),
         ..crate::internal::local_state::groups::GroupRecord::default()
     })
 }
@@ -1055,7 +2396,164 @@ fn invalid_after_server_seq(value: &str) -> crate::ImError {
     )
 }
 
+fn effective_after_server_seq(
+    requested: Option<i64>,
+    local: crate::internal::local_state::messages::CatchUpCursor,
+) -> i64 {
+    match (requested, local.hydration_gap_after_server_seq) {
+        (Some(requested), Some(gap_after)) => requested.min(gap_after),
+        (Some(requested), None) => requested,
+        (None, _) => local.default_after_server_seq.unwrap_or_default(),
+    }
+}
+
+fn catch_up_hydration_proof(
+    client: &crate::core::ImClient,
+    thread: crate::messages::ThreadRef,
+    after_server_seq: i64,
+    result: &crate::messages::SyncThreadAfterResult,
+) -> crate::ImResult<crate::internal::local_state::messages::CatchUpHydrationProof> {
+    let through_server_seq = result
+        .next_after_server_seq
+        .as_deref()
+        .map(parse_after_server_seq)
+        .transpose()?
+        .unwrap_or(after_server_seq);
+    Ok(
+        crate::internal::local_state::messages::CatchUpHydrationProof {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            thread,
+            after_server_seq,
+            through_server_seq,
+            exhausted: !result.has_more,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThreadAfterPageContract {
+    next_after_server_seq: i64,
+    has_more: bool,
+}
+
+fn validate_thread_after_wire_page(
+    raw: &Value,
+    after_server_seq: i64,
+    limit: u32,
+    discarded_messages: usize,
+) -> crate::ImResult<ThreadAfterPageContract> {
+    let object = raw
+        .as_object()
+        .ok_or_else(|| sync_invalid_page("sync.thread_after response must be an object"))?;
+    let messages = object
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| sync_invalid_page("sync.thread_after messages must be an array"))?;
+    if messages.len().saturating_add(discarded_messages)
+        > usize::try_from(limit).unwrap_or(usize::MAX)
+    {
+        return Err(sync_invalid_page(
+            "sync.thread_after returned more messages than requested",
+        ));
+    }
+    let mut previous_server_seq = after_server_seq;
+    for item in messages {
+        let message = item
+            .as_object()
+            .ok_or_else(|| sync_invalid_page("sync.thread_after message must be an object"))?;
+        let message_id = string_from_object(Some(message), "id")
+            .or_else(|| string_from_object(Some(message), "message_id"))
+            .or_else(|| string_from_object(Some(message), "msg_id"))
+            .ok_or_else(|| sync_invalid_page("sync.thread_after message id is required"))?;
+        crate::ids::MessageId::parse(message_id).map_err(|_| {
+            sync_invalid_page("sync.thread_after message id must be a valid message id")
+        })?;
+        let server_seq = decimal_i64_from_object(message, "server_seq")
+            .or_else(|| decimal_i64_from_object(message, "group_event_seq"))
+            .ok_or_else(|| {
+                sync_invalid_page("sync.thread_after message missing thread-local server_seq")
+            })?;
+        if server_seq <= after_server_seq {
+            return Err(sync_invalid_page(
+                "sync.thread_after returned a message at or before after_server_seq",
+            ));
+        }
+        if server_seq < previous_server_seq {
+            return Err(sync_invalid_page(
+                "sync.thread_after messages must be ordered by server_seq ascending",
+            ));
+        }
+        previous_server_seq = server_seq;
+    }
+    let next_after_server_seq = object
+        .get("next_after_server_seq")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            sync_invalid_page("sync.thread_after next_after_server_seq must be a decimal string")
+        })
+        .and_then(parse_after_server_seq)?;
+    if next_after_server_seq < previous_server_seq
+        || (discarded_messages == 0 && next_after_server_seq != previous_server_seq)
+    {
+        return Err(sync_invalid_page(
+            "sync.thread_after next_after_server_seq does not match the scanned page",
+        ));
+    }
+    let has_more = object
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| sync_invalid_page("sync.thread_after has_more must be a boolean"))?;
+    if has_more && next_after_server_seq <= after_server_seq {
+        return Err(sync_invalid_page(
+            "sync.thread_after has_more page made no cursor progress",
+        ));
+    }
+    Ok(ThreadAfterPageContract {
+        next_after_server_seq,
+        has_more,
+    })
+}
+
 fn thread_after_result(
+    messages: Vec<crate::messages::Message>,
+    after_server_seq: i64,
+    raw: Value,
+    limit: u32,
+    contract: ThreadAfterPageContract,
+) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+    if messages.len() > usize::try_from(limit).unwrap_or(usize::MAX) {
+        return Err(sync_invalid_page(
+            "sync.thread_after projection exceeded the requested limit",
+        ));
+    }
+    let mut previous_server_seq = after_server_seq;
+    for message in &messages {
+        let server_seq = message.metadata.server_sequence.ok_or_else(|| {
+            sync_invalid_page("sync.thread_after projected message missing server_seq")
+        })?;
+        if server_seq <= after_server_seq || server_seq < previous_server_seq {
+            return Err(sync_invalid_page(
+                "sync.thread_after projected messages violate ascending cursor order",
+            ));
+        }
+        if server_seq > contract.next_after_server_seq {
+            return Err(sync_invalid_page(
+                "sync.thread_after projected message exceeds next_after_server_seq",
+            ));
+        }
+        previous_server_seq = server_seq;
+    }
+    let warnings = warnings_from_raw(&raw);
+    Ok(crate::messages::SyncThreadAfterResult {
+        messages,
+        next_after_server_seq: Some(contract.next_after_server_seq.to_string()),
+        has_more: contract.has_more,
+        warnings,
+    })
+}
+
+fn direct_history_after_result(
     mut messages: Vec<crate::messages::Message>,
     after_server_seq: i64,
     raw: Value,
@@ -1075,22 +2573,37 @@ fn thread_after_result(
             .then_with(|| left.id.as_str().cmp(right.id.as_str()))
     });
     let truncated = truncate_messages(&mut messages, limit);
-    let next_after_server_seq = messages
+    let last_message_seq = messages
         .last()
         .and_then(|message| message.metadata.server_sequence)
-        .unwrap_or(after_server_seq)
-        .to_string();
+        .unwrap_or(after_server_seq);
+    let wire_next = raw
+        .get("next_after_server_seq")
+        .and_then(Value::as_str)
+        .map(parse_after_server_seq)
+        .transpose()?
+        .unwrap_or(last_message_seq);
+    if wire_next < after_server_seq || wire_next < last_message_seq {
+        return Err(sync_invalid_page(
+            "sync.thread_after next cursor is behind the requested or returned sequence",
+        ));
+    }
+    let next_after_server_seq = if truncated {
+        last_message_seq
+    } else {
+        wire_next
+    }
+    .to_string();
     let has_more = raw
         .get("has_more")
         .and_then(Value::as_bool)
         .unwrap_or(false)
         || truncated;
-    let warnings = warnings_from_raw(&raw);
     Ok(crate::messages::SyncThreadAfterResult {
         messages,
         next_after_server_seq: Some(next_after_server_seq),
         has_more,
-        warnings,
+        warnings: warnings_from_raw(&raw),
     })
 }
 
@@ -1170,6 +2683,109 @@ async fn local_max_server_seq_async(
     _thread: &crate::messages::ThreadRef,
 ) -> i64 {
     0
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn local_catch_up_server_seq_blocking(
+    client: &crate::core::ImClient,
+    thread: &crate::messages::ThreadRef,
+) -> crate::internal::local_state::messages::CatchUpCursor {
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return Default::default();
+    };
+    crate::internal::local_state::messages::catch_up_server_seq_for_thread_ref_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        thread,
+    )
+    .unwrap_or_default()
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn local_catch_up_server_seq_blocking(
+    _client: &crate::core::ImClient,
+    _thread: &crate::messages::ThreadRef,
+) -> crate::internal::local_state::messages::CatchUpCursor {
+    Default::default()
+}
+
+#[cfg(feature = "sqlite")]
+async fn local_catch_up_server_seq_async(
+    client: &crate::core::ImClient,
+    thread: &crate::messages::ThreadRef,
+) -> crate::internal::local_state::messages::CatchUpCursor {
+    let db = match client.core_inner().local_state_db().await {
+        Ok(db) => db,
+        Err(_) => return Default::default(),
+    };
+    db.catch_up_server_seq_for_thread_ref(
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        thread.clone(),
+    )
+    .await
+    .unwrap_or_default()
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn local_catch_up_server_seq_async(
+    _client: &crate::core::ImClient,
+    _thread: &crate::messages::ThreadRef,
+) -> crate::internal::local_state::messages::CatchUpCursor {
+    Default::default()
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn local_message_server_seq_blocking(
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> Option<i64> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .ok()?;
+    crate::internal::local_state::messages::message_server_seq(
+        &connection,
+        client.current_identity().id.as_str(),
+        message_id,
+    )
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn local_message_server_seq_blocking(
+    _client: &crate::core::ImClient,
+    _message_id: &str,
+) -> Option<i64> {
+    None
+}
+
+#[cfg(feature = "sqlite")]
+async fn local_message_server_seq_async(
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> Option<i64> {
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .ok()?
+        .message_server_seq(client.current_identity().id.as_str(), message_id)
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn local_message_server_seq_async(
+    _client: &crate::core::ImClient,
+    _message_id: &str,
+) -> Option<i64> {
+    None
 }
 
 #[cfg(test)]

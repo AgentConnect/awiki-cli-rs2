@@ -46,6 +46,68 @@ fn every_command_spec_has_required_policy_metadata() {
 }
 
 #[test]
+fn manifest_handle_recovery_is_absent_and_nearby_invocations_fail_closed() {
+    let forbidden_fragments = [
+        "handle.recovery",
+        "handle-recovery",
+        "handle_recovery",
+        "recover.handle",
+        "recover-handle",
+        "manifest.recovery",
+    ];
+    for spec in command_catalog::specs() {
+        let searchable = std::iter::once(spec.name)
+            .chain(std::iter::once(spec.use_))
+            .chain(spec.aliases.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        assert!(
+            forbidden_fragments
+                .iter()
+                .all(|fragment| !searchable.contains(fragment)),
+            "Manifest Handle Recovery must not be registered or hidden in the CLI catalog: {}",
+            spec.name
+        );
+    }
+    for name in [
+        "handle.recovery",
+        "id.handle-recovery",
+        "id.recover-handle",
+        "manifest.recovery",
+    ] {
+        assert!(command_catalog::lookup(name).is_none(), "{name}");
+    }
+
+    for args in [
+        &[
+            "handle-recovery",
+            "--phone",
+            "+8613800000000",
+            "--code",
+            "otp-must-not-be-rendered",
+        ][..],
+        &["id", "recover-handle", "--code", "otp-must-not-be-rendered"][..],
+        &[
+            "manifest",
+            "recovery",
+            "--grant",
+            "grant-must-not-be-rendered",
+        ][..],
+    ] {
+        let output = awiki_cmd(args);
+        assert_ne!(output.status.code(), Some(0), "{args:?}");
+        let rendered = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!rendered.contains("otp-must-not-be-rendered"));
+        assert!(!rendered.contains("grant-must-not-be-rendered"));
+    }
+}
+
+#[test]
 fn cutover_classifier_marks_supported_im_core_commands() {
     for command in [
         "id.list",
@@ -56,7 +118,6 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "id.refresh-token",
         "id.resolve",
         "id.bind",
-        "id.recover",
         "id.profile.get",
         "id.profile.set",
         "msg.send",
@@ -399,8 +460,37 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
 
 #[test]
 fn release_artifact_script_documents_e2ee_feature_gate() {
+    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(crate_root.join("Cargo.toml"))
+        .expect("read awiki-cli Cargo manifest");
+    let im_core_dependency = manifest
+        .lines()
+        .find(|line| line.starts_with("im-core = "))
+        .expect("awiki-cli im-core dependency");
+    assert!(im_core_dependency.contains("\"group-e2ee\""));
+    assert!(im_core_dependency.contains("\"blocking\""));
+
+    let group_service =
+        std::fs::read_to_string(crate_root.join("../im-core/src/groups/service.rs"))
+            .expect("read im-core Group service");
+    let create_async = group_service
+        .split("pub async fn create_async(")
+        .nth(1)
+        .and_then(|rest| rest.split("pub fn join(").next())
+        .expect("GroupService::create_async source");
+    let worker_start = create_async
+        .find("run_blocking(move ||")
+        .expect("P6 sync initialization should enter the blocking worker");
+    let worker_end = create_async[worker_start..]
+        .find(".map_err(|err| crate::ImError::Internal")
+        .map(|offset| worker_start + offset)
+        .expect("P6 blocking worker result mapping");
+    let worker_call = &create_async[worker_start..worker_end];
+    assert!(worker_call.contains("initialize_created_group("));
+    assert!(worker_call.trim_end().ends_with(".await"));
+
     let script = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        crate_root
             .join("../..")
             .join("scripts/release/build-release-artifact.sh"),
     )

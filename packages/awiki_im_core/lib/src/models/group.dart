@@ -4,6 +4,7 @@ enum GroupIdentityMode { handle, didOnly }
 
 class GroupSummary {
   const GroupSummary({
+    required this.conversationId,
     this.id,
     required this.did,
     this.name,
@@ -15,6 +16,7 @@ class GroupSummary {
     this.lastMessageAt,
   });
 
+  final String conversationId;
   final String? id;
   final String did;
   final String? name;
@@ -28,6 +30,7 @@ class GroupSummary {
 
 class GroupSnapshot extends GroupSummary {
   const GroupSnapshot({
+    required super.conversationId,
     super.id,
     required super.did,
     super.name,
@@ -45,7 +48,10 @@ class GroupSnapshot extends GroupSummary {
 
 class GroupMember {
   const GroupMember({
+    this.membershipId,
+    this.peerPersonaId,
     this.did,
+    this.credentialDid,
     this.handle,
     this.role,
     this.status,
@@ -53,7 +59,10 @@ class GroupMember {
     this.subjectType,
   });
 
+  final String? membershipId;
+  final String? peerPersonaId;
   final String? did;
+  final String? credentialDid;
   final String? handle;
   final String? role;
   final String? status;
@@ -218,6 +227,10 @@ class GroupReadResult {
     this.members = const [],
     required this.messages,
     this.total,
+    this.nextCursor,
+    this.hasMore = false,
+    this.pageGroupDid,
+    this.groupStateVersion,
     this.source,
     this.warnings = const [],
   });
@@ -227,6 +240,10 @@ class GroupReadResult {
   final List<GroupMember> members;
   final MessagePage messages;
   final int? total;
+  final String? nextCursor;
+  final bool hasMore;
+  final String? pageGroupDid;
+  final String? groupStateVersion;
   final String? source;
   final List<String> warnings;
 }

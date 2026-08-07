@@ -117,6 +117,7 @@ fn listener_launchd_status_parser_maps_launchctl_list_output() {
         ),
         LaunchdStatus {
             installed: true,
+            loaded: true,
             running: true,
             pid: Some(30656),
             last_exit_status: Some(0),
@@ -133,6 +134,7 @@ fn listener_launchd_status_parser_maps_launchctl_list_output() {
         ),
         LaunchdStatus {
             installed: true,
+            loaded: true,
             running: false,
             pid: None,
             last_exit_status: Some(78),
@@ -141,9 +143,28 @@ fn listener_launchd_status_parser_maps_launchctl_list_output() {
     );
 
     assert_eq!(
+        listener_launchd::parse_launchctl_status(
+            r#"gui/501/awiki-cli-listener-test = {
+    state = running
+    pid = 4217
+    last exit code = 0
+}"#
+        ),
+        LaunchdStatus {
+            installed: true,
+            loaded: true,
+            running: true,
+            pid: Some(4217),
+            last_exit_status: Some(0),
+            raw_state: "gui/501/awiki-cli-listener-test = {".to_string(),
+        }
+    );
+
+    assert_eq!(
         listener_launchd::parse_launchctl_status("Could not find service \"awiki-cli-listener\""),
         LaunchdStatus {
             installed: false,
+            loaded: false,
             running: false,
             pid: None,
             last_exit_status: None,
@@ -155,6 +176,7 @@ fn listener_launchd_status_parser_maps_launchctl_list_output() {
         listener_launchd::parse_launchctl_status(""),
         LaunchdStatus {
             installed: false,
+            loaded: false,
             running: false,
             pid: None,
             last_exit_status: None,

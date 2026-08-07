@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use awiki_im_core::messages::direct_peer_scope_thread_id;
 use awiki_im_core::prelude::*;
 use serde_json::json;
 use serde_json::Value;
@@ -61,8 +62,12 @@ fn attachments_input_is_the_canonical_message_body_input() {
 
 #[test]
 fn conversation_attachment_request_is_conversation_first() {
+    let conversation_id = direct_peer_scope_thread_id("user-bob", "bob.awiki.info")
+        .unwrap()
+        .as_str()
+        .to_owned();
     let request = SendConversationAttachmentRequest {
-        conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+        conversation: ConversationReadRef::new(conversation_id.clone()).unwrap(),
         input: AttachmentInput::Bytes {
             filename: Some("note.txt".to_string()),
             mime_type: Some("text/plain".to_string()),
@@ -78,7 +83,7 @@ fn conversation_attachment_request_is_conversation_first() {
         wait_for_final_acceptance: true,
     };
 
-    assert_eq!(request.conversation.conversation_id, "dm:did:example:bob");
+    assert_eq!(request.conversation.conversation_id, conversation_id);
     assert_eq!(
         request.client_message_id.as_ref().map(MessageId::as_str),
         Some("msg-client-attachment")
@@ -93,6 +98,7 @@ fn conversation_attachment_request_is_conversation_first() {
 #[tokio::test]
 async fn attachments_service_send_conversation_direct_uses_canonical_projection() {
     let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(handle_lookup_result()),
         ExpectedHttp::rpc_result(json!({
             "attachment_id": "att-conv-direct",
             "slot_id": "slot-conv-direct",
@@ -125,11 +131,17 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
+    let lookup = client
+        .directory()
+        .lookup_handle_async(Handle::parse("bob.awiki.info", "").unwrap())
+        .await
+        .expect("verified Handle lookup should establish the canonical Direct route");
+    let conversation_id = lookup.direct_conversation_id();
 
     let result = client
         .attachments()
         .send_conversation_async(SendConversationAttachmentRequest {
-            conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+            conversation: ConversationReadRef::new(conversation_id.clone()).unwrap(),
             input: AttachmentInput::Bytes {
                 filename: Some("conversation.txt".to_string()),
                 mime_type: Some("text/plain".to_string()),
@@ -159,18 +171,20 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
             .conversation_identity
             .as_ref()
             .map(|identity| identity.conversation_id.as_str()),
-        Some("dm:did:example:bob")
+        Some(conversation_id.as_str())
     );
     assert_eq!(result.target_kind, "agent");
     assert_eq!(result.target_did, "did:example:bob");
+    let attachment_id = result.attachment.attachment_id.clone();
+    assert!(attachment_id.starts_with("att-"));
 
     let rows = local_message_rows(
         &paths,
         "SELECT msg_id, conversation_id, thread_id, receiver_did, content_type, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-direct'",
     );
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["conversation_id"], "dm:did:example:bob");
-    assert_eq!(rows[0]["thread_id"], "dm:did:example:bob");
+    assert_eq!(rows[0]["conversation_id"], conversation_id);
+    assert_eq!(rows[0]["thread_id"], conversation_id);
     assert_eq!(rows[0]["receiver_did"], "did:example:bob");
     assert_eq!(
         rows[0]["content_type"],
@@ -178,33 +192,34 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
     );
     let stored_manifest: Value =
         serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
-    assert_eq!(stored_manifest["primary_attachment_id"], "att-conv-direct");
+    assert_eq!(stored_manifest["primary_attachment_id"], attachment_id);
     assert_eq!(stored_manifest["caption"], "conversation caption");
     let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
     assert_eq!(metadata["operation_id"], "retry-msg-conv-attachment-direct");
-    assert_eq!(metadata["attachment_id"], "att-conv-direct");
+    assert_eq!(metadata["attachment_id"], attachment_id);
 
     let requests = server.join();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
     assert_eq!(
-        requests[0].rpc_method().as_deref(),
+        requests[1].rpc_method().as_deref(),
         Some("attachment.create_slot")
     );
     assert_eq!(
-        requests[0].params()["body"]["intended_target"],
+        requests[1].params()["body"]["intended_target"],
         json!({ "kind": "agent", "did": "did:example:bob" })
     );
-    assert_eq!(requests[3].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(requests[4].rpc_method().as_deref(), Some("direct.send"));
     assert_eq!(
-        requests[3].params()["meta"]["target"],
+        requests[4].params()["meta"]["target"],
         json!({ "kind": "agent", "did": "did:example:bob" })
     );
     assert_eq!(
-        requests[3].params()["meta"]["message_id"],
+        requests[4].params()["meta"]["message_id"],
         "msg-conv-attachment-direct"
     );
     assert_eq!(
-        requests[3].params()["meta"]["operation_id"],
+        requests[4].params()["meta"]["operation_id"],
         "retry-msg-conv-attachment-direct"
     );
 }
@@ -245,6 +260,7 @@ async fn attachments_service_send_conversation_group_uses_group_route() {
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
+    seed_active_group_conversation(&paths, "did:example:group");
 
     let result = client
         .attachments()
@@ -283,6 +299,8 @@ async fn attachments_service_send_conversation_group_uses_group_route() {
     );
     assert_eq!(result.target_kind, "group");
     assert_eq!(result.target_did, "did:example:group");
+    let attachment_id = result.attachment.attachment_id.clone();
+    assert!(attachment_id.starts_with("att-"));
 
     let rows = local_message_rows(
         &paths,
@@ -298,11 +316,11 @@ async fn attachments_service_send_conversation_group_uses_group_route() {
     );
     let stored_manifest: Value =
         serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
-    assert_eq!(stored_manifest["primary_attachment_id"], "att-conv-group");
+    assert_eq!(stored_manifest["primary_attachment_id"], attachment_id);
     assert_eq!(stored_manifest["caption"], "group caption");
     let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
     assert_eq!(metadata["operation_id"], "op-msg-conv-attachment-group");
-    assert_eq!(metadata["attachment_id"], "att-conv-group");
+    assert_eq!(metadata["attachment_id"], attachment_id);
 
     let requests = server.join();
     assert_eq!(requests.len(), 4);
@@ -396,6 +414,88 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
 }
 
 #[tokio::test]
+async fn attachments_service_target_send_preserves_explicit_identity_without_conversation() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-explicit-id",
+            "slot_id": "slot-explicit-id",
+            "upload_uri": "__BASE__/objects/slot-explicit-id",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-explicit-id",
+            "commit_token": "commit-token-explicit-id",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-explicit-id",
+            "object_uri": "__BASE__/objects/att-explicit-id",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-explicit-attachment",
+            "operation_id": "op-msg-explicit-attachment",
+            "target_did": "did:example:bob",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, _) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send_with_client_message_id_async(
+            MessageTarget::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
+            AttachmentSendRequest {
+                input: AttachmentInput::Bytes {
+                    filename: Some("explicit.txt".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                    bytes: b"explicit identity".to_vec(),
+                },
+                caption: None,
+                mention_payload: None,
+                mime_type: None,
+                filename: None,
+                delivery: MessageDeliveryOptions {
+                    idempotency_key: Some("op-msg-explicit-attachment".to_string()),
+                    wait_for_final_acceptance: false,
+                },
+                security: MessageSecurityMode::DefaultPlain,
+            },
+            MessageId::parse("msg-explicit-attachment").unwrap(),
+        )
+        .await
+        .expect("target-based attachment send should not require a conversation registry row");
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-explicit-attachment"
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(
+        requests[3].params()["meta"]["message_id"],
+        "msg-explicit-attachment"
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["operation_id"],
+        "op-msg-explicit-attachment"
+    );
+}
+
+#[tokio::test]
 async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(handle_lookup_result()),
@@ -464,7 +564,8 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     assert!(matches!(result.message.delivery, DeliveryState::Accepted));
     assert_eq!(result.target_kind, "agent");
     assert_eq!(result.target_did, "did:example:bob");
-    assert_eq!(result.attachment.attachment_id, "att-1");
+    let attachment_id = result.attachment.attachment_id.clone();
+    assert!(attachment_id.starts_with("att-"));
     assert_eq!(result.attachment.filename, "override.bin");
     assert_eq!(result.attachment.mime_type, "application/custom");
     assert_eq!(result.attachment.size_bytes, 5);
@@ -473,7 +574,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
         result.attachment.object_uri,
         format!("{}/objects/att-1", server.base_url())
     );
-    assert_eq!(result.manifest["primary_attachment_id"], "att-1");
+    assert_eq!(result.manifest["primary_attachment_id"], attachment_id);
     assert_eq!(result.manifest["caption"], "caption");
     let rows = local_message_rows(
         &paths,
@@ -490,13 +591,13 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     assert_eq!(rows[0]["is_read"], 1);
     let stored_manifest: Value =
         serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
-    assert_eq!(stored_manifest["primary_attachment_id"], "att-1");
+    assert_eq!(stored_manifest["primary_attachment_id"], attachment_id);
     assert_eq!(stored_manifest["caption"], "caption");
     let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
     assert_eq!(metadata["operation_id"], "op-attachment-send-1");
     assert_eq!(metadata["delivery_state"], "accepted");
     assert_eq!(metadata["target_handle"], "bob.awiki.info");
-    assert_eq!(metadata["attachment_id"], "att-1");
+    assert_eq!(metadata["attachment_id"], attachment_id);
     assert_eq!(
         metadata["object_uri"],
         format!("{}/objects/att-1", server.base_url())
@@ -505,7 +606,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     let requests = server.join();
     assert_eq!(requests.len(), 5);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
     assert_eq!(requests[0].params(), json!({ "handle": "bob.awiki.info" }));
 
@@ -539,7 +640,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
         requests[3].rpc_method().as_deref(),
         Some("attachment.commit_object")
     );
-    assert_eq!(requests[3].params()["body"]["attachment_id"], "att-1");
+    assert_eq!(requests[3].params()["body"]["attachment_id"], attachment_id);
     assert_eq!(requests[3].params()["body"]["slot_id"], "slot-1");
 
     assert_eq!(requests[4].method, "POST");
@@ -555,7 +656,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     );
     assert_eq!(
         requests[4].params()["body"]["payload"]["primary_attachment_id"],
-        "att-1"
+        attachment_id
     );
     assert_eq!(
         requests[4].params()["body"]["payload"]["caption"],
@@ -571,7 +672,7 @@ async fn attachments_service_download_resolves_direct_handle_before_history_look
             "messages": [{
                 "id": "msg-attachment-1",
                 "message_id": "msg-attachment-1",
-                "sender_did": "did:key:z6mk-bob",
+                "sender_did": "did:example:bob",
                 "content": {
                     "attachments": [{
                         "attachment_id": "att-1",
@@ -613,7 +714,7 @@ async fn attachments_service_download_resolves_direct_handle_before_history_look
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
     assert_eq!(requests[0].params(), json!({ "handle": "bob.awiki.info" }));
     assert_eq!(requests[1].method, "POST");
@@ -1001,7 +1102,7 @@ fn attachment_discovery_selects_lowest_priority_compatible_service() {
                 "serviceDid": "did:wba:example.com",
                 "profiles": ["anp.direct.base.v1"],
                 "securityProfiles": ["transport-protected"],
-                "priority": 1
+                "priority": 9
             },
             {
                 "id": "#secondary",
@@ -1010,7 +1111,7 @@ fn attachment_discovery_selects_lowest_priority_compatible_service() {
                 "serviceDid": "did:wba:example.com",
                 "profiles": ["anp.attachment.v1"],
                 "securityProfiles": ["transport-protected"],
-                "priority": 9
+                "priority": 1
             },
             {
                 "id": "#primary",
@@ -1030,9 +1131,53 @@ fn attachment_discovery_selects_lowest_priority_compatible_service() {
     )
     .expect("service");
 
-    assert_eq!(service.rpc_endpoint, "https://example.com/primary/rpc");
+    assert_eq!(service.rpc_endpoint, "https://example.com/secondary/rpc");
     assert_eq!(service.service_did, "did:wba:example.com");
     assert_eq!(service.sender_did, "did:wba:example.com:user:alice:e1");
+}
+
+#[test]
+fn attachment_discovery_keeps_explicit_legacy_v1_compatibility() {
+    let document = json!({
+        "service": [{
+            "id": "#attachment",
+            "type": "ANPMessageService",
+            "serviceEndpoint": "https://example.com/attachment/rpc",
+            "serviceDid": "did:wba:example.com",
+            "profiles": ["anp.attachment.v1"],
+            "securityProfiles": ["transport-protected"]
+        }]
+    });
+
+    let service = awiki_im_core::compat::attachments::select_attachment_rpc_service_from_document(
+        "did:wba:example.com:user:alice:e1",
+        &document,
+    )
+    .expect("legacy service");
+
+    assert_eq!(service.rpc_endpoint, "https://example.com/attachment/rpc");
+}
+
+#[test]
+fn attachment_discovery_uses_explicit_v1_when_other_profiles_are_v2() {
+    let document = json!({
+        "service": [{
+            "id": "#message",
+            "type": "ANPMessageService",
+            "serviceEndpoint": "https://example.com/anp-im/rpc",
+            "serviceDid": "did:wba:example.com",
+            "profiles": ["anp.core.binding.v1", "anp.attachment.v1"],
+            "securityProfiles": ["transport-protected"]
+        }]
+    });
+
+    let service = awiki_im_core::compat::attachments::select_attachment_rpc_service_from_document(
+        "did:wba:example.com:user:alice:e1",
+        &document,
+    )
+    .expect("explicit attachment v1 remains an independent negotiated contract");
+
+    assert_eq!(service.rpc_endpoint, "https://example.com/anp-im/rpc");
 }
 
 #[test]
@@ -1120,11 +1265,15 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     )
     .expect("create-slot params");
     assert_eq!(create_slot["meta"]["profile"], "anp.attachment.v1");
+    assert!(create_slot["meta"].get("anp_version").is_none());
     assert_eq!(
         create_slot["meta"]["target"],
         json!({ "kind": "service", "did": "did:wba:awiki.ai:services:message:e1" })
     );
     assert_eq!(create_slot["body"]["expected_size"], "5");
+    assert!(create_slot["body"]["attachment_id"]
+        .as_str()
+        .is_some_and(|attachment_id| attachment_id.starts_with("att-") && attachment_id.len() > 4));
     assert_eq!(
         create_slot["body"]["expected_digest"]["value_b64u"],
         "digest"
@@ -1172,10 +1321,9 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         &selection,
     )
     .expect("ticket params");
-    assert_eq!(
-        ticket["body"]["sender_did"],
-        "did:wba:awiki.ai:user:bob:e1_bob"
-    );
+    assert_eq!(ticket["meta"]["profile"], "anp.attachment.v1");
+    assert!(ticket["meta"].get("anp_version").is_none());
+    assert_eq!(ticket["body"].get("sender_did"), None);
     assert_eq!(
         ticket["body"]["requester_did"],
         "did:wba:awiki.ai:user:alice:e1_alice"
@@ -1467,6 +1615,28 @@ fn local_message_rows(paths: &ImCorePaths, statement: &str) -> Vec<Value> {
         .collect()
 }
 
+fn seed_active_group_conversation(paths: &ImCorePaths, group_did: &str) {
+    fs::create_dir_all(
+        paths
+            .local_state
+            .sqlite_path
+            .parent()
+            .expect("local state database parent"),
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
+    db.execute(
+        r#"
+INSERT INTO groups
+    (owner_identity_id, owner_did, group_id, group_did, membership_status, stored_at, metadata)
+VALUES ('alice-id', 'did:example:alice', ?1, ?1, 'active', '2026-07-14T00:00:00Z', '{}')
+"#,
+        [group_did],
+    )
+    .unwrap();
+}
+
 fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> Value {
     match value {
         rusqlite::types::ValueRef::Null => Value::Null,
@@ -1541,6 +1711,7 @@ fn test_config_with_base_url(base_url: &str) -> ImCoreConfig {
     ImCoreConfig {
         service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
         did_domain: "awiki.info".to_string(),
+        client_version_info: None,
         user_service_endpoint: None,
         message_service_endpoint: None,
         mail_service_endpoint: None,
@@ -1608,7 +1779,12 @@ impl AttachmentServiceTestServer {
             for response in responses {
                 let mut stream = accept_before_deadline(&listener, deadline);
                 let request = read_http_request(&mut stream);
-                write_http_response(&mut stream, response.replace_base(&handle_base_url));
+                write_http_response(
+                    &mut stream,
+                    response
+                        .replace_base(&handle_base_url)
+                        .bind_attachment_id(&request),
+                );
                 captured.push(request);
             }
             captured
@@ -1655,6 +1831,27 @@ impl ExpectedHttp {
         if let Some(body) = body {
             self.body = body;
         }
+        self
+    }
+
+    fn bind_attachment_id(mut self, request: &CapturedHttp) -> Self {
+        if !matches!(
+            request.rpc_method().as_deref(),
+            Some("attachment.create_slot" | "attachment.commit_object")
+        ) {
+            return self;
+        }
+        let Some(attachment_id) = request.params()["body"]["attachment_id"]
+            .as_str()
+            .map(ToOwned::to_owned)
+        else {
+            return self;
+        };
+        let Ok(mut envelope) = serde_json::from_slice::<Value>(&self.body) else {
+            return self;
+        };
+        envelope["result"]["attachment_id"] = Value::String(attachment_id);
+        self.body = envelope.to_string().into_bytes();
         self
     }
 }

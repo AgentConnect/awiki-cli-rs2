@@ -373,7 +373,7 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     assert_contains(&requests[0], "Authorization: Bearer legacy-token\r\n");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "replace_did");
@@ -714,7 +714,7 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v4_current_k1_dids_like_go() {
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     assert_contains(&requests[0], "Authorization: Bearer jwt-legacy\r\n");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "replace_did");

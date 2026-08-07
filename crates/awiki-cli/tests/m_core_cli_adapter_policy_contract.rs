@@ -104,6 +104,14 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
             && text.contains("im_core_realtime_adapter::listener_realtime_options()"),
         "host runtime listener should call the public async realtime service API outside compat"
     );
+    assert!(
+        text.contains(".sync_now_async(") && text.contains("im_core::messages::MessageSyncRequest"),
+        "host runtime listener should converge through the public v2 reliable-sync API"
+    );
+    assert!(
+        !text.contains("sync_delta"),
+        "the first-party CLI listener must not call the v1 compatibility reader"
+    );
 }
 
 const LEGACY_BRIDGE_NEEDLES: &[&str] = &[

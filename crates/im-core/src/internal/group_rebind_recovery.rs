@@ -3,6 +3,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+#[cfg(test)]
+mod handle_recovery_tests;
+
 pub(crate) const GROUP_REBIND_RECOVERY_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS group_rebind_outbox (
     job_id TEXT PRIMARY KEY,
@@ -80,6 +83,76 @@ pub(crate) struct P6RebindJob {
     pub(crate) attempt_count: i64,
 }
 
+/// Derives the contract-stable operation id for the transport-only Handle
+/// Recovery rebind path. No local owner, device, time or random input is
+/// included, so retries and independently recovered devices converge.
+pub(crate) fn handle_recovery_operation_id(
+    canonical_full_handle: &str,
+    previous_did: &str,
+    current_did: &str,
+    binding_generation: &str,
+    canonical_group_did: &str,
+) -> crate::ImResult<String> {
+    let canonical_handle = canonical_recovery_handle(canonical_full_handle)?;
+    if canonical_handle.full != canonical_full_handle {
+        return Err(crate::ImError::invalid_input(
+            Some("canonical_full_handle".to_owned()),
+            "full Handle must already be canonical",
+        ));
+    }
+    if !canonical_generation(binding_generation) {
+        return Err(crate::ImError::invalid_input(
+            Some("binding_generation".to_owned()),
+            "binding generation must be a canonical positive decimal string",
+        ));
+    }
+    let previous_did = canonical_did("previous_did", previous_did)?;
+    let current_did = canonical_did("current_did", current_did)?;
+    let group_did = canonical_did("group_did", canonical_group_did)?;
+
+    let mut digest = Sha256::new();
+    digest.update(b"awiki.group.rebind_member.operation_id.v1\0");
+    for value in [
+        canonical_handle.full.as_str(),
+        previous_did.as_str(),
+        current_did.as_str(),
+        binding_generation,
+        group_did.as_str(),
+    ] {
+        let bytes = value.as_bytes();
+        let len = u32::try_from(bytes.len()).map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("operation_id_input".to_owned()),
+                "operation id field exceeds the u32 length envelope",
+            )
+        })?;
+        digest.update(len.to_be_bytes());
+        digest.update(bytes);
+    }
+    Ok(format!("op-rebind-v1-{:x}", digest.finalize()))
+}
+
+pub(crate) fn is_handle_recovery_operation_id(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix("op-rebind-v1-") else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn canonical_did(field: &str, value: &str) -> crate::ImResult<String> {
+    let parsed = crate::ids::Did::parse(value)?;
+    if parsed.as_str() != value {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_owned()),
+            format!("{field} must already be canonical"),
+        ));
+    }
+    Ok(parsed.as_str().to_owned())
+}
+
 pub(crate) fn enqueue_recovery_jobs(
     sqlite_path: &Path,
     owner_identity_id: &str,
@@ -133,7 +206,7 @@ pub(crate) fn enqueue_recovery_jobs_for_connection(
             .prepare(
                 r#"
 SELECT gm.group_id, gm.member_did
-     , gm.anchor_value, gm.handle_binding_generation
+     , gm.anchor_value, gm.handle_binding_generation, g.metadata
 FROM group_members gm
 JOIN groups g
   ON g.owner_identity_id = gm.owner_identity_id AND g.group_id = gm.group_id
@@ -150,6 +223,7 @@ WHERE gm.owner_identity_id = ?1
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -163,6 +237,10 @@ WHERE gm.owner_identity_id = ?1
                         && decimal_generation_cmp(binding_generation, generation)
                             == std::cmp::Ordering::Greater
                 })
+                && value
+                    .4
+                    .as_deref()
+                    .is_some_and(exact_handle_recovery_transport_profile)
             {
                 values.push((value.0, value.1));
             }
@@ -175,12 +253,13 @@ WHERE gm.owner_identity_id = ?1
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     let mut inserted = 0;
     for (group_did, previous_did) in candidates {
-        let job_id = stable_job_id(&[
-            owner_identity_id,
-            &group_did,
+        let job_id = handle_recovery_operation_id(
             &member_handle.full,
+            &previous_did,
+            new_did,
             binding_generation,
-        ]);
+            &group_did,
+        )?;
         inserted += transaction
             .execute(
                 r#"
@@ -837,6 +916,100 @@ LIMIT 500"#,
     Ok(items)
 }
 
+pub(crate) fn handle_recovery_job_counts(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    member_handle: &str,
+    previous_member_did: &str,
+    new_member_did: &str,
+    binding_generation: &str,
+) -> crate::ImResult<(u32, u32)> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT job_id, phase
+FROM group_rebind_outbox
+WHERE owner_identity_id=?1
+  AND member_handle=?2
+  AND previous_member_did=?3
+  AND new_member_did=?4
+  AND binding_generation=?5"#,
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                owner_identity_id,
+                member_handle,
+                previous_member_did,
+                new_member_did,
+                binding_generation,
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut pending = 0_u32;
+    let mut blocked = 0_u32;
+    for row in rows {
+        let (job_id, phase) = row.map_err(crate::internal::local_state::local_state_unavailable)?;
+        if !is_handle_recovery_operation_id(&job_id) {
+            continue;
+        }
+        match phase.as_str() {
+            "complete" => {}
+            "blocked" => blocked = blocked.saturating_add(1),
+            _ => pending = pending.saturating_add(1),
+        }
+    }
+    Ok((pending, blocked))
+}
+
+pub(crate) fn recovery_impact_counts(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    previous_member_did: &str,
+) -> crate::ImResult<(u32, u32)> {
+    let connection = rusqlite::Connection::open_with_flags(
+        sqlite_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT gm.anchor_kind, g.metadata
+FROM group_members gm
+JOIN groups g
+  ON g.owner_identity_id=gm.owner_identity_id AND g.group_id=gm.group_id
+WHERE gm.owner_identity_id=?1
+  AND gm.member_did=?2
+  AND COALESCE(gm.status,'active')='active'
+  AND COALESCE(g.membership_status,'active') NOT IN ('left','removed','inactive','non_member')"#,
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![owner_identity_id, previous_member_did],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut e2ee = 0_u32;
+    let mut did_only = 0_u32;
+    for row in rows {
+        let (anchor_kind, metadata) =
+            row.map_err(crate::internal::local_state::local_state_unavailable)?;
+        if anchor_kind != "handle" {
+            did_only = did_only.saturating_add(1);
+        }
+        if metadata.as_deref().and_then(metadata_e2ee_classification) == Some(true) {
+            e2ee = e2ee.saturating_add(1);
+        }
+    }
+    Ok((e2ee, did_only))
+}
+
 pub(crate) fn awaiting_p6_groups(
     sqlite_path: &Path,
     owner_identity_id: &str,
@@ -1036,6 +1209,29 @@ fn metadata_e2ee_classification(metadata: &str) -> Option<bool> {
     }
 }
 
+fn exact_handle_recovery_transport_profile(metadata: &str) -> bool {
+    let Ok(metadata) = serde_json::from_str::<Value>(metadata) else {
+        return false;
+    };
+    if metadata
+        .get("required_security_profile")
+        .and_then(Value::as_str)
+        != Some("transport-protected")
+    {
+        return false;
+    }
+    let consistent = [
+        metadata.get("message_security_profile"),
+        metadata
+            .get("group_policy")
+            .and_then(|policy| policy.get("message_security_profile")),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|value| value.as_str() == Some("transport-protected"));
+    consistent
+}
+
 fn update_job(
     sqlite_path: &Path,
     table: &str,
@@ -1171,6 +1367,11 @@ mod tests {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         db.execute("INSERT INTO groups (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,stored_at) VALUES ('owner','did:old','did:group','did:group','member','active','now')", []).unwrap();
+        db.execute(
+            "UPDATE groups SET metadata='{\"required_security_profile\":\"transport-protected\"}'",
+            [],
+        )
+        .unwrap();
         db.execute("INSERT INTO group_members (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES ('owner','did:old','did:group','peer','did:old','alice.example.com','handle','alice.example.com','1','active','now')", []).unwrap();
         let old = vec!["did:old".to_owned()];
         assert_eq!(
@@ -1206,12 +1407,34 @@ mod tests {
     }
 
     #[test]
+    fn recovery_impact_status_query_does_not_mutate_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status-read-only.sqlite");
+        let db = crate::internal::local_state::open_writable(&path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            recovery_impact_counts(&path, "owner", "did:wba:example.com:users:old").unwrap(),
+            (0, 0)
+        );
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
     fn applied_rebind_advances_projection_used_by_next_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.sqlite3");
         let db = crate::internal::local_state::open_writable(&path).unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         db.execute("INSERT INTO groups (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,stored_at) VALUES ('owner','did:current','did:group','did:group','member','active','now')", []).unwrap();
+        db.execute(
+            "UPDATE groups SET metadata='{\"required_security_profile\":\"transport-protected\"}'",
+            [],
+        )
+        .unwrap();
         db.execute("INSERT INTO group_members (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES ('owner','did:current','did:group','peer','did:wba:example.com:alice:e1_old','alice','handle','alice','1','active','now')", []).unwrap();
         drop(db);
 
@@ -1285,6 +1508,7 @@ INSERT INTO groups (owner_identity_id,owner_did,group_id,group_did,my_role,membe
  ('owner','did:new','did:group:not-previous','did:group:not-previous','member','active','now'),
  ('owner','did:new','did:group:did-only','did:group:did-only','member','active','now'),
  ('owner','did:new','did:group:inactive','did:group:inactive','member','active','now');
+UPDATE groups SET metadata='{"required_security_profile":"transport-protected"}';
 INSERT INTO group_members
  (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES
  ('owner','did:new','did:group:legacy','legacy','did:wba:example.com:alice:e1_old','alice','handle','alice','1','active','now'),
@@ -1361,6 +1585,7 @@ INSERT INTO identity_did_history
 INSERT INTO groups
  (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,stored_at) VALUES
  ('owner','did:wba:example.com:alice:e1_new','did:group','did:group','member','active','now');
+UPDATE groups SET metadata='{"required_security_profile":"transport-protected"}';
 INSERT INTO group_members
  (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES
  ('owner','did:wba:example.com:alice:e1_new','did:group','alice','did:wba:example.com:alice:e1_old','alice','handle','alice','2','active','now');

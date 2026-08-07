@@ -34,7 +34,7 @@ fn page_live_command_dispatches_through_im_core_content_rpc() {
     assert_eq!(envelope["data"]["count"], 2);
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "page list should reach content RPC once");
-    assert!(requests[0].contains("POST /content/rpc HTTP/1.1"));
+    assert!(requests[0].contains("POST /user-service/v1/content/rpc HTTP/1.1"));
     assert!(requests[0].contains(r#""method":"list""#));
     assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice-page");
 }
@@ -74,7 +74,7 @@ fn page_create_live_command_dispatches_through_im_core_content_rpc() {
         1,
         "page create should reach content RPC once"
     );
-    assert!(requests[0].contains("POST /content/rpc HTTP/1.1"));
+    assert!(requests[0].contains("POST /user-service/v1/content/rpc HTTP/1.1"));
     assert!(requests[0].contains(r#""method":"create""#));
     assert!(requests[0].contains(r#""slug":"hello""#));
     assert!(requests[0].contains(r#""title":"Hello""#));

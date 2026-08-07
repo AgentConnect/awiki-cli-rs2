@@ -4,7 +4,16 @@ General-purpose Flutter/Dart SDK package for Awiki `awiki-im-core`, backed by th
 
 This package is not an `awiki-me` adapter and intentionally exposes DTOs that follow `awiki-im-core` semantics rather than app UI/cache models.
 
-Native support in v0.1 targets Android, iOS, macOS, and Linux. Flutter Web receives a stub that throws `UnsupportedError` at runtime.
+Native support in v0.1 targets Android, iOS, macOS, Linux, and Windows x64.
+Flutter Web receives a stub that throws `UnsupportedError` at runtime. Windows
+ARM64 and 32-bit x86 are not supported.
+
+## License
+
+This package is available under [GNU AGPLv3](LICENSE) or a separate
+[AWiki Commercial License](COMMERCIAL-LICENSING.md). The prior Apache License
+text is retained in [LICENSE-APACHE](LICENSE-APACHE), and source location
+information is in [SOURCE.md](SOURCE.md).
 
 Build Linux native artifacts on a Linux host before running a Flutter Linux app:
 
@@ -14,6 +23,26 @@ scripts/flutter/build-sdk-native.sh --linux-only
 
 The command writes `packages/awiki_im_core/linux/lib/libawiki_im_core.so`.
 That file is a generated native artifact and is not committed to git.
+
+Build the Windows native artifact on a Windows host with Rust 1.88.0 and the
+Visual Studio 2022 MSVC x64 toolchain:
+
+```powershell
+./scripts/flutter/build-windows.ps1
+```
+
+The cross-platform build entrypoint can select the same build from Git Bash or
+PowerShell 7:
+
+```bash
+scripts/flutter/build-sdk-native.sh --windows-only
+```
+
+The build writes
+`packages/awiki_im_core/windows/bin/awiki_im_core.dll`. The PowerShell builder
+rejects non-x64 PE output and verifies the required Flutter Rust Bridge exports
+and generated Dart/Rust content hash before packaging. The DLL is generated and
+is not committed to git.
 
 ## Identity SecretVault
 
@@ -165,10 +194,17 @@ final page = await client.messages.syncThreadAfter(
 ```
 
 `syncDelta` lets Rust `im-core` read and advance the global reliable checkpoint
-inside SQLite after events are applied. Dart callers can choose diagnostics such
-as `limit`, `deviceId`, and `reason`, but cannot pass `since_event_seq` or store
-the checkpoint. `syncThreadAfter` is thread-local and uses `afterServerSeq`; it
-does not read or advance the global checkpoint.
+inside SQLite after events are applied. The checkpoint is partitioned by the
+stable local `ownerIdentityId` and the service `syncSubjectId`; the current
+service maps that subject to canonical DID, so DID recovery starts a new
+sequence at `0` without rewriting the previous DID namespace. Dart callers can
+choose diagnostics such as `limit`, `deviceId`, and `reason`, but cannot pass
+`since_event_seq` or store the checkpoint. `syncThreadAfter` is thread-local and
+uses `afterServerSeq`; it does not read or advance the global checkpoint.
+
+For ordinary Direct metadata events, Core hydrates the exact missing messages
+before it commits the delta checkpoint. Apps do not run a second hydration loop,
+and private per-message hydration state is intentionally not exposed to Dart.
 
 Realtime events may include a readonly `RealtimeSyncHint`. Apps may use it to
 schedule `syncDelta` after dirty/gap detection, but receiving realtime metadata

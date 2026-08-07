@@ -65,6 +65,7 @@ fn wire_direct_text_payload_matches_go_contract() {
 
     assert_eq!(payload.method, "direct.send");
     assert_eq!(payload.meta["profile"], "anp.direct.base.v1");
+    assert!(payload.meta.get("anp_version").is_none());
     assert_eq!(payload.meta["security_profile"], "transport-protected");
     assert_eq!(
         payload.meta["target"],
@@ -198,7 +199,7 @@ fn wire_delegated_inbox_history_params_include_inbox_auth_fields() {
 }
 
 fn assert_has_generated_meta(meta: &serde_json::Value) {
-    assert_eq!(meta["anp_version"], "1.0");
+    assert!(meta.get("anp_version").is_none());
     assert!(meta["operation_id"]
         .as_str()
         .expect("operation id")

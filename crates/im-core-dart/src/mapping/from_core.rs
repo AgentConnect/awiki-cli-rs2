@@ -16,24 +16,40 @@ use crate::dto::{
         DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
     },
     identity::{
+        DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
-        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
+        DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
+        DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
+        DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
+        DartDeviceJoinSessionSummary, DartDeviceJoinSide,
+        DartDeviceRegistryAuthorizedDeviceSummary, DartDeviceRevokeResult, DartDeviceRevokeStatus,
+        DartHandleRecoveryErrorCode, DartHandleRecoveryImpact, DartHandleRecoveryOtpResult,
+        DartHandleRecoveryPhase, DartHandleRecoveryProgress, DartHandleRecoveryResetReference,
+        DartHandleRecoveryTransitionSourceKind, DartHandleRegistrationJoinRequired,
+        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
+        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartLegacyRegistryEpochAdoptionAuthority,
+        DartLegacyUpgradeStatus, DartRootKeyTransferError, DartRootKeyTransferPreparation,
+        DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
     },
     message::{
-        DartConversation, DartConversationAlias, DartConversationAliasSource,
-        DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
-        DartConversationMigrationState, DartConversationPage, DartConversationSnapshotItem,
-        DartConversationSnapshotMessage, DartConversationSnapshotMessageBody,
-        DartConversationStorageThreadRef, DartConversationStorePatch, DartMarkReadResult,
-        DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
-        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark,
-        DartSendMessageResult, DartSyncDeltaResult, DartSyncThreadAfterResult,
-        DartThreadMessageStorePatch,
+        DartCommittedIncomingMessage, DartCommittedMessageSource, DartConversation,
+        DartConversationAlias, DartConversationAliasSource, DartConversationIdentity,
+        DartConversationIdentityScope, DartConversationListSnapshot,
+        DartConversationMigrationState, DartConversationPage, DartConversationResolutionState,
+        DartConversationSnapshotItem, DartConversationSnapshotMessage,
+        DartConversationSnapshotMessageBody, DartConversationStorageThreadRef,
+        DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
+        DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
+        DartMessageMetadataAttribute, DartMessagePage, DartMessageSyncDiagnostics,
+        DartMessageSyncDirtyDomain, DartMessageSyncMode, DartMessageSyncOutcome,
+        DartMessageSyncRetryState, DartMessageSyncStatus, DartReadWatermark, DartSendMessageResult,
+        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
-    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
+    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint, DartSyncDomain},
     secure::{
         DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
         DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
@@ -42,6 +58,375 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::LegacyRegistryEpochAdoptionAuthority>
+    for DartLegacyRegistryEpochAdoptionAuthority
+{
+    fn from(value: im_core::identity::LegacyRegistryEpochAdoptionAuthority) -> Self {
+        Self {
+            owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+            account_user_id: value.account_user_id,
+            current_did: value.current_did.as_str().to_owned(),
+            binding_generation: value.binding_generation,
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            device_auth_generation: value.device_auth_generation,
+            provenance_id: value.provenance_id,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryOtpResult> for DartHandleRecoveryOtpResult {
+    fn from(value: im_core::identity::HandleRecoveryOtpResult) -> Self {
+        Self {
+            handle: value.handle,
+            operation_id: value.operation_id,
+            accepted: value.accepted,
+            retry_after_seconds: value.retry_after_seconds,
+            retry_at: value.retry_at,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgress {
+    fn from(value: im_core::identity::HandleRecoveryProgress) -> Self {
+        Self {
+            recovery_id: value.recovery_id,
+            operation_id: value.operation_id,
+            owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+            handle: value.handle,
+            previous_did: value.previous_did.as_str().to_owned(),
+            current_did: value.current_did.as_str().to_owned(),
+            binding_generation: value.binding_generation,
+            phase: match value.phase {
+                im_core::identity::HandleRecoveryPhase::Prepared => {
+                    DartHandleRecoveryPhase::Prepared
+                }
+                im_core::identity::HandleRecoveryPhase::RemoteCommitPending => {
+                    DartHandleRecoveryPhase::RemoteCommitPending
+                }
+                im_core::identity::HandleRecoveryPhase::RemoteCommitted => {
+                    DartHandleRecoveryPhase::RemoteCommitted
+                }
+                im_core::identity::HandleRecoveryPhase::IdentityTransitionPending => {
+                    DartHandleRecoveryPhase::IdentityTransitionPending
+                }
+                im_core::identity::HandleRecoveryPhase::IdentitySwitched => {
+                    DartHandleRecoveryPhase::IdentitySwitched
+                }
+                im_core::identity::HandleRecoveryPhase::Completed => {
+                    DartHandleRecoveryPhase::Completed
+                }
+                im_core::identity::HandleRecoveryPhase::Blocked => DartHandleRecoveryPhase::Blocked,
+            },
+            impact: value.impact.into(),
+            reset_reference: value.reset_reference.map(Into::into),
+            blocked_code: value.blocked_code.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryImpact> for DartHandleRecoveryImpact {
+    fn from(value: im_core::identity::HandleRecoveryImpact) -> Self {
+        Self {
+            local_ordinary_data_will_migrate: value.local_ordinary_data_will_migrate,
+            other_devices_must_rejoin: value.other_devices_must_rejoin,
+            unsupported_e2ee_group_count: value.unsupported_e2ee_group_count,
+            unsupported_did_only_group_count: value.unsupported_did_only_group_count,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryResetReference> for DartHandleRecoveryResetReference {
+    fn from(value: im_core::identity::HandleRecoveryResetReference) -> Self {
+        Self {
+            account_user_id: value.account_user_id,
+            owner_identity_id: value.owner_identity_id,
+            previous_did: value.previous_did.as_str().to_owned(),
+            current_did: value.current_did.as_str().to_owned(),
+            binding_generation: value.binding_generation,
+            handle: value.handle,
+            source_kind: match value.source_kind {
+                im_core::identity::HandleRecoveryTransitionSourceKind::Initiator => {
+                    DartHandleRecoveryTransitionSourceKind::Initiator
+                }
+                im_core::identity::HandleRecoveryTransitionSourceKind::JoinedDevice => {
+                    DartHandleRecoveryTransitionSourceKind::JoinedDevice
+                }
+            },
+            source_id: value.source_id,
+        }
+    }
+}
+
+impl From<im_core::identity::AuthorizedJoinActivationProgress>
+    for DartAuthorizedJoinActivationProgress
+{
+    fn from(value: im_core::identity::AuthorizedJoinActivationProgress) -> Self {
+        Self {
+            join: value.join.into(),
+            reset_reference: value.reset_reference.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryErrorCode> for DartHandleRecoveryErrorCode {
+    fn from(value: im_core::identity::HandleRecoveryErrorCode) -> Self {
+        match value {
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryNotPrepared => Self::HandleRecoveryNotPrepared,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryUserPresenceRequired => Self::HandleRecoveryUserPresenceRequired,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryTransitionMismatch => Self::HandleRecoveryTransitionMismatch,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryTransitionChainUnsupported => Self::HandleRecoveryTransitionChainUnsupported,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryRemoteStateChanged => Self::HandleRecoveryRemoteStateChanged,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryOutcomeUnknown => Self::HandleRecoveryOutcomeUnknown,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable => Self::HandleRecoveryLocalStateUnavailable,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryBlocked => Self::HandleRecoveryBlocked,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
+    fn from(value: im_core::identity::DeviceRevokeResult) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            target_device_id: value.target_device_id.as_str().to_owned(),
+            status: match value.status {
+                im_core::identity::DeviceRevokeStatus::Revoked => DartDeviceRevokeStatus::Revoked,
+            },
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferSendResult> for DartRootKeyTransferSendResult {
+    fn from(value: im_core::identity::RootKeyTransferSendResult) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            sender_device_id: value.sender_device_id.as_str().to_owned(),
+            recipient_device_id: value.recipient_device_id.as_str().to_owned(),
+            message_id: value.message_id.as_str().to_owned(),
+            accepted_at: value.accepted_at,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferPreparation> for DartRootKeyTransferPreparation {
+    fn from(value: im_core::identity::RootKeyTransferPreparation) -> Self {
+        let serde_json::Value::String(authorization_handle) =
+            serde_json::to_value(value.authorization_handle)
+                .expect("root transfer authorization handle serialization is infallible")
+        else {
+            unreachable!("root transfer authorization handle must serialize as a string")
+        };
+        Self {
+            authorization_handle,
+            recipient: value.recipient.into(),
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferRecipientSummary>
+    for DartRootKeyTransferRecipientSummary
+{
+    fn from(value: im_core::identity::RootKeyTransferRecipientSummary) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            device_id: value.device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            registry_version: value.registry_version,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferError> for DartRootKeyTransferError {
+    fn from(value: im_core::identity::RootKeyTransferError) -> Self {
+        Self {
+            code: value.to_string(),
+            retryable: value.retryable,
+        }
+    }
+}
+
+impl DartRootKeyTransferError {
+    pub(crate) fn invalid_request() -> Self {
+        Self {
+            code: "root_transfer.invalid_request".to_owned(),
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn authorization_invalid() -> Self {
+        Self {
+            code: "root_transfer.authorization_invalid".to_owned(),
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn temporarily_unavailable() -> Self {
+        Self {
+            code: "root_transfer.temporarily_unavailable".to_owned(),
+            retryable: true,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinSessionView> for DartDeviceJoinSessionSummary {
+    fn from(value: im_core::identity::DeviceJoinSessionView) -> Self {
+        Self {
+            join_session_id: value.join_session_id,
+            did: value.did.as_str().to_owned(),
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            side: match value.side {
+                im_core::identity::DeviceJoinSide::NewDevice => DartDeviceJoinSide::NewDevice,
+                im_core::identity::DeviceJoinSide::Admin => DartDeviceJoinSide::Admin,
+            },
+            phase: match value.phase {
+                im_core::identity::DeviceJoinLocalPhase::Pending => DartDeviceJoinPhase::Pending,
+                im_core::identity::DeviceJoinLocalPhase::ChallengePrepared => {
+                    DartDeviceJoinPhase::ChallengePrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::ResponsePrepared => {
+                    DartDeviceJoinPhase::ResponsePrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::ResponseVerified => {
+                    DartDeviceJoinPhase::ResponseVerified
+                }
+                im_core::identity::DeviceJoinLocalPhase::ApprovalPrepared => {
+                    DartDeviceJoinPhase::ApprovalPrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::Authorized => {
+                    DartDeviceJoinPhase::Authorized
+                }
+                im_core::identity::DeviceJoinLocalPhase::Cancelled => {
+                    DartDeviceJoinPhase::Cancelled
+                }
+                im_core::identity::DeviceJoinLocalPhase::Expired => DartDeviceJoinPhase::Expired,
+            },
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinAuthorizedDeviceSummary>
+    for DartDeviceJoinAuthorizedDeviceSummary
+{
+    fn from(value: im_core::identity::DeviceJoinAuthorizedDeviceSummary) -> Self {
+        Self {
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            status: match value.status {
+                im_core::identity::DeviceJoinAuthorizationStatus::Active => {
+                    DartDeviceJoinAuthorizationStatus::Active
+                }
+                im_core::identity::DeviceJoinAuthorizationStatus::Revoked => {
+                    DartDeviceJoinAuthorizationStatus::Revoked
+                }
+            },
+            role: dart_device_join_role(value.role),
+            management_ready: value.management_ready,
+            is_current: value.is_current,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceRegistryAuthorizedDeviceSummary>
+    for DartDeviceRegistryAuthorizedDeviceSummary
+{
+    fn from(value: im_core::identity::DeviceRegistryAuthorizedDeviceSummary) -> Self {
+        Self {
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            status: match value.status {
+                im_core::identity::DeviceJoinAuthorizationStatus::Active => {
+                    DartDeviceJoinAuthorizationStatus::Active
+                }
+                im_core::identity::DeviceJoinAuthorizationStatus::Revoked => {
+                    DartDeviceJoinAuthorizationStatus::Revoked
+                }
+            },
+            role: dart_device_join_role(value.role),
+            management_ready: value.management_ready,
+            is_current: value.is_current,
+            auth_generation: value.auth_generation,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
+    fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
+        Self {
+            event_id: value.event_id,
+            join_session_id: value.join_session_id,
+            did: value.did.as_str().to_owned(),
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            candidate_key_fingerprint: value.candidate_key_fingerprint,
+            issued_at: value.issued_at,
+            expires_at: value.expires_at,
+            state: dart_device_join_remote_state(value.state),
+            claimed_by_current_device: value.claimed_by_current_device,
+            can_start_verification: value.can_start_verification,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinRegistrySnapshot> for DartDeviceJoinRegistrySnapshot {
+    fn from(value: im_core::identity::DeviceJoinRegistrySnapshot) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            registry_version: value.registry_version,
+            devices: value.devices.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinProgress> for DartDeviceJoinProgress {
+    fn from(value: im_core::identity::DeviceJoinProgress) -> Self {
+        Self {
+            session: value.session.into(),
+            remote_state: dart_device_join_remote_state(value.remote_state),
+            sas: value.sas,
+            authorized_device: value.authorized_device.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinApprovalPrompt> for DartDeviceJoinApprovalPrompt {
+    fn from(value: im_core::identity::DeviceJoinApprovalPrompt) -> Self {
+        Self {
+            approval_handle: value.approval_handle,
+            join_session_id: value.join_session_id,
+            sas: value.sas,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+fn dart_device_join_remote_state(
+    value: im_core::identity::DeviceJoinRemoteState,
+) -> DartDeviceJoinRemoteState {
+    match value {
+        im_core::identity::DeviceJoinRemoteState::Pending => DartDeviceJoinRemoteState::Pending,
+        im_core::identity::DeviceJoinRemoteState::ChallengeSent => {
+            DartDeviceJoinRemoteState::ChallengeSent
+        }
+        im_core::identity::DeviceJoinRemoteState::ResponseVerified => {
+            DartDeviceJoinRemoteState::ResponseVerified
+        }
+        im_core::identity::DeviceJoinRemoteState::Consumed => DartDeviceJoinRemoteState::Consumed,
+        im_core::identity::DeviceJoinRemoteState::Cancelled => DartDeviceJoinRemoteState::Cancelled,
+        im_core::identity::DeviceJoinRemoteState::Rejected => DartDeviceJoinRemoteState::Rejected,
+        im_core::identity::DeviceJoinRemoteState::Expired => DartDeviceJoinRemoteState::Expired,
+    }
+}
+
+fn dart_device_join_role(value: im_core::identity::DeviceJoinRole) -> DartDeviceJoinRole {
+    match value {
+        im_core::identity::DeviceJoinRole::Member => DartDeviceJoinRole::Member,
+        im_core::identity::DeviceJoinRole::Admin => DartDeviceJoinRole::Admin,
+    }
+}
 
 impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
     fn from(value: im_core::identity::IdentitySummary) -> Self {
@@ -61,6 +446,58 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::ActiveSyncAccountBinding> for DartActiveSyncAccountBinding {
+    fn from(value: im_core::identity::ActiveSyncAccountBinding) -> Self {
+        Self {
+            owner_identity_id: value.owner_identity_id,
+            account_id: value.account_id,
+            current_did: value.current_did,
+            protocol_device_id: value.protocol_device_id,
+            identity_generation: value.identity_generation,
+            device_auth_generation: value.device_auth_generation,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityDeviceSummary> for DartIdentityDeviceSummary {
+    fn from(value: im_core::identity::IdentityDeviceSummary) -> Self {
+        Self {
+            identity: value.identity.into(),
+            mode: match value.mode {
+                im_core::identity::IdentityDeviceMode::Legacy => DartIdentityDeviceMode::Legacy,
+                im_core::identity::IdentityDeviceMode::VNext => DartIdentityDeviceMode::VNext,
+            },
+            protocol_device_id: value
+                .protocol_device_id
+                .map(|device_id| device_id.as_str().to_owned()),
+            role: value.role.map(|role| match role {
+                im_core::identity::IdentityDeviceRole::Member => DartIdentityDeviceRole::Member,
+                im_core::identity::IdentityDeviceRole::Admin => DartIdentityDeviceRole::Admin,
+            }),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            readiness: match value.readiness {
+                im_core::identity::IdentityDeviceReadiness::Legacy => {
+                    DartIdentityDeviceReadiness::Legacy
+                }
+                im_core::identity::IdentityDeviceReadiness::MemberReady => {
+                    DartIdentityDeviceReadiness::MemberReady
+                }
+                im_core::identity::IdentityDeviceReadiness::AdminAwaitingRoot => {
+                    DartIdentityDeviceReadiness::AdminAwaitingRoot
+                }
+                im_core::identity::IdentityDeviceReadiness::AdminReady => {
+                    DartIdentityDeviceReadiness::AdminReady
+                }
+                im_core::identity::IdentityDeviceReadiness::Blocked => {
+                    DartIdentityDeviceReadiness::Blocked
+                }
+            },
+            blocked_reason: value.blocked_reason,
         }
     }
 }
@@ -100,6 +537,19 @@ impl From<im_core::identity::IdentityVaultStatus> for DartIdentityVaultStatus {
             plaintext_compat_retained: value.plaintext_compat_retained,
             missing: value.missing,
             warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::LegacyUpgradeStatus> for DartLegacyUpgradeStatus {
+    fn from(value: im_core::identity::LegacyUpgradeStatus) -> Self {
+        match value {
+            im_core::identity::LegacyUpgradeStatus::Idle => Self::Idle,
+            im_core::identity::LegacyUpgradeStatus::Running => Self::Running,
+            im_core::identity::LegacyUpgradeStatus::RetryRequired { identity_id, code } => {
+                Self::RetryRequired { identity_id, code }
+            }
+            im_core::identity::LegacyUpgradeStatus::Completed => Self::Completed,
         }
     }
 }
@@ -328,9 +778,11 @@ impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistratio
     fn from(value: im_core::identity::HandleRegistrationResult) -> Self {
         Self {
             identity: value.identity.map(Into::into),
+            account_id: value.account_id,
             handle: value.handle.as_str().to_string(),
             method: registration_method_to_string(value.method),
             state: registration_state_to_string(value.state),
+            join_required: value.join_required.map(Into::into),
             default_identity_change: value.default_identity_change.map(Into::into),
             warnings: value.warnings,
         }
@@ -351,37 +803,18 @@ fn registration_state_to_string(value: im_core::identity::HandleRegistrationStat
         im_core::identity::HandleRegistrationState::EmailSent => "email_sent".to_string(),
         im_core::identity::HandleRegistrationState::EmailPending => "email_pending".to_string(),
         im_core::identity::HandleRegistrationState::Registered => "registered".to_string(),
+        im_core::identity::HandleRegistrationState::JoinRequired => "join_required".to_string(),
     }
 }
 
-impl From<im_core::identity::RecoverHandleResult> for DartRecoverHandleResult {
-    fn from(value: im_core::identity::RecoverHandleResult) -> Self {
-        let (recovered_identity, user_id, access_token_present) = value
-            .recovered_identity
-            .map(|recovered| {
-                (
-                    Some(recovered.identity.into()),
-                    recovered.user_id,
-                    recovered.access_token_present,
-                )
-            })
-            .unwrap_or((None, None, false));
+impl From<im_core::identity::HandleRegistrationJoinRequired>
+    for DartHandleRegistrationJoinRequired
+{
+    fn from(value: im_core::identity::HandleRegistrationJoinRequired) -> Self {
         Self {
-            handle: value.handle.as_str().to_string(),
-            phone: value.phone,
-            state: recover_state_to_string(value.state),
-            recovered_identity,
-            user_id,
-            access_token_present,
-            warnings: value.warnings,
+            did: value.did.as_str().to_owned(),
+            account_verification_token: value.account_verification_token,
         }
-    }
-}
-
-fn recover_state_to_string(value: im_core::identity::RecoverHandleState) -> String {
-    match value {
-        im_core::identity::RecoverHandleState::OtpSent => "otp_sent".to_string(),
-        im_core::identity::RecoverHandleState::Recovered => "recovered".to_string(),
     }
 }
 
@@ -459,6 +892,7 @@ impl From<im_core::identity::Profile> for DartUserProfile {
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
             updated_at: value.updated_at,
+            profile_version: value.profile_version,
             version_id: value.version_id,
             ttl: value.ttl,
         }
@@ -700,9 +1134,26 @@ impl From<im_core::messages::MessageTarget> for crate::dto::message::DartMessage
 
 impl From<im_core::messages::Message> for DartMessage {
     fn from(value: im_core::messages::Message) -> Self {
+        let conversation_id = value
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.clone())
+            .unwrap_or_default();
+        let sender_peer_persona_id = value
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "sender_peer_persona_id")
+            .map(|attribute| attribute.value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let sender_did_snapshot = value.sender.as_str().to_owned();
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
         Self {
             id: value.id.as_str().to_string(),
+            conversation_id,
+            sender_peer_persona_id,
+            sender_did_snapshot,
             thread_kind,
             thread_id,
             direction: value.direction.into(),
@@ -743,6 +1194,10 @@ impl From<im_core::messages::Conversation> for DartConversation {
     fn from(value: im_core::messages::Conversation) -> Self {
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
         Self {
+            conversation_id: value.conversation_id,
+            peer_persona_id: value.peer_persona_id,
+            canonical_group_did: value.canonical_group_did,
+            resolution_state: value.resolution_state.into(),
             thread_kind,
             thread_id,
             conversation_identity: value.conversation_identity.map(Into::into),
@@ -761,6 +1216,20 @@ impl From<im_core::messages::Conversation> for DartConversation {
             message_count: value.message_count,
             last_message_at: value.last_message_at,
             activity_at: value.activity_at,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationResolutionState> for DartConversationResolutionState {
+    fn from(value: im_core::messages::ConversationResolutionState) -> Self {
+        match value {
+            im_core::messages::ConversationResolutionState::Resolved => Self::Resolved,
+            im_core::messages::ConversationResolutionState::LegacyUnresolved => {
+                Self::LegacyUnresolved
+            }
+            im_core::messages::ConversationResolutionState::BlockedConflict => {
+                Self::BlockedConflict
+            }
         }
     }
 }
@@ -826,35 +1295,27 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
             } => DartConversationStorePatch::Remove {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity: conversation_identity.map(Into::into),
+                conversation_id,
             },
             im_core::messages::ConversationStorePatch::Reorder {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
                 index,
             } => DartConversationStorePatch::Reorder {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity: conversation_identity.map(Into::into),
+                conversation_id,
                 index,
             },
             im_core::messages::ConversationStorePatch::RepairRequired {
@@ -954,8 +1415,13 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
 impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnapshotItem {
     fn from(value: im_core::messages::ConversationSnapshotItem) -> Self {
         Self {
+            conversation_id: value.conversation_id,
+            peer_persona_id: value.peer_persona_id,
+            canonical_group_did: value.canonical_group_did,
+            resolution_state: value.resolution_state.into(),
             thread_kind: value.thread_kind,
             thread_id: value.thread_id,
+            title: value.title,
             conversation_identity: value.conversation_identity.map(Into::into),
             participants: value.participants,
             last_message: value.last_message.map(Into::into),
@@ -1197,6 +1663,9 @@ impl From<im_core::secure::GroupSecureRepairResult> for DartGroupSecureRepairRes
             group: value.group.as_str().to_string(),
             state: value.state.into(),
             repaired: value.repaired,
+            added_devices: value.added_devices,
+            removed_devices: value.removed_devices,
+            remaining_devices: value.remaining_devices,
             problem: value.problem.map(Into::into),
             warnings: value.warnings,
         }
@@ -1337,6 +1806,97 @@ impl From<im_core::messages::SyncDeltaResult> for DartSyncDeltaResult {
     }
 }
 
+impl From<im_core::messages::MessageSyncStatus> for DartMessageSyncStatus {
+    fn from(value: im_core::messages::MessageSyncStatus) -> Self {
+        match value {
+            im_core::messages::MessageSyncStatus::Idle => Self::Idle,
+            im_core::messages::MessageSyncStatus::Changed => Self::Changed,
+            im_core::messages::MessageSyncStatus::RecoveryRequired => Self::RecoveryRequired,
+            im_core::messages::MessageSyncStatus::RetryableFailure => Self::RetryableFailure,
+            im_core::messages::MessageSyncStatus::AuthRevoked => Self::AuthRevoked,
+        }
+    }
+}
+
+impl From<im_core::messages::CommittedIncomingMessage> for DartCommittedIncomingMessage {
+    fn from(value: im_core::messages::CommittedIncomingMessage) -> Self {
+        debug_assert_eq!(value.source, "live_delta");
+        Self {
+            event_id: value.event_id,
+            logical_message_id: value.logical_message_id,
+            source: DartCommittedMessageSource::LiveDelta,
+            direction: value.direction.into(),
+            message: value.message.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncOutcome> for DartMessageSyncOutcome {
+    fn from(value: im_core::messages::MessageSyncOutcome) -> Self {
+        Self {
+            status: value.status.into(),
+            events_applied: value.events_applied,
+            pages_fetched: value.pages_fetched,
+            messages_hydrated: value.messages_hydrated,
+            duplicates_skipped: value.duplicates_skipped,
+            changed_conversation_ids: value.changed_conversation_ids,
+            committed_incoming_messages: value
+                .committed_incoming_messages
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            error_code: value.error_code,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncMode> for DartMessageSyncMode {
+    fn from(value: im_core::messages::MessageSyncMode) -> Self {
+        match value {
+            im_core::messages::MessageSyncMode::Uninitialized => Self::Uninitialized,
+            im_core::messages::MessageSyncMode::Idle => Self::Idle,
+            im_core::messages::MessageSyncMode::Recovering => Self::Recovering,
+            im_core::messages::MessageSyncMode::Retryable => Self::Retryable,
+            im_core::messages::MessageSyncMode::Blocked => Self::Blocked,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDirtyDomain> for DartMessageSyncDirtyDomain {
+    fn from(value: im_core::messages::MessageSyncDirtyDomain) -> Self {
+        match value {
+            im_core::messages::MessageSyncDirtyDomain::Messages => Self::Messages,
+            im_core::messages::MessageSyncDirtyDomain::ReadState => Self::ReadState,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncRetryState> for DartMessageSyncRetryState {
+    fn from(value: im_core::messages::MessageSyncRetryState) -> Self {
+        match value {
+            im_core::messages::MessageSyncRetryState::None => Self::None,
+            im_core::messages::MessageSyncRetryState::Pending => Self::Pending,
+            im_core::messages::MessageSyncRetryState::InFlight => Self::InFlight,
+            im_core::messages::MessageSyncRetryState::Scheduled => Self::Scheduled,
+            im_core::messages::MessageSyncRetryState::PermanentFailure => Self::PermanentFailure,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDiagnostics> for DartMessageSyncDiagnostics {
+    fn from(value: im_core::messages::MessageSyncDiagnostics) -> Self {
+        Self {
+            last_success_at: value.last_success_at,
+            mode: value.mode.into(),
+            pending_mutation_count: value.pending_mutation_count,
+            dirty_domains: value.dirty_domains.into_iter().map(Into::into).collect(),
+            retry_state: value.retry_state.into(),
+            next_retry_at: value.next_retry_at,
+        }
+    }
+}
+
 impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResult {
     fn from(value: im_core::messages::SyncThreadAfterResult) -> Self {
         Self {
@@ -1350,7 +1910,9 @@ impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResul
 
 impl From<im_core::groups::GroupSummary> for DartGroupSummary {
     fn from(value: im_core::groups::GroupSummary) -> Self {
+        let conversation_id = format!("group:{}", value.did.as_str());
         Self {
+            conversation_id,
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
@@ -1366,7 +1928,9 @@ impl From<im_core::groups::GroupSummary> for DartGroupSummary {
 
 impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
     fn from(value: im_core::groups::GroupSnapshot) -> Self {
+        let conversation_id = format!("group:{}", value.did.as_str());
         Self {
+            conversation_id,
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
@@ -1384,7 +1948,10 @@ impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
 impl From<im_core::groups::GroupMember> for DartGroupMember {
     fn from(value: im_core::groups::GroupMember) -> Self {
         Self {
+            membership_id: value.membership_id,
+            peer_persona_id: value.peer_persona_id,
             did: value.did.map(|did| did.as_str().to_string()),
+            credential_did: value.credential_did.map(|did| did.as_str().to_string()),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
             role: value.role,
             status: value.status,
@@ -1402,6 +1969,10 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
             members: value.members.into_iter().map(Into::into).collect(),
             messages: value.messages.into(),
             total: value.total,
+            next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_owned()),
+            has_more: value.has_more,
+            page_group_did: value.page_group.map(|group| group.as_str().to_owned()),
+            group_state_version: value.group_state_version,
             source: value.source,
             warnings: value.warnings,
         }
@@ -1527,6 +2098,39 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             out.sync = event.sync.map(Into::into);
             out
         }
+        ImEvent::SystemNotificationChanged(event) => {
+            let mut out = empty();
+            out.kind = "system_notification_changed".to_string();
+            out.notification_id = Some(event.notification.event_id);
+            out.notification_type = Some(
+                match event.notification.kind {
+                    im_core::system_notifications::SystemNotificationKind::JoinRequested => {
+                        "awiki.device.join-requested.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinClaimed => {
+                        "awiki.device.join-claimed.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinResponseVerified => {
+                        "awiki.device.join-response-verified.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinCompleted => {
+                        "awiki.device.join-completed.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinCancelled => {
+                        "awiki.device.join-cancelled.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinRejected => {
+                        "awiki.device.join-rejected.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinExpired => {
+                        "awiki.device.join-expired.v1"
+                    }
+                }
+                .to_owned(),
+            );
+            out.sync = event.sync.map(Into::into);
+            out
+        }
         ImEvent::LocalNotification(event) => {
             let mut out = empty();
             out.kind = "local_notification".to_string();
@@ -1573,11 +2177,23 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
 impl From<im_core::realtime::RealtimeSyncHint> for DartRealtimeSyncHint {
     fn from(value: im_core::realtime::RealtimeSyncHint) -> Self {
         Self {
-            event_id: value.event_id,
-            event_seq: value.event_seq,
-            event_type: value.event_type,
+            domains: value.domains.into_iter().map(Into::into).collect(),
+            reason: value.reason,
             sync_dirty: value.sync_dirty,
             gap_detected: value.gap_detected,
+            has_unknown_domain: value.has_unknown_domain,
+        }
+    }
+}
+
+impl From<im_core::realtime::SyncDomain> for DartSyncDomain {
+    fn from(value: im_core::realtime::SyncDomain) -> Self {
+        match value {
+            im_core::realtime::SyncDomain::Message => Self::Message,
+            im_core::realtime::SyncDomain::Profile => Self::Profile,
+            im_core::realtime::SyncDomain::AgentInventory => Self::AgentInventory,
+            im_core::realtime::SyncDomain::AgentStatus => Self::AgentStatus,
+            im_core::realtime::SyncDomain::DeviceRegistry => Self::DeviceRegistry,
         }
     }
 }
@@ -1607,7 +2223,10 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::{realtime_event_to_dart, DartRelationStatus};
+    use super::{
+        realtime_event_to_dart, DartActiveSyncAccountBinding, DartGroupSummary,
+        DartHandleRegistrationResult, DartRelationStatus, DartSyncDomain,
+    };
     use im_core::{
         directory::RelationshipStatus,
         ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
@@ -1618,9 +2237,62 @@ mod tests {
             ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
             HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent,
             MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState, RealtimeSyncHint,
-            UnknownNotificationEvent,
+            SystemNotificationChangedEvent, UnknownNotificationEvent,
+        },
+        system_notifications::{
+            SystemNotificationKind, SystemNotificationSnapshot, SystemNotificationState,
         },
     };
+
+    #[test]
+    fn registration_join_required_maps_to_typed_dart_result() {
+        let mapped =
+            DartHandleRegistrationResult::from(im_core::identity::HandleRegistrationResult {
+                identity: None,
+                account_id: None,
+                handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
+                method: im_core::identity::RegistrationMethod::Phone,
+                state: im_core::identity::HandleRegistrationState::JoinRequired,
+                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
+                    did: im_core::ids::Did::parse("did:wba:example.test:existing").unwrap(),
+                    account_verification_token: "single-use-account-verification".to_owned(),
+                }),
+                default_identity_change: None,
+                warnings: Vec::new(),
+            });
+
+        assert_eq!(mapped.state, "join_required");
+        assert!(mapped.identity.is_none());
+        assert!(mapped.account_id.is_none());
+        let join_required = mapped.join_required.expect("typed Join result");
+        assert_eq!(join_required.did, "did:wba:example.test:existing");
+        assert_eq!(
+            join_required.account_verification_token,
+            "single-use-account-verification"
+        );
+    }
+
+    #[test]
+    fn active_sync_binding_mapping_preserves_unbounded_decimal_generations() {
+        let mapped =
+            DartActiveSyncAccountBinding::from(im_core::identity::ActiveSyncAccountBinding {
+                owner_identity_id: "owner-alice".to_owned(),
+                account_id: "account-alice".to_owned(),
+                current_did: "did:wba:awiki.info:user:alice".to_owned(),
+                protocol_device_id: "device-desktop".to_owned(),
+                identity_generation: "184467440737095516160000000000000000001".to_owned(),
+                device_auth_generation: "184467440737095516160000000000000000002".to_owned(),
+            });
+
+        assert_eq!(
+            mapped.identity_generation,
+            "184467440737095516160000000000000000001"
+        );
+        assert_eq!(
+            mapped.device_auth_generation,
+            "184467440737095516160000000000000000002"
+        );
+    }
 
     #[test]
     fn relationship_status_mapping_preserves_directional_truth() {
@@ -1761,13 +2433,65 @@ mod tests {
     }
 
     #[test]
+    fn realtime_event_mapping_exposes_only_trusted_system_notification_signal() {
+        let event = realtime_event_to_dart(ImEvent::SystemNotificationChanged(
+            SystemNotificationChangedEvent {
+                notification: SystemNotificationSnapshot {
+                    event_id: "event-join-1".to_owned(),
+                    did: "did:wba:example.test:alice".to_owned(),
+                    join_session_id: "join-session-secret-adjacent".to_owned(),
+                    kind: SystemNotificationKind::JoinRequested,
+                    state: SystemNotificationState::Pending,
+                    session_revision: 1,
+                    issued_at: "2026-07-23T10:00:00Z".to_owned(),
+                    expires_at: "2026-07-23T10:10:00Z".to_owned(),
+                    first_seen_at: "2026-07-23T10:00:01Z".to_owned(),
+                    terminal: false,
+                },
+                sync: Some(RealtimeSyncHint {
+                    event_id: Some("sync-event-join-1".to_owned()),
+                    event_seq: Some("42".to_owned()),
+                    event_type: Some("system.notification".to_owned()),
+                    domains: std::collections::BTreeSet::from([
+                        im_core::realtime::SyncDomain::DeviceRegistry,
+                    ]),
+                    reason: Some("system.notification".to_owned()),
+                    sync_dirty: false,
+                    gap_detected: false,
+                    has_unknown_domain: false,
+                }),
+            },
+        ));
+
+        assert_eq!(event.kind, "system_notification_changed");
+        assert_eq!(event.notification_id.as_deref(), Some("event-join-1"));
+        assert_eq!(
+            event.notification_type.as_deref(),
+            Some("awiki.device.join-requested.v1")
+        );
+        assert!(event.message.is_none());
+        assert!(event.body.is_none());
+        assert!(event.content_type.is_none());
+        assert!(event.reason.is_none());
+        let sync = event.sync.expect("reliable sync hint");
+        assert_eq!(sync.domains, vec![DartSyncDomain::DeviceRegistry]);
+        assert_eq!(sync.reason.as_deref(), Some("system.notification"));
+    }
+
+    #[test]
     fn realtime_event_mapping_preserves_sync_hint_without_checkpoint_control() {
         let sync = RealtimeSyncHint {
             event_id: Some("sev-1".to_string()),
             event_seq: Some("42".to_string()),
             event_type: Some("message.created".to_string()),
+            domains: std::collections::BTreeSet::from([
+                im_core::realtime::SyncDomain::Message,
+                im_core::realtime::SyncDomain::Profile,
+            ]),
+            reason: Some("message_available".to_string()),
             sync_dirty: true,
             gap_detected: true,
+            has_unknown_domain: true,
         };
 
         let event =
@@ -1779,10 +2503,30 @@ mod tests {
             }));
 
         let hint = event.sync.expect("sync hint is preserved");
-        assert_eq!(hint.event_id.as_deref(), Some("sev-1"));
-        assert_eq!(hint.event_seq.as_deref(), Some("42"));
-        assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+        assert_eq!(
+            hint.domains,
+            vec![DartSyncDomain::Message, DartSyncDomain::Profile]
+        );
+        assert_eq!(hint.reason.as_deref(), Some("message_available"));
         assert!(hint.sync_dirty);
         assert!(hint.gap_detected);
+        assert!(hint.has_unknown_domain);
+    }
+
+    #[test]
+    fn group_summary_mapping_exposes_core_canonical_conversation_id() {
+        let mapped = DartGroupSummary::from(im_core::groups::GroupSummary {
+            id: None,
+            did: im_core::ids::GroupRef::parse("did:example:group").unwrap(),
+            name: Some("Group".to_owned()),
+            display_name: None,
+            avatar_uri: None,
+            my_role: Some("member".to_owned()),
+            membership_status: Some("active".to_owned()),
+            member_count: Some(1),
+            last_message_at: None,
+        });
+
+        assert_eq!(mapped.conversation_id, "group:did:example:group");
     }
 }

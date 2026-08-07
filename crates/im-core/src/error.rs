@@ -2,6 +2,13 @@ use std::fmt;
 
 pub type ImResult<T> = Result<T, ImError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRevokeOutcomeCategory {
+    CancelledBeforeSubmit,
+    RejectedBeforeCommit,
+    OutcomeUnknown,
+}
+
 /// Stable, redacted reasons why an identity vault cannot be opened or verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityVaultFailure {
@@ -55,6 +62,13 @@ pub enum ImError {
     GroupNotFound {
         group: String,
     },
+    CursorInvalid,
+    CursorStale,
+    InventoryIncomplete,
+    InventoryTooLarge,
+    DeviceRevokeOutcome {
+        category: DeviceRevokeOutcomeCategory,
+    },
     MessageNotFound {
         message_id: String,
     },
@@ -67,6 +81,35 @@ pub enum ImError {
     LocalStateUnavailable {
         detail: String,
     },
+    LocalStateUpgradeRequired {
+        from_version: i64,
+        target_version: i64,
+    },
+    LocalStateUpgradeInProgress,
+    LocalStateUpgradeFailed {
+        phase: String,
+        code: String,
+    },
+    IdentityUnresolved {
+        detail: String,
+    },
+    IdentityBindingConflict {
+        detail: String,
+    },
+    ConversationAliasConflict {
+        alias: String,
+        existing_target: String,
+        requested_target: String,
+    },
+    MessageWireIdentityConflict {
+        message_id: String,
+    },
+    CanonicalGroupIdentityMissing {
+        group: String,
+    },
+    LocalProjectionUnavailable {
+        detail: String,
+    },
     PathUnavailable {
         path_kind: String,
         detail: String,
@@ -74,6 +117,11 @@ pub enum ImError {
     CredentialFileUnreadable {
         path_kind: String,
         detail: String,
+    },
+    SkillOnboarding {
+        code: String,
+        phase: String,
+        retryable: bool,
     },
     Service {
         status_code: Option<u16>,
@@ -138,6 +186,21 @@ impl fmt::Display for ImError {
             Self::PermissionDenied => f.write_str("permission denied"),
             Self::PeerNotFound { peer } => write!(f, "peer not found: {peer}"),
             Self::GroupNotFound { group } => write!(f, "group not found: {group}"),
+            Self::CursorInvalid => f.write_str("group page cursor is invalid"),
+            Self::CursorStale => f.write_str("group member inventory changed during pagination"),
+            Self::InventoryIncomplete => f.write_str("group member inventory is incomplete"),
+            Self::InventoryTooLarge => f.write_str("group member inventory exceeds its limit"),
+            Self::DeviceRevokeOutcome { category } => match category {
+                DeviceRevokeOutcomeCategory::CancelledBeforeSubmit => {
+                    f.write_str("device revoke was cancelled before submission")
+                }
+                DeviceRevokeOutcomeCategory::RejectedBeforeCommit => {
+                    f.write_str("device revoke was rejected before commit")
+                }
+                DeviceRevokeOutcomeCategory::OutcomeUnknown => {
+                    f.write_str("device revoke outcome is unknown")
+                }
+            },
             Self::MessageNotFound { message_id } => write!(f, "message not found: {message_id}"),
             Self::TransportUnavailable { detail } => write!(f, "transport unavailable: {detail}"),
             Self::UnsupportedCapability { capability } => {
@@ -146,12 +209,52 @@ impl fmt::Display for ImError {
             Self::LocalStateUnavailable { detail } => {
                 write!(f, "local state unavailable: {detail}")
             }
+            Self::LocalStateUpgradeRequired {
+                from_version,
+                target_version,
+            } => write!(
+                f,
+                "local state upgrade required: schema {from_version} -> {target_version}"
+            ),
+            Self::LocalStateUpgradeInProgress => f.write_str("local state upgrade in progress"),
+            Self::LocalStateUpgradeFailed { phase, code } => {
+                write!(f, "local state upgrade failed during {phase}: {code}")
+            }
+            Self::IdentityUnresolved { detail } => write!(f, "identity unresolved: {detail}"),
+            Self::IdentityBindingConflict { detail } => {
+                write!(f, "identity binding conflict: {detail}")
+            }
+            Self::ConversationAliasConflict {
+                alias,
+                existing_target,
+                requested_target,
+            } => write!(
+                f,
+                "conversation alias conflict for {alias}: existing target {existing_target}, requested target {requested_target}"
+            ),
+            Self::MessageWireIdentityConflict { message_id } => {
+                write!(f, "message wire identity conflict: {message_id}")
+            }
+            Self::CanonicalGroupIdentityMissing { group } => {
+                write!(f, "canonical group identity missing: {group}")
+            }
+            Self::LocalProjectionUnavailable { detail } => {
+                write!(f, "local projection unavailable: {detail}")
+            }
             Self::PathUnavailable { path_kind, detail } => {
                 write!(f, "{path_kind} path unavailable: {detail}")
             }
             Self::CredentialFileUnreadable { path_kind, detail } => {
                 write!(f, "{path_kind} credential file unreadable: {detail}")
             }
+            Self::SkillOnboarding {
+                code,
+                phase,
+                retryable,
+            } => write!(
+                f,
+                "Skill onboarding failed during {phase}: {code} (retryable={retryable})"
+            ),
             Self::Service {
                 status_code,
                 code,

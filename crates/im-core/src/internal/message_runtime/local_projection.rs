@@ -18,6 +18,89 @@ pub(crate) fn persist_messages(
     crate::internal::local_state::messages::upsert_messages(&connection, &records)
 }
 
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+pub(crate) fn persist_remote_messages(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    if messages.is_empty() {
+        return Ok(Default::default());
+    }
+    let mut connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let outcome = crate::internal::local_state::inbound_resolution_backlog::ingest_remote_messages(
+        &transaction,
+        &records,
+        "remote_history",
+    )?;
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(outcome)
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+pub(crate) fn persist_catch_up_remote_messages(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    let mut connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let outcome =
+        crate::internal::local_state::inbound_resolution_backlog::ingest_catch_up_remote_messages(
+            &transaction,
+            &records,
+            "thread_catch_up",
+            &proof,
+        )?;
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(outcome)
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_remote_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_catch_up_remote_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+    _proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
 pub(crate) fn persist_messages(
     _client: &crate::core::ImClient,
@@ -46,6 +129,48 @@ pub(crate) async fn persist_messages_async(
         .await
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_remote_messages_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    if messages.is_empty() {
+        return Ok(Default::default());
+    }
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_remote_messages(records, "remote_history")
+        .await
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_catch_up_remote_messages_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_catch_up_messages(records, "thread_catch_up", proof)
+        .await
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn persist_messages(
     _client: &crate::core::ImClient,
@@ -60,6 +185,48 @@ pub(crate) async fn persist_messages_async(
     _messages: &[crate::messages::Message],
 ) -> crate::ImResult<()> {
     Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn persist_remote_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Ok(Default::default())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn persist_catch_up_remote_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+    _proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Ok(Default::default())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_catch_up_remote_messages_async(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+    _proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Ok(Default::default())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_remote_messages_async(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Ok(Default::default())
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
@@ -565,6 +732,69 @@ pub(crate) async fn persist_direct_e2ee_outgoing_async(
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+pub(crate) fn persist_direct_e2ee_payload_outgoing(
+    connection: &rusqlite::Connection,
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    crate::internal::local_state::messages::upsert_message(
+        connection,
+        &direct_e2ee_payload_outgoing_record(
+            client,
+            target_did,
+            target_handle,
+            peer_scope,
+            payload,
+            sdk_result,
+        ),
+    )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_e2ee_payload_outgoing(
+    _connection: &rusqlite::Connection,
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    _payload: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported(
+        "sync-direct-e2ee-payload-projection",
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_direct_e2ee_payload_outgoing_async(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = direct_e2ee_payload_outgoing_record(
+        client,
+        target_did,
+        target_handle,
+        peer_scope,
+        payload,
+        sdk_result,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_e2ee_attachment_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
@@ -790,6 +1020,7 @@ fn group_e2ee_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -820,6 +1051,7 @@ fn group_e2ee_payload_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -850,6 +1082,7 @@ fn group_e2ee_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
@@ -944,6 +1177,7 @@ fn direct_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -981,6 +1215,7 @@ fn direct_outgoing_result_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1028,6 +1263,7 @@ fn send_projection_record(
                 credential_name: credential_name(client),
                 ..crate::internal::local_state::messages::MessageRecord::default()
             }
+            .with_resolved_wire_thread("direct", target_did)
         }
         crate::messages::MessageTarget::Group(group) => {
             let group_did = group.as_str();
@@ -1060,12 +1296,13 @@ fn send_projection_record(
                 credential_name: credential_name(client),
                 ..crate::internal::local_state::messages::MessageRecord::default()
             }
+            .with_resolved_wire_thread("group", group_did)
         }
     };
     Ok(record)
 }
 
-fn send_projection_result(
+pub(crate) fn send_projection_result(
     client: &crate::core::ImClient,
     target: &crate::messages::MessageTarget,
     body: &crate::messages::MessageBody,
@@ -1327,6 +1564,43 @@ fn direct_e2ee_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_e2ee_payload_outgoing_record(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        receiver_did: target_did.trim().to_owned(),
+        content_type: "application/json".to_owned(),
+        content: serde_json::to_string(payload).unwrap_or_default(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: true,
+        is_read: true,
+        metadata: secure_metadata_json(
+            "direct-e2ee",
+            &sdk_result.message.metadata,
+            direct_metadata_extras(target_handle, peer_scope, target_did),
+        ),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1362,6 +1636,7 @@ fn direct_e2ee_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1396,6 +1671,7 @@ fn group_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1432,6 +1708,7 @@ fn group_outgoing_result_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1466,6 +1743,7 @@ fn direct_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1499,6 +1777,7 @@ fn group_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1849,7 +2128,8 @@ pub(crate) fn message_record_from_message(
         metadata: read_metadata_json(&message.metadata),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
-    })
+    }
+    .with_wire_identity_from_message(client.did().as_str(), message))
 }
 
 #[cfg(feature = "sqlite")]
@@ -2052,6 +2332,7 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "security"
             | "decryption_state"
             | "secure_wire_content_type"
                 if !attribute.value.trim().is_empty() =>
@@ -2156,6 +2437,27 @@ mod tests {
         assert_eq!(value["group_event_seq"], "7");
         assert!(value.get("private_message_b64u").is_none());
         assert!(!encoded.contains("cipher"));
+    }
+
+    #[test]
+    fn read_metadata_keeps_secure_projection_marker() {
+        let metadata = crate::messages::MessageMetadata {
+            attributes: vec![
+                crate::messages::MessageMetadataAttribute {
+                    key: "security".to_owned(),
+                    value: "direct-e2ee".to_owned(),
+                },
+                crate::messages::MessageMetadataAttribute {
+                    key: "ignored".to_owned(),
+                    value: "value".to_owned(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let value: Value = serde_json::from_str(&read_metadata_json(&metadata)).unwrap();
+        assert_eq!(value["security"], "direct-e2ee");
+        assert!(value.get("ignored").is_none());
     }
 
     #[test]
@@ -2413,6 +2715,7 @@ mod tests {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,

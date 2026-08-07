@@ -17,19 +17,26 @@ function run(command, args, options = {}) {
 
 function writeServerConfig(filePath, root) {
   const values = {
-    public_origin: 'https://downloads.example.com',
+    public_origin: 'https://awiki.info',
     public_base_path: '/cli',
-    default_backend_base_url: 'https://tenant.example.com',
-    default_did_host: 'tenant.example.com',
+    default_backend_base_url: 'https://awiki.info',
+    default_did_host: 'awiki.info',
     web_root: `${root}/web`,
     archive_root: `${root}/archive`,
     nginx_config: `${root}/nginx.conf`,
+    nginx_http_snippet: `${root}/nginx-http-snippet.conf`,
     nginx_snippet: `${root}/nginx-snippet.conf`,
+    nginx_backup_root: `${root}/backups`,
     protocol_gateway_checkout: `${root}/gateway`,
+    protocol_gateway_origin: 'http://127.0.0.1:9896',
     protocol_gateway_service: 'protocol-gateway',
     github_repo: 'AgentConnect/awiki-cli-rs2',
     github_workflow: 'build-cli-release.yml',
     github_token: 'test-token',
+    cli_download_max_per_ip: '2',
+    cli_download_max_total: '4',
+    cli_download_rate_after: '1m',
+    cli_download_rate: '512k',
   };
   fs.writeFileSync(filePath, `${Object.entries(values).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join('\n')}\n`);
 }
@@ -65,7 +72,7 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
 
     const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
     assert.equal(manifest.latest, '1.0.20-beta.1');
-    assert.equal(manifest.installer.url, 'https://downloads.example.com/cli/beta/awiki-cli.tgz');
+    assert.equal(manifest.installer.url, 'https://awiki.info/cli/beta/awiki-cli.tgz');
     assert.deepEqual(Object.keys(manifest.packages).sort(), [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
@@ -76,23 +83,52 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     for (const required of [
       'package/package.json', 'package/awiki-release.json',
       'package/scripts/install.js', 'package/scripts/run.js',
+      'package/LICENSE', 'package/LICENSES/Apache-2.0.txt',
+      'package/COMMERCIAL-LICENSING.md', 'package/SOURCE.md',
     ]) assert.match(packageListing.stdout, new RegExp(`^${required}$`, 'm'));
     assert.doesNotMatch(packageListing.stdout, /publish-server|scripts\/release/);
 
     const releaseMetadata = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/awiki-release.json']);
     assert.equal(releaseMetadata.status, 0, releaseMetadata.stderr);
     const metadata = JSON.parse(releaseMetadata.stdout);
-    assert.equal(metadata.default_tenant.backend_base_url, 'https://tenant.example.com');
-    assert.equal(metadata.default_tenant.did_host, 'tenant.example.com');
+    assert.equal(metadata.default_tenant.backend_base_url, 'https://awiki.info');
+    assert.equal(metadata.default_tenant.did_host, 'awiki.info');
+
+    const sourceDocument = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/SOURCE.md']);
+    assert.equal(sourceDocument.status, 0, sourceDocument.stderr);
+    assert.match(sourceDocument.stdout, /Version: 1\.0\.20-beta\.1/);
+    assert.match(sourceDocument.stdout, new RegExp(`Commit: ${'a'.repeat(40)}`));
+    assert.match(sourceDocument.stdout, new RegExp(`tree/${'a'.repeat(40)}`));
+    assert.match(sourceDocument.stdout, new RegExp(`ANP dependency commit: ${'97f321376ff97fdfb2837eb0db7ad90d11040406'}`));
 
     const onboarding = fs.readFileSync(path.join(output, 'onboarding.md'), 'utf8');
-    assert.match(onboarding, /https:\/\/downloads\.example\.com\/cli\/beta\/awiki-cli\.tgz/);
+    assert.match(onboarding, /https:\/\/awiki\.info\/cli\/beta\/awiki-cli\.tgz/);
+    assert.match(onboarding, /AWIKI_SKILL_ONBOARDING_V1/);
+    assert.match(onboarding, /awiki-cli onboarding claim/);
+    assert.match(onboarding, /--expected-agent-handle/);
+    assert.match(onboarding, /--token-stdin/);
+    assert.doesNotMatch(onboarding, /awiki\.ai/);
     assert.doesNotMatch(onboarding, /\{\{[A-Z0-9_]+\}\}/);
     const skillListing = run('tar', ['-tzf', path.join(output, 'awiki-cli-skill.tar.gz')]);
     assert.equal(skillListing.status, 0, skillListing.stderr);
     assert.match(skillListing.stdout, /^SKILL\.md$/m);
     assert.match(skillListing.stdout, /^references\/00-installation\.md$/m);
+    assert.match(skillListing.stdout, /^references\/01-onboarding\.md$/m);
+    assert.match(skillListing.stdout, /^references\/12-mail\.md$/m);
+    assert.match(skillListing.stdout, /^references\/13-tenants\.md$/m);
     assert.doesNotMatch(skillListing.stdout, /(^|\/)\._/m);
+
+    const skillEntry = run('tar', ['-xOzf', path.join(output, 'awiki-cli-skill.tar.gz'), 'SKILL.md']);
+    assert.equal(skillEntry.status, 0, skillEntry.stderr);
+    assert.match(skillEntry.stdout, /AWIKI_SKILL_ONBOARDING_V1/);
+    assert.doesNotMatch(skillEntry.stdout, /awiki\.ai/);
+    const skillOnboarding = run('tar', [
+      '-xOzf', path.join(output, 'awiki-cli-skill.tar.gz'), 'references/01-onboarding.md',
+    ]);
+    assert.equal(skillOnboarding.status, 0, skillOnboarding.stderr);
+    assert.match(skillOnboarding.stdout, /awiki-cli onboarding claim/);
+    assert.match(skillOnboarding.stdout, /--token-stdin/);
+    assert.doesNotMatch(skillOnboarding.stdout, /awiki\.ai/);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

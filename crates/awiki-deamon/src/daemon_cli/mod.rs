@@ -6,22 +6,21 @@ use serde_json::Value;
 
 use std::path::PathBuf;
 
-use crate::agent::{agent_data_paths, generate_product_handle, AgentDefinition, AgentKind};
+use crate::agent::{generate_product_handle, AgentDefinition, AgentKind};
 use crate::commands::setup_daemon_agent;
 use crate::plugins::hermes::{HermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 #[cfg(test)]
 use crate::registration::DidAuthMaterial;
 use crate::registration::{
-    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationExchangeRequest,
-    AgentRegistrationExchangeResult, RegistrationToken, RegistrationTokenMetadata,
-    UserServiceAgentRegistrationClient,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, RegistrationToken,
+    RegistrationTokenMetadata, UserServiceAgentRegistrationClient,
 };
 use crate::runtime::RuntimeInstallStatus;
 use crate::service::{
     current_platform_label, manage_service, require_service_state_root_is_product, ServiceAction,
     ServicePlatform, ServiceStatus,
 };
-use crate::state::{controller_scope_key, DaemonState};
+use crate::state::DaemonState;
 use crate::upgrade::check_release_status;
 use crate::{DaemonConfig, DaemonPersistentConfig};
 
@@ -437,7 +436,7 @@ where
 
     if let Some(existing) = existing {
         ensure_existing_daemon_matches_token_scope(config, &existing, &metadata)?;
-        return recover_existing_daemon_agent(state, client, existing, metadata, token);
+        return recover_existing_daemon_agent(state, existing);
     }
 
     let handle = metadata
@@ -457,75 +456,31 @@ where
     )
 }
 
-fn recover_existing_daemon_agent<C>(
+fn recover_existing_daemon_agent(
     state: &DaemonState,
-    client: &C,
-    mut existing: AgentDefinition,
-    metadata: RegistrationTokenMetadata,
-    token: RegistrationToken,
-) -> Result<AgentDefinition>
-where
-    C: crate::registration::AgentRegistrationClient,
-{
-    let identity = state.load_agent_identity(&existing.agent_did)?;
-    let exchange = client.exchange_token(AgentRegistrationExchangeRequest {
-        token,
-        agent_kind: AgentKind::Daemon,
-        controller_did: metadata.controller_did.clone(),
-        handle: metadata
-            .handle
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| existing.handle.clone()),
-        name: None,
-        did_document: identity.did_document.clone(),
-        endpoint_url: identity.endpoint_url.clone(),
-        key_algorithm: identity.key_algorithm.clone(),
-        public_key: identity.public_key.clone(),
-        allow_existing_agent_did: true,
-    })?;
-    if exchange.did != existing.agent_did {
-        bail!("registration token exchange returned a different DID");
-    }
-    if exchange.agent_kind != AgentKind::Daemon {
-        bail!("registration token exchange returned a non-daemon agent kind");
-    }
-    if exchange.controller_did.trim().is_empty() {
-        bail!("registration token exchange returned an empty controller_did");
-    }
-    let (local_agent_db_path, message_db_path) = agent_data_paths(&existing.agent_did)?;
-    let exchange_scope_key = controller_scope_key(
-        &exchange.controller_user_id,
-        &exchange.controller_full_handle,
-    )?;
-    existing.handle = exchange.handle.clone();
-    existing.controller_user_id = exchange.controller_user_id.clone();
-    existing.controller_full_handle = exchange.controller_full_handle.clone();
-    existing.controller_scope_key = exchange_scope_key;
-    existing.controller_did = exchange.controller_did.clone();
-    existing.local_agent_db_path = local_agent_db_path;
-    existing.message_db_path = message_db_path;
-    existing.status = "active".to_string();
-    state.upsert_agent_definition(&existing)?;
-    store_exchange_auth_token(state, &exchange)?;
-    Ok(existing)
-}
-
-fn store_exchange_auth_token(
-    state: &DaemonState,
-    exchange: &AgentRegistrationExchangeResult,
-) -> Result<()> {
-    if let Some(token) = exchange
-        .access_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
+    existing: AgentDefinition,
+) -> Result<AgentDefinition> {
+    if state
+        .load_agent_device_identity(&existing.agent_did)?
+        .is_none()
     {
+        // Existing Legacy Agents are upgraded through same-DID
+        // did-auth/update_document during foreground startup. Never replay the
+        // old agent-registration protocol with allow_existing_agent_did.
         state
-            .store_agent_auth_token(&exchange.did, token)
-            .context("store agent auth token from registration exchange")?;
+            .load_agent_identity(&existing.agent_did)
+            .with_context(|| {
+                format!(
+                    "agent_identity_migration_required: Legacy identity unavailable for {}",
+                    existing.agent_did
+                )
+            })?;
+        state.record_agent_identity_migration_required(
+            &existing.agent_did,
+            "legacy_upgrade_pending_foreground",
+        )?;
     }
-    Ok(())
+    Ok(existing)
 }
 
 fn existing_daemon_agent(state: &DaemonState) -> Result<Option<AgentDefinition>> {
@@ -624,13 +579,15 @@ fn sync_one_agent_identity(
     im_core: &crate::ImCoreAdapter,
     agent: &AgentDefinition,
 ) -> Result<()> {
-    let identity = state.load_agent_identity(&agent.agent_did)?;
-    let jwt_token = state.load_agent_auth_token(&agent.agent_did)?;
-    let _ = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+    let _ = im_core.client_for_agent(config, state, &agent.agent_did)?;
     Ok(())
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the inline suite tests the status publisher declared later in this module"
+)]
 mod tests {
     use super::*;
     use crate::agent::{agent_data_paths, generate_agent_identity, AgentKind};
@@ -726,25 +683,23 @@ mod tests {
             request: AgentRegistrationExchangeRequest,
         ) -> Result<AgentRegistrationExchangeResult> {
             self.exchange_requests.lock().unwrap().push(request.clone());
-            let did = request
-                .did_document
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap()
-                .to_string();
+            let account_id = "agent-user-1";
+            let (did, handle, access_token) =
+                crate::registration::mock_vnext_exchange_fields(&request, account_id)?;
             let (controller_user_id, controller_full_handle) =
                 self.exchange_scope.lock().unwrap().clone();
             Ok(AgentRegistrationExchangeResult {
                 token_id: "agtok_daemon".to_string(),
                 did,
-                user_id: Some("agent-user-1".to_string()),
+                user_id: Some(account_id.to_string()),
                 agent_kind: request.agent_kind,
                 controller_user_id,
                 controller_full_handle,
                 controller_did: request.controller_did,
-                handle: request.handle,
+                handle,
+                binding_generation: Some("1".to_string()),
                 status: "registered".to_string(),
-                access_token: Some("jwt-agent-secret".to_string()),
+                access_token: Some(access_token),
             })
         }
     }
@@ -865,7 +820,11 @@ mod tests {
             agent_kind: AgentKind::Daemon,
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
-            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+            controller_scope_key: crate::state::controller_scope_key(
+                "user-alice",
+                "alice.anpclaw.com",
+            )
+            .unwrap(),
             controller_did: "did:human:alice".to_string(),
             runtime_plugin_id: None,
             runtime_profile_id: None,
@@ -874,6 +833,35 @@ mod tests {
             local_agent_db_path,
             message_db_path,
             status: "active".to_string(),
+        };
+        state.upsert_agent_definition(&definition).unwrap();
+        definition
+    }
+
+    fn store_vnext_daemon(config: &DaemonConfig, state: &DaemonState) -> AgentDefinition {
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            config,
+            state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
+        let (local_agent_db_path, message_db_path) = agent_data_paths(&identity.agent_did).unwrap();
+        let definition = AgentDefinition {
+            agent_did: identity.agent_did,
+            handle: identity.full_handle,
+            agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_owned(),
+            controller_full_handle: "alice.anpclaw.com".to_owned(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_owned(),
+            controller_did: "did:human:alice".to_owned(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_owned(),
+            local_agent_db_path,
+            message_db_path,
+            status: "active".to_owned(),
         };
         state.upsert_agent_definition(&definition).unwrap();
         definition
@@ -932,13 +920,14 @@ mod tests {
         assert_eq!(agent.controller_did, "did:human:alice");
         assert_eq!(agent.handle, "alice-mac-daemon");
         assert_eq!(client.exchange_count(), 1);
-        assert_eq!(
-            state
-                .load_agent_auth_token(&agent.agent_did)
-                .unwrap()
-                .as_deref(),
-            Some("jwt-agent-secret")
-        );
+        assert!(state
+            .load_agent_auth_token(&agent.agent_did)
+            .unwrap()
+            .is_none());
+        assert!(state
+            .load_agent_device_identity(&agent.agent_did)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -977,23 +966,13 @@ mod tests {
         .unwrap();
 
         let requests = client.exchange_requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].allow_existing_agent_did);
-        assert_eq!(requests[0].agent_kind, AgentKind::Daemon);
-        assert_eq!(requests[0].controller_did, "did:human:alice");
-        assert_eq!(
-            requests[0].did_document.get("id").and_then(Value::as_str),
-            Some(existing.agent_did.as_str())
-        );
+        assert!(requests.is_empty());
         assert_eq!(agent.agent_did, existing.agent_did);
         let recovered = state.load_agent_definition(&existing.agent_did).unwrap();
-        assert_eq!(
-            state
-                .load_agent_auth_token(&existing.agent_did)
-                .unwrap()
-                .as_deref(),
-            Some("jwt-agent-secret")
-        );
+        assert!(state
+            .load_agent_auth_token(&existing.agent_did)
+            .unwrap()
+            .is_none());
         assert_eq!(recovered.controller_user_id, "user-alice");
         assert_eq!(recovered.controller_full_handle, "alice.anpclaw.com");
         assert_eq!(recovered.controller_did, "did:human:alice");
@@ -1023,8 +1002,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(agent.agent_did, existing.agent_did);
-        assert_eq!(agent.controller_did, "did:human:alice-new");
-        assert_eq!(client.exchange_count(), 1);
+        assert_eq!(agent.controller_did, "did:human:alice");
+        assert_eq!(client.exchange_count(), 0);
     }
 
     #[test]
@@ -1208,7 +1187,7 @@ mod tests {
         let (root, mut config, state) = fixture();
         write_status_manifest(root.path(), crate::upgrade::CURRENT_DAEMON_VERSION);
         config.download_base_url = format!("file://{}", root.path().display());
-        let agent = store_existing_daemon(&config, &state);
+        let agent = store_vnext_daemon(&config, &state);
         let im_core = crate::ImCoreAdapter::open(&config).unwrap();
         sync_one_agent_identity(&config, &state, &im_core, &agent).unwrap();
         let client = MockInstallClient::active_daemon_token();

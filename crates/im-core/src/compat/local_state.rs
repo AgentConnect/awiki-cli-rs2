@@ -130,6 +130,14 @@ pub struct OwnerInvariantViolation {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalInvariantViolation {
+    pub table: String,
+    pub invariant: String,
+    pub row_count: i64,
+}
+
+#[cfg(feature = "sqlite")]
 #[doc(hidden)]
 pub fn ensure_schema(connection: &rusqlite::Connection) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)
@@ -166,6 +174,26 @@ pub fn identity_owned_owner_invariants(
             })
             .collect()
     })
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn canonical_conversation_invariants(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<CanonicalInvariantViolation>> {
+    crate::internal::local_state::canonical_invariants::check(connection, owner_identity_id).map(
+        |violations| {
+            violations
+                .into_iter()
+                .map(|violation| CanonicalInvariantViolation {
+                    table: violation.table.to_owned(),
+                    invariant: violation.invariant.to_owned(),
+                    row_count: violation.row_count,
+                })
+                .collect()
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -223,6 +251,9 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             owner_identity_id: record.owner_identity_id,
             owner_did: record.owner_did,
             conversation_id: String::new(),
+            wire_thread_kind: String::new(),
+            wire_thread_ref: String::new(),
+            wire_identity_resolution_state: String::new(),
             thread_id: record.thread_id,
             direction: record.direction,
             sender_did: record.sender_did,
@@ -233,6 +264,8 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             content: record.content,
             title: record.title,
             server_seq: record.server_seq,
+            hydration_state:
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
             sent_at: record.sent_at,
             stored_at: record.stored_at,
             is_e2ee: record.is_e2ee,
@@ -319,11 +352,15 @@ impl From<GroupMemberRecord> for crate::internal::local_state::groups::GroupMemb
             owner_identity_id: record.owner_identity_id,
             group_id: record.group_id,
             user_id: record.user_id,
+            membership_id: String::new(),
+            peer_persona_id: String::new(),
             member_did: record.member_did.clone(),
+            member_credential_did: record.member_did.clone(),
             anchor_kind: "did".to_owned(),
             anchor_value: record.member_did.clone(),
             member_handle: record.member_handle,
             handle_binding_generation: String::new(),
+            membership_epoch: String::new(),
             profile_url: record.profile_url,
             role: record.role,
             status: record.status,

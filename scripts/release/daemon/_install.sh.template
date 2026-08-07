@@ -378,6 +378,9 @@ expected = {
     "awiki-deamon-runtime": "runtime",
     "README.txt": "file",
     "LICENSE": "file",
+    "LICENSE-APACHE": "file",
+    "COMMERCIAL-LICENSING.md": "file",
+    "SOURCE.md": "file",
     "checksums.txt": "file",
 }
 seen = set()
@@ -435,6 +438,9 @@ validate_extracted_package() {
   fi
   [ -f "$INSTALL_DIR/README.txt" ] || die "daemon package does not contain README.txt"
   [ -f "$INSTALL_DIR/LICENSE" ] || die "daemon package does not contain LICENSE"
+  [ -f "$INSTALL_DIR/LICENSE-APACHE" ] || die "daemon package does not contain LICENSE-APACHE"
+  [ -f "$INSTALL_DIR/COMMERCIAL-LICENSING.md" ] || die "daemon package does not contain COMMERCIAL-LICENSING.md"
+  [ -f "$INSTALL_DIR/SOURCE.md" ] || die "daemon package does not contain SOURCE.md"
   [ -f "$INSTALL_DIR/checksums.txt" ] || die "daemon package does not contain checksums.txt"
 }
 

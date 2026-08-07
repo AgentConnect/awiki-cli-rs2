@@ -48,6 +48,10 @@ pub fn reset_test_shutdown_request() {
 }
 
 pub fn request_test_shutdown() {
+    request_shutdown();
+}
+
+pub fn request_shutdown() {
     SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 }
 

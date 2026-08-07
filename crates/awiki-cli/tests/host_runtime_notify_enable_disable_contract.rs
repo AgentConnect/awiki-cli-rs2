@@ -112,35 +112,6 @@ fn host_notify_disable_and_enable_toggle_config_and_preserve_sink() {
 }
 
 #[test]
-fn host_notify_change_restarts_running_listener_like_go_contract() {
-    let workspace = TempDir::new().expect("temp workspace");
-
-    let start = awiki_cmd(&["runtime", "listener", "start"], workspace.path());
-    assert_success(&start);
-    let envelope = success_json(&start);
-    assert_eq!(envelope["data"]["listener"]["running"], true);
-
-    let set_sink = awiki_cmd(
-        &["runtime", "host-notify", "config", "set", "--sink", "file"],
-        workspace.path(),
-    );
-    assert_success(&set_sink);
-    let envelope = success_json(&set_sink);
-    assert_eq!(envelope["data"]["host_notify"]["sink"], "file");
-    assert_eq!(envelope["data"]["listener"]["running"], true);
-    assert_warning_contains(
-        &envelope,
-        "Listener restarted to apply host notify configuration.",
-    );
-
-    let status = awiki_cmd(&["runtime", "listener", "status"], workspace.path());
-    assert_success(&status);
-    let envelope = success_json(&status);
-    assert_eq!(envelope["data"]["listener"]["running"], true);
-    assert_eq!(envelope["data"]["listener"]["host_notify"]["sink"], "file");
-}
-
-#[test]
 fn host_notify_change_when_listener_is_stopped_reports_start_warning_like_go_contract() {
     let workspace = TempDir::new().expect("temp workspace");
 

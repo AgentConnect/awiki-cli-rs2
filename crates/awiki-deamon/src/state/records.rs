@@ -17,6 +17,14 @@ pub struct StateSummary {
     pub schema_version: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DaemonSyncProbe {
+    pub v2_subprotocol_negotiated: bool,
+    pub v2_bootstrap_completed: bool,
+    pub last_reconcile_protocol: Option<String>,
+    pub legacy_sync_used: bool,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliRuntimeProfileRecord {
     pub runtime_profile_id: String,
@@ -533,9 +541,9 @@ pub(crate) fn decode_cli_route_hash_salt_hex(input: &str) -> Result<[u8; 32]> {
         bail!("route hash salt must use 32-byte lowercase hex format");
     }
     let mut salt = [0u8; 32];
-    for index in 0..32 {
+    for (index, byte) in salt.iter_mut().enumerate() {
         let start = index * 2;
-        salt[index] = u8::from_str_radix(&value[start..start + 2], 16)
+        *byte = u8::from_str_radix(&value[start..start + 2], 16)
             .map_err(|error| anyhow::anyhow!("invalid route hash salt hex: {error}"))?;
     }
     Ok(salt)
@@ -693,7 +701,7 @@ pub enum BootstrapStoreOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppMessageAgentBindingRecord {
+pub struct AppPersonalAgentBindingRecord {
     pub binding_id: String,
     pub user_did: String,
     pub inbox_auth_verification_method: String,
@@ -727,6 +735,395 @@ pub struct ProcessedMessageRecord {
     pub schema: String,
     pub processed_at_ms: i64,
     pub status: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDeviceIdentityRecord {
+    pub identity_id: String,
+    pub agent_did: String,
+    pub handle: String,
+    pub display_name: String,
+    pub agent_kind: crate::agent::AgentKind,
+    pub account_id: String,
+    pub full_handle: String,
+    pub binding_generation: String,
+    pub did_document: Value,
+    pub protocol_device_id: String,
+    pub root_key_id: String,
+    pub root_private_key_pem: String,
+    pub device_signing_key_id: String,
+    pub device_signing_private_key_pem: String,
+    pub device_e2ee_key_id: String,
+    pub device_e2ee_private_key_pem: String,
+    pub daemon_subkey_package_json: Option<Value>,
+    pub authorization_status: String,
+    pub role: String,
+    pub management_ready: bool,
+    pub auth_generation: u64,
+    pub access_token: String,
+    pub document_version: u64,
+    pub document_hash: String,
+    pub registry_version: u64,
+    pub identity_status: String,
+    pub legacy_migration_state: String,
+    pub last_error_code: Option<String>,
+}
+
+impl AgentDeviceIdentityRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("identity_id", self.identity_id.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("handle", self.handle.as_str()),
+            ("display_name", self.display_name.as_str()),
+            ("account_id", self.account_id.as_str()),
+            ("full_handle", self.full_handle.as_str()),
+            ("full_handle", self.full_handle.as_str()),
+            ("binding_generation", self.binding_generation.as_str()),
+            ("protocol_device_id", self.protocol_device_id.as_str()),
+            ("root_key_id", self.root_key_id.as_str()),
+            ("root_private_key_pem", self.root_private_key_pem.as_str()),
+            ("device_signing_key_id", self.device_signing_key_id.as_str()),
+            (
+                "device_signing_private_key_pem",
+                self.device_signing_private_key_pem.as_str(),
+            ),
+            ("device_e2ee_key_id", self.device_e2ee_key_id.as_str()),
+            (
+                "device_e2ee_private_key_pem",
+                self.device_e2ee_private_key_pem.as_str(),
+            ),
+            ("authorization_status", self.authorization_status.as_str()),
+            ("role", self.role.as_str()),
+            ("access_token", self.access_token.as_str()),
+            ("document_hash", self.document_hash.as_str()),
+            ("identity_status", self.identity_status.as_str()),
+            (
+                "legacy_migration_state",
+                self.legacy_migration_state.as_str(),
+            ),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.did_document.is_object() {
+            bail!("did_document must be a JSON object");
+        }
+        if self
+            .daemon_subkey_package_json
+            .as_ref()
+            .is_some_and(|value| !value.is_object())
+        {
+            bail!("daemon_subkey_package_json must be a JSON object when present");
+        }
+        if self.did_document.get("id").and_then(Value::as_str) != Some(self.agent_did.as_str()) {
+            bail!("did_document.id must match agent_did");
+        }
+        validate_positive_decimal("binding_generation", &self.binding_generation)?;
+        validate_document_hash(&self.document_hash)?;
+        if self.auth_generation == 0 {
+            bail!("auth_generation must be positive");
+        }
+        if self.document_version == 0 {
+            bail!("document_version must be positive");
+        }
+        if self.registry_version == 0 {
+            bail!("registry_version must be positive");
+        }
+        let expected_identity_id = self
+            .agent_did
+            .rsplit(':')
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("agent_did must have a final DID segment"))?;
+        if self.identity_id != expected_identity_id {
+            bail!("identity_id must equal the final agent DID segment");
+        }
+        match self.authorization_status.as_str() {
+            "active" | "revoked" => {}
+            _ => bail!("authorization_status must be active or revoked"),
+        }
+        match self.role.as_str() {
+            "admin" | "member" => {}
+            _ => bail!("role must be admin or member"),
+        }
+        match self.identity_status.as_str() {
+            "active" | "revoked" | "migration_required" | "blocked" => {}
+            _ => bail!("unsupported identity_status"),
+        }
+        match self.legacy_migration_state.as_str() {
+            "not_required" | "completed" | "migration_required" | "blocked" => {}
+            _ => bail!("unsupported legacy_migration_state"),
+        }
+        match self.identity_status.as_str() {
+            "active" => {
+                if self.authorization_status != "active"
+                    || self.role != "admin"
+                    || !self.management_ready
+                    || !matches!(
+                        self.legacy_migration_state.as_str(),
+                        "not_required" | "completed"
+                    )
+                    || self.last_error_code.is_some()
+                {
+                    bail!(
+                        "active identity must be active ready-admin with a completed migration state and no error"
+                    );
+                }
+            }
+            "revoked" => {
+                if self.authorization_status != "revoked"
+                    || self.management_ready
+                    || !matches!(
+                        self.legacy_migration_state.as_str(),
+                        "not_required" | "completed"
+                    )
+                {
+                    bail!("revoked identity has an inconsistent authorization state");
+                }
+            }
+            "migration_required" => {
+                if self.legacy_migration_state != "migration_required"
+                    || self.last_error_code.is_none()
+                {
+                    bail!("migration_required identity must carry its closed migration state and error code");
+                }
+            }
+            "blocked" => {
+                if self.legacy_migration_state != "blocked" || self.last_error_code.is_none() {
+                    bail!("blocked identity must carry its closed migration state and error code");
+                }
+            }
+            _ => unreachable!("identity_status was validated above"),
+        }
+        if self
+            .last_error_code
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("last_error_code must not be empty when present");
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for AgentDeviceIdentityRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentDeviceIdentityRecord")
+            .field("identity_id", &self.identity_id)
+            .field("agent_did", &self.agent_did)
+            .field("handle", &self.handle)
+            .field("display_name", &self.display_name)
+            .field("agent_kind", &self.agent_kind)
+            .field("account_id", &self.account_id)
+            .field("full_handle", &self.full_handle)
+            .field("binding_generation", &self.binding_generation)
+            .field("did_document", &self.did_document)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("root_key_id", &self.root_key_id)
+            .field("root_private_key_pem", &"<redacted-private-key>")
+            .field("device_signing_key_id", &self.device_signing_key_id)
+            .field("device_signing_private_key_pem", &"<redacted-private-key>")
+            .field("device_e2ee_key_id", &self.device_e2ee_key_id)
+            .field("device_e2ee_private_key_pem", &"<redacted-private-key>")
+            .field(
+                "daemon_subkey_package_json",
+                &self
+                    .daemon_subkey_package_json
+                    .as_ref()
+                    .map(|_| "<redacted-daemon-subkey-package>"),
+            )
+            .field("authorization_status", &self.authorization_status)
+            .field("role", &self.role)
+            .field("management_ready", &self.management_ready)
+            .field("auth_generation", &self.auth_generation)
+            .field("access_token", &"<redacted-token>")
+            .field("document_version", &self.document_version)
+            .field("document_hash", &self.document_hash)
+            .field("registry_version", &self.registry_version)
+            .field("identity_status", &self.identity_status)
+            .field("legacy_migration_state", &self.legacy_migration_state)
+            .field("last_error_code", &self.last_error_code)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingAgentRegistrationRecord {
+    pub registration_id: String,
+    pub dedupe_key: String,
+    pub agent_kind: crate::agent::AgentKind,
+    pub controller_did: String,
+    pub handle: String,
+    pub display_name: String,
+    pub agent_did: String,
+    pub protocol_device_id: String,
+    pub document_digest: String,
+    pub request_digest: String,
+    pub secret_payload_json: Value,
+    pub status: String,
+    pub attempt_count: u32,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl PendingAgentRegistrationRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("registration_id", self.registration_id.as_str()),
+            ("dedupe_key", self.dedupe_key.as_str()),
+            ("controller_did", self.controller_did.as_str()),
+            ("handle", self.handle.as_str()),
+            ("display_name", self.display_name.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("protocol_device_id", self.protocol_device_id.as_str()),
+            ("document_digest", self.document_digest.as_str()),
+            ("request_digest", self.request_digest.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.secret_payload_json.is_object() {
+            bail!("secret_payload_json must be a JSON object");
+        }
+        if !matches!(
+            self.status.as_str(),
+            "pending" | "retryable" | "blocked" | "completed"
+        ) {
+            bail!("unsupported pending registration status: {}", self.status);
+        }
+        for (field_name, value) in [
+            ("last_error_code", self.last_error_code.as_deref()),
+            ("last_error_summary", self.last_error_summary.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                bail!("{field_name} must not be empty when present");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for PendingAgentRegistrationRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingAgentRegistrationRecord")
+            .field("registration_id", &self.registration_id)
+            .field("dedupe_key", &self.dedupe_key)
+            .field("agent_kind", &self.agent_kind)
+            .field("controller_did", &self.controller_did)
+            .field("handle", &self.handle)
+            .field("display_name", &self.display_name)
+            .field("agent_did", &self.agent_did)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("document_digest", &self.document_digest)
+            .field("request_digest", &self.request_digest)
+            .field("secret_payload_json", &"<redacted-registration-payload>")
+            .field("status", &self.status)
+            .field("attempt_count", &self.attempt_count)
+            .field("last_error_code", &self.last_error_code)
+            .field("last_error_summary", &self.last_error_summary)
+            .field("created_at_ms", &self.created_at_ms)
+            .field("updated_at_ms", &self.updated_at_ms)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingAgentRegistrationStoreOutcome {
+    Inserted,
+    Duplicate,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingAgentLegacyUpgradeRecord {
+    pub agent_did: String,
+    pub agent_kind: crate::agent::AgentKind,
+    pub protocol_device_id: String,
+    pub target_document_hash: String,
+    pub secret_payload_json: Value,
+    pub status: String,
+    pub attempt_count: u32,
+    pub last_error_code: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+impl PendingAgentLegacyUpgradeRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field, value) in [
+            ("agent_did", self.agent_did.as_str()),
+            ("protocol_device_id", self.protocol_device_id.as_str()),
+            ("target_document_hash", self.target_document_hash.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field} must not be empty");
+            }
+        }
+        validate_document_hash(&self.target_document_hash)?;
+        if !self.secret_payload_json.is_object() {
+            bail!("Legacy upgrade secret payload must be a JSON object");
+        }
+        if !matches!(
+            self.status.as_str(),
+            "prepared" | "retryable" | "completed" | "blocked"
+        ) {
+            bail!("unsupported Agent Legacy upgrade pending status");
+        }
+        if self
+            .last_error_code
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("last_error_code must not be empty when present");
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for PendingAgentLegacyUpgradeRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingAgentLegacyUpgradeRecord")
+            .field("agent_did", &self.agent_did)
+            .field("agent_kind", &self.agent_kind)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("target_document_hash", &self.target_document_hash)
+            .field("secret_payload_json", &"<redacted-legacy-upgrade-payload>")
+            .field("status", &self.status)
+            .field("attempt_count", &self.attempt_count)
+            .field("last_error_code", &self.last_error_code)
+            .field("updated_at_ms", &self.updated_at_ms)
+            .finish()
+    }
+}
+
+fn validate_positive_decimal(field_name: &str, value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.starts_with('0')
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("{field_name} must be a canonical positive decimal string");
+    }
+    Ok(())
+}
+
+fn validate_document_hash(value: &str) -> Result<()> {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        bail!("document_hash must use the sha256 base64url format");
+    };
+    if digest.len() != 43
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("document_hash must use the sha256 base64url format");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -810,7 +1207,7 @@ impl UserDelegatedIdentityRecord {
     }
 }
 
-impl AppMessageAgentBindingRecord {
+impl AppPersonalAgentBindingRecord {
     pub fn validate(&self) -> Result<()> {
         for (field_name, value) in [
             ("binding_id", self.binding_id.as_str()),
@@ -1448,7 +1845,7 @@ impl HermesNativeSessionRecord {
 fn stable_hermes_session_record_id(route_key: &str, stored_session_id: &str) -> String {
     let digest = Sha256::digest(route_key.as_bytes());
     let digest = Sha256::digest([digest.as_slice(), stored_session_id.as_bytes()].concat());
-    format!("hns_{:x}", digest)
+    format!("hns_{digest:x}")
 }
 
 pub(crate) fn validate_cli_route_key(route_key: &str) -> Result<()> {
