@@ -333,18 +333,16 @@ where
         let (pending_ref, mut pending) =
             load_or_create_pending_registration(self.core, &store, &request, &target)?;
         verify_pending_matches_request(&pending, &request, &target)?;
-        if pending.remote_result.is_none() {
-            if pending.remote_attempted {
-                match self
-                    .transport
-                    .reconcile_pending_registration(&pending)
-                    .await?
-                {
-                    crate::internal::transport::PendingRegistrationReconciliation::Absent => {}
-                    committed => {
-                        apply_registration_reconciliation(&mut pending, committed)?;
-                        store.save(&pending)?;
-                    }
+        if pending.remote_result.is_none() && pending.remote_attempted {
+            match self
+                .transport
+                .reconcile_pending_registration(&pending)
+                .await?
+            {
+                crate::internal::transport::PendingRegistrationReconciliation::Absent => {}
+                committed => {
+                    apply_registration_reconciliation(&mut pending, committed)?;
+                    store.save(&pending)?;
                 }
             }
         }

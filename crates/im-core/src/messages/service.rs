@@ -3345,14 +3345,14 @@ impl<'a> MessageService<'a> {
                 .iter()
                 .map(crate::internal::message_runtime::conversations::message_from_record)
                 .collect::<crate::ImResult<Vec<_>>>()?;
-            return Ok(super::MessagePage {
+            Ok(super::MessagePage {
                 items,
                 next_cursor: None,
                 has_more,
                 source: Some("local_projection".to_owned()),
                 resolved_dids: Vec::new(),
                 warnings: Vec::new(),
-            });
+            })
         }
         #[cfg(not(feature = "sqlite"))]
         {

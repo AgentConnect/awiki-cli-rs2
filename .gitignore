@@ -47,6 +47,8 @@ packages/*/macos/Frameworks/*.xcframework/
 packages/*/macos/Frameworks/*.framework/
 packages/*/macos/Frameworks/*.a
 packages/*/macos/Frameworks/*.dylib
+packages/*/ios/Frameworks/*.artifact.json
+packages/*/macos/Frameworks/*.artifact.json
 
 # Local environment files
 .env

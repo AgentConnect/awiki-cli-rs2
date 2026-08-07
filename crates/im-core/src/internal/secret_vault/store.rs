@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct FileSecretVaultStore {
@@ -221,7 +224,13 @@ fn temp_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("record.json");
-    path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nanos))
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        sequence
+    ))
 }
 
 #[cfg(unix)]

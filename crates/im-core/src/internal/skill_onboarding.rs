@@ -680,12 +680,18 @@ pub(crate) async fn recover_legacy_claim_with_remote<R: SkillOnboardingRemote>(
         }
     }
 
-    let status = core
+    let selector = crate::identity::IdentitySelector::LocalAlias(legacy.local_alias.clone());
+    let device = core
         .identities()
-        .upgrade_legacy_identity_async(crate::identity::IdentitySelector::LocalAlias(
-            legacy.local_alias.clone(),
-        ))
+        .device_summary_async(selector.clone())
         .await?;
+    let status = if device.mode == crate::identity::IdentityDeviceMode::VNext {
+        crate::identity::LegacyUpgradeStatus::Completed
+    } else {
+        core.identities()
+            .upgrade_legacy_identity_async(selector)
+            .await?
+    };
     if let crate::identity::LegacyUpgradeStatus::RetryRequired { code, .. } = status {
         return Err(onboarding_error(
             "skill_onboarding_legacy_upgrade_retry_required",

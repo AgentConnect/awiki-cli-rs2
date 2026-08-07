@@ -157,14 +157,12 @@ impl SystemNotificationChangeSession {
         if let Some(change) = self.initial.pop_front() {
             return Some(change);
         }
-        loop {
-            match self.receiver.recv().await {
-                Ok(change) => return Some(change),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    return Some(self.store.repair_required("subscriber_lag"));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+        match self.receiver.recv().await {
+            Ok(change) => Some(change),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                Some(self.store.repair_required("subscriber_lag"))
             }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
     }
 

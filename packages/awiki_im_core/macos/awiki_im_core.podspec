@@ -21,9 +21,8 @@ Pod::Spec.new do |s|
   s.platform         = :osx, '10.14'
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
-  s.pod_target_xcconfig = {
-    'OTHER_LDFLAGS' => "$(inherited) -force_load $(PODS_TARGET_SRCROOT)/Frameworks/AwikiImCore.xcframework/#{macos_slice}/libawiki_im_core.a"
-  }
+  # FRB resolves native symbols from the process. Keep one Runner-side
+  # force-load so the static archive is not dead-stripped.
   s.user_target_xcconfig = {
     'OTHER_LDFLAGS' => "$(inherited) -force_load $(PODS_ROOT)/../Flutter/ephemeral/.symlinks/plugins/awiki_im_core/macos/Frameworks/AwikiImCore.xcframework/#{macos_slice}/libawiki_im_core.a -Wl,-export_dynamic"
   }

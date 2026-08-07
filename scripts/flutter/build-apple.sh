@@ -63,6 +63,7 @@ IOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/include"
 MACOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/macos/include"
 IOS_XCFRAMEWORK="${IOS_FRAMEWORK_DIR}/AwikiImCore.xcframework"
 MACOS_XCFRAMEWORK="${MACOS_FRAMEWORK_DIR}/AwikiImCore.xcframework"
+ARTIFACT_MANIFEST_TOOL="${ROOT_DIR}/scripts/flutter/native-artifact-manifest.py"
 IOS_TARGETS=(
   aarch64-apple-ios
   aarch64-apple-ios-sim
@@ -246,6 +247,11 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
     -library "${SIM_DIR}/lib${LIB_NAME}.a" \
     -headers "${IOS_INCLUDE_DIR}" \
     -output "${IOS_XCFRAMEWORK}"
+  ios_targets="$(IFS=,; echo "${IOS_TARGETS[*]}")"
+  python3 "${ARTIFACT_MANIFEST_TOOL}" write \
+    --platform ios \
+    --targets "${ios_targets}" \
+    --features blocking,sqlite,http,ios
 fi
 
 if [[ "${BUILD_MACOS}" == "1" ]]; then
@@ -266,4 +272,9 @@ if [[ "${BUILD_MACOS}" == "1" ]]; then
     -library "${MACOS_DIR}/lib${LIB_NAME}.a" \
     -headers "${MACOS_INCLUDE_DIR}" \
     -output "${MACOS_XCFRAMEWORK}"
+  macos_targets="$(IFS=,; echo "${MACOS_TARGETS[*]}")"
+  python3 "${ARTIFACT_MANIFEST_TOOL}" write \
+    --platform macos \
+    --targets "${macos_targets}" \
+    --features blocking,sqlite,http,macos,group-e2ee
 fi

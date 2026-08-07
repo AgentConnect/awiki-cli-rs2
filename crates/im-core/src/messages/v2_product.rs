@@ -521,13 +521,11 @@ pub(super) async fn send_group_async(
     #[cfg(feature = "group-e2ee")]
     {
         let client = client.clone();
-        return crate::internal::runtime::worker::run_blocking(move || {
-            send_group(&client, request)
-        })
-        .await
-        .map_err(|err| crate::ImError::Internal {
-            message: err.to_string(),
-        })?;
+        crate::internal::runtime::worker::run_blocking(move || send_group(&client, request))
+            .await
+            .map_err(|err| crate::ImError::Internal {
+                message: err.to_string(),
+            })?
     }
     #[cfg(not(feature = "group-e2ee"))]
     {

@@ -1436,9 +1436,7 @@ fn sync_delta_metadata_only_plain_direct_peer(
     {
         return None;
     }
-    let Some(payload) = event.payload.as_object() else {
-        return None;
-    };
+    let payload = event.payload.as_object()?;
     let thread = map_value(payload.get("thread"));
     let thread_kind = string_from_object(thread, "kind")
         .or_else(|| string_from_object(Some(payload), "thread_kind"))
@@ -1455,9 +1453,9 @@ fn sync_delta_metadata_only_plain_direct_peer(
         .or_else(|| map_value(payload.get("body")));
     message
         .is_some_and(|message| {
-            !message
+            message
                 .get("content")
-                .is_some_and(|content| !content.is_null())
+                .is_none_or(|content| content.is_null())
         })
         .then_some(peer_did)
 }

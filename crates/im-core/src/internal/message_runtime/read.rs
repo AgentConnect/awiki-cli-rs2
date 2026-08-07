@@ -1749,10 +1749,10 @@ pub(crate) async fn hydrate_reliable_direct_message_async(
         .into_iter()
         .flatten()
         .any(|message| {
-            if !message
+            if message
                 .get("accepted_at")
                 .and_then(Value::as_str)
-                .is_some_and(|accepted_at| !accepted_at.trim().is_empty())
+                .is_none_or(|accepted_at| accepted_at.trim().is_empty())
             {
                 return false;
             }

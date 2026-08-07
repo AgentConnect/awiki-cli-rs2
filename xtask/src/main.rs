@@ -3,9 +3,53 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use time::{Date, Month, OffsetDateTime};
 
 const MAX_LINES: usize = 2500;
 const TEST_MAX_LINES: usize = 3000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Source,
+    Test,
+    Generated,
+}
+
+impl FileKind {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "Source" => Ok(Self::Source),
+            "Test" => Ok(Self::Test),
+            "Generated" => Ok(Self::Generated),
+            _ => bail!("unknown exception kind {value:?}; expected Source, Test, or Generated"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Source => "Source",
+            Self::Test => "Test",
+            Self::Generated => "Generated",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSizeException {
+    kind: FileKind,
+    approved_lines: usize,
+    owner: String,
+    review_by: Date,
+    reason: String,
+    exit_condition: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RustFileSize {
+    lines: usize,
+    policy_limit: usize,
+    kind: FileKind,
+}
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -170,7 +214,8 @@ fn is_numeric_identifier(value: &str) -> bool {
 fn check_structure() -> Result<()> {
     let root = std::env::current_dir().context("read current dir")?;
     let exceptions = read_exceptions(&root.join("docs/file-size-exceptions.md"))?;
-    let mut offenders = Vec::new();
+    let today = OffsetDateTime::now_utc().date();
+    let mut files = BTreeMap::new();
     visit(&root, &mut |path| {
         if !is_counted_rust(path) {
             return Ok(());
@@ -182,25 +227,83 @@ fn check_structure() -> Result<()> {
             .replace('\\', "/");
         let count = count_lines(path)?;
         let max_lines = max_lines_for_path(&rel);
-        if count > max_lines && !exceptions.contains_key(&rel) {
-            offenders.push((rel, count, max_lines));
-        }
+        let kind = if is_generated_rust(path)? {
+            FileKind::Generated
+        } else if is_test_rust_path(&rel) {
+            FileKind::Test
+        } else {
+            FileKind::Source
+        };
+        files.insert(
+            rel,
+            RustFileSize {
+                lines: count,
+                policy_limit: max_lines,
+                kind,
+            },
+        );
         Ok(())
     })?;
-    if offenders.is_empty() {
+
+    let mut violations = Vec::new();
+    for (path, size) in &files {
+        if size.lines <= size.policy_limit {
+            if exceptions.contains_key(path) {
+                violations.push(format!(
+                    "{path}: {0} lines is within the {1}-line policy; remove its stale exception",
+                    size.lines, size.policy_limit
+                ));
+            }
+            continue;
+        }
+
+        let Some(exception) = exceptions.get(path) else {
+            violations.push(format!(
+                "{path}: {0} lines exceeds {1} without docs/file-size-exceptions.md entry",
+                size.lines, size.policy_limit
+            ));
+            continue;
+        };
+        if exception.kind != size.kind {
+            violations.push(format!(
+                "{path}: exception kind {} does not match detected kind {}",
+                exception.kind.label(),
+                size.kind.label()
+            ));
+        }
+        if size.lines > exception.approved_lines {
+            violations.push(format!(
+                "{path}: {0} lines exceeds its approved exception ceiling of {1}",
+                size.lines, exception.approved_lines
+            ));
+        }
+        if exception.review_by < today {
+            violations.push(format!(
+                "{path}: exception review date {} has expired; review, split, or renew it",
+                exception.review_by
+            ));
+        }
+    }
+    for path in exceptions.keys() {
+        if !files.contains_key(path) {
+            violations.push(format!(
+                "{path}: exception does not refer to a counted Rust file"
+            ));
+        }
+    }
+
+    if violations.is_empty() {
         println!(
-            "structure ok: no undocumented Rust files over policy limits ({MAX_LINES} source, {TEST_MAX_LINES} tests)"
+            "structure ok: all Rust files meet policy or have current, bounded exceptions ({MAX_LINES} source, {TEST_MAX_LINES} tests)"
         );
         return Ok(());
     }
-    for (path, lines, max_lines) in &offenders {
-        eprintln!(
-            "{path}: {lines} lines exceeds {max_lines} without docs/file-size-exceptions.md entry"
-        );
+    for violation in &violations {
+        eprintln!("{violation}");
     }
     bail!(
-        "structure check failed with {} undocumented oversized Rust files",
-        offenders.len()
+        "structure check failed with {} file-size policy violations",
+        violations.len()
     )
 }
 
@@ -216,15 +319,24 @@ fn is_test_rust_path(rel: &str) -> bool {
     rel.contains("/tests/") || rel.ends_with("/tests.rs")
 }
 
-fn read_exceptions(path: &Path) -> Result<BTreeMap<String, String>> {
+fn read_exceptions(path: &Path) -> Result<BTreeMap<String, FileSizeException>> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    parse_exceptions(&text, &path.display().to_string())
+}
+
+fn parse_exceptions(text: &str, source: &str) -> Result<BTreeMap<String, FileSizeException>> {
     let mut entries = BTreeMap::new();
-    for line in text.lines() {
+    let mut in_table = false;
+    for (line_index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        if !trimmed.starts_with('|') || trimmed.contains("Rust path") || trimmed.contains("---") {
+        if trimmed.starts_with("| Rust path |") {
+            in_table = true;
+            continue;
+        }
+        if !in_table || !trimmed.starts_with('|') {
             continue;
         }
         let cells: Vec<_> = trimmed
@@ -232,13 +344,90 @@ fn read_exceptions(path: &Path) -> Result<BTreeMap<String, String>> {
             .split('|')
             .map(str::trim)
             .collect();
-        if let Some(rust_path) = cells.first() {
-            if !rust_path.is_empty() && rust_path.starts_with('`') && rust_path.ends_with('`') {
-                entries.insert(rust_path.trim_matches('`').to_string(), trimmed.to_string());
-            }
+        if cells.first().is_some_and(|cell| cell.starts_with("---")) {
+            continue;
+        }
+        if cells.len() != 7 {
+            bail!(
+                "{source}:{}: expected 7 exception columns, found {}",
+                line_index + 1,
+                cells.len()
+            );
+        }
+        let rust_path = cells[0];
+        if !rust_path.starts_with('`') || !rust_path.ends_with('`') || rust_path.len() < 3 {
+            bail!(
+                "{source}:{}: Rust path must be a non-empty backticked path",
+                line_index + 1
+            );
+        }
+        let rust_path = rust_path.trim_matches('`').to_string();
+        let exception = FileSizeException {
+            kind: FileKind::parse(cells[1])
+                .with_context(|| format!("{source}:{}: invalid kind", line_index + 1))?,
+            approved_lines: cells[2].parse::<usize>().with_context(|| {
+                format!(
+                    "{source}:{}: approved lines must be an integer",
+                    line_index + 1
+                )
+            })?,
+            owner: required_exception_cell(source, line_index, "owner", cells[3])?,
+            review_by: parse_review_date(cells[4])
+                .with_context(|| format!("{source}:{}: invalid review date", line_index + 1))?,
+            reason: required_exception_cell(source, line_index, "reason", cells[5])?,
+            exit_condition: required_exception_cell(
+                source,
+                line_index,
+                "exit condition",
+                cells[6],
+            )?,
+        };
+        if exception.approved_lines == 0 {
+            bail!(
+                "{source}:{}: approved lines must be greater than zero",
+                line_index + 1
+            );
+        }
+        if entries.insert(rust_path.clone(), exception).is_some() {
+            bail!(
+                "{source}:{}: duplicate exception for {rust_path}",
+                line_index + 1
+            );
         }
     }
     Ok(entries)
+}
+
+fn required_exception_cell(
+    source: &str,
+    line_index: usize,
+    name: &str,
+    value: &str,
+) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "-" {
+        bail!("{source}:{}: {name} must not be empty", line_index + 1);
+    }
+    Ok(value.to_string())
+}
+
+fn parse_review_date(value: &str) -> Result<Date> {
+    let parts = value
+        .split('-')
+        .map(str::parse::<i32>)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("review date must use YYYY-MM-DD, got {value:?}"))?;
+    if parts.len() != 3 || parts[0] < 0 {
+        bail!("review date must use YYYY-MM-DD, got {value:?}");
+    }
+    let month = u8::try_from(parts[1])
+        .ok()
+        .and_then(|month| Month::try_from(month).ok())
+        .with_context(|| format!("invalid month in review date {value:?}"))?;
+    let day =
+        u8::try_from(parts[2]).with_context(|| format!("invalid day in review date {value:?}"))?;
+    Date::from_calendar_date(parts[0], month, day)
+        .with_context(|| format!("invalid review date {value:?}"))
 }
 
 fn visit(dir: &Path, f: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
@@ -274,4 +463,53 @@ fn is_counted_rust(path: &Path) -> bool {
 fn count_lines(path: &Path) -> Result<usize> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     Ok(text.lines().count())
+}
+
+fn is_generated_rust(path: &Path) -> Result<bool> {
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    Ok(text
+        .lines()
+        .take(8)
+        .any(|line| line.contains("@generated") || line.contains("automatically generated")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: &str = "| Rust path | Kind | Approved lines | Owner | Review by | Reason | Exit condition |\n| --- | --- | ---: | --- | --- | --- | --- |\n";
+
+    #[test]
+    fn exception_table_requires_complete_governance_metadata() {
+        let text = format!(
+            "{HEADER}| `crates/example/src/lib.rs` | Source | 2600 | Example team | 2099-12-31 | Cohesive migration state machine. | Split transport from persistence after migration. |\n"
+        );
+        let entries = parse_exceptions(&text, "test table").expect("valid table");
+        let entry = entries
+            .get("crates/example/src/lib.rs")
+            .expect("parsed exception");
+        assert_eq!(entry.kind, FileKind::Source);
+        assert_eq!(entry.approved_lines, 2600);
+        assert_eq!(entry.owner, "Example team");
+        assert_eq!(entry.review_by.to_string(), "2099-12-31");
+    }
+
+    #[test]
+    fn exception_table_rejects_missing_exit_condition() {
+        let text = format!(
+            "{HEADER}| `crates/example/src/lib.rs` | Source | 2600 | Example team | 2099-12-31 | Temporary migration. | - |\n"
+        );
+        let error = parse_exceptions(&text, "test table").expect_err("missing exit condition");
+        assert!(error
+            .to_string()
+            .contains("exit condition must not be empty"));
+    }
+
+    #[test]
+    fn exception_table_rejects_duplicate_paths() {
+        let row = "| `crates/example/src/lib.rs` | Source | 2600 | Example team | 2099-12-31 | Temporary migration. | Split after migration. |\n";
+        let error = parse_exceptions(&format!("{HEADER}{row}{row}"), "test table")
+            .expect_err("duplicate path");
+        assert!(error.to_string().contains("duplicate exception"));
+    }
 }

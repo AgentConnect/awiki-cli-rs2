@@ -41,6 +41,48 @@ test("Flutter package carries the canonical license bundle", () => {
   }
 });
 
+test("macOS static IM Core has one Runner force-load boundary", () => {
+  const podspec = fs.readFileSync(
+    path.join(
+      root,
+      "packages/awiki_im_core/macos/awiki_im_core.podspec",
+    ),
+    "utf8",
+  );
+  assert.match(podspec, /vendored_frameworks/);
+  assert.doesNotMatch(podspec, /pod_target_xcconfig/);
+  assert.equal((podspec.match(/-force_load/g) || []).length, 1);
+  assert.equal((podspec.match(/-export_dynamic/g) || []).length, 1);
+});
+
+test("Apple builds write a verifiable native artifact manifest", () => {
+  const buildScript = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-apple.sh"),
+    "utf8",
+  );
+  const verifier = fs.readFileSync(
+    path.join(root, "scripts/flutter/verify-native-artifact.sh"),
+    "utf8",
+  );
+  assert.match(buildScript, /native-artifact-manifest\.py/);
+  assert.match(buildScript, /--platform ios/);
+  assert.match(buildScript, /--platform macos/);
+  assert.match(buildScript, /--targets "\$\{macos_targets\}"/);
+  assert.match(verifier, /verify --platform "\$platform"/);
+
+  const help = spawnSync(
+    "python3",
+    [
+      path.join(root, "scripts/flutter/native-artifact-manifest.py"),
+      "--help",
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  expectSuccess(help);
+  assert.match(help.stdout, /write/);
+  assert.match(help.stdout, /verify/);
+});
+
 test(
   "Apple dry-run limits a macOS XCFramework to the requested architecture",
   { skip: process.platform === "win32" },

@@ -70,10 +70,9 @@ impl<'a> SystemNotificationService<'a> {
         query: super::SystemNotificationListQuery,
     ) -> crate::ImResult<super::SystemNotificationChangeSession> {
         let items = self.list(query).await?;
-        Ok(self
-            .client
+        self.client
             .system_notification_store()
-            .watch_for_client(self.client, items)?)
+            .watch_for_client(self.client, items)
     }
 }
 
