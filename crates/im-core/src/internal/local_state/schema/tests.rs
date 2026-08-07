@@ -2361,10 +2361,10 @@ PRAGMA user_version=35;
     )
     .unwrap();
     db.execute(
-        "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at) VALUES ('legacy-v3-receipt',1,?1,?2,'initiator','op_legacy_12345678',?3,'user-1','owner-1','alice.example.invalid','did:wba:example.invalid:users:alice-old','did:wba:example.invalid:users:alice-new','7','completed','2026-08-07T00:00:00Z','2026-08-07T00:00:01Z')",
+        "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at) VALUES ('legacy-incomplete-receipt',1,?1,?2,'initiator','op_legacy_12345678',?3,'user-1','owner-1','alice.example.invalid','did:wba:example.invalid:users:alice-old','did:wba:example.invalid:users:alice-new','7','completed','2026-08-07T00:00:00Z','2026-08-07T00:00:01Z')",
         rusqlite::params![
-            crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION,
-            crate::internal::identity_handle_recovery_pending::CONTRACT_HASH,
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH,
             crate::internal::identity_transition_pending::state_root_fingerprint(&path),
         ],
     )
@@ -2386,12 +2386,8 @@ PRAGMA user_version=35;
     assert_index_exists(&db, "idx_identity_transition_owner_phase");
     assert_index_exists(&db, "idx_identity_transition_account_generation");
     assert_index_exists(&db, "idx_identity_transition_handle_epoch");
-    let legacy = crate::internal::identity_transition_pending::load(&path, "legacy-v3-receipt")
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        legacy.phase,
-        crate::internal::identity_transition_pending::TransitionPhase::Completed
+    assert!(
+        crate::internal::identity_transition_pending::load(&path, "legacy-incomplete-receipt")
+            .is_err()
     );
-    assert!(legacy.current_device_id.is_none());
 }

@@ -152,41 +152,6 @@ impl IdentityTransitionMarker {
         Ok(marker)
     }
 
-    pub(crate) fn initiator(
-        sqlite_path: &Path,
-        pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecovery,
-        result: &crate::internal::identity_handle_recovery_pending::RecoveryRemoteResult,
-    ) -> crate::ImResult<Self> {
-        let now = now()?;
-        let marker = Self {
-            schema_version: 1,
-            contract_version: crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
-                .to_owned(),
-            contract_hash: crate::internal::identity_handle_recovery_pending::CONTRACT_HASH
-                .to_owned(),
-            recovery_id: pending.recovery_id.clone(),
-            source_kind: TransitionSourceKind::Initiator,
-            source_id: pending.operation_id.clone(),
-            state_root_fingerprint: state_root_fingerprint(sqlite_path),
-            account_user_id: result.account_user_id.clone(),
-            owner_identity_id: pending.owner_identity_id.clone(),
-            handle: result.handle.clone(),
-            previous_did: result.previous_did.clone(),
-            current_did: result.did.clone(),
-            binding_generation: result.binding_generation.clone(),
-            current_device_id: Some(result.bootstrap_device_id.clone()),
-            device_auth_generation: Some(result.auth_generation.to_string()),
-            registry_version: Some(result.registry_version.to_string()),
-            applied_at: None,
-            metadata_json: "{}".to_owned(),
-            phase: TransitionPhase::Pending,
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        marker.validate()?;
-        Ok(marker)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn joined_device(
         sqlite_path: &Path,
@@ -232,16 +197,11 @@ impl IdentityTransitionMarker {
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
-        let contract_is_v3 = self.contract_version
-            == crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
-            && self.contract_hash
-                == crate::internal::identity_handle_recovery_pending::CONTRACT_HASH;
-        let contract_is_v4 = self.contract_version
-            == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
-            && self.contract_hash
-                == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH;
         if self.schema_version != 1
-            || !(contract_is_v3 || contract_is_v4)
+            || self.contract_version
+                != crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+            || self.contract_hash
+                != crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
             || self.recovery_id.trim().is_empty()
             || self.source_id.trim().is_empty()
             || self.account_user_id.trim().is_empty()
@@ -254,9 +214,7 @@ impl IdentityTransitionMarker {
                 &self.metadata_json,
             )
             .is_err()
-            || (self.contract_version
-                == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
-                && self.metadata_json != "{}")
+            || self.metadata_json != "{}"
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -272,8 +230,6 @@ impl IdentityTransitionMarker {
             }
         }
         if self.phase == TransitionPhase::Completed
-            && self.contract_version
-                == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
             && (self.current_device_id.as_deref().unwrap_or("").is_empty()
                 || self.device_auth_generation.is_none()
                 || self.registry_version.is_none()
@@ -457,10 +413,11 @@ pub(crate) fn persist(
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if other_active_transition != 0 {
+        let code = crate::identity::HandleRecoveryErrorCode::LocalTransitionPending.as_str();
         return Err(crate::ImError::Service {
             status_code: None,
-            code: Some("handle_recovery_transition_chain_unsupported".to_owned()),
-            message: "handle_recovery_transition_chain_unsupported".to_owned(),
+            code: Some(code.to_owned()),
+            message: code.to_owned(),
             data: None,
         });
     }
@@ -858,7 +815,7 @@ fn migrate_local_state_inner(
                 marker.current_did,
                 now,
                 serde_json::json!({
-                    "protocol": "manifest_handle_recovery_v1",
+                    "protocol": "manifest_handle_recovery_v4",
                     "operation_id": marker.source_id,
                     "binding_generation": marker.binding_generation,
                 })
@@ -1070,9 +1027,9 @@ mod tests {
     fn test_marker(path: &Path) -> IdentityTransitionMarker {
         IdentityTransitionMarker {
             schema_version: 1,
-            contract_version: crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
-                .to_owned(),
-            contract_hash: crate::internal::identity_handle_recovery_pending::CONTRACT_HASH
+            contract_version:
+                crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned(),
+            contract_hash: crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
                 .to_owned(),
             recovery_id: "recovery-1".to_owned(),
             source_kind: TransitionSourceKind::Initiator,
@@ -1141,25 +1098,21 @@ mod tests {
     }
 
     #[test]
-    fn marker_accepts_only_exact_v3_or_v4_contract_pair() {
+    fn marker_accepts_only_the_exact_v4_contract_pair() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("contract-pair.sqlite");
         let mut marker = test_marker(&path);
         assert!(marker.validate().is_ok());
 
-        marker.contract_version =
-            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned();
+        marker.contract_version = "unsupported-handle-recovery-contract".to_owned();
         assert_eq!(
             marker.validate().unwrap_err(),
             crate::ImError::PermissionDenied
         );
 
-        marker.contract_hash =
-            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH.to_owned();
-        assert!(marker.validate().is_ok());
-
         marker.contract_version =
-            crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION.to_owned();
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned();
+        marker.contract_hash = "0".repeat(64);
         assert_eq!(
             marker.validate().unwrap_err(),
             crate::ImError::PermissionDenied
@@ -1366,9 +1319,9 @@ mod tests {
 
         let marker = IdentityTransitionMarker {
             schema_version: 1,
-            contract_version: crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
-                .to_owned(),
-            contract_hash: crate::internal::identity_handle_recovery_pending::CONTRACT_HASH
+            contract_version:
+                crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned(),
+            contract_hash: crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
                 .to_owned(),
             recovery_id: "recovery-1".to_owned(),
             source_kind: TransitionSourceKind::Initiator,
@@ -1428,6 +1381,17 @@ mod tests {
                 )
                 .unwrap(),
             2
+        );
+        let metadata: String = connection
+            .query_row(
+                "SELECT metadata FROM identity_did_history WHERE owner_identity_id='owner-1' AND did='did:wba:example.invalid:users:alice-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap()["protocol"],
+            "manifest_handle_recovery_v4"
         );
     }
 
@@ -1501,8 +1465,8 @@ mod tests {
                 "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at) VALUES (?1,1,?2,?3,'initiator','recover-1',?4,'user-1','e1_owner','alice.example.invalid','did:wba:example.invalid:user:alice:e1_old','did:wba:example.invalid:user:alice:e1_owner','7',?5,'2026-08-03T00:00:00Z','2026-08-03T00:00:00Z')",
                 rusqlite::params![
                     format!("recovery-{phase}"),
-                    crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION,
-                    crate::internal::identity_handle_recovery_pending::CONTRACT_HASH,
+                    crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+                    crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH,
                     state_root_fingerprint(&path),
                     phase,
                 ],

@@ -39,13 +39,6 @@ enum HandleRecoveryFailureCode {
   localTransitionPending,
   localMigrationUnsupported,
   unknownEpoch,
-  notPrepared,
-  userPresenceRequired,
-  transitionMismatch,
-  transitionChainUnsupported,
-  remoteStateChanged,
-  localStateUnavailable,
-  blocked,
 }
 
 extension HandleRecoveryFailureCodeRetryability on HandleRecoveryFailureCode {

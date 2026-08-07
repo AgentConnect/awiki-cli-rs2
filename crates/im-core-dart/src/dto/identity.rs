@@ -47,15 +47,10 @@ pub enum DartHandleRecoveryPhase {
     AwaitingFactor,
     ReadyToCommit,
     RemoteOutcomeUnknown,
-    Prepared,
-    RemoteCommitPending,
     RemoteCommitted,
     IdentityTransitionPending,
-    IdentitySwitched,
-    Completed,
     Applied,
     QuarantinedKeyUnavailable,
-    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +62,6 @@ pub enum DartHandleRecoveryErrorCode {
     LocalTransitionPending,
     LocalMigrationUnsupported,
     UnknownEpoch,
-    HandleRecoveryNotPrepared,
-    HandleRecoveryUserPresenceRequired,
-    HandleRecoveryTransitionMismatch,
-    HandleRecoveryTransitionChainUnsupported,
-    HandleRecoveryRemoteStateChanged,
-    HandleRecoveryOutcomeUnknown,
-    HandleRecoveryLocalStateUnavailable,
-    HandleRecoveryBlocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +103,7 @@ pub struct DartHandleRecoveryProgress {
     pub phase: DartHandleRecoveryPhase,
     pub impact: DartHandleRecoveryImpact,
     pub reset_reference: Option<DartHandleRecoveryResetReference>,
-    pub blocked_code: Option<DartHandleRecoveryErrorCode>,
+    pub failure_code: Option<DartHandleRecoveryErrorCode>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

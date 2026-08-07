@@ -110,33 +110,20 @@ impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgr
                 im_core::identity::HandleRecoveryPhase::RemoteOutcomeUnknown => {
                     DartHandleRecoveryPhase::RemoteOutcomeUnknown
                 }
-                im_core::identity::HandleRecoveryPhase::Prepared => {
-                    DartHandleRecoveryPhase::Prepared
-                }
-                im_core::identity::HandleRecoveryPhase::RemoteCommitPending => {
-                    DartHandleRecoveryPhase::RemoteCommitPending
-                }
                 im_core::identity::HandleRecoveryPhase::RemoteCommitted => {
                     DartHandleRecoveryPhase::RemoteCommitted
                 }
                 im_core::identity::HandleRecoveryPhase::IdentityTransitionPending => {
                     DartHandleRecoveryPhase::IdentityTransitionPending
                 }
-                im_core::identity::HandleRecoveryPhase::IdentitySwitched => {
-                    DartHandleRecoveryPhase::IdentitySwitched
-                }
-                im_core::identity::HandleRecoveryPhase::Completed => {
-                    DartHandleRecoveryPhase::Completed
-                }
                 im_core::identity::HandleRecoveryPhase::Applied => DartHandleRecoveryPhase::Applied,
                 im_core::identity::HandleRecoveryPhase::QuarantinedKeyUnavailable => {
                     DartHandleRecoveryPhase::QuarantinedKeyUnavailable
                 }
-                im_core::identity::HandleRecoveryPhase::Blocked => DartHandleRecoveryPhase::Blocked,
             },
             impact: value.impact.into(),
             reset_reference: value.reset_reference.map(Into::into),
-            blocked_code: value.blocked_code.map(Into::into),
+            failure_code: value.failure_code.map(Into::into),
         }
     }
 }
@@ -188,21 +175,21 @@ impl From<im_core::identity::AuthorizedJoinActivationProgress>
 impl From<im_core::identity::HandleRecoveryErrorCode> for DartHandleRecoveryErrorCode {
     fn from(value: im_core::identity::HandleRecoveryErrorCode) -> Self {
         match value {
-            im_core::identity::HandleRecoveryErrorCode::FactorRetryRequired => Self::FactorRetryRequired,
+            im_core::identity::HandleRecoveryErrorCode::FactorRetryRequired => {
+                Self::FactorRetryRequired
+            }
             im_core::identity::HandleRecoveryErrorCode::ResultAbsent => Self::ResultAbsent,
             im_core::identity::HandleRecoveryErrorCode::OutcomeUnknown => Self::OutcomeUnknown,
-            im_core::identity::HandleRecoveryErrorCode::LocalKeyUnavailable => Self::LocalKeyUnavailable,
-            im_core::identity::HandleRecoveryErrorCode::LocalTransitionPending => Self::LocalTransitionPending,
-            im_core::identity::HandleRecoveryErrorCode::LocalMigrationUnsupported => Self::LocalMigrationUnsupported,
+            im_core::identity::HandleRecoveryErrorCode::LocalKeyUnavailable => {
+                Self::LocalKeyUnavailable
+            }
+            im_core::identity::HandleRecoveryErrorCode::LocalTransitionPending => {
+                Self::LocalTransitionPending
+            }
+            im_core::identity::HandleRecoveryErrorCode::LocalMigrationUnsupported => {
+                Self::LocalMigrationUnsupported
+            }
             im_core::identity::HandleRecoveryErrorCode::UnknownEpoch => Self::UnknownEpoch,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryNotPrepared => Self::HandleRecoveryNotPrepared,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryUserPresenceRequired => Self::HandleRecoveryUserPresenceRequired,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryTransitionMismatch => Self::HandleRecoveryTransitionMismatch,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryTransitionChainUnsupported => Self::HandleRecoveryTransitionChainUnsupported,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryRemoteStateChanged => Self::HandleRecoveryRemoteStateChanged,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryOutcomeUnknown => Self::HandleRecoveryOutcomeUnknown,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable => Self::HandleRecoveryLocalStateUnavailable,
-            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryBlocked => Self::HandleRecoveryBlocked,
         }
     }
 }

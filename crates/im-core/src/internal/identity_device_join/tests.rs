@@ -960,7 +960,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
             status_code: None,
             code: Some(code),
             ..
-        }) if code == "handle_recovery_transition_mismatch"
+        }) if code == "unknown_epoch"
     ));
     assert_eq!(
         JoinStateStore::new(&candidate)
@@ -1155,21 +1155,21 @@ VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
     db.execute(
         "UPDATE identity_transition_pending SET contract_version=?1,contract_hash=?2 WHERE recovery_id=?3",
         rusqlite::params![
-            crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION,
-            crate::internal::identity_handle_recovery_pending::CONTRACT_HASH,
+            "unsupported-handle-recovery-contract",
+            "0".repeat(64),
             marker.recovery_id,
         ],
     )
     .unwrap();
     drop(db);
-    assert!(
+    assert_eq!(
         super::super::identity_handle_recovery_runtime::authorized_receipt(
             &recovery_core,
             crate::identity::IdentitySelector::Did(receipt.current_did.clone()),
         )
         .await
-        .unwrap()
-        .is_none()
+        .unwrap_err(),
+        crate::ImError::PermissionDenied
     );
     assert_eq!(
         crate::internal::group_rebind_recovery::handle_recovery_job_counts(

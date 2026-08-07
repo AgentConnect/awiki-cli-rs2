@@ -26,12 +26,12 @@ fn recovery_facade_uses_the_frozen_phase_and_error_vocabulary() {
         "\"identity_transition_pending\""
     );
     assert_eq!(
-        HandleRecoveryErrorCode::HandleRecoveryOutcomeUnknown.as_str(),
-        "handle_recovery_outcome_unknown"
+        HandleRecoveryErrorCode::OutcomeUnknown.as_str(),
+        "outcome_unknown"
     );
     assert_eq!(
-        HandleRecoveryErrorCode::HandleRecoveryTransitionChainUnsupported.as_str(),
-        "handle_recovery_transition_chain_unsupported"
+        HandleRecoveryErrorCode::LocalMigrationUnsupported.as_str(),
+        "local_migration_unsupported"
     );
 }
 

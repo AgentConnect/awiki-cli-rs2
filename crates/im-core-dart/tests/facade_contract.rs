@@ -38,7 +38,7 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
             current_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-new").unwrap(),
             binding_generation: Some("8".to_owned()),
             state_root_fingerprint: Some("sha256:test".to_owned()),
-            phase: im_core::identity::HandleRecoveryPhase::Blocked,
+            phase: im_core::identity::HandleRecoveryPhase::QuarantinedKeyUnavailable,
             impact: im_core::identity::HandleRecoveryImpact {
                 local_ordinary_data_will_migrate: true,
                 other_devices_must_rejoin: true,
@@ -57,17 +57,17 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
                 source_kind: im_core::identity::HandleRecoveryTransitionSourceKind::Initiator,
                 source_id: "operation-1".to_owned(),
             }),
-            blocked_code: Some(im_core::identity::HandleRecoveryErrorCode::HandleRecoveryBlocked),
+            failure_code: Some(im_core::identity::HandleRecoveryErrorCode::LocalKeyUnavailable),
         },
     );
 
     assert_eq!(
         mapped.phase,
-        awiki_im_core::dto::identity::DartHandleRecoveryPhase::Blocked
+        awiki_im_core::dto::identity::DartHandleRecoveryPhase::QuarantinedKeyUnavailable
     );
     assert_eq!(
-        mapped.blocked_code,
-        Some(awiki_im_core::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryBlocked)
+        mapped.failure_code,
+        Some(awiki_im_core::dto::identity::DartHandleRecoveryErrorCode::LocalKeyUnavailable)
     );
     let reset = mapped.reset_reference.unwrap();
     assert_eq!(reset.owner_identity_id, "owner-1");

@@ -83,12 +83,14 @@ Rules:
 
 ### 4.2 Manifest Handle Recovery boundary
 
-Handle Recovery is an environment-level, host-neutral Core state machine behind the
+Manifest Handle Recovery V4.0 is an environment-level, host-neutral Core state machine behind the
 default-off `multi_device_handle_recovery_enabled` option. Core owns OTP/grant exchange,
 fresh root/device/E2EE generation, signed commit proof, Vault-only exact retry state,
-source-bound `identity_transition_pending`, stable-owner epoch migration, fresh JWT,
+the SQLite `handle_recovery_operations_v4` index, source-bound
+`identity_transition_pending`, stable-owner epoch migration, fresh JWT,
 new P5 PreKey publication, and transport-only P4 group convergence. Dart is a typed
-projection of the same seven operations; it does not implement a second state machine.
+projection of that state machine; it does not implement a second state machine. Core creates
+the opaque operation ID when OTP is requested, and every later call addresses that exact ID.
 
 The transition marker is persisted before Registry checkpoint replacement. Initiator
 markers bind the authoritative commit operation ID; joined-device markers bind the exact
@@ -99,16 +101,23 @@ DID-only, E2EE, or malformed profiles fail closed, and Recovery never enters P6/
 `awaiting_p6`.
 
 The JSON-RPC transport treats an HTTP success with a zero-byte response body as
-`TransportUnavailable` with a fixed, body-free diagnostic. For a Recovery Commit this is an
-ambiguous mutation outcome: Core keeps the durable proof in `remoteCommitPending`, returns
-`handle_recovery_outcome_unknown`, and a later resume replays the exact request. A non-empty
-malformed JSON body remains `Serialization`; neither classification exposes response content.
+`TransportUnavailable` with a fixed, body-free diagnostic. For a V4 Commit this is an ambiguous
+mutation outcome: Core keeps the operation in `remote_outcome_unknown`, returns the closed public
+error `outcome_unknown`, and a later resume first calls `handle_recovery_result_get_v4`. A committed
+result is applied locally; `result_absent` permits the same frozen intent to retry Commit. Core never
+blindly creates a new intent or key after an uncertain outcome. A non-empty malformed JSON body
+remains `Serialization`; neither classification exposes response content.
 
-V1 deliberately has no CLI command, Daemon task, Agent recovery entrypoint, UI route, or
-process-global identity. Those hosts can be added later by calling the typed Core service
-with an explicit `IdentitySelector`; the cryptographic and durable orchestration remains
-inside Core. The separate legacy Registry epoch adoption authority is available for App
-migration only when the exact vNext binding is active and no transition marker exists.
+Pre-attempt discard first claims `pre_commit && commit_attempted=false` in the SQLite operation
+index and only then idempotently deletes Vault material, so concurrent activation and discard cannot
+both win. When a post-attempt Grant refresh observes a changed authoritative binding, Core performs
+a second Result Get before classifying the operation as superseded; this closes the
+`result_absent -> delayed Commit -> factor exchange` window without adding protocol or storage state.
+
+V4.0 has no V3 wire methods, V3 phase aliases, or V3 error aliases. CLI, Daemon, and Agent
+recovery entrypoints remain out of scope; any later host must call the typed Core service with an
+explicit `IdentitySelector`. The separate legacy Registry epoch adoption authority is not a
+Manifest Handle Recovery compatibility path and cannot authorize V4.0 N-k adoption.
 
 ### 4.1 Local multi-device authorization projection
 

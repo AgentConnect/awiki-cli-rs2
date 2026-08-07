@@ -10424,20 +10424,12 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryErrorCode {
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
             0 => crate::dto::identity::DartHandleRecoveryErrorCode::FactorRetryRequired,
-1 => crate::dto::identity::DartHandleRecoveryErrorCode::ResultAbsent,
-2 => crate::dto::identity::DartHandleRecoveryErrorCode::OutcomeUnknown,
-3 => crate::dto::identity::DartHandleRecoveryErrorCode::LocalKeyUnavailable,
-4 => crate::dto::identity::DartHandleRecoveryErrorCode::LocalTransitionPending,
-5 => crate::dto::identity::DartHandleRecoveryErrorCode::LocalMigrationUnsupported,
-6 => crate::dto::identity::DartHandleRecoveryErrorCode::UnknownEpoch,
-7 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryNotPrepared,
-8 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryUserPresenceRequired,
-9 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryTransitionMismatch,
-10 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryTransitionChainUnsupported,
-11 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryRemoteStateChanged,
-12 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryOutcomeUnknown,
-13 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable,
-14 => crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryBlocked,
+            1 => crate::dto::identity::DartHandleRecoveryErrorCode::ResultAbsent,
+            2 => crate::dto::identity::DartHandleRecoveryErrorCode::OutcomeUnknown,
+            3 => crate::dto::identity::DartHandleRecoveryErrorCode::LocalKeyUnavailable,
+            4 => crate::dto::identity::DartHandleRecoveryErrorCode::LocalTransitionPending,
+            5 => crate::dto::identity::DartHandleRecoveryErrorCode::LocalMigrationUnsupported,
+            6 => crate::dto::identity::DartHandleRecoveryErrorCode::UnknownEpoch,
             _ => unreachable!("Invalid variant for DartHandleRecoveryErrorCode: {}", inner),
         };
     }
@@ -10554,15 +10546,10 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryPhase {
             0 => crate::dto::identity::DartHandleRecoveryPhase::AwaitingFactor,
             1 => crate::dto::identity::DartHandleRecoveryPhase::ReadyToCommit,
             2 => crate::dto::identity::DartHandleRecoveryPhase::RemoteOutcomeUnknown,
-            3 => crate::dto::identity::DartHandleRecoveryPhase::Prepared,
-            4 => crate::dto::identity::DartHandleRecoveryPhase::RemoteCommitPending,
-            5 => crate::dto::identity::DartHandleRecoveryPhase::RemoteCommitted,
-            6 => crate::dto::identity::DartHandleRecoveryPhase::IdentityTransitionPending,
-            7 => crate::dto::identity::DartHandleRecoveryPhase::IdentitySwitched,
-            8 => crate::dto::identity::DartHandleRecoveryPhase::Completed,
-            9 => crate::dto::identity::DartHandleRecoveryPhase::Applied,
-            10 => crate::dto::identity::DartHandleRecoveryPhase::QuarantinedKeyUnavailable,
-            11 => crate::dto::identity::DartHandleRecoveryPhase::Blocked,
+            3 => crate::dto::identity::DartHandleRecoveryPhase::RemoteCommitted,
+            4 => crate::dto::identity::DartHandleRecoveryPhase::IdentityTransitionPending,
+            5 => crate::dto::identity::DartHandleRecoveryPhase::Applied,
+            6 => crate::dto::identity::DartHandleRecoveryPhase::QuarantinedKeyUnavailable,
             _ => unreachable!("Invalid variant for DartHandleRecoveryPhase: {}", inner),
         };
     }
@@ -10587,7 +10574,7 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryProgress {
             <Option<crate::dto::identity::DartHandleRecoveryResetReference>>::sse_decode(
                 deserializer,
             );
-        let mut var_blockedCode =
+        let mut var_failureCode =
             <Option<crate::dto::identity::DartHandleRecoveryErrorCode>>::sse_decode(deserializer);
         return crate::dto::identity::DartHandleRecoveryProgress {
             operation_id: var_operationId,
@@ -10601,7 +10588,7 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryProgress {
             phase: var_phase,
             impact: var_impact,
             reset_reference: var_resetReference,
-            blocked_code: var_blockedCode,
+            failure_code: var_failureCode,
         };
     }
 }
@@ -16077,14 +16064,6 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRecoveryE
             Self::LocalTransitionPending => 4.into_dart(),
             Self::LocalMigrationUnsupported => 5.into_dart(),
             Self::UnknownEpoch => 6.into_dart(),
-            Self::HandleRecoveryNotPrepared => 7.into_dart(),
-            Self::HandleRecoveryUserPresenceRequired => 8.into_dart(),
-            Self::HandleRecoveryTransitionMismatch => 9.into_dart(),
-            Self::HandleRecoveryTransitionChainUnsupported => 10.into_dart(),
-            Self::HandleRecoveryRemoteStateChanged => 11.into_dart(),
-            Self::HandleRecoveryOutcomeUnknown => 12.into_dart(),
-            Self::HandleRecoveryLocalStateUnavailable => 13.into_dart(),
-            Self::HandleRecoveryBlocked => 14.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -16243,15 +16222,10 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRecoveryP
             Self::AwaitingFactor => 0.into_dart(),
             Self::ReadyToCommit => 1.into_dart(),
             Self::RemoteOutcomeUnknown => 2.into_dart(),
-            Self::Prepared => 3.into_dart(),
-            Self::RemoteCommitPending => 4.into_dart(),
-            Self::RemoteCommitted => 5.into_dart(),
-            Self::IdentityTransitionPending => 6.into_dart(),
-            Self::IdentitySwitched => 7.into_dart(),
-            Self::Completed => 8.into_dart(),
-            Self::Applied => 9.into_dart(),
-            Self::QuarantinedKeyUnavailable => 10.into_dart(),
-            Self::Blocked => 11.into_dart(),
+            Self::RemoteCommitted => 3.into_dart(),
+            Self::IdentityTransitionPending => 4.into_dart(),
+            Self::Applied => 5.into_dart(),
+            Self::QuarantinedKeyUnavailable => 6.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -16282,7 +16256,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRecoveryP
             self.phase.into_into_dart().into_dart(),
             self.impact.into_into_dart().into_dart(),
             self.reset_reference.into_into_dart().into_dart(),
-            self.blocked_code.into_into_dart().into_dart(),
+            self.failure_code.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -20157,22 +20131,21 @@ impl SseEncode for crate::dto::identity::DartHandleRecoveryAccountEpochReceipt {
 impl SseEncode for crate::dto::identity::DartHandleRecoveryErrorCode {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(match self {crate::dto::identity::DartHandleRecoveryErrorCode::FactorRetryRequired => { 0 }
-crate::dto::identity::DartHandleRecoveryErrorCode::ResultAbsent => { 1 }
-crate::dto::identity::DartHandleRecoveryErrorCode::OutcomeUnknown => { 2 }
-crate::dto::identity::DartHandleRecoveryErrorCode::LocalKeyUnavailable => { 3 }
-crate::dto::identity::DartHandleRecoveryErrorCode::LocalTransitionPending => { 4 }
-crate::dto::identity::DartHandleRecoveryErrorCode::LocalMigrationUnsupported => { 5 }
-crate::dto::identity::DartHandleRecoveryErrorCode::UnknownEpoch => { 6 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryNotPrepared => { 7 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryUserPresenceRequired => { 8 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryTransitionMismatch => { 9 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryTransitionChainUnsupported => { 10 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryRemoteStateChanged => { 11 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryOutcomeUnknown => { 12 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable => { 13 }
-crate::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryBlocked => { 14 }
- _ => { unimplemented!(""); }}, serializer);
+        <i32>::sse_encode(
+            match self {
+                crate::dto::identity::DartHandleRecoveryErrorCode::FactorRetryRequired => 0,
+                crate::dto::identity::DartHandleRecoveryErrorCode::ResultAbsent => 1,
+                crate::dto::identity::DartHandleRecoveryErrorCode::OutcomeUnknown => 2,
+                crate::dto::identity::DartHandleRecoveryErrorCode::LocalKeyUnavailable => 3,
+                crate::dto::identity::DartHandleRecoveryErrorCode::LocalTransitionPending => 4,
+                crate::dto::identity::DartHandleRecoveryErrorCode::LocalMigrationUnsupported => 5,
+                crate::dto::identity::DartHandleRecoveryErrorCode::UnknownEpoch => 6,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -20261,15 +20234,10 @@ impl SseEncode for crate::dto::identity::DartHandleRecoveryPhase {
                 crate::dto::identity::DartHandleRecoveryPhase::AwaitingFactor => 0,
                 crate::dto::identity::DartHandleRecoveryPhase::ReadyToCommit => 1,
                 crate::dto::identity::DartHandleRecoveryPhase::RemoteOutcomeUnknown => 2,
-                crate::dto::identity::DartHandleRecoveryPhase::Prepared => 3,
-                crate::dto::identity::DartHandleRecoveryPhase::RemoteCommitPending => 4,
-                crate::dto::identity::DartHandleRecoveryPhase::RemoteCommitted => 5,
-                crate::dto::identity::DartHandleRecoveryPhase::IdentityTransitionPending => 6,
-                crate::dto::identity::DartHandleRecoveryPhase::IdentitySwitched => 7,
-                crate::dto::identity::DartHandleRecoveryPhase::Completed => 8,
-                crate::dto::identity::DartHandleRecoveryPhase::Applied => 9,
-                crate::dto::identity::DartHandleRecoveryPhase::QuarantinedKeyUnavailable => 10,
-                crate::dto::identity::DartHandleRecoveryPhase::Blocked => 11,
+                crate::dto::identity::DartHandleRecoveryPhase::RemoteCommitted => 3,
+                crate::dto::identity::DartHandleRecoveryPhase::IdentityTransitionPending => 4,
+                crate::dto::identity::DartHandleRecoveryPhase::Applied => 5,
+                crate::dto::identity::DartHandleRecoveryPhase::QuarantinedKeyUnavailable => 6,
                 _ => {
                     unimplemented!("");
                 }
@@ -20297,7 +20265,7 @@ impl SseEncode for crate::dto::identity::DartHandleRecoveryProgress {
             serializer,
         );
         <Option<crate::dto::identity::DartHandleRecoveryErrorCode>>::sse_encode(
-            self.blocked_code,
+            self.failure_code,
             serializer,
         );
     }

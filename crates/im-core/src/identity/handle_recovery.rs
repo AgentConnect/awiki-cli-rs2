@@ -100,15 +100,10 @@ pub enum HandleRecoveryPhase {
     AwaitingFactor,
     ReadyToCommit,
     RemoteOutcomeUnknown,
-    Prepared,
-    RemoteCommitPending,
     RemoteCommitted,
     IdentityTransitionPending,
-    IdentitySwitched,
-    Completed,
     Applied,
     QuarantinedKeyUnavailable,
-    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,14 +116,6 @@ pub enum HandleRecoveryErrorCode {
     LocalTransitionPending,
     LocalMigrationUnsupported,
     UnknownEpoch,
-    HandleRecoveryNotPrepared,
-    HandleRecoveryUserPresenceRequired,
-    HandleRecoveryTransitionMismatch,
-    HandleRecoveryTransitionChainUnsupported,
-    HandleRecoveryRemoteStateChanged,
-    HandleRecoveryOutcomeUnknown,
-    HandleRecoveryLocalStateUnavailable,
-    HandleRecoveryBlocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,16 +143,6 @@ impl HandleRecoveryErrorCode {
             Self::LocalTransitionPending => "local_transition_pending",
             Self::LocalMigrationUnsupported => "local_migration_unsupported",
             Self::UnknownEpoch => "unknown_epoch",
-            Self::HandleRecoveryNotPrepared => "handle_recovery_not_prepared",
-            Self::HandleRecoveryUserPresenceRequired => "handle_recovery_user_presence_required",
-            Self::HandleRecoveryTransitionMismatch => "handle_recovery_transition_mismatch",
-            Self::HandleRecoveryTransitionChainUnsupported => {
-                "handle_recovery_transition_chain_unsupported"
-            }
-            Self::HandleRecoveryRemoteStateChanged => "handle_recovery_remote_state_changed",
-            Self::HandleRecoveryOutcomeUnknown => "handle_recovery_outcome_unknown",
-            Self::HandleRecoveryLocalStateUnavailable => "handle_recovery_local_state_unavailable",
-            Self::HandleRecoveryBlocked => "handle_recovery_blocked",
         }
     }
 
@@ -206,7 +183,7 @@ pub struct HandleRecoveryProgress {
     pub phase: HandleRecoveryPhase,
     pub impact: HandleRecoveryImpact,
     pub reset_reference: Option<HandleRecoveryResetReference>,
-    pub blocked_code: Option<HandleRecoveryErrorCode>,
+    pub failure_code: Option<HandleRecoveryErrorCode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

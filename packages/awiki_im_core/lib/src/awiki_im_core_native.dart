@@ -82,20 +82,6 @@ HandleRecoveryFailureCode? _handleRecoveryFailureCode(String? code) =>
       'local_migration_unsupported' =>
         HandleRecoveryFailureCode.localMigrationUnsupported,
       'unknown_epoch' => HandleRecoveryFailureCode.unknownEpoch,
-      'handle_recovery_not_prepared' => HandleRecoveryFailureCode.notPrepared,
-      'handle_recovery_user_presence_required' =>
-        HandleRecoveryFailureCode.userPresenceRequired,
-      'handle_recovery_transition_mismatch' =>
-        HandleRecoveryFailureCode.transitionMismatch,
-      'handle_recovery_transition_chain_unsupported' =>
-        HandleRecoveryFailureCode.transitionChainUnsupported,
-      'handle_recovery_remote_state_changed' =>
-        HandleRecoveryFailureCode.remoteStateChanged,
-      'handle_recovery_outcome_unknown' =>
-        HandleRecoveryFailureCode.outcomeUnknown,
-      'handle_recovery_local_state_unavailable' =>
-        HandleRecoveryFailureCode.localStateUnavailable,
-      'handle_recovery_blocked' => HandleRecoveryFailureCode.blocked,
       _ => null,
     };
 
@@ -2603,28 +2589,18 @@ extension on gen_identity.DartHandleRecoveryProgress {
         HandleRecoveryPhase.readyToCommit,
       gen_identity.DartHandleRecoveryPhase.remoteOutcomeUnknown =>
         HandleRecoveryPhase.remoteOutcomeUnknown,
-      gen_identity.DartHandleRecoveryPhase.prepared =>
-        HandleRecoveryPhase.prepared,
-      gen_identity.DartHandleRecoveryPhase.remoteCommitPending =>
-        HandleRecoveryPhase.remoteCommitPending,
       gen_identity.DartHandleRecoveryPhase.remoteCommitted =>
         HandleRecoveryPhase.remoteCommitted,
       gen_identity.DartHandleRecoveryPhase.identityTransitionPending =>
         HandleRecoveryPhase.identityTransitionPending,
-      gen_identity.DartHandleRecoveryPhase.identitySwitched =>
-        HandleRecoveryPhase.identitySwitched,
-      gen_identity.DartHandleRecoveryPhase.completed =>
-        HandleRecoveryPhase.completed,
       gen_identity.DartHandleRecoveryPhase.applied =>
         HandleRecoveryPhase.applied,
       gen_identity.DartHandleRecoveryPhase.quarantinedKeyUnavailable =>
         HandleRecoveryPhase.quarantinedKeyUnavailable,
-      gen_identity.DartHandleRecoveryPhase.blocked =>
-        HandleRecoveryPhase.blocked,
     },
     impact: impact._toModel(),
     registryEpochReset: resetReference?._toModel(),
-    failureCode: switch (blockedCode) {
+    failureCode: switch (failureCode) {
       gen_identity.DartHandleRecoveryErrorCode.factorRetryRequired =>
         HandleRecoveryFailureCode.factorRetryRequired,
       gen_identity.DartHandleRecoveryErrorCode.resultAbsent =>
@@ -2639,32 +2615,6 @@ extension on gen_identity.DartHandleRecoveryProgress {
         HandleRecoveryFailureCode.localMigrationUnsupported,
       gen_identity.DartHandleRecoveryErrorCode.unknownEpoch =>
         HandleRecoveryFailureCode.unknownEpoch,
-      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryNotPrepared =>
-        HandleRecoveryFailureCode.notPrepared,
-      gen_identity
-          .DartHandleRecoveryErrorCode
-          .handleRecoveryUserPresenceRequired =>
-        HandleRecoveryFailureCode.userPresenceRequired,
-      gen_identity
-          .DartHandleRecoveryErrorCode
-          .handleRecoveryTransitionMismatch =>
-        HandleRecoveryFailureCode.transitionMismatch,
-      gen_identity
-          .DartHandleRecoveryErrorCode
-          .handleRecoveryTransitionChainUnsupported =>
-        HandleRecoveryFailureCode.transitionChainUnsupported,
-      gen_identity
-          .DartHandleRecoveryErrorCode
-          .handleRecoveryRemoteStateChanged =>
-        HandleRecoveryFailureCode.remoteStateChanged,
-      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryOutcomeUnknown =>
-        HandleRecoveryFailureCode.outcomeUnknown,
-      gen_identity
-          .DartHandleRecoveryErrorCode
-          .handleRecoveryLocalStateUnavailable =>
-        HandleRecoveryFailureCode.localStateUnavailable,
-      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryBlocked =>
-        HandleRecoveryFailureCode.blocked,
       null => null,
     },
   );

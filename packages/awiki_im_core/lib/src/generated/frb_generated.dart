@@ -8497,7 +8497,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dco_decode_opt_box_autoadd_dart_handle_recovery_reset_reference(
             arr[10],
           ),
-      blockedCode: dco_decode_opt_box_autoadd_dart_handle_recovery_error_code(
+      failureCode: dco_decode_opt_box_autoadd_dart_handle_recovery_error_code(
         arr[11],
       ),
     );
@@ -12943,7 +12943,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_decode_opt_box_autoadd_dart_handle_recovery_reset_reference(
           deserializer,
         );
-    var var_blockedCode =
+    var var_failureCode =
         sse_decode_opt_box_autoadd_dart_handle_recovery_error_code(
           deserializer,
         );
@@ -12959,7 +12959,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       phase: var_phase,
       impact: var_impact,
       resetReference: var_resetReference,
-      blockedCode: var_blockedCode,
+      failureCode: var_failureCode,
     );
   }
 
@@ -17756,7 +17756,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_opt_box_autoadd_dart_handle_recovery_error_code(
-      self.blockedCode,
+      self.failureCode,
       serializer,
     );
   }

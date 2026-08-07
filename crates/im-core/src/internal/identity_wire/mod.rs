@@ -26,8 +26,6 @@ pub(crate) const EMAIL_STATUS_ENDPOINT: &str = "/user-service/v1/auth/email-stat
 pub(crate) const SMS_CODES_ENDPOINT: &str = "/user-service/v1/auth/sms-codes";
 pub(crate) const ACCOUNT_VERIFICATION_EXCHANGE_ENDPOINT: &str =
     "/user-service/v1/auth/account-verification/exchange";
-pub(crate) const HANDLE_RECOVERY_EXCHANGE_ENDPOINT: &str =
-    "/user-service/v1/auth/handle-recovery/exchange";
 pub(crate) const PHONE_BIND_SEND_ENDPOINT: &str = "/user-service/v1/auth/phone-bind-send";
 pub(crate) const PHONE_BIND_VERIFY_ENDPOINT: &str = "/user-service/v1/auth/phone-bind-verify";
 

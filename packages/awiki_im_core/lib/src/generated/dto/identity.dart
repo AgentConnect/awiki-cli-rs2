@@ -618,14 +618,6 @@ enum DartHandleRecoveryErrorCode {
   localTransitionPending,
   localMigrationUnsupported,
   unknownEpoch,
-  handleRecoveryNotPrepared,
-  handleRecoveryUserPresenceRequired,
-  handleRecoveryTransitionMismatch,
-  handleRecoveryTransitionChainUnsupported,
-  handleRecoveryRemoteStateChanged,
-  handleRecoveryOutcomeUnknown,
-  handleRecoveryLocalStateUnavailable,
-  handleRecoveryBlocked,
 }
 
 class DartHandleRecoveryImpact {
@@ -784,15 +776,10 @@ enum DartHandleRecoveryPhase {
   awaitingFactor,
   readyToCommit,
   remoteOutcomeUnknown,
-  prepared,
-  remoteCommitPending,
   remoteCommitted,
   identityTransitionPending,
-  identitySwitched,
-  completed,
   applied,
   quarantinedKeyUnavailable,
-  blocked,
 }
 
 class DartHandleRecoveryProgress {
@@ -807,7 +794,7 @@ class DartHandleRecoveryProgress {
   final DartHandleRecoveryPhase phase;
   final DartHandleRecoveryImpact impact;
   final DartHandleRecoveryResetReference? resetReference;
-  final DartHandleRecoveryErrorCode? blockedCode;
+  final DartHandleRecoveryErrorCode? failureCode;
 
   const DartHandleRecoveryProgress({
     required this.operationId,
@@ -821,7 +808,7 @@ class DartHandleRecoveryProgress {
     required this.phase,
     required this.impact,
     this.resetReference,
-    this.blockedCode,
+    this.failureCode,
   });
 
   @override
@@ -837,7 +824,7 @@ class DartHandleRecoveryProgress {
       phase.hashCode ^
       impact.hashCode ^
       resetReference.hashCode ^
-      blockedCode.hashCode;
+      failureCode.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -855,7 +842,7 @@ class DartHandleRecoveryProgress {
           phase == other.phase &&
           impact == other.impact &&
           resetReference == other.resetReference &&
-          blockedCode == other.blockedCode;
+          failureCode == other.failureCode;
 }
 
 class DartHandleRecoveryResetReference {

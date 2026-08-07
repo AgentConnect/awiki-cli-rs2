@@ -11,9 +11,6 @@ use crate::internal::platform_secret::SecretBytes;
 mod tests;
 
 pub(crate) const HANDLE_RECOVERY_PURPOSE: &str = "awiki.identity.handle-recovery.v1";
-pub(crate) const HANDLE_RECOVERY_COMMIT_PURPOSE: &str = "awiki.identity.handle-recovery.commit.v1";
-pub(crate) const HANDLE_RECOVERY_COMMIT_METHOD: &str = "handle_recovery_commit";
-const DEVICE_SIGNATURE_TYPE: &str = "awiki-device-signature-v1";
 
 pub(crate) const HANDLE_RECOVERY_V4_CONTRACT_VERSION: &str =
     "awiki.handle-recovery.v1.contract.4.20260807";
@@ -223,21 +220,6 @@ pub(crate) struct CanonicalHandle {
     pub(crate) full: String,
 }
 
-pub(crate) struct RecoveryGrantExchangeResult {
-    pub(crate) recovery_grant: SecretBytes,
-    pub(crate) expires_at: String,
-}
-
-impl std::fmt::Debug for RecoveryGrantExchangeResult {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RecoveryGrantExchangeResult")
-            .field("recovery_grant", &"<redacted>")
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IdentityTransition {
     pub(crate) previous_did: String,
@@ -264,59 +246,6 @@ impl std::fmt::Debug for AccountVerificationResult {
             .field("handle", &self.handle)
             .field("did", &self.did)
             .field("identity_transition", &self.identity_transition)
-            .finish()
-    }
-}
-
-pub(crate) struct CommitProofInput<'a> {
-    pub(crate) operation_id: &'a str,
-    pub(crate) handle: &'a str,
-    pub(crate) recovery_grant: SecretBytes,
-    pub(crate) expected_binding_generation: &'a str,
-    pub(crate) new_did_document: Value,
-    pub(crate) bootstrap_device_id: &'a str,
-    pub(crate) bootstrap_signing_key_id: &'a str,
-    pub(crate) bootstrap_signing_private_key: &'a anp::PrivateKeyMaterial,
-    pub(crate) created_at: &'a str,
-    pub(crate) expires_at: &'a str,
-    pub(crate) nonce: &'a [u8],
-}
-
-impl std::fmt::Debug for CommitProofInput<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CommitProofInput")
-            .field("operation_id", &self.operation_id)
-            .field("handle", &self.handle)
-            .field("recovery_grant", &"<redacted>")
-            .field(
-                "expected_binding_generation",
-                &self.expected_binding_generation,
-            )
-            .field("new_did_document", &self.new_did_document)
-            .field("bootstrap_device_id", &self.bootstrap_device_id)
-            .field("bootstrap_signing_key_id", &self.bootstrap_signing_key_id)
-            .field("bootstrap_signing_private_key", &"<redacted>")
-            .field("created_at", &self.created_at)
-            .field("expires_at", &self.expires_at)
-            .field("nonce", &"<redacted>")
-            .finish()
-    }
-}
-
-pub(crate) struct PreparedCommit {
-    pub(crate) call: super::RpcCall,
-    pub(crate) signed_params: Value,
-    pub(crate) request_hash: String,
-}
-
-impl std::fmt::Debug for PreparedCommit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PreparedCommit")
-            .field("endpoint", &self.call.endpoint)
-            .field("method", &self.call.method)
-            .field("request_hash", &self.request_hash)
             .finish()
     }
 }
@@ -407,55 +336,6 @@ pub(crate) fn build_send_otp_call(
     ))
 }
 
-pub(crate) fn build_grant_exchange_call(
-    phone: &str,
-    code: &str,
-    handle: &str,
-    operation_id: &str,
-) -> crate::ImResult<super::RestCall> {
-    let phone = super::normalize_phone(phone)?;
-    let code = super::sanitize_otp(code);
-    if code.is_empty() {
-        return Err(invalid("code", "OTP code is required"));
-    }
-    let handle = canonical_handle(handle)?;
-    let operation_id = validate_operation_id(operation_id)?;
-    let _ = recovery_otp_target(&handle.full, &operation_id)?;
-    Ok(super::rest_call(
-        super::HANDLE_RECOVERY_EXCHANGE_ENDPOINT,
-        "POST",
-        json!({
-            "phone": phone,
-            "code": code,
-            "handle": handle.full,
-            "operation_id": operation_id,
-        }),
-        Default::default(),
-        false,
-    ))
-}
-
-pub(crate) fn parse_grant_exchange_result(
-    value: Value,
-) -> crate::ImResult<RecoveryGrantExchangeResult> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Raw {
-        recovery_grant: String,
-        purpose: String,
-        expires_at: String,
-    }
-    let raw: Raw = closed(value, "Handle Recovery grant exchange")?;
-    if raw.purpose != HANDLE_RECOVERY_PURPOSE {
-        return Err(invalid("purpose", "unexpected Recovery grant purpose"));
-    }
-    validate_timestamp("expires_at", &raw.expires_at)?;
-    Ok(RecoveryGrantExchangeResult {
-        recovery_grant: required_secret(raw.recovery_grant, "recovery_grant")?,
-        expires_at: raw.expires_at,
-    })
-}
-
 pub(crate) fn parse_account_verification_result(
     value: Value,
 ) -> crate::ImResult<AccountVerificationResult> {
@@ -540,88 +420,6 @@ pub(crate) fn parse_account_verification_result(
         handle: raw.handle,
         did: raw.did,
         identity_transition: transition,
-    })
-}
-
-pub(crate) fn prepare_commit(input: CommitProofInput<'_>) -> crate::ImResult<PreparedCommit> {
-    let operation_id = validate_operation_id(input.operation_id)?;
-    let handle = canonical_handle(input.handle)?;
-    if !canonical_generation(input.expected_binding_generation) {
-        return Err(invalid(
-            "expected_binding_generation",
-            "expected binding generation must be canonical positive decimal",
-        ));
-    }
-    validate_timestamp("created_at", input.created_at)?;
-    validate_timestamp("expires_at", input.expires_at)?;
-    if input.nonce.is_empty() {
-        return Err(invalid("nonce", "proof nonce is required"));
-    }
-    let mut projected_document = input.new_did_document.clone();
-    projected_document
-        .as_object_mut()
-        .ok_or_else(|| invalid("new_did_document", "DID document must be an object"))?
-        .remove("proof");
-    let signed_params = json!({
-        "operation_id": operation_id,
-        "handle": handle.full,
-        "expected_binding_generation": input.expected_binding_generation,
-        "new_did_document": projected_document,
-        "bootstrap_device_id": required(input.bootstrap_device_id, "bootstrap_device_id")?,
-    });
-    let canonical_params =
-        serde_json_canonicalizer::to_vec(&signed_params).map_err(serialization)?;
-    let request_hash = format!(
-        "sha256:{}",
-        URL_SAFE_NO_PAD.encode(Sha256::digest(&canonical_params))
-    );
-    let nonce = URL_SAFE_NO_PAD.encode(input.nonce);
-    let signing_object = json!({
-        "type": DEVICE_SIGNATURE_TYPE,
-        "purpose": HANDLE_RECOVERY_COMMIT_PURPOSE,
-        "method": HANDLE_RECOVERY_COMMIT_METHOD,
-        "key_id": required(input.bootstrap_signing_key_id, "bootstrap_signing_key_id")?,
-        "created_at": input.created_at,
-        "expires_at": input.expires_at,
-        "nonce": nonce,
-        "params": signed_params,
-    });
-    let signing_bytes = serde_json_canonicalizer::to_vec(&signing_object).map_err(serialization)?;
-    let signature = input
-        .bootstrap_signing_private_key
-        .sign_message(&signing_bytes)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    if signature.len() != 64 {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let proof = json!({
-        "type": DEVICE_SIGNATURE_TYPE,
-        "key_id": input.bootstrap_signing_key_id,
-        "created_at": input.created_at,
-        "expires_at": input.expires_at,
-        "nonce": nonce,
-        "signature": URL_SAFE_NO_PAD.encode(signature),
-    });
-    let recovery_grant = String::from_utf8(input.recovery_grant.expose_secret().to_vec())
-        .map_err(|_| invalid("recovery_grant", "Recovery grant must be UTF-8"))?;
-    let params = json!({
-        "operation_id": operation_id,
-        "handle": handle.full,
-        "recovery_grant": recovery_grant,
-        "expected_binding_generation": input.expected_binding_generation,
-        "new_did_document": input.new_did_document,
-        "bootstrap_device_id": input.bootstrap_device_id,
-        "bootstrap_device_proof": proof,
-    });
-    Ok(PreparedCommit {
-        call: super::rpc_call(
-            super::DID_AUTH_RPC_ENDPOINT,
-            HANDLE_RECOVERY_COMMIT_METHOD,
-            super::TransportProfile::RpcDefault,
-            params,
-        ),
-        signed_params,
-        request_hash,
     })
 }
 

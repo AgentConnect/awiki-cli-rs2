@@ -138,15 +138,10 @@ enum HandleRecoveryPhase {
   awaitingFactor,
   readyToCommit,
   remoteOutcomeUnknown,
-  prepared,
-  remoteCommitPending,
   remoteCommitted,
   identityTransitionPending,
-  identitySwitched,
-  completed,
   applied,
   quarantinedKeyUnavailable,
-  blocked,
 }
 
 enum HandleRecoveryTransitionSourceKind { initiator, joinedDevice }

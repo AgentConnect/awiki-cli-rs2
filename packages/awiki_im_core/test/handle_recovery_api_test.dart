@@ -50,8 +50,8 @@ void main() {
   test('Recovery failure mapping is a closed public enum', () {
     const error = AwikiImCoreException(
       code: 'service_error',
-      message: 'handle_recovery_outcome_unknown',
-      serviceCode: 'handle_recovery_outcome_unknown',
+      message: 'outcome_unknown',
+      serviceCode: 'outcome_unknown',
       handleRecoveryFailureCode: HandleRecoveryFailureCode.outcomeUnknown,
     );
 

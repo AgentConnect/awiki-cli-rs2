@@ -31,7 +31,7 @@ use crate::identity::{
     DeviceJoinLocalPhase, DeviceJoinNewDeviceRespondRequest, DeviceJoinNewDeviceRespondResult,
     DeviceJoinObjectProof, DeviceJoinRequest, DeviceJoinRequestProof, DeviceJoinSessionSummary,
     DeviceJoinSide, DeviceJoinStartRequest, DeviceJoinStartResult, EncryptedJoinChallenge,
-    DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_LEGACY_DRAFT_PROFILES,
+    HandleRecoveryErrorCode, DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_LEGACY_DRAFT_PROFILES,
     DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS, DEVICE_JOIN_MAX_TTL_SECONDS,
     DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE, DEVICE_JOIN_REQUEST_PROOF_TYPE, DEVICE_JOIN_REQUEST_TYPE,
     DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE, DEVICE_JOIN_VNEXT_PROFILES,
@@ -1546,10 +1546,11 @@ fn promote_join_identity(
         &stored.join_request.join_session_id,
     )? {
         if marker.current_did != did.as_str() || marker.account_user_id != access.user_id {
+            let code = HandleRecoveryErrorCode::UnknownEpoch.as_str();
             return Err(crate::ImError::Service {
                 status_code: None,
-                code: Some("handle_recovery_transition_mismatch".to_owned()),
-                message: "handle_recovery_transition_mismatch".to_owned(),
+                code: Some(code.to_owned()),
+                message: code.to_owned(),
                 data: None,
             });
         }
@@ -1568,10 +1569,11 @@ fn promote_join_identity(
                 || previous_entry.binding_generation.as_deref()
                     != Some(marker.binding_generation.as_str())
             {
+                let code = HandleRecoveryErrorCode::UnknownEpoch.as_str();
                 return Err(crate::ImError::Service {
                     status_code: None,
-                    code: Some("handle_recovery_transition_mismatch".to_owned()),
-                    message: "handle_recovery_transition_mismatch".to_owned(),
+                    code: Some(code.to_owned()),
+                    message: code.to_owned(),
                     data: None,
                 });
             }
@@ -1626,10 +1628,11 @@ fn promote_join_identity(
             || previous_entry.full_handle != marker.handle
             || (!historical_binding_generation_missing && !historical_binding_generation_matches)
         {
+            let code = HandleRecoveryErrorCode::UnknownEpoch.as_str();
             return Err(crate::ImError::Service {
                 status_code: None,
-                code: Some("handle_recovery_transition_mismatch".to_owned()),
-                message: "handle_recovery_transition_mismatch".to_owned(),
+                code: Some(code.to_owned()),
+                message: code.to_owned(),
                 data: None,
             });
         }
