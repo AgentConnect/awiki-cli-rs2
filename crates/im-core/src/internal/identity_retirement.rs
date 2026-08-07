@@ -182,7 +182,22 @@ fn advance(
     // Repeat this cleanup even for Completed markers. An operation admitted
     // before the host detached the client may finish late; the durable
     // identity-id tombstone guarantees those records are removed on next open.
-    cleanup_identity_vault(core, &record.identity_id)?;
+    //
+    // The tombstone is keyed by identity_id, which is the deterministic DID
+    // suffix for a handle. Re-registering the same handle reuses the same
+    // identity_id, so a stale tombstone must never wipe the vault records of
+    // an identity that is currently registered: that would destroy the live
+    // identity's secrets and make the next open fail closed with
+    // identity_vault_record_open_failed. Only replay cleanup when the retired
+    // identity is not present in the registry anymore.
+    if identity_is_registered(core, record)? {
+        outcome.warnings.push(format!(
+            "identity {} is currently registered; skipping retirement vault cleanup",
+            record.identity_id
+        ));
+    } else {
+        cleanup_identity_vault(core, &record.identity_id)?;
+    }
     if let Some(protocol_device_id) = record.protocol_device_id.as_deref() {
         crate::internal::identity_device_join::retire_authorized_new_device_sessions(
             core,
@@ -208,6 +223,29 @@ fn cleanup_identity_vault(core: &crate::core::ImCore, identity_id: &str) -> crat
         }
     }
     Ok(())
+}
+
+/// Returns whether the retired identity is currently registered in the local
+/// identity index.
+///
+/// The retirement tombstone is keyed by `identity_id`, which is the
+/// deterministic DID suffix for a handle. A re-registration of the same
+/// handle reuses the same `identity_id`, so the index must be consulted
+/// before replaying vault cleanup: wiping the records of a registered
+/// identity destroys its live secrets (next open fails closed with
+/// `identity_vault_record_open_failed`).
+fn identity_is_registered(
+    core: &crate::core::ImCore,
+    record: &IdentityRetirementRecord,
+) -> crate::ImResult<bool> {
+    let store = crate::internal::identity_store::IdentityStore::new(
+        &core.inner().sdk_paths().identities,
+    );
+    let index = store.load_index()?;
+    Ok(index
+        .credentials
+        .values()
+        .any(|entry| entry.unique_id == record.identity_id && entry.did == record.did))
 }
 
 enum IdentityDirectoryMatch {
