@@ -17,7 +17,7 @@ const KEY_VERSION: u32 = 1;
 
 pub(crate) const V4_CONTRACT_VERSION: &str = "awiki.handle-recovery.v1.contract.4.20260807";
 pub(crate) const V4_CONTRACT_HASH: &str =
-    "3fa18eb7c5ce603014050bbd61d7508dcca01c202e150ec7666df32ecad52652";
+    "b1494eebd8ca1c297f89f752fa79679ef449de38ad869d2e60fc2fbcf17f0078";
 const V4_SCHEMA_VERSION: u32 = 1;
 const V4_KEY_VERSION: u32 = 2;
 
@@ -544,7 +544,6 @@ impl PendingHandleRecoveryV4 {
                     || binding.binding_generation != intent.expected_binding_generation
                     || intent.operation_id != self.operation_id
                     || intent.full_handle != self.full_handle
-                    || intent.expected_previous_did != self.local_previous_did
                     || intent.new_did != self.generated.did.as_str()
                     || intent.new_did_document_hash != expected_document_hash
                     || intent.bootstrap_device_id != self.generated.protocol_device_id.as_str()
@@ -1089,11 +1088,13 @@ pub(crate) fn pending_v4_key_id(operation_id: &str) -> String {
 
 fn canonical_generation(value: &str) -> bool {
     !value.is_empty()
+        && value.len()
+            <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && value.as_bytes()[0] != b'0'
 }
 
-fn increment_canonical_generation(value: &str) -> Option<String> {
+pub(crate) fn increment_canonical_generation(value: &str) -> Option<String> {
     if !canonical_generation(value) {
         return None;
     }
@@ -1109,7 +1110,28 @@ fn increment_canonical_generation(value: &str) -> Option<String> {
     let mut next = Vec::with_capacity(bytes.len() + 1);
     next.push(b'1');
     next.extend(bytes);
-    String::from_utf8(next).ok()
+    (next.len() <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS)
+        .then(|| String::from_utf8(next).ok())
+        .flatten()
+}
+
+pub(crate) fn previous_canonical_generation(value: &str) -> Option<String> {
+    if !canonical_generation(value) || value == "1" {
+        return None;
+    }
+    let mut bytes = value.as_bytes().to_vec();
+    for index in (0..bytes.len()).rev() {
+        if bytes[index] == b'0' {
+            bytes[index] = b'9';
+        } else {
+            bytes[index] -= 1;
+            break;
+        }
+    }
+    if bytes.first() == Some(&b'0') {
+        bytes.remove(0);
+    }
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -1142,6 +1164,30 @@ mod tests {
             "awiki.handle-recovery.v1.contract.3.20260802"
         );
         assert_eq!(super::CONTRACT_HASH.len(), 64);
+        assert_eq!(
+            super::V4_CONTRACT_HASH,
+            "b1494eebd8ca1c297f89f752fa79679ef449de38ad869d2e60fc2fbcf17f0078"
+        );
+    }
+
+    #[test]
+    fn v4_generation_uses_the_frozen_255_digit_decimal_profile() {
+        let max_non_overflowing = format!("8{}", "9".repeat(254));
+        let successor = super::increment_canonical_generation(&max_non_overflowing).unwrap();
+        assert_eq!(successor.len(), 255);
+        assert_eq!(
+            super::previous_canonical_generation(&successor),
+            Some(max_non_overflowing)
+        );
+        assert_eq!(
+            super::increment_canonical_generation(&"9".repeat(255)),
+            None
+        );
+        assert_eq!(
+            super::increment_canonical_generation(&"1".repeat(256)),
+            None
+        );
+        assert_eq!(super::previous_canonical_generation(&"1".repeat(256)), None);
     }
 
     #[test]

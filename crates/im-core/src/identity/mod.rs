@@ -33,10 +33,11 @@ pub use self::handle_recovery::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
     HandleRecoveryAccountEpochReceipt, HandleRecoveryActivateRequest, HandleRecoveryDiscardRequest,
     HandleRecoveryErrorCode, HandleRecoveryImpact, HandleRecoveryKeyState,
-    HandleRecoveryOperationLifecycle, HandleRecoveryOperationSummary, HandleRecoveryOtpRequest,
-    HandleRecoveryOtpResult, HandleRecoveryPhase, HandleRecoveryPrepareRequest,
-    HandleRecoveryProgress, HandleRecoveryQuarantineRequest, HandleRecoveryResetReference,
-    HandleRecoveryResumeRequest, HandleRecoveryService, HandleRecoveryTransitionSourceKind,
+    HandleRecoveryMetricsSnapshot, HandleRecoveryOperationLifecycle,
+    HandleRecoveryOperationSummary, HandleRecoveryOtpRequest, HandleRecoveryOtpResult,
+    HandleRecoveryPhase, HandleRecoveryPrepareRequest, HandleRecoveryProgress,
+    HandleRecoveryQuarantineRequest, HandleRecoveryResetReference, HandleRecoveryResumeRequest,
+    HandleRecoveryService, HandleRecoveryTransitionSourceKind,
 };
 pub use self::join::{
     DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus,

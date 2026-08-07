@@ -395,6 +395,7 @@ pub(crate) fn quarantine_key_unavailable(
         &request.operation_id,
         &now_second_z()?,
     )?;
+    crate::internal::identity_handle_recovery_metrics::record_key_unavailable();
     operation_summary(
         crate::internal::identity_handle_recovery_operation::load(
             sqlite_path,
@@ -618,9 +619,28 @@ pub(crate) async fn prepare(
         result,
         &pending.full_handle,
     )?;
-    // V4.0 deliberately supports only a direct local transition from the
-    // authoritative current DID. Transparent N-k adoption remains V4.1.
-    if grant.current_binding.current_did != pending.local_previous_did {
+    let direct_local_transition = grant.current_binding.current_did == pending.local_previous_did;
+    // The only V4.0 exception to a direct local transition is the explicitly
+    // confirmed key-unavailable break-glass path. It creates a fresh local
+    // crypto/control epoch; transparent N-k history adoption remains V4.1.
+    let fresh_break_glass = if !direct_local_transition {
+        let authorized = break_glass_authority_for_exchange(
+            sqlite_path,
+            &pending,
+            pre_attempt,
+            post_attempt_refresh,
+            &now_second_z()?,
+        )?;
+        crate::internal::identity_handle_recovery_metrics::record_break_glass(if authorized {
+            crate::internal::identity_handle_recovery_metrics::BreakGlassResult::Authorized
+        } else {
+            crate::internal::identity_handle_recovery_metrics::BreakGlassResult::Rejected
+        });
+        authorized
+    } else {
+        false
+    };
+    if !direct_local_transition && !fresh_break_glass {
         if post_attempt_refresh {
             mark_post_attempt_state_changed(core, &pending)?;
         }
@@ -638,8 +658,17 @@ pub(crate) async fn prepare(
         .values()
         .find(|entry| entry.unique_id == pending.owner_identity_id)
         .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
-    if local_entry.did != grant.current_binding.current_did
-        || local_entry.full_handle != grant.current_binding.full_handle
+    if local_migration_mode_v4(
+        &pending,
+        &grant.current_binding.account_user_id,
+        &grant.current_binding.full_handle,
+        &grant.current_binding.current_did,
+        &local_entry.user_id,
+        &local_entry.full_handle,
+        &local_entry.did,
+        fresh_break_glass,
+    )
+    .is_none()
     {
         if post_attempt_refresh {
             mark_post_attempt_state_changed(core, &pending)?;
@@ -694,6 +723,64 @@ pub(crate) async fn prepare(
     progress_v4(core, &pending)
 }
 
+fn break_glass_authority_for_exchange(
+    sqlite_path: &std::path::Path,
+    pending: &PendingHandleRecoveryV4,
+    pre_attempt: bool,
+    post_attempt_refresh: bool,
+    now: &str,
+) -> crate::ImResult<bool> {
+    if pre_attempt {
+        return crate::internal::identity_handle_recovery_operation::claim_quarantined_replacement(
+            sqlite_path,
+            &pending.operation_id,
+            &pending.owner_identity_id,
+            &pending.full_handle,
+            now,
+        );
+    }
+    if post_attempt_refresh {
+        return crate::internal::identity_handle_recovery_operation::is_quarantined_replacement(
+            sqlite_path,
+            &pending.operation_id,
+            &pending.owner_identity_id,
+            &pending.full_handle,
+        );
+    }
+    Ok(false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalMigrationModeV4 {
+    Direct,
+    ConfirmedFreshBreakGlass,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn local_migration_mode_v4(
+    pending: &PendingHandleRecoveryV4,
+    authoritative_account_user_id: &str,
+    authoritative_full_handle: &str,
+    authoritative_current_did: &str,
+    local_account_user_id: &str,
+    local_full_handle: &str,
+    local_current_did: &str,
+    fresh_break_glass: bool,
+) -> Option<LocalMigrationModeV4> {
+    if local_full_handle != authoritative_full_handle {
+        return None;
+    }
+    if local_current_did == authoritative_current_did
+        && authoritative_current_did == pending.local_previous_did
+    {
+        return Some(LocalMigrationModeV4::Direct);
+    }
+    (fresh_break_glass
+        && local_current_did == pending.local_previous_did
+        && local_account_user_id == authoritative_account_user_id)
+        .then_some(LocalMigrationModeV4::ConfirmedFreshBreakGlass)
+}
+
 fn mark_post_attempt_state_changed(
     core: &crate::core::ImCore,
     pending: &PendingHandleRecoveryV4,
@@ -722,7 +809,10 @@ pub(crate) async fn activate(
             HandleRecoveryErrorCode::HandleRecoveryUserPresenceRequired,
         ));
     }
-    advance_v4(core, &request.operation_id).await
+    match recovery_journal_kind(core, &request.operation_id)? {
+        RecoveryJournalKind::V4 => advance_v4(core, &request.operation_id).await,
+        RecoveryJournalKind::V3Legacy => advance_v3_legacy(core, &request.operation_id).await,
+    }
 }
 
 pub(crate) async fn resume(
@@ -730,7 +820,10 @@ pub(crate) async fn resume(
     request: HandleRecoveryResumeRequest,
 ) -> crate::ImResult<HandleRecoveryProgress> {
     require_enabled(core)?;
-    advance_v4(core, &request.operation_id).await
+    match recovery_journal_kind(core, &request.operation_id)? {
+        RecoveryJournalKind::V4 => advance_v4(core, &request.operation_id).await,
+        RecoveryJournalKind::V3Legacy => advance_v3_legacy(core, &request.operation_id).await,
+    }
 }
 
 pub(crate) fn status(
@@ -740,11 +833,68 @@ pub(crate) fn status(
     require_enabled(core)?;
     let store = PendingHandleRecoveryStore::from_core(core)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
-    let (_, pending) = store
+    if let Some((_, pending)) = store
         .load_v4(operation_id)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
-        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::HandleRecoveryNotPrepared))?;
-    progress_v4(core, &pending)
+    {
+        return progress_v4(core, &pending);
+    }
+    if let Some((_, pending)) = store
+        .load(operation_id)
+        .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
+    {
+        return progress(core, &pending);
+    }
+    if crate::internal::identity_handle_recovery_operation::load(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        operation_id,
+    )?
+    .is_some()
+    {
+        return Err(recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable));
+    }
+    Err(recovery_error(
+        HandleRecoveryErrorCode::HandleRecoveryNotPrepared,
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryJournalKind {
+    V4,
+    V3Legacy,
+}
+
+fn recovery_journal_kind(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+) -> crate::ImResult<RecoveryJournalKind> {
+    let store = PendingHandleRecoveryStore::from_core(core)
+        .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+    if store
+        .load_v4(operation_id)
+        .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
+        .is_some()
+    {
+        return Ok(RecoveryJournalKind::V4);
+    }
+    if store
+        .load(operation_id)
+        .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
+        .is_some()
+    {
+        return Ok(RecoveryJournalKind::V3Legacy);
+    }
+    if crate::internal::identity_handle_recovery_operation::load(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        operation_id,
+    )?
+    .is_some()
+    {
+        return Err(recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable));
+    }
+    Err(recovery_error(
+        HandleRecoveryErrorCode::HandleRecoveryNotPrepared,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -792,6 +942,7 @@ async fn advance_v4(
     let operation =
         crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
+    require_v4_local_migration_authority(sqlite_path, &pending)?;
     reconcile_v4_lifecycle_index(sqlite_path, &operation, &pending, &now_second_z()?)?;
     if pending.phase == PendingRecoveryPhaseV4::AwaitingFactor {
         return Err(recovery_error(HandleRecoveryErrorCode::FactorRetryRequired));
@@ -839,6 +990,27 @@ async fn advance_v4(
         apply_local_transition_v4(core, &store, &mut pending).await?;
     }
     progress_v4(core, &pending)
+}
+
+fn require_v4_local_migration_authority(
+    sqlite_path: &std::path::Path,
+    pending: &PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let Some(authoritative) = pending.authoritative_binding.as_ref() else {
+        return Ok(());
+    };
+    if authoritative.current_did == pending.local_previous_did {
+        return Ok(());
+    }
+    if crate::internal::identity_handle_recovery_operation::is_quarantined_replacement(
+        sqlite_path,
+        &pending.operation_id,
+        &pending.owner_identity_id,
+        &pending.full_handle,
+    )? {
+        return Ok(());
+    }
+    Err(crate::ImError::PermissionDenied)
 }
 
 fn reconcile_frozen_intent_index(
@@ -1407,12 +1579,29 @@ async fn apply_local_transition_v4(
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
     if marker.phase == crate::internal::identity_transition_pending::TransitionPhase::Pending {
-        crate::internal::identity_transition_pending::migrate_local_state(
+        if crate::internal::identity_handle_recovery_operation::is_quarantined_replacement(
             sqlite_path,
-            &marker,
-            &result.bootstrap_device.device_id,
-            result.bootstrap_device.auth_generation,
-        )?;
+            &pending.operation_id,
+            &pending.owner_identity_id,
+            &pending.full_handle,
+        )? {
+            crate::internal::identity_transition_pending::migrate_initiator_fresh_local_state(
+                sqlite_path,
+                &marker,
+                &result.bootstrap_device.device_id,
+                result.bootstrap_device.auth_generation,
+            )?;
+            crate::internal::identity_handle_recovery_metrics::record_break_glass(
+                crate::internal::identity_handle_recovery_metrics::BreakGlassResult::Applied,
+            );
+        } else {
+            crate::internal::identity_transition_pending::migrate_local_state(
+                sqlite_path,
+                &marker,
+                &result.bootstrap_device.device_id,
+                result.bootstrap_device.auth_generation,
+            )?;
+        }
         let generated = &pending.generated;
         let device_state = crate::internal::identity_device_state::IdentityDeviceState {
             schema_version:
@@ -1564,7 +1753,6 @@ fn validate_switched_identity_v4(
     Ok(())
 }
 
-#[allow(dead_code)]
 async fn advance_v3_legacy(
     core: &crate::core::ImCore,
     recovery_id: &str,
@@ -2136,12 +2324,11 @@ fn parse_remote_result(
         || raw.handle != pending.handle
         || raw.previous_did != pending.previous_did
         || raw.did != pending.generated.did.as_str()
-        || raw.binding_generation.parse::<u128>().ok()
-            != pending
-                .expected_binding_generation
-                .parse::<u128>()
-                .ok()
-                .and_then(|generation| generation.checked_add(1))
+        || Some(raw.binding_generation.as_str())
+            != crate::internal::identity_handle_recovery_pending::increment_canonical_generation(
+                &pending.expected_binding_generation,
+            )
+            .as_deref()
         || raw.bootstrap_device.device_id != pending.generated.protocol_device_id.as_str()
         || raw.bootstrap_device.status != "active"
         || raw.bootstrap_device.role != "admin"
@@ -2240,6 +2427,25 @@ fn progress_v4(
     core: &crate::core::ImCore,
     pending: &PendingHandleRecoveryV4,
 ) -> crate::ImResult<HandleRecoveryProgress> {
+    if let Ok(Some(operation)) = crate::internal::identity_handle_recovery_operation::load(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &pending.operation_id,
+    ) {
+        let age = metric_age_seconds(&operation.updated_at);
+        match pending.phase {
+            PendingRecoveryPhaseV4::RemoteOutcomeUnknown => {
+                crate::internal::identity_handle_recovery_metrics::record_remote_unresolved_age(
+                    age,
+                );
+            }
+            PendingRecoveryPhaseV4::LocalTransitionPending => {
+                crate::internal::identity_handle_recovery_metrics::record_local_transition_pending_age(
+                    age,
+                );
+            }
+            _ => {}
+        }
+    }
     let marker = crate::internal::identity_transition_pending::load(
         &core.inner().sdk_paths().local_state.sqlite_path,
         &pending.operation_id,
@@ -2296,6 +2502,18 @@ fn progress_v4(
             .as_deref()
             .and_then(public_error_code),
     })
+}
+
+fn metric_age_seconds(updated_at: &str) -> u64 {
+    chrono::DateTime::parse_from_rfc3339(updated_at)
+        .ok()
+        .map(|updated| {
+            chrono::Utc::now()
+                .signed_duration_since(updated.with_timezone(&chrono::Utc))
+                .num_seconds()
+                .max(0) as u64
+        })
+        .unwrap_or(0)
 }
 
 fn require_enabled(core: &crate::core::ImCore) -> crate::ImResult<()> {
@@ -2429,6 +2647,8 @@ fn validate_switched_identity(
 
 fn canonical_generation(value: &str) -> bool {
     !value.is_empty()
+        && value.len()
+            <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && value.as_bytes()[0] != b'0'
 }
@@ -2827,6 +3047,233 @@ mod tests {
             superseded.last_error_code.as_deref(),
             Some("handle_recovery.state_changed_requires_new_operation")
         );
+    }
+
+    #[test]
+    fn local_migration_mode_requires_explicit_break_glass_for_stale_epoch() {
+        let pending =
+            v4_awaiting_factor_pending("recover-v4-migration-mode", "owner-migration-mode");
+        assert_eq!(
+            local_migration_mode_v4(
+                &pending,
+                "user-1",
+                &pending.full_handle,
+                &pending.local_previous_did,
+                "user-1",
+                &pending.full_handle,
+                &pending.local_previous_did,
+                false,
+            ),
+            Some(LocalMigrationModeV4::Direct)
+        );
+        let authoritative = "did:wba:awiki.test:users:already-recovered";
+        assert_eq!(
+            local_migration_mode_v4(
+                &pending,
+                "user-1",
+                &pending.full_handle,
+                authoritative,
+                "user-1",
+                &pending.full_handle,
+                &pending.local_previous_did,
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            local_migration_mode_v4(
+                &pending,
+                "user-1",
+                &pending.full_handle,
+                authoritative,
+                "user-1",
+                &pending.full_handle,
+                &pending.local_previous_did,
+                true,
+            ),
+            Some(LocalMigrationModeV4::ConfirmedFreshBreakGlass)
+        );
+        assert_eq!(
+            local_migration_mode_v4(
+                &pending,
+                "another-user",
+                &pending.full_handle,
+                authoritative,
+                "user-1",
+                &pending.full_handle,
+                &pending.local_previous_did,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn confirmed_break_glass_keeps_local_d0_separate_from_remote_d1_and_applies_d2() {
+        let mut pending = v4_awaiting_factor_pending("recover-v4-d0-d1-d2", "owner-d0-d1-d2");
+        let local_d0 = pending.local_previous_did.clone();
+        let remote_d1 = "did:wba:awiki.test:users:alice-remote-d1".to_owned();
+        let committed_d2 = pending.generated.did.as_str().to_owned();
+        pending
+            .freeze_exchange(
+                crate::internal::identity_handle_recovery_pending::RecoveryAuthoritativeBindingV4 {
+                    account_user_id: "user-v4-1".to_owned(),
+                    full_handle: pending.full_handle.clone(),
+                    current_did: remote_d1.clone(),
+                    binding_generation: "8".to_owned(),
+                },
+                "grant-v4-d0-d1-d2".to_owned(),
+                "2099-08-07T00:05:00Z".to_owned(),
+            )
+            .unwrap();
+        pending
+            .mark_commit_attempted("2026-08-07T00:01:00Z".to_owned())
+            .unwrap();
+        let result = crate::internal::identity_handle_recovery_pending::RecoveryRemoteResultV4 {
+            state: "recovered".to_owned(),
+            operation_id: pending.operation_id.clone(),
+            intent_hash: pending.intent_hash.clone().unwrap(),
+            intent_schema_version: "1".to_owned(),
+            contract_version:
+                crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned(),
+            account_user_id: "user-v4-1".to_owned(),
+            full_handle: pending.full_handle.clone(),
+            previous_did: remote_d1.clone(),
+            current_did: committed_d2.clone(),
+            binding_generation: "9".to_owned(),
+            checkpoint: crate::internal::identity_handle_recovery_pending::RecoveryCheckpointV4 {
+                document_version: 1,
+                document_hash: crate::internal::identity_wire::document::document_hash(
+                    &pending.generated.did_document,
+                )
+                .unwrap(),
+                registry_version: 1,
+            },
+            bootstrap_device:
+                crate::internal::identity_handle_recovery_pending::RecoveryBootstrapDeviceV4 {
+                    device_id: pending.generated.protocol_device_id.as_str().to_owned(),
+                    status: "active".to_owned(),
+                    role: "admin".to_owned(),
+                    management_ready: true,
+                    auth_generation: 1,
+                },
+            committed_at: "2026-08-07T00:01:01Z".to_owned(),
+        };
+        pending.record_remote_result(result.clone()).unwrap();
+
+        let directory = tempfile::tempdir().unwrap();
+        let sqlite_path = directory.path().join("d0-d1-d2.sqlite");
+        let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,?2,?3,?4,'device-d0','7','3',1,1)",
+                rusqlite::params![
+                    &pending.owner_identity_id,
+                    "user-v4-1",
+                    &pending.full_handle,
+                    &local_d0,
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let marker =
+            crate::internal::identity_transition_pending::IdentityTransitionMarker::initiator_v4(
+                &sqlite_path,
+                &pending,
+                &result,
+            )
+            .unwrap();
+        assert_eq!(result.previous_did, remote_d1);
+        assert_eq!(marker.previous_did, local_d0);
+        assert_eq!(marker.current_did, committed_d2);
+        crate::internal::identity_transition_pending::persist(&sqlite_path, &marker).unwrap();
+        crate::internal::identity_transition_pending::migrate_initiator_fresh_local_state(
+            &sqlite_path,
+            &marker,
+            &result.bootstrap_device.device_id,
+            result.bootstrap_device.auth_generation,
+        )
+        .unwrap();
+
+        let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        let applied: (String, String) = connection
+            .query_row(
+                "SELECT current_did,identity_generation FROM identity_account_bindings WHERE owner_identity_id=?1",
+                [&pending.owner_identity_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(applied, (committed_d2, "9".to_owned()));
+    }
+
+    #[test]
+    fn stale_authoritative_binding_requires_durable_quarantined_replacement_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(root.path(), "https://example.invalid", [92_u8; 32]);
+        let (old, _) = create_v4_awaiting_factor_operation(
+            &core,
+            "recover-v4-key-unavailable-old",
+            "owner-break-glass-authority",
+        );
+        let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+        crate::internal::identity_handle_recovery_operation::quarantine_key_unavailable(
+            sqlite_path,
+            &old.operation_id,
+            "2026-08-07T00:01:00Z",
+        )
+        .unwrap();
+        let (mut replacement, _) = create_v4_awaiting_factor_operation(
+            &core,
+            "recover-v4-key-unavailable-replacement",
+            "owner-break-glass-authority",
+        );
+        replacement
+            .freeze_exchange(
+                crate::internal::identity_handle_recovery_pending::RecoveryAuthoritativeBindingV4 {
+                    account_user_id: "user-v4-1".to_owned(),
+                    full_handle: replacement.full_handle.clone(),
+                    current_did: "did:wba:awiki.test:users:alice-remote-current".to_owned(),
+                    binding_generation: "8".to_owned(),
+                },
+                "grant-v4-break-glass-authority".to_owned(),
+                "2099-08-07T00:05:00Z".to_owned(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            require_v4_local_migration_authority(sqlite_path, &replacement).unwrap_err(),
+            crate::ImError::PermissionDenied
+        );
+        assert!(
+            crate::internal::identity_handle_recovery_operation::claim_quarantined_replacement(
+                sqlite_path,
+                &replacement.operation_id,
+                &replacement.owner_identity_id,
+                &replacement.full_handle,
+                "2026-08-07T00:02:00Z",
+            )
+            .unwrap()
+        );
+        require_v4_local_migration_authority(sqlite_path, &replacement).unwrap();
+        replacement
+            .mark_commit_attempted("2026-08-07T00:03:00Z".to_owned())
+            .unwrap();
+        crate::internal::identity_handle_recovery_operation::mark_commit_attempted(
+            sqlite_path,
+            &replacement.operation_id,
+            "2026-08-07T00:03:00Z",
+        )
+        .unwrap();
+        assert!(break_glass_authority_for_exchange(
+            sqlite_path,
+            &replacement,
+            false,
+            true,
+            "2026-08-07T00:04:00Z",
+        )
+        .unwrap());
     }
 
     #[test]
@@ -4120,6 +4567,54 @@ VALUES (?1,?2,?3,?4,?5,?6,?7,'blocked','now','now')"#,
             },
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v3_journal_status_resume_and_activate_remain_compatible() {
+        let root = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(root.path(), "https://example.invalid", [91_u8; 32]);
+        let recovery_id = "legacy-recovery-compatible-001";
+        let mut pending = scoped_pending(
+            recovery_id,
+            "legacy-operation-compatible-001",
+            "owner-legacy-compatible-1",
+            "user-legacy-compatible-1",
+            "legacy-compatible",
+        );
+        pending.remote_result = Some(scoped_remote_result(&pending));
+        pending.phase = PendingRecoveryPhase::Completed;
+        PendingHandleRecoveryStore::from_core(&core)
+            .unwrap()
+            .save(&pending)
+            .unwrap();
+        let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+        std::fs::create_dir_all(sqlite_path.parent().unwrap()).unwrap();
+        let connection = crate::internal::local_state::open_writable(sqlite_path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        drop(connection);
+
+        let status = status(&core, recovery_id).unwrap();
+        assert_eq!(status.phase, HandleRecoveryPhase::Completed);
+        assert_eq!(status.operation_id, pending.operation_id);
+        let resumed = resume(
+            &core,
+            HandleRecoveryResumeRequest {
+                operation_id: recovery_id.to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.phase, HandleRecoveryPhase::Completed);
+        let activated = activate(
+            &core,
+            HandleRecoveryActivateRequest {
+                operation_id: recovery_id.to_owned(),
+                user_presence_confirmed: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(activated.phase, HandleRecoveryPhase::Completed);
     }
 
     #[test]

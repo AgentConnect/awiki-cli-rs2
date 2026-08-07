@@ -630,6 +630,7 @@ pub(crate) fn migrate_local_state(
         bootstrap_device_id,
         auth_generation,
         false,
+        false,
     )
 }
 
@@ -648,6 +649,37 @@ pub(crate) fn migrate_joined_device_local_state_without_historical_binding(
         bootstrap_device_id,
         auth_generation,
         true,
+        false,
+    )
+}
+
+/// Applies the explicitly confirmed V4.0 fresh-state break-glass path. The
+/// local binding may be older than the authoritative Recovery predecessor,
+/// but it must still belong to the same stable owner/account/Handle and be
+/// strictly older than the committed epoch. This does not perform V4.1
+/// transparent history adoption; credential-scoped state is retired by the
+/// same transaction as an ordinary Recovery transition.
+pub(crate) fn migrate_initiator_fresh_local_state(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+    bootstrap_device_id: &str,
+    auth_generation: u64,
+) -> crate::ImResult<()> {
+    if marker.source_kind != TransitionSourceKind::Initiator
+        || marker.contract_version
+            != crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+        || marker.contract_hash
+            != crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    migrate_local_state_inner(
+        sqlite_path,
+        marker,
+        bootstrap_device_id,
+        auth_generation,
+        false,
+        true,
     )
 }
 
@@ -657,6 +689,7 @@ fn migrate_local_state_inner(
     bootstrap_device_id: &str,
     auth_generation: u64,
     allow_missing_previous_binding: bool,
+    allow_stale_previous_binding: bool,
 ) -> crate::ImResult<()> {
     marker.validate()?;
     marker.validate_state_root(sqlite_path)?;
@@ -711,13 +744,10 @@ fn migrate_local_state_inner(
     {
         return Ok(());
     }
-    let previous_generation = marker
-        .binding_generation
-        .parse::<u128>()
-        .ok()
-        .and_then(|value| value.checked_sub(1))
-        .filter(|value| *value > 0)
-        .map(|value| value.to_string())
+    let previous_generation =
+        crate::internal::identity_handle_recovery_pending::previous_canonical_generation(
+            &marker.binding_generation,
+        )
         .ok_or(crate::ImError::PermissionDenied)?;
     let expected_previous_binding = (
         marker.account_user_id.clone(),
@@ -725,8 +755,21 @@ fn migrate_local_state_inner(
         marker.previous_did.clone(),
         previous_generation,
     );
+    let stale_previous_binding =
+        binding
+            .as_ref()
+            .is_some_and(|(account_id, handle, current_did, binding_generation)| {
+                account_id == &marker.account_user_id
+                    && handle.as_deref() == Some(marker.handle.as_str())
+                    && current_did == &marker.previous_did
+                    && canonical_generation_is_less_than(
+                        binding_generation,
+                        &marker.binding_generation,
+                    )
+            });
     if binding.as_ref() != Some(&expected_previous_binding)
         && !(allow_missing_previous_binding && binding.is_none())
+        && !(allow_stale_previous_binding && stale_previous_binding)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -826,6 +869,14 @@ fn migrate_local_state_inner(
     transaction
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)
+}
+
+fn canonical_generation_is_less_than(left: &str, right: &str) -> bool {
+    left.len() <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
+        && right.len()
+            <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
+        && crate::internal::local_state::sync_v2::compare_decimal(left, right)
+            .is_ok_and(|ordering| ordering == std::cmp::Ordering::Less)
 }
 
 fn delete_owner_rows(
@@ -995,6 +1046,8 @@ fn now() -> crate::ImResult<String> {
 
 fn canonical_generation(value: &str) -> bool {
     !value.is_empty()
+        && value.len()
+            <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && value.as_bytes()[0] != b'0'
 }
@@ -1236,6 +1289,58 @@ mod tests {
                 .unwrap()
                 .phase,
             TransitionPhase::IdentitySwitched
+        );
+    }
+
+    #[test]
+    fn generation_predecessor_is_arbitrary_precision_and_canonical() {
+        let previous =
+            crate::internal::identity_handle_recovery_pending::previous_canonical_generation;
+        assert_eq!(previous("2").as_deref(), Some("1"));
+        assert_eq!(previous("1000").as_deref(), Some("999"));
+        assert_eq!(
+            previous("100000000000000000000000000000000000000").as_deref(),
+            Some("99999999999999999999999999999999999999")
+        );
+        for invalid in ["", "0", "1", "01", "+2", "2 "] {
+            assert_eq!(previous(invalid), None);
+        }
+    }
+
+    #[test]
+    fn confirmed_v4_fresh_migration_accepts_only_same_owner_stale_epoch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fresh.sqlite");
+        insert_old_binding(&path);
+        let mut marker = test_marker(&path);
+        marker.contract_version =
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned();
+        marker.contract_hash =
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH.to_owned();
+        marker.binding_generation = "100000000000000000000000000000000000000".to_owned();
+        persist(&path, &marker).unwrap();
+
+        assert!(matches!(
+            migrate_local_state(&path, &marker, "device-new", 1),
+            Err(crate::ImError::PermissionDenied)
+        ));
+        migrate_initiator_fresh_local_state(&path, &marker, "device-new", 1).unwrap();
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        let binding: (String, String, String, String) = connection
+            .query_row(
+                "SELECT account_id,current_did,identity_generation,device_id FROM identity_account_bindings WHERE owner_identity_id='owner-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            binding,
+            (
+                "user-1".to_owned(),
+                "did:wba:example.invalid:users:alice-new".to_owned(),
+                marker.binding_generation,
+                "device-new".to_owned(),
+            )
         );
     }
 

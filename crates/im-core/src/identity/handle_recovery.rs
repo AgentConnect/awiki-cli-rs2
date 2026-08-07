@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HandleRecoveryOtpRequest {
@@ -267,6 +268,16 @@ pub struct HandleRecoveryAccountEpochReceipt {
     pub metadata_json: String,
 }
 
+/// Process-local, secret-free V4.0 metrics ready for an embedding telemetry adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryMetricsSnapshot {
+    pub recovery_remote_unresolved_age_seconds: u64,
+    pub recovery_key_unavailable_total: u64,
+    pub recovery_break_glass_total: BTreeMap<String, u64>,
+    pub recovery_local_transition_pending_age_seconds: u64,
+    pub group_repair_total: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorizedJoinActivationProgress {
     pub join: super::DeviceJoinProgress,
@@ -347,6 +358,10 @@ impl<'a> HandleRecoveryService<'a> {
     ) -> crate::ImResult<Option<HandleRecoveryAccountEpochReceipt>> {
         crate::internal::identity_handle_recovery_runtime::authorized_receipt(self.core, identity)
             .await
+    }
+
+    pub fn handle_recovery_metrics(&self) -> HandleRecoveryMetricsSnapshot {
+        crate::internal::identity_handle_recovery_metrics::public_snapshot()
     }
 
     pub async fn activate_authorized_join(

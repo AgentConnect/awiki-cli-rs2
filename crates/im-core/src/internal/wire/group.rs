@@ -210,6 +210,8 @@ pub(crate) fn build_group_rebind_member_payload(
     }
     let generation = request.handle_binding_generation.as_str();
     if generation.is_empty()
+        || generation.len()
+            > crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
         || generation == "0"
         || generation.starts_with('0')
         || !generation.bytes().all(|byte| byte.is_ascii_digit())

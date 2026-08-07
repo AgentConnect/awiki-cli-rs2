@@ -29,6 +29,7 @@ pub(crate) const HANDLE_RECOVERY_KEY_POSSESSION_PROOF_TYPE: &str =
     "awiki-handle-recovery-key-possession-v1";
 pub(crate) const HANDLE_RECOVERY_RESULT_ABSENT_PADDING: &str =
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+pub(crate) const MAX_BINDING_GENERATION_DIGITS: usize = 255;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1124,6 +1125,7 @@ fn validate_timestamp_v4(field: &str, value: &str) -> crate::ImResult<()> {
 
 fn canonical_generation(value: &str) -> bool {
     !value.is_empty()
+        && value.len() <= MAX_BINDING_GENERATION_DIGITS
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && value.as_bytes()[0] != b'0'
 }

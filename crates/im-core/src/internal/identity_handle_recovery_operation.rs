@@ -384,6 +384,111 @@ pub(crate) fn quarantine_key_unavailable(
     Ok(())
 }
 
+/// Claims the latest explicitly quarantined operation as the break-glass
+/// authority for `replacement_operation_id`. A prior replacement may be
+/// replaced only after it has reached a non-applied terminal state. This uses
+/// the frozen `superseded_by_operation_id` column and introduces no new local
+/// persistence shape.
+pub(crate) fn claim_quarantined_replacement(
+    sqlite_path: &Path,
+    replacement_operation_id: &str,
+    owner_identity_id: &str,
+    full_handle: &str,
+    now: &str,
+) -> crate::ImResult<bool> {
+    let mut connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let replacement_valid: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM handle_recovery_operations_v4 WHERE operation_id=?1 AND owner_identity_id=?2 AND full_handle=?3 AND lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed','local_transition_pending')",
+            rusqlite::params![replacement_operation_id, owner_identity_id, full_handle],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if replacement_valid != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let already_claimed: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM handle_recovery_operations_v4 WHERE owner_identity_id=?1 AND full_handle=?2 AND lifecycle_class='quarantined_key_unavailable' AND superseded_by_operation_id=?3",
+            rusqlite::params![owner_identity_id, full_handle, replacement_operation_id],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if already_claimed > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if already_claimed == 1 {
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        return Ok(true);
+    }
+    let candidate: Option<String> = transaction
+        .query_row(
+            r#"SELECT quarantined.operation_id
+FROM handle_recovery_operations_v4 AS quarantined
+LEFT JOIN handle_recovery_operations_v4 AS previous_replacement
+  ON previous_replacement.operation_id=quarantined.superseded_by_operation_id
+WHERE quarantined.owner_identity_id=?1
+  AND quarantined.full_handle=?2
+  AND quarantined.lifecycle_class='quarantined_key_unavailable'
+  AND (
+    quarantined.superseded_by_operation_id IS NULL
+    OR previous_replacement.lifecycle_class IN (
+      'discarded_pre_attempt','superseded_by_state_change','failed_terminal'
+    )
+  )
+ORDER BY quarantined.updated_at DESC,quarantined.operation_id DESC
+LIMIT 1"#,
+            rusqlite::params![owner_identity_id, full_handle],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let Some(candidate) = candidate else {
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        return Ok(false);
+    };
+    let changed = transaction
+        .execute(
+            "UPDATE handle_recovery_operations_v4 SET superseded_by_operation_id=?2,updated_at=?3 WHERE operation_id=?1 AND lifecycle_class='quarantined_key_unavailable'",
+            rusqlite::params![candidate, replacement_operation_id, now],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if changed != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(true)
+}
+
+pub(crate) fn is_quarantined_replacement(
+    sqlite_path: &Path,
+    replacement_operation_id: &str,
+    owner_identity_id: &str,
+    full_handle: &str,
+) -> crate::ImResult<bool> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM handle_recovery_operations_v4 WHERE owner_identity_id=?1 AND full_handle=?2 AND lifecycle_class='quarantined_key_unavailable' AND superseded_by_operation_id=?3",
+            rusqlite::params![owner_identity_id, full_handle, replacement_operation_id],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if count > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(count == 1)
+}
+
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecoveryOperationRecord> {
     Ok(RecoveryOperationRecord {
         operation_id: row.get(0)?,
@@ -463,5 +568,72 @@ mod tests {
         let standard = "sha256:SlQnFpLKCK0OFEKnA2492wGZ8WsD_w35-l_wTccWbUA";
         assert!(valid_sha256_digest(standard));
         assert!(!valid_sha256_digest(&format!("sha256:{standard}")));
+    }
+
+    #[test]
+    fn quarantined_operation_authorizes_only_one_actionable_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        insert(&path, &record("op_quarantined_12345678", "owner-1")).unwrap();
+        quarantine_key_unavailable(&path, "op_quarantined_12345678", "2026-08-07T00:01:00Z")
+            .unwrap();
+        insert(&path, &record("op_replacement_12345678", "owner-1")).unwrap();
+        assert!(claim_quarantined_replacement(
+            &path,
+            "op_replacement_12345678",
+            "owner-1",
+            "alice.example.invalid",
+            "2026-08-07T00:02:00Z",
+        )
+        .unwrap());
+        assert!(is_quarantined_replacement(
+            &path,
+            "op_replacement_12345678",
+            "owner-1",
+            "alice.example.invalid",
+        )
+        .unwrap());
+
+        mark_commit_attempted(&path, "op_replacement_12345678", "2026-08-07T00:03:00Z").unwrap();
+        assert!(is_quarantined_replacement(
+            &path,
+            "op_replacement_12345678",
+            "owner-1",
+            "alice.example.invalid",
+        )
+        .unwrap());
+        update_lifecycle(
+            &path,
+            "op_replacement_12345678",
+            RecoveryLifecycleClass::RemoteUnresolved,
+            RecoveryLifecycleClass::FailedTerminal,
+            None,
+            Some("handle_recovery_state_changed"),
+            "2026-08-07T00:04:00Z",
+        )
+        .unwrap();
+        insert(&path, &record("op_replacement_next_12345678", "owner-1")).unwrap();
+        assert!(claim_quarantined_replacement(
+            &path,
+            "op_replacement_next_12345678",
+            "owner-1",
+            "alice.example.invalid",
+            "2026-08-07T00:05:00Z",
+        )
+        .unwrap());
+        assert!(!is_quarantined_replacement(
+            &path,
+            "op_replacement_12345678",
+            "owner-1",
+            "alice.example.invalid",
+        )
+        .unwrap());
+        assert!(is_quarantined_replacement(
+            &path,
+            "op_replacement_next_12345678",
+            "owner-1",
+            "alice.example.invalid",
+        )
+        .unwrap());
     }
 }

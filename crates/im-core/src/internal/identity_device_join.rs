@@ -1609,9 +1609,11 @@ fn promote_join_identity(
         let historical_binding_generation_matches = previous_entry
             .binding_generation
             .as_deref()
-            .and_then(|value| value.parse::<u128>().ok())
-            .and_then(|previous| previous.checked_add(1))
-            == marker.binding_generation.parse::<u128>().ok();
+            .and_then(
+                crate::internal::identity_handle_recovery_pending::increment_canonical_generation,
+            )
+            .as_deref()
+            == Some(marker.binding_generation.as_str());
         if identity_already_switched {
             ensure_existing_join_identity_is_rootless(
                 &index,
