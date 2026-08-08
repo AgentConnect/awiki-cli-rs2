@@ -24,11 +24,13 @@ legacyRegistryEpochAdoptionAuthority({
 
 Future<DartHandleRecoveryOtpResult> requestHandleRecoveryOtp({
   required ArcDartImCore core,
-  required DartIdentitySelector selector,
+  DartIdentitySelector? selector,
+  required String fullHandle,
   required String phone,
 }) => RustLib.instance.api.crateApiIdentityRequestHandleRecoveryOtp(
   core: core,
   selector: selector,
+  fullHandle: fullHandle,
   phone: phone,
 );
 

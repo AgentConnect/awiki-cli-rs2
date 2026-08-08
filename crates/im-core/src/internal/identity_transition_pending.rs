@@ -640,6 +640,33 @@ pub(crate) fn migrate_initiator_fresh_local_state(
     )
 }
 
+/// Installs a recovered identity on a machine that has never held the Handle.
+/// The authoritative previous DID is retained in the receipt, while the new
+/// stable owner starts with no prior local account binding or history rows.
+pub(crate) fn migrate_initiator_new_local_state(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+    bootstrap_device_id: &str,
+    auth_generation: u64,
+) -> crate::ImResult<()> {
+    if marker.source_kind != TransitionSourceKind::Initiator
+        || marker.contract_version
+            != crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+        || marker.contract_hash
+            != crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    migrate_local_state_inner(
+        sqlite_path,
+        marker,
+        bootstrap_device_id,
+        auth_generation,
+        true,
+        false,
+    )
+}
+
 fn migrate_local_state_inner(
     sqlite_path: &Path,
     marker: &IdentityTransitionMarker,
@@ -1292,6 +1319,38 @@ mod tests {
                 "user-1".to_owned(),
                 "did:wba:example.invalid:users:alice-new".to_owned(),
                 marker.binding_generation,
+                "device-new".to_owned(),
+            )
+        );
+    }
+
+    #[test]
+    fn new_machine_recovery_installs_first_local_binding() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("new-machine.sqlite");
+        let marker = test_marker(&path);
+        persist(&path, &marker).unwrap();
+
+        assert!(matches!(
+            migrate_local_state(&path, &marker, "device-new", 1),
+            Err(crate::ImError::PermissionDenied)
+        ));
+        migrate_initiator_new_local_state(&path, &marker, "device-new", 1).unwrap();
+
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        let binding: (String, String, String, String) = connection
+            .query_row(
+                "SELECT account_id,current_did,identity_generation,device_id FROM identity_account_bindings WHERE owner_identity_id='owner-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            binding,
+            (
+                "user-1".to_owned(),
+                "did:wba:example.invalid:users:alice-new".to_owned(),
+                "8".to_owned(),
                 "device-new".to_owned(),
             )
         );

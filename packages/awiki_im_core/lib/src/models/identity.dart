@@ -214,6 +214,7 @@ class HandleRecoveryProgress {
 
 class HandleRecoveryOtpResult {
   const HandleRecoveryOtpResult({
+    required this.ownerIdentityId,
     required this.fullHandle,
     required this.operationId,
     required this.accepted,
@@ -221,6 +222,7 @@ class HandleRecoveryOtpResult {
     required this.retryAt,
   });
 
+  final String ownerIdentityId;
   final String fullHandle;
   final String operationId;
   final bool accepted;

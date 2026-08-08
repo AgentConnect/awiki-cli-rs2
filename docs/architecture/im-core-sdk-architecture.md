@@ -92,10 +92,10 @@ new P5 PreKey publication, and transport-only P4 group convergence. Dart is a ty
 projection of that state machine; it does not implement a second state machine. Core creates
 the opaque operation ID when OTP is requested, and every later call addresses that exact ID.
 
-`prepare_handle_recovery` accepts an optional local identity selector. With a selector,
+`request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
 against the complete local identity index; if absent, it resolves the active public WNS
-binding and bootstraps a new local owner after phone verification. It never substitutes the
+binding during factor exchange and bootstraps a new local owner after phone verification. It never substitutes the
 process default/current identity. Existing-target recovery migrates only that owner's ordinary
 state; a newly bootstrapped target reports no local ordinary-data migration and leaves every
 other local identity unchanged.

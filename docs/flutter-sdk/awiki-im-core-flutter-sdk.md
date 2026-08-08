@@ -299,8 +299,9 @@ The public methods are wrappers on `AwikiImCore` itself; callers do not import g
 access its private native handle. Flutter Web exposes the same signatures and fails closed as
 unsupported.
 
-`requestHandleRecoveryOtp` accepts an explicit identity selector and phone; Core creates and returns
-the opaque operation ID. The host passes that exact ID to `prepareHandleRecovery`, activate, resume,
+`requestHandleRecoveryOtp` accepts a canonical full Handle, phone, and an optional identity selector;
+Core creates and returns the opaque operation ID plus its authoritative local owner ID. The host
+passes that exact ID to `prepareHandleRecovery`, activate, resume,
 status, discard, or quarantine. Core does not guess a pending Recovery from an identity scope and
 does not return `null` for an unknown ID. The public failure enum is closed to
 `factorRetryRequired`, `resultAbsent`, `outcomeUnknown`, `localKeyUnavailable`,

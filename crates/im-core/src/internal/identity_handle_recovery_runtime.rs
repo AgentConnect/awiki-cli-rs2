@@ -18,70 +18,192 @@ use crate::internal::identity_handle_recovery_pending::{
 };
 use crate::internal::transport::{AsyncRestTransport as _, AsyncRpcTransport as _};
 
+struct RecoveryLocalContext {
+    owner_identity_id: String,
+    local_alias: String,
+    display_name: String,
+    make_default: bool,
+    local_previous_did: String,
+    fresh_local_state: bool,
+    generated: Option<crate::internal::identity_generation::GeneratedHandleRecoveryIdentity>,
+}
+
 pub(crate) async fn request_otp(
     core: &crate::core::ImCore,
     request: HandleRecoveryOtpRequest,
 ) -> crate::ImResult<HandleRecoveryOtpResult> {
     require_enabled(core)?;
-    require_explicit_identity(&request.identity)?;
-    let identity = core.identities().resolve_async(request.identity).await?;
-    let handle = identity
-        .handle
-        .as_ref()
-        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
     let canonical =
-        crate::internal::identity_wire::handle_recovery::canonical_handle(handle.as_str())?;
-    let lock = core.inner().handle_recovery_lock(identity.id.as_str());
+        crate::internal::identity_wire::handle_recovery::canonical_handle(&request.full_handle)?;
+    let request_lock_scope = format!("handle:{}", canonical.full);
+    let lock = core.inner().handle_recovery_lock(&request_lock_scope);
     let _guard = lock.lock().await;
     let index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .load_index()?;
-    let entry = index
-        .credentials
-        .values()
-        .find(|entry| entry.unique_id == identity.id.as_str())
-        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
-    let local_alias = (!entry.credential_name.trim().is_empty())
-        .then(|| entry.credential_name.clone())
-        .or_else(|| identity.local_alias.clone())
-        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
     let store = PendingHandleRecoveryStore::from_core(core)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+    let context = if let Some(selector) = request.identity {
+        require_explicit_identity(&selector)?;
+        let identity = core.identities().resolve_async(selector).await?;
+        if identity.handle.as_ref().map(|handle| handle.as_str()) != Some(canonical.full.as_str()) {
+            return Err(recovery_error(
+                HandleRecoveryErrorCode::LocalMigrationUnsupported,
+            ));
+        }
+        let entry = index
+            .credentials
+            .values()
+            .find(|entry| entry.unique_id == identity.id.as_str())
+            .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
+        RecoveryLocalContext {
+            owner_identity_id: identity.id.as_str().to_owned(),
+            local_alias: (!entry.credential_name.trim().is_empty())
+                .then(|| entry.credential_name.clone())
+                .or_else(|| identity.local_alias.clone())
+                .ok_or_else(|| {
+                    recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported)
+                })?,
+            display_name: identity
+                .display_name
+                .clone()
+                .unwrap_or_else(|| canonical.local_part.clone()),
+            make_default: identity.is_default,
+            local_previous_did: identity.did.as_str().to_owned(),
+            fresh_local_state: false,
+            generated: None,
+        }
+    } else {
+        let local_matches = index
+            .credentials
+            .values()
+            .filter(|entry| entry.full_handle == canonical.full)
+            .collect::<Vec<_>>();
+        if local_matches.len() > 1 {
+            return Err(recovery_error(
+                HandleRecoveryErrorCode::LocalMigrationUnsupported,
+            ));
+        }
+        if let Some(entry) = local_matches.first() {
+            RecoveryLocalContext {
+                owner_identity_id: entry.unique_id.clone(),
+                local_alias: entry.credential_name.clone(),
+                display_name: (!entry.name.trim().is_empty())
+                    .then(|| entry.name.clone())
+                    .unwrap_or_else(|| canonical.local_part.clone()),
+                make_default: entry.is_default,
+                local_previous_did: entry.did.clone(),
+                fresh_local_state: false,
+                generated: None,
+            }
+        } else if let Some(existing) = crate::internal::identity_handle_recovery_operation::list_handle(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &canonical.full,
+        )?
+        .into_iter()
+        .find(|record| {
+            matches!(
+                record.lifecycle_class,
+                crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit
+                    | crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteUnresolved
+                    | crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteCommitted
+                    | crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::LocalTransitionPending
+            )
+        }) {
+            let (_, pending) = store
+                .load_v4(&existing.operation_id)
+                .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
+                .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+            RecoveryLocalContext {
+                owner_identity_id: pending.owner_identity_id,
+                local_alias: pending.local_alias,
+                display_name: pending.display_name,
+                make_default: pending.make_default,
+                local_previous_did: pending.local_previous_did,
+                fresh_local_state: pending.fresh_local_state,
+                generated: None,
+            }
+        } else {
+            let mut vault_only = store
+                .list_v4_for_handle(&canonical.full)?
+                .into_iter()
+                .map(|(_, pending)| pending)
+                .filter(|pending| {
+                    pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+                        && !pending.commit_attempted
+                })
+                .collect::<Vec<_>>();
+            if vault_only.len() > 1 {
+                return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
+            }
+            if let Some(pending) = vault_only.pop() {
+                RecoveryLocalContext {
+                    owner_identity_id: pending.owner_identity_id,
+                    local_alias: pending.local_alias,
+                    display_name: pending.display_name,
+                    make_default: pending.make_default,
+                    local_previous_did: pending.local_previous_did,
+                    fresh_local_state: pending.fresh_local_state,
+                    generated: None,
+                }
+            } else {
+            let generated =
+                crate::internal::identity_generation::generate_handle_recovery_identity(
+                    &canonical.domain,
+                    &canonical.local_part,
+                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                    core.inner().sdk_config().anp_service_did.as_ref(),
+                )?;
+            RecoveryLocalContext {
+                owner_identity_id: generated.unique_id.clone(),
+                local_alias: generated.unique_id.clone(),
+                display_name: canonical.local_part.clone(),
+                make_default: index.default_credential_name.is_empty(),
+                local_previous_did: format!("{}:unbound", generated.did.as_str()),
+                fresh_local_state: true,
+                generated: Some(generated),
+            }
+            }
+        }
+    };
     reconcile_vault_only_awaiting_factor_operation(
         core,
         &store,
-        identity.id.as_str(),
+        &context.owner_identity_id,
         &canonical.full,
-        identity.did.as_str(),
+        &context.local_previous_did,
+        context.fresh_local_state,
     )?;
     let existing = reusable_awaiting_factor_operation(
         core,
         &store,
-        identity.id.as_str(),
+        &context.owner_identity_id,
         &canonical.full,
-        identity.did.as_str(),
+        &context.local_previous_did,
+        context.fresh_local_state,
     )?;
     let operation_id = if let Some(operation_id) = existing {
         operation_id
     } else {
         let operation_id = random_reference("recover_v4")?;
-        let generated = crate::internal::identity_generation::generate_handle_recovery_identity(
-            &canonical.domain,
-            &canonical.local_part,
-            core.inner().sdk_config().anp_service_endpoint.as_ref(),
-            core.inner().sdk_config().anp_service_did.as_ref(),
-        )?;
+        let generated = match context.generated.clone() {
+            Some(generated) => generated,
+            None => crate::internal::identity_generation::generate_handle_recovery_identity(
+                &canonical.domain,
+                &canonical.local_part,
+                core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                core.inner().sdk_config().anp_service_did.as_ref(),
+            )?,
+        };
         let pending = PendingHandleRecoveryV4::new_pre_otp(
             operation_id.clone(),
-            identity.id.as_str().to_owned(),
-            local_alias,
-            identity
-                .display_name
-                .clone()
-                .unwrap_or_else(|| canonical.local_part.clone()),
-            identity.is_default,
+            context.owner_identity_id.clone(),
+            context.local_alias.clone(),
+            context.display_name.clone(),
+            context.make_default,
+            context.fresh_local_state,
             canonical.full.clone(),
-            identity.did.as_str().to_owned(),
+            context.local_previous_did.clone(),
             generated,
         )?;
         store.create_v4(&pending)?;
@@ -92,7 +214,7 @@ pub(crate) async fn request_otp(
         )?;
         let operation = crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
                 operation_id.clone(),
-                identity.id.as_str().to_owned(),
+                context.owner_identity_id.clone(),
                 canonical.full.clone(),
                 crate::internal::identity_handle_recovery_pending::pending_v4_key_id(&operation_id),
                 now,
@@ -114,6 +236,7 @@ pub(crate) async fn request_otp(
         .await?;
     let (accepted, retry_after_seconds, retry_at) = parse_otp_send_boundary(&raw)?;
     Ok(HandleRecoveryOtpResult {
+        owner_identity_id: crate::ids::IdentityId::parse(&context.owner_identity_id)?,
         full_handle: canonical.full,
         operation_id,
         accepted,
@@ -128,6 +251,7 @@ fn reconcile_vault_only_awaiting_factor_operation(
     owner_identity_id: &str,
     full_handle: &str,
     local_previous_did: &str,
+    fresh_local_state: bool,
 ) -> crate::ImResult<()> {
     let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
     let vault_only = store
@@ -156,6 +280,7 @@ fn reconcile_vault_only_awaiting_factor_operation(
         || pending.owner_identity_id != owner_identity_id
         || pending.full_handle != full_handle
         || pending.local_previous_did != local_previous_did
+        || pending.fresh_local_state != fresh_local_state
     {
         return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
     }
@@ -196,6 +321,7 @@ fn reusable_awaiting_factor_operation(
     owner_identity_id: &str,
     full_handle: &str,
     local_previous_did: &str,
+    fresh_local_state: bool,
 ) -> crate::ImResult<Option<String>> {
     let existing = crate::internal::identity_handle_recovery_operation::list_owner(
         &core.inner().sdk_paths().local_state.sqlite_path,
@@ -245,6 +371,7 @@ fn reusable_awaiting_factor_operation(
         || pending.owner_identity_id != owner_identity_id
         || pending.full_handle != full_handle
         || pending.local_previous_did != local_previous_did
+        || pending.fresh_local_state != fresh_local_state
     {
         return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
     }
@@ -660,7 +787,7 @@ pub(crate) async fn prepare(
     // The only V4.0 exception to a direct local transition is the explicitly
     // confirmed key-unavailable break-glass path. It creates a fresh local
     // crypto/control epoch; transparent N-k history adoption remains V4.1.
-    let fresh_break_glass = if !direct_local_transition {
+    let fresh_break_glass = if !direct_local_transition && !pending.fresh_local_state {
         let authorized = break_glass_authority_for_exchange(
             sqlite_path,
             &pending,
@@ -677,7 +804,7 @@ pub(crate) async fn prepare(
     } else {
         false
     };
-    if !direct_local_transition && !fresh_break_glass {
+    if !direct_local_transition && !fresh_break_glass && !pending.fresh_local_state {
         if post_attempt_refresh {
             mark_post_attempt_state_changed(core, &pending)?;
         }
@@ -687,26 +814,31 @@ pub(crate) async fn prepare(
             HandleRecoveryErrorCode::LocalMigrationUnsupported
         }));
     }
-    let local_index =
-        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .load_index()?;
-    let local_entry = local_index
-        .credentials
-        .values()
-        .find(|entry| entry.unique_id == pending.owner_identity_id)
-        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
-    if local_migration_mode_v4(
-        &pending,
-        &grant.current_binding.account_user_id,
-        &grant.current_binding.full_handle,
-        &grant.current_binding.current_did,
-        &local_entry.user_id,
-        &local_entry.full_handle,
-        &local_entry.did,
-        fresh_break_glass,
-    )
-    .is_none()
-    {
+    let local_migration_supported = if pending.fresh_local_state {
+        true
+    } else {
+        let local_index = crate::internal::identity_store::IdentityStore::new(
+            &core.inner().sdk_paths().identities,
+        )
+        .load_index()?;
+        let local_entry = local_index
+            .credentials
+            .values()
+            .find(|entry| entry.unique_id == pending.owner_identity_id)
+            .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
+        local_migration_mode_v4(
+            &pending,
+            &grant.current_binding.account_user_id,
+            &grant.current_binding.full_handle,
+            &grant.current_binding.current_did,
+            &local_entry.user_id,
+            &local_entry.full_handle,
+            &local_entry.did,
+            fresh_break_glass,
+        )
+        .is_some()
+    };
+    if !local_migration_supported {
         if post_attempt_refresh {
             mark_post_attempt_state_changed(core, &pending)?;
         }
@@ -793,12 +925,12 @@ fn local_migration_mode_v4(
         return None;
     }
     if local_current_did == authoritative_current_did
-        && authoritative_current_did == pending.local_previous_did
+        && pending.local_previous_did == authoritative_current_did
     {
         return Some(LocalMigrationModeV4::Direct);
     }
     (fresh_break_glass
-        && local_current_did == pending.local_previous_did
+        && pending.local_previous_did == local_current_did
         && local_account_user_id == authoritative_account_user_id)
         .then_some(LocalMigrationModeV4::ConfirmedFreshBreakGlass)
 }
@@ -989,7 +1121,7 @@ fn require_v4_local_migration_authority(
     let Some(authoritative) = pending.authoritative_binding.as_ref() else {
         return Ok(());
     };
-    if authoritative.current_did == pending.local_previous_did {
+    if pending.fresh_local_state || pending.local_previous_did == authoritative.current_did {
         return Ok(());
     }
     if crate::internal::identity_handle_recovery_operation::is_quarantined_replacement(
@@ -1590,7 +1722,14 @@ async fn apply_local_transition_v4(
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
     if marker.phase == crate::internal::identity_transition_pending::TransitionPhase::Pending {
-        if crate::internal::identity_handle_recovery_operation::is_quarantined_replacement(
+        if pending.fresh_local_state {
+            crate::internal::identity_transition_pending::migrate_initiator_new_local_state(
+                sqlite_path,
+                &marker,
+                &result.bootstrap_device.device_id,
+                result.bootstrap_device.auth_generation,
+            )?;
+        } else if crate::internal::identity_handle_recovery_operation::is_quarantined_replacement(
             sqlite_path,
             &pending.operation_id,
             &pending.owner_identity_id,
@@ -1709,15 +1848,17 @@ async fn apply_local_transition_v4(
             &result.checkpoint.registry_version.to_string(),
             "{}",
         )?;
-        let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
-            sqlite_path,
-            &pending.owner_identity_id,
-            &pending.full_handle,
-            std::slice::from_ref(&pending.local_previous_did),
-            &result.current_did,
-            &result.binding_generation,
-        );
-        let _ = client.groups().resume_rebind_recovery_async(100).await;
+        if !pending.fresh_local_state {
+            let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
+                sqlite_path,
+                &pending.owner_identity_id,
+                &pending.full_handle,
+                std::slice::from_ref(&pending.local_previous_did),
+                &result.current_did,
+                &result.binding_generation,
+            );
+            let _ = client.groups().resume_rebind_recovery_async(100).await;
+        }
     }
     let applied =
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?
@@ -2047,11 +2188,15 @@ fn progress_v4(
         .transpose()?;
     let result = pending.remote_result.as_ref();
     let (unsupported_e2ee_group_count, unsupported_did_only_group_count) =
-        crate::internal::group_rebind_recovery::recovery_impact_counts(
-            &core.inner().sdk_paths().local_state.sqlite_path,
-            &pending.owner_identity_id,
-            &pending.local_previous_did,
-        )?;
+        if !pending.fresh_local_state {
+            crate::internal::group_rebind_recovery::recovery_impact_counts(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &pending.owner_identity_id,
+                &pending.local_previous_did,
+            )?
+        } else {
+            (0, 0)
+        };
     Ok(HandleRecoveryProgress {
         operation_id: pending.operation_id.clone(),
         owner_identity_id: crate::ids::IdentityId::parse(&pending.owner_identity_id)?,
@@ -2080,7 +2225,7 @@ fn progress_v4(
             }
         },
         impact: HandleRecoveryImpact {
-            local_ordinary_data_will_migrate: true,
+            local_ordinary_data_will_migrate: !pending.fresh_local_state,
             other_devices_must_rejoin: true,
             unsupported_e2ee_group_count,
             unsupported_did_only_group_count,
@@ -2348,6 +2493,7 @@ mod tests {
             "alice".to_owned(),
             "Alice".to_owned(),
             true,
+            false,
             "alice.awiki.test".to_owned(),
             "did:wba:awiki.test:users:alice-old".to_owned(),
             generated,
@@ -2639,6 +2785,7 @@ mod tests {
                 "owner-factor-pre",
                 "alice.awiki.test",
                 "did:wba:awiki.test:users:alice-old",
+                false,
             )
             .unwrap()
             .as_deref(),
@@ -2656,6 +2803,7 @@ mod tests {
                 "owner-factor-post",
                 "alice.awiki.test",
                 "did:wba:awiki.test:users:alice-old",
+                false,
             )
             .unwrap()
             .as_deref(),
@@ -3137,6 +3285,7 @@ mod tests {
             owner,
             "alice.awiki.test",
             "did:wba:awiki.test:users:alice-old",
+            false,
         )
         .unwrap();
         let rebuilt = crate::internal::identity_handle_recovery_operation::load(
@@ -3157,6 +3306,7 @@ mod tests {
                 owner,
                 "alice.awiki.test",
                 "did:wba:awiki.test:users:alice-old",
+                false,
             )
             .unwrap()
             .as_deref(),
@@ -3179,6 +3329,7 @@ mod tests {
             conflict_owner,
             "alice.awiki.test",
             "did:wba:awiki.test:users:alice-old",
+            false,
         )
         .unwrap_err();
         assert!(matches!(
@@ -3461,6 +3612,7 @@ mod tests {
                 owner_identity_id,
                 "alice.awiki.test",
                 "did:wba:awiki.test:users:alice-old",
+                false,
             )
             .unwrap()
             .as_deref(),
@@ -3478,6 +3630,7 @@ mod tests {
                 owner_identity_id,
                 "alice.awiki.test",
                 "did:wba:awiki.test:users:alice-old",
+                false,
             )
             .unwrap()
             .as_deref(),

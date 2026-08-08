@@ -218,14 +218,16 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
-    required IdentitySelector selector,
+    IdentitySelector? selector,
+    required String fullHandle,
     required String phone,
   }) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.requestHandleRecoveryOtp(
         core: _inner,
-        selector: selector._toGen(),
+        selector: selector?._toGen(),
+        fullHandle: fullHandle,
         phone: phone,
       ),
     );
@@ -2536,6 +2538,7 @@ extension on gen_identity.DartLegacyRegistryEpochAdoptionAuthority {
 
 extension on gen_identity.DartHandleRecoveryOtpResult {
   HandleRecoveryOtpResult _toModel() => HandleRecoveryOtpResult(
+    ownerIdentityId: ownerIdentityId,
     fullHandle: fullHandle,
     operationId: operationId,
     accepted: accepted,

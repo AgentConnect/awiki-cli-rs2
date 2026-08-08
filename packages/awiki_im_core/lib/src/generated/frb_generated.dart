@@ -641,7 +641,8 @@ abstract class RustLibApi extends BaseApi {
 
   Future<DartHandleRecoveryOtpResult> crateApiIdentityRequestHandleRecoveryOtp({
     required ArcDartImCore core,
-    required DartIdentitySelector selector,
+    DartIdentitySelector? selector,
+    required String fullHandle,
     required String phone,
   });
 
@@ -4731,7 +4732,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<DartHandleRecoveryOtpResult> crateApiIdentityRequestHandleRecoveryOtp({
     required ArcDartImCore core,
-    required DartIdentitySelector selector,
+    DartIdentitySelector? selector,
+    required String fullHandle,
     required String phone,
   }) {
     return handler.executeNormal(
@@ -4742,7 +4744,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             core,
             serializer,
           );
-          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+          sse_encode_opt_box_autoadd_dart_identity_selector(
+            selector,
+            serializer,
+          );
+          sse_encode_String(fullHandle, serializer);
           sse_encode_String(phone, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -4756,7 +4762,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiIdentityRequestHandleRecoveryOtpConstMeta,
-        argValues: [core, selector, phone],
+        argValues: [core, selector, fullHandle, phone],
         apiImpl: this,
       ),
     );
@@ -4765,7 +4771,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiIdentityRequestHandleRecoveryOtpConstMeta =>
       const TaskConstMeta(
         debugName: "request_handle_recovery_otp",
-        argNames: ["core", "selector", "phone"],
+        argNames: ["core", "selector", "fullHandle", "phone"],
       );
 
   @override
@@ -8457,14 +8463,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return DartHandleRecoveryOtpResult(
-      fullHandle: dco_decode_String(arr[0]),
-      operationId: dco_decode_String(arr[1]),
-      accepted: dco_decode_bool(arr[2]),
-      retryAfterSeconds: dco_decode_u_32(arr[3]),
-      retryAt: dco_decode_String(arr[4]),
+      ownerIdentityId: dco_decode_String(arr[0]),
+      fullHandle: dco_decode_String(arr[1]),
+      operationId: dco_decode_String(arr[2]),
+      accepted: dco_decode_bool(arr[3]),
+      retryAfterSeconds: dco_decode_u_32(arr[4]),
+      retryAt: dco_decode_String(arr[5]),
     );
   }
 
@@ -10292,6 +10299,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_dart_identity_device_role(raw);
+  }
+
+  @protected
+  DartIdentitySelector? dco_decode_opt_box_autoadd_dart_identity_selector(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_identity_selector(raw);
   }
 
   @protected
@@ -12901,12 +12918,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_ownerIdentityId = sse_decode_String(deserializer);
     var var_fullHandle = sse_decode_String(deserializer);
     var var_operationId = sse_decode_String(deserializer);
     var var_accepted = sse_decode_bool(deserializer);
     var var_retryAfterSeconds = sse_decode_u_32(deserializer);
     var var_retryAt = sse_decode_String(deserializer);
     return DartHandleRecoveryOtpResult(
+      ownerIdentityId: var_ownerIdentityId,
       fullHandle: var_fullHandle,
       operationId: var_operationId,
       accepted: var_accepted,
@@ -15413,6 +15432,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentitySelector? sse_decode_opt_box_autoadd_dart_identity_selector(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_identity_selector(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(
     SseDeserializer deserializer,
   ) {
@@ -17719,6 +17751,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.ownerIdentityId, serializer);
     sse_encode_String(self.fullHandle, serializer);
     sse_encode_String(self.operationId, serializer);
     sse_encode_bool(self.accepted, serializer);
@@ -19680,6 +19713,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_identity_device_role(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_identity_selector(
+    DartIdentitySelector? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_identity_selector(self, serializer);
     }
   }
 

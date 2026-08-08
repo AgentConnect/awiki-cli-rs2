@@ -114,6 +114,7 @@ pub struct DartAuthorizedJoinActivationProgress {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRecoveryOtpResult {
+    pub owner_identity_id: String,
     pub full_handle: String,
     pub operation_id: String,
     pub accepted: bool,

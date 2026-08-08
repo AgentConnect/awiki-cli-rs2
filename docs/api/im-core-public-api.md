@@ -719,8 +719,10 @@ Manifest Handle Recovery V4.0 是 host-neutral、默认关闭的 Core 能力。H
 `resume_authorized_join_activation`；metrics 另有只读快照。`status` 和 list 只读；
 activate/resume 才能推进持久化状态机。
 OTP、Recovery Grant、proof、私钥与 JWT 不进入公开进度 DTO 或 SQLite transition marker。
-OTP request 只接受显式 identity 与 phone，由 Core 生成并返回 operation ID；prepare、status、
-activate 和 resume 都精确接受该 ID，不按 identity scope 猜测，也不把 unknown 映射成
+OTP request 接受规范化 full Handle、phone 与 optional identity：提供 selector 时必须与 Handle
+精确闭合；省略时 Core 只按 Handle 查找本地身份，本机不存在则创建新的本地 owner，绝不回退到
+default/current identity。Core 生成并返回 operation ID 与权威 owner ID；prepare、status、
+activate 和 resume 都精确接受 operation ID，不按 identity scope 猜测，也不把 unknown 映射成
 nullable success。
 `HandleRecoveryProgress` 包含 secret-free impact 和 initiator reset projection；authorized Join
 返回 `AuthorizedJoinActivationProgress { join, reset_reference }`，其中 joined-device reset 的
@@ -733,7 +735,8 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 `local_migration_unsupported` 和 `unknown_epoch`。V3 阶段名和 `handle_recovery_*` 兼容错误别名
 均不存在。
 
-恢复保留稳定 `owner_identity_id` 和本地 alias，切换后用新设备签名刷新 JWT、发布新的 P5
+本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
+`local_ordinary_data_will_migrate=false`，且不读取或覆盖其他本地身份。切换后用新设备签名刷新 JWT、发布新的 P5
 PreKey，并只为 authoritative `required_security_profile=transport-protected` 的 Handle-backed
 群创建 P4 rebind。缺失、未知、冲突、DID-only、group-e2ee 均 fail closed；Recovery 任务绝不
 创建 P6/MLS 或 `awaiting_p6`。旧 Ratchet、PreKey/OPK、MLS 和 device-scoped checkpoint 被退役，
@@ -752,7 +755,8 @@ V4.0 不增加 CLI command、Daemon task、Agent 恢复入口或 process-global 
 可复用同一 typed service 和显式 `IdentitySelector`，不得绕过 Core 状态机。App 迁移旧
 device-registry epoch 时只能采用 `IdentityRegistry::legacy_registry_epoch_adoption_authority`
 返回的精确、marker-free、opaque authority；任意 Recovery marker phase 都会使该 authority
-fail closed。V4.0 不实现透明 N-k 本地历史认领；该能力保留给后续 V4.1。
+fail closed。V4.0 支持无目标本地身份的新机器 fresh install，但不实现已有 owner 的透明 N-k
+本地历史认领；后者保留给后续 V4.1。
 
 `plan_default_identity_change` 返回计划，CLI/App 负责是否写入 default identity 文件。若未来 SDK 需要直接写入，必须只写显式传入的 `default_identity_path`。
 

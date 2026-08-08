@@ -6,7 +6,8 @@ use awiki_im_core::identity::{
 #[test]
 fn recovery_secret_inputs_are_write_only_in_debug_output() {
     let otp = HandleRecoveryOtpRequest {
-        identity: awiki_im_core::identity::IdentitySelector::Default,
+        identity: Some(awiki_im_core::identity::IdentitySelector::Default),
+        full_handle: "alice.awiki.info".to_owned(),
         phone: "+8613800000000".to_owned(),
     };
     let prepare = HandleRecoveryPrepareRequest {
@@ -89,7 +90,8 @@ async fn recovery_execution_gate_defaults_off() {
     let error = core
         .handle_recovery()
         .request_handle_recovery_otp(HandleRecoveryOtpRequest {
-            identity: awiki_im_core::identity::IdentitySelector::Default,
+            identity: None,
+            full_handle: "alice.example.invalid".to_owned(),
             phone: "+8613800000000".to_owned(),
         })
         .await

@@ -199,6 +199,8 @@ pub(crate) struct PendingHandleRecoveryV4 {
     pub(crate) local_alias: String,
     pub(crate) display_name: String,
     pub(crate) make_default: bool,
+    #[serde(default)]
+    pub(crate) fresh_local_state: bool,
     pub(crate) full_handle: String,
     pub(crate) local_previous_did: String,
     pub(crate) generated: crate::internal::identity_generation::GeneratedHandleRecoveryIdentity,
@@ -248,6 +250,7 @@ impl PendingHandleRecoveryV4 {
         local_alias: String,
         display_name: String,
         make_default: bool,
+        fresh_local_state: bool,
         full_handle: String,
         local_previous_did: String,
         generated: crate::internal::identity_generation::GeneratedHandleRecoveryIdentity,
@@ -262,6 +265,7 @@ impl PendingHandleRecoveryV4 {
             local_alias,
             display_name,
             make_default,
+            fresh_local_state,
             full_handle,
             local_previous_did,
             generated,
@@ -300,6 +304,9 @@ impl PendingHandleRecoveryV4 {
             || grant_expires_at.trim().is_empty()
         {
             return Err(crate::ImError::PermissionDenied);
+        }
+        if self.fresh_local_state {
+            self.local_previous_did = authoritative_binding.current_did.clone();
         }
         let signing_public_key = generated_signing_public_jwk(&self.generated)?;
         let intent = RecoveryIntentV4 {
@@ -755,6 +762,36 @@ impl PendingHandleRecoveryStore {
         Ok(matches)
     }
 
+    pub(crate) fn list_v4_for_handle(
+        &self,
+        full_handle: &str,
+    ) -> crate::ImResult<Vec<(SecretRef, PendingHandleRecoveryV4)>> {
+        let mut matches = Vec::new();
+        for secret_ref in self.vault.list()?.into_iter().filter(|secret_ref| {
+            secret_ref.workspace_id == self.workspace_id
+                && secret_ref.device_id == self.device_id
+                && secret_ref.kind == SecretKind::IdentityHandleRecoveryPending
+                && secret_ref.key_version == V4_KEY_VERSION
+        }) {
+            let plaintext = self.vault.open(&secret_ref)?;
+            let pending: PendingHandleRecoveryV4 =
+                serde_json::from_slice(plaintext.expose_secret())
+                    .map_err(|_| crate::ImError::PermissionDenied)?;
+            pending.validate()?;
+            if secret_ref.identity_id.as_deref() != Some(pending.owner_identity_id.as_str())
+                || secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
+                || secret_ref.did.as_deref() != Some(pending.generated.did.as_str())
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            if pending.full_handle == full_handle {
+                matches.push((secret_ref, pending));
+            }
+        }
+        matches.sort_by(|left, right| left.1.operation_id.cmp(&right.1.operation_id));
+        Ok(matches)
+    }
+
     /// Creates the pre-OTP journal without replacing an operation that already
     /// exists. The caller persists the SQLite operation index immediately after
     /// this succeeds and before making the OTP network request.
@@ -910,6 +947,7 @@ mod tests {
             "alice".to_owned(),
             "Alice".to_owned(),
             true,
+            false,
             "alice.example.invalid".to_owned(),
             "did:wba:example.invalid:user:alice:old".to_owned(),
             generated,
@@ -996,6 +1034,33 @@ mod tests {
                 "2026-08-07T00:08:00Z".to_owned(),
             )
             .is_err());
+    }
+
+    #[test]
+    fn fresh_machine_freezes_the_authoritative_previous_did() {
+        let mut pending = v4_pending();
+        pending.fresh_local_state = true;
+        pending.local_previous_did = format!("{}:unbound", pending.generated.did.as_str());
+        let authoritative_previous = "did:wba:example.invalid:user:alice:remote";
+
+        pending
+            .freeze_exchange(
+                super::RecoveryAuthoritativeBindingV4 {
+                    account_user_id: "user-1".to_owned(),
+                    full_handle: "alice.example.invalid".to_owned(),
+                    current_did: authoritative_previous.to_owned(),
+                    binding_generation: "7".to_owned(),
+                },
+                "secret-grant".to_owned(),
+                "2026-08-07T00:05:00Z".to_owned(),
+            )
+            .unwrap();
+
+        assert_eq!(pending.local_previous_did, authoritative_previous);
+        assert_eq!(
+            pending.intent.as_ref().unwrap().expected_previous_did,
+            authoritative_previous
+        );
     }
 
     #[test]

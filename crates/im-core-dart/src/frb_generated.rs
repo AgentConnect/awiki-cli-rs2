@@ -5859,7 +5859,8 @@ fn wire__crate__api__identity__request_handle_recovery_otp_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
             >>::sse_decode(&mut deserializer);
             let api_selector =
-                <crate::dto::identity::DartIdentitySelector>::sse_decode(&mut deserializer);
+                <Option<crate::dto::identity::DartIdentitySelector>>::sse_decode(&mut deserializer);
+            let api_full_handle = <String>::sse_decode(&mut deserializer);
             let api_phone = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
@@ -5885,6 +5886,7 @@ fn wire__crate__api__identity__request_handle_recovery_otp_impl(
                         let output_ok = crate::api::identity::request_handle_recovery_otp(
                             &*api_core_guard,
                             api_selector,
+                            api_full_handle,
                             api_phone,
                         )
                         .await?;
@@ -10523,12 +10525,14 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryOperationSummary {
 impl SseDecode for crate::dto::identity::DartHandleRecoveryOtpResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_ownerIdentityId = <String>::sse_decode(deserializer);
         let mut var_fullHandle = <String>::sse_decode(deserializer);
         let mut var_operationId = <String>::sse_decode(deserializer);
         let mut var_accepted = <bool>::sse_decode(deserializer);
         let mut var_retryAfterSeconds = <u32>::sse_decode(deserializer);
         let mut var_retryAt = <String>::sse_decode(deserializer);
         return crate::dto::identity::DartHandleRecoveryOtpResult {
+            owner_identity_id: var_ownerIdentityId,
             full_handle: var_fullHandle,
             operation_id: var_operationId,
             accepted: var_accepted,
@@ -13063,6 +13067,19 @@ impl SseDecode for Option<crate::dto::identity::DartIdentityDeviceRole> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::dto::identity::DartIdentityDeviceRole>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::identity::DartIdentitySelector> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::identity::DartIdentitySelector>::sse_decode(
                 deserializer,
             ));
         } else {
@@ -16195,6 +16212,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartHandleRecoveryO
 impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRecoveryOtpResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.owner_identity_id.into_into_dart().into_dart(),
             self.full_handle.into_into_dart().into_dart(),
             self.operation_id.into_into_dart().into_dart(),
             self.accepted.into_into_dart().into_dart(),
@@ -20218,6 +20236,7 @@ impl SseEncode for crate::dto::identity::DartHandleRecoveryOperationSummary {
 impl SseEncode for crate::dto::identity::DartHandleRecoveryOtpResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.owner_identity_id, serializer);
         <String>::sse_encode(self.full_handle, serializer);
         <String>::sse_encode(self.operation_id, serializer);
         <bool>::sse_encode(self.accepted, serializer);
@@ -22140,6 +22159,16 @@ impl SseEncode for Option<crate::dto::identity::DartIdentityDeviceRole> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::identity::DartIdentityDeviceRole>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::identity::DartIdentitySelector> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::identity::DartIdentitySelector>::sse_encode(value, serializer);
         }
     }
 }

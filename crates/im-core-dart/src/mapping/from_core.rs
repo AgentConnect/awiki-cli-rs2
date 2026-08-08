@@ -80,6 +80,7 @@ impl From<im_core::identity::LegacyRegistryEpochAdoptionAuthority>
 impl From<im_core::identity::HandleRecoveryOtpResult> for DartHandleRecoveryOtpResult {
     fn from(value: im_core::identity::HandleRecoveryOtpResult) -> Self {
         Self {
+            owner_identity_id: value.owner_identity_id.as_str().to_owned(),
             full_handle: value.full_handle,
             operation_id: value.operation_id,
             accepted: value.accepted,

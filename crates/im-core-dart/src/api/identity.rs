@@ -32,13 +32,15 @@ pub async fn legacy_registry_epoch_adoption_authority(
 
 pub async fn request_handle_recovery_otp(
     core: &Arc<crate::api::core::DartImCore>,
-    selector: DartIdentitySelector,
+    selector: Option<DartIdentitySelector>,
+    full_handle: String,
     phone: String,
 ) -> Result<DartHandleRecoveryOtpResult, DartImError> {
     core.clone_inner()?
         .handle_recovery()
         .request_handle_recovery_otp(im_core::identity::HandleRecoveryOtpRequest {
-            identity: selector.try_into()?,
+            identity: selector.map(TryInto::try_into).transpose()?,
+            full_handle,
             phone,
         })
         .await

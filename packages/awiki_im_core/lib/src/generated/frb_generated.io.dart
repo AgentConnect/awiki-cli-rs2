@@ -1277,6 +1277,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentitySelector? dco_decode_opt_box_autoadd_dart_identity_selector(
+    dynamic raw,
+  );
+
+  @protected
   DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
     dynamic raw,
   );
@@ -2871,6 +2876,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartIdentityDeviceRole? sse_decode_opt_box_autoadd_dart_identity_device_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentitySelector? sse_decode_opt_box_autoadd_dart_identity_selector(
     SseDeserializer deserializer,
   );
 
@@ -4767,6 +4777,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_identity_device_role(
     DartIdentityDeviceRole? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_identity_selector(
+    DartIdentitySelector? self,
     SseSerializer serializer,
   );
 

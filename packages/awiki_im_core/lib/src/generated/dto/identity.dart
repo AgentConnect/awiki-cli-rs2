@@ -738,6 +738,7 @@ class DartHandleRecoveryOperationSummary {
 }
 
 class DartHandleRecoveryOtpResult {
+  final String ownerIdentityId;
   final String fullHandle;
   final String operationId;
   final bool accepted;
@@ -745,6 +746,7 @@ class DartHandleRecoveryOtpResult {
   final String retryAt;
 
   const DartHandleRecoveryOtpResult({
+    required this.ownerIdentityId,
     required this.fullHandle,
     required this.operationId,
     required this.accepted,
@@ -754,6 +756,7 @@ class DartHandleRecoveryOtpResult {
 
   @override
   int get hashCode =>
+      ownerIdentityId.hashCode ^
       fullHandle.hashCode ^
       operationId.hashCode ^
       accepted.hashCode ^
@@ -765,6 +768,7 @@ class DartHandleRecoveryOtpResult {
       identical(this, other) ||
       other is DartHandleRecoveryOtpResult &&
           runtimeType == other.runtimeType &&
+          ownerIdentityId == other.ownerIdentityId &&
           fullHandle == other.fullHandle &&
           operationId == other.operationId &&
           accepted == other.accepted &&

@@ -60,7 +60,8 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
-    required IdentitySelector selector,
+    IdentitySelector? selector,
+    required String fullHandle,
     required String phone,
   }) async {
     throw _unsupported();

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HandleRecoveryOtpRequest {
-    pub identity: super::IdentitySelector,
+    pub identity: Option<super::IdentitySelector>,
+    pub full_handle: String,
     pub phone: String,
 }
 
@@ -12,6 +13,7 @@ impl std::fmt::Debug for HandleRecoveryOtpRequest {
         formatter
             .debug_struct("HandleRecoveryOtpRequest")
             .field("identity", &self.identity)
+            .field("full_handle", &self.full_handle)
             .field("phone", &"<redacted>")
             .finish()
     }
@@ -19,6 +21,7 @@ impl std::fmt::Debug for HandleRecoveryOtpRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRecoveryOtpResult {
+    pub owner_identity_id: crate::ids::IdentityId,
     pub full_handle: String,
     pub operation_id: String,
     pub accepted: bool,
