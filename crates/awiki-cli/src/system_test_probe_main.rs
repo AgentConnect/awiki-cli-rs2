@@ -23,6 +23,8 @@
 //! 8. Agent bootstrap checks keep Device Access and Daemon Vault records inside Rust and expose
 //!    only a closed bool-or-null projection; account, DID, device, key, and claim values never
 //!    cross the probe boundary.
+//! 9. Live WebSocket fencing checks send only the side-effect-free `anp.get_capabilities` method
+//!    on an already-held session and expose only `allowed` plus an allowlisted fencing code.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -59,6 +61,7 @@ const MAX_REQUEST_LINE_BYTES: usize = 64 * 1024;
 const MAX_RPC_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TIMEOUT_MS: u64 = 300_000;
+const WS_CAPABILITIES_FRAME_TIMEOUT_MS: u64 = 10_000;
 const RPC_PATH: &str = "/im/rpc";
 const ACCOUNT_STATE_RPC_PATH: &str = "/user-service/v1/account-state/rpc";
 const AGENT_INVENTORY_RPC_PATH: &str = "/user-service/v1/agent-inventory/rpc";
@@ -124,6 +127,7 @@ enum Action {
     DaemonMarkerProcessed { message_id: String },
     HumanDaemonSubkeyState,
     OpenWs,
+    SendWsCapabilitiesFrame,
     WaitWsClosed { timeout_ms: u64 },
     CloseWs,
     ReconnectWs,
@@ -784,6 +788,12 @@ enum WsConnectOutcome {
     Rejected(Option<&'static str>),
 }
 
+enum WsCapabilitiesFrameOutcome {
+    Allowed,
+    Rejected(&'static str),
+    Closed,
+}
+
 #[tokio::main]
 async fn main() {
     if run().await.is_err() {
@@ -1294,6 +1304,22 @@ impl Probe {
                         Ok((json!({"opened": true}), false))
                     }
                     WsConnectOutcome::Rejected(_) => Err(ProbeFailure::Transport),
+                }
+            }
+            Action::SendWsCapabilitiesFrame => {
+                let outcome = {
+                    let stream = self.ws.as_mut().ok_or(ProbeFailure::InvalidState)?;
+                    send_ws_capabilities_frame(stream).await?
+                };
+                match outcome {
+                    WsCapabilitiesFrameOutcome::Allowed => Ok((json!({"allowed": true}), false)),
+                    WsCapabilitiesFrameOutcome::Rejected(code) => {
+                        Ok((result_with_code("allowed", false, Some(code)), false))
+                    }
+                    WsCapabilitiesFrameOutcome::Closed => {
+                        self.ws.take();
+                        Ok((json!({"allowed": false}), false))
+                    }
                 }
             }
             Action::WaitWsClosed { timeout_ms } => {
@@ -2793,6 +2819,64 @@ async fn wait_ws_closed(stream: &mut WsStream, timeout_ms: u64) -> bool {
         .unwrap_or(false)
 }
 
+async fn send_ws_capabilities_frame(
+    stream: &mut WsStream,
+) -> Result<WsCapabilitiesFrameOutcome, ProbeFailure> {
+    const REQUEST_ID: &str = "system-test-probe-capabilities";
+    let request = im_core::realtime::build_ws_rpc_request(
+        REQUEST_ID,
+        "anp.get_capabilities",
+        Some(Map::new()),
+    );
+    let payload = serde_json::to_string(&request).map_err(|_| ProbeFailure::Runtime)?;
+    if stream.send(Message::Text(payload.into())).await.is_err() {
+        return Ok(WsCapabilitiesFrameOutcome::Closed);
+    }
+
+    let wait = async {
+        loop {
+            match stream.next().await {
+                Some(Ok(Message::Text(raw))) => {
+                    let response: Value =
+                        serde_json::from_str(raw.as_ref()).map_err(|_| ProbeFailure::Runtime)?;
+                    let response = response.as_object().ok_or(ProbeFailure::Runtime)?;
+                    if response.get("id").and_then(Value::as_str) != Some(REQUEST_ID) {
+                        continue;
+                    }
+                    return match (response.get("result"), response.get("error")) {
+                        (Some(_), None) => Ok(WsCapabilitiesFrameOutcome::Allowed),
+                        (None, Some(error)) => match allowlisted_anp_code(error) {
+                            Some(DEVICE_NOT_ELIGIBLE) => {
+                                Ok(WsCapabilitiesFrameOutcome::Rejected(DEVICE_NOT_ELIGIBLE))
+                            }
+                            Some(DEVICE_STATE_CHANGED) => {
+                                Ok(WsCapabilitiesFrameOutcome::Rejected(DEVICE_STATE_CHANGED))
+                            }
+                            _ => Err(ProbeFailure::Runtime),
+                        },
+                        _ => Err(ProbeFailure::Runtime),
+                    };
+                }
+                Some(Ok(Message::Ping(payload))) => {
+                    if stream.send(Message::Pong(payload)).await.is_err() {
+                        return Ok(WsCapabilitiesFrameOutcome::Closed);
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                    return Ok(WsCapabilitiesFrameOutcome::Closed)
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+    };
+    tokio::time::timeout(
+        Duration::from_millis(WS_CAPABILITIES_FRAME_TIMEOUT_MS),
+        wait,
+    )
+    .await
+    .map_err(|_| ProbeFailure::Transport)?
+}
+
 async fn read_limited(
     response: reqwest::Response,
     limit: usize,
@@ -3058,6 +3142,10 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
         "open_ws" => {
             require_exact_keys(params, &[])?;
             Action::OpenWs
+        }
+        "send_ws_capabilities_frame" => {
+            require_exact_keys(params, &[])?;
+            Action::SendWsCapabilitiesFrame
         }
         "wait_ws_closed" => {
             require_exact_keys(params, &["timeout_ms"])?;
@@ -4738,6 +4826,22 @@ mod tests {
             response,
             json!({"id": 7, "ok": false, "error": {"code": INVALID_REQUEST}})
         );
+
+        let ws_frame = match parse_request(
+            r#"{"id":"ws-frame","action":"send_ws_capabilities_frame","params":{}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed WebSocket capabilities frame request"),
+        };
+        assert!(matches!(ws_frame.action, Action::SendWsCapabilitiesFrame));
+
+        let ws_frame_extra = match parse_request(
+            r#"{"id":"ws-frame-extra","action":"send_ws_capabilities_frame","params":{"method":"inbox.get"}}"#,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("WebSocket frame method must not be caller-controlled"),
+        };
+        assert_eq!(ws_frame_extra.code(), INVALID_REQUEST);
     }
 
     #[test]
@@ -7255,6 +7359,139 @@ INSERT INTO runtime_final_outbox (
         assert!(!serialized.contains(SERVER_ERROR_SECRET));
     }
 
+    #[tokio::test]
+    async fn held_websocket_capabilities_frame_returns_only_closed_success_projection() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "system-test-probe-capabilities",
+            "result": {
+                "capabilities": [SERVER_ERROR_SECRET],
+                "service_did": SERVICE_DID,
+            },
+        });
+        let (base_url, server) = spawn_ws_capabilities_server(Some(response)).await;
+        let mut probe = test_probe(&base_url);
+
+        let opened = execute_line(
+            &mut probe,
+            r#"{"id":"ws-open","action":"open_ws","params":{}}"#,
+        )
+        .await;
+        assert_eq!(opened["result"], json!({"opened": true}));
+        let output = execute_line(
+            &mut probe,
+            r#"{"id":"ws-frame","action":"send_ws_capabilities_frame","params":{}}"#,
+        )
+        .await;
+        server.await.expect("WebSocket capabilities server task");
+
+        assert_eq!(output["result"], json!({"allowed": true}));
+        let encoded = serde_json::to_string(&output).expect("serialize closed WebSocket output");
+        assert!(!encoded.contains(SERVER_ERROR_SECRET));
+        assert!(!encoded.contains(SERVICE_DID));
+        assert!(!encoded.contains("capabilities"));
+    }
+
+    #[tokio::test]
+    async fn held_websocket_capabilities_frame_allowlists_only_fencing_code() {
+        for code in [DEVICE_NOT_ELIGIBLE, DEVICE_STATE_CHANGED] {
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": "system-test-probe-capabilities",
+                "error": {
+                    "code": 1017,
+                    "message": SERVER_ERROR_SECRET,
+                    "data": {
+                        "anp_code": code,
+                        "detail": SERVICE_DID,
+                    },
+                },
+            });
+            let (base_url, server) = spawn_ws_capabilities_server(Some(response)).await;
+            let mut probe = test_probe(&base_url);
+            let opened = execute_line(
+                &mut probe,
+                r#"{"id":"ws-open","action":"open_ws","params":{}}"#,
+            )
+            .await;
+            assert_eq!(opened["result"], json!({"opened": true}));
+
+            let output = execute_line(
+                &mut probe,
+                r#"{"id":"ws-frame","action":"send_ws_capabilities_frame","params":{}}"#,
+            )
+            .await;
+            server.await.expect("WebSocket fencing server task");
+
+            assert_eq!(
+                output["result"],
+                json!({"allowed": false, "anp_code": code})
+            );
+            let encoded = serde_json::to_string(&output).expect("serialize closed fencing output");
+            assert!(!encoded.contains(SERVER_ERROR_SECRET));
+            assert!(!encoded.contains(SERVICE_DID));
+        }
+    }
+
+    #[tokio::test]
+    async fn held_websocket_capabilities_frame_does_not_project_unknown_error() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "system-test-probe-capabilities",
+            "error": {
+                "code": -32603,
+                "message": SERVER_ERROR_SECRET,
+                "data": {"anp_code": "anp.internal_error", "detail": SERVICE_DID},
+            },
+        });
+        let (base_url, server) = spawn_ws_capabilities_server(Some(response)).await;
+        let mut probe = test_probe(&base_url);
+        let opened = execute_line(
+            &mut probe,
+            r#"{"id":"ws-open","action":"open_ws","params":{}}"#,
+        )
+        .await;
+        assert_eq!(opened["result"], json!({"opened": true}));
+
+        let output = execute_line(
+            &mut probe,
+            r#"{"id":"ws-frame","action":"send_ws_capabilities_frame","params":{}}"#,
+        )
+        .await;
+        server.await.expect("WebSocket unknown-error server task");
+
+        assert_eq!(
+            output,
+            json!({"id": "ws-frame", "ok": false, "error": {"code": RUNTIME_FAILED}})
+        );
+        let encoded = serde_json::to_string(&output).expect("serialize unknown-error output");
+        assert!(!encoded.contains(SERVER_ERROR_SECRET));
+        assert!(!encoded.contains(SERVICE_DID));
+        assert!(!encoded.contains("anp.internal_error"));
+    }
+
+    #[tokio::test]
+    async fn held_websocket_capabilities_frame_projects_peer_close_without_fabricated_code() {
+        let (base_url, server) = spawn_ws_capabilities_server(None).await;
+        let mut probe = test_probe(&base_url);
+        let opened = execute_line(
+            &mut probe,
+            r#"{"id":"ws-open","action":"open_ws","params":{}}"#,
+        )
+        .await;
+        assert_eq!(opened["result"], json!({"opened": true}));
+
+        let output = execute_line(
+            &mut probe,
+            r#"{"id":"ws-frame","action":"send_ws_capabilities_frame","params":{}}"#,
+        )
+        .await;
+        server.await.expect("WebSocket close server task");
+
+        assert_eq!(output["result"], json!({"allowed": false}));
+        assert!(probe.ws.is_none());
+    }
+
     fn test_probe(base_url: &str) -> Probe {
         let rpc_url = reqwest::Url::parse(&format!("{base_url}{RPC_PATH}")).expect("fake RPC URL");
         let http = match build_http_client(None) {
@@ -7663,6 +7900,54 @@ INSERT INTO runtime_final_outbox (
                     .write_all(response.as_bytes())
                     .await
                     .expect("write fake response");
+            }
+        });
+        (base_url, server)
+    }
+
+    async fn spawn_ws_capabilities_server(
+        response: Option<Value>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind WebSocket capabilities server");
+        let address = listener
+            .local_addr()
+            .expect("WebSocket capabilities server address");
+        let base_url = format!("http://{address}");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept WebSocket request");
+            let mut stream = tokio_tungstenite::accept_async(socket)
+                .await
+                .expect("accept WebSocket handshake");
+            let message = stream
+                .next()
+                .await
+                .expect("WebSocket capabilities request")
+                .expect("valid WebSocket capabilities frame");
+            let Message::Text(raw) = message else {
+                panic!("capabilities probe must use a Text frame")
+            };
+            let request: Value =
+                serde_json::from_str(raw.as_ref()).expect("WebSocket capabilities JSON");
+            assert_eq!(
+                request,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "system-test-probe-capabilities",
+                    "method": "anp.get_capabilities",
+                    "params": {},
+                })
+            );
+            match response {
+                Some(response) => stream
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .expect("send WebSocket capabilities response"),
+                None => stream
+                    .close(None)
+                    .await
+                    .expect("close WebSocket capabilities stream"),
             }
         });
         (base_url, server)
