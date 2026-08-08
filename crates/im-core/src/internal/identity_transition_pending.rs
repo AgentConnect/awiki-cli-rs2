@@ -1022,6 +1022,8 @@ pub(crate) fn legacy_registry_epoch_adoption_authority(
 
 fn now() -> crate::ImResult<String> {
     time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .map_err(|_| crate::ImError::PermissionDenied)?
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|error| crate::ImError::Serialization {
             detail: error.to_string(),
@@ -1050,6 +1052,17 @@ use rusqlite::OptionalExtension as _;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transition_timestamp_uses_contract_second_precision() {
+        let value = now().unwrap();
+        let parsed =
+            time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339)
+                .unwrap();
+        assert_eq!(parsed.nanosecond(), 0);
+        assert!(value.ends_with('Z'));
+        assert!(!value.contains('.'));
+    }
 
     fn test_marker(path: &Path) -> IdentityTransitionMarker {
         IdentityTransitionMarker {
