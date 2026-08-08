@@ -665,45 +665,20 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
 }
 
 pub(crate) fn local_identity_uses_vnext(client: &crate::core::ImClient) -> crate::ImResult<bool> {
+    let Some(alias) = client.current_identity().local_alias.as_deref() else {
+        return Ok(false);
+    };
     let index = crate::internal::identity_store::IdentityStore::new(
         &client.core_inner().sdk_paths().identities,
     )
     .load_index()?;
-    Ok(
-        current_identity_index_entry(&index, client.current_identity())
-            .and_then(|entry| entry.device_state.as_ref())
-            .is_some_and(|state| {
-                state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-            }),
-    )
-}
-
-fn current_identity_index_entry<'a>(
-    index: &'a crate::internal::identity_store::IndexPayload,
-    current: &crate::identity::IdentitySummary,
-) -> Option<&'a crate::internal::identity_store::IndexEntry> {
-    if let Some(alias) = current.local_alias.as_deref() {
-        return index.credentials.get(alias);
-    }
-
-    let current_did = current.did.as_str();
-    if current.is_default {
-        let default = index.default_credential_name.trim();
-        if let Some(entry) = index
-            .credentials
-            .get(default)
-            .filter(|entry| entry.did == current_did)
-        {
-            return Some(entry);
-        }
-    }
-
-    let mut matches = index
+    Ok(index
         .credentials
-        .values()
-        .filter(|entry| entry.did == current_did);
-    let entry = matches.next()?;
-    matches.next().is_none().then_some(entry)
+        .get(alias)
+        .and_then(|entry| entry.device_state.as_ref())
+        .is_some_and(|state| {
+            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+        }))
 }
 
 pub(crate) async fn send_for_client(
