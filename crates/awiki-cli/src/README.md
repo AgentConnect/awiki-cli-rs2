@@ -105,6 +105,7 @@ Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶�
 | `cli_shell/group_e2ee_handlers.rs` | group E2EE 命令壳层；当前多为 gated / unsupported 或转 M-Core 策略。 |
 | `cli_shell/group_handlers.rs` | group create / join / member / list / update 等命令 handler，主要转 `m_core_cli_adapter`。 |
 | `cli_shell/handle_helpers.rs` | handle 标准化、补全、输入边界 helper。 |
+| `cli_shell/identity_register_handlers.rs` | `id register` 的非 argv 手机号/验证码 stdin 输入与闭合校验。 |
 | `cli_shell/id_replace_did_handlers.rs` | `id replace-did` handler，计划/执行边界和 warning 输出。 |
 | `cli_shell/mail_handlers.rs` | mail 命令 handler，转 `im-core` email API。 |
 | `cli_shell/msg_handlers.rs` | msg send / inbox / history / mark-read / secure 等命令 handler。 |
