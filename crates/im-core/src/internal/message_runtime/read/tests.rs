@@ -2265,6 +2265,35 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
         cached["content"]["attachments"][0]["encryption_info"]["nonce_b64u"],
         "NONCE-SECRET"
     );
+
+    let mut failed_replay = vec![json!({
+        "id": "did:example:group:e2ee:9",
+        "sender_did": "did:example:alice",
+        "group_did": "did:example:group:e2ee",
+        "content_type": "application/x-awiki-group-e2ee-redacted",
+        "decryption_state": "failed",
+        "content": null
+    })];
+    apply_cached_group_attachment_manifests(&client, &mut failed_replay);
+    assert_eq!(
+        failed_replay[0]["content_type"],
+        crate::attachments::manifest::attachment_manifest_content_type()
+    );
+    assert_eq!(failed_replay[0]["type"], "attachment_manifest");
+    assert_eq!(failed_replay[0]["decryption_state"], "decrypted");
+    assert_eq!(
+        failed_replay[0]["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
+        "OBJECT-KEY-SECRET"
+    );
+
+    redact_attachment_manifests_for_public_projection(&mut failed_replay);
+    assert_eq!(
+        failed_replay[0]["content"]["attachments"][0]["encryption_info"]["mode"],
+        "object-e2ee"
+    );
+    let public = serde_json::to_string(&failed_replay).unwrap();
+    assert!(!public.contains("OBJECT-KEY-SECRET"));
+    assert!(!public.contains("NONCE-SECRET"));
 }
 
 #[cfg(feature = "group-e2ee")]

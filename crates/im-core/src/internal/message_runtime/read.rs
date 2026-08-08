@@ -4218,6 +4218,7 @@ fn project_group_e2ee_messages_impl(
             &mut message_values,
         );
     cache_attachment_manifests_for_internal_download(client, &message_values);
+    apply_cached_group_attachment_manifests(client, &mut message_values);
     if redact_attachment_secrets {
         redact_attachment_manifests_for_public_projection(&mut message_values);
     }
@@ -4282,6 +4283,7 @@ async fn project_group_e2ee_messages_async_impl(
         )
         .await;
     cache_attachment_manifests_for_internal_download_async(client, &message_values).await;
+    apply_cached_group_attachment_manifests(client, &mut message_values);
     if redact_attachment_secrets {
         redact_attachment_manifests_for_public_projection(&mut message_values);
     }
@@ -4729,6 +4731,56 @@ pub(crate) async fn cache_attachment_manifests_for_internal_download_async(
     {
         let _ = (client, messages);
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn apply_cached_group_attachment_manifests(client: &crate::core::ImClient, messages: &mut [Value]) {
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return;
+    };
+    let owner_identity_id = client.current_identity().id.as_str();
+    for message in messages {
+        let Some(object) = message.as_object() else {
+            continue;
+        };
+        if object.get("content_type").and_then(Value::as_str)
+            != Some("application/x-awiki-group-e2ee-redacted")
+            || object.get("decryption_state").and_then(Value::as_str) != Some("failed")
+        {
+            continue;
+        }
+        let Some(group_did) = first_non_empty_owned([
+            string_value(object.get("group_did")),
+            string_value(object.get("group")),
+        ]) else {
+            continue;
+        };
+        let Some(message_id) = attachment_manifest_cache_message_id(object, &group_did) else {
+            continue;
+        };
+        let Ok(Some(cached)) = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+            &connection,
+            owner_identity_id,
+            "group",
+            &group_did,
+            &message_id,
+        ) else {
+            continue;
+        };
+        let (Some(target), Some(cached)) = (message.as_object_mut(), cached.as_object()) else {
+            continue;
+        };
+        target.extend(cached.clone());
+    }
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn apply_cached_group_attachment_manifests(
+    _client: &crate::core::ImClient,
+    _messages: &mut [Value],
+) {
 }
 
 #[cfg(feature = "sqlite")]
