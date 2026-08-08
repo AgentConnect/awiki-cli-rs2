@@ -419,10 +419,19 @@ pub(crate) async fn list_operations(
 ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
     require_enabled(core)?;
     require_explicit_identity(&identity)?;
-    let identity = core.identities().resolve_async(identity).await?;
+    let owner_identity_id = match identity {
+        crate::identity::IdentitySelector::Id(identity_id) => identity_id.as_str().to_owned(),
+        selector => core
+            .identities()
+            .resolve_async(selector)
+            .await?
+            .id
+            .as_str()
+            .to_owned(),
+    };
     crate::internal::identity_handle_recovery_operation::list_owner(
         &core.inner().sdk_paths().local_state.sqlite_path,
-        identity.id.as_str(),
+        &owner_identity_id,
     )?
     .into_iter()
     .map(operation_summary)
@@ -3736,6 +3745,27 @@ mod tests {
             ))
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn uninstalled_recovery_owner_can_list_its_local_operation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(temporary.path(), "https://example.invalid", [71_u8; 32]);
+        let owner_identity_id = "fresh-recovery-owner";
+        create_v4_awaiting_factor_operation(&core, "recover-v4-list", owner_identity_id);
+
+        let operations = list_operations(
+            &core,
+            crate::identity::IdentitySelector::Id(
+                crate::ids::IdentityId::parse(owner_identity_id).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].operation_id, "recover-v4-list");
+        assert_eq!(operations[0].owner_identity_id.as_str(), owner_identity_id);
     }
 
     #[test]
