@@ -220,6 +220,23 @@ fn message_content_type(message: &crate::messages::Message) -> String {
 
 #[cfg(feature = "sqlite")]
 fn message_content(message: &crate::messages::Message) -> String {
+    if !group_did_for_message(message).is_empty()
+        && message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee")
+        && message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "decryption_state" && attribute.value == "failed")
+    {
+        // A replayed MLS ciphertext can fail after a realtime listener already
+        // committed its decrypted projection. Keep the failed placeholder
+        // contentless so local upsert cannot replace that trusted plaintext.
+        return String::new();
+    }
     match &message.body {
         crate::messages::MessageBodyView::Text { text, .. } => text.clone(),
         crate::messages::MessageBodyView::Payload { payload } => {
@@ -487,6 +504,63 @@ mod tests {
         assert!(record.is_e2ee);
         assert_eq!(metadata["decryption_state"], "decrypted");
         assert_eq!(metadata["raw_message_id"], "logical-message-12");
+    }
+
+    #[test]
+    fn failed_group_realtime_replay_cannot_overwrite_decrypted_content() {
+        let redacted_content_type = "application/x-awiki-group-e2ee-redacted";
+        let message = crate::messages::Message {
+            id: crate::ids::MessageId::parse("did:example:group:13").unwrap(),
+            thread: crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+            direction: crate::messages::MessageDirection::Incoming,
+            sender: crate::ids::PeerRef::parse("did:example:sender", "").unwrap(),
+            receiver: Some(crate::ids::PeerRef::parse("did:example:owner", "").unwrap()),
+            group: Some(crate::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: crate::messages::MessageBodyView::Unsupported {
+                content_type: Some(redacted_content_type.to_owned()),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: crate::messages::MessageMetadata {
+                server_sequence: Some(13),
+                content_type: Some(redacted_content_type.to_owned()),
+                attributes: vec![
+                    crate::messages::MessageMetadataAttribute {
+                        key: "security".to_owned(),
+                        value: "group-e2ee".to_owned(),
+                    },
+                    crate::messages::MessageMetadataAttribute {
+                        key: "decryption_state".to_owned(),
+                        value: "failed".to_owned(),
+                    },
+                ],
+                ..crate::messages::MessageMetadata::default()
+            },
+        };
+
+        let record = plan_realtime_message_local_projection(
+            &RealtimeMessageLocalProjectionContext {
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                credential_name: "owner-a".to_owned(),
+                peer_scope: None,
+            },
+            &message,
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .into_record();
+
+        assert_eq!(record.content_type, redacted_content_type);
+        assert!(record.content.is_empty());
+        assert_eq!(
+            serde_json::from_str::<Value>(&record.metadata).unwrap()["decryption_state"],
+            "failed"
+        );
     }
 
     #[test]
