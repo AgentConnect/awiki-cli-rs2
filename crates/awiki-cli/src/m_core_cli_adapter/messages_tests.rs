@@ -154,6 +154,8 @@ fn direct_delivery_projects_internal_partial_retry_counts() {
     let result = thread_scoped_send_result(&[
         ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),
         ("attempted_device_count", "1"),
+        ("target_device_count", "1"),
+        ("own_sync_device_count", "1"),
         ("previously_accepted_device_count", "1"),
         ("newly_accepted_device_count", "1"),
         ("accepted_device_count", "2"),
@@ -165,6 +167,8 @@ fn direct_delivery_projects_internal_partial_retry_counts() {
     let delivery = &rendered.data["delivery"];
 
     assert_eq!(delivery["attempted_device_count"], 1);
+    assert_eq!(delivery["target_device_count"], 1);
+    assert_eq!(delivery["own_sync_device_count"], 1);
     assert_eq!(delivery["previously_accepted_device_count"], 1);
     assert_eq!(delivery["newly_accepted_device_count"], 1);
     assert_eq!(delivery["accepted_device_count"], 2);
