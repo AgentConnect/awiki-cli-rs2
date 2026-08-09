@@ -1061,6 +1061,19 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
 #[test]
 fn group_e2ee_leave_reaches_supported_path_before_identity_lookup() {
     let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![TestResponse {
+        status: 401,
+        body: json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32001,
+                "message": "authentication is required",
+            },
+            "id": "req-1",
+        })
+        .to_string(),
+    }]);
+    write_group_config(workspace.path(), &server.base_url());
     register_generated_group_identity(workspace.path(), "alice", "alice", "");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
 
@@ -1077,13 +1090,16 @@ fn group_e2ee_leave_reaches_supported_path_before_identity_lookup() {
         workspace.path(),
     );
 
-    assert_code(&output, 3);
+    assert_code(&output, 1);
     let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "auth_required");
+    assert_eq!(envelope["error"]["code"], "transport_unavailable");
     assert!(!envelope["error"]["message"]
         .as_str()
         .unwrap()
         .contains("identity_vault_metadata"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
 }
 
 #[test]

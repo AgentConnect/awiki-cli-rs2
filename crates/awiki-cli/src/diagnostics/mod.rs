@@ -246,6 +246,18 @@ fn identity_store_check(resolved: &Resolved) -> Check {
             }
         };
     let current = identities.iter().find(|identity| identity.is_default);
+    let current_cli = current.map(|identity| {
+        crate::m_core_cli_adapter::identity::cli_identity_summary_from_sdk(identity, &[])
+    });
+    let current_details = current
+        .zip(current_cli.as_ref())
+        .map(|(identity, summary)| {
+            let mut details = json!(summary);
+            if let Some(object) = details.as_object_mut() {
+                object.insert("local_alias".to_owned(), json!(identity.local_alias));
+            }
+            details
+        });
     let current_unexpected_error = !identities.is_empty() && current.is_none();
     let legacy_k1_dids = identities
         .iter()
@@ -274,8 +286,8 @@ fn identity_store_check(resolved: &Resolved) -> Check {
             "index_path": index_path.to_string_lossy(),
             "index_exists": index_exists,
             "index_entries": identities.len(),
-            "default_identity": current,
-            "user_state": current.map(|identity| &identity.readiness),
+            "default_identity": current_details,
+            "user_state": current_cli.as_ref().map(|identity| &identity.user_state),
             "index_error": &index_error,
             "list_error": &index_error,
             "legacy_k1_dids": legacy_k1_dids,
