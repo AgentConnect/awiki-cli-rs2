@@ -28,10 +28,13 @@ pub(crate) enum StableOwnerMatch {
 }
 
 /// Classifies an ordinary registration response when no Recovery authority is
-/// available. Any local state related to the Handle or target DID means this
-/// is not a fresh-device Join and must fail closed as a missing transition.
+/// available. Live or ambiguous local state related to the Handle or target
+/// DID must fail closed as a missing transition. One exact stable binding whose
+/// credential was removed by a completed identity-retirement transaction is
+/// not live identity state and may start an ordinary Join again.
 pub(crate) fn match_stable_owner_without_transition(
     sqlite_path: &Path,
+    identity_root_dir: &Path,
     index: &crate::internal::identity_store::IndexPayload,
     full_handle: &str,
     current_did: &str,
@@ -39,23 +42,53 @@ pub(crate) fn match_stable_owner_without_transition(
     crate::internal::identity_wire::handle_recovery::canonical_handle(full_handle)?;
     crate::ids::Did::parse(current_did)?;
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
-    let related_binding_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM identity_account_bindings WHERE handle_scope=?1 OR current_did=?2",
-            rusqlite::params![full_handle, current_did],
-            |row| row.get(0),
+    let mut statement = connection
+        .prepare(
+            r#"SELECT owner_identity_id,handle_scope,current_did,device_id
+FROM identity_account_bindings
+WHERE handle_scope=?1 OR current_did=?2
+ORDER BY owner_identity_id"#,
         )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let related_bindings = statement
+        .query_map(rusqlite::params![full_handle, current_did], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     let related_index_count = index
         .credentials
         .values()
         .filter(|entry| entry.full_handle == full_handle || entry.did == current_did)
         .count();
-    Ok(if related_binding_count == 0 && related_index_count == 0 {
-        StableOwnerMatch::None
-    } else {
-        StableOwnerMatch::Conflict
-    })
+    if related_bindings.is_empty() && related_index_count == 0 {
+        return Ok(StableOwnerMatch::None);
+    }
+    if related_index_count != 0 || related_bindings.len() != 1 {
+        return Ok(StableOwnerMatch::Conflict);
+    }
+    let (owner_identity_id, handle_scope, binding_did, protocol_device_id) = &related_bindings[0];
+    if handle_scope.as_deref() != Some(full_handle) || binding_did != current_did {
+        return Ok(StableOwnerMatch::Conflict);
+    }
+    Ok(
+        if crate::internal::identity_retirement::matches_completed_binding(
+            identity_root_dir,
+            owner_identity_id,
+            binding_did,
+            protocol_device_id,
+        )? {
+            StableOwnerMatch::None
+        } else {
+            StableOwnerMatch::Conflict
+        },
+    )
 }
 
 #[derive(Debug)]
@@ -205,6 +238,8 @@ WHERE owner_identity_id=?1
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use sha2::{Digest, Sha256};
 
     fn fixture_index() -> crate::internal::identity_store::IndexPayload {
         let mut index = crate::internal::identity_store::IndexPayload::default();
@@ -249,6 +284,32 @@ mod tests {
             previous_did: "did:wba:example.invalid:user:alice:old",
             binding_generation: "8",
         }
+    }
+
+    fn write_completed_retirement(
+        identity_root_dir: &Path,
+        owner_identity_id: &str,
+        did: &str,
+        protocol_device_id: &str,
+    ) {
+        let directory = identity_root_dir.join(".identity-retirements");
+        std::fs::create_dir_all(&directory).unwrap();
+        let digest = Sha256::digest(owner_identity_id.as_bytes());
+        let path = directory.join(format!("{}.json", URL_SAFE_NO_PAD.encode(digest)));
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "identity_id": owner_identity_id,
+                "did": did,
+                "local_alias": "alice",
+                "identity_dir_name": "owner-alice",
+                "protocol_device_id": protocol_device_id,
+                "phase": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -298,10 +359,12 @@ mod tests {
     fn registration_recovery_join_missing_transition_distinguishes_fresh_from_local_state() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
         let empty_index = crate::internal::identity_store::IndexPayload::default();
         assert_eq!(
             match_stable_owner_without_transition(
                 &path,
+                &identity_root_dir,
                 &empty_index,
                 "alice.example.invalid",
                 "did:wba:example.invalid:user:alice:new",
@@ -320,9 +383,70 @@ mod tests {
         assert_eq!(
             match_stable_owner_without_transition(
                 &path,
+                &identity_root_dir,
                 &empty_index,
                 "alice.example.invalid",
                 "did:wba:example.invalid:user:alice:new",
+            )
+            .unwrap(),
+            StableOwnerMatch::Conflict
+        );
+    }
+
+    #[test]
+    fn registration_join_treats_exact_completed_retirement_as_no_live_local_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let did = "did:wba:example.invalid:user:alice:retired";
+        let empty_index = crate::internal::identity_store::IndexPayload::default();
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            did,
+            "7",
+        );
+        write_completed_retirement(&identity_root_dir, "owner-alice", did, "device-owner-alice");
+
+        assert_eq!(
+            match_stable_owner_without_transition(
+                &path,
+                &identity_root_dir,
+                &empty_index,
+                "alice.example.invalid",
+                did,
+            )
+            .unwrap(),
+            StableOwnerMatch::None
+        );
+    }
+
+    #[test]
+    fn registration_join_keeps_mismatched_retirement_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let did = "did:wba:example.invalid:user:alice:retired";
+        let empty_index = crate::internal::identity_store::IndexPayload::default();
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            did,
+            "7",
+        );
+        write_completed_retirement(&identity_root_dir, "owner-alice", did, "device-different");
+
+        assert_eq!(
+            match_stable_owner_without_transition(
+                &path,
+                &identity_root_dir,
+                &empty_index,
+                "alice.example.invalid",
+                did,
             )
             .unwrap(),
             StableOwnerMatch::Conflict

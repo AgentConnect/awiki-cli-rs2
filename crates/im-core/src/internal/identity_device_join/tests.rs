@@ -440,6 +440,48 @@ fn identity_retirement_replays_exact_join_cleanup_after_restart() {
 }
 
 #[test]
+fn identity_retirement_reopens_ordinary_registration_join_for_same_handle() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let (core, _, did) = open_ready_admin_core(root.path());
+    let identity = core.identities().default_identity().unwrap().unwrap();
+    let protocol_device_id = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap()
+        .protocol_device_id
+        .unwrap();
+    let connection =
+        crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,'user-1','alice.awiki.test',?2,?3,'1','1',1,1)",
+            rusqlite::params![identity.id.as_str(), did.as_str(), protocol_device_id.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+
+    core.identities()
+        .delete_local_identity(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let index = crate::internal::identity_store::IdentityStore::new(&paths.identities)
+        .load_index()
+        .unwrap();
+    assert!(index.credentials.is_empty());
+    assert_eq!(
+        crate::internal::identity_local_owner_matcher::match_stable_owner_without_transition(
+            &paths.local_state.sqlite_path,
+            &paths.identities.identity_root_dir,
+            &index,
+            "alice.awiki.test",
+            did.as_str(),
+        )
+        .unwrap(),
+        crate::internal::identity_local_owner_matcher::StableOwnerMatch::None
+    );
+}
+
+#[test]
 fn request_role_is_member_only() {
     let request = json!({
         "type": DEVICE_JOIN_REQUEST_TYPE,

@@ -98,6 +98,12 @@ JWT claims or substitute a DID to manufacture it. Its
 preparation containing only a preparation ID, typed mode, user-presence
 requirement, expected DID, and full Handle. The account verification token and
 recovery transition remain inside Core and are never exposed to Dart/App code.
+After an exact completed local identity retirement, Core may retain the stable
+message account binding while the related credential is absent. Re-registering
+that same Handle returns ordinary `join_required` when the retirement marker
+exactly closes over the binding identity, DID, and protocol device; Flutter
+hosts should keep presenting the explicit Join/Handle-Recovery choice rather
+than translating the historical binding into an error.
 
 The remote `registered.message` field is diagnostic text and is not exposed as
 registration authority. Core validates the exact DID, Handle, domain, binding
@@ -240,6 +246,9 @@ Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rol
 Recovery rebind 模式下先持久化 joined-device marker，再创建远端 Join。该 preparation
 故意不跨进程持久化；App/Core 重启后必须重新发起注册验证，不能缓存 token、推断 owner 或
 拼装独立 JSON continuation。
+本地凭证已通过 Core 完成退役、但同账号消息 binding 仍保留时，重新提交同 Handle 会继续得到
+ordinary `join_required`；App 仍显示 Join/Recovery 选择。缺失、未完成或不匹配的 retirement
+证据由 Core 失败关闭，Dart 不检查 SQLite、marker 或 identity registry 来自行降级。
 
 现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
 验证、durable dedupe 和本地 reducer commit 后，才发出可信

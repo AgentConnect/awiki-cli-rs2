@@ -517,7 +517,11 @@ Envelope 语义，也不影响独立的 Direct/Group E2EE rollout gate。
 pointer tombstone 是目录与 Vault 清理之前的权威状态；Core open 会恢复中断阶段，并
 通过永久 identity-ID tombstone 清理由并发尾部任务晚写的 identity-scoped Vault
 records。Host 的 realtime stop、runtime dispose 和任何网络 logout 都不属于该调用的
-成功条件。
+成功条件。消息投影的 stable account binding 会保留；仅当本地 registry 已无相关身份，且
+唯一 binding 与 completed retirement marker 的 identity ID、DID、`protocol_device_id`
+精确闭合时，后续同 Handle 注册才把它视为“无 live 本地凭证”并返回 ordinary
+`join_required`。缺失、未完成、冲突或部分匹配仍失败关闭为
+`handle_recovery.transition_missing`。
 
 Legacy upgrade 是 Core 内部可恢复事务；host 必须等待
 `upgrade_legacy_identity_async` 的 typed status，不得用更短的通用 UI request timeout
@@ -554,7 +558,9 @@ generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份
 `registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID，也不暴露
 account verification token 或 owner 选择。Core 在 prepared begin 时重新验证稳定 owner；
 Recovery rebind 必须在远端 Join create 之前持久化 joined-device marker。进程重启后 preparation
-失效，host 重新发起注册验证，不提供兼容恢复或独立 JSON continuation。
+失效，host 重新发起注册验证，不提供兼容恢复或独立 JSON continuation。已完成本地身份退役
+但保留消息 binding 的同 Handle 仍通过 ordinary `join_required` 重新进入显式 Join，而不是
+因该历史 binding 返回 `handle_recovery.transition_missing`。
 注册写入发生传输不确定性时，Core 先用同一 pending DID 对账；所有 JSON-RPC HTTP 状态都
 保留服务端 `code/data`。只有 User Service 返回精确
 `error.data.awiki_code=did_auth.active_did_not_found`（或既有明确 not-found 契约）时，

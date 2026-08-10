@@ -306,6 +306,15 @@ deletion returns. Directory deletion additionally verifies the persisted
 identity ID and DID, preventing an old retirement record from deleting a path
 that has since been reused by another identity.
 
+Identity retirement deliberately retains the stable account binding used by
+message projections. When registration later receives an existing-Handle
+response without a Recovery transition, Core treats that binding as having no
+live local credential only if the identity index has no related entry and one
+exact completed retirement marker matches the binding's identity ID, DID, and
+protocol device ID. That state returns the ordinary `join_required` path;
+missing, partial, mismatched, duplicate, or still-live state continues to fail
+closed as `handle_recovery.transition_missing`.
+
 An authorized New Device Join record is a crash-recovery journal for the local
 identity/device activation, not a permanent active session. When identity
 retirement has an exact `protocol_device_id`, the same resumable transaction

@@ -917,6 +917,7 @@ fn prepare_join_required(
         },
         None => match crate::internal::identity_local_owner_matcher::match_stable_owner_without_transition(
             sqlite_path,
+            &core.inner().sdk_paths().identities.identity_root_dir,
             &index,
             parsed.full_handle.as_str(),
             parsed.did.as_str(),

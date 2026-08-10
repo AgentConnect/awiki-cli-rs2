@@ -2306,6 +2306,7 @@ fn revalidate_prepared_registration_owner(
         },
         None => match crate::internal::identity_local_owner_matcher::match_stable_owner_without_transition(
             sqlite_path,
+            &core.inner().sdk_paths().identities.identity_root_dir,
             index,
             snapshot.full_handle.as_str(),
             snapshot.expected_did.as_str(),

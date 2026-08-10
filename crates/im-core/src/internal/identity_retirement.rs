@@ -103,6 +103,45 @@ pub(crate) fn recover_all(core: &crate::core::ImCore) -> crate::ImResult<()> {
     Ok(())
 }
 
+/// Returns whether the exact historical owner/device tuple was retired by a
+/// completed local identity deletion.
+///
+/// Message projections deliberately retain their stable account binding after
+/// credential deletion. Registration may treat that binding as having no live
+/// local credential only when the durable retirement marker closes over the
+/// same identity, DID, and protocol device. Missing, partial, or mismatched
+/// markers never relax the registration continuity fence.
+pub(crate) fn matches_completed_binding(
+    identity_root_dir: &Path,
+    identity_id: &str,
+    did: &str,
+    protocol_device_id: &str,
+) -> crate::ImResult<bool> {
+    let path = retirement_record_path_from_root(identity_root_dir, identity_id);
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(crate::ImError::from(error)),
+    };
+    let record: IdentityRetirementRecord =
+        serde_json::from_slice(&raw).map_err(|_| crate::ImError::PermissionDenied)?;
+    if record.schema_version != RETIREMENT_SCHEMA_VERSION
+        || record.identity_id.trim().is_empty()
+        || record.did.trim().is_empty()
+        || record.local_alias.trim().is_empty()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    crate::ids::Did::parse(&record.did)?;
+    if let Some(record_device_id) = record.protocol_device_id.as_deref() {
+        crate::ids::ProtocolDeviceId::parse(record_device_id)?;
+    }
+    Ok(record.phase == IdentityRetirementPhase::Completed
+        && record.identity_id == identity_id
+        && record.did == did
+        && record.protocol_device_id.as_deref() == Some(protocol_device_id))
+}
+
 fn advance(
     core: &crate::core::ImCore,
     path: &Path,
@@ -331,16 +370,24 @@ fn validate_record(
 }
 
 fn retirement_dir(core: &crate::core::ImCore) -> PathBuf {
-    core.inner()
-        .sdk_paths()
-        .identities
-        .identity_root_dir
-        .join(RETIREMENT_DIR_NAME)
+    retirement_dir_from_root(&core.inner().sdk_paths().identities.identity_root_dir)
 }
 
 fn retirement_record_path(core: &crate::core::ImCore, identity_id: &str) -> PathBuf {
+    retirement_record_path_from_root(
+        &core.inner().sdk_paths().identities.identity_root_dir,
+        identity_id,
+    )
+}
+
+fn retirement_dir_from_root(identity_root_dir: &Path) -> PathBuf {
+    identity_root_dir.join(RETIREMENT_DIR_NAME)
+}
+
+fn retirement_record_path_from_root(identity_root_dir: &Path, identity_id: &str) -> PathBuf {
     let digest = Sha256::digest(identity_id.as_bytes());
-    retirement_dir(core).join(format!("{}.json", URL_SAFE_NO_PAD.encode(digest)))
+    retirement_dir_from_root(identity_root_dir)
+        .join(format!("{}.json", URL_SAFE_NO_PAD.encode(digest)))
 }
 
 fn write_record(path: &Path, record: &IdentityRetirementRecord) -> crate::ImResult<()> {
