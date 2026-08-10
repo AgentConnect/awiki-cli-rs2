@@ -492,6 +492,29 @@ pub async fn sync_now(
         .map_err(DartImError::from)
 }
 
+/// Hydrates the closed P5 exact-device Inbox before foreground ordinary sync,
+/// then reloads the same stable local identity so later calls use any device
+/// authorization generation advanced by a committed Root import.
+pub async fn prepare_secure_inbox_for_sync(
+    client: &Arc<crate::api::client::DartImClient>,
+    limit: u32,
+) -> Result<Vec<String>, DartImError> {
+    let inner = client.clone_inner()?;
+    let identity_id = inner.current_identity().id.clone();
+    let warnings = inner
+        .messages()
+        .hydrate_exact_device_secure_inbox_async(page_limit(limit)?)
+        .await
+        .map_err(DartImError::from)?;
+    let refreshed = client
+        .clone_core()?
+        .client_async(im_core::identity::IdentitySelector::Id(identity_id.clone()))
+        .await
+        .map_err(DartImError::from)?;
+    client.replace_inner(&identity_id, refreshed)?;
+    Ok(warnings)
+}
+
 pub async fn sync_diagnostics(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartMessageSyncDiagnostics, DartImError> {

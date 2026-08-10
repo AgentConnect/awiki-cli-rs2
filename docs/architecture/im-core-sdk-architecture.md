@@ -879,14 +879,16 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   delta, and v2 delta converge idempotently instead of creating duplicate rows.
   These lifecycle records remain durable timeline facts but do not enter the
   ordinary committed-incoming notification list.
-- When the independent P5 gate is enabled, Foreground CLI Inbox compensation
-  first performs one bounded exact-device secure hydration through the local-only
+- When the independent P5 gate is enabled, foreground CLI Inbox compensation and
+  the native Dart `MessageApi.syncNow` wrapper first perform one bounded
+  exact-device secure hydration through the local-only
   `inbox.get` contract. This lets Root control messages finish local credential
   promotion before a changed device authorization generation is used for ordinary
-  sync. The CLI reopens `ImClient` for the same DID after hydration so the same
-  command cannot retain the pre-promotion device authorization generation, then
-  uses the exact-device v2 reader with reason `foreground_reconcile` for ordinary
-  messages. Secure hydration uses the closed
+  sync. Both hosts reload `ImClient` for the same stable local identity after
+  hydration so the same foreground operation cannot retain the pre-promotion
+  device authorization generation; the CLI then uses reason
+  `foreground_reconcile`, while Dart continues the caller's ordinary `syncNow`
+  request. Secure hydration uses the closed
   `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
   P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
   local commit, reloads bearer state before that ACK in case a Root control

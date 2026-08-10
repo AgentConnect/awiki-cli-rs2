@@ -1276,6 +1276,12 @@ class MessageApi {
 
   Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
     _client._ensureNotDisposed();
+    final secureWarnings = await _mapNativeErrors(
+      () => gen_messages.prepareSecureInboxForSync(
+        client: _client._inner,
+        limit: request.limit ?? 100,
+      ),
+    );
     final result = await _mapNativeErrors(
       () => gen_messages.syncNow(
         client: _client._inner,
@@ -1285,7 +1291,24 @@ class MessageApi {
         ),
       ),
     );
-    return result._toModel();
+    final outcome = result._toModel();
+    if (secureWarnings.isEmpty) {
+      return outcome;
+    }
+    return MessageSyncOutcome(
+      status: outcome.status,
+      eventsApplied: outcome.eventsApplied,
+      pagesFetched: outcome.pagesFetched,
+      messagesHydrated: outcome.messagesHydrated,
+      duplicatesSkipped: outcome.duplicatesSkipped,
+      changedConversationIds: outcome.changedConversationIds,
+      committedIncomingMessages: outcome.committedIncomingMessages,
+      errorCode: outcome.errorCode,
+      warnings: List<String>.unmodifiable([
+        ...secureWarnings,
+        ...outcome.warnings,
+      ]),
+    );
   }
 
   Future<MessageSyncDiagnostics> syncDiagnostics() async {

@@ -500,6 +500,32 @@ fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
 }
 
 #[test]
+fn registration_recovery_join_sync_prepares_secure_inbox_before_ordinary_sync() {
+    let native = include_str!("../../../packages/awiki_im_core/lib/src/awiki_im_core_native.dart");
+    let sync_now = native
+        .split("Future<MessageSyncOutcome> syncNow(MessageSyncRequest request)")
+        .nth(1)
+        .expect("native syncNow wrapper");
+    let prepare = sync_now
+        .find("prepareSecureInboxForSync")
+        .expect("closed secure Inbox preparation");
+    let ordinary = sync_now
+        .find("gen_messages.syncNow")
+        .expect("ordinary message sync");
+    assert!(prepare < ordinary);
+    assert!(sync_now.contains("...secureWarnings"));
+
+    let facade = include_str!("../src/api/messages.rs");
+    let prepare = facade
+        .split("pub async fn prepare_secure_inbox_for_sync")
+        .nth(1)
+        .expect("Rust-Dart secure Inbox preparation");
+    assert!(prepare.contains("hydrate_exact_device_secure_inbox_async"));
+    assert!(prepare.contains("IdentitySelector::Id(identity_id.clone())"));
+    assert!(prepare.contains("client.replace_inner(&identity_id, refreshed)"));
+}
+
+#[test]
 fn sync_thread_after_request_uses_thread_local_sequence_only() {
     let request = awiki_im_core::dto::message::DartSyncThreadAfterRequest {
         thread: awiki_im_core::dto::message::DartThreadRef::Direct {

@@ -987,7 +987,10 @@ Reliable sync 补充：
   `has_more=false` 或命中 100 页硬上限。ACK 缺失、部分成功、无进展或达到上限均返回错误，
   但不回滚已提交的本地消息；成功结果仅返回安全 warning 文本。
   该接口不返回远端消息页，不接纳 delegated/Legacy 身份，也绝不能用于补齐普通消息；
-  普通 Direct/Group 的唯一前台补偿仍是 `sync_now`。
+  普通 Direct/Group 的唯一前台补偿仍是 `sync_now`。Native Dart
+  `MessageApi.syncNow` 只把该边界作为 Core-owned 前置阶段，水合后在 bridge
+  内重新加载同一 stable local identity 的 client，然后才执行 ordinary
+  `sync_now`；它不暴露独立 Dart public 水合 API，也不把 P5 control 返回 host。
 
 - `sync_now(MessageSyncRequest { reason, limit })` 是 v2 普通 Direct/Group 主链路。
   account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome

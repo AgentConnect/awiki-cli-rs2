@@ -748,12 +748,15 @@ snapshot count is exposed to Dart. `syncDelta` remains a separate v1
 compatibility facade. Message edit, recall, delete, tombstone, Push, and
 E2EE/MLS multi-device synchronization remain outside this stage.
 
-`syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Rust CLI 的
-前台 Inbox 在 P5 gate 开启时，会在 `syncNow` 成功后使用 exact-device、
-`body.security_profile=direct-e2ee` 的本域 secure hydration，再读取统一 local projection；
+`syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Native Dart
+wrapper 在 P5 gate 开启时，会先使用 exact-device、
+`body.security_profile=direct-e2ee` 的本域 secure hydration，再在 Core 内重新加载同一
+stable identity 的 client，最后执行 ordinary `syncNow`；这确保 Root 导入推进设备认证代次后
+普通同步不会继续使用旧 client。Rust CLI 前台 Inbox 遵循相同顺序。
 secure hydration 在每页本地提交后只 ACK 已成功消费的 P5 raw delivery，并有 100 页硬上限；
 ACK/收敛失败保留已提交本地数据但不返回完整前台成功。
-该窄化方法不是 ordinary/Legacy Inbox fallback，目前也不新增 Dart public API。Flutter
+该窄化方法不是 ordinary/Legacy Inbox fallback，也不新增独立 Dart public API；它是
+`MessageApi.syncNow` 内部的 Core-owned 前置阶段。Flutter
 不得把空 local projection 当成是否需要 E2EE hydration 的启发式判断。
 
 AWiki Me 默认启用 `syncNow`，并对所有合法账号/设备 binding 使用同一协议；Dart SDK 不暴露
