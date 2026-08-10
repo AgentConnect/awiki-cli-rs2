@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
@@ -5,6 +8,10 @@ use crate::agent::AgentDefinition;
 use crate::registration::{AgentInventoryClient, ControllerSenderScope, DidAuthMaterial};
 use crate::state::{controller_scope_key, DaemonState};
 use crate::DaemonConfig;
+
+type ControllerReconcileLockMap = BTreeMap<String, Arc<Mutex<()>>>;
+
+static CONTROLLER_RECONCILE_LOCKS: OnceLock<Mutex<ControllerReconcileLockMap>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedControllerSender {
@@ -39,13 +46,24 @@ pub fn verify_daemon_controller_sender<C>(
 where
     C: AgentInventoryClient,
 {
-    crate::agent_status::ensure_controller_identity_active(state, &daemon_agent.agent_did)?;
-    let auth = daemon_auth_material(config, state, daemon_agent)?;
-    let scope =
-        client.verify_controller_sender(&daemon_agent.agent_did, sender_did.trim(), &auth)?;
-    let verified = VerifiedControllerSender::from_scope(scope)?;
-    ensure_scope_matches_daemon(state, daemon_agent, &verified)?;
-    Ok(verified)
+    with_controller_reconcile_singleflight(daemon_agent, || {
+        let daemon_agent = state.load_agent_definition(&daemon_agent.agent_did)?;
+        let auth = daemon_auth_material(config, state, &daemon_agent)?;
+        let scope =
+            client.verify_controller_sender(&daemon_agent.agent_did, sender_did.trim(), &auth)?;
+        let verified = VerifiedControllerSender::from_scope(scope)?;
+        reconcile_authoritative_controller_scope(
+            state,
+            &daemon_agent,
+            Some(&verified.controller_user_id),
+            Some(&verified.controller_full_handle),
+            Some(&verified.controller_scope_key),
+            &verified.controller_did,
+            "verified_controller_sender",
+            "daemon.controller_sender_scope_mismatch",
+        )?;
+        Ok(verified)
+    })
 }
 
 pub fn sync_daemon_controller_scope<C>(
@@ -57,13 +75,37 @@ pub fn sync_daemon_controller_scope<C>(
 where
     C: AgentInventoryClient,
 {
-    let auth = daemon_auth_material(config, state, daemon_agent)?;
-    let response = client.sync_controller_scope(&daemon_agent.agent_did, &auth)?;
-    crate::agent_status::sync_controller_scope_from_response(
-        state,
-        &daemon_agent.agent_did,
-        &response,
-    )
+    with_controller_reconcile_singleflight(daemon_agent, || {
+        let daemon_agent = state.load_agent_definition(&daemon_agent.agent_did)?;
+        let auth = daemon_auth_material(config, state, &daemon_agent)?;
+        let response = client.sync_controller_scope(&daemon_agent.agent_did, &auth)?;
+        crate::agent_status::sync_controller_scope_from_response(
+            state,
+            &daemon_agent.agent_did,
+            &response,
+        )
+    })
+}
+
+pub(crate) fn with_controller_reconcile_singleflight<T>(
+    daemon_agent: &AgentDefinition,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let key = format!(
+        "{}\u{1f}{}",
+        daemon_agent.agent_did, daemon_agent.controller_scope_key
+    );
+    let lock = {
+        let mut locks = CONTROLLER_RECONCILE_LOCKS
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("controller reconcile lock map is poisoned"))?;
+        Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+    };
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("controller reconcile lock is poisoned"))?;
+    operation()
 }
 
 pub fn daemon_auth_material(
@@ -85,17 +127,30 @@ pub fn daemon_auth_material(
     })
 }
 
-fn ensure_scope_matches_daemon(
+pub(crate) fn reconcile_authoritative_controller_scope(
     state: &DaemonState,
     daemon_agent: &AgentDefinition,
-    verified: &VerifiedControllerSender,
+    authoritative_controller_user_id: Option<&str>,
+    authoritative_controller_full_handle: Option<&str>,
+    authoritative_controller_scope_key: Option<&str>,
+    authoritative_controller_did: &str,
+    source: &'static str,
+    mismatch_event_type: &'static str,
 ) -> Result<()> {
-    if daemon_agent.controller_user_id != verified.controller_user_id
-        || daemon_agent.controller_full_handle != verified.controller_full_handle
-        || daemon_agent.controller_scope_key != verified.controller_scope_key
+    let did_changed = authoritative_controller_did != daemon_agent.controller_did;
+    let stable_scope_missing = did_changed
+        && (authoritative_controller_user_id.is_none()
+            || authoritative_controller_full_handle.is_none());
+    if stable_scope_missing
+        || authoritative_controller_user_id
+            .is_some_and(|value| value != daemon_agent.controller_user_id)
+        || authoritative_controller_full_handle
+            .is_some_and(|value| value != daemon_agent.controller_full_handle)
+        || authoritative_controller_scope_key
+            .is_some_and(|value| value != daemon_agent.controller_scope_key)
     {
         state.insert_audit_event_json(
-            "daemon.controller_sender_scope_mismatch",
+            mismatch_event_type,
             Some(&daemon_agent.agent_did),
             None,
             None,
@@ -103,18 +158,84 @@ fn ensure_scope_matches_daemon(
             json!({
                 "local_controller_user_id": daemon_agent.controller_user_id,
                 "local_controller_full_handle": daemon_agent.controller_full_handle,
-                "remote_controller_user_id": verified.controller_user_id,
-                "remote_controller_full_handle": verified.controller_full_handle,
+                "remote_controller_user_id": authoritative_controller_user_id,
+                "remote_controller_full_handle": authoritative_controller_full_handle,
             }),
         )?;
         bail!("controller_scope_mismatch");
     }
-    if daemon_agent.controller_did != verified.controller_did {
-        return crate::agent_status::record_controller_identity_changed(
-            state,
-            &daemon_agent.agent_did,
-            "verified_controller_sender",
-        );
-    }
+    state.rebind_controller_did_for_agent_family(
+        &daemon_agent.agent_did,
+        &daemon_agent.controller_user_id,
+        &daemon_agent.controller_full_handle,
+        &daemon_agent.controller_scope_key,
+        authoritative_controller_did,
+        source,
+    )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::agent::AgentKind;
+
+    fn controller_rebind_daemon() -> AgentDefinition {
+        AgentDefinition {
+            agent_did: "did:agent:daemon-controller-singleflight".to_owned(),
+            handle: "alice-daemon".to_owned(),
+            agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_owned(),
+            controller_full_handle: "alice.awiki.info".to_owned(),
+            controller_scope_key: "controller-scope:v1:user-alice:alice.awiki.info".to_owned(),
+            controller_did: "did:human:alice-old".to_owned(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_owned(),
+            local_agent_db_path: "agents/daemon/agent.db".to_owned(),
+            message_db_path: "agents/daemon/messages.db".to_owned(),
+            status: "active".to_owned(),
+        }
+    }
+
+    #[test]
+    fn controller_rebind_singleflight_covers_authoritative_query_through_apply() {
+        let daemon = controller_rebind_daemon();
+        let first_daemon = daemon.clone();
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            with_controller_reconcile_singleflight(&first_daemon, || {
+                first_started_tx.send(()).unwrap();
+                release_first_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        first_started_rx.recv().unwrap();
+
+        let second_daemon = daemon;
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            with_controller_reconcile_singleflight(&second_daemon, || {
+                second_started_tx.send(()).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        assert!(second_started_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+
+        release_first_tx.send(()).unwrap();
+        first.join().unwrap();
+        second_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        second.join().unwrap();
+    }
 }

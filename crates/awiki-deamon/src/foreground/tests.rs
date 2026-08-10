@@ -3579,7 +3579,7 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
 }
 
 #[test]
-fn app_control_from_old_controller_stops_after_identity_change_observation() {
+fn app_control_controller_rebind_uses_authoritative_sender_and_ignores_legacy_guard() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient;
     let daemon = setup_daemon_agent(
@@ -3598,14 +3598,14 @@ fn app_control_from_old_controller_stops_after_identity_change_observation() {
     )
     .unwrap_err();
 
-    let error = handle_app_control_payload(
+    let outcome = handle_app_control_payload(
         &config,
         &state,
         &registration,
         IncomingAppControlPayload {
             message_id: "msg_after_controller_change".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:human:alice-new".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: json!({
@@ -3615,11 +3615,28 @@ fn app_control_from_old_controller_stops_after_identity_change_observation() {
             }),
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert_eq!(error.to_string(), "controller_identity_changed");
-    assert!(!state
+    assert!(matches!(
+        outcome,
+        AppControlOutcome::CapabilitiesReceived { .. }
+    ));
+    assert_eq!(
+        state
+            .load_agent_definition(&daemon.agent_did)
+            .unwrap()
+            .controller_did,
+        "did:human:alice-new"
+    );
+    assert!(state
         .audit_event_exists("app.capabilities.received", Some(&daemon.agent_did), None,)
+        .unwrap());
+    assert!(state
+        .audit_event_exists(
+            "daemon.controller_rebound",
+            Some(&daemon.agent_did),
+            Some("verified_controller_sender"),
+        )
         .unwrap());
 }
 
