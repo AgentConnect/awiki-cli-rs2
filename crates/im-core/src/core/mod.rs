@@ -30,6 +30,8 @@ pub(crate) struct ImCoreInner {
     >,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
+    pub(crate) registration_join_preparations:
+        crate::internal::identity_registration_join_preparation::RegistrationJoinPreparationStore,
     pub(crate) root_key_transfer_authorizations:
         crate::internal::identity_root_transfer_runtime::RootKeyTransferAuthorizationStore,
     #[cfg(feature = "sqlite")]
@@ -113,6 +115,7 @@ impl ImCore {
                 multi_device_audience,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 device_join_approvals: Default::default(),
+                registration_join_preparations: Default::default(),
                 root_key_transfer_authorizations: Default::default(),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),

@@ -547,19 +547,27 @@ class HandleRegistrationResult {
   final String handle;
   final String method;
   final String state;
-  final HandleRegistrationJoinRequired? joinRequired;
+  final HandleRegistrationJoinRequiredPreparation? joinRequired;
   final DefaultIdentityChange? defaultIdentityChange;
   final List<String> warnings;
 }
 
-class HandleRegistrationJoinRequired {
-  const HandleRegistrationJoinRequired({
-    required this.did,
-    required this.accountVerificationGrant,
+enum HandleRegistrationJoinMode { ordinary, handleRecoveryRebind }
+
+class HandleRegistrationJoinRequiredPreparation {
+  const HandleRegistrationJoinRequiredPreparation({
+    required this.preparationId,
+    required this.mode,
+    required this.requiresUserPresence,
+    required this.expectedDid,
+    required this.fullHandle,
   });
 
-  final String did;
-  final DeviceJoinAccountVerificationGrant accountVerificationGrant;
+  final String preparationId;
+  final HandleRegistrationJoinMode mode;
+  final bool requiresUserPresence;
+  final String expectedDid;
+  final String fullHandle;
 }
 
 enum DeviceJoinSide { newDevice, admin }

@@ -256,8 +256,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_handle_recovery_reset_reference(dynamic raw);
 
   @protected
-  DartHandleRegistrationJoinRequired
-  dco_decode_box_autoadd_dart_handle_registration_join_required(dynamic raw);
+  DartHandleRegistrationJoinRequiredPreparation
+  dco_decode_box_autoadd_dart_handle_registration_join_required_preparation(
+    dynamic raw,
+  );
 
   @protected
   DartIdentityDeviceRole dco_decode_box_autoadd_dart_identity_device_role(
@@ -776,8 +778,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_dart_handle_recovery_transition_source_kind(dynamic raw);
 
   @protected
-  DartHandleRegistrationJoinRequired
-  dco_decode_dart_handle_registration_join_required(dynamic raw);
+  DartHandleRegistrationJoinMode dco_decode_dart_handle_registration_join_mode(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRegistrationJoinRequiredPreparation
+  dco_decode_dart_handle_registration_join_required_preparation(dynamic raw);
 
   @protected
   DartHandleRegistrationResult dco_decode_dart_handle_registration_result(
@@ -1266,8 +1273,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_dart_handle_recovery_reset_reference(dynamic raw);
 
   @protected
-  DartHandleRegistrationJoinRequired?
-  dco_decode_opt_box_autoadd_dart_handle_registration_join_required(
+  DartHandleRegistrationJoinRequiredPreparation?
+  dco_decode_opt_box_autoadd_dart_handle_registration_join_required_preparation(
     dynamic raw,
   );
 
@@ -1581,8 +1588,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartHandleRegistrationJoinRequired
-  sse_decode_box_autoadd_dart_handle_registration_join_required(
+  DartHandleRegistrationJoinRequiredPreparation
+  sse_decode_box_autoadd_dart_handle_registration_join_required_preparation(
     SseDeserializer deserializer,
   );
 
@@ -2229,8 +2236,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartHandleRegistrationJoinRequired
-  sse_decode_dart_handle_registration_join_required(
+  DartHandleRegistrationJoinMode sse_decode_dart_handle_registration_join_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRegistrationJoinRequiredPreparation
+  sse_decode_dart_handle_registration_join_required_preparation(
     SseDeserializer deserializer,
   );
 
@@ -2869,8 +2881,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartHandleRegistrationJoinRequired?
-  sse_decode_opt_box_autoadd_dart_handle_registration_join_required(
+  DartHandleRegistrationJoinRequiredPreparation?
+  sse_decode_opt_box_autoadd_dart_handle_registration_join_required_preparation(
     SseDeserializer deserializer,
   );
 
@@ -3221,8 +3233,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_dart_handle_registration_join_required(
-    DartHandleRegistrationJoinRequired self,
+  void
+  sse_encode_box_autoadd_dart_handle_registration_join_required_preparation(
+    DartHandleRegistrationJoinRequiredPreparation self,
     SseSerializer serializer,
   );
 
@@ -3995,8 +4008,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_dart_handle_registration_join_required(
-    DartHandleRegistrationJoinRequired self,
+  void sse_encode_dart_handle_registration_join_mode(
+    DartHandleRegistrationJoinMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_registration_join_required_preparation(
+    DartHandleRegistrationJoinRequiredPreparation self,
     SseSerializer serializer,
   );
 
@@ -4769,8 +4788,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_opt_box_autoadd_dart_handle_registration_join_required(
-    DartHandleRegistrationJoinRequired? self,
+  void
+  sse_encode_opt_box_autoadd_dart_handle_registration_join_required_preparation(
+    DartHandleRegistrationJoinRequiredPreparation? self,
     SseSerializer serializer,
   );
 

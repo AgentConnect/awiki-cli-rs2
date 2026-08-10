@@ -192,6 +192,21 @@ Future<DartDeviceJoinProgress> beginDeviceJoin({
   accountVerificationGrant: accountVerificationGrant,
 );
 
+Future<DartAuthorizedJoinActivationProgress>
+beginPreparedRegistrationDeviceJoin({
+  required ArcDartImCore core,
+  required String preparationId,
+  required String operationId,
+  required BigInt ttlSeconds,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityBeginPreparedRegistrationDeviceJoin(
+  core: core,
+  preparationId: preparationId,
+  operationId: operationId,
+  ttlSeconds: ttlSeconds,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
 Future<DartDeviceJoinProgress> pollNewDeviceJoin({
   required ArcDartImCore core,
   required String joinSessionId,

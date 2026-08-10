@@ -28,10 +28,11 @@ use crate::dto::{
         DartHandleRecoveryImpact, DartHandleRecoveryKeyState, DartHandleRecoveryOperationLifecycle,
         DartHandleRecoveryOperationSummary, DartHandleRecoveryOtpResult, DartHandleRecoveryPhase,
         DartHandleRecoveryProgress, DartHandleRecoveryResetReference,
-        DartHandleRecoveryTransitionSourceKind, DartHandleRegistrationJoinRequired,
-        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
-        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
-        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartHandleRecoveryTransitionSourceKind, DartHandleRegistrationJoinMode,
+        DartHandleRegistrationJoinRequiredPreparation, DartHandleRegistrationResult,
+        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
+        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
+        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartLegacyRegistryEpochAdoptionAuthority,
         DartLegacyUpgradeStatus, DartRootKeyTransferError, DartRootKeyTransferPreparation,
         DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
@@ -912,13 +913,23 @@ fn registration_state_to_string(value: im_core::identity::HandleRegistrationStat
     }
 }
 
-impl From<im_core::identity::HandleRegistrationJoinRequired>
-    for DartHandleRegistrationJoinRequired
+impl From<im_core::identity::HandleRegistrationJoinRequiredPreparation>
+    for DartHandleRegistrationJoinRequiredPreparation
 {
-    fn from(value: im_core::identity::HandleRegistrationJoinRequired) -> Self {
+    fn from(value: im_core::identity::HandleRegistrationJoinRequiredPreparation) -> Self {
         Self {
-            did: value.did.as_str().to_owned(),
-            account_verification_token: value.account_verification_token,
+            preparation_id: value.preparation_id,
+            mode: match value.mode {
+                im_core::identity::HandleRegistrationJoinMode::Ordinary => {
+                    DartHandleRegistrationJoinMode::Ordinary
+                }
+                im_core::identity::HandleRegistrationJoinMode::HandleRecoveryRebind => {
+                    DartHandleRegistrationJoinMode::HandleRecoveryRebind
+                }
+            },
+            requires_user_presence: value.requires_user_presence,
+            expected_did: value.expected_did.as_str().to_owned(),
+            full_handle: value.full_handle.as_str().to_owned(),
         }
     }
 }
@@ -2330,7 +2341,8 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 mod tests {
     use super::{
         realtime_event_to_dart, DartActiveSyncAccountBinding, DartGroupSummary,
-        DartHandleRegistrationResult, DartRelationStatus, DartSyncDomain,
+        DartHandleRegistrationJoinMode, DartHandleRegistrationResult, DartRelationStatus,
+        DartSyncDomain,
     };
     use im_core::{
         directory::RelationshipStatus,
@@ -2350,7 +2362,7 @@ mod tests {
     };
 
     #[test]
-    fn registration_join_required_maps_to_typed_dart_result() {
+    fn registration_recovery_join_maps_to_opaque_typed_dart_result() {
         let mapped =
             DartHandleRegistrationResult::from(im_core::identity::HandleRegistrationResult {
                 identity: None,
@@ -2358,10 +2370,16 @@ mod tests {
                 handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
                 method: im_core::identity::RegistrationMethod::Phone,
                 state: im_core::identity::HandleRegistrationState::JoinRequired,
-                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
-                    did: im_core::ids::Did::parse("did:wba:example.test:existing").unwrap(),
-                    account_verification_token: "single-use-account-verification".to_owned(),
-                }),
+                join_required: Some(
+                    im_core::identity::HandleRegistrationJoinRequiredPreparation {
+                        preparation_id: "regjoin_opaque".to_owned(),
+                        mode: im_core::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
+                        requires_user_presence: true,
+                        expected_did: im_core::ids::Did::parse("did:wba:example.test:existing")
+                            .unwrap(),
+                        full_handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
+                    },
+                ),
                 default_identity_change: None,
                 warnings: Vec::new(),
             });
@@ -2370,11 +2388,14 @@ mod tests {
         assert!(mapped.identity.is_none());
         assert!(mapped.account_id.is_none());
         let join_required = mapped.join_required.expect("typed Join result");
-        assert_eq!(join_required.did, "did:wba:example.test:existing");
+        assert_eq!(join_required.preparation_id, "regjoin_opaque");
         assert_eq!(
-            join_required.account_verification_token,
-            "single-use-account-verification"
+            join_required.mode,
+            DartHandleRegistrationJoinMode::HandleRecoveryRebind
         );
+        assert!(join_required.requires_user_presence);
+        assert_eq!(join_required.expected_did, "did:wba:example.test:existing");
+        assert_eq!(join_required.full_handle, "alice.example.test");
     }
 
     #[test]

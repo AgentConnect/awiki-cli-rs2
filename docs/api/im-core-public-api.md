@@ -537,7 +537,9 @@ pending 记录固定保存同一组 device ID/keys 和目标文档；重试时�
 `register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
-host 使用其中的一次性 account verification grant 进入 Device Join。若服务端确认该 Handle
+Core 将账号验证 token 和可选 Recovery transition 保存在短生命周期、进程内的 opaque
+preparation 中；host 只能读取 preparation ID、typed mode、user-presence 要求、预期 DID 和
+完整 Handle，并通过 `begin_prepared_registration_device_join` 进入 Device Join。若服务端确认该 Handle
 仍是 Legacy 且本次 phone factor 与原绑定完全一致，`register` 可以作为窄范围兼容路径把它
 原子恢复为新的 canonical vNext DID，同时保留原 `user_id`、Handle 和递增后的 binding
 generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。`registered` wire
@@ -549,7 +551,10 @@ generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份
 独立的 durable PreKey publication 会在后续安全操作中复用同一 bundle 重试。注册 pending 在
 身份提交边界结束，清理失败使用 `registration_pending_cleanup_required` warning。公共 DTO 不暴露
 私钥、pending、内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
-`registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID。
+`registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID，也不暴露
+account verification token 或 owner 选择。Core 在 prepared begin 时重新验证稳定 owner；
+Recovery rebind 必须在远端 Join create 之前持久化 joined-device marker。进程重启后 preparation
+失效，host 重新发起注册验证，不提供兼容恢复或独立 JSON continuation。
 注册写入发生传输不确定性时，Core 先用同一 pending DID 对账；所有 JSON-RPC HTTP 状态都
 保留服务端 `code/data`。只有 User Service 返回精确
 `error.data.awiki_code=did_auth.active_did_not_found`（或既有明确 not-found 契约）时，

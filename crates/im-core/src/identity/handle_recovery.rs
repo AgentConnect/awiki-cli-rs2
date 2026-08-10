@@ -81,6 +81,14 @@ pub struct AuthorizedJoinActivationRequest {
     pub user_presence_confirmed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BeginPreparedRegistrationDeviceJoinRequest {
+    pub preparation_id: String,
+    pub operation_id: String,
+    pub ttl_seconds: u64,
+    pub user_presence_confirmed: bool,
+}
+
 impl std::fmt::Debug for AuthorizedJoinActivationRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -349,6 +357,16 @@ impl<'a> HandleRecoveryService<'a> {
         request: AuthorizedJoinActivationRequest,
     ) -> crate::ImResult<AuthorizedJoinActivationProgress> {
         crate::internal::identity_handle_recovery_runtime::activate_authorized_join(
+            self.core, request,
+        )
+        .await
+    }
+
+    pub async fn begin_prepared_registration_device_join(
+        &self,
+        request: BeginPreparedRegistrationDeviceJoinRequest,
+    ) -> crate::ImResult<AuthorizedJoinActivationProgress> {
+        crate::internal::identity_handle_recovery_runtime::begin_prepared_registration_device_join(
             self.core, request,
         )
         .await

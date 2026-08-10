@@ -308,6 +308,28 @@ pub async fn begin_device_join(
         .map_err(DartImError::from)
 }
 
+pub async fn begin_prepared_registration_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    preparation_id: String,
+    operation_id: String,
+    ttl_seconds: u64,
+    user_presence_confirmed: bool,
+) -> Result<DartAuthorizedJoinActivationProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .begin_prepared_registration_device_join(
+            im_core::identity::BeginPreparedRegistrationDeviceJoinRequest {
+                preparation_id,
+                operation_id,
+                ttl_seconds,
+                user_presence_confirmed,
+            },
+        )
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn poll_new_device_join(
     core: &Arc<crate::api::core::DartImCore>,
     join_session_id: String,

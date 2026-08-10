@@ -508,22 +508,22 @@ pub struct DartHandleRegistrationResult {
     pub handle: String,
     pub method: String,
     pub state: String,
-    pub join_required: Option<DartHandleRegistrationJoinRequired>,
+    pub join_required: Option<DartHandleRegistrationJoinRequiredPreparation>,
     pub default_identity_change: Option<DartDefaultIdentityChange>,
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct DartHandleRegistrationJoinRequired {
-    pub did: String,
-    pub account_verification_token: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRegistrationJoinMode {
+    Ordinary,
+    HandleRecoveryRebind,
 }
 
-impl std::fmt::Debug for DartHandleRegistrationJoinRequired {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DartHandleRegistrationJoinRequired")
-            .field("did", &self.did)
-            .field("account_verification_token", &"<redacted>")
-            .finish()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRegistrationJoinRequiredPreparation {
+    pub preparation_id: String,
+    pub mode: DartHandleRegistrationJoinMode,
+    pub requires_user_presence: bool,
+    pub expected_did: String,
+    pub full_handle: String,
 }

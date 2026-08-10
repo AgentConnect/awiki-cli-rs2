@@ -38,6 +38,7 @@ pub(crate) mod identity_legacy_upgrade;
 pub(crate) mod identity_legacy_upgrade_pending;
 pub(crate) mod identity_legacy_upgrade_runtime;
 pub(crate) mod identity_local_owner_matcher;
+pub(crate) mod identity_registration_join_preparation;
 pub(crate) mod identity_registration_pending;
 pub(crate) mod identity_registration_runtime;
 pub(crate) mod identity_replace_did_execution;

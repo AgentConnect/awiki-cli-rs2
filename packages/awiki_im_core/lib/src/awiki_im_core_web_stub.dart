@@ -160,6 +160,15 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<AuthorizedJoinActivationProgress> beginPreparedRegistrationDeviceJoin({
+    required String preparationId,
+    required String operationId,
+    int ttlSeconds = 600,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<DeviceJoinProgress> pollNewDeviceJoin(String joinSessionId) async {
     throw _unsupported();
   }

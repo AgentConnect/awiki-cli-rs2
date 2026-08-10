@@ -813,6 +813,7 @@ pub(crate) async fn prepare(
                 binding_generation: &expected_committed_generation,
             },
             Some(&operation_id),
+            None,
         )?;
         match owner_match {
             crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(candidate) => {
@@ -2007,25 +2008,44 @@ pub(crate) async fn activate_authorized_join(
             &core.inner().sdk_paths().identities,
         )
         .load_index()?;
-        let owner_entries = index
-            .credentials
-            .values()
-            .filter(|entry| entry.unique_id == owner.id.as_str())
-            .collect::<Vec<_>>();
-        let account_handle_owner_closed = owner_entries.len() == 1
-            && owner_entries[0].user_id == account_user_id
-            && owner_entries[0].full_handle == canonical.full
-            && request.did.as_str() == transition.current_did
+        let authority_closed = request.did.as_str() == transition.current_did
             && exchanged.did.as_deref() == Some(request.did.as_str())
             && exchanged.handle.as_deref() == Some(canonical.full.as_str());
-        if !account_handle_owner_closed || owner.did.as_str() != transition.previous_did {
-            return Err(recovery_error(authorized_join_transition_error_code(
-                account_handle_owner_closed,
-                owner.did.as_str() == transition.previous_did,
-                false,
-            )));
+        if !authority_closed {
+            return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
         }
-        let owner_identity_id = owner.id.as_str().to_owned();
+        let owner_identity_id =
+            match crate::internal::identity_local_owner_matcher::match_stable_owner(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &index,
+                crate::internal::identity_local_owner_matcher::StableOwnerAuthority {
+                    account_user_id: &account_user_id,
+                    full_handle: &canonical.full,
+                    previous_did: &transition.previous_did,
+                    binding_generation: &transition.binding_generation,
+                },
+                None,
+                None,
+            )? {
+                crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(
+                    candidate,
+                ) if candidate.owner_identity_id == owner.id.as_str() => {
+                    candidate.owner_identity_id
+                }
+                crate::internal::identity_local_owner_matcher::StableOwnerMatch::Conflict => {
+                    return Err(
+                        crate::internal::identity_registration_join_preparation::continuity_error(
+                            "handle_recovery.local_state_conflict",
+                        ),
+                    );
+                }
+                crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(_)
+                | crate::internal::identity_local_owner_matcher::StableOwnerMatch::None => {
+                    return Err(recovery_error(
+                        HandleRecoveryErrorCode::LocalMigrationUnsupported,
+                    ));
+                }
+            };
         let handle = canonical.full.clone();
         let previous_did = transition.previous_did.clone();
         let current_did = transition.current_did.clone();
@@ -2091,6 +2111,219 @@ pub(crate) async fn activate_authorized_join(
         join,
         reset_reference: None,
     })
+}
+
+pub(crate) async fn begin_prepared_registration_device_join(
+    core: &crate::core::ImCore,
+    request: crate::identity::BeginPreparedRegistrationDeviceJoinRequest,
+) -> crate::ImResult<AuthorizedJoinActivationProgress> {
+    let operation_id = crate::internal::identity_wire::handle_recovery::validate_operation_id(
+        &request.operation_id,
+    )?;
+    let begin_input_hash =
+        crate::internal::identity_registration_join_preparation::begin_input_hash(
+            &operation_id,
+            request.ttl_seconds,
+            request.user_presence_confirmed,
+        )?;
+    let operation_lock = core
+        .inner()
+        .registration_join_preparations
+        .operation_lock(&request.preparation_id)?;
+    let _guard = operation_lock.lock().await;
+    let snapshot = core
+        .inner()
+        .registration_join_preparations
+        .bind_and_snapshot(&request.preparation_id, &operation_id, &begin_input_hash)?;
+    let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+    if snapshot.state_root_fingerprint
+        != crate::internal::identity_transition_pending::state_root_fingerprint(sqlite_path)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let already_authorized = snapshot
+        .join_session_id
+        .as_deref()
+        .and_then(|join_session_id| {
+            core.device_join()
+                .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)
+                .ok()
+        })
+        .is_some_and(|session| session.phase == crate::identity::DeviceJoinLocalPhase::Authorized);
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    if !already_authorized
+        && snapshot.identity_index_fingerprint
+            != crate::internal::identity_registration_join_preparation::identity_index_fingerprint(
+                &index,
+            )?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let exact_owner = if already_authorized {
+        snapshot.owner_identity_id.clone()
+    } else {
+        revalidate_prepared_registration_owner(core, &snapshot, &index)?
+    };
+    let is_rebind = matches!(
+        snapshot.mode,
+        crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind
+    );
+    if is_rebind {
+        require_enabled(core)?;
+        if !request.user_presence_confirmed {
+            return Err(user_presence_required_error());
+        }
+    }
+
+    let join = if snapshot.remote_started {
+        let join_session_id = snapshot
+            .join_session_id
+            .as_deref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        core.device_join()
+            .poll_new_device_join(join_session_id)
+            .await?
+    } else {
+        let preparation_id = request.preparation_id.clone();
+        let marker_transition = snapshot.transition.clone();
+        let marker_owner = exact_owner.clone();
+        let marker_handle = snapshot.full_handle.as_str().to_owned();
+        let marker_operation = operation_id.clone();
+        let token = crate::identity::DeviceJoinAccountVerificationGrant::from_bytes(
+            snapshot.account_verification_token.clone(),
+        )?;
+        let join = core
+            .device_join()
+            .begin_new_device_join_with_local_hook(
+                crate::identity::DeviceJoinBeginRequest {
+                    operation_id: operation_id.clone(),
+                    did: snapshot.expected_did.clone(),
+                    ttl_seconds: request.ttl_seconds,
+                    account_verification_grant: token,
+                },
+                move |session| {
+                    if let (Some(transition), Some(owner_identity_id)) =
+                        (marker_transition.as_ref(), marker_owner.as_deref())
+                    {
+                        let marker = crate::internal::identity_transition_pending::IdentityTransitionMarker::joined_device(
+                            sqlite_path,
+                            &session.join_session_id,
+                            &transition.account_user_id,
+                            owner_identity_id,
+                            &marker_handle,
+                            &transition.previous_did,
+                            &transition.current_did,
+                            &transition.binding_generation,
+                        )?;
+                        crate::internal::identity_transition_pending::persist(sqlite_path, &marker)?;
+                    }
+                    core.inner()
+                        .registration_join_preparations
+                        .bind_local_session(
+                            &preparation_id,
+                            &marker_operation,
+                            &session.join_session_id,
+                        )
+                },
+            )
+            .await?;
+        core.inner()
+            .registration_join_preparations
+            .mark_remote_started(
+                &request.preparation_id,
+                &operation_id,
+                &join.session.join_session_id,
+            )?;
+        join
+    };
+    if is_rebind {
+        advance_joined_rebind(core, &join.session.join_session_id, &join.session.did).await?;
+    }
+    let reset_reference = if is_rebind {
+        crate::internal::identity_transition_pending::load_joined_device(
+            sqlite_path,
+            &join.session.join_session_id,
+        )?
+        .as_ref()
+        .map(reset_reference_from_marker)
+        .transpose()?
+    } else {
+        None
+    };
+    Ok(AuthorizedJoinActivationProgress {
+        join,
+        reset_reference,
+    })
+}
+
+fn revalidate_prepared_registration_owner(
+    core: &crate::core::ImCore,
+    snapshot: &crate::internal::identity_registration_join_preparation::RegistrationJoinPreparationSnapshot,
+    index: &crate::internal::identity_store::IndexPayload,
+) -> crate::ImResult<Option<String>> {
+    use crate::internal::identity_local_owner_matcher::{StableOwnerAuthority, StableOwnerMatch};
+
+    let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+    match snapshot.transition.as_ref() {
+        Some(transition) => match crate::internal::identity_local_owner_matcher::match_stable_owner(
+            sqlite_path,
+            index,
+            StableOwnerAuthority {
+                account_user_id: &transition.account_user_id,
+                full_handle: snapshot.full_handle.as_str(),
+                previous_did: &transition.previous_did,
+                binding_generation: &transition.binding_generation,
+            },
+            None,
+            snapshot.join_session_id.as_deref(),
+        )? {
+            StableOwnerMatch::Exact(owner)
+                if snapshot.mode
+                    == crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind
+                    && snapshot.owner_identity_id.as_deref()
+                        == Some(owner.owner_identity_id.as_str()) =>
+            {
+                Ok(Some(owner.owner_identity_id))
+            }
+            StableOwnerMatch::None
+                if snapshot.mode == crate::identity::HandleRegistrationJoinMode::Ordinary
+                    && snapshot.owner_identity_id.is_none() =>
+            {
+                Ok(None)
+            }
+            StableOwnerMatch::Conflict => Err(
+                crate::internal::identity_registration_join_preparation::continuity_error(
+                    "handle_recovery.local_state_conflict",
+                ),
+            ),
+            StableOwnerMatch::Exact(_) | StableOwnerMatch::None => {
+                Err(crate::ImError::PermissionDenied)
+            }
+        },
+        None => match crate::internal::identity_local_owner_matcher::match_stable_owner_without_transition(
+            sqlite_path,
+            index,
+            snapshot.full_handle.as_str(),
+            snapshot.expected_did.as_str(),
+        )? {
+            StableOwnerMatch::None
+                if snapshot.mode == crate::identity::HandleRegistrationJoinMode::Ordinary
+                    && snapshot.owner_identity_id.is_none() =>
+            {
+                Ok(None)
+            }
+            StableOwnerMatch::Exact(_) | StableOwnerMatch::Conflict => Err(
+                crate::internal::identity_registration_join_preparation::continuity_error(
+                    "handle_recovery.transition_missing",
+                ),
+            ),
+            StableOwnerMatch::None => Err(crate::ImError::PermissionDenied),
+        },
+    }
 }
 
 pub(crate) async fn resume_authorized_join_activation(

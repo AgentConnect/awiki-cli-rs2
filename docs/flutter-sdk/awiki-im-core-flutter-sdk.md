@@ -93,7 +93,11 @@ The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recov
 A successful registered result exposes `HandleRegistrationResult.accountId`,
 which is the canonical User Service account ID persisted by Core. A
 `join_required` result leaves `accountId` null; Flutter/App code must not decode
-JWT claims or substitute a DID to manufacture it.
+JWT claims or substitute a DID to manufacture it. Its
+`HandleRegistrationJoinRequiredPreparation` is an opaque, process-local Core
+preparation containing only a preparation ID, typed mode, user-presence
+requirement, expected DID, and full Handle. The account verification token and
+recovery transition remain inside Core and are never exposed to Dart/App code.
 
 The remote `registered.message` field is diagnostic text and is not exposed as
 registration authority. Core validates the exact DID, Handle, domain, binding
@@ -229,6 +233,13 @@ Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rol
 该 grant 没有 getter、copy/JSON API 或泄露内容的 `toString`，并由
 `beginDeviceJoin` 一次性消费。重启恢复与候选设备侧收敛继续使用
 `localDeviceJoinSessions`、`pollNewDeviceJoin` 和 `cancelNewDeviceJoin`。
+
+注册返回 `join_required` 时不走上述 host-supplied grant 接口。Host 只把 opaque
+`preparationId` 和正式 user-presence 结果传给
+`beginPreparedRegistrationDeviceJoin(...)`；Core 自行校验稳定 owner、消费内部 token，并在
+Recovery rebind 模式下先持久化 joined-device marker，再创建远端 Join。该 preparation
+故意不跨进程持久化；App/Core 重启后必须重新发起注册验证，不能缓存 token、推断 owner 或
+拼装独立 JSON continuation。
 
 现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
 验证、durable dedupe 和本地 reducer commit 后，才发出可信

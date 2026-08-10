@@ -27,6 +27,37 @@ pub(crate) enum StableOwnerMatch {
     Conflict,
 }
 
+/// Classifies an ordinary registration response when no Recovery authority is
+/// available. Any local state related to the Handle or target DID means this
+/// is not a fresh-device Join and must fail closed as a missing transition.
+pub(crate) fn match_stable_owner_without_transition(
+    sqlite_path: &Path,
+    index: &crate::internal::identity_store::IndexPayload,
+    full_handle: &str,
+    current_did: &str,
+) -> crate::ImResult<StableOwnerMatch> {
+    crate::internal::identity_wire::handle_recovery::canonical_handle(full_handle)?;
+    crate::ids::Did::parse(current_did)?;
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let related_binding_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM identity_account_bindings WHERE handle_scope=?1 OR current_did=?2",
+            rusqlite::params![full_handle, current_did],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let related_index_count = index
+        .credentials
+        .values()
+        .filter(|entry| entry.full_handle == full_handle || entry.did == current_did)
+        .count();
+    Ok(if related_binding_count == 0 && related_index_count == 0 {
+        StableOwnerMatch::None
+    } else {
+        StableOwnerMatch::Conflict
+    })
+}
+
 #[derive(Debug)]
 struct BindingCandidate {
     owner_identity_id: String,
@@ -38,6 +69,7 @@ pub(crate) fn match_stable_owner(
     index: &crate::internal::identity_store::IndexPayload,
     authority: StableOwnerAuthority<'_>,
     excluded_recovery_operation_id: Option<&str>,
+    excluded_transition_source_id: Option<&str>,
 ) -> crate::ImResult<StableOwnerMatch> {
     let canonical =
         crate::internal::identity_wire::handle_recovery::canonical_handle(authority.full_handle)?;
@@ -117,8 +149,13 @@ ORDER BY owner_identity_id"#,
         .query_row(
             r#"SELECT COUNT(*) FROM identity_transition_pending
 WHERE phase IN ('pending','identity_switched')
-  AND (owner_identity_id=?1 OR previous_did=?2 OR current_did=?2)"#,
-            rusqlite::params![candidate.owner_identity_id, authority.previous_did],
+  AND (owner_identity_id=?1 OR previous_did=?2 OR current_did=?2)
+  AND (?3 IS NULL OR source_id<>?3)"#,
+            rusqlite::params![
+                candidate.owner_identity_id,
+                authority.previous_did,
+                excluded_transition_source_id
+            ],
             |row| row.get(0),
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -228,7 +265,7 @@ mod tests {
         );
 
         assert!(matches!(
-            match_stable_owner(&path, &fixture_index(), authority(), None).unwrap(),
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
             StableOwnerMatch::Exact(StableOwnerCandidate { owner_identity_id, .. })
                 if owner_identity_id == "owner-alice"
         ));
@@ -239,7 +276,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("im.sqlite");
         assert_eq!(
-            match_stable_owner(&path, &fixture_index(), authority(), None).unwrap(),
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
             StableOwnerMatch::None
         );
 
@@ -252,7 +289,42 @@ mod tests {
             "7",
         );
         assert_eq!(
-            match_stable_owner(&path, &fixture_index(), authority(), None).unwrap(),
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
+            StableOwnerMatch::Conflict
+        );
+    }
+
+    #[test]
+    fn registration_recovery_join_missing_transition_distinguishes_fresh_from_local_state() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let empty_index = crate::internal::identity_store::IndexPayload::default();
+        assert_eq!(
+            match_stable_owner_without_transition(
+                &path,
+                &empty_index,
+                "alice.example.invalid",
+                "did:wba:example.invalid:user:alice:new",
+            )
+            .unwrap(),
+            StableOwnerMatch::None
+        );
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            "did:wba:example.invalid:user:alice:old",
+            "7",
+        );
+        assert_eq!(
+            match_stable_owner_without_transition(
+                &path,
+                &empty_index,
+                "alice.example.invalid",
+                "did:wba:example.invalid:user:alice:new",
+            )
+            .unwrap(),
             StableOwnerMatch::Conflict
         );
     }
@@ -282,7 +354,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            match_stable_owner(&path, &fixture_index(), authority(), None).unwrap(),
+            match_stable_owner(&path, &fixture_index(), authority(), None, None).unwrap(),
             StableOwnerMatch::Conflict
         );
     }

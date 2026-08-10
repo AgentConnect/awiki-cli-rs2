@@ -289,8 +289,14 @@ fn register_handle_command_result(
     }
     if let Some(join_required) = result.join_required.as_ref() {
         data["join_required"] = json!({
-            "did": join_required.did.as_str(),
-            "account_verification_token": join_required.account_verification_token,
+            "preparation_id": join_required.preparation_id,
+            "mode": match join_required.mode {
+                im_core::identity::HandleRegistrationJoinMode::Ordinary => "ordinary",
+                im_core::identity::HandleRegistrationJoinMode::HandleRecoveryRebind => "handle_recovery_rebind",
+            },
+            "requires_user_presence": join_required.requires_user_presence,
+            "expected_did": join_required.expected_did.as_str(),
+            "full_handle": join_required.full_handle.as_str(),
         });
     }
     if let Some(phone) = registration_phone(&request.verification) {
@@ -2063,10 +2069,15 @@ mod tests {
                 handle: Handle::parse("alice.awiki.test", "").unwrap(),
                 method: RegistrationMethod::AlreadyVerified,
                 state: HandleRegistrationState::Registered,
-                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
-                    did: Did::parse("did:wba:awiki.test:alice:e1_root").unwrap(),
-                    account_verification_token: "verification-token".to_owned(),
-                }),
+                join_required: Some(
+                    im_core::identity::HandleRegistrationJoinRequiredPreparation {
+                        preparation_id: "regjoin_opaque".to_owned(),
+                        mode: im_core::identity::HandleRegistrationJoinMode::Ordinary,
+                        requires_user_presence: false,
+                        expected_did: Did::parse("did:wba:awiki.test:alice:e1_root").unwrap(),
+                        full_handle: Handle::parse("alice.awiki.test", "").unwrap(),
+                    },
+                ),
                 default_identity_change: None,
                 warnings: Vec::new(),
             },
@@ -2088,10 +2099,15 @@ mod tests {
                 handle: Handle::parse("alice.awiki.test", "").unwrap(),
                 method: RegistrationMethod::AlreadyVerified,
                 state: HandleRegistrationState::JoinRequired,
-                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
-                    did: Did::parse("did:wba:awiki.test:alice:e1_root").unwrap(),
-                    account_verification_token: "verification-token".to_owned(),
-                }),
+                join_required: Some(
+                    im_core::identity::HandleRegistrationJoinRequiredPreparation {
+                        preparation_id: "regjoin_opaque".to_owned(),
+                        mode: im_core::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
+                        requires_user_presence: true,
+                        expected_did: Did::parse("did:wba:awiki.test:alice:e1_root").unwrap(),
+                        full_handle: Handle::parse("alice.awiki.test", "").unwrap(),
+                    },
+                ),
                 default_identity_change: None,
                 warnings: Vec::new(),
             },
@@ -2102,12 +2118,15 @@ mod tests {
         assert_eq!(result.data["action"], "join_device");
         assert!(result.data.get("account_id").is_none());
         assert_eq!(
-            result.data["join_required"]["did"],
+            result.data["join_required"]["expected_did"],
             "did:wba:awiki.test:alice:e1_root"
         );
         assert_eq!(
-            result.data["join_required"]["account_verification_token"],
-            "verification-token"
+            result.data["join_required"]["preparation_id"],
+            "regjoin_opaque"
         );
+        assert!(result.data["join_required"]
+            .get("account_verification_token")
+            .is_none());
     }
 }

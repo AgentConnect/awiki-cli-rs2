@@ -898,25 +898,41 @@ class DartHandleRecoveryResetReference {
 
 enum DartHandleRecoveryTransitionSourceKind { initiator, joinedDevice }
 
-class DartHandleRegistrationJoinRequired {
-  final String did;
-  final String accountVerificationToken;
+enum DartHandleRegistrationJoinMode { ordinary, handleRecoveryRebind }
 
-  const DartHandleRegistrationJoinRequired({
-    required this.did,
-    required this.accountVerificationToken,
+class DartHandleRegistrationJoinRequiredPreparation {
+  final String preparationId;
+  final DartHandleRegistrationJoinMode mode;
+  final bool requiresUserPresence;
+  final String expectedDid;
+  final String fullHandle;
+
+  const DartHandleRegistrationJoinRequiredPreparation({
+    required this.preparationId,
+    required this.mode,
+    required this.requiresUserPresence,
+    required this.expectedDid,
+    required this.fullHandle,
   });
 
   @override
-  int get hashCode => did.hashCode ^ accountVerificationToken.hashCode;
+  int get hashCode =>
+      preparationId.hashCode ^
+      mode.hashCode ^
+      requiresUserPresence.hashCode ^
+      expectedDid.hashCode ^
+      fullHandle.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is DartHandleRegistrationJoinRequired &&
+      other is DartHandleRegistrationJoinRequiredPreparation &&
           runtimeType == other.runtimeType &&
-          did == other.did &&
-          accountVerificationToken == other.accountVerificationToken;
+          preparationId == other.preparationId &&
+          mode == other.mode &&
+          requiresUserPresence == other.requiresUserPresence &&
+          expectedDid == other.expectedDid &&
+          fullHandle == other.fullHandle;
 }
 
 class DartHandleRegistrationResult {
@@ -925,7 +941,7 @@ class DartHandleRegistrationResult {
   final String handle;
   final String method;
   final String state;
-  final DartHandleRegistrationJoinRequired? joinRequired;
+  final DartHandleRegistrationJoinRequiredPreparation? joinRequired;
   final DartDefaultIdentityChange? defaultIdentityChange;
   final List<String> warnings;
 

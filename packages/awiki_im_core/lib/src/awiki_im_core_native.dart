@@ -436,6 +436,25 @@ class AwikiImCore {
     }
   }
 
+  Future<AuthorizedJoinActivationProgress> beginPreparedRegistrationDeviceJoin({
+    required String preparationId,
+    required String operationId,
+    int ttlSeconds = 600,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.beginPreparedRegistrationDeviceJoin(
+        core: _inner,
+        preparationId: preparationId,
+        operationId: operationId,
+        ttlSeconds: BigInt.from(ttlSeconds),
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return progress._toModel();
+  }
+
   Future<DeviceJoinProgress> pollNewDeviceJoin(String joinSessionId) async {
     _ensureNotDisposed();
     final progress = await _mapNativeErrors(
@@ -2709,13 +2728,20 @@ extension on gen_identity.DartAuthorizedJoinActivationProgress {
       );
 }
 
-extension on gen_identity.DartHandleRegistrationJoinRequired {
-  HandleRegistrationJoinRequired _toModel() => HandleRegistrationJoinRequired(
-    did: did,
-    accountVerificationGrant: DeviceJoinAccountVerificationGrant.fromToken(
-      accountVerificationToken,
-    ),
-  );
+extension on gen_identity.DartHandleRegistrationJoinRequiredPreparation {
+  HandleRegistrationJoinRequiredPreparation _toModel() =>
+      HandleRegistrationJoinRequiredPreparation(
+        preparationId: preparationId,
+        mode: switch (mode) {
+          gen_identity.DartHandleRegistrationJoinMode.ordinary =>
+            HandleRegistrationJoinMode.ordinary,
+          gen_identity.DartHandleRegistrationJoinMode.handleRecoveryRebind =>
+            HandleRegistrationJoinMode.handleRecoveryRebind,
+        },
+        requiresUserPresence: requiresUserPresence,
+        expectedDid: expectedDid,
+        fullHandle: fullHandle,
+      );
 }
 
 extension on AuthScope {

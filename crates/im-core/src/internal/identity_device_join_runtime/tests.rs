@@ -723,7 +723,7 @@ fn response_notification_only_advances_a_waiting_admin_session() {
 }
 
 #[tokio::test]
-async fn joined_transition_marker_is_durable_before_remote_join_create() {
+async fn registration_recovery_join_marker_is_durable_before_remote_join_create() {
     let directory = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(directory.path());
     let sqlite_path = core.inner().sdk_paths().local_state.sqlite_path.clone();
