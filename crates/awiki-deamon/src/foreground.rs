@@ -3033,6 +3033,14 @@ fn emit_external_direct_invocation_rejection(
             "active_mode": active_mode,
         }),
     )?;
+    // A sender without an active Handle is not an addressable requester. In
+    // particular, this is how a retired controller DID appears after Handle
+    // Recovery. Treat the denied input as terminal instead of repeatedly
+    // trying to send status/feedback to a principal that can no longer receive
+    // it; ordinary policy denials for active requesters still get feedback.
+    if reason == "sender_handle_not_found" {
+        return Ok(());
+    }
     let task_id = format!(
         "task_{}",
         external_direct_task_message_id(source_message_id, target_agent_did)

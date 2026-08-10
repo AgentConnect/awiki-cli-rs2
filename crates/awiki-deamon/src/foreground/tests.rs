@@ -2422,6 +2422,45 @@ fn denied_external_direct_invocation_emits_feedback_and_failed_status_without_ru
 }
 
 #[test]
+fn controller_rebind_retired_sender_is_terminal_without_unroutable_feedback() {
+    let (root, _config, state) = fixture();
+    register_runtime_family(root.path(), &state);
+    let (status_sender, calls) = recording_status_sender("daemon-status");
+    let message_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime-message",
+        Arc::clone(&calls),
+    ));
+
+    emit_external_direct_invocation_rejection(
+        &state,
+        &message_sender,
+        &status_sender,
+        "did:agent:hermes",
+        "did:agent:daemon",
+        "controller-scope:v1:test-alice-anpclaw-com",
+        "msg_retired_controller",
+        Some("direct:did:human:alice-old"),
+        "did:human:alice-old",
+        None,
+        "sender_handle_not_found",
+        "blacklist",
+    )
+    .unwrap();
+
+    assert!(calls
+        .lock()
+        .expect("recorded calls lock poisoned")
+        .is_empty());
+    assert!(state
+        .audit_event_exists(
+            "daemon.direct_invocation.rejected",
+            Some("did:agent:hermes"),
+            Some("sender_handle_not_found"),
+        )
+        .unwrap());
+}
+
+#[test]
 fn runtime_group_inbox_skips_agent_senders_to_prevent_agent_loops() {
     let mut message = group_mention_message("did:group:team:11", "did:agent:hermes");
     message.sender = PeerRef::parse("did:wba:example.com:agent:other", "").unwrap();
