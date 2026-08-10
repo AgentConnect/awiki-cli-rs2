@@ -36,6 +36,11 @@ Expected result:
 
 If the `awiki-cli` command is unavailable, first check whether the global npm bin directory is in `PATH`, or consult the current environment documentation to fix the global npm installation.
 
+If the wrapper reports that its native binary is missing, use the exact package-local installer
+command printed by the wrapper, then run `awiki-cli version --format json` again. Do not guess a
+global npm prefix or substitute a different download URL. If the wrapper does not print one exact
+command, stop and ask the user instead of improvising.
+
 ---
 
 ## Step 2: Install Awiki Skills
@@ -109,6 +114,11 @@ npx skills add {{AWIKI_CLI_CHANNEL_BASE_URL}} --agent <your-agent-id> -y -g
 If you really want to install Awiki Skills for all supported Agents, you can remove the `--agent <your-agent-id>` parameter entirely.
 
 If `npx skills add` is unavailable, fix the local Node/npm environment first. The Awiki Skill content is served by the configured AWiki release endpoint and does not require GitHub or Gitee.
+
+Record the exact Skill directory reported by the installer. Updated Skill instructions are loaded
+only by a fresh Agent process or task. If the host catalog exposes more than one Skill whose
+frontmatter `name` is `awiki`, stop and ask the user to choose how to retire the stale copy; do not
+silently select one by directory name, merge the copies, or delete either copy automatically.
 
 ---
 

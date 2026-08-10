@@ -90,6 +90,20 @@ fn skill_token_onboarding_docs_require_closing_stdin_after_the_token_line() {
 }
 
 #[test]
+fn installation_skill_fails_closed_on_missing_binary_and_duplicate_skill_entries() {
+    let root = repo_root();
+    let text = fs::read_to_string(root.join("skills/references/00-installation.md"))
+        .expect("read installation guide");
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(normalized.contains("exact package-local installer"));
+    assert!(normalized.contains("Do not guess a global npm prefix"));
+    assert!(normalized.contains("more than one Skill whose"));
+    assert!(normalized.contains("do not silently select one by directory name"));
+    assert!(normalized.contains("fresh Agent process or task"));
+}
+
+#[test]
 fn skill_router_references_exist() {
     let root = repo_root();
     let skill = fs::read_to_string(root.join("skills/SKILL.md")).expect("read Skill entrypoint");

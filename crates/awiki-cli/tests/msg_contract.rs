@@ -82,6 +82,11 @@ fn msg_dry_run_plans_match_go_contracts() {
     assert_eq!(direct["data"]["plan"]["message_type"], "text");
     assert_eq!(direct["data"]["plan"]["runtime_mode"], "websocket");
     assert_eq!(direct["data"]["plan"]["transport"], "websocket");
+    assert_eq!(
+        direct["data"]["plan"]["transport_policy"],
+        "realtime_preferred"
+    );
+    assert_eq!(direct["data"]["plan"]["listener_required"], false);
     assert_eq!(direct["data"]["plan"]["local_writes"], json!(["messages"]));
     assert_eq!(
         direct["data"]["plan"]["target"],
@@ -165,6 +170,11 @@ fn msg_dry_run_plans_match_go_contracts() {
         "attachment_manifest"
     );
     assert_eq!(attachment_send["data"]["plan"]["transport"], "http");
+    assert_eq!(
+        attachment_send["data"]["plan"]["transport_policy"],
+        "http_only"
+    );
+    assert_eq!(attachment_send["data"]["plan"]["listener_required"], false);
     assert_eq!(
         attachment_send["data"]["plan"]["attachment"],
         json!({
@@ -296,6 +306,43 @@ fn msg_dry_run_plans_match_go_contracts() {
         mark_read["data"]["plan"]["message_ids"],
         json!(["msg-1", "msg-2"])
     );
+}
+
+#[test]
+fn msg_send_dry_run_preserves_explicit_delivery_identity() {
+    let workspace = TempDir::new().expect("workspace");
+    let envelope = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "skill-agent",
+            "msg",
+            "send",
+            "--to",
+            "did:example:bob",
+            "--text",
+            "terminal notification",
+            "--client-message-id",
+            "msg-notify-task-123-completed",
+            "--idempotency-key",
+            "notify-task-123-completed",
+        ],
+        workspace.path(),
+    ));
+
+    assert_eq!(
+        envelope["data"]["plan"]["client_message_id"],
+        "msg-notify-task-123-completed"
+    );
+    assert_eq!(
+        envelope["data"]["plan"]["idempotency_key"],
+        "notify-task-123-completed"
+    );
+    assert_eq!(
+        envelope["data"]["plan"]["transport_policy"],
+        "realtime_preferred"
+    );
+    assert_eq!(envelope["data"]["plan"]["listener_required"], false);
 }
 
 #[test]

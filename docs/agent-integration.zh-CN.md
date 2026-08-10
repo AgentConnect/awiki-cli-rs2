@@ -20,6 +20,9 @@ flowchart LR
 
 `Host Notification` 是唤醒 Host Agent 的入站 Runtime 集成。Coding Agent 终态通知方向相反：
 在用户明确授权后，通过明文 `msg send` 向 AWiki Me 发消息，不使用 host-notify、Daemon 或 E2EE。
+dry-run 会分别给出已配置的 Runtime mode 与实际 transport policy；这条出站发送不依赖 CLI
+listener。宿主能够提供稳定、不透明的任务键时，Notify reference 会在 dry-run 与真实发送之间
+固定 client-message 与 idempotency key。
 
 ## 2. 安装状态
 

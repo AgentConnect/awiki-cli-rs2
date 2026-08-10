@@ -25,3 +25,17 @@ test('does not enable the Hermes user service on other platforms', () => {
   assert.deepEqual(_internal.hermesServiceEnvironment('darwin', {}), {});
   assert.deepEqual(_internal.hermesServiceEnvironment('win32', {}), {});
 });
+
+test('prints an exact package-local binary installer command on POSIX', () => {
+  assert.equal(
+    _internal.installBinaryCommand('/tmp/Awiki CLI', 'darwin'),
+    "node '/tmp/Awiki CLI/scripts/install.js'",
+  );
+});
+
+test('quotes the package-local binary installer command on Windows', () => {
+  assert.equal(
+    _internal.installBinaryCommand('C:\\Awiki CLI', 'win32'),
+    'node "C:\\Awiki CLI\\scripts\\install.js"',
+  );
+});

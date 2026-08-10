@@ -62,7 +62,17 @@ fn notify_skill_keeps_authorization_and_product_boundaries() {
     assert!(notify.contains("data.plan.identity"));
     assert!(notify.contains("data.plan.target.did"));
     assert!(notify.contains("plain text may expose"));
-    assert!(notify.contains("No crash-safe idempotency"));
+    assert!(notify.contains("No durable send ledger"));
+    assert!(notify.contains("opaque-notification-key"));
+    assert!(notify.contains("--client-message-id"));
+    assert!(notify.contains("--idempotency-key"));
+    assert!(notify.contains("data.plan.client_message_id"));
+    assert!(notify.contains("data.plan.idempotency_key"));
+    assert!(notify.contains("data.plan.listener_required"));
+    assert!(notify.contains("data.plan.transport_policy"));
+    assert!(notify.contains("do not include a Handle, DID"));
+    assert!(notify.contains("do not prove deduplication"));
+    assert!(notify.contains("authorize an automatic retry"));
     assert!(notify.contains("data.delivery.accepted"));
     assert!(notify.contains("data.delivery.final_acceptance"));
     assert!(notify.contains("data.message.id"));
