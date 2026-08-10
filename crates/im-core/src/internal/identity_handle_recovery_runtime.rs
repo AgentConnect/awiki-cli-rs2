@@ -1166,7 +1166,13 @@ async fn advance_v4(
         store.save_v4_cas(&pending, revision)?;
     }
     if pending.phase == PendingRecoveryPhaseV4::LocalTransitionPending {
-        apply_local_transition_v4(core, &store, &mut pending).await?;
+        if let Err(error) = apply_local_transition_v4(core, &store, &mut pending).await {
+            let Some(code) = local_transition_retry_code(&error) else {
+                return Err(error);
+            };
+            persist_nonterminal_error_code_v4(core, &store, &mut pending, code.as_str())?;
+            return Err(recovery_error(code));
+        }
     }
     progress_v4(core, &pending)
 }
@@ -2585,6 +2591,18 @@ fn public_error_code(value: &str) -> Option<HandleRecoveryErrorCode> {
     ]
     .into_iter()
     .find(|code| code.as_str() == value)
+}
+
+fn local_transition_retry_code(error: &crate::ImError) -> Option<HandleRecoveryErrorCode> {
+    matches!(
+        error,
+        crate::ImError::TransportUnavailable { .. }
+            | crate::ImError::AuthRequired
+            | crate::ImError::SessionExpired
+            | crate::ImError::Service { .. }
+            | crate::ImError::Serialization { .. }
+    )
+    .then_some(HandleRecoveryErrorCode::LocalTransitionPending)
 }
 
 fn random_reference(prefix: &str) -> crate::ImResult<String> {
@@ -4062,6 +4080,49 @@ mod tests {
             authorized_join_transition_error_code(false, false, false),
             HandleRecoveryErrorCode::UnknownEpoch
         );
+    }
+
+    #[test]
+    fn post_commit_runtime_failures_require_exact_local_transition_resume() {
+        for error in [
+            crate::ImError::TransportUnavailable {
+                detail: "offline".to_owned(),
+            },
+            crate::ImError::AuthRequired,
+            crate::ImError::SessionExpired,
+            crate::ImError::Service {
+                status_code: Some(503),
+                code: Some("prekey_publish_unavailable".to_owned()),
+                message: "unavailable".to_owned(),
+                data: None,
+            },
+        ] {
+            assert_eq!(
+                local_transition_retry_code(&error),
+                Some(HandleRecoveryErrorCode::LocalTransitionPending),
+            );
+        }
+        assert_eq!(
+            local_transition_retry_code(&crate::ImError::PermissionDenied),
+            None,
+        );
+
+        let mut pending = v4_awaiting_factor_pending(
+            "recover-v4-local-transition-retry",
+            "owner-local-transition-retry",
+        );
+        freeze_and_commit_v4_pending(&mut pending);
+        pending.mark_local_transition_pending().unwrap();
+        pending
+            .record_retryable_error(
+                HandleRecoveryErrorCode::LocalTransitionPending
+                    .as_str()
+                    .to_owned(),
+            )
+            .unwrap();
+        pending.mark_applied().unwrap();
+        assert_eq!(pending.last_error_code, None);
+        assert_eq!(pending.retry_metadata.last_retryable_code, None);
     }
 
     #[test]

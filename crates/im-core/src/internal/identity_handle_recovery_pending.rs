@@ -526,6 +526,9 @@ impl PendingHandleRecoveryV4 {
         }
         self.local_transition_state = LocalTransitionStateV4::Applied;
         self.phase = PendingRecoveryPhaseV4::Applied;
+        self.last_error_code = None;
+        self.retry_metadata.last_retryable_code = None;
+        self.retry_metadata.next_retry_at = None;
         self.revision = self
             .revision
             .checked_add(1)

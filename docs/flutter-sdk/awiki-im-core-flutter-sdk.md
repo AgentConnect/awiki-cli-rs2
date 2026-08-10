@@ -338,6 +338,12 @@ Ratchet/MLS material and never creates P6 or `awaitingP6` state. Only exact Hand
 `transport-protected` groups are eligible; every missing, DID-only, E2EE, malformed, or
 conflicting profile fails closed.
 
+If the remote Commit has succeeded but fresh-JWT or P5 PreKey finalization cannot finish because
+of a retryable transport/auth/session/service/serialization failure, activate/resume throws the
+stable `localTransitionPending` failure while preserving the same durable operation. Flutter code
+must query and resume that exact operation; it must not translate the state into “not prepared” or
+start another Recovery. Once the operation becomes `applied`, Core clears its stale retry error.
+
 `legacyRegistryEpochAdoptionAuthority(selector)` is the narrow bridge for an App upgrading an
 already active legacy local device-registry epoch. It returns only the exact owner/account/DID/
 generation/device tuple and an opaque provenance ID. It returns `null` if any Handle Recovery

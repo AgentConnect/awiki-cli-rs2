@@ -753,6 +753,11 @@ PreKey，并只为 authoritative `required_security_profile=transport-protected`
 创建 P6/MLS 或 `awaiting_p6`。旧 Ratchet、PreKey/OPK、MLS 和 device-scoped checkpoint 被退役，
 业务历史仍保留。`identity_transition_pending` 在本地 epoch reset 前持久化，并按 initiator
 operation ID 或 joined-device Join session ID 绑定来源。
+远端 Commit 成功后，新身份 JWT 刷新或 P5 PreKey 发布遇到可续跑的 transport/auth/session/
+service/serialization 失败时，Core 持久化稳定 `local_transition_pending`，并要求 Host 对同一
+operation ID 调用 resume；不生成新恢复任务，也不回退远端 Commit。续跑收敛为 `applied`
+后会清理该 operation 上的旧可重试错误投影。权限、Vault、本地不变式或持久化破坏仍保持原错误并
+fail closed，不得被伪装成可重试连接故障。
 Recovery Commit 收到 HTTP 2xx 零字节响应时按传输结果不确定处理：activate 返回稳定
 `outcome_unknown`，pending phase 保持 `remote_outcome_unknown`；进程重开后的 resume 先用
 Vault 中持久化的 bootstrap key 对 `handle_recovery_result_get_v4` 签名。已提交结果继续本地

@@ -108,6 +108,13 @@ Only exact Handle-backed `transport-protected` groups are eligible. Missing, con
 DID-only, E2EE, or malformed profiles fail closed, and Recovery never enters P6/MLS or
 `awaiting_p6`.
 
+After the remote Commit, JWT refresh and P5 PreKey publication are still part of the same
+durable local transition. Retryable transport/auth/session/service/serialization failures are
+projected as `local_transition_pending`; the host must resume the exact operation rather than
+start a second Recovery. Successful application clears the stale retry projection. Permission,
+Vault, local invariant, and persistence failures retain their original closed error instead of
+being mislabeled as transient connectivity.
+
 The JSON-RPC transport treats an HTTP success with a zero-byte response body as
 `TransportUnavailable` with a fixed, body-free diagnostic. For a V4 Commit this is an ambiguous
 mutation outcome: Core keeps the operation in `remote_outcome_unknown`, returns the closed public
