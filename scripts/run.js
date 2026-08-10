@@ -12,6 +12,21 @@ function findBinary() {
   return path.join(binDir, exeName);
 }
 
+function quoteCommandArg(value, platform = process.platform) {
+  if (platform === 'win32') {
+    return `"${String(value).replaceAll('"', '""')}"`;
+  }
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function installBinaryCommand(
+  rootDir = path.resolve(__dirname, '..'),
+  platform = process.platform,
+) {
+  const pathApi = platform === 'win32' ? path.win32 : path;
+  return `node ${quoteCommandArg(pathApi.join(rootDir, 'scripts', 'install.js'), platform)}`;
+}
+
 function fileExists(p) {
   try {
     fs.accessSync(p, fs.constants.F_OK);
@@ -64,8 +79,8 @@ function run() {
   if (!fileExists(binPath)) {
     const version = getPackageVersion();
     console.error(`[awiki-cli] Binary not found at ${binPath}.`);
-    console.error('[awiki-cli] Please download it first, for example:');
-    console.error('  npm run install-binary');
+    console.error('[awiki-cli] Run the package installer explicitly:');
+    console.error(`  ${installBinaryCommand()}`);
     console.error('');
     console.error('If you installed this package globally, you may need to run the command with the same package manager (npm/pnpm/yarn).');
     console.error(`Current package version: ${version}`);
@@ -100,6 +115,8 @@ module.exports = {
   _internal: {
     findBinary,
     fileExists,
+    installBinaryCommand,
+    quoteCommandArg,
     releaseEnvironment,
     hermesServiceEnvironment,
   },

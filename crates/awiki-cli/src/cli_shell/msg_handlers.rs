@@ -20,6 +20,8 @@ struct MsgSendPlan<'a> {
     mime_type: &'a str,
     has_attachment: bool,
     secure: bool,
+    client_message_id: Option<&'a str>,
+    idempotency_key: Option<&'a str>,
 }
 
 struct MsgSendPlanBody<'a> {
@@ -75,6 +77,11 @@ impl App {
                     mime_type: "",
                     has_attachment: false,
                     secure,
+                    client_message_id: request
+                        .client_message_id
+                        .as_ref()
+                        .map(im_core::ids::MessageId::as_str),
+                    idempotency_key: request.delivery.idempotency_key.as_deref(),
                 },
                 request_warnings,
             );
@@ -136,6 +143,11 @@ impl App {
                     mime_type: "",
                     has_attachment: false,
                     secure,
+                    client_message_id: request
+                        .client_message_id
+                        .as_ref()
+                        .map(im_core::ids::MessageId::as_str),
+                    idempotency_key: request.delivery.idempotency_key.as_deref(),
                 },
                 request_warnings,
             );
@@ -193,6 +205,10 @@ impl App {
                     mime_type,
                     has_attachment: true,
                     secure,
+                    client_message_id: client_message_id
+                        .as_ref()
+                        .map(im_core::ids::MessageId::as_str),
+                    idempotency_key: request.delivery.idempotency_key.as_deref(),
                 },
                 request_warnings,
             );
@@ -252,6 +268,10 @@ impl App {
                     mime_type,
                     has_attachment: true,
                     secure,
+                    client_message_id: client_message_id
+                        .as_ref()
+                        .map(im_core::ids::MessageId::as_str),
+                    idempotency_key: request.delivery.idempotency_key.as_deref(),
                 },
                 request_warnings,
             );
@@ -328,6 +348,14 @@ impl App {
                 resolved.runtime_mode.clone()
             }),
         );
+        plan.insert(
+            "transport_policy".to_string(),
+            Value::String(message_transport_policy(
+                &resolved.runtime_mode,
+                input.has_attachment,
+            )),
+        );
+        plan.insert("listener_required".to_string(), Value::Bool(false));
         plan.insert("local_writes".to_string(), json!(["messages"]));
         plan.insert("secure".to_string(), Value::Bool(input.secure));
         plan.insert(
@@ -346,6 +374,18 @@ impl App {
         }
         if let Some(payload) = input.payload {
             plan.insert("payload".to_string(), payload.clone());
+        }
+        if let Some(client_message_id) = input.client_message_id {
+            plan.insert(
+                "client_message_id".to_string(),
+                Value::String(client_message_id.to_string()),
+            );
+        }
+        if let Some(idempotency_key) = input.idempotency_key {
+            plan.insert(
+                "idempotency_key".to_string(),
+                Value::String(idempotency_key.to_string()),
+            );
         }
 
         self.render_success(
@@ -1005,6 +1045,17 @@ impl App {
             summary,
             Vec::new(),
         )
+    }
+}
+
+fn message_transport_policy(runtime_mode: &str, has_attachment: bool) -> String {
+    if has_attachment {
+        return "http_only".to_string();
+    }
+    match runtime_mode.trim().to_ascii_lowercase().as_str() {
+        "websocket" => "realtime_preferred".to_string(),
+        "http" | "" => "http_only".to_string(),
+        _ => "auto".to_string(),
     }
 }
 

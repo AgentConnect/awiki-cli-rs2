@@ -21,6 +21,9 @@ flowchart LR
 `Host Notification` is an inbound Runtime integration that wakes the Host Agent. Coding Agent
 terminal notification is the opposite direction: an explicitly authorized outbound plain
 `msg send` reaches AWiki Me and does not use host-notify, Daemon, or E2EE.
+Its dry-run reports the configured Runtime mode separately from the effective transport policy;
+the CLI listener is not required for this outbound send. When the host has a stable opaque task
+key, the Notify reference pins explicit client-message and idempotency keys across dry-run and send.
 
 ## 2. Installation status
 
