@@ -311,6 +311,7 @@ pub(super) enum RealtimeDirtyReason {
     UnknownNotification,
     SessionEnded,
     ChannelPressure,
+    PeriodicReconcile,
 }
 
 impl RealtimeDirtyReason {
@@ -324,6 +325,7 @@ impl RealtimeDirtyReason {
             Self::UnknownNotification => "unknown_notification",
             Self::SessionEnded => "session_ended",
             Self::ChannelPressure => "channel_pressure",
+            Self::PeriodicReconcile => "periodic_reconcile",
         }
     }
 
@@ -334,6 +336,7 @@ impl RealtimeDirtyReason {
                 | Self::UnknownNotification
                 | Self::SessionEnded
                 | Self::ChannelPressure
+                | Self::PeriodicReconcile
         )
     }
 }
@@ -455,6 +458,34 @@ impl RuntimeRealtimeSyncCoordinator {
 
     pub(super) fn mark_channel_pressure(&mut self, source: &RealtimeSource) {
         self.mark_dirty(source, RealtimeDirtyReason::ChannelPressure, None, None);
+    }
+
+    pub(super) fn mark_periodic_reconcile(&mut self, agent_dids: impl IntoIterator<Item = String>) {
+        let now = Instant::now();
+        for agent_did in agent_dids {
+            if agent_did.trim().is_empty() || self.auth_revoked_generation.contains_key(&agent_did)
+            {
+                continue;
+            }
+            match self.dirty.entry(agent_did) {
+                std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                    let entry = occupied.get_mut();
+                    entry
+                        .reasons
+                        .insert(RealtimeDirtyReason::PeriodicReconcile.as_str());
+                    entry.degraded_poll = true;
+                }
+                std::collections::hash_map::Entry::Vacant(vacant) => {
+                    let mut entry = DirtyAgentSync::new(now, None);
+                    entry
+                        .reasons
+                        .insert(RealtimeDirtyReason::PeriodicReconcile.as_str());
+                    entry.degraded_poll = true;
+                    entry.due_at = now;
+                    vacant.insert(entry);
+                }
+            }
+        }
     }
 
     fn mark_dirty(
@@ -999,6 +1030,28 @@ mod tests {
     }
 
     #[test]
+    fn sync_coordinator_periodic_reconcile_is_immediate_deduplicated_fallback() {
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_periodic_reconcile([
+            "did:agent:b".to_string(),
+            "did:agent:a".to_string(),
+            "did:agent:a".to_string(),
+        ]);
+
+        let mut work = coordinator.take_due_work();
+        work.sort_by(|left, right| left.agent_did.cmp(&right.agent_did));
+        assert_eq!(work.len(), 2);
+        assert_eq!(work[0].agent_did, "did:agent:a");
+        assert_eq!(work[1].agent_did, "did:agent:b");
+        for item in work {
+            assert_eq!(item.source, None);
+            assert_eq!(item.reasons, vec!["periodic_reconcile"]);
+            assert!(item.degraded_poll);
+        }
+    }
+
+    #[test]
     fn sync_coordinator_keeps_original_due_for_repeated_same_reason() {
         let source = source("did:agent:a", 1);
         let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
@@ -1148,6 +1201,10 @@ mod tests {
             ),
             (RealtimeDirtyReason::SessionEnded, "foreground_reconcile"),
             (RealtimeDirtyReason::ChannelPressure, "foreground_reconcile"),
+            (
+                RealtimeDirtyReason::PeriodicReconcile,
+                "foreground_reconcile",
+            ),
         ];
         for (reason, expected) in cases {
             assert_eq!(
