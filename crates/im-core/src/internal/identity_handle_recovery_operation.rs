@@ -318,6 +318,59 @@ pub(crate) fn record_frozen_intent(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_frozen_owner_and_intent(
+    sqlite_path: &Path,
+    operation_id: &str,
+    expected_owner_identity_id: &str,
+    frozen_owner_identity_id: &str,
+    account_user_id: &str,
+    intent_hash: &str,
+    now: &str,
+) -> crate::ImResult<()> {
+    if expected_owner_identity_id.trim().is_empty()
+        || frozen_owner_identity_id.trim().is_empty()
+        || account_user_id.trim().is_empty()
+        || !valid_sha256_digest(intent_hash)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let changed = connection
+        .execute(
+            r#"UPDATE handle_recovery_operations_v4
+SET owner_identity_id=?3,account_user_id=?4,intent_hash=?5,updated_at=?6
+WHERE operation_id=?1
+  AND owner_identity_id=?2
+  AND lifecycle_class='pre_commit'
+  AND commit_attempted=0
+  AND (account_user_id IS NULL OR account_user_id=?4)
+  AND (intent_hash IS NULL OR intent_hash=?5)"#,
+            rusqlite::params![
+                operation_id,
+                expected_owner_identity_id,
+                frozen_owner_identity_id,
+                account_user_id,
+                intent_hash,
+                now,
+            ],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if changed == 1 {
+        return Ok(());
+    }
+    let stored = load(sqlite_path, operation_id)?.ok_or(crate::ImError::PermissionDenied)?;
+    if stored.owner_identity_id == frozen_owner_identity_id
+        && stored.account_user_id.as_deref() == Some(account_user_id)
+        && stored.intent_hash.as_deref() == Some(intent_hash)
+        && stored.lifecycle_class == RecoveryLifecycleClass::PreCommit
+        && !stored.commit_attempted
+    {
+        return Ok(());
+    }
+    Err(crate::ImError::PermissionDenied)
+}
+
 pub(crate) fn update_lifecycle(
     sqlite_path: &Path,
     operation_id: &str,
@@ -589,6 +642,40 @@ mod tests {
         let standard = "sha256:SlQnFpLKCK0OFEKnA2492wGZ8WsD_w35-l_wTccWbUA";
         assert!(valid_sha256_digest(standard));
         assert!(!valid_sha256_digest(&format!("sha256:{standard}")));
+    }
+
+    #[test]
+    fn recovery_owner_continuity_freezes_owner_only_before_commit_attempt() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        insert(&path, &record("op_owner_freeze_12345678", "fresh-owner")).unwrap();
+        let intent_hash = "sha256:SlQnFpLKCK0OFEKnA2492wGZ8WsD_w35-l_wTccWbUA";
+        record_frozen_owner_and_intent(
+            &path,
+            "op_owner_freeze_12345678",
+            "fresh-owner",
+            "stable-owner",
+            "account-alice",
+            intent_hash,
+            "2026-08-10T00:00:00Z",
+        )
+        .unwrap();
+        let frozen = load(&path, "op_owner_freeze_12345678").unwrap().unwrap();
+        assert_eq!(frozen.owner_identity_id, "stable-owner");
+        assert_eq!(frozen.account_user_id.as_deref(), Some("account-alice"));
+        assert_eq!(frozen.intent_hash.as_deref(), Some(intent_hash));
+
+        mark_commit_attempted(&path, "op_owner_freeze_12345678", "2026-08-10T00:01:00Z").unwrap();
+        assert!(record_frozen_owner_and_intent(
+            &path,
+            "op_owner_freeze_12345678",
+            "stable-owner",
+            "another-owner",
+            "account-alice",
+            intent_hash,
+            "2026-08-10T00:02:00Z",
+        )
+        .is_err());
     }
 
     #[test]

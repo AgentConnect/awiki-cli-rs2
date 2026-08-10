@@ -11,7 +11,7 @@ use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
 pub(crate) const V4_CONTRACT_VERSION: &str = "awiki.handle-recovery.v1.contract.4.20260807";
 pub(crate) const V4_CONTRACT_HASH: &str =
-    "173d53051fc690f35f958bff7f08a51fd8458c729230d33563a16e0db1db3b84";
+    "0b8c713448ab2b9ab54dd90fc6875da38e2a73f6b017c6d84e685f8f8c0c500a";
 const V4_SCHEMA_VERSION: u32 = 1;
 const V4_KEY_VERSION: u32 = 2;
 
@@ -339,6 +339,48 @@ impl PendingHandleRecoveryV4 {
             .revision
             .checked_add(1)
             .ok_or(crate::ImError::PermissionDenied)?;
+        self.validate()
+    }
+
+    /// Freezes the local stable owner selected from the authoritative
+    /// direct-previous transition. This is called only before `freeze_exchange`
+    /// builds the immutable remote intent.
+    pub(crate) fn freeze_local_owner(
+        &mut self,
+        candidate: &crate::internal::identity_local_owner_matcher::StableOwnerCandidate,
+        authoritative_previous_did: &str,
+    ) -> crate::ImResult<()> {
+        if self.factor_state != RecoveryFactorStateV4::AwaitingOtp
+            || self.intent.is_some()
+            || self.commit_attempted
+            || authoritative_previous_did.trim().is_empty()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.owner_identity_id = candidate.owner_identity_id.clone();
+        self.local_alias = candidate.local_alias.clone();
+        self.display_name = candidate.display_name.clone();
+        self.make_default = candidate.make_default;
+        self.local_previous_did = authoritative_previous_did.to_owned();
+        self.fresh_local_state = false;
+        self.validate()
+    }
+
+    pub(crate) fn freeze_fresh_local_owner(
+        &mut self,
+        authoritative_previous_did: &str,
+    ) -> crate::ImResult<()> {
+        if self.factor_state != RecoveryFactorStateV4::AwaitingOtp
+            || self.intent.is_some()
+            || self.commit_attempted
+            || authoritative_previous_did.trim().is_empty()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.owner_identity_id = self.generated.unique_id.clone();
+        self.local_alias = self.generated.unique_id.clone();
+        self.local_previous_did = authoritative_previous_did.to_owned();
+        self.fresh_local_state = true;
         self.validate()
     }
 
@@ -743,20 +785,20 @@ impl PendingHandleRecoveryStore {
                 && secret_ref.device_id == self.device_id
                 && secret_ref.kind == SecretKind::IdentityHandleRecoveryPending
                 && secret_ref.key_version == V4_KEY_VERSION
-                && secret_ref.identity_id.as_deref() == Some(owner_identity_id)
         }) {
             let plaintext = self.vault.open(&secret_ref)?;
             let pending: PendingHandleRecoveryV4 =
                 serde_json::from_slice(plaintext.expose_secret())
                     .map_err(|_| crate::ImError::PermissionDenied)?;
             pending.validate()?;
-            if pending.owner_identity_id != owner_identity_id
-                || secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
+            if secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
                 || secret_ref.did.as_deref() != Some(pending.generated.did.as_str())
             {
                 return Err(crate::ImError::PermissionDenied);
             }
-            matches.push((secret_ref, pending));
+            if pending.owner_identity_id == owner_identity_id {
+                matches.push((secret_ref, pending));
+            }
         }
         matches.sort_by(|left, right| left.1.operation_id.cmp(&right.1.operation_id));
         Ok(matches)
@@ -778,8 +820,7 @@ impl PendingHandleRecoveryStore {
                 serde_json::from_slice(plaintext.expose_secret())
                     .map_err(|_| crate::ImError::PermissionDenied)?;
             pending.validate()?;
-            if secret_ref.identity_id.as_deref() != Some(pending.owner_identity_id.as_str())
-                || secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
+            if secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
                 || secret_ref.did.as_deref() != Some(pending.generated.did.as_str())
             {
                 return Err(crate::ImError::PermissionDenied);
@@ -829,14 +870,26 @@ impl PendingHandleRecoveryStore {
         if pending.revision != expected_revision.saturating_add(1) {
             return Err(crate::ImError::PermissionDenied);
         }
-        let (_, current) = self
+        let (current_ref, current) = self
             .load_v4(&pending.operation_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
         if current.revision != expected_revision {
             return Err(crate::ImError::PermissionDenied);
         }
         self.vault.seal(SealSecretRequest {
-            metadata: self.v4_metadata(pending),
+            // SecretRef metadata is an immutable journal-placement anchor. A
+            // post-factor stable-owner freeze changes the encrypted pending
+            // payload, not its deterministic record path.
+            metadata: SecretMetadata {
+                workspace_id: current_ref.workspace_id,
+                device_id: current_ref.device_id,
+                identity_id: current_ref.identity_id,
+                did: current_ref.did,
+                kind: current_ref.kind,
+                key_id: current_ref.key_id,
+                key_version: current_ref.key_version,
+                policy: SecretAccessPolicy::no_prompt_local_secret(),
+            },
             plaintext: serialize_v4(pending)?,
         })
     }
@@ -959,7 +1012,7 @@ mod tests {
     fn contract_identity_is_frozen() {
         assert_eq!(
             super::V4_CONTRACT_HASH,
-            "173d53051fc690f35f958bff7f08a51fd8458c729230d33563a16e0db1db3b84"
+            "0b8c713448ab2b9ab54dd90fc6875da38e2a73f6b017c6d84e685f8f8c0c500a"
         );
     }
 
@@ -1034,6 +1087,63 @@ mod tests {
                 "2026-08-07T00:08:00Z".to_owned(),
             )
             .is_err());
+    }
+
+    #[test]
+    fn recovery_owner_continuity_freezes_exact_owner_before_intent() {
+        let mut pending = v4_pending();
+        let candidate = crate::internal::identity_local_owner_matcher::StableOwnerCandidate {
+            owner_identity_id: "stable-owner".to_owned(),
+            local_alias: "stable-alice".to_owned(),
+            display_name: "Stable Alice".to_owned(),
+            make_default: false,
+        };
+        pending
+            .freeze_local_owner(
+                &candidate,
+                "did:wba:example.invalid:user:alice:authoritative-previous",
+            )
+            .unwrap();
+        assert_eq!(pending.owner_identity_id, "stable-owner");
+        assert_eq!(pending.local_alias, "stable-alice");
+        assert_eq!(pending.display_name, "Stable Alice");
+        assert!(!pending.make_default);
+        assert!(!pending.fresh_local_state);
+        assert!(pending.intent.is_none());
+
+        pending
+            .freeze_exchange(
+                super::RecoveryAuthoritativeBindingV4 {
+                    account_user_id: "user-1".to_owned(),
+                    full_handle: "alice.example.invalid".to_owned(),
+                    current_did: "did:wba:example.invalid:user:alice:authoritative-previous"
+                        .to_owned(),
+                    binding_generation: "7".to_owned(),
+                },
+                "secret-grant".to_owned(),
+                "2026-08-07T00:05:00Z".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(
+            pending.intent.as_ref().unwrap().expected_previous_did,
+            pending.local_previous_did
+        );
+    }
+
+    #[test]
+    fn recovery_owner_continuity_conflict_uses_generated_fresh_owner() {
+        let mut pending = v4_pending();
+        let generated_owner = pending.generated.unique_id.clone();
+        pending
+            .freeze_fresh_local_owner("did:wba:example.invalid:user:alice:remote-current")
+            .unwrap();
+        assert_eq!(pending.owner_identity_id, generated_owner);
+        assert_eq!(pending.local_alias, generated_owner);
+        assert!(pending.fresh_local_state);
+        assert_eq!(
+            pending.local_previous_did,
+            "did:wba:example.invalid:user:alice:remote-current"
+        );
     }
 
     #[test]

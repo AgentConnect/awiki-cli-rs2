@@ -792,6 +792,39 @@ pub(crate) async fn prepare(
             }
         }
     }
+    let local_index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    if pending.factor_state
+        == crate::internal::identity_handle_recovery_pending::RecoveryFactorStateV4::AwaitingOtp
+    {
+        let expected_committed_generation =
+            crate::internal::identity_handle_recovery_pending::increment_canonical_generation(
+                &grant.current_binding.binding_generation,
+            )
+            .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalMigrationUnsupported))?;
+        let owner_match = crate::internal::identity_local_owner_matcher::match_stable_owner(
+            sqlite_path,
+            &local_index,
+            crate::internal::identity_local_owner_matcher::StableOwnerAuthority {
+                account_user_id: &grant.current_binding.account_user_id,
+                full_handle: &grant.current_binding.full_handle,
+                previous_did: &grant.current_binding.current_did,
+                binding_generation: &expected_committed_generation,
+            },
+            Some(&operation_id),
+        )?;
+        match owner_match {
+            crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(candidate) => {
+                pending.freeze_local_owner(&candidate, &grant.current_binding.current_did)?;
+            }
+            crate::internal::identity_local_owner_matcher::StableOwnerMatch::None
+            | crate::internal::identity_local_owner_matcher::StableOwnerMatch::Conflict => {
+                pending.freeze_fresh_local_owner(&grant.current_binding.current_did)?;
+            }
+        }
+    }
+
     let direct_local_transition = grant.current_binding.current_did == pending.local_previous_did;
     // The only V4.0 exception to a direct local transition is the explicitly
     // confirmed key-unavailable break-glass path. It creates a fresh local
@@ -826,10 +859,6 @@ pub(crate) async fn prepare(
     let local_migration_supported = if pending.fresh_local_state {
         true
     } else {
-        let local_index = crate::internal::identity_store::IdentityStore::new(
-            &core.inner().sdk_paths().identities,
-        )
-        .load_index()?;
         let local_entry = local_index
             .credentials
             .values()
@@ -860,6 +889,7 @@ pub(crate) async fn prepare(
     let recovery_grant = String::from_utf8(grant.recovery_grant.expose_secret().to_vec())
         .map_err(|_| crate::ImError::PermissionDenied)?;
     let expected_revision = pending.revision;
+    let previous_operation_owner = operation.owner_identity_id.clone();
     match pending.factor_state {
         crate::internal::identity_handle_recovery_pending::RecoveryFactorStateV4::AwaitingOtp => {
             pending.freeze_exchange(authoritative_binding, recovery_grant, grant.expires_at)?;
@@ -869,20 +899,34 @@ pub(crate) async fn prepare(
         }
     }
     store.save_v4_cas(&pending, expected_revision)?;
-    crate::internal::identity_handle_recovery_operation::record_frozen_intent(
-        sqlite_path,
-        &operation_id,
-        &pending
-            .authoritative_binding
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?
-            .account_user_id,
-        pending
-            .intent_hash
-            .as_deref()
-            .ok_or(crate::ImError::PermissionDenied)?,
-        &now_second_z()?,
-    )?;
+    let frozen_account_user_id = &pending
+        .authoritative_binding
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .account_user_id;
+    let frozen_intent_hash = pending
+        .intent_hash
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if pre_attempt {
+        crate::internal::identity_handle_recovery_operation::record_frozen_owner_and_intent(
+            sqlite_path,
+            &operation_id,
+            &previous_operation_owner,
+            &pending.owner_identity_id,
+            frozen_account_user_id,
+            frozen_intent_hash,
+            &now_second_z()?,
+        )?;
+    } else {
+        crate::internal::identity_handle_recovery_operation::record_frozen_intent(
+            sqlite_path,
+            &operation_id,
+            frozen_account_user_id,
+            frozen_intent_hash,
+            &now_second_z()?,
+        )?;
+    }
     progress_v4(core, &pending)
 }
 
@@ -1059,10 +1103,13 @@ async fn advance_v4(
     let operation =
         crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
             .ok_or_else(operation_not_found_error)?;
+    reconcile_frozen_intent_index(sqlite_path, &operation, &pending, &now_second_z()?)?;
+    let operation =
+        crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
+            .ok_or_else(operation_not_found_error)?;
     if pending.owner_identity_id != operation.owner_identity_id {
         return Err(crate::ImError::PermissionDenied);
     }
-    reconcile_frozen_intent_index(sqlite_path, &operation, &pending, &now_second_z()?)?;
     merge_commit_attempted_authorities(
         sqlite_path,
         &store,
@@ -1176,14 +1223,17 @@ fn reconcile_frozen_intent_index(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    if operation.account_user_id.as_deref() == Some(binding.account_user_id.as_str())
+    if operation.owner_identity_id == pending.owner_identity_id
+        && operation.account_user_id.as_deref() == Some(binding.account_user_id.as_str())
         && operation.intent_hash.as_deref() == Some(intent_hash)
     {
         return Ok(());
     }
-    crate::internal::identity_handle_recovery_operation::record_frozen_intent(
+    crate::internal::identity_handle_recovery_operation::record_frozen_owner_and_intent(
         sqlite_path,
         &operation.operation_id,
+        &operation.owner_identity_id,
+        &pending.owner_identity_id,
         &binding.account_user_id,
         intent_hash,
         now,
