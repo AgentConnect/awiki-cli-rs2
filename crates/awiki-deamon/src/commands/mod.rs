@@ -157,6 +157,18 @@ pub struct RuntimeAgentCreateRequest {
     pub client_request_id: Option<String>,
 }
 
+pub trait RuntimeAgentMessageReadiness {
+    fn ensure_message_ready(&self, outcome: &RuntimeAgentCreateOutcome) -> Result<()>;
+}
+
+struct AssumeRuntimeAgentMessageReady;
+
+impl RuntimeAgentMessageReadiness for AssumeRuntimeAgentMessageReady {
+    fn ensure_message_ready(&self, _outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::large_enum_variant,
@@ -315,6 +327,29 @@ where
     C: AgentRegistrationClient + AgentInventoryClient,
     O: AgentManagementOutbox + Clone + Send + 'static,
 {
+    handle_agent_payload_message_with_readiness(
+        config,
+        state,
+        registration_client,
+        outbox,
+        &AssumeRuntimeAgentMessageReady,
+        message,
+    )
+}
+
+pub fn handle_agent_payload_message_with_readiness<C, O, R>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration_client: &C,
+    outbox: &O,
+    readiness: &R,
+    message: IncomingAgentPayloadMessage,
+) -> Result<AgentCommandOutcome>
+where
+    C: AgentRegistrationClient + AgentInventoryClient,
+    O: AgentManagementOutbox + Clone + Send + 'static,
+    R: RuntimeAgentMessageReadiness,
+{
     validate_application_json_payload(&message)?;
     let daemon_agent = state
         .load_agent_definition(&message.target_agent_did)
@@ -379,6 +414,25 @@ where
                     return Err(error);
                 }
             };
+
+            if let Err(error) = readiness.ensure_message_ready(&outcome) {
+                send_command_status(
+                    outbox,
+                    &daemon_agent,
+                    &message,
+                    &payload.command_id,
+                    "failed",
+                    Some("runtime agent messaging is not ready".to_owned()),
+                    json!({
+                        "command": RUNTIME_AGENT_CREATE,
+                        "client_request_id": outcome.client_request_id,
+                        "agent_did": outcome.agent_did,
+                        "runtime_agent_did": outcome.agent_did,
+                        "phase": "message_readiness",
+                    }),
+                )?;
+                return Err(error).context("establish Runtime Agent message readiness");
+            }
 
             let should_send_final = payload
                 .reply_policy
@@ -741,6 +795,28 @@ pub fn create_runtime_agent_from_request<C>(
 where
     C: AgentRegistrationClient,
 {
+    create_runtime_agent_from_request_with_readiness(
+        config,
+        state,
+        registration_client,
+        daemon_agent,
+        &AssumeRuntimeAgentMessageReady,
+        request,
+    )
+}
+
+pub fn create_runtime_agent_from_request_with_readiness<C, R>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration_client: &C,
+    daemon_agent: &AgentDefinition,
+    readiness: &R,
+    request: RuntimeAgentCreateRequest,
+) -> Result<RuntimeAgentCreateOutcome>
+where
+    C: AgentRegistrationClient,
+    R: RuntimeAgentMessageReadiness,
+{
     let verified_sender = VerifiedControllerSender {
         controller_user_id: daemon_agent.controller_user_id.clone(),
         controller_full_handle: daemon_agent.controller_full_handle.clone(),
@@ -748,7 +824,7 @@ where
         controller_did: daemon_agent.controller_did.clone(),
         sender_did: daemon_agent.controller_did.clone(),
     };
-    create_runtime_agent(
+    let outcome = create_runtime_agent(
         config,
         state,
         registration_client,
@@ -775,7 +851,9 @@ where
             },
             reply_policy: None,
         },
-    )
+    )?;
+    readiness.ensure_message_ready(&outcome)?;
+    Ok(outcome)
 }
 
 fn create_runtime_agent<C>(

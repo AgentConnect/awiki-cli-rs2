@@ -20,7 +20,8 @@ use crate::plugins::generic_cli::{
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::reply_payload::{
-    group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
+    group_did_from_conversation_id, structured_direct_reply, structured_group_reply,
+    StructuredDirectReplyInput, StructuredGroupReplyInput,
 };
 use crate::runtime::{
     runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeInvocationAuthority,
@@ -314,11 +315,7 @@ where
     let task_conversation_id = task.conversation_id.clone();
     let task_controller_did = task.controller_did.clone();
     let task_reply_recipient_did = task.reply_recipient_did.clone();
-    let task_source_message_id = task
-        .task_id
-        .strip_prefix("task_")
-        .unwrap_or(&task.task_id)
-        .to_string();
+    let task_source_message_id = task.correlation().source_message_id;
     let recipient_policy = runtime_recipient_policy(
         state,
         profile,
@@ -1247,11 +1244,7 @@ fn maybe_enqueue_cli_route_message_reference(
     ) {
         return Ok(None);
     }
-    let source_message_id = task
-        .task_id
-        .strip_prefix("task_")
-        .unwrap_or(&task.task_id)
-        .to_string();
+    let source_message_id = task.correlation().source_message_id;
     let record =
         state.enqueue_cli_route_message_reference(CreateCliRouteMessageQueueReference {
             agent_did: profile.agent_did.clone(),
@@ -1562,42 +1555,45 @@ fn runtime_final_payload(
     state: &DaemonState,
     record: &RuntimeFinalOutboxRecord,
 ) -> Result<Option<serde_json::Value>> {
-    let Some(_) = record
-        .conversation_id
-        .as_deref()
-        .and_then(group_did_from_conversation_id)
-    else {
-        return Ok(None);
-    };
     let task = match state.load_runtime_task_for_run(&record.run_id) {
         Ok(task) => task,
         Err(_) => return Ok(None),
     };
-    let payload = match serde_json::from_str::<serde_json::Value>(&task.text) {
-        Ok(payload) => payload,
-        Err(_) => return Ok(None),
-    };
-    if payload.get("mention_context").is_none() {
-        return Ok(None);
+    let correlation = task.correlation();
+    let source_message_id = correlation.source_message_id.as_str();
+    let is_group = record
+        .conversation_id
+        .as_deref()
+        .and_then(group_did_from_conversation_id)
+        .is_some();
+    if is_group {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&task.text) {
+            if payload.get("mention_context").is_some() {
+                if let Some(sender_did) = payload
+                    .get("source_sender_did")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    if let Some(reply) = structured_group_reply(StructuredGroupReplyInput {
+                        run_id: &record.run_id,
+                        agent_did: &record.agent_did,
+                        requester_did: sender_did,
+                        requester_full_handle: payload
+                            .get("source_sender_full_handle")
+                            .and_then(serde_json::Value::as_str),
+                        source_message_id: Some(source_message_id),
+                        reply_text: &record.final_text,
+                    }) {
+                        return Ok(Some(reply.payload));
+                    }
+                }
+            }
+        }
     }
-    let Some(sender_did) = payload
-        .get("source_sender_did")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-    Ok(structured_group_reply(StructuredGroupReplyInput {
-        run_id: &record.run_id,
+    Ok(structured_direct_reply(StructuredDirectReplyInput {
         agent_did: &record.agent_did,
-        requester_did: sender_did,
-        requester_full_handle: payload
-            .get("source_sender_full_handle")
-            .and_then(serde_json::Value::as_str),
-        source_message_id: payload
-            .get("source_message_id")
-            .and_then(serde_json::Value::as_str),
+        source_message_id,
         reply_text: &record.final_text,
     })
     .map(|reply| reply.payload))
@@ -2562,6 +2558,15 @@ mod tests {
             "test",
         )
         .unwrap();
+        let payload = runtime_final_payload(&state, &pending)
+            .unwrap()
+            .expect("direct Runtime final must carry reply correlation");
+        assert_eq!(payload["text"], "must remain isolated");
+        assert_eq!(
+            payload["annotations"]["awiki_reply_to_message_id"],
+            "task-before-controller-change"
+        );
+        assert_eq!(payload["mentions"], serde_json::json!([]));
         state.upsert_runtime_final_outbox_pending(&pending).unwrap();
         crate::agent_status::record_controller_identity_changed(
             &state,

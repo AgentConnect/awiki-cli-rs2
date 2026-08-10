@@ -12,6 +12,8 @@ fn dart_error_unsupported_has_stable_code() {
 fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
     let mut core =
         im_core::identity::Profile::new(im_core::ids::Did::parse("did:example:alice").unwrap());
+    core.agent_kind = Some("skill".to_owned());
+    core.agent_capabilities = vec!["group_membership_v1".to_owned()];
     core.profile_version = Some("18446744073709551616".to_owned());
     core.version_id = Some("wns-profile-7".to_owned());
 
@@ -22,6 +24,8 @@ fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
         Some("18446744073709551616")
     );
     assert_eq!(mapped.version_id.as_deref(), Some("wns-profile-7"));
+    assert_eq!(mapped.agent_kind.as_deref(), Some("skill"));
+    assert_eq!(mapped.agent_capabilities, ["group_membership_v1"]);
 }
 
 #[test]

@@ -9643,8 +9643,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartUserProfile dco_decode_dart_user_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return DartUserProfile(
       subject: dco_decode_String(arr[0]),
       handle: dco_decode_opt_String(arr[1]),
@@ -9658,10 +9658,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       avatarUrl: dco_decode_opt_String(arr[9]),
       profileUri: dco_decode_opt_String(arr[10]),
       subjectType: dco_decode_opt_String(arr[11]),
-      updatedAt: dco_decode_opt_String(arr[12]),
-      profileVersion: dco_decode_opt_String(arr[13]),
-      versionId: dco_decode_opt_String(arr[14]),
-      ttl: dco_decode_opt_box_autoadd_u_64(arr[15]),
+      agentKind: dco_decode_opt_String(arr[12]),
+      agentCapabilities: dco_decode_list_String(arr[13]),
+      updatedAt: dco_decode_opt_String(arr[14]),
+      profileVersion: dco_decode_opt_String(arr[15]),
+      versionId: dco_decode_opt_String(arr[16]),
+      ttl: dco_decode_opt_box_autoadd_u_64(arr[17]),
     );
   }
 
@@ -14384,6 +14386,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_avatarUrl = sse_decode_opt_String(deserializer);
     var var_profileUri = sse_decode_opt_String(deserializer);
     var var_subjectType = sse_decode_opt_String(deserializer);
+    var var_agentKind = sse_decode_opt_String(deserializer);
+    var var_agentCapabilities = sse_decode_list_String(deserializer);
     var var_updatedAt = sse_decode_opt_String(deserializer);
     var var_profileVersion = sse_decode_opt_String(deserializer);
     var var_versionId = sse_decode_opt_String(deserializer);
@@ -14401,6 +14405,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       avatarUrl: var_avatarUrl,
       profileUri: var_profileUri,
       subjectType: var_subjectType,
+      agentKind: var_agentKind,
+      agentCapabilities: var_agentCapabilities,
       updatedAt: var_updatedAt,
       profileVersion: var_profileVersion,
       versionId: var_versionId,
@@ -18627,6 +18633,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.avatarUrl, serializer);
     sse_encode_opt_String(self.profileUri, serializer);
     sse_encode_opt_String(self.subjectType, serializer);
+    sse_encode_opt_String(self.agentKind, serializer);
+    sse_encode_list_String(self.agentCapabilities, serializer);
     sse_encode_opt_String(self.updatedAt, serializer);
     sse_encode_opt_String(self.profileVersion, serializer);
     sse_encode_opt_String(self.versionId, serializer);

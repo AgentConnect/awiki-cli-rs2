@@ -19,6 +19,11 @@ const GREETING_TEXT: &str = "AWiki Skill Agent 已完成注册，可以开始对
 const PENDING_SECRET_KEY_PREFIX: &str = "skill-onboarding-pending-v2-";
 const LEGACY_PENDING_SECRET_KEY_PREFIX: &str = "skill-onboarding-pending-v1-";
 const PUBLIC_ONBOARDING_REASON_MAX_LEN: usize = 96;
+const SKILL_GROUP_MEMBERSHIP_CAPABILITY: &str = "group_membership_v1";
+
+fn skill_exchange_capabilities() -> [&'static str; 1] {
+    [SKILL_GROUP_MEMBERSHIP_CAPABILITY]
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkillTokenMetadata {
@@ -263,6 +268,7 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
                     "handle": metadata.agent_handle.as_str(),
                     "did_document": pending.generated.did_document,
                     "allow_existing_agent_did": false,
+                    "capabilities": skill_exchange_capabilities(),
                 }),
             )
             .await?;
@@ -294,6 +300,7 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
                     "handle": metadata.agent_handle.as_str(),
                     "did_document": pending.did_document,
                     "allow_existing_agent_did": false,
+                    "capabilities": skill_exchange_capabilities(),
                 }),
             )
             .await?;

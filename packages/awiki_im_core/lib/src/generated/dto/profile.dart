@@ -58,6 +58,8 @@ class DartUserProfile {
   final String? avatarUrl;
   final String? profileUri;
   final String? subjectType;
+  final String? agentKind;
+  final List<String> agentCapabilities;
   final String? updatedAt;
   final String? profileVersion;
   final String? versionId;
@@ -76,6 +78,8 @@ class DartUserProfile {
     this.avatarUrl,
     this.profileUri,
     this.subjectType,
+    this.agentKind,
+    required this.agentCapabilities,
     this.updatedAt,
     this.profileVersion,
     this.versionId,
@@ -96,6 +100,8 @@ class DartUserProfile {
       avatarUrl.hashCode ^
       profileUri.hashCode ^
       subjectType.hashCode ^
+      agentKind.hashCode ^
+      agentCapabilities.hashCode ^
       updatedAt.hashCode ^
       profileVersion.hashCode ^
       versionId.hashCode ^
@@ -118,6 +124,8 @@ class DartUserProfile {
           avatarUrl == other.avatarUrl &&
           profileUri == other.profileUri &&
           subjectType == other.subjectType &&
+          agentKind == other.agentKind &&
+          agentCapabilities == other.agentCapabilities &&
           updatedAt == other.updatedAt &&
           profileVersion == other.profileVersion &&
           versionId == other.versionId &&

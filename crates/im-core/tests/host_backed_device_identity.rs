@@ -55,6 +55,26 @@ fn device_access_token_with_profile(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    device_access_token_with_times(
+        bootstrap,
+        account_id,
+        audiences,
+        auth_generation,
+        scopes,
+        now.saturating_sub(1),
+        now + 3600,
+    )
+}
+
+fn device_access_token_with_times(
+    bootstrap: &VNextAgentBootstrapMaterial,
+    account_id: &str,
+    audiences: &[&str],
+    auth_generation: u64,
+    scopes: &[&str],
+    issued_at: u64,
+    expires_at: u64,
+) -> String {
     let claims = json!({
         "iss": "user-service",
         "aud": audiences,
@@ -67,9 +87,9 @@ fn device_access_token_with_profile(
         "key_id": bootstrap.device_signing_key_id,
         "auth_generation": auth_generation,
         "scopes": scopes,
-        "iat": now,
-        "nbf": now,
-        "exp": now + 3600,
+        "iat": issued_at,
+        "nbf": issued_at,
+        "exp": expires_at,
         "jti": format!("agent-bootstrap-{}", bootstrap.protocol_device_id.as_str()),
     });
     format!(
@@ -173,6 +193,40 @@ async fn valid_host_backed_device_produces_exact_six_field_sync_binding() {
     );
     assert_eq!(binding.identity_generation, "1");
     assert_eq!(binding.device_auth_generation, "1");
+}
+
+#[test]
+fn expired_host_backed_token_preserves_identity_binding_and_requests_refresh() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path());
+    let bootstrap = core
+        .generate_vnext_agent_bootstrap(AgentIdentityKind::Runtime, "expired-runtime")
+        .unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut material = host_backed_material(&bootstrap, "agent-account-expired");
+    material.access_token = device_access_token_with_times(
+        &bootstrap,
+        "agent-account-expired",
+        &["awiki-user-service", "awiki-message-service"],
+        1,
+        &["device:manage", "device:read", "message:connect"],
+        now - 7200,
+        now - 3600,
+    );
+
+    let client = core
+        .client_with_device_identity_material(material)
+        .expect("an expired but exactly bound token must not invalidate the identity");
+    let status = client.auth().status().unwrap();
+    assert!(!status.has_session);
+    assert!(status.needs_refresh);
+    assert!(matches!(
+        client.auth().ensure_session(AuthScope::Messaging),
+        Err(ImError::SessionExpired)
+    ));
 }
 
 #[tokio::test]

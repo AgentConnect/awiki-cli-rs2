@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use crate::agent::AgentDefinition;
 use crate::app_bridge::action::{parse_app_capabilities_payload, APP_CAPABILITIES_SCHEMA};
 use crate::commands::{
-    create_runtime_agent_from_request, RuntimeAgentCreateOutcome, RuntimeAgentCreateRequest,
+    create_runtime_agent_from_request_with_readiness, RuntimeAgentCreateOutcome,
+    RuntimeAgentCreateRequest, RuntimeAgentMessageReadiness,
 };
 use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
 use crate::registration::AgentRegistrationClient;
@@ -91,6 +92,38 @@ pub fn ensure_app_personal_agent<C>(
 where
     C: AgentRegistrationClient,
 {
+    struct AssumeReady;
+    impl RuntimeAgentMessageReadiness for AssumeReady {
+        fn ensure_message_ready(&self, _outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
+            Ok(())
+        }
+    }
+    ensure_app_personal_agent_with_readiness(
+        config,
+        state,
+        registration_client,
+        daemon_agent,
+        identity,
+        desired_personal_agent,
+        capability_policy,
+        &AssumeReady,
+    )
+}
+
+pub fn ensure_app_personal_agent_with_readiness<C, R>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration_client: &C,
+    daemon_agent: &AgentDefinition,
+    identity: &UserDelegatedIdentityRecord,
+    desired_personal_agent: &Value,
+    capability_policy: &Value,
+    readiness: &R,
+) -> Result<EnsureAppPersonalAgentOutcome>
+where
+    C: AgentRegistrationClient,
+    R: RuntimeAgentMessageReadiness,
+{
     identity.validate()?;
     let desired = parse_desired_personal_agent(desired_personal_agent)?;
     let role = desired
@@ -174,11 +207,12 @@ where
         .context(
             "desired_personal_agent.runtime_registration_token is required for first create",
         )?;
-    let outcome = create_runtime_agent_from_request(
+    let outcome = create_runtime_agent_from_request_with_readiness(
         config,
         state,
         registration_client,
         daemon_agent,
+        readiness,
         RuntimeAgentCreateRequest {
             command_id: format!("cmd_{binding_id}"),
             handle: Some(default_handle(

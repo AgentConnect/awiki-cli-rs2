@@ -2179,7 +2179,7 @@ fn runtime_task_status_correlation_prefers_group_mention_source_metadata() {
 
 #[test]
 fn runtime_task_status_correlation_falls_back_to_task_message_id() {
-    let task = RuntimeTask {
+    let mut task = RuntimeTask {
         task_id: "task_msg_direct_1".to_string(),
         agent_did: "did:agent:hermes".to_string(),
         agent_handle: "alice-hermes".to_string(),
@@ -2200,6 +2200,12 @@ fn runtime_task_status_correlation_falls_back_to_task_message_id() {
         conversation_id: Some("direct:did:human:alice".to_string()),
         text: "direct prompt".to_string(),
     };
+
+    let (source_message_id, mention_id) = runtime_task_status_correlation(&task);
+
+    assert_eq!(source_message_id.as_deref(), Some("msg_direct_1"));
+    assert_eq!(mention_id, None);
+    task.text = r#"{"source_message_id":"spoofed"}"#.to_string();
 
     let (source_message_id, mention_id) = runtime_task_status_correlation(&task);
 

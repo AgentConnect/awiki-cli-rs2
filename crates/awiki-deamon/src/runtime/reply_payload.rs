@@ -17,6 +17,35 @@ pub struct StructuredGroupReplyInput<'a> {
     pub reply_text: &'a str,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StructuredDirectReplyInput<'a> {
+    pub agent_did: &'a str,
+    pub source_message_id: &'a str,
+    pub reply_text: &'a str,
+}
+
+pub fn structured_direct_reply(
+    input: StructuredDirectReplyInput<'_>,
+) -> Option<StructuredGroupReply> {
+    let agent_did = input.agent_did.trim();
+    let source_message_id = input.source_message_id.trim();
+    let reply_text = input.reply_text.trim();
+    if agent_did.is_empty() || source_message_id.is_empty() || reply_text.is_empty() {
+        return None;
+    }
+    Some(StructuredGroupReply {
+        text: reply_text.to_owned(),
+        payload: json!({
+            "text": reply_text,
+            "mentions": [],
+            "annotations": {
+                "awiki_reply_to_message_id": source_message_id,
+                "awiki_reply_from_agent_did": agent_did,
+            }
+        }),
+    })
+}
+
 pub fn structured_group_reply(
     input: StructuredGroupReplyInput<'_>,
 ) -> Option<StructuredGroupReply> {
@@ -189,6 +218,24 @@ mod tests {
         assert_eq!(
             reply.payload["mentions"][0]["target"]["did"],
             "did:human:bob"
+        );
+    }
+
+    #[test]
+    fn structured_direct_reply_preserves_text_and_exact_source_message() {
+        let reply = structured_direct_reply(StructuredDirectReplyInput {
+            agent_did: "did:agent:codex",
+            source_message_id: "msg_2",
+            reply_text: "still here",
+        })
+        .unwrap();
+
+        assert_eq!(reply.text, "still here");
+        assert_eq!(reply.payload["text"], "still here");
+        assert_eq!(reply.payload["mentions"], json!([]));
+        assert_eq!(
+            reply.payload["annotations"]["awiki_reply_to_message_id"],
+            "msg_2"
         );
     }
 }

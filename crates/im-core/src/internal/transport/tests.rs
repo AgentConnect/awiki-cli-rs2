@@ -3,6 +3,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOST_ACCOUNT_ID: &str = "agent-account-refresh";
@@ -352,6 +353,17 @@ fn host_backed_client(
     crate::identity::VNextAgentBootstrapMaterial,
     String,
 ) {
+    host_backed_client_inner(core, None)
+}
+
+fn host_backed_client_inner(
+    core: &crate::core::ImCore,
+    persistence: Option<Arc<dyn crate::identity::HostBackedAuthTokenPersistence>>,
+) -> (
+    crate::core::ImClient,
+    crate::identity::VNextAgentBootstrapMaterial,
+    String,
+) {
     let bootstrap = core
         .generate_vnext_agent_bootstrap(
             crate::identity::AgentIdentityKind::Daemon,
@@ -367,30 +379,47 @@ fn host_backed_client(
         &["device:manage", "device:read", "message:connect"],
         "host-bootstrap-token",
     );
-    let client = core
-        .client_with_device_identity_material(crate::identity::HostBackedDeviceIdentityMaterial {
-            identity_id: bootstrap.identity_id.clone(),
-            did: bootstrap.did.as_str().to_owned(),
-            handle: Some(format!("{}.awiki.test", bootstrap.handle_local_part)),
-            display_name: Some("Refresh daemon".to_owned()),
-            account_id: HOST_ACCOUNT_ID.to_owned(),
-            binding_generation: "1".to_owned(),
-            did_document: bootstrap.did_document.clone(),
-            protocol_device_id: bootstrap.protocol_device_id.clone(),
-            device_signing_key_id: bootstrap.device_signing_key_id.clone(),
-            device_signing_private_key_pem: bootstrap.device_signing_private_key_pem.clone(),
-            device_e2ee_key_id: bootstrap.device_e2ee_key_id.clone(),
-            device_e2ee_private_key_pem: bootstrap.device_e2ee_private_key_pem.clone(),
-            root_key_id: bootstrap.root_key_id.clone(),
-            root_private_key_pem: bootstrap.root_private_key_pem.clone(),
-            authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
-            role: crate::identity::IdentityDeviceRole::Admin,
-            management_ready: true,
-            auth_generation: "1".to_owned(),
-            access_token: initial_token.clone(),
-        })
-        .unwrap();
+    let material = crate::identity::HostBackedDeviceIdentityMaterial {
+        identity_id: bootstrap.identity_id.clone(),
+        did: bootstrap.did.as_str().to_owned(),
+        handle: Some(format!("{}.awiki.test", bootstrap.handle_local_part)),
+        display_name: Some("Refresh daemon".to_owned()),
+        account_id: HOST_ACCOUNT_ID.to_owned(),
+        binding_generation: "1".to_owned(),
+        did_document: bootstrap.did_document.clone(),
+        protocol_device_id: bootstrap.protocol_device_id.clone(),
+        device_signing_key_id: bootstrap.device_signing_key_id.clone(),
+        device_signing_private_key_pem: bootstrap.device_signing_private_key_pem.clone(),
+        device_e2ee_key_id: bootstrap.device_e2ee_key_id.clone(),
+        device_e2ee_private_key_pem: bootstrap.device_e2ee_private_key_pem.clone(),
+        root_key_id: bootstrap.root_key_id.clone(),
+        root_private_key_pem: bootstrap.root_private_key_pem.clone(),
+        authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
+        role: crate::identity::IdentityDeviceRole::Admin,
+        management_ready: true,
+        auth_generation: "1".to_owned(),
+        access_token: initial_token.clone(),
+    };
+    let client = match persistence {
+        Some(persistence) => {
+            core.client_with_device_identity_material_and_auth_persistence(material, persistence)
+        }
+        None => core.client_with_device_identity_material(material),
+    }
+    .unwrap();
     (client, bootstrap, initial_token)
+}
+
+#[derive(Clone, Default)]
+struct RecordingAuthTokenPersistence {
+    tokens: Arc<Mutex<Vec<String>>>,
+}
+
+impl crate::identity::HostBackedAuthTokenPersistence for RecordingAuthTokenPersistence {
+    fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
+        self.tokens.lock().unwrap().push(token.to_owned());
+        Ok(())
+    }
 }
 
 fn assert_transport_unavailable<T>(result: crate::ImResult<T>, expected: &str) {
@@ -689,7 +718,10 @@ async fn host_backed_401_refresh_accepts_and_persists_exact_device_access() {
     let address = listener.local_addr().unwrap();
     let root = tempfile::tempdir().unwrap();
     let core = host_backed_core(root.path(), &format!("http://{address}"));
-    let (client, bootstrap, initial_token) = host_backed_client(&core);
+    let persistence = RecordingAuthTokenPersistence::default();
+    let persisted_tokens = persistence.tokens.clone();
+    let (client, bootstrap, initial_token) =
+        host_backed_client_inner(&core, Some(Arc::new(persistence)));
     let refreshed_token = host_device_access_token(
         &bootstrap,
         HOST_ACCOUNT_ID,
@@ -753,6 +785,10 @@ async fn host_backed_401_refresh_accepts_and_persists_exact_device_access() {
     assert_eq!(
         transport.jwt_token.as_deref(),
         Some(refreshed_token.as_str())
+    );
+    assert_eq!(
+        persisted_tokens.lock().unwrap().as_slice(),
+        &[refreshed_token]
     );
 }
 

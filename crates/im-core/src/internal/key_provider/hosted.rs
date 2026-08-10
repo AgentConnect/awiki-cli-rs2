@@ -18,6 +18,8 @@ pub(crate) struct HostBackedDeviceKeyMaterialProvider {
     root_private_pem: String,
     e2ee_agreement_private_pem: String,
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
+    auth_token_persistence:
+        Option<std::sync::Arc<dyn crate::identity::HostBackedAuthTokenPersistence>>,
 }
 
 impl HostedKeyMaterialProvider {
@@ -55,6 +57,15 @@ impl HostBackedDeviceKeyMaterialProvider {
     pub(crate) fn new(
         material: &crate::identity::HostBackedDeviceIdentityMaterial,
     ) -> crate::ImResult<Self> {
+        Self::new_with_auth_token_persistence(material, None)
+    }
+
+    pub(crate) fn new_with_auth_token_persistence(
+        material: &crate::identity::HostBackedDeviceIdentityMaterial,
+        auth_token_persistence: Option<
+            std::sync::Arc<dyn crate::identity::HostBackedAuthTokenPersistence>,
+        >,
+    ) -> crate::ImResult<Self> {
         validate_host_backed_device_material(material)?;
         Ok(Self {
             did_document: material.did_document.clone(),
@@ -63,6 +74,7 @@ impl HostBackedDeviceKeyMaterialProvider {
             root_private_pem: material.root_private_key_pem.clone(),
             e2ee_agreement_private_pem: material.device_e2ee_private_key_pem.clone(),
             auth_state: Mutex::new(auth_state_from_token(Some(&material.access_token))?),
+            auth_token_persistence,
         })
     }
 }
@@ -207,6 +219,9 @@ impl super::KeyMaterialProvider for HostBackedDeviceKeyMaterialProvider {
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
         let next = auth_state_from_token(Some(token))?;
+        if let Some(persistence) = self.auth_token_persistence.as_ref() {
+            persistence.persist_auth_token(token)?;
+        }
         let mut guard = self
             .auth_state
             .lock()
@@ -285,7 +300,7 @@ fn validate_host_backed_device_material(
         &material.device_e2ee_private_key_pem,
         PrivateKeyRole::DeviceE2ee,
     )?;
-    crate::internal::access_token::validate_device_access_token(
+    crate::internal::access_token::validate_device_access_token_binding(
         &material.access_token,
         &crate::internal::access_token::ExpectedDeviceAccess {
             did: did.as_str(),
@@ -296,7 +311,8 @@ fn validate_host_backed_device_material(
             role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
             management_ready: true,
         },
-    )
+    )?;
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

@@ -4068,6 +4068,83 @@ fn fresh_device_identity_is_vault_only_and_does_not_write_legacy_identity_rows()
 }
 
 #[test]
+fn device_access_token_replacement_is_exact_atomic_and_vault_only() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [82_u8; 32]);
+    state.initialize().unwrap();
+    let identity = device_identity_fixture("e2-token", crate::agent::AgentKind::Runtime);
+    state.store_agent_device_identity(&identity).unwrap();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    let refs_before: (String, String, String, String) = connection
+        .query_row(
+            r#"
+SELECT root_private_key_ref_json, device_signing_private_key_ref_json,
+       device_e2ee_private_key_ref_json, access_token_ref_json
+FROM agent_device_identity WHERE agent_did = ?1
+"#,
+            [&identity.agent_did],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+
+    state
+        .replace_agent_device_access_token(
+            &identity.agent_did,
+            &identity.protocol_device_id,
+            &identity.device_signing_key_id,
+            identity.auth_generation,
+            "refreshed-device-access-secret",
+        )
+        .unwrap();
+
+    let loaded = state
+        .load_agent_device_identity(&identity.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.access_token, "refreshed-device-access-secret");
+    assert_eq!(loaded.root_private_key_pem, identity.root_private_key_pem);
+    let refs_after: (String, String, String, String) = connection
+        .query_row(
+            r#"
+SELECT root_private_key_ref_json, device_signing_private_key_ref_json,
+       device_e2ee_private_key_ref_json, access_token_ref_json
+FROM agent_device_identity WHERE agent_did = ?1
+"#,
+            [&identity.agent_did],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(refs_after.0, refs_before.0);
+    assert_eq!(refs_after.1, refs_before.1);
+    assert_eq!(refs_after.2, refs_before.2);
+    assert_ne!(refs_after.3, refs_before.3);
+    assert!(
+        !String::from_utf8_lossy(&std::fs::read(&config.daemon_db_path).unwrap())
+            .contains("refreshed-device-access-secret")
+    );
+
+    let error = state
+        .replace_agent_device_access_token(
+            &identity.agent_did,
+            "wrong-device",
+            &identity.device_signing_key_id,
+            identity.auth_generation,
+            "must-not-commit",
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("binding is stale"));
+    assert_eq!(
+        state
+            .load_agent_device_identity(&identity.agent_did)
+            .unwrap()
+            .unwrap()
+            .access_token,
+        "refreshed-device-access-secret"
+    );
+}
+
+#[test]
 fn promoted_registration_survives_definition_crash_window_then_scrubs_pending_secret() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

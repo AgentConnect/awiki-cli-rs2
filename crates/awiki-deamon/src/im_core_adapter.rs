@@ -9,6 +9,33 @@ use crate::state::{AgentDeviceIdentityRecord, DaemonState};
 use crate::DaemonConfig;
 
 #[derive(Clone)]
+struct DaemonAgentAuthTokenPersistence {
+    state: DaemonState,
+    agent_did: String,
+    protocol_device_id: String,
+    device_signing_key_id: String,
+    auth_generation: u64,
+}
+
+impl im_core::HostBackedAuthTokenPersistence for DaemonAgentAuthTokenPersistence {
+    fn persist_auth_token(&self, token: &str) -> im_core::ImResult<()> {
+        self.state
+            .replace_agent_device_access_token(
+                &self.agent_did,
+                &self.protocol_device_id,
+                &self.device_signing_key_id,
+                self.auth_generation,
+                token,
+            )
+            .map_err(|_| im_core::ImError::CredentialFileUnreadable {
+                path_kind: "daemon_agent_device_access_token".to_owned(),
+                detail: "validated Device Access token could not be committed to the daemon vault"
+                    .to_owned(),
+            })
+    }
+}
+
+#[derive(Clone)]
 pub struct ImCoreAdapter {
     core: ImCore,
 }
@@ -151,7 +178,17 @@ impl ImCoreAdapter {
                     "agent_identity_migration_required: exact device identity missing for {agent_did}"
                 )
             })?;
-        self.client_for_agent_device_identity(&identity)
+        let material = host_backed_device_identity_material(&identity)?;
+        let persistence = std::sync::Arc::new(DaemonAgentAuthTokenPersistence {
+            state: state.clone(),
+            agent_did: identity.agent_did.clone(),
+            protocol_device_id: identity.protocol_device_id.clone(),
+            device_signing_key_id: identity.device_signing_key_id.clone(),
+            auth_generation: identity.auth_generation,
+        });
+        Ok(self
+            .core
+            .client_with_device_identity_material_and_auth_persistence(material, persistence)?)
     }
 
     pub fn client_for_agent_device_identity(
@@ -165,41 +202,11 @@ impl ImCoreAdapter {
                 identity.identity_status
             );
         }
-        let protocol_device_id =
-            im_core::ids::ProtocolDeviceId::parse(&identity.protocol_device_id)?;
-        let authorization_status = match identity.authorization_status.as_str() {
-            "active" => im_core::IdentityDeviceAuthorizationStatus::Active,
-            "revoked" => im_core::IdentityDeviceAuthorizationStatus::Revoked,
-            other => anyhow::bail!("unsupported device authorization status: {other}"),
-        };
-        let role = match identity.role.as_str() {
-            "admin" => im_core::IdentityDeviceRole::Admin,
-            "member" => im_core::IdentityDeviceRole::Member,
-            other => anyhow::bail!("unsupported device role: {other}"),
-        };
-        Ok(self.core.client_with_device_identity_material(
-            im_core::HostBackedDeviceIdentityMaterial {
-                identity_id: identity.identity_id.clone(),
-                did: identity.agent_did.clone(),
-                handle: Some(identity.full_handle.clone()),
-                display_name: Some(identity.display_name.clone()),
-                account_id: identity.account_id.clone(),
-                binding_generation: identity.binding_generation.clone(),
-                did_document: identity.did_document.clone(),
-                protocol_device_id,
-                device_signing_key_id: identity.device_signing_key_id.clone(),
-                device_signing_private_key_pem: identity.device_signing_private_key_pem.clone(),
-                device_e2ee_key_id: identity.device_e2ee_key_id.clone(),
-                device_e2ee_private_key_pem: identity.device_e2ee_private_key_pem.clone(),
-                root_key_id: identity.root_key_id.clone(),
-                root_private_key_pem: identity.root_private_key_pem.clone(),
-                authorization_status,
-                role,
-                management_ready: identity.management_ready,
-                auth_generation: identity.auth_generation.to_string(),
-                access_token: identity.access_token.clone(),
-            },
-        )?)
+        Ok(self
+            .core
+            .client_with_device_identity_material(host_backed_device_identity_material(
+                identity,
+            )?)?)
     }
 
     pub fn client_for_delegated_signing_identity(
@@ -222,6 +229,43 @@ impl ImCoreAdapter {
                 auth_token: None,
             })?)
     }
+}
+
+fn host_backed_device_identity_material(
+    identity: &AgentDeviceIdentityRecord,
+) -> Result<im_core::HostBackedDeviceIdentityMaterial> {
+    let protocol_device_id = im_core::ids::ProtocolDeviceId::parse(&identity.protocol_device_id)?;
+    let authorization_status = match identity.authorization_status.as_str() {
+        "active" => im_core::IdentityDeviceAuthorizationStatus::Active,
+        "revoked" => im_core::IdentityDeviceAuthorizationStatus::Revoked,
+        other => anyhow::bail!("unsupported device authorization status: {other}"),
+    };
+    let role = match identity.role.as_str() {
+        "admin" => im_core::IdentityDeviceRole::Admin,
+        "member" => im_core::IdentityDeviceRole::Member,
+        other => anyhow::bail!("unsupported device role: {other}"),
+    };
+    Ok(im_core::HostBackedDeviceIdentityMaterial {
+        identity_id: identity.identity_id.clone(),
+        did: identity.agent_did.clone(),
+        handle: Some(identity.full_handle.clone()),
+        display_name: Some(identity.display_name.clone()),
+        account_id: identity.account_id.clone(),
+        binding_generation: identity.binding_generation.clone(),
+        did_document: identity.did_document.clone(),
+        protocol_device_id,
+        device_signing_key_id: identity.device_signing_key_id.clone(),
+        device_signing_private_key_pem: identity.device_signing_private_key_pem.clone(),
+        device_e2ee_key_id: identity.device_e2ee_key_id.clone(),
+        device_e2ee_private_key_pem: identity.device_e2ee_private_key_pem.clone(),
+        root_key_id: identity.root_key_id.clone(),
+        root_private_key_pem: identity.root_private_key_pem.clone(),
+        authorization_status,
+        role,
+        management_ready: identity.management_ready,
+        auth_generation: identity.auth_generation.to_string(),
+        access_token: identity.access_token.clone(),
+    })
 }
 
 pub fn hosted_identity_material(

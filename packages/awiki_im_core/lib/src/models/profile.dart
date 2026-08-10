@@ -12,6 +12,8 @@ class UserProfile {
     this.avatarUrl,
     this.profileUri,
     this.subjectType,
+    this.agentKind,
+    this.agentCapabilities = const [],
     this.updatedAt,
     this.profileVersion,
     this.versionId,
@@ -30,6 +32,8 @@ class UserProfile {
   final String? avatarUrl;
   final String? profileUri;
   final String? subjectType;
+  final String? agentKind;
+  final List<String> agentCapabilities;
   final String? updatedAt;
   final String? profileVersion;
   final String? versionId;

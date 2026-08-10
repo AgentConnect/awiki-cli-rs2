@@ -385,6 +385,26 @@ impl ImCore {
         &self,
         material: crate::identity::HostBackedDeviceIdentityMaterial,
     ) -> crate::ImResult<ImClient> {
+        self.client_with_device_identity_material_inner(material, None)
+    }
+
+    /// Creates an exact-device client whose validated replacement access tokens
+    /// are durably committed by the trusted host.
+    pub fn client_with_device_identity_material_and_auth_persistence(
+        &self,
+        material: crate::identity::HostBackedDeviceIdentityMaterial,
+        auth_token_persistence: std::sync::Arc<dyn crate::identity::HostBackedAuthTokenPersistence>,
+    ) -> crate::ImResult<ImClient> {
+        self.client_with_device_identity_material_inner(material, Some(auth_token_persistence))
+    }
+
+    fn client_with_device_identity_material_inner(
+        &self,
+        material: crate::identity::HostBackedDeviceIdentityMaterial,
+        auth_token_persistence: Option<
+            std::sync::Arc<dyn crate::identity::HostBackedAuthTokenPersistence>,
+        >,
+    ) -> crate::ImResult<ImClient> {
         let identity_id = crate::ids::IdentityId::parse(&material.identity_id)?;
         let did = crate::ids::Did::parse(&material.did)?;
         let expected_identity_id = did
@@ -417,7 +437,10 @@ impl ImCore {
         let device_e2ee_key_id = material.device_e2ee_key_id.clone();
         let display_name = material.display_name.clone();
         let key_provider = std::sync::Arc::new(
-            crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new(&material)?,
+            crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new_with_auth_token_persistence(
+                &material,
+                auth_token_persistence,
+            )?,
         );
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {

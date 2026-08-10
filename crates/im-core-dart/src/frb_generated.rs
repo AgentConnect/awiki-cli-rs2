@@ -12118,6 +12118,8 @@ impl SseDecode for crate::dto::profile::DartUserProfile {
         let mut var_avatarUrl = <Option<String>>::sse_decode(deserializer);
         let mut var_profileUri = <Option<String>>::sse_decode(deserializer);
         let mut var_subjectType = <Option<String>>::sse_decode(deserializer);
+        let mut var_agentKind = <Option<String>>::sse_decode(deserializer);
+        let mut var_agentCapabilities = <Vec<String>>::sse_decode(deserializer);
         let mut var_updatedAt = <Option<String>>::sse_decode(deserializer);
         let mut var_profileVersion = <Option<String>>::sse_decode(deserializer);
         let mut var_versionId = <Option<String>>::sse_decode(deserializer);
@@ -12135,6 +12137,8 @@ impl SseDecode for crate::dto::profile::DartUserProfile {
             avatar_url: var_avatarUrl,
             profile_uri: var_profileUri,
             subject_type: var_subjectType,
+            agent_kind: var_agentKind,
+            agent_capabilities: var_agentCapabilities,
             updated_at: var_updatedAt,
             profile_version: var_profileVersion,
             version_id: var_versionId,
@@ -18146,6 +18150,8 @@ impl flutter_rust_bridge::IntoDart for crate::dto::profile::DartUserProfile {
             self.avatar_url.into_into_dart().into_dart(),
             self.profile_uri.into_into_dart().into_dart(),
             self.subject_type.into_into_dart().into_dart(),
+            self.agent_kind.into_into_dart().into_dart(),
+            self.agent_capabilities.into_into_dart().into_dart(),
             self.updated_at.into_into_dart().into_dart(),
             self.profile_version.into_into_dart().into_dart(),
             self.version_id.into_into_dart().into_dart(),
@@ -21078,6 +21084,8 @@ impl SseEncode for crate::dto::profile::DartUserProfile {
         <Option<String>>::sse_encode(self.avatar_url, serializer);
         <Option<String>>::sse_encode(self.profile_uri, serializer);
         <Option<String>>::sse_encode(self.subject_type, serializer);
+        <Option<String>>::sse_encode(self.agent_kind, serializer);
+        <Vec<String>>::sse_encode(self.agent_capabilities, serializer);
         <Option<String>>::sse_encode(self.updated_at, serializer);
         <Option<String>>::sse_encode(self.profile_version, serializer);
         <Option<String>>::sse_encode(self.version_id, serializer);

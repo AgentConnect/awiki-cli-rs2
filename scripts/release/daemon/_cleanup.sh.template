@@ -13,8 +13,9 @@ Stops the AWiki daemon user service and permanently removes AWiki daemon data
 from this host:
   $HOME/.awiki-daemon/deamon
 
-This cleanup does not contact the daemon and does not require a healthy daemon
-installation.
+This is local host cleanup only. It does not contact AWiki services or remove
+the Daemon and its Agents from your AWiki account. After cleanup, open AWiki Me
+and remove the corresponding offline Daemon from your account.
 USAGE
 }
 
@@ -88,6 +89,9 @@ The following data will be deleted and cannot be recovered:
 
 This includes daemon identity, SQLite state, runtime profiles, logs, archives,
 downloaded daemon binaries, and service environment files.
+
+This only cleans up the current host. It will not remove the Daemon or its
+Agents from your AWiki account. You must finish the removal in AWiki Me.
 EOF
   if [ ! -r /dev/tty ]; then
     die "confirmation requires a terminal; rerun with --yes to clean up non-interactively"
@@ -163,7 +167,10 @@ remove_path "$PRODUCT_ROOT" "AWiki daemon product data"
 reload_linux_service_registration
 
 if [ "$DRY_RUN" = "1" ]; then
-  info "dry-run complete; no data was removed"
+  info "dry-run complete; no local data or AWiki account state was changed"
 else
   info "AWiki daemon host cleanup complete"
+  info ""
+  info "Only data on this host was removed. The Daemon and its Agents were not removed from your AWiki account."
+  info "Open AWiki Me, find the corresponding offline Daemon, and choose 'Remove from account' to finish."
 fi

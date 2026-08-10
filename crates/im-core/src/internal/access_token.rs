@@ -19,10 +19,26 @@ pub(crate) struct ExpectedDeviceAccess<'a> {
     pub(crate) management_ready: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeviceAccessTokenFreshness {
+    Fresh,
+    Expired,
+}
+
 pub(crate) fn validate_device_access_token(
     token: &str,
     expected: &ExpectedDeviceAccess<'_>,
 ) -> crate::ImResult<()> {
+    match validate_device_access_token_binding(token, expected)? {
+        DeviceAccessTokenFreshness::Fresh => Ok(()),
+        DeviceAccessTokenFreshness::Expired => Err(crate::ImError::SessionExpired),
+    }
+}
+
+pub(crate) fn validate_device_access_token_binding(
+    token: &str,
+    expected: &ExpectedDeviceAccess<'_>,
+) -> crate::ImResult<DeviceAccessTokenFreshness> {
     let claims = required_payload(token)?;
     require_string(&claims, "iss", EXPECTED_ISSUER)?;
     require_string(&claims, "type", "access")?;
@@ -44,9 +60,9 @@ pub(crate) fn validate_device_access_token(
         return Err(crate::ImError::PermissionDenied);
     }
     validate_audience(&claims)?;
-    validate_times(&claims)?;
+    let freshness = validate_times(&claims)?;
     validate_scopes(&claims, expected)?;
-    Ok(())
+    Ok(freshness)
 }
 
 pub(crate) fn validate_legacy_access_token(token: &str, did: &str) -> crate::ImResult<()> {
@@ -104,7 +120,7 @@ fn validate_audience(claims: &Value) -> crate::ImResult<()> {
     Ok(())
 }
 
-fn validate_times(claims: &Value) -> crate::ImResult<()> {
+fn validate_times(claims: &Value) -> crate::ImResult<DeviceAccessTokenFreshness> {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let iat = claims
         .get("iat")
@@ -126,12 +142,14 @@ fn validate_times(claims: &Value) -> crate::ImResult<()> {
         || nbf != iat
         || iat > now + CLOCK_SKEW_SECONDS
         || nbf > now + CLOCK_SKEW_SECONDS
-        || exp <= now - CLOCK_SKEW_SECONDS
         || exp <= iat
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    if exp <= now - CLOCK_SKEW_SECONDS {
+        return Ok(DeviceAccessTokenFreshness::Expired);
+    }
+    Ok(DeviceAccessTokenFreshness::Fresh)
 }
 
 fn validate_scopes(claims: &Value, expected: &ExpectedDeviceAccess<'_>) -> crate::ImResult<()> {
@@ -281,6 +299,30 @@ mod tests {
         assert_eq!(
             validate_device_access_token(&jwt(missing_message_service), &expected_admin(),),
             Err(crate::ImError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn expired_device_access_keeps_exact_binding_but_requires_refresh() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let mut claims = admin_claims();
+        let object = claims.as_object_mut().unwrap();
+        object.insert("iat".to_owned(), json!(now - 600));
+        object.insert("nbf".to_owned(), json!(now - 600));
+        object.insert("exp".to_owned(), json!(now - 60));
+        object.insert("jti".to_owned(), json!("expired-token"));
+        let token = format!(
+            "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        );
+
+        assert_eq!(
+            validate_device_access_token_binding(&token, &expected_admin()).unwrap(),
+            DeviceAccessTokenFreshness::Expired
+        );
+        assert_eq!(
+            validate_device_access_token(&token, &expected_admin()),
+            Err(crate::ImError::SessionExpired)
         );
     }
 

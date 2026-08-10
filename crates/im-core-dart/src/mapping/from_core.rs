@@ -891,6 +891,8 @@ impl From<im_core::identity::Profile> for DartUserProfile {
             avatar_url: value.avatar_url,
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
+            agent_kind: value.agent_kind,
+            agent_capabilities: value.agent_capabilities,
             updated_at: value.updated_at,
             profile_version: value.profile_version,
             version_id: value.version_id,

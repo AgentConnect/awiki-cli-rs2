@@ -442,6 +442,8 @@ The Dart `UserProfile` model uses these standard display fields:
 - `profileUri`
 - `description`
 - `subjectType`
+- `agentKind`
+- `agentCapabilities`
 - `versionId`
 - `ttl`
 
@@ -449,6 +451,10 @@ The Dart `UserProfile` model uses these standard display fields:
 `profileVersion`。它是账号 Profile 域的 canonical non-negative decimal string，允许
 `"0"` 并始终保留为 Dart `String?`。它与 WNS DID Subject Profile 展示元数据 `versionId`
 相互独立；旧响应只有 `versionId` 时 `profileVersion` 为 `null`。
+
+`agentKind` 与 `agentCapabilities` 来自 User Service 的结构化 Agent inventory 投影，用于
+共享类型标签和邀请前的友好禁用状态。App 不得根据 DID/Handle/昵称补造 capability，也不得
+把该公开字段当作最终授权；群邀请提交仍接受服务端 admission 的最终裁决。
 
 Legacy compatibility fields remain available:
 

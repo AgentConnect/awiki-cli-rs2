@@ -12,6 +12,8 @@ pub struct DartUserProfile {
     pub avatar_url: Option<String>,
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
+    pub agent_kind: Option<String>,
+    pub agent_capabilities: Vec<String>,
     pub updated_at: Option<String>,
     pub profile_version: Option<String>,
     pub version_id: Option<String>,

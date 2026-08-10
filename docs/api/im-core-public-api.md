@@ -187,6 +187,9 @@ workspace。相同 journal 可恢复同一 DID；其他非空或无法识别状�
 Handle、确定性 greeting message ID、phase/status 和稳定错误码，不含 Token、JWT 或
 私钥。问候尚未被 Message Service 接受时返回 `greeting_pending + retryable=true`，
 后续通过无 Token 的 `resume` 继续使用同一 DID 和 message ID，不重新注册。
+新建与 legacy-recovery 两条 Skill exchange 路径都会显式声明
+`capabilities=["group_membership_v1"]`；这只是 Agent 实现能力声明，User Service 的独立
+部署开关和最终 admission 仍决定能否加入群聊，Core 不在本地绕过服务端策略。
 
 `resume` 只接受严格匹配 service origin、Controller Handle、Agent Handle 的 schema-v2
 journal，并且只继续 `device_prekey_pending` 或 `controller_greeting_pending`。它先验证本地
@@ -382,6 +385,9 @@ pub struct ActiveSyncAccountBinding {
 // redact documents, private keys, tokens, and private packages from Debug.
 pub struct VNextAgentBootstrapMaterial { /* typed Agent/device/key material */ }
 pub struct HostBackedDeviceIdentityMaterial { /* exact account/device access */ }
+pub trait HostBackedAuthTokenPersistence: Send + Sync {
+    fn persist_auth_token(&self, token: &str) -> ImResult<()>;
+}
 
 impl ImCore {
     pub fn generate_vnext_agent_bootstrap(
@@ -401,6 +407,12 @@ impl ImCore {
     pub fn client_with_device_identity_material(
         &self,
         material: HostBackedDeviceIdentityMaterial,
+    ) -> ImResult<ImClient>;
+
+    pub fn client_with_device_identity_material_and_auth_persistence(
+        &self,
+        material: HostBackedDeviceIdentityMaterial,
+        persistence: Arc<dyn HostBackedAuthTokenPersistence>,
     ) -> ImResult<ImClient>;
 }
 
@@ -496,9 +508,18 @@ DID；函数保留 DID/root/Handle，不执行远端 `update_document`。
 立即构造。Core 会一起校验 canonical Manifest、唯一 matching device、key IDs 与
 private/public binding、Agent 自己的 account、canonical generations、active/admin/ready
 状态，以及 Device Access 的 DID/user/device/key/generation、精确 scopes、双 audience、
-purpose 和有效期。第一版 root 是 mandatory；rootless member 需要未来单独 API。
+purpose 和时间结构。绑定完全匹配但已过期的 Token 仍可构造 client，并通过 auth status
+暴露 `needs_refresh=true`；缺字段、主体或设备不匹配、错误 generation/audience/scope/role/
+readiness 仍然 fail closed。第一版 root 是 mandatory；rootless member 需要未来单独 API。
 校验成功后 Core 从正式 seed 派生 exact device 和六字段 binding；旧
 `HostedIdentityMaterial` 仍然没有 binding。
+
+原有 `client_with_device_identity_material` 保持兼容，只在当前 Core client 内更新刷新后的
+Token。需要跨进程重启继续使用刷新结果的受信 host 应选择
+`client_with_device_identity_material_and_auth_persistence`：Core 先对新 Token 做完整 exact
+binding 校验，再调用 host persistence；回调必须原子替换同一 DID/device/key/generation 的
+SecretVault Token，不得记录 Token，也不得顺带改写密钥、身份或同步状态。host 持久化失败时
+本次刷新失败，Core 不把仅存在内存中的 Token 表述为已提交。
 
 这里的本地 Device Access 校验只解码并核对 claims/时效，不验证 JWT 签名；该 API
 因此只允许受信同进程 host 使用。Token 的密码学权威性来自 User/Message Service
@@ -1212,12 +1233,18 @@ pub struct Profile {
     pub avatar_url: Option<String>,   // legacy compatibility
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
+    pub agent_kind: Option<String>,
+    pub agent_capabilities: Vec<String>,
     pub updated_at: Option<String>,
     pub profile_version: Option<String>,
     pub version_id: Option<String>,
     pub ttl: Option<u64>,
 }
 ```
+
+`agent_kind` 与 `agent_capabilities` 是 User Service inventory 的公开安全投影，供客户端
+做类型展示和交互预判；能力数组只保留前 16 个去重非空字符串。它们不是授权证据，群成员
+准入必须以 Message/User Service 的最终结果为准，也不得从 DID、Handle 或展示文案补造能力。
 
 `profile_version` 是 User Service 账号 Profile 域提交后的 canonical non-negative decimal
 string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私有 Profile RPC 返回该版本时存在。
@@ -1264,6 +1291,13 @@ client.messages().send(SendMessageRequest {
 ```
 
 SDK 内部必须把该 body 发送为 `meta.content_type = "application/json"` 和 `body.payload`。`im-core` 不解释 payload 内部的 command/status/result 语义，也不新增 daemon 业务专用 content type。
+
+Daemon 的 `runtime.agent.create` 成功语义包含消息就绪门禁：新 Runtime Agent 必须先用其
+exact-device client 完成一次 Sync V2 bootstrap/delta 提交并持久化 reconcile completion，
+之后才能发送既有 `ready` command status 和欢迎消息。门禁失败沿用既有 status schema，
+额外返回 `phase="message_readiness"`；相同 `client_request_id` 的重试复用已创建 Agent，
+不得再次 exchange，也不得回填创建前历史。这样旧客户端仍消费原有 ready/failed 结构，
+而 ready 之后发送的第一条消息具有稳定的 tail-only 接收基线。
 
 完整 group service 在 P3 下沉：
 

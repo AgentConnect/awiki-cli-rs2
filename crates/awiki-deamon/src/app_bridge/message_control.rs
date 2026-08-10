@@ -12,7 +12,10 @@ use crate::app_bridge::bootstrap::{
     parse_secure_bootstrap_payload, process_secure_bootstrap_envelope, BootstrapProcessOutcome,
     DefaultBootstrapDidDocumentResolver,
 };
-use crate::app_bridge::personal_agent::{ensure_app_personal_agent, EnsureAppPersonalAgentOutcome};
+use crate::app_bridge::personal_agent::{
+    ensure_app_personal_agent_with_readiness, EnsureAppPersonalAgentOutcome,
+};
+use crate::commands::{RuntimeAgentCreateOutcome, RuntimeAgentMessageReadiness};
 use crate::registration::AgentRegistrationClient;
 use crate::state::DaemonState;
 use crate::DaemonConfig;
@@ -63,6 +66,32 @@ pub fn handle_app_control_payload<C>(
 where
     C: AgentRegistrationClient,
 {
+    struct AssumeReady;
+    impl RuntimeAgentMessageReadiness for AssumeReady {
+        fn ensure_message_ready(&self, _outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
+            Ok(())
+        }
+    }
+    handle_app_control_payload_with_readiness(
+        config,
+        state,
+        registration_client,
+        &AssumeReady,
+        message,
+    )
+}
+
+pub fn handle_app_control_payload_with_readiness<C, R>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration_client: &C,
+    readiness: &R,
+    message: IncomingAppControlPayload,
+) -> Result<AppControlOutcome>
+where
+    C: AgentRegistrationClient,
+    R: RuntimeAgentMessageReadiness,
+{
     validate_application_json_payload(&message)?;
     let daemon_agent = state
         .load_agent_definition(&message.target_agent_did)
@@ -87,7 +116,7 @@ where
         let identity = state
             .load_user_delegated_identity(&secure_outcome.bootstrap.verification_method)?
             .context("load user delegated identity after bootstrap")?;
-        let personal_agent = ensure_app_personal_agent(
+        let personal_agent = ensure_app_personal_agent_with_readiness(
             config,
             state,
             registration_client,
@@ -95,6 +124,7 @@ where
             &identity,
             &secure_outcome.desired_personal_agent,
             &secure_outcome.capability_policy,
+            readiness,
         )?;
         return Ok(AppControlOutcome::BootstrapReceived {
             bootstrap: secure_outcome.bootstrap,

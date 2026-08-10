@@ -13,7 +13,7 @@ use im_core::ids::{MessageId, ThreadId};
 use im_core::messages::{
     parse_message_mention_payload, Message, MessageBodyView, MessageDeliveryOptions,
     MessageDirection, MessageMention, MessageMentionPayload, MessageMentionRole,
-    MessageMentionTarget, ThreadRef,
+    MessageMentionTarget, MessageSyncRequest, MessageSyncStatus, ThreadRef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -22,11 +22,12 @@ use tokio::task::JoinSet;
 
 use crate::agent_status::{HeartbeatScheduler, LATEST_STATUS_CHECK_MS};
 use crate::app_bridge::message_control::{
-    handle_app_control_payload, is_app_control_payload, IncomingAppControlPayload,
+    handle_app_control_payload_with_readiness, is_app_control_payload, IncomingAppControlPayload,
 };
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::commands::{
-    handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
+    handle_agent_payload_message_with_readiness, AgentCommandOutcome, IncomingAgentPayloadMessage,
+    RuntimeAgentCreateOutcome, RuntimeAgentMessageReadiness,
 };
 use crate::controller_scope::{
     daemon_auth_material, verify_daemon_controller_sender, VerifiedControllerSender,
@@ -106,6 +107,85 @@ const RUNTIME_INBOX_RECOVERY_PAGE_LIMIT: u32 = 100;
 const RUNTIME_INBOX_RECOVERY_ROUND_HARD_CAP: usize = 500;
 const FOREGROUND_CONTROL_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const AGENT_INVOCATION_DENIED_FEEDBACK: &str = "我现在不能响应这条请求：你没有权限控制这个智能体。";
+
+#[derive(Clone)]
+struct ImCoreRuntimeAgentMessageReadiness {
+    config: DaemonConfig,
+    state: DaemonState,
+    im_core: ImCoreAdapter,
+}
+
+impl ImCoreRuntimeAgentMessageReadiness {
+    fn new(config: &DaemonConfig, state: &DaemonState, im_core: &ImCoreAdapter) -> Self {
+        Self {
+            config: config.clone(),
+            state: state.clone(),
+            im_core: im_core.clone(),
+        }
+    }
+}
+
+impl RuntimeAgentMessageReadiness for ImCoreRuntimeAgentMessageReadiness {
+    fn ensure_message_ready(&self, outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
+        let client = self
+            .im_core
+            .client_for_agent(&self.config, &self.state, &outcome.agent_did)
+            .context("open exact Runtime Agent client for initial message sync")?;
+        let sync = block_on_runtime_agent_initial_sync(client)?;
+        if !matches!(
+            sync.status,
+            MessageSyncStatus::Idle | MessageSyncStatus::Changed
+        ) {
+            bail!(
+                "Runtime Agent initial message sync did not become ready: {:?}",
+                sync.status
+            );
+        }
+        self.state
+            .mark_sync_v2_reconcile_completed(&outcome.agent_did)?;
+        self.state.insert_audit_event_json(
+            "daemon.runtime_agent.message_ready",
+            Some(&outcome.agent_did),
+            Some(&outcome.runtime_profile_id),
+            None,
+            None,
+            json!({
+                "pages_fetched": sync.pages_fetched,
+                "events_applied": sync.events_applied,
+                "messages_hydrated": sync.messages_hydrated,
+                "committed_incoming_count": sync.committed_incoming_messages.len(),
+                "warnings": sanitize_warning_list(&sync.warnings),
+            }),
+        )?;
+        Ok(())
+    }
+}
+
+fn block_on_runtime_agent_initial_sync(
+    client: im_core::ImClient,
+) -> Result<im_core::messages::MessageSyncOutcome> {
+    let run = move || -> Result<im_core::messages::MessageSyncOutcome> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create Runtime Agent initial sync runtime")?;
+        Ok(
+            runtime.block_on(client.messages().sync_now_async(MessageSyncRequest {
+                reason: "runtime_agent_create_readiness".to_owned(),
+                limit: Some(100),
+            }))?,
+        )
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return thread::Builder::new()
+            .name("awiki-runtime-agent-initial-sync".to_owned())
+            .spawn(run)
+            .context("spawn Runtime Agent initial sync thread")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("Runtime Agent initial sync thread panicked"))?;
+    }
+    run()
+}
 
 struct RuntimeRouteCompletion {
     message_key: String,
@@ -444,6 +524,9 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     ).await?;
                 let delegated_processed =
                     process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
+                if newly_processed + delegated_processed > 0 {
+                    realtime_supervisor.reconcile_active_agents().await?;
+                }
                 processed_messages += newly_processed + delegated_processed;
                 if newly_processed + delegated_processed > 0 {
                     queue_notifier.notify_all();
@@ -462,6 +545,9 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     &mut recovery_page_tokens,
                 )
                 .await?;
+                if newly_processed > 0 {
+                    realtime_supervisor.reconcile_active_agents().await?;
+                }
                 processed_messages += newly_processed;
                 if newly_processed > 0 {
                     queue_notifier.notify_all();
@@ -1380,29 +1466,8 @@ fn runtime_processed_message_blocks_route(
 }
 
 fn runtime_task_status_correlation(task: &RuntimeTask) -> (Option<String>, Option<String>) {
-    let fallback_source_message_id = task
-        .task_id
-        .strip_prefix("task_")
-        .map(str::to_string)
-        .filter(|value| !value.trim().is_empty());
-    let Ok(payload) = serde_json::from_str::<Value>(&task.text) else {
-        return (fallback_source_message_id, None);
-    };
-    let source_message_id = payload
-        .get("source_message_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or(fallback_source_message_id);
-    let mention_id = payload
-        .get("mention_context")
-        .and_then(|context| context.get("mention_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    (source_message_id, mention_id)
+    let correlation = task.correlation();
+    (Some(correlation.source_message_id), correlation.mention_id)
 }
 
 fn record_runtime_inbox_poll_error(
@@ -2007,10 +2072,12 @@ async fn route_message(
                 payload: payload.clone(),
             };
             if is_app_control_payload(payload) {
-                handle_app_control_payload(
+                let readiness = ImCoreRuntimeAgentMessageReadiness::new(config, state, im_core);
+                handle_app_control_payload_with_readiness(
                     config,
                     state,
                     registration,
+                    &readiness,
                     IncomingAppControlPayload {
                         message_id: payload_message.message_id.clone(),
                         conversation_id: payload_message.conversation_id.clone(),
@@ -2077,11 +2144,13 @@ async fn route_message(
                 )?;
             } else {
                 let outbox = ImCoreAgentOutbox::new(target_client.clone());
-                let outcome = handle_agent_payload_message(
+                let readiness = ImCoreRuntimeAgentMessageReadiness::new(config, state, im_core);
+                let outcome = handle_agent_payload_message_with_readiness(
                     config,
                     state,
                     registration,
                     &outbox,
+                    &readiness,
                     payload_message,
                 )?;
                 sync_configured_agent_identities(config, state, im_core)?;

@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use awiki_deamon::agent::{workspace_id, AgentKind};
 use awiki_deamon::commands::{
-    handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
-    IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
+    handle_agent_payload_message, handle_agent_payload_message_with_readiness, setup_daemon_agent,
+    AgentCommandOutcome, IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
+    RuntimeAgentMessageReadiness,
 };
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
@@ -28,6 +29,30 @@ struct MockRegistrationClient {
     requests: Arc<Mutex<Vec<AgentRegistrationExchangeRequest>>>,
     archive_requests: Arc<Mutex<Vec<(String, String)>>>,
     fail_reason: Option<String>,
+}
+
+#[derive(Clone)]
+struct RecordingRuntimeReadiness {
+    calls: Arc<Mutex<Vec<String>>>,
+    outbox: MemoryRuntimeOutbox,
+    fail: bool,
+}
+
+impl RuntimeAgentMessageReadiness for RecordingRuntimeReadiness {
+    fn ensure_message_ready(&self, outcome: &RuntimeAgentCreateOutcome) -> anyhow::Result<()> {
+        assert!(
+            self.outbox
+                .agent_statuses()
+                .iter()
+                .all(|status| status.payload["state"] != "ready"),
+            "ready status must not be emitted before the message baseline"
+        );
+        self.calls.lock().unwrap().push(outcome.agent_did.clone());
+        if self.fail {
+            anyhow::bail!("initial message baseline unavailable");
+        }
+        Ok(())
+    }
 }
 
 impl MockRegistrationClient {
@@ -438,11 +463,17 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert_eq!(daemon.handle, "alice-mac-daemon");
 
     let outbox = MemoryRuntimeOutbox::default();
-    let outcome = handle_agent_payload_message(
+    let readiness = RecordingRuntimeReadiness {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        outbox: outbox.clone(),
+        fail: false,
+    };
+    let outcome = handle_agent_payload_message_with_readiness(
         &config,
         &state,
         &registration,
         &outbox,
+        &readiness,
         IncomingAgentPayloadMessage {
             message_id: "msg_002".to_string(),
             conversation_id: Some("conv_daemon_001".to_string()),
@@ -472,6 +503,10 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     .unwrap();
 
     let created = expect_created(outcome);
+    assert_eq!(
+        readiness.calls.lock().unwrap().as_slice(),
+        &[created.agent_did.clone()]
+    );
     assert_eq!(created.handle, "alice-awiki-coder");
     assert_eq!(created.runtime_plugin_id, "generic-cli");
     assert_eq!(created.driver_id.as_deref(), Some("claude-code"));
@@ -571,6 +606,89 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert!(audit_dump.contains("\"driver_id\":\"claude-code\""));
     assert!(audit_dump.contains("\"legacy_runtime_plugin_id\":\"runtime.cli.claude-code\""));
     assert!(!audit_dump.contains("tok_runtime_secret_value"));
+}
+
+#[test]
+fn runtime_create_reports_ready_only_after_retryable_message_readiness_succeeds() {
+    let (root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "readiness-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_readiness").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let message = || IncomingAgentPayloadMessage {
+        message_id: "msg_runtime_readiness".to_owned(),
+        conversation_id: Some("conv_runtime_readiness".to_owned()),
+        sender_did: "did:human:alice".to_owned(),
+        target_agent_did: daemon.agent_did.clone(),
+        content_type: "application/json".to_owned(),
+        payload: json!({
+            "schema": "awiki.agent.command.v1",
+            "command_id": "cmd_runtime_readiness",
+            "command": "runtime.agent.create",
+            "target_agent_kind": "runtime",
+            "args": {
+                "handle": "runtime-readiness",
+                "runtime": "claude-code",
+                "display_name": "Runtime Readiness",
+                "workspace": root.path().join("readiness-workspace").display().to_string(),
+                "controller_did": "did:human:alice",
+                "registration_token": "tok_runtime_readiness",
+                "client_request_id": "app_req_runtime_readiness"
+            }
+        }),
+    };
+    let failing = RecordingRuntimeReadiness {
+        calls: calls.clone(),
+        outbox: outbox.clone(),
+        fail: true,
+    };
+
+    let error = handle_agent_payload_message_with_readiness(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        &failing,
+        message(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("message readiness"));
+    let statuses = outbox.agent_statuses();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].payload["state"], "failed");
+    assert_eq!(statuses[0].payload["result"]["phase"], "message_readiness");
+
+    let succeeding = RecordingRuntimeReadiness {
+        calls: calls.clone(),
+        outbox: outbox.clone(),
+        fail: false,
+    };
+    let outcome = handle_agent_payload_message_with_readiness(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        &succeeding,
+        message(),
+    )
+    .unwrap();
+    let created = expect_created(outcome);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[created.agent_did.clone(), created.agent_did]
+    );
+    let statuses = outbox.agent_statuses();
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(statuses[1].payload["state"], "ready");
+    assert_eq!(registration.requests().len(), 2);
 }
 
 #[test]

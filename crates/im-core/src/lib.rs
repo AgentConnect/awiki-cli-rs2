@@ -46,11 +46,12 @@ pub use crate::error::{DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImErro
 pub use crate::groups::GroupService;
 pub use crate::identity::{
     ActiveSyncAccountBinding, AgentIdentityKind, DeleteLocalIdentityResult,
-    HostBackedDeviceIdentityMaterial, HostedIdentityMaterial, IdentityDeviceAuthorizationStatus,
-    IdentityDeviceRole, IdentitySecretStorageBackend, IdentitySelector, IdentitySummary,
-    IdentityVaultMigrationReport, IdentityVaultStatus, IdentityVaultVerificationReport,
-    LegacyRegistryEpochAdoptionAuthority, VNextAgentBootstrapMaterial,
-    VNextAgentLegacyUpgradeReconciliation, VNextAgentLegacyUpgradeSession,
+    HostBackedAuthTokenPersistence, HostBackedDeviceIdentityMaterial, HostedIdentityMaterial,
+    IdentityDeviceAuthorizationStatus, IdentityDeviceRole, IdentitySecretStorageBackend,
+    IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
+    IdentityVaultVerificationReport, LegacyRegistryEpochAdoptionAuthority,
+    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
+    VNextAgentLegacyUpgradeSession,
 };
 #[cfg(feature = "sqlite")]
 pub use crate::local_state_upgrade::{

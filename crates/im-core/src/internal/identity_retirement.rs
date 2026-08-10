@@ -238,9 +238,8 @@ fn identity_is_registered(
     core: &crate::core::ImCore,
     record: &IdentityRetirementRecord,
 ) -> crate::ImResult<bool> {
-    let store = crate::internal::identity_store::IdentityStore::new(
-        &core.inner().sdk_paths().identities,
-    );
+    let store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
     let index = store.load_index()?;
     Ok(index
         .credentials

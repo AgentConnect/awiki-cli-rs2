@@ -2749,6 +2749,8 @@ extension on gen_profile_dto.DartUserProfile {
     avatarUrl: avatarUrl,
     profileUri: profileUri,
     subjectType: subjectType,
+    agentKind: agentKind,
+    agentCapabilities: agentCapabilities,
     updatedAt: updatedAt,
     profileVersion: profileVersion,
     versionId: versionId,

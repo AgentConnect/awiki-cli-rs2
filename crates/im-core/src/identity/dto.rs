@@ -281,6 +281,13 @@ pub struct HostBackedDeviceIdentityMaterial {
     pub access_token: String,
 }
 
+/// Optional trusted-host persistence used after im-core has validated a newly
+/// issued exact-device access token. Implementations must commit atomically and
+/// must never log or expose the token.
+pub trait HostBackedAuthTokenPersistence: Send + Sync {
+    fn persist_auth_token(&self, token: &str) -> crate::ImResult<()>;
+}
+
 impl std::fmt::Debug for HostBackedDeviceIdentityMaterial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostBackedDeviceIdentityMaterial")
@@ -614,6 +621,9 @@ pub struct Profile {
     pub avatar_url: Option<String>,
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
+    pub agent_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_capabilities: Vec<String>,
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_version: Option<String>,
@@ -649,6 +659,8 @@ impl Profile {
             avatar_url: None,
             profile_uri: None,
             subject_type: None,
+            agent_kind: None,
+            agent_capabilities: Vec::new(),
             updated_at: None,
             profile_version: None,
             version_id: None,
@@ -732,6 +744,18 @@ impl Profile {
             value.insert(
                 "subject_type".to_string(),
                 serde_json::Value::String(subject_type.clone()),
+            );
+        }
+        if let Some(agent_kind) = self.agent_kind.as_ref() {
+            value.insert(
+                "agent_kind".to_string(),
+                serde_json::Value::String(agent_kind.clone()),
+            );
+        }
+        if !self.agent_capabilities.is_empty() {
+            value.insert(
+                "agent_capabilities".to_string(),
+                serde_json::json!(self.agent_capabilities),
             );
         }
         if let Some(updated_at) = self.updated_at.as_ref() {

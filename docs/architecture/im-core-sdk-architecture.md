@@ -349,12 +349,23 @@ binding as an App client. Generic `HostedIdentityMaterial` keeps its old
 Legacy semantics and never receives a sync account seed.
 
 The local Device Access validator decodes JWT claims and validates their exact
-binding, scopes, audiences, purpose and time window; it does not verify the JWT
-signature. This is safe only because the API is a trusted in-process host seam
-fed from the authenticated exchange result. User Service and Message Service
-signature verification plus Message Service live-Registry revalidation remain
-the credential authority and session-fencing boundary. Documentation and host
-UI must not describe local construction as cryptographic token verification.
+binding, scopes, audiences, purpose and time structure; it does not verify the
+JWT signature. A token whose binding is exact but whose expiry is in the past
+may construct the host-backed client with `needs_refresh`; every other binding
+or authorization mismatch still fails closed. This is safe only because the API
+is a trusted in-process host seam fed from the authenticated exchange result.
+User Service and Message Service signature verification plus Message Service
+live-Registry revalidation remain the credential authority and session-fencing
+boundary. Documentation and host UI must not describe local construction as
+cryptographic token verification.
+
+The original host-backed constructor remains source-compatible and keeps a
+replacement token only in that Core client. A host that owns durable SecretVault
+state may opt into `HostBackedAuthTokenPersistence`. Core validates every newly
+issued token against the same exact device binding before invoking the callback;
+the host atomically replaces only that DID/device/key/generation token. A
+persistence failure fails the refresh before Core publishes the token in memory,
+and no callback may rewrite identity keys, generations, or Sync V2 state.
 
 Independent Skill, Daemon, and Runtime Agent accounts share one Core builder.
 `generate_vnext_agent_bootstrap` fixes the DID path to
@@ -365,6 +376,12 @@ independent. Existing Legacy Agents use the narrow
 algorithm, proves the old root against the old document, requires the requested
 Agent-kind DID path and exact Handle service, and preserves the DID, root and
 Handle while adding the fresh device. Neither builder performs remote writes.
+
+Skill onboarding's new and explicit legacy-recovery exchange paths both declare
+`group_membership_v1` as an implementation capability. This declaration is stored by User Service
+in the Agent inventory and projected through Profile; it never becomes local authorization.
+User Service owns the independent rollout gate and final membership admission, while App/Core may
+only use the projection for fail-closed presentation.
 
 Both generations are canonical positive decimal strings and are never narrowed
 to a machine integer. The local binding reducer is monotonic: neither
@@ -522,6 +539,7 @@ Transport is explicit through configuration and capability checks:
 - `HttpOnly` keeps business operations on HTTP/RPC.
 - realtime runner requires a non-HTTP-only transport policy and returns a capability error when unavailable.
 - realtime session startup does not require a cached bearer token before spawning the runner. The auth layer first tries the cached token; when it is missing or receives `401`, it performs one fresh device-signed User Service request, stores the access token from the authentication response headers, and retries once. Bearer transport never renews itself, and no device refresh token is used.
+- Runtime Agent creation does not publish its existing `ready` command status or welcome message until the new exact-device client has committed its initial Sync V2 bootstrap/delta and the daemon has persisted reconcile completion. This establishes the tail-only boundary before the controller can send the first post-ready request. A retry with the same client request ID reuses the created Agent and retries only readiness; it never re-exchanges registration or backfills pre-baseline history.
 - group E2EE, secure direct, SQLite-backed state, and advanced provider traits are feature-gated where appropriate.
 
 ## 9. Security Rules
@@ -530,6 +548,7 @@ Transport is explicit through configuration and capability checks:
 - CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
 - Skill onboarding requests use a redacted, non-serializable Token type. Token HTTP requests reject redirects; journals contain only non-secret scope and recovery state. A non-empty or ambiguous workspace fails closed.
 - Skill exchange response parsing tolerates additive fields while required identity/account/device/token fields remain exact. v1 artifacts are deleted only after the v2 identity and journal commit; orphaned artifacts without an identifying journal are not broadly deleted.
+- Public Profile may expose bounded `agent_kind` and `agent_capabilities` presentation fields. They are not routing, authentication, E2EE, or group-admission evidence, and clients must not infer missing capabilities from identity strings or display metadata.
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
 - Whole-roster Group security decisions use a bounded, version-bound

@@ -919,6 +919,11 @@ fn document_digest_is_stable_across_object_key_order() {
 }
 
 #[test]
+fn every_skill_exchange_declares_the_current_group_membership_capability() {
+    assert_eq!(skill_exchange_capabilities(), ["group_membership_v1"]);
+}
+
+#[test]
 fn exchange_response_allows_benign_additive_fields() {
     let result = parse_exchange_result(
         &json!({

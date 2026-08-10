@@ -193,6 +193,11 @@ pub(crate) fn profile_from_value(
     let avatar_url = string_value(raw, &["avatar_url", "avatar", "avatar_uri"]);
     let profile_uri = string_value(raw, &["profile_uri", "profile_url"]);
     let subject_type = string_value(raw, &["subject_type"]);
+    let agent_kind = string_value(raw, &["agent_kind", "agentKind"]);
+    let agent_capabilities = string_list_value(
+        raw.get("agent_capabilities")
+            .or_else(|| raw.get("agentCapabilities")),
+    );
     let updated_at = string_value(raw, &["updated", "updated_at", "update_time", "updatedAt"]);
     let profile_version = profile_version_value(raw)?;
     let version_id = string_value(raw, &["versionId", "version_id"]);
@@ -212,6 +217,8 @@ pub(crate) fn profile_from_value(
         avatar_url,
         profile_uri,
         subject_type,
+        agent_kind,
+        agent_capabilities,
         updated_at,
         profile_version,
         version_id,
@@ -330,6 +337,28 @@ fn tags_value(value: Option<&Value>) -> Vec<String> {
     }
 }
 
+fn string_list_value(value: Option<&Value>) -> Vec<String> {
+    const MAX_VALUES: usize = 16;
+    let Some(Value::Array(values)) = value else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for value in values {
+        if result.len() == MAX_VALUES {
+            break;
+        }
+        let Value::String(value) = value else {
+            continue;
+        };
+        let normalized = value.trim();
+        if normalized.is_empty() || result.iter().any(|existing| existing == normalized) {
+            continue;
+        }
+        result.push(normalized.to_owned());
+    }
+    result
+}
+
 fn u64_value(value: Option<&Value>) -> Option<u64> {
     match value {
         Some(Value::Number(value)) => value.as_u64(),
@@ -348,6 +377,8 @@ fn profile_metadata(raw: &Value) -> Vec<crate::identity::ProfileAttribute> {
         "profile_url",
         "description",
         "subject_type",
+        "agent_kind",
+        "agent_capabilities",
         "discoverability",
         "updated",
         "versionId",
@@ -412,7 +443,7 @@ fn metadata_value(value: Option<&Value>) -> Vec<crate::identity::ProfileAttribut
 
 #[cfg(test)]
 mod tests {
-    use super::profile_version_value;
+    use super::{profile_version_value, string_list_value};
     use serde_json::json;
 
     #[test]
@@ -436,5 +467,23 @@ mod tests {
         );
         assert!(profile_version_value(&json!({ "profile_version": "01" })).is_err());
         assert!(profile_version_value(&json!({ "profile_version": 1 })).is_err());
+    }
+
+    #[test]
+    fn agent_capabilities_are_bounded_to_unique_non_empty_strings() {
+        assert_eq!(
+            string_list_value(Some(&json!([
+                "group_membership_v1",
+                " group_membership_v1 ",
+                "",
+                7
+            ]))),
+            vec!["group_membership_v1"]
+        );
+        assert!(string_list_value(Some(&json!("group_membership_v1"))).is_empty());
+        let many = (0..20)
+            .map(|index| json!(format!("future_capability_{index}")))
+            .collect::<Vec<_>>();
+        assert_eq!(string_list_value(Some(&json!(many))).len(), 16);
     }
 }

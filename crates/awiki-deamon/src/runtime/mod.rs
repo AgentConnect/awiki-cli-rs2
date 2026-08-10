@@ -61,6 +61,12 @@ pub struct RuntimeTask {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeTaskCorrelation {
+    pub source_message_id: String,
+    pub mention_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeConversationScope {
@@ -285,6 +291,44 @@ pub fn default_preferred_language() -> String {
 }
 
 impl RuntimeTask {
+    pub(crate) fn correlation(&self) -> RuntimeTaskCorrelation {
+        let fallback_source_message_id = self
+            .task_id
+            .strip_prefix("task_")
+            .unwrap_or(&self.task_id)
+            .to_string();
+        if self.trigger_kind == RuntimeTaskTriggerKind::ControllerDirect {
+            return RuntimeTaskCorrelation {
+                source_message_id: fallback_source_message_id,
+                mention_id: None,
+            };
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&self.text) else {
+            return RuntimeTaskCorrelation {
+                source_message_id: fallback_source_message_id,
+                mention_id: None,
+            };
+        };
+        let source_message_id = payload
+            .get("source_message_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&fallback_source_message_id)
+            .to_string();
+        let mention_id = payload
+            .get("mention_context")
+            .and_then(|context| context.get("mention_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        RuntimeTaskCorrelation {
+            source_message_id,
+            mention_id,
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.task_id.trim().is_empty() {
             bail!("task_id must not be empty");

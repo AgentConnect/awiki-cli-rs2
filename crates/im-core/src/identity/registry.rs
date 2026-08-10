@@ -3380,11 +3380,7 @@ mod tests {
                 "device-e2ee-private"
             );
             assert_eq!(
-                runtime
-                    .key_provider
-                    .valid_auth_token()
-                    .unwrap()
-                    .as_deref(),
+                runtime.key_provider.valid_auth_token().unwrap().as_deref(),
                 Some("device-token")
             );
         }
@@ -3399,9 +3395,7 @@ mod tests {
         let record_paths = std::fs::read_dir(&retirements)
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.extension().and_then(|value| value.to_str()) == Some("json")
-            })
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
             .collect::<Vec<_>>();
         assert_eq!(record_paths.len(), 1);
         let record: serde_json::Value =

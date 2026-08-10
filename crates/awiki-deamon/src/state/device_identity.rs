@@ -706,6 +706,126 @@ WHERE registration_id = ?1 AND status != 'completed'
         self.finish_agent_device_secret_switch(refs, switch_result)
     }
 
+    pub fn replace_agent_device_access_token(
+        &self,
+        agent_did: &str,
+        expected_protocol_device_id: &str,
+        expected_device_signing_key_id: &str,
+        expected_auth_generation: u64,
+        access_token: &str,
+    ) -> Result<()> {
+        let access_token = access_token.trim();
+        if agent_did.trim().is_empty()
+            || expected_protocol_device_id.trim().is_empty()
+            || expected_device_signing_key_id.trim().is_empty()
+            || expected_auth_generation == 0
+            || access_token.is_empty()
+        {
+            bail!("exact Agent device access token replacement binding is incomplete");
+        }
+        let identity = self
+            .load_agent_device_identity(agent_did)?
+            .context("Agent device identity is missing during access token replacement")?;
+        if identity.identity_status != "active"
+            || identity.protocol_device_id != expected_protocol_device_id
+            || identity.device_signing_key_id != expected_device_signing_key_id
+            || identity.auth_generation != expected_auth_generation
+        {
+            bail!("Agent device access token replacement binding is stale");
+        }
+
+        let vault = self
+            .secret_vault()
+            .context("Agent device access token replacement requires daemon secret vault")?;
+        let mut sealed = Vec::new();
+        let replacement = seal_staged_device_secret(
+            vault,
+            &identity,
+            &random_agent_device_secret_stage_id(),
+            SecretKind::AuthJwt,
+            &format!("{}#device-access", identity.agent_did),
+            access_token,
+            &mut sealed,
+        )?;
+        let replacement_json = serde_json::to_string(&replacement)?;
+        let expected_auth_generation = i64::try_from(expected_auth_generation)
+            .context("auth_generation exceeds SQLite integer range")?;
+        let switch_result = (|| -> Result<SecretRef> {
+            let mut connection = self.connection()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current = transaction
+                .query_row(
+                    r#"
+SELECT protocol_device_id, device_signing_key_id, auth_generation,
+       identity_status, access_token_ref_json
+FROM agent_device_identity
+WHERE agent_did = ?1
+"#,
+                    [agent_did],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .context("Agent device identity disappeared during access token replacement")?;
+            if current.0 != expected_protocol_device_id
+                || current.1 != expected_device_signing_key_id
+                || current.2 != expected_auth_generation
+                || current.3 != "active"
+            {
+                bail!("Agent device access token replacement binding changed concurrently");
+            }
+            let old_ref: SecretRef = serde_json::from_str(&current.4)
+                .context("parse previous Agent Device Access token ref")?;
+            let updated = transaction.execute(
+                r#"
+UPDATE agent_device_identity
+SET access_token_ref_json = ?2,
+    updated_at_ms = ?3
+WHERE agent_did = ?1
+  AND protocol_device_id = ?4
+  AND device_signing_key_id = ?5
+  AND auth_generation = ?6
+  AND identity_status = 'active'
+"#,
+                rusqlite::params![
+                    agent_did,
+                    replacement_json,
+                    current_time_millis()?,
+                    expected_protocol_device_id,
+                    expected_device_signing_key_id,
+                    expected_auth_generation,
+                ],
+            )?;
+            if updated != 1 {
+                bail!("Agent device access token replacement lost its exact binding");
+            }
+            inject_agent_device_store_failure_before_commit()?;
+            transaction.commit()?;
+            Ok(old_ref)
+        })();
+
+        match switch_result {
+            Ok(old_ref) => {
+                if !skip_agent_device_post_commit_cleanup() {
+                    let _ = self.delete_device_secret_refs_if_unreferenced(&[old_ref]);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                delete_secret_refs_best_effort(vault, &sealed);
+                Err(error)
+            }
+        }
+    }
+
     pub fn promote_pending_agent_device_identity(
         &self,
         registration_id: &str,
