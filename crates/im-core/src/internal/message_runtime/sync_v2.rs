@@ -1826,8 +1826,11 @@ pub(crate) fn failure_outcome(
         crate::ImError::TransportUnavailable { .. } => {
             vec!["sync.retry.transport_unavailable".to_owned()]
         }
-        crate::ImError::LocalStateUnavailable { .. } => {
-            vec!["sync.retry.local_state_unavailable".to_owned()]
+        crate::ImError::LocalStateUnavailable { detail } => {
+            vec![
+                "sync.retry.local_state_unavailable".to_owned(),
+                local_state_retry_warning(detail).to_owned(),
+            ]
         }
         crate::ImError::Service { .. }
             if status == crate::messages::MessageSyncStatus::RetryableFailure =>
@@ -1842,6 +1845,28 @@ pub(crate) fn failure_outcome(
         warnings,
         ..empty_outcome()
     })
+}
+
+fn local_state_retry_warning(detail: &str) -> &'static str {
+    let detail = detail.to_ascii_lowercase();
+    if detail.contains("actor is closed") {
+        "sync.retry.local_state.actor_closed"
+    } else if detail.contains("database is locked") || detail.contains("database is busy") {
+        "sync.retry.local_state.database_busy"
+    } else if detail.contains("constraint failed") {
+        "sync.retry.local_state.constraint_failed"
+    } else if detail.contains("no such table") || detail.contains("no such column") {
+        "sync.retry.local_state.schema_unavailable"
+    } else if detail.contains("unable to open database")
+        || detail.contains("disk i/o error")
+        || detail.contains("readonly database")
+    {
+        "sync.retry.local_state.storage_unavailable"
+    } else if detail.contains("failed to encode") || detail.contains("failed to decode") {
+        "sync.retry.local_state.codec_unavailable"
+    } else {
+        "sync.retry.local_state.other"
+    }
 }
 
 fn error_code(error: &crate::ImError) -> Option<&str> {
@@ -1985,21 +2010,10 @@ mod tests {
 
     #[test]
     fn failure_outcome_classifies_redacted_retryable_sources() {
-        let cases = [
-            (
-                crate::ImError::TransportUnavailable {
-                    detail: "sensitive transport detail".to_owned(),
-                },
-                "sync.retry.transport_unavailable",
-            ),
-            (
-                crate::ImError::LocalStateUnavailable {
-                    detail: "sensitive local detail".to_owned(),
-                },
-                "sync.retry.local_state_unavailable",
-            ),
-        ];
-        for (error, expected_warning) in cases {
+        let cases = [crate::ImError::TransportUnavailable {
+            detail: "sensitive transport detail".to_owned(),
+        }];
+        for error in cases {
             let outcome = failure_outcome(&error).expect("retryable error must be classified");
             assert_eq!(
                 outcome.status,
@@ -2009,8 +2023,29 @@ mod tests {
                 outcome.error_code.as_deref(),
                 Some("SYNC_RETRYABLE_FAILURE")
             );
-            assert_eq!(outcome.warnings, [expected_warning]);
+            assert_eq!(outcome.warnings, ["sync.retry.transport_unavailable"]);
             assert!(!outcome.warnings[0].contains("sensitive"));
+        }
+
+        for (detail, expected_warning) in [
+            (
+                "UNIQUE constraint failed: messages.owner_identity_id",
+                "sync.retry.local_state.constraint_failed",
+            ),
+            ("sensitive local detail", "sync.retry.local_state.other"),
+        ] {
+            let outcome = failure_outcome(&crate::ImError::LocalStateUnavailable {
+                detail: detail.to_owned(),
+            })
+            .expect("retryable local-state error must be classified");
+            assert_eq!(
+                outcome.warnings,
+                ["sync.retry.local_state_unavailable", expected_warning]
+            );
+            assert!(outcome
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains(detail)));
         }
     }
     use crate::internal::auth::session::SessionProvider;
