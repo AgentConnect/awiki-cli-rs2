@@ -1822,9 +1822,24 @@ pub(crate) fn failure_outcome(
         ),
         _ => return None,
     };
+    let warnings = match error {
+        crate::ImError::TransportUnavailable { .. } => {
+            vec!["sync.retry.transport_unavailable".to_owned()]
+        }
+        crate::ImError::LocalStateUnavailable { .. } => {
+            vec!["sync.retry.local_state_unavailable".to_owned()]
+        }
+        crate::ImError::Service { .. }
+            if status == crate::messages::MessageSyncStatus::RetryableFailure =>
+        {
+            vec!["sync.retry.service_unavailable".to_owned()]
+        }
+        _ => Vec::new(),
+    };
     Some(crate::messages::MessageSyncOutcome {
         status,
         error_code: Some(code),
+        warnings,
         ..empty_outcome()
     })
 }
@@ -1964,6 +1979,38 @@ mod tests {
                 crate::messages::MessageSyncStatus::RetryableFailure
             );
             assert_eq!(outcome.error_code.as_deref(), Some("INTERNAL_ERROR"));
+            assert_eq!(outcome.warnings, ["sync.retry.service_unavailable"]);
+        }
+    }
+
+    #[test]
+    fn failure_outcome_classifies_redacted_retryable_sources() {
+        let cases = [
+            (
+                crate::ImError::TransportUnavailable {
+                    detail: "sensitive transport detail".to_owned(),
+                },
+                "sync.retry.transport_unavailable",
+            ),
+            (
+                crate::ImError::LocalStateUnavailable {
+                    detail: "sensitive local detail".to_owned(),
+                },
+                "sync.retry.local_state_unavailable",
+            ),
+        ];
+        for (error, expected_warning) in cases {
+            let outcome = failure_outcome(&error).expect("retryable error must be classified");
+            assert_eq!(
+                outcome.status,
+                crate::messages::MessageSyncStatus::RetryableFailure
+            );
+            assert_eq!(
+                outcome.error_code.as_deref(),
+                Some("SYNC_RETRYABLE_FAILURE")
+            );
+            assert_eq!(outcome.warnings, [expected_warning]);
+            assert!(!outcome.warnings[0].contains("sensitive"));
         }
     }
     use crate::internal::auth::session::SessionProvider;
