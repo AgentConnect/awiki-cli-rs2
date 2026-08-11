@@ -106,6 +106,7 @@ const RUNTIME_INBOX_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 const RUNTIME_INBOX_RECOVERY_PAGE_LIMIT: u32 = 100;
 const RUNTIME_INBOX_RECOVERY_ROUND_HARD_CAP: usize = 500;
 const FOREGROUND_CONTROL_TICK_INTERVAL: Duration = Duration::from_secs(1);
+const RUNTIME_AGENT_INITIAL_SYNC_REASON: &str = "foreground_reconcile";
 const AGENT_INVOCATION_DENIED_FEEDBACK: &str = "我现在不能响应这条请求：你没有权限控制这个智能体。";
 
 #[derive(Clone)]
@@ -171,7 +172,7 @@ fn block_on_runtime_agent_initial_sync(
             .context("create Runtime Agent initial sync runtime")?;
         Ok(
             runtime.block_on(client.messages().sync_now_async(MessageSyncRequest {
-                reason: "runtime_agent_create_readiness".to_owned(),
+                reason: RUNTIME_AGENT_INITIAL_SYNC_REASON.to_owned(),
                 limit: Some(100),
             }))?,
         )

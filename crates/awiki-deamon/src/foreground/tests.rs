@@ -45,6 +45,11 @@ use crate::workspace::WorkspaceMode;
 #[derive(Debug, Clone, Default)]
 struct MockRegistrationClient;
 
+#[test]
+fn runtime_agent_initial_sync_uses_supported_wire_reason() {
+    assert_eq!(RUNTIME_AGENT_INITIAL_SYNC_REASON, "foreground_reconcile");
+}
+
 impl AgentRegistrationClient for MockRegistrationClient {
     fn exchange_token(
         &self,
