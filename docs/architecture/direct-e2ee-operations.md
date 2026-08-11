@@ -38,10 +38,12 @@ The CLI must not independently implement ratchet/session algorithms or expose ra
 
 The CLI passes `AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED` into
 `ImCoreOpenOptions.multi_device_direct_e2ee_enabled`. The variable is optional
-and defaults to disabled; when present, only `0` and `1` are accepted. Invalid
-values fail closed before Core opens. This host-local gate is independent from
-Join, root transfer, device revoke, Handle Recovery, and Group E2EE gates, and
-is never emitted as an ANP, DID Document, or cross-domain field.
+and defaults to enabled for the AWiki CLI/Daemon product host; `0` is reserved
+for emergency rollback, and when present only `0` and `1` are accepted. Invalid
+values fail closed before Core opens. The reusable SDK option itself remains
+fail-closed by default. This host-local gate is independent from Join, root
+transfer, device revoke, Handle Recovery, and Group E2EE gates, and is never
+emitted as an ANP, DID Document, or cross-domain field.
 
 Historical Go SDK reference stores may exist under the identity directory, but active runtime state is stored through `im-core` local state rather than using those paths as owner identity.
 

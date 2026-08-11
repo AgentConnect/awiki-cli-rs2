@@ -70,6 +70,6 @@ pub(crate) fn require_rollout_enabled() -> Result<(), ExitError> {
         "unsupported_capability",
         2,
         "Permanent device revocation is disabled by the local rollout gate.",
-        "Set AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED=1 only after Identity and Message revocation convergence is deployed.",
+        "Remove AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED=0 after Identity and Message revocation convergence is ready.",
     ))
 }

@@ -11,12 +11,12 @@ fn revoke_confirmation_injection_is_not_public_api() {
 }
 
 #[test]
-fn device_revoke_fails_closed_before_workspace_open() {
+fn explicit_zero_disables_device_revoke_before_workspace_open() {
     let workspace = TempDir::new("device-revoke-gate").unwrap();
     let output = awiki_cmd(
         &["id", "device", "revoke", "--device", "dev-target"],
         workspace.path(),
-        None,
+        Some("0"),
     );
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
@@ -32,7 +32,7 @@ fn device_revoke_requires_foreground_tty_before_workspace_open() {
     let output = awiki_cmd(
         &["id", "device", "revoke", "--device", "dev-target"],
         workspace.path(),
-        Some("1"),
+        None,
     );
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(
