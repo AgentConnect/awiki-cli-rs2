@@ -155,13 +155,12 @@ pub(crate) fn publish_current_key_package(
     })
 }
 
-/// Publishes the stable P6 KeyPackage family associated with an authorized
-/// device-Join session. Core always supplies the deterministic family base
-/// IDs; the SDK WAL may return a fresh attempt-specific `meta` and body after
-/// an unaccepted attempt expires. Only that returned wire attempt is sent to
-/// the Host, while an accepted family remains terminal and has no network side
-/// effect on later Join polling.
-pub(crate) async fn publish_join_key_package(
+/// Publishes a stable P6 KeyPackage family for the selected current device.
+/// The caller supplies deterministic family base IDs; the SDK WAL may return a
+/// fresh attempt-specific `meta` and body after an unaccepted attempt expires.
+/// Only that returned wire attempt is sent to the Host, while an accepted
+/// family remains terminal and has no network side effect on later retries.
+pub(crate) async fn publish_stable_key_package(
     client: &crate::core::ImClient,
     expected_device_id: &str,
     base_operation_id: &str,

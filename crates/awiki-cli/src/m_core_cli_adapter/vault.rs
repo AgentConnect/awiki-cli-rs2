@@ -66,42 +66,42 @@ pub fn build_im_core_open_options(
 
 pub(crate) fn multi_device_device_revoke_enabled() -> Result<bool, ExitError> {
     match std::env::var("AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED") {
-        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(std::env::VarError::NotPresent) => Ok(true),
         Ok(value) if value.trim() == "1" => Ok(true),
         Ok(value) if value.trim().is_empty() || value.trim() == "0" => Ok(false),
         Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(ExitError::new(
             "invalid_config",
             2,
             "AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED must be 0 or 1.",
-            "Leave it unset for the fail-closed default, or set it to 1 for an explicit rollout.",
+            "Leave it unset for the enabled product default, or set it to 0 for emergency rollback.",
         )),
     }
 }
 
 pub(crate) fn multi_device_direct_e2ee_enabled() -> Result<bool, ExitError> {
     match std::env::var("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED") {
-        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(std::env::VarError::NotPresent) => Ok(true),
         Ok(value) if value.trim() == "1" => Ok(true),
         Ok(value) if value.trim() == "0" => Ok(false),
         Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(ExitError::new(
             "invalid_config",
             2,
             "AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED must be 0 or 1.",
-            "Leave it unset for the fail-closed default, or set it explicitly to 0 or 1.",
+            "Leave it unset for the enabled product default, or set it to 0 for emergency rollback.",
         )),
     }
 }
 
 pub(crate) fn multi_device_group_e2ee_enabled() -> Result<bool, ExitError> {
     match std::env::var("AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED") {
-        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(std::env::VarError::NotPresent) => Ok(true),
         Ok(value) if value.trim() == "1" => Ok(true),
         Ok(value) if value.trim() == "0" => Ok(false),
         Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(ExitError::new(
             "invalid_config",
             2,
             "AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED must be 0 or 1.",
-            "Leave it unset for the fail-closed default, or set it explicitly to 0 or 1.",
+            "Leave it unset for the enabled product default, or set it to 0 for emergency rollback.",
         )),
     }
 }

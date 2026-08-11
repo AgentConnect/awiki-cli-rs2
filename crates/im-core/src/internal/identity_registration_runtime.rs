@@ -5,10 +5,15 @@
 //! restart-safe until the remote and local identity commits have succeeded. An
 //! explicit expired-root-proof service reason refreshes only that proof and is
 //! retried once; ambiguous transport errors never trigger re-signing.
-//! P5 PreKey publication has its own durable, idempotent local state and is
-//! reported as a non-fatal completion warning after that commit boundary.
+//! P5 PreKey and optional P6 KeyPackage publication have durable, idempotent
+//! local state and are reported as non-fatal completion warnings after that
+//! commit boundary.
 
+#[cfg(feature = "group-e2ee")]
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
+#[cfg(feature = "group-e2ee")]
+use sha2::{Digest as _, Sha256};
 use std::time::{Duration, Instant};
 
 use crate::internal::transport::{
@@ -18,6 +23,8 @@ use crate::internal::transport::{
 const DEFAULT_EMAIL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_EMAIL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING: &str = "registration_prekey_publish_pending";
+const REGISTRATION_GROUP_KEY_PACKAGE_PUBLISH_PENDING_WARNING: &str =
+    "registration_group_key_package_publish_pending";
 const REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING: &str = "registration_pending_cleanup_required";
 const REGISTRATION_PROOF_EXPIRED_AWIKI_CODE: &str = "device.document_proof_expired";
 
@@ -192,7 +199,7 @@ where
             crate::internal::identity_registration_pending::PendingRegistrationPhase::LocalCommitted;
         store.save(&pending)?;
         result.sdk_result.warnings.extend(finish_registration(
-            publish_v2_prekeys_after_registration(self.core, &pending.generated.did),
+            publish_v2_messaging_material_after_registration(self.core, &pending.generated.did),
             || store.delete(&pending_ref),
         ));
         Ok(result)
@@ -410,12 +417,15 @@ where
         pending.phase =
             crate::internal::identity_registration_pending::PendingRegistrationPhase::LocalCommitted;
         store.save(&pending)?;
-        let publish_result =
-            publish_v2_prekeys_after_registration_async(self.core, &pending.generated.did).await;
+        let publish_warnings = publish_v2_messaging_material_after_registration_async(
+            self.core,
+            &pending.generated.did,
+        )
+        .await;
         result
             .sdk_result
             .warnings
-            .extend(finish_registration(publish_result, || {
+            .extend(finish_registration(publish_warnings, || {
                 store.delete(&pending_ref)
             }));
         Ok(result)
@@ -1204,6 +1214,92 @@ fn publish_v2_prekeys_after_registration(
     runtime.block_on(publish_v2_prekeys_after_registration_async(core, did))
 }
 
+fn publish_v2_messaging_material_after_registration(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+) -> Vec<String> {
+    let group_e2ee_enabled = core.inner().group_e2ee_v2_enabled();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return registration_messaging_material_unavailable_warnings(group_e2ee_enabled);
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return registration_messaging_material_unavailable_warnings(group_e2ee_enabled);
+    };
+    runtime.block_on(publish_v2_messaging_material_after_registration_async(
+        core, did,
+    ))
+}
+
+async fn publish_v2_messaging_material_after_registration_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+) -> Vec<String> {
+    let prekey_result = publish_v2_prekeys_after_registration_async(core, did).await;
+    let group_key_package_result = if core.inner().group_e2ee_v2_enabled() {
+        Some(publish_v2_group_key_package_after_registration_async(core, did).await)
+    } else {
+        None
+    };
+    registration_messaging_material_warnings(prekey_result, group_key_package_result)
+}
+
+async fn publish_v2_group_key_package_after_registration_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+) -> crate::ImResult<()> {
+    #[cfg(feature = "group-e2ee")]
+    {
+        let client = core
+            .client_async(crate::identity::IdentitySelector::Did(did.clone()))
+            .await?;
+        let device_id = client.exact_protocol_device_id()?;
+        let (operation_id, key_package_id) =
+            deterministic_registration_group_key_package_ids(did, &device_id);
+        crate::internal::group_e2ee::v2_lifecycle::publish_stable_key_package(
+            &client,
+            &device_id,
+            &operation_id,
+            &key_package_id,
+        )
+        .await
+    }
+    #[cfg(not(feature = "group-e2ee"))]
+    {
+        let _ = (core, did);
+        Err(crate::ImError::invalid_input(
+            Some("multi_device_group_e2ee_enabled".to_owned()),
+            "Group E2EE v2 requires the group-e2ee build feature",
+        ))
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn deterministic_registration_group_key_package_ids(
+    did: &crate::ids::Did,
+    device_id: &str,
+) -> (String, String) {
+    let digest = |kind: &str| {
+        let mut digest = Sha256::new();
+        for value in [
+            "awiki.identity.registration.p6-key-package.v1",
+            kind,
+            did.as_str(),
+            device_id,
+        ] {
+            digest.update((value.len() as u64).to_be_bytes());
+            digest.update(value.as_bytes());
+        }
+        base64::Engine::encode(&URL_SAFE_NO_PAD, digest.finalize())
+    };
+    (
+        format!("registration-p6-publish-{}", digest("operation")),
+        format!("registration-kp-{}", digest("key-package")),
+    )
+}
+
 pub(crate) async fn publish_v2_prekeys_after_registration_async(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -1232,14 +1328,32 @@ fn registration_prekey_access_requires_refresh(
     has_device_authorization && !has_valid_bearer
 }
 
-fn finish_registration<D>(publish_result: crate::ImResult<()>, delete_pending: D) -> Vec<String>
+fn registration_messaging_material_warnings(
+    prekey_result: crate::ImResult<()>,
+    group_key_package_result: Option<crate::ImResult<()>>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if prekey_result.is_err() {
+        warnings.push(REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING.to_owned());
+    }
+    if group_key_package_result.is_some_and(|result| result.is_err()) {
+        warnings.push(REGISTRATION_GROUP_KEY_PACKAGE_PUBLISH_PENDING_WARNING.to_owned());
+    }
+    warnings
+}
+
+fn registration_messaging_material_unavailable_warnings(group_e2ee_enabled: bool) -> Vec<String> {
+    let mut warnings = vec![REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING.to_owned()];
+    if group_e2ee_enabled {
+        warnings.push(REGISTRATION_GROUP_KEY_PACKAGE_PUBLISH_PENDING_WARNING.to_owned());
+    }
+    warnings
+}
+
+fn finish_registration<D>(mut warnings: Vec<String>, delete_pending: D) -> Vec<String>
 where
     D: FnOnce() -> crate::ImResult<()>,
 {
-    let mut warnings = Vec::new();
-    if publish_result.is_err() {
-        warnings.push(REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING.to_owned());
-    }
     if delete_pending().is_err() {
         warnings.push(REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING.to_owned());
     }
@@ -1816,9 +1930,12 @@ mod tests {
 
         publish_attempts.push(p5_state_id.clone());
         let warnings = finish_registration(
-            Err(crate::ImError::TransportUnavailable {
-                detail: "message service unavailable".to_owned(),
-            }),
+            registration_messaging_material_warnings(
+                Err(crate::ImError::TransportUnavailable {
+                    detail: "message service unavailable".to_owned(),
+                }),
+                None,
+            ),
             || {
                 deleted += 1;
                 Ok(())
@@ -1856,7 +1973,7 @@ mod tests {
 
     #[test]
     fn committed_registration_reports_cleanup_failure_without_hiding_success() {
-        let warnings = finish_registration(Ok(()), || {
+        let warnings = finish_registration(Vec::new(), || {
             Err(crate::ImError::LocalStateUnavailable {
                 detail: "vault cleanup unavailable".to_owned(),
             })
@@ -1871,9 +1988,12 @@ mod tests {
     #[test]
     fn committed_registration_can_report_both_recoverable_warnings() {
         let warnings = finish_registration(
-            Err(crate::ImError::TransportUnavailable {
-                detail: "message service unavailable".to_owned(),
-            }),
+            registration_messaging_material_warnings(
+                Err(crate::ImError::TransportUnavailable {
+                    detail: "message service unavailable".to_owned(),
+                }),
+                None,
+            ),
             || {
                 Err(crate::ImError::LocalStateUnavailable {
                     detail: "vault cleanup unavailable".to_owned(),
@@ -1888,6 +2008,35 @@ mod tests {
                 REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING.to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn committed_registration_reports_group_key_package_failure_separately() {
+        let warnings = registration_messaging_material_warnings(
+            Ok(()),
+            Some(Err(crate::ImError::TransportUnavailable {
+                detail: "message service unavailable".to_owned(),
+            })),
+        );
+
+        assert_eq!(
+            warnings,
+            vec![REGISTRATION_GROUP_KEY_PACKAGE_PUBLISH_PENDING_WARNING.to_owned()]
+        );
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[test]
+    fn registration_group_key_package_family_ids_are_deterministic_and_device_scoped() {
+        let did = crate::ids::Did::parse("did:example:alice").unwrap();
+        let first = deterministic_registration_group_key_package_ids(&did, "device-a");
+        let repeated = deterministic_registration_group_key_package_ids(&did, "device-a");
+        let sibling = deterministic_registration_group_key_package_ids(&did, "device-b");
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, sibling);
+        assert!(first.0.starts_with("registration-p6-publish-"));
+        assert!(first.1.starts_with("registration-kp-"));
     }
 
     fn request() -> crate::identity::RegisterHandleRequest {

@@ -1228,7 +1228,7 @@ impl DeviceJoinGroupKeyPackagePublisher for ProductionDeviceJoinGroupKeyPackageP
         client: &crate::core::ImClient,
         publish: &DeviceJoinGroupKeyPackagePublish,
     ) -> crate::ImResult<()> {
-        crate::internal::group_e2ee::v2_lifecycle::publish_join_key_package(
+        crate::internal::group_e2ee::v2_lifecycle::publish_stable_key_package(
             client,
             &publish.expected_device_id,
             &publish.operation_id,

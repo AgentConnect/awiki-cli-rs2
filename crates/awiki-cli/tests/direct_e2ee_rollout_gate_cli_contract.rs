@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn direct_gate_defaults_off_and_accepts_explicit_zero_or_one() {
+fn direct_gate_defaults_on_and_accepts_explicit_zero_or_one() {
     for gate in [None, Some("0"), Some("1")] {
         let workspace = TempDir::new("direct-rollout-valid").unwrap();
         write_file_compat_config(workspace.path());

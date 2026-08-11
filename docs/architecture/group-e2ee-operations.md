@@ -17,10 +17,12 @@ lifecycle operations and the existing redacted group status/repair facade; it
 does not expose low-level MLS commands.
 
 The CLI maps the deployment-local environment variable
-`AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` to that Core option. It is unset/`0`
-by default, accepts only `0` or `1`, and fails closed on every other value.
-This gate is independent from Join, Direct, root transfer, revoke and Handle
-Recovery and is never serialized into ANP discovery or message payloads.
+`AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` to that Core option. An unset variable
+enables the AWiki CLI/Daemon product path; `0` is reserved for emergency
+rollback, `1` explicitly enables it, and every other value fails closed. The
+reusable SDK option remains default-off. This gate is independent from Join,
+Direct, root transfer, revoke and Handle Recovery and is never serialized into
+ANP discovery or message payloads.
 
 ### P6 v2 lifecycle routing
 

@@ -189,12 +189,14 @@ protocol or generate a second identity on retry.
 
 Once both the remote registration and local identity commit have completed, the
 registration transaction is successful. P5 PreKey publication uses its own
-durable, idempotent local publication state: a publication failure is returned
-as the stable `registration_prekey_publish_pending` warning and must not turn
-the committed identity into a registration failure. The registration pending
-record is cleaned up at that boundary; cleanup failure is separately reported
-as `registration_pending_cleanup_required`. A later secure operation reuses
-the same local PreKey publication instead of registering the identity again.
+durable, idempotent local publication state. If Group E2EE v2 is enabled, the
+bootstrap device also publishes a deterministic P6 KeyPackage family. A
+publication failure is returned as the stable
+`registration_prekey_publish_pending` or
+`registration_group_key_package_publish_pending` warning and must not turn the
+committed identity into a registration failure. The registration pending record
+is cleaned up at that boundary; cleanup failure is separately reported as
+`registration_pending_cleanup_required`.
 
 Legacy identities keep `device_state` absent until an explicit one-time upgrade.
 Only the original device that still has the usable Legacy `key-1` is supported:
