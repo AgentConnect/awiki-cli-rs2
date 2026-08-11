@@ -77,11 +77,12 @@ struct SummaryStateRow {
 
 impl SummaryMessageRow {
     fn is_control_payload(&self) -> bool {
-        super::messages::is_control_payload_for_projection(
+        crate::messages::classify_message_payload_for_projection(
             &self.content_type,
             &self.content,
             &self.sender_did,
         )
+        .is_control()
     }
 
     fn is_unread_incoming(&self) -> bool {

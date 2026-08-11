@@ -8857,6 +8857,100 @@ impl SseDecode for crate::dto::identity::DartActiveSyncAccountBinding {
     }
 }
 
+impl SseDecode for crate::dto::message::DartAgentMessageAction {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartAgentMessageAction::OpenConversation,
+            _ => unreachable!("Invalid variant for DartAgentMessageAction: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartAgentMessageKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartAgentMessageKind::Message,
+            1 => crate::dto::message::DartAgentMessageKind::TaskResult,
+            2 => crate::dto::message::DartAgentMessageKind::Alert,
+            _ => unreachable!("Invalid variant for DartAgentMessageKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartAgentMessageProjection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_state =
+            <crate::dto::message::DartAgentMessageProjectionState>::sse_decode(deserializer);
+        let mut var_message =
+            <Option<crate::dto::message::DartAgentMessageV1>>::sse_decode(deserializer);
+        return crate::dto::message::DartAgentMessageProjection {
+            state: var_state,
+            message: var_message,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartAgentMessageProjectionState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartAgentMessageProjectionState::Valid,
+            1 => crate::dto::message::DartAgentMessageProjectionState::Invalid,
+            _ => unreachable!(
+                "Invalid variant for DartAgentMessageProjectionState: {}",
+                inner
+            ),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartAgentMessageRequestedLevel {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartAgentMessageRequestedLevel::Normal,
+            1 => crate::dto::message::DartAgentMessageRequestedLevel::Urgent,
+            _ => unreachable!(
+                "Invalid variant for DartAgentMessageRequestedLevel: {}",
+                inner
+            ),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartAgentMessageV1 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_schema = <String>::sse_decode(deserializer);
+        let mut var_eventId = <String>::sse_decode(deserializer);
+        let mut var_taskName = <String>::sse_decode(deserializer);
+        let mut var_kind = <crate::dto::message::DartAgentMessageKind>::sse_decode(deserializer);
+        let mut var_requestedLevel =
+            <crate::dto::message::DartAgentMessageRequestedLevel>::sse_decode(deserializer);
+        let mut var_summary = <String>::sse_decode(deserializer);
+        let mut var_detail = <Option<String>>::sse_decode(deserializer);
+        let mut var_action =
+            <crate::dto::message::DartAgentMessageAction>::sse_decode(deserializer);
+        return crate::dto::message::DartAgentMessageV1 {
+            schema: var_schema,
+            event_id: var_eventId,
+            task_name: var_taskName,
+            kind: var_kind,
+            requested_level: var_requestedLevel,
+            summary: var_summary,
+            detail: var_detail,
+            action: var_action,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::attachment::DartAttachmentDestination {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9022,12 +9116,14 @@ impl SseDecode for crate::dto::message::DartCommittedIncomingMessage {
             <crate::dto::message::DartCommittedMessageSource>::sse_decode(deserializer);
         let mut var_direction =
             <crate::dto::message::DartMessageDirection>::sse_decode(deserializer);
+        let mut var_authoritativeReceivedAt = <Option<String>>::sse_decode(deserializer);
         let mut var_message = <crate::dto::message::DartMessage>::sse_decode(deserializer);
         return crate::dto::message::DartCommittedIncomingMessage {
             event_id: var_eventId,
             logical_message_id: var_logicalMessageId,
             source: var_source,
             direction: var_direction,
+            authoritative_received_at: var_authoritativeReceivedAt,
             message: var_message,
         };
     }
@@ -9305,6 +9401,7 @@ impl SseDecode for crate::dto::message::DartConversationSnapshotMessage {
             <crate::dto::message::DartConversationSnapshotMessageBody>::sse_decode(deserializer);
         let mut var_sentAt = <Option<String>>::sse_decode(deserializer);
         let mut var_receivedAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_authoritativeReceivedAt = <Option<String>>::sse_decode(deserializer);
         let mut var_serverSequence = <Option<i64>>::sse_decode(deserializer);
         let mut var_contentType = <Option<String>>::sse_decode(deserializer);
         let mut var_attributes =
@@ -9321,6 +9418,7 @@ impl SseDecode for crate::dto::message::DartConversationSnapshotMessage {
             body: var_body,
             sent_at: var_sentAt,
             received_at: var_receivedAt,
+            authoritative_received_at: var_authoritativeReceivedAt,
             server_sequence: var_serverSequence,
             content_type: var_contentType,
             attributes: var_attributes,
@@ -9335,11 +9433,14 @@ impl SseDecode for crate::dto::message::DartConversationSnapshotMessageBody {
         let mut var_kind = <Option<String>>::sse_decode(deserializer);
         let mut var_payloadJson = <Option<String>>::sse_decode(deserializer);
         let mut var_unsupportedContentType = <Option<String>>::sse_decode(deserializer);
+        let mut var_agentMessage =
+            <Option<crate::dto::message::DartAgentMessageProjection>>::sse_decode(deserializer);
         return crate::dto::message::DartConversationSnapshotMessageBody {
             text: var_text,
             kind: var_kind,
             payload_json: var_payloadJson,
             unsupported_content_type: var_unsupportedContentType,
+            agent_message: var_agentMessage,
         };
     }
 }
@@ -11484,6 +11585,7 @@ impl SseDecode for crate::dto::message::DartMessage {
         let mut var_body = <crate::dto::message::DartMessageBodyView>::sse_decode(deserializer);
         let mut var_sentAt = <Option<String>>::sse_decode(deserializer);
         let mut var_receivedAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_authoritativeReceivedAt = <Option<String>>::sse_decode(deserializer);
         let mut var_metadata = <crate::dto::message::DartMessageMetadata>::sse_decode(deserializer);
         return crate::dto::message::DartMessage {
             id: var_id,
@@ -11499,6 +11601,7 @@ impl SseDecode for crate::dto::message::DartMessage {
             body: var_body,
             sent_at: var_sentAt,
             received_at: var_receivedAt,
+            authoritative_received_at: var_authoritativeReceivedAt,
             metadata: var_metadata,
         };
     }
@@ -11511,11 +11614,14 @@ impl SseDecode for crate::dto::message::DartMessageBodyView {
         let mut var_kind = <Option<String>>::sse_decode(deserializer);
         let mut var_payloadJson = <Option<String>>::sse_decode(deserializer);
         let mut var_unsupportedContentType = <Option<String>>::sse_decode(deserializer);
+        let mut var_agentMessage =
+            <Option<crate::dto::message::DartAgentMessageProjection>>::sse_decode(deserializer);
         return crate::dto::message::DartMessageBodyView {
             text: var_text,
             kind: var_kind,
             payload_json: var_payloadJson,
             unsupported_content_type: var_unsupportedContentType,
+            agent_message: var_agentMessage,
         };
     }
 }
@@ -13041,6 +13147,32 @@ impl SseDecode for Option<bool> {
     }
 }
 
+impl SseDecode for Option<crate::dto::message::DartAgentMessageProjection> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::dto::message::DartAgentMessageProjection>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::message::DartAgentMessageV1> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::message::DartAgentMessageV1>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::config::DartClientVersionInfo> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -14142,6 +14274,138 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartActiveSyncAccou
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartAgentMessageAction {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::OpenConversation => 0.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartAgentMessageAction
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartAgentMessageAction>
+    for crate::dto::message::DartAgentMessageAction
+{
+    fn into_into_dart(self) -> crate::dto::message::DartAgentMessageAction {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartAgentMessageKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Message => 0.into_dart(),
+            Self::TaskResult => 1.into_dart(),
+            Self::Alert => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartAgentMessageKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartAgentMessageKind>
+    for crate::dto::message::DartAgentMessageKind
+{
+    fn into_into_dart(self) -> crate::dto::message::DartAgentMessageKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartAgentMessageProjection {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.state.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartAgentMessageProjection
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartAgentMessageProjection>
+    for crate::dto::message::DartAgentMessageProjection
+{
+    fn into_into_dart(self) -> crate::dto::message::DartAgentMessageProjection {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartAgentMessageProjectionState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Valid => 0.into_dart(),
+            Self::Invalid => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartAgentMessageProjectionState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartAgentMessageProjectionState>
+    for crate::dto::message::DartAgentMessageProjectionState
+{
+    fn into_into_dart(self) -> crate::dto::message::DartAgentMessageProjectionState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartAgentMessageRequestedLevel {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Normal => 0.into_dart(),
+            Self::Urgent => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartAgentMessageRequestedLevel
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartAgentMessageRequestedLevel>
+    for crate::dto::message::DartAgentMessageRequestedLevel
+{
+    fn into_into_dart(self) -> crate::dto::message::DartAgentMessageRequestedLevel {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartAgentMessageV1 {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.schema.into_into_dart().into_dart(),
+            self.event_id.into_into_dart().into_dart(),
+            self.task_name.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+            self.requested_level.into_into_dart().into_dart(),
+            self.summary.into_into_dart().into_dart(),
+            self.detail.into_into_dart().into_dart(),
+            self.action.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartAgentMessageV1
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartAgentMessageV1>
+    for crate::dto::message::DartAgentMessageV1
+{
+    fn into_into_dart(self) -> crate::dto::message::DartAgentMessageV1 {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::attachment::DartAttachmentDestination {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -14353,6 +14617,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartCommittedIncomin
             self.logical_message_id.into_into_dart().into_dart(),
             self.source.into_into_dart().into_dart(),
             self.direction.into_into_dart().into_dart(),
+            self.authoritative_received_at.into_into_dart().into_dart(),
             self.message.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -14686,6 +14951,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationSnap
             self.body.into_into_dart().into_dart(),
             self.sent_at.into_into_dart().into_dart(),
             self.received_at.into_into_dart().into_dart(),
+            self.authoritative_received_at.into_into_dart().into_dart(),
             self.server_sequence.into_into_dart().into_dart(),
             self.content_type.into_into_dart().into_dart(),
             self.attributes.into_into_dart().into_dart(),
@@ -14712,6 +14978,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationSnap
             self.kind.into_into_dart().into_dart(),
             self.payload_json.into_into_dart().into_dart(),
             self.unsupported_content_type.into_into_dart().into_dart(),
+            self.agent_message.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -17428,6 +17695,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessage {
             self.body.into_into_dart().into_dart(),
             self.sent_at.into_into_dart().into_dart(),
             self.received_at.into_into_dart().into_dart(),
+            self.authoritative_received_at.into_into_dart().into_dart(),
             self.metadata.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -17452,6 +17720,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageBodyView 
             self.kind.into_into_dart().into_dart(),
             self.payload_json.into_into_dart().into_dart(),
             self.unsupported_content_type.into_into_dart().into_dart(),
+            self.agent_message.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -19089,6 +19358,95 @@ impl SseEncode for crate::dto::identity::DartActiveSyncAccountBinding {
     }
 }
 
+impl SseEncode for crate::dto::message::DartAgentMessageAction {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartAgentMessageAction::OpenConversation => 0,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartAgentMessageKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartAgentMessageKind::Message => 0,
+                crate::dto::message::DartAgentMessageKind::TaskResult => 1,
+                crate::dto::message::DartAgentMessageKind::Alert => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartAgentMessageProjection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartAgentMessageProjectionState>::sse_encode(self.state, serializer);
+        <Option<crate::dto::message::DartAgentMessageV1>>::sse_encode(self.message, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartAgentMessageProjectionState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartAgentMessageProjectionState::Valid => 0,
+                crate::dto::message::DartAgentMessageProjectionState::Invalid => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartAgentMessageRequestedLevel {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartAgentMessageRequestedLevel::Normal => 0,
+                crate::dto::message::DartAgentMessageRequestedLevel::Urgent => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartAgentMessageV1 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.schema, serializer);
+        <String>::sse_encode(self.event_id, serializer);
+        <String>::sse_encode(self.task_name, serializer);
+        <crate::dto::message::DartAgentMessageKind>::sse_encode(self.kind, serializer);
+        <crate::dto::message::DartAgentMessageRequestedLevel>::sse_encode(
+            self.requested_level,
+            serializer,
+        );
+        <String>::sse_encode(self.summary, serializer);
+        <Option<String>>::sse_encode(self.detail, serializer);
+        <crate::dto::message::DartAgentMessageAction>::sse_encode(self.action, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::attachment::DartAttachmentDestination {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -19214,6 +19572,7 @@ impl SseEncode for crate::dto::message::DartCommittedIncomingMessage {
         <String>::sse_encode(self.logical_message_id, serializer);
         <crate::dto::message::DartCommittedMessageSource>::sse_encode(self.source, serializer);
         <crate::dto::message::DartMessageDirection>::sse_encode(self.direction, serializer);
+        <Option<String>>::sse_encode(self.authoritative_received_at, serializer);
         <crate::dto::message::DartMessage>::sse_encode(self.message, serializer);
     }
 }
@@ -19448,6 +19807,7 @@ impl SseEncode for crate::dto::message::DartConversationSnapshotMessage {
         );
         <Option<String>>::sse_encode(self.sent_at, serializer);
         <Option<String>>::sse_encode(self.received_at, serializer);
+        <Option<String>>::sse_encode(self.authoritative_received_at, serializer);
         <Option<i64>>::sse_encode(self.server_sequence, serializer);
         <Option<String>>::sse_encode(self.content_type, serializer);
         <Vec<crate::dto::message::DartMessageMetadataAttribute>>::sse_encode(
@@ -19464,6 +19824,10 @@ impl SseEncode for crate::dto::message::DartConversationSnapshotMessageBody {
         <Option<String>>::sse_encode(self.kind, serializer);
         <Option<String>>::sse_encode(self.payload_json, serializer);
         <Option<String>>::sse_encode(self.unsupported_content_type, serializer);
+        <Option<crate::dto::message::DartAgentMessageProjection>>::sse_encode(
+            self.agent_message,
+            serializer,
+        );
     }
 }
 
@@ -21071,6 +21435,7 @@ impl SseEncode for crate::dto::message::DartMessage {
         <crate::dto::message::DartMessageBodyView>::sse_encode(self.body, serializer);
         <Option<String>>::sse_encode(self.sent_at, serializer);
         <Option<String>>::sse_encode(self.received_at, serializer);
+        <Option<String>>::sse_encode(self.authoritative_received_at, serializer);
         <crate::dto::message::DartMessageMetadata>::sse_encode(self.metadata, serializer);
     }
 }
@@ -21082,6 +21447,10 @@ impl SseEncode for crate::dto::message::DartMessageBodyView {
         <Option<String>>::sse_encode(self.kind, serializer);
         <Option<String>>::sse_encode(self.payload_json, serializer);
         <Option<String>>::sse_encode(self.unsupported_content_type, serializer);
+        <Option<crate::dto::message::DartAgentMessageProjection>>::sse_encode(
+            self.agent_message,
+            serializer,
+        );
     }
 }
 
@@ -22230,6 +22599,26 @@ impl SseEncode for Option<bool> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <bool>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::message::DartAgentMessageProjection> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::message::DartAgentMessageProjection>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::message::DartAgentMessageV1> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::message::DartAgentMessageV1>::sse_encode(value, serializer);
         }
     }
 }

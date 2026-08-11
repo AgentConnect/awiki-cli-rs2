@@ -1074,7 +1074,13 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
             .or_else(|| object.get("body").and_then(|body| body.get("payload")))
             .cloned()
             .filter(Value::is_object)
-            .map(|payload| crate::messages::MessageBodyView::Payload { payload })
+            .map(|payload| {
+                if content_type.as_deref() == Some("application/json") {
+                    crate::messages::MessageBodyView::from_json_payload(payload)
+                } else {
+                    crate::messages::MessageBodyView::Payload { payload }
+                }
+            })
             .unwrap_or(crate::messages::MessageBodyView::Unsupported {
                 content_type: content_type.clone(),
             })

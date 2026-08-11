@@ -3309,12 +3309,66 @@ extension on gen_message.DartMessageDirection {
   };
 }
 
+extension on gen_message.DartAgentMessageProjectionState {
+  AgentMessageProjectionState _toModel() => switch (this) {
+    gen_message.DartAgentMessageProjectionState.valid =>
+      AgentMessageProjectionState.valid,
+    gen_message.DartAgentMessageProjectionState.invalid =>
+      AgentMessageProjectionState.invalid,
+  };
+}
+
+extension on gen_message.DartAgentMessageKind {
+  AgentMessageKind _toModel() => switch (this) {
+    gen_message.DartAgentMessageKind.message => AgentMessageKind.message,
+    gen_message.DartAgentMessageKind.taskResult => AgentMessageKind.taskResult,
+    gen_message.DartAgentMessageKind.alert => AgentMessageKind.alert,
+  };
+}
+
+extension on gen_message.DartAgentMessageRequestedLevel {
+  AgentMessageRequestedLevel _toModel() => switch (this) {
+    gen_message.DartAgentMessageRequestedLevel.normal =>
+      AgentMessageRequestedLevel.normal,
+    gen_message.DartAgentMessageRequestedLevel.urgent =>
+      AgentMessageRequestedLevel.urgent,
+  };
+}
+
+extension on gen_message.DartAgentMessageAction {
+  AgentMessageAction _toModel() => switch (this) {
+    gen_message.DartAgentMessageAction.openConversation =>
+      AgentMessageAction.openConversation,
+  };
+}
+
+extension on gen_message.DartAgentMessageV1 {
+  AgentMessageV1 _toModel() => AgentMessageV1(
+    schema: schema,
+    eventId: eventId,
+    taskName: taskName,
+    kind: kind._toModel(),
+    requestedLevel: requestedLevel._toModel(),
+    summary: summary,
+    detail: detail,
+    action: action._toModel(),
+  );
+}
+
+extension on gen_message.DartAgentMessageProjection {
+  AgentMessageProjection _toModel() => AgentMessageProjection(
+    state: state._toModel(),
+    message: message?._toModel(),
+  );
+}
+
 extension on gen_message.DartMessageBodyView {
   MessageBodyView _toModel() => MessageBodyView(
     text: text,
     kind: kind,
     payloadJson: payloadJson,
     unsupportedContentType: unsupportedContentType,
+    agentMessage: agentMessage?._toModel(),
   );
 }
 
@@ -3419,6 +3473,7 @@ extension on gen_message.DartMessage {
     body: body._toModel(),
     sentAt: sentAt,
     receivedAt: receivedAt,
+    authoritativeReceivedAt: authoritativeReceivedAt,
     metadata: metadata._toModel(),
   );
 }
@@ -3611,6 +3666,7 @@ extension on gen_message.DartConversationSnapshotMessage {
     body: body._toModel(),
     sentAt: sentAt,
     receivedAt: receivedAt,
+    authoritativeReceivedAt: authoritativeReceivedAt,
     serverSequence: serverSequence?.toInt(),
     contentType: contentType,
     attributes: attributes.map((attribute) => attribute._toModel()).toList(),
@@ -3623,6 +3679,7 @@ extension on gen_message.DartConversationSnapshotMessageBody {
     kind: kind,
     payloadJson: payloadJson,
     unsupportedContentType: unsupportedContentType,
+    agentMessage: agentMessage?._toModel(),
   );
 }
 
@@ -3709,6 +3766,7 @@ extension on gen_message.DartCommittedIncomingMessage {
     logicalMessageId: logicalMessageId,
     source: source._toModel(),
     direction: direction._toModel(),
+    authoritativeReceivedAt: authoritativeReceivedAt,
     message: message._toModel(),
   );
 }

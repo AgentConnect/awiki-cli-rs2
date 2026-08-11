@@ -559,8 +559,12 @@ fn message_body_view(content_type: &str, body: Option<&Map<String, Value>>) -> M
     if is_payload_content_type(content_type) {
         if let Some(payload) = value_from_object(body, "payload").filter(|value| value.is_object())
         {
-            return MessageBodyView::Payload {
-                payload: payload.clone(),
+            return if content_type == "application/json" {
+                MessageBodyView::from_json_payload(payload.clone())
+            } else {
+                MessageBodyView::Payload {
+                    payload: payload.clone(),
+                }
             };
         }
         return MessageBodyView::Unsupported {

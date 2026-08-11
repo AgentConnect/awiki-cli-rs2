@@ -262,6 +262,7 @@ where
                                 logical_message_id: message.id.as_str().to_owned(),
                                 source: "live_delta".to_owned(),
                                 direction: crate::messages::MessageDirection::Incoming,
+                                authoritative_received_at: message.received_at.clone(),
                                 message: message.clone(),
                             },
                         );
@@ -5112,6 +5113,10 @@ mod tests {
         let message = public_messages.get("event-discovered").unwrap();
         assert_eq!(
             message.sent_at.as_deref(),
+            Some("2026-07-28T10:00:00.123456Z")
+        );
+        assert_eq!(
+            message.received_at.as_deref(),
             Some("2026-07-28T10:00:00.123456Z")
         );
         assert_eq!(

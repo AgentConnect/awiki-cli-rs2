@@ -179,6 +179,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_box_autoadd_bool(dynamic raw);
 
   @protected
+  DartAgentMessageProjection
+  dco_decode_box_autoadd_dart_agent_message_projection(dynamic raw);
+
+  @protected
+  DartAgentMessageV1 dco_decode_box_autoadd_dart_agent_message_v_1(dynamic raw);
+
+  @protected
   DartAttachmentSendRequest dco_decode_box_autoadd_dart_attachment_send_request(
     dynamic raw,
   );
@@ -413,6 +420,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartActiveSyncAccountBinding dco_decode_dart_active_sync_account_binding(
     dynamic raw,
   );
+
+  @protected
+  DartAgentMessageAction dco_decode_dart_agent_message_action(dynamic raw);
+
+  @protected
+  DartAgentMessageKind dco_decode_dart_agent_message_kind(dynamic raw);
+
+  @protected
+  DartAgentMessageProjection dco_decode_dart_agent_message_projection(
+    dynamic raw,
+  );
+
+  @protected
+  DartAgentMessageProjectionState
+  dco_decode_dart_agent_message_projection_state(dynamic raw);
+
+  @protected
+  DartAgentMessageRequestedLevel dco_decode_dart_agent_message_requested_level(
+    dynamic raw,
+  );
+
+  @protected
+  DartAgentMessageV1 dco_decode_dart_agent_message_v_1(dynamic raw);
 
   @protected
   DartAttachmentDestination dco_decode_dart_attachment_destination(dynamic raw);
@@ -1219,6 +1249,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
+  DartAgentMessageProjection?
+  dco_decode_opt_box_autoadd_dart_agent_message_projection(dynamic raw);
+
+  @protected
+  DartAgentMessageV1? dco_decode_opt_box_autoadd_dart_agent_message_v_1(
+    dynamic raw,
+  );
+
+  @protected
   DartClientVersionInfo? dco_decode_opt_box_autoadd_dart_client_version_info(
     dynamic raw,
   );
@@ -1491,6 +1530,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  DartAgentMessageProjection
+  sse_decode_box_autoadd_dart_agent_message_projection(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageV1 sse_decode_box_autoadd_dart_agent_message_v_1(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(
@@ -1783,6 +1833,35 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartActiveSyncAccountBinding sse_decode_dart_active_sync_account_binding(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageAction sse_decode_dart_agent_message_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageKind sse_decode_dart_agent_message_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageProjection sse_decode_dart_agent_message_projection(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageProjectionState
+  sse_decode_dart_agent_message_projection_state(SseDeserializer deserializer);
+
+  @protected
+  DartAgentMessageRequestedLevel sse_decode_dart_agent_message_requested_level(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageV1 sse_decode_dart_agent_message_v_1(
     SseDeserializer deserializer,
   );
 
@@ -2811,6 +2890,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
+  DartAgentMessageProjection?
+  sse_decode_opt_box_autoadd_dart_agent_message_projection(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartAgentMessageV1? sse_decode_opt_box_autoadd_dart_agent_message_v_1(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartClientVersionInfo? sse_decode_opt_box_autoadd_dart_client_version_info(
     SseDeserializer deserializer,
   );
@@ -3129,6 +3219,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_dart_agent_message_projection(
+    DartAgentMessageProjection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_agent_message_v_1(
+    DartAgentMessageV1 self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_dart_attachment_send_request(
@@ -3461,6 +3563,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_active_sync_account_binding(
     DartActiveSyncAccountBinding self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_agent_message_action(
+    DartAgentMessageAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_agent_message_kind(
+    DartAgentMessageKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_agent_message_projection(
+    DartAgentMessageProjection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_agent_message_projection_state(
+    DartAgentMessageProjectionState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_agent_message_requested_level(
+    DartAgentMessageRequestedLevel self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_agent_message_v_1(
+    DartAgentMessageV1 self,
     SseSerializer serializer,
   );
 
@@ -4714,6 +4852,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_agent_message_projection(
+    DartAgentMessageProjection? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_agent_message_v_1(
+    DartAgentMessageV1? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_dart_client_version_info(

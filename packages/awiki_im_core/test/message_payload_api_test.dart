@@ -55,6 +55,95 @@ void main() {
     expect(body.payloadJson, payload);
   });
 
+  test(
+    'agent message body exposes typed direct projection without raw JSON',
+    () {
+      const message = AgentMessageV1(
+        schema: 'awiki.agent.message.v1',
+        eventId: 'event-001',
+        taskName: 'Release verification',
+        kind: AgentMessageKind.taskResult,
+        requestedLevel: AgentMessageRequestedLevel.urgent,
+        summary: 'Build completed',
+        detail: 'Focused checks passed.',
+        action: AgentMessageAction.openConversation,
+      );
+      const projection = AgentMessageProjection(
+        state: AgentMessageProjectionState.valid,
+        message: message,
+      );
+      const body = MessageBodyView(
+        kind: 'agent_message',
+        agentMessage: projection,
+      );
+
+      expect(body.payloadJson, isNull);
+      expect(body.agentMessage?.isValid, isTrue);
+      expect(body.agentMessage?.message?.taskName, 'Release verification');
+      expect(body.agentMessage?.message?.kind, AgentMessageKind.taskResult);
+      expect(
+        body.agentMessage?.message?.requestedLevel,
+        AgentMessageRequestedLevel.urgent,
+      );
+    },
+  );
+
+  test('invalid visible agent message is a field-free generic placeholder', () {
+    const body = MessageBodyView(
+      kind: 'agent_message',
+      agentMessage: AgentMessageProjection(
+        state: AgentMessageProjectionState.invalid,
+      ),
+    );
+
+    expect(body.payloadJson, isNull);
+    expect(body.agentMessage?.isValid, isFalse);
+    expect(body.agentMessage?.message, isNull);
+  });
+
+  test('live snapshot and committed models expose explicit receive time', () {
+    const receivedAt = '2026-08-11T00:00:05Z';
+    const body = MessageBodyView(text: 'hello', kind: 'text');
+    const metadata = MessageMetadata();
+    const live = Message(
+      id: 'msg-1',
+      conversationId: 'dm:peer',
+      senderDidSnapshot: 'did:example:agent',
+      threadKind: 'direct',
+      threadId: 'did:example:agent',
+      direction: MessageDirection.incoming,
+      sender: 'did:example:agent',
+      body: body,
+      sentAt: '2026-08-11T00:00:00Z',
+      receivedAt: receivedAt,
+      authoritativeReceivedAt: receivedAt,
+      metadata: metadata,
+    );
+    const snapshot = ConversationSnapshotMessage(
+      id: 'msg-1',
+      threadKind: 'direct',
+      threadId: 'did:example:agent',
+      direction: 'incoming',
+      sender: 'did:example:agent',
+      body: ConversationSnapshotMessageBody(text: 'hello', kind: 'text'),
+      sentAt: '2026-08-11T00:00:00Z',
+      receivedAt: receivedAt,
+      authoritativeReceivedAt: receivedAt,
+    );
+    const committed = CommittedIncomingMessage(
+      eventId: 'event-1',
+      logicalMessageId: 'msg-1',
+      source: CommittedMessageSource.liveDelta,
+      direction: MessageDirection.incoming,
+      authoritativeReceivedAt: receivedAt,
+      message: live,
+    );
+
+    expect(live.authoritativeReceivedAt, receivedAt);
+    expect(snapshot.authoritativeReceivedAt, receivedAt);
+    expect(committed.authoritativeReceivedAt, receivedAt);
+  });
+
   test('conversation identity surface is additive and SDK-generic', () {
     const identity = ConversationIdentity(
       conversationId: 'dm:peer-scope:v1:abc',

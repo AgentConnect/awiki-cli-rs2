@@ -2114,7 +2114,8 @@ pub(super) fn sync_delta_message_from_payload(
             sent_at: string_from_object(Some(message), "sent_at")
                 .or_else(|| string_from_object(Some(message), "accepted_at"))
                 .or_else(|| event.created_at.clone()),
-            received_at: string_from_object(Some(message), "received_at"),
+            received_at: string_from_object(Some(message), "received_at")
+                .or_else(|| string_from_object(Some(message), "accepted_at")),
             metadata: crate::messages::MessageMetadata {
                 operation_id: string_from_object(Some(message), "operation_id"),
                 server_sequence: server_seq,
@@ -2146,6 +2147,9 @@ fn sync_delta_message_body(
                 kind: crate::messages::MessageKind::Text,
             }
         }
+        Some(value) if content_type == "application/json" && value.is_object() => {
+            crate::messages::MessageBodyView::from_json_payload(value.clone())
+        }
         Some(value) if is_payload_content_type(content_type) && value.is_object() => {
             crate::messages::MessageBodyView::Payload {
                 payload: value.clone(),
@@ -2155,7 +2159,13 @@ fn sync_delta_message_body(
             serde_json::from_str::<Value>(text)
                 .ok()
                 .filter(Value::is_object)
-                .map(|payload| crate::messages::MessageBodyView::Payload { payload })
+                .map(|payload| {
+                    if content_type == "application/json" {
+                        crate::messages::MessageBodyView::from_json_payload(payload)
+                    } else {
+                        crate::messages::MessageBodyView::Payload { payload }
+                    }
+                })
                 .unwrap_or_else(|| crate::messages::MessageBodyView::Unsupported {
                     content_type: Some(content_type.to_owned()),
                 })

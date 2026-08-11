@@ -136,6 +136,14 @@ pub enum MessageBodyView {
     Unsupported { content_type: Option<String> },
 }
 
+impl MessageBodyView {
+    pub(crate) fn from_json_payload(payload: serde_json::Value) -> Self {
+        Self::Payload {
+            payload: super::sanitize_projected_json_payload(payload),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageMetadata {
     #[serde(default)]
@@ -548,6 +556,10 @@ pub struct CommittedIncomingMessage {
     pub logical_message_id: String,
     pub source: String,
     pub direction: MessageDirection,
+    /// Service accepted/received time selected by Core for notification age
+    /// policy. Missing or invalid values must be treated as non-urgent by hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoritative_received_at: Option<String>,
     pub message: Message,
 }
 

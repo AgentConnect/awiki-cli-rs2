@@ -967,6 +967,247 @@ fn payload_request_and_body_view_preserve_json_for_dart() {
     assert_eq!(payload["schema"], "awiki.agent.status.v1");
     assert_eq!(payload["state"], "running");
     assert!(dart_body.unsupported_content_type.is_none());
+    assert!(dart_body.agent_message.is_none());
+}
+
+#[test]
+fn agent_message_projection_is_typed_and_invalid_never_exposes_raw_json() {
+    use awiki_im_core::dto::message::{
+        DartAgentMessageAction, DartAgentMessageKind, DartAgentMessageProjectionState,
+        DartAgentMessageRequestedLevel,
+    };
+
+    let valid_message: awiki_im_core::dto::message::DartMessage = im_core::messages::Message {
+        id: im_core::ids::MessageId::parse("msg-agent-valid").unwrap(),
+        thread: im_core::messages::ThreadRef::Direct(
+            im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        ),
+        direction: im_core::messages::MessageDirection::Incoming,
+        sender: im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        receiver: None,
+        group: None,
+        body: im_core::messages::MessageBodyView::Payload {
+            payload: serde_json::json!({
+                "schema": "awiki.agent.message.v1",
+                "event_id": "event-001",
+                "task_name": "Release verification",
+                "kind": "task_result",
+                "level": "urgent",
+                "content": {"summary": "Build completed", "detail": "Checks passed."},
+                "action": {"type": "open_conversation"}
+            }),
+        },
+        sent_at: None,
+        received_at: Some("2026-08-11T00:00:05Z".to_owned()),
+        metadata: im_core::messages::MessageMetadata::default(),
+    }
+    .into();
+    assert_eq!(
+        valid_message.authoritative_received_at.as_deref(),
+        Some("2026-08-11T00:00:05Z")
+    );
+    let valid = valid_message.body;
+    assert_eq!(valid.kind.as_deref(), Some("agent_message"));
+    assert!(valid.payload_json.is_none());
+    let projection = valid.agent_message.expect("typed projection");
+    assert_eq!(projection.state, DartAgentMessageProjectionState::Valid);
+    let message = projection.message.expect("valid message fields");
+    assert_eq!(message.event_id, "event-001");
+    assert_eq!(message.task_name, "Release verification");
+    assert_eq!(message.kind, DartAgentMessageKind::TaskResult);
+    assert_eq!(
+        message.requested_level,
+        DartAgentMessageRequestedLevel::Urgent
+    );
+    assert_eq!(message.summary, "Build completed");
+    assert_eq!(message.detail.as_deref(), Some("Checks passed."));
+    assert_eq!(message.action, DartAgentMessageAction::OpenConversation);
+
+    let invalid: awiki_im_core::dto::message::DartMessageBodyView =
+        im_core::messages::MessageBodyView::Payload {
+            payload: serde_json::json!({
+                "schema": "awiki.agent.message.v1",
+                "content": {"summary": "token=must-not-cross"},
+                "raw": "/private/secret"
+            }),
+        }
+        .into();
+    assert_eq!(invalid.kind.as_deref(), Some("agent_message"));
+    assert!(invalid.payload_json.is_none());
+    let projection = invalid.agent_message.expect("invalid projection");
+    assert_eq!(projection.state, DartAgentMessageProjectionState::Invalid);
+    assert!(projection.message.is_none());
+    assert!(!format!("{projection:?}").contains("must-not-cross"));
+    assert!(!format!("{projection:?}").contains("private"));
+}
+
+#[test]
+fn group_agent_message_payload_is_forced_to_invalid_visible_projection() {
+    use awiki_im_core::dto::message::DartAgentMessageProjectionState;
+
+    let group = im_core::ids::GroupRef::parse("did:example:group").unwrap();
+    let mapped: awiki_im_core::dto::message::DartMessage = im_core::messages::Message {
+        id: im_core::ids::MessageId::parse("msg-group-agent-schema").unwrap(),
+        thread: im_core::messages::ThreadRef::Group(group.clone()),
+        direction: im_core::messages::MessageDirection::Incoming,
+        sender: im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        receiver: None,
+        group: Some(group),
+        body: im_core::messages::MessageBodyView::Payload {
+            payload: serde_json::json!({
+                "schema": "awiki.agent.message.v1",
+                "event_id": "event-group-001",
+                "task_name": "Group task",
+                "kind": "alert",
+                "level": "urgent",
+                "content": {"summary": "Must not drive a Group urgent card"},
+                "action": {"type": "open_conversation"}
+            }),
+        },
+        sent_at: None,
+        received_at: None,
+        metadata: im_core::messages::MessageMetadata::default(),
+    }
+    .into();
+    let projection = mapped.body.agent_message.expect("exact schema projection");
+    assert_eq!(projection.state, DartAgentMessageProjectionState::Invalid);
+    assert!(projection.message.is_none());
+    assert!(mapped.body.payload_json.is_none());
+}
+
+#[test]
+fn e2ee_agent_message_payload_is_forced_to_invalid_visible_projection() {
+    use awiki_im_core::dto::message::DartAgentMessageProjectionState;
+
+    let mapped: awiki_im_core::dto::message::DartMessage = im_core::messages::Message {
+        id: im_core::ids::MessageId::parse("msg-e2ee-agent-schema").unwrap(),
+        thread: im_core::messages::ThreadRef::Direct(
+            im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        ),
+        direction: im_core::messages::MessageDirection::Incoming,
+        sender: im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        receiver: None,
+        group: None,
+        body: im_core::messages::MessageBodyView::Payload {
+            payload: serde_json::json!({
+                "schema": "awiki.agent.message.v1",
+                "event_id": "event-e2ee-001",
+                "task_name": "E2EE task",
+                "kind": "alert",
+                "level": "urgent",
+                "content": {"summary": "Must not drive an E2EE urgent card"},
+                "action": {"type": "open_conversation"}
+            }),
+        },
+        sent_at: None,
+        received_at: Some("2026-08-11T00:00:05Z".to_owned()),
+        metadata: im_core::messages::MessageMetadata {
+            attributes: vec![im_core::messages::MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: "direct-e2ee".to_owned(),
+            }],
+            ..im_core::messages::MessageMetadata::default()
+        },
+    }
+    .into();
+    let projection = mapped.body.agent_message.expect("exact schema projection");
+    assert_eq!(projection.state, DartAgentMessageProjectionState::Invalid);
+    assert!(projection.message.is_none());
+    assert!(mapped.body.payload_json.is_none());
+}
+
+#[test]
+fn snapshot_agent_message_preserves_authoritative_time_and_rejects_e2ee() {
+    use awiki_im_core::dto::message::DartAgentMessageProjectionState;
+
+    let mapped: awiki_im_core::dto::message::DartConversationSnapshotMessage =
+        im_core::messages::ConversationSnapshotMessage {
+            id: "msg-snapshot-e2ee-agent".to_owned(),
+            thread_kind: "direct".to_owned(),
+            thread_id: "did:example:agent".to_owned(),
+            conversation_identity: None,
+            direction: "incoming".to_owned(),
+            sender: "did:example:agent".to_owned(),
+            receiver: None,
+            group: None,
+            body: im_core::messages::ConversationSnapshotMessageBody {
+                text: None,
+                kind: Some("payload".to_owned()),
+                payload_json: Some(
+                    serde_json::json!({
+                        "schema": "awiki.agent.message.v1",
+                        "event_id": "event-snapshot-e2ee-001",
+                        "task_name": "Snapshot task",
+                        "kind": "alert",
+                        "level": "urgent",
+                        "content": {"summary": "Must stay generic"},
+                        "action": {"type": "open_conversation"}
+                    })
+                    .to_string(),
+                ),
+                unsupported_content_type: None,
+            },
+            sent_at: Some("2026-08-11T00:00:00Z".to_owned()),
+            received_at: Some("2026-08-11T00:00:05Z".to_owned()),
+            server_sequence: Some(1),
+            content_type: Some("application/json".to_owned()),
+            attributes: vec![im_core::messages::MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: "direct-e2ee".to_owned(),
+            }],
+        }
+        .into();
+
+    assert_eq!(
+        mapped.authoritative_received_at.as_deref(),
+        Some("2026-08-11T00:00:05Z")
+    );
+    let projection = mapped
+        .body
+        .agent_message
+        .expect("exact schema remains visible generic");
+    assert_eq!(projection.state, DartAgentMessageProjectionState::Invalid);
+    assert!(projection.message.is_none());
+    assert!(mapped.body.payload_json.is_none());
+}
+
+#[test]
+fn committed_incoming_mapping_preserves_core_authoritative_received_time() {
+    let message = im_core::messages::Message {
+        id: im_core::ids::MessageId::parse("msg-authoritative-time").unwrap(),
+        thread: im_core::messages::ThreadRef::Direct(
+            im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        ),
+        direction: im_core::messages::MessageDirection::Incoming,
+        sender: im_core::ids::PeerRef::parse("did:example:agent", "").unwrap(),
+        receiver: None,
+        group: None,
+        body: im_core::messages::MessageBodyView::Text {
+            text: "hello".to_owned(),
+            kind: im_core::messages::MessageKind::Text,
+        },
+        sent_at: Some("2026-08-11T00:00:00Z".to_owned()),
+        received_at: Some("2026-08-11T00:00:05Z".to_owned()),
+        metadata: im_core::messages::MessageMetadata::default(),
+    };
+    let mapped = awiki_im_core::dto::message::DartCommittedIncomingMessage::from(
+        im_core::messages::CommittedIncomingMessage {
+            event_id: "sync-event-1".to_owned(),
+            logical_message_id: "msg-authoritative-time".to_owned(),
+            source: "live_delta".to_owned(),
+            direction: im_core::messages::MessageDirection::Incoming,
+            authoritative_received_at: Some("2026-08-11T00:00:05Z".to_owned()),
+            message,
+        },
+    );
+    assert_eq!(
+        mapped.authoritative_received_at.as_deref(),
+        Some("2026-08-11T00:00:05Z")
+    );
+    assert_eq!(
+        mapped.message.authoritative_received_at.as_deref(),
+        Some("2026-08-11T00:00:05Z")
+    );
 }
 
 #[test]

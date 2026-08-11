@@ -38,6 +38,8 @@ use crate::dto::{
         DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
     },
     message::{
+        DartAgentMessageAction, DartAgentMessageKind, DartAgentMessageProjection,
+        DartAgentMessageProjectionState, DartAgentMessageRequestedLevel, DartAgentMessageV1,
         DartCommittedIncomingMessage, DartCommittedMessageSource, DartConversation,
         DartConversationAlias, DartConversationAliasSource, DartConversationIdentity,
         DartConversationIdentityScope, DartConversationListSnapshot,
@@ -1083,27 +1085,99 @@ impl From<im_core::messages::MessageDirection> for DartMessageDirection {
 
 impl From<im_core::messages::MessageBodyView> for DartMessageBodyView {
     fn from(value: im_core::messages::MessageBodyView) -> Self {
-        match value {
-            im_core::messages::MessageBodyView::Text { text, kind } => Self {
-                text: Some(text),
-                kind: Some(message_kind_to_string(kind)),
-                payload_json: None,
-                unsupported_content_type: None,
-            },
-            im_core::messages::MessageBodyView::Payload { payload } => Self {
-                text: None,
-                kind: Some("payload".to_string()),
-                payload_json: Some(payload.to_string()),
-                unsupported_content_type: None,
-            },
-            im_core::messages::MessageBodyView::Unsupported { content_type } => Self {
-                text: None,
-                kind: None,
-                payload_json: None,
-                unsupported_content_type: content_type,
-            },
-        }
+        dart_message_body_view(value, false)
     }
+}
+
+fn dart_message_body_view(
+    value: im_core::messages::MessageBodyView,
+    allow_direct_agent_message: bool,
+) -> DartMessageBodyView {
+    match value {
+        im_core::messages::MessageBodyView::Text { text, kind } => DartMessageBodyView {
+            text: Some(text),
+            kind: Some(message_kind_to_string(kind)),
+            payload_json: None,
+            unsupported_content_type: None,
+            agent_message: None,
+        },
+        im_core::messages::MessageBodyView::Payload { payload } => {
+            let agent_message = dart_agent_message_projection(&payload, allow_direct_agent_message);
+            DartMessageBodyView {
+                text: None,
+                kind: Some(if agent_message.is_some() {
+                    "agent_message".to_string()
+                } else {
+                    "payload".to_string()
+                }),
+                payload_json: agent_message.is_none().then(|| payload.to_string()),
+                unsupported_content_type: None,
+                agent_message,
+            }
+        }
+        im_core::messages::MessageBodyView::Unsupported { content_type } => DartMessageBodyView {
+            text: None,
+            kind: None,
+            payload_json: None,
+            unsupported_content_type: content_type,
+            agent_message: None,
+        },
+    }
+}
+
+fn dart_agent_message_projection(
+    payload: &serde_json::Value,
+    allow_direct_agent_message: bool,
+) -> Option<DartAgentMessageProjection> {
+    let scope = if allow_direct_agent_message {
+        im_core::messages::AgentMessageProjectionScope::DirectTransportProtected
+    } else {
+        im_core::messages::AgentMessageProjectionScope::Unsupported
+    };
+    Some(
+        match im_core::messages::project_agent_message_payload_for_scope(payload, scope)? {
+            im_core::messages::AgentMessageProjection::Invalid => DartAgentMessageProjection {
+                state: DartAgentMessageProjectionState::Invalid,
+                message: None,
+            },
+            im_core::messages::AgentMessageProjection::Valid(message) => {
+                DartAgentMessageProjection {
+                    state: DartAgentMessageProjectionState::Valid,
+                    message: Some(DartAgentMessageV1 {
+                        schema: im_core::messages::AGENT_MESSAGE_SCHEMA_V1.to_owned(),
+                        event_id: message.event_id,
+                        task_name: message.task_name,
+                        kind: match message.kind {
+                            im_core::messages::AgentMessageKind::Message => {
+                                DartAgentMessageKind::Message
+                            }
+                            im_core::messages::AgentMessageKind::TaskResult => {
+                                DartAgentMessageKind::TaskResult
+                            }
+                            im_core::messages::AgentMessageKind::Alert => {
+                                DartAgentMessageKind::Alert
+                            }
+                        },
+                        requested_level: match message.requested_level {
+                            im_core::messages::AgentMessageRequestedLevel::Normal => {
+                                DartAgentMessageRequestedLevel::Normal
+                            }
+                            im_core::messages::AgentMessageRequestedLevel::Urgent => {
+                                DartAgentMessageRequestedLevel::Urgent
+                            }
+                        },
+                        summary: message.summary,
+                        detail: message.detail,
+                        action: match message.action {
+                            im_core::messages::AgentMessageAction::OpenConversation => {
+                                DartAgentMessageAction::OpenConversation
+                            }
+                        },
+                    }),
+                }
+            }
+        },
+    )
 }
 
 fn message_kind_to_string(value: im_core::messages::MessageKind) -> String {
@@ -1252,6 +1326,18 @@ impl From<im_core::messages::MessageTarget> for crate::dto::message::DartMessage
 
 impl From<im_core::messages::Message> for DartMessage {
     fn from(value: im_core::messages::Message) -> Self {
+        let allow_direct_agent_message = value.group.is_none()
+            && (matches!(&value.thread, im_core::messages::ThreadRef::Direct(_))
+                || value
+                    .metadata
+                    .conversation_identity
+                    .as_ref()
+                    .is_some_and(|identity| {
+                        identity.identity_scope
+                            == im_core::messages::ConversationIdentityScope::Direct
+                    }))
+            && agent_message_transport_is_plain(&value.metadata.attributes);
+        let authoritative_received_at = value.received_at.clone();
         let conversation_id = value
             .metadata
             .conversation_identity
@@ -1278,12 +1364,25 @@ impl From<im_core::messages::Message> for DartMessage {
             sender: value.sender.as_str().to_string(),
             receiver: value.receiver.map(|receiver| receiver.as_str().to_string()),
             group: value.group.map(|group| group.as_str().to_string()),
-            body: value.body.into(),
+            body: dart_message_body_view(value.body, allow_direct_agent_message),
             sent_at: value.sent_at,
             received_at: value.received_at,
+            authoritative_received_at,
             metadata: value.metadata.into(),
         }
     }
+}
+
+fn agent_message_transport_is_plain(
+    attributes: &[im_core::messages::MessageMetadataAttribute],
+) -> bool {
+    !attributes.iter().any(|attribute| {
+        let key = attribute.key.trim();
+        let value = attribute.value.trim();
+        matches!(key, "decryption_state" | "secure_wire_content_type")
+            || (key == "security"
+                && !matches!(value, "" | "plain" | "plaintext" | "transport-protected"))
+    })
 }
 
 fn thread_ref_parts(value: im_core::messages::ThreadRef) -> (String, String) {
@@ -1555,6 +1654,17 @@ impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnaps
 
 impl From<im_core::messages::ConversationSnapshotMessage> for DartConversationSnapshotMessage {
     fn from(value: im_core::messages::ConversationSnapshotMessage) -> Self {
+        let allow_direct_agent_message = value.group.is_none()
+            && (value.thread_kind == "direct"
+                || value
+                    .conversation_identity
+                    .as_ref()
+                    .is_some_and(|identity| {
+                        identity.identity_scope
+                            == im_core::messages::ConversationIdentityScope::Direct
+                    }))
+            && agent_message_transport_is_plain(&value.attributes);
+        let authoritative_received_at = value.received_at.clone();
         Self {
             id: value.id,
             thread_kind: value.thread_kind,
@@ -1564,9 +1674,10 @@ impl From<im_core::messages::ConversationSnapshotMessage> for DartConversationSn
             sender: value.sender,
             receiver: value.receiver,
             group: value.group,
-            body: value.body.into(),
+            body: dart_conversation_snapshot_message_body(value.body, allow_direct_agent_message),
             sent_at: value.sent_at,
             received_at: value.received_at,
+            authoritative_received_at,
             server_sequence: value.server_sequence,
             content_type: value.content_type,
             attributes: value.attributes.into_iter().map(Into::into).collect(),
@@ -1578,12 +1689,32 @@ impl From<im_core::messages::ConversationSnapshotMessageBody>
     for DartConversationSnapshotMessageBody
 {
     fn from(value: im_core::messages::ConversationSnapshotMessageBody) -> Self {
-        Self {
-            text: value.text,
-            kind: value.kind,
-            payload_json: value.payload_json,
-            unsupported_content_type: value.unsupported_content_type,
-        }
+        dart_conversation_snapshot_message_body(value, false)
+    }
+}
+
+fn dart_conversation_snapshot_message_body(
+    value: im_core::messages::ConversationSnapshotMessageBody,
+    allow_direct_agent_message: bool,
+) -> DartConversationSnapshotMessageBody {
+    let mut payload_json = value.payload_json;
+    let agent_message = payload_json
+        .as_deref()
+        .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+        .as_ref()
+        .and_then(|payload| dart_agent_message_projection(payload, allow_direct_agent_message));
+    if agent_message.is_some() {
+        payload_json = None;
+    }
+    DartConversationSnapshotMessageBody {
+        text: value.text,
+        kind: agent_message
+            .is_some()
+            .then(|| "agent_message".to_owned())
+            .or(value.kind),
+        payload_json,
+        unsupported_content_type: value.unsupported_content_type,
+        agent_message,
     }
 }
 
@@ -1944,6 +2075,7 @@ impl From<im_core::messages::CommittedIncomingMessage> for DartCommittedIncoming
             logical_message_id: value.logical_message_id,
             source: DartCommittedMessageSource::LiveDelta,
             direction: value.direction.into(),
+            authoritative_received_at: value.authoritative_received_at,
             message: value.message.into(),
         }
     }

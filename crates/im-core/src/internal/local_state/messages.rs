@@ -12,6 +12,10 @@ pub(crate) enum MessageHydrationState {
     LegacyProbe,
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "messages_agent_projection_tests.rs"]
+mod agent_message_projection_tests;
+
 impl MessageHydrationState {
     fn as_str(self) -> &'static str {
         match self {
@@ -553,7 +557,12 @@ fn upsert_message_record(
     };
     let is_e2ee = record.is_e2ee || group_duplicate_rows.iter().any(|row| row.is_e2ee);
     let is_control_payload = hydration_state == MessageHydrationState::Hydrated
-        && is_control_payload_for_projection(&content_type, &content, &record.sender_did);
+        && crate::messages::classify_message_payload_for_projection(
+            &content_type,
+            &content,
+            &record.sender_did,
+        )
+        .is_control();
     let is_read = record.is_read;
     let is_read = is_read || is_control_payload;
     let mentions_current_user = mentions_current_user_for_projection(
@@ -1244,57 +1253,6 @@ pub(crate) fn mentions_current_user_for_projection(
 }
 
 #[cfg(feature = "sqlite")]
-pub(crate) fn is_control_payload_for_projection(
-    content_type: &str,
-    content: &str,
-    sender_did: &str,
-) -> bool {
-    if !content_type.trim().eq_ignore_ascii_case("application/json") {
-        return false;
-    }
-    let daemon_sender = is_daemon_control_sender(sender_did);
-    let content = content.trim();
-    if content.is_empty() {
-        return true;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
-        return false;
-    };
-    is_control_payload_value(&value) || (daemon_sender && is_daemon_control_payload_value(&value))
-}
-
-#[cfg(feature = "sqlite")]
-fn is_control_payload_value(value: &serde_json::Value) -> bool {
-    value
-        .as_object()
-        .and_then(|object| object.get("schema"))
-        .and_then(serde_json::Value::as_str)
-        .map(|schema| schema.trim().starts_with("awiki."))
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "sqlite")]
-fn is_daemon_control_sender(sender_did: &str) -> bool {
-    sender_did.trim().contains(":agent:daemon:")
-}
-
-#[cfg(feature = "sqlite")]
-fn is_daemon_control_payload_value(value: &serde_json::Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    object.contains_key("daemon")
-        || object.contains_key("runtimes")
-        || object.contains_key("command_id")
-        || object.contains_key("events")
-        || object
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .map(|command| command.trim().starts_with("agent."))
-            .unwrap_or(false)
-}
-
-#[cfg(feature = "sqlite")]
 pub(crate) fn repair_control_payload_read_projection(
     connection: &rusqlite::Connection,
 ) -> crate::ImResult<usize> {
@@ -1338,7 +1296,12 @@ WHERE direction = 0
             if owner_identity_id.trim().is_empty()
                 || msg_id.trim().is_empty()
                 || conversation_id.trim().is_empty()
-                || !is_control_payload_for_projection(&content_type, &content, &sender_did)
+                || !crate::messages::classify_message_payload_for_projection(
+                    &content_type,
+                    &content,
+                    &sender_did,
+                )
+                .is_control()
             {
                 continue;
             }

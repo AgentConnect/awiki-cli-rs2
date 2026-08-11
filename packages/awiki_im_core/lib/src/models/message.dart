@@ -179,18 +179,62 @@ class ScopedInboxToken {
   final String token;
 }
 
+enum AgentMessageProjectionState { valid, invalid }
+
+enum AgentMessageKind { message, taskResult, alert }
+
+/// Requested product semantic only; it is not a platform notification priority.
+enum AgentMessageRequestedLevel { normal, urgent }
+
+enum AgentMessageAction { openConversation }
+
+class AgentMessageV1 {
+  const AgentMessageV1({
+    required this.schema,
+    required this.eventId,
+    required this.taskName,
+    required this.kind,
+    required this.requestedLevel,
+    required this.summary,
+    this.detail,
+    required this.action,
+  });
+
+  final String schema;
+  final String eventId;
+  final String taskName;
+  final AgentMessageKind kind;
+  final AgentMessageRequestedLevel requestedLevel;
+  final String summary;
+  final String? detail;
+  final AgentMessageAction action;
+}
+
+class AgentMessageProjection {
+  const AgentMessageProjection({required this.state, this.message});
+
+  final AgentMessageProjectionState state;
+  final AgentMessageV1? message;
+
+  bool get isValid => state == AgentMessageProjectionState.valid;
+}
+
 class MessageBodyView {
   const MessageBodyView({
     this.text,
     this.kind,
     this.payloadJson,
     this.unsupportedContentType,
+    this.agentMessage,
   });
 
   final String? text;
   final String? kind;
   final String? payloadJson;
   final String? unsupportedContentType;
+
+  /// Present only for the exact visible schema. Invalid carries no raw payload.
+  final AgentMessageProjection? agentMessage;
 }
 
 class MessageMetadataAttribute {
@@ -296,6 +340,7 @@ class Message {
     required this.body,
     this.sentAt,
     this.receivedAt,
+    this.authoritativeReceivedAt,
     required this.metadata,
   });
 
@@ -312,6 +357,9 @@ class Message {
   final MessageBodyView body;
   final String? sentAt;
   final String? receivedAt;
+
+  /// Core-selected receive time; never inferred from sender-controlled sentAt.
+  final String? authoritativeReceivedAt;
   final MessageMetadata metadata;
 }
 
@@ -378,6 +426,7 @@ class CommittedIncomingMessage {
     required this.logicalMessageId,
     required this.source,
     required this.direction,
+    this.authoritativeReceivedAt,
     required this.message,
   });
 
@@ -385,6 +434,9 @@ class CommittedIncomingMessage {
   final String logicalMessageId;
   final CommittedMessageSource source;
   final MessageDirection direction;
+
+  /// Core-selected service accepted/received time for urgency age checks.
+  final String? authoritativeReceivedAt;
   final Message message;
 }
 
@@ -583,6 +635,7 @@ class ConversationSnapshotMessage {
     required this.body,
     this.sentAt,
     this.receivedAt,
+    this.authoritativeReceivedAt,
     this.serverSequence,
     this.contentType,
     this.attributes = const [],
@@ -599,6 +652,9 @@ class ConversationSnapshotMessage {
   final ConversationSnapshotMessageBody body;
   final String? sentAt;
   final String? receivedAt;
+
+  /// Core-selected receive time; never inferred from sender-controlled sentAt.
+  final String? authoritativeReceivedAt;
   final int? serverSequence;
   final String? contentType;
   final List<MessageMetadataAttribute> attributes;
@@ -610,12 +666,14 @@ class ConversationSnapshotMessageBody {
     this.kind,
     this.payloadJson,
     this.unsupportedContentType,
+    this.agentMessage,
   });
 
   final String? text;
   final String? kind;
   final String? payloadJson;
   final String? unsupportedContentType;
+  final AgentMessageProjection? agentMessage;
 }
 
 class ConversationReadRef {

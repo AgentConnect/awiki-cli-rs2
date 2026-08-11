@@ -1483,9 +1483,9 @@ fn request_body_view(
                     "message payload must be a JSON object",
                 ));
             }
-            Ok(crate::messages::MessageBodyView::Payload {
-                payload: payload.clone(),
-            })
+            Ok(crate::messages::MessageBodyView::from_json_payload(
+                payload.clone(),
+            ))
         }
         crate::messages::MessageBody::Attachment { .. } => {
             Err(crate::ImError::unsupported("conversation-attachment-send"))

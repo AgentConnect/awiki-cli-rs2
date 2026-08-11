@@ -533,6 +533,124 @@ fn msg_send_default_cutover_supports_attachment_dry_run_and_secure_direct_alias(
 }
 
 #[test]
+fn msg_send_agent_message_v1_dry_run_defers_authority_without_message_side_effects() {
+    let workspace = TempDir::new().expect("workspace");
+    let valid = r#"{"schema":"awiki.agent.message.v1","event_id":"event-001","task_name":"Release verification","kind":"task_result","level":"normal","content":{"summary":"Build completed"},"action":{"type":"open_conversation"}}"#;
+
+    let group_before_ids = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--group",
+            "did:example:group",
+            "--payload",
+            valid,
+        ],
+        workspace.path(),
+    );
+    assert_code(&group_before_ids, 2);
+    let envelope = error_json(&group_before_ids);
+    assert_eq!(envelope["error"]["code"], "agent_message_direct_only");
+
+    let e2ee_before_ids = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            valid,
+            "--secure",
+            "on",
+        ],
+        workspace.path(),
+    );
+    assert_code(&e2ee_before_ids, 2);
+    let envelope = error_json(&e2ee_before_ids);
+    assert_eq!(
+        envelope["error"]["code"],
+        "agent_message_transport_protected_only"
+    );
+
+    let missing_ids = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            valid,
+        ],
+        workspace.path(),
+    );
+    assert_code(&missing_ids, 2);
+    let envelope = error_json(&missing_ids);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(&envelope["error"]["message"], "client_message_id");
+
+    let capability_deferred = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            valid,
+            "--client-message-id",
+            "msg-event-001",
+            "--idempotency-key",
+            "idem-event-001",
+        ],
+        workspace.path(),
+    );
+    assert_success(&capability_deferred);
+    let envelope = success_json(&capability_deferred);
+    assert_eq!(envelope["data"]["plan"]["action"], "direct.send");
+    assert_eq!(
+        envelope["data"]["plan"]["receiver_capability_check"],
+        "deferred_to_receiving_home"
+    );
+    assert_eq!(
+        envelope["data"]["plan"]["receiver_capability_verified"],
+        false
+    );
+    assert_eq!(
+        envelope["data"]["plan"]["urgent_authorization_checked"],
+        false
+    );
+    assert!(envelope["data"].get("delivery").is_none());
+    assert!(!envelope.to_string().contains("accepted"));
+
+    let unsafe_payload = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            r#"{"schema":"awiki.agent.message.v1","event_id":"event-002","task_name":"Production release","kind":"alert","level":"urgent","content":{"summary":"token=must-not-echo"},"action":{"type":"open_conversation"}}"#,
+            "--client-message-id",
+            "msg-event-002",
+            "--idempotency-key",
+            "idem-event-002",
+        ],
+        workspace.path(),
+    );
+    assert_code(&unsafe_payload, 2);
+    let envelope = error_json(&unsafe_payload);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert!(!envelope.to_string().contains("must-not-echo"));
+
+    assert!(!workspace.path().join("identities").exists());
+    assert!(!workspace.path().join("data").exists());
+}
+
+#[test]
 fn msg_read_default_cutover_dry_run_routes_inbox_and_history_subset() {
     let workspace = TempDir::new().expect("workspace");
 

@@ -8,11 +8,87 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'message.freezed.dart';
 
+enum DartAgentMessageAction { openConversation }
+
+enum DartAgentMessageKind { message, taskResult, alert }
+
+class DartAgentMessageProjection {
+  final DartAgentMessageProjectionState state;
+  final DartAgentMessageV1? message;
+
+  const DartAgentMessageProjection({required this.state, this.message});
+
+  @override
+  int get hashCode => state.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartAgentMessageProjection &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          message == other.message;
+}
+
+enum DartAgentMessageProjectionState { valid, invalid }
+
+enum DartAgentMessageRequestedLevel { normal, urgent }
+
+class DartAgentMessageV1 {
+  final String schema;
+  final String eventId;
+  final String taskName;
+  final DartAgentMessageKind kind;
+  final DartAgentMessageRequestedLevel requestedLevel;
+  final String summary;
+  final String? detail;
+  final DartAgentMessageAction action;
+
+  const DartAgentMessageV1({
+    required this.schema,
+    required this.eventId,
+    required this.taskName,
+    required this.kind,
+    required this.requestedLevel,
+    required this.summary,
+    this.detail,
+    required this.action,
+  });
+
+  @override
+  int get hashCode =>
+      schema.hashCode ^
+      eventId.hashCode ^
+      taskName.hashCode ^
+      kind.hashCode ^
+      requestedLevel.hashCode ^
+      summary.hashCode ^
+      detail.hashCode ^
+      action.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartAgentMessageV1 &&
+          runtimeType == other.runtimeType &&
+          schema == other.schema &&
+          eventId == other.eventId &&
+          taskName == other.taskName &&
+          kind == other.kind &&
+          requestedLevel == other.requestedLevel &&
+          summary == other.summary &&
+          detail == other.detail &&
+          action == other.action;
+}
+
 class DartCommittedIncomingMessage {
   final String eventId;
   final String logicalMessageId;
   final DartCommittedMessageSource source;
   final DartMessageDirection direction;
+
+  /// Core-selected service accepted/received time for notification age policy.
+  final String? authoritativeReceivedAt;
   final DartMessage message;
 
   const DartCommittedIncomingMessage({
@@ -20,6 +96,7 @@ class DartCommittedIncomingMessage {
     required this.logicalMessageId,
     required this.source,
     required this.direction,
+    this.authoritativeReceivedAt,
     required this.message,
   });
 
@@ -29,6 +106,7 @@ class DartCommittedIncomingMessage {
       logicalMessageId.hashCode ^
       source.hashCode ^
       direction.hashCode ^
+      authoritativeReceivedAt.hashCode ^
       message.hashCode;
 
   @override
@@ -40,6 +118,7 @@ class DartCommittedIncomingMessage {
           logicalMessageId == other.logicalMessageId &&
           source == other.source &&
           direction == other.direction &&
+          authoritativeReceivedAt == other.authoritativeReceivedAt &&
           message == other.message;
 }
 
@@ -393,6 +472,10 @@ class DartConversationSnapshotMessage {
   final DartConversationSnapshotMessageBody body;
   final String? sentAt;
   final String? receivedAt;
+
+  /// Core-selected receive time for urgency age checks. This remains
+  /// explicit so snapshot consumers never guess from `sent_at`.
+  final String? authoritativeReceivedAt;
   final PlatformInt64? serverSequence;
   final String? contentType;
   final List<DartMessageMetadataAttribute> attributes;
@@ -409,6 +492,7 @@ class DartConversationSnapshotMessage {
     required this.body,
     this.sentAt,
     this.receivedAt,
+    this.authoritativeReceivedAt,
     this.serverSequence,
     this.contentType,
     required this.attributes,
@@ -427,6 +511,7 @@ class DartConversationSnapshotMessage {
       body.hashCode ^
       sentAt.hashCode ^
       receivedAt.hashCode ^
+      authoritativeReceivedAt.hashCode ^
       serverSequence.hashCode ^
       contentType.hashCode ^
       attributes.hashCode;
@@ -447,6 +532,7 @@ class DartConversationSnapshotMessage {
           body == other.body &&
           sentAt == other.sentAt &&
           receivedAt == other.receivedAt &&
+          authoritativeReceivedAt == other.authoritativeReceivedAt &&
           serverSequence == other.serverSequence &&
           contentType == other.contentType &&
           attributes == other.attributes;
@@ -457,12 +543,14 @@ class DartConversationSnapshotMessageBody {
   final String? kind;
   final String? payloadJson;
   final String? unsupportedContentType;
+  final DartAgentMessageProjection? agentMessage;
 
   const DartConversationSnapshotMessageBody({
     this.text,
     this.kind,
     this.payloadJson,
     this.unsupportedContentType,
+    this.agentMessage,
   });
 
   @override
@@ -470,7 +558,8 @@ class DartConversationSnapshotMessageBody {
       text.hashCode ^
       kind.hashCode ^
       payloadJson.hashCode ^
-      unsupportedContentType.hashCode;
+      unsupportedContentType.hashCode ^
+      agentMessage.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -480,7 +569,8 @@ class DartConversationSnapshotMessageBody {
           text == other.text &&
           kind == other.kind &&
           payloadJson == other.payloadJson &&
-          unsupportedContentType == other.unsupportedContentType;
+          unsupportedContentType == other.unsupportedContentType &&
+          agentMessage == other.agentMessage;
 }
 
 class DartConversationStorageThreadRef {
@@ -731,6 +821,10 @@ class DartMessage {
   final DartMessageBodyView body;
   final String? sentAt;
   final String? receivedAt;
+
+  /// Core-selected receive time for urgency age checks. This never falls
+  /// back to the sender-controlled `sent_at` value.
+  final String? authoritativeReceivedAt;
   final DartMessageMetadata metadata;
 
   const DartMessage({
@@ -747,6 +841,7 @@ class DartMessage {
     required this.body,
     this.sentAt,
     this.receivedAt,
+    this.authoritativeReceivedAt,
     required this.metadata,
   });
 
@@ -765,6 +860,7 @@ class DartMessage {
       body.hashCode ^
       sentAt.hashCode ^
       receivedAt.hashCode ^
+      authoritativeReceivedAt.hashCode ^
       metadata.hashCode;
 
   @override
@@ -785,6 +881,7 @@ class DartMessage {
           body == other.body &&
           sentAt == other.sentAt &&
           receivedAt == other.receivedAt &&
+          authoritativeReceivedAt == other.authoritativeReceivedAt &&
           metadata == other.metadata;
 }
 
@@ -793,12 +890,14 @@ class DartMessageBodyView {
   final String? kind;
   final String? payloadJson;
   final String? unsupportedContentType;
+  final DartAgentMessageProjection? agentMessage;
 
   const DartMessageBodyView({
     this.text,
     this.kind,
     this.payloadJson,
     this.unsupportedContentType,
+    this.agentMessage,
   });
 
   @override
@@ -806,7 +905,8 @@ class DartMessageBodyView {
       text.hashCode ^
       kind.hashCode ^
       payloadJson.hashCode ^
-      unsupportedContentType.hashCode;
+      unsupportedContentType.hashCode ^
+      agentMessage.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -816,7 +916,8 @@ class DartMessageBodyView {
           text == other.text &&
           kind == other.kind &&
           payloadJson == other.payloadJson &&
-          unsupportedContentType == other.unsupportedContentType;
+          unsupportedContentType == other.unsupportedContentType &&
+          agentMessage == other.agentMessage;
 }
 
 enum DartMessageDirection { outgoing, incoming, unknown }

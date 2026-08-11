@@ -982,6 +982,36 @@ must stay behind internal diagnostics or test-only interfaces.
 
 ## Message payloads and ANP P9 mentions
 
+### Agent 可见消息 typed projection
+
+`MessageBodyView.agentMessage` 是 exact `awiki.agent.message.v1` 的唯一 App-facing projection。
+`state=valid` 时 `message` 包含 `eventId`、必填安全 `taskName`、闭合 `kind`、`requestedLevel`、安全
+`summary/detail` 与 `openConversation`；`state=invalid` 时 `message == null`。两种状态的
+`payloadJson` 都为 `null`，App 不得回退解析 raw JSON。Conversation snapshot last-message body
+使用同一 typed projection。
+
+`taskName` 是 Coding Agent 任务的显示上下文，不是任务 ID、route 或 authorization fact。卡片和
+App 内全屏紧急态必须显示它；单行空间不足时可以视觉省略，但不得从 `summary`、conversation
+标题或 sender label 猜测，也不得把 payload 自报的 `agent_name` 当成可信 Agent 名称。
+
+只有已证明普通 transport-protected Direct 的 Message context 可以得到 valid。Group、E2EE 或
+无法证明 scope 的 raw Thread 即使 payload 字段合法也由 Core scoped projector输出 invalid generic；AWiki Me mapper 不再实现
+另一套 scope/schema validator。旧 broad classifier 留下的 read 行可在 rebuild 后显示，但不补
+unread、不 retro-notify。
+
+live `Message`、`ConversationSnapshotMessage` 与 `CommittedIncomingMessage` 都显式提供
+`authoritativeReceivedAt`，它是 App 做 urgent 15 分钟 age gate 的唯一时间。该值只来自 Core
+选择的 `received_at|accepted_at`，不从 `sentAt` fallback。缺失、解析失败、未来时间或超时都降为
+normal，禁止用 `sentAt ?? receivedAt`。此外
+`AgentMessageRequestedLevel.urgent` 仍只是请求语义；App 必须继续应用 verified Agent、用户开关、
+mute、rate limit 与前后台策略，不能直接设置平台 priority/sound/vibration/wake/DND。
+
+发送继续走 `sendPayload`/`sendConversationPayload`。native Core 只执行本地 schema、Direct/
+transport-protected scope 与稳定幂等字段校验；receiver capability 由 Receiving Home 在提交前
+权威裁决，Flutter 不得提供 caller-supplied version/boolean 绕过。CLI dry-run 只能显示该检查已
+延后且尚未验证，不能声称 server accepted、Push eligible 或 urgent authorized。兼容旧客户端时
+只允许获授权 workflow 单发普通文本 fallback，不能同时发送两种消息。
+
 `SendPayloadRequest.payloadJson` accepts any JSON object up to the SDK payload
 size limit. It no longer requires a top-level `schema` field. Existing
 `awiki.agent.*` control payloads may continue to include `schema`, but App code

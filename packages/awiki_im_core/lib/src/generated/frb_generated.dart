@@ -6820,6 +6820,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartAgentMessageProjection
+  dco_decode_box_autoadd_dart_agent_message_projection(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_agent_message_projection(raw);
+  }
+
+  @protected
+  DartAgentMessageV1 dco_decode_box_autoadd_dart_agent_message_v_1(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_agent_message_v_1(raw);
+  }
+
+  @protected
   DartAttachmentSendRequest dco_decode_box_autoadd_dart_attachment_send_request(
     dynamic raw,
   ) {
@@ -7245,6 +7260,65 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartAgentMessageAction dco_decode_dart_agent_message_action(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartAgentMessageAction.values[raw as int];
+  }
+
+  @protected
+  DartAgentMessageKind dco_decode_dart_agent_message_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartAgentMessageKind.values[raw as int];
+  }
+
+  @protected
+  DartAgentMessageProjection dco_decode_dart_agent_message_projection(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return DartAgentMessageProjection(
+      state: dco_decode_dart_agent_message_projection_state(arr[0]),
+      message: dco_decode_opt_box_autoadd_dart_agent_message_v_1(arr[1]),
+    );
+  }
+
+  @protected
+  DartAgentMessageProjectionState
+  dco_decode_dart_agent_message_projection_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartAgentMessageProjectionState.values[raw as int];
+  }
+
+  @protected
+  DartAgentMessageRequestedLevel dco_decode_dart_agent_message_requested_level(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartAgentMessageRequestedLevel.values[raw as int];
+  }
+
+  @protected
+  DartAgentMessageV1 dco_decode_dart_agent_message_v_1(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return DartAgentMessageV1(
+      schema: dco_decode_String(arr[0]),
+      eventId: dco_decode_String(arr[1]),
+      taskName: dco_decode_String(arr[2]),
+      kind: dco_decode_dart_agent_message_kind(arr[3]),
+      requestedLevel: dco_decode_dart_agent_message_requested_level(arr[4]),
+      summary: dco_decode_String(arr[5]),
+      detail: dco_decode_opt_String(arr[6]),
+      action: dco_decode_dart_agent_message_action(arr[7]),
+    );
+  }
+
+  @protected
   DartAttachmentDestination dco_decode_dart_attachment_destination(
     dynamic raw,
   ) {
@@ -7371,14 +7445,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return DartCommittedIncomingMessage(
       eventId: dco_decode_String(arr[0]),
       logicalMessageId: dco_decode_String(arr[1]),
       source: dco_decode_dart_committed_message_source(arr[2]),
       direction: dco_decode_dart_message_direction(arr[3]),
-      message: dco_decode_dart_message(arr[4]),
+      authoritativeReceivedAt: dco_decode_opt_String(arr[4]),
+      message: dco_decode_dart_message(arr[5]),
     );
   }
 
@@ -7557,8 +7632,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return DartConversationSnapshotMessage(
       id: dco_decode_String(arr[0]),
       threadKind: dco_decode_String(arr[1]),
@@ -7572,9 +7647,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       body: dco_decode_dart_conversation_snapshot_message_body(arr[8]),
       sentAt: dco_decode_opt_String(arr[9]),
       receivedAt: dco_decode_opt_String(arr[10]),
-      serverSequence: dco_decode_opt_box_autoadd_i_64(arr[11]),
-      contentType: dco_decode_opt_String(arr[12]),
-      attributes: dco_decode_list_dart_message_metadata_attribute(arr[13]),
+      authoritativeReceivedAt: dco_decode_opt_String(arr[11]),
+      serverSequence: dco_decode_opt_box_autoadd_i_64(arr[12]),
+      contentType: dco_decode_opt_String(arr[13]),
+      attributes: dco_decode_list_dart_message_metadata_attribute(arr[14]),
     );
   }
 
@@ -7583,13 +7659,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_dart_conversation_snapshot_message_body(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartConversationSnapshotMessageBody(
       text: dco_decode_opt_String(arr[0]),
       kind: dco_decode_opt_String(arr[1]),
       payloadJson: dco_decode_opt_String(arr[2]),
       unsupportedContentType: dco_decode_opt_String(arr[3]),
+      agentMessage: dco_decode_opt_box_autoadd_dart_agent_message_projection(
+        arr[4],
+      ),
     );
   }
 
@@ -9179,8 +9258,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessage dco_decode_dart_message(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return DartMessage(
       id: dco_decode_String(arr[0]),
       conversationId: dco_decode_String(arr[1]),
@@ -9195,7 +9274,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       body: dco_decode_dart_message_body_view(arr[10]),
       sentAt: dco_decode_opt_String(arr[11]),
       receivedAt: dco_decode_opt_String(arr[12]),
-      metadata: dco_decode_dart_message_metadata(arr[13]),
+      authoritativeReceivedAt: dco_decode_opt_String(arr[13]),
+      metadata: dco_decode_dart_message_metadata(arr[14]),
     );
   }
 
@@ -9203,13 +9283,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessageBodyView dco_decode_dart_message_body_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartMessageBodyView(
       text: dco_decode_opt_String(arr[0]),
       kind: dco_decode_opt_String(arr[1]),
       payloadJson: dco_decode_opt_String(arr[2]),
       unsupportedContentType: dco_decode_opt_String(arr[3]),
+      agentMessage: dco_decode_opt_box_autoadd_dart_agent_message_projection(
+        arr[4],
+      ),
     );
   }
 
@@ -10292,6 +10375,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartAgentMessageProjection?
+  dco_decode_opt_box_autoadd_dart_agent_message_projection(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_agent_message_projection(raw);
+  }
+
+  @protected
+  DartAgentMessageV1? dco_decode_opt_box_autoadd_dart_agent_message_v_1(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_agent_message_v_1(raw);
+  }
+
+  @protected
   DartClientVersionInfo? dco_decode_opt_box_autoadd_dart_client_version_info(
     dynamic raw,
   ) {
@@ -10843,6 +10945,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartAgentMessageProjection
+  sse_decode_box_autoadd_dart_agent_message_projection(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_agent_message_projection(deserializer));
+  }
+
+  @protected
+  DartAgentMessageV1 sse_decode_box_autoadd_dart_agent_message_v_1(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_agent_message_v_1(deserializer));
+  }
+
+  @protected
   DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(
     SseDeserializer deserializer,
   ) {
@@ -11331,6 +11450,82 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartAgentMessageAction sse_decode_dart_agent_message_action(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartAgentMessageAction.values[inner];
+  }
+
+  @protected
+  DartAgentMessageKind sse_decode_dart_agent_message_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartAgentMessageKind.values[inner];
+  }
+
+  @protected
+  DartAgentMessageProjection sse_decode_dart_agent_message_projection(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_state = sse_decode_dart_agent_message_projection_state(
+      deserializer,
+    );
+    var var_message = sse_decode_opt_box_autoadd_dart_agent_message_v_1(
+      deserializer,
+    );
+    return DartAgentMessageProjection(state: var_state, message: var_message);
+  }
+
+  @protected
+  DartAgentMessageProjectionState
+  sse_decode_dart_agent_message_projection_state(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartAgentMessageProjectionState.values[inner];
+  }
+
+  @protected
+  DartAgentMessageRequestedLevel sse_decode_dart_agent_message_requested_level(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartAgentMessageRequestedLevel.values[inner];
+  }
+
+  @protected
+  DartAgentMessageV1 sse_decode_dart_agent_message_v_1(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_schema = sse_decode_String(deserializer);
+    var var_eventId = sse_decode_String(deserializer);
+    var var_taskName = sse_decode_String(deserializer);
+    var var_kind = sse_decode_dart_agent_message_kind(deserializer);
+    var var_requestedLevel = sse_decode_dart_agent_message_requested_level(
+      deserializer,
+    );
+    var var_summary = sse_decode_String(deserializer);
+    var var_detail = sse_decode_opt_String(deserializer);
+    var var_action = sse_decode_dart_agent_message_action(deserializer);
+    return DartAgentMessageV1(
+      schema: var_schema,
+      eventId: var_eventId,
+      taskName: var_taskName,
+      kind: var_kind,
+      requestedLevel: var_requestedLevel,
+      summary: var_summary,
+      detail: var_detail,
+      action: var_action,
+    );
+  }
+
+  @protected
   DartAttachmentDestination sse_decode_dart_attachment_destination(
     SseDeserializer deserializer,
   ) {
@@ -11486,12 +11681,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_logicalMessageId = sse_decode_String(deserializer);
     var var_source = sse_decode_dart_committed_message_source(deserializer);
     var var_direction = sse_decode_dart_message_direction(deserializer);
+    var var_authoritativeReceivedAt = sse_decode_opt_String(deserializer);
     var var_message = sse_decode_dart_message(deserializer);
     return DartCommittedIncomingMessage(
       eventId: var_eventId,
       logicalMessageId: var_logicalMessageId,
       source: var_source,
       direction: var_direction,
+      authoritativeReceivedAt: var_authoritativeReceivedAt,
       message: var_message,
     );
   }
@@ -11744,6 +11941,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     var var_sentAt = sse_decode_opt_String(deserializer);
     var var_receivedAt = sse_decode_opt_String(deserializer);
+    var var_authoritativeReceivedAt = sse_decode_opt_String(deserializer);
     var var_serverSequence = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_contentType = sse_decode_opt_String(deserializer);
     var var_attributes = sse_decode_list_dart_message_metadata_attribute(
@@ -11761,6 +11959,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       body: var_body,
       sentAt: var_sentAt,
       receivedAt: var_receivedAt,
+      authoritativeReceivedAt: var_authoritativeReceivedAt,
       serverSequence: var_serverSequence,
       contentType: var_contentType,
       attributes: var_attributes,
@@ -11777,11 +11976,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_kind = sse_decode_opt_String(deserializer);
     var var_payloadJson = sse_decode_opt_String(deserializer);
     var var_unsupportedContentType = sse_decode_opt_String(deserializer);
+    var var_agentMessage =
+        sse_decode_opt_box_autoadd_dart_agent_message_projection(deserializer);
     return DartConversationSnapshotMessageBody(
       text: var_text,
       kind: var_kind,
       payloadJson: var_payloadJson,
       unsupportedContentType: var_unsupportedContentType,
+      agentMessage: var_agentMessage,
     );
   }
 
@@ -13842,6 +14044,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_body = sse_decode_dart_message_body_view(deserializer);
     var var_sentAt = sse_decode_opt_String(deserializer);
     var var_receivedAt = sse_decode_opt_String(deserializer);
+    var var_authoritativeReceivedAt = sse_decode_opt_String(deserializer);
     var var_metadata = sse_decode_dart_message_metadata(deserializer);
     return DartMessage(
       id: var_id,
@@ -13857,6 +14060,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       body: var_body,
       sentAt: var_sentAt,
       receivedAt: var_receivedAt,
+      authoritativeReceivedAt: var_authoritativeReceivedAt,
       metadata: var_metadata,
     );
   }
@@ -13870,11 +14074,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_kind = sse_decode_opt_String(deserializer);
     var var_payloadJson = sse_decode_opt_String(deserializer);
     var var_unsupportedContentType = sse_decode_opt_String(deserializer);
+    var var_agentMessage =
+        sse_decode_opt_box_autoadd_dart_agent_message_projection(deserializer);
     return DartMessageBodyView(
       text: var_text,
       kind: var_kind,
       payloadJson: var_payloadJson,
       unsupportedContentType: var_unsupportedContentType,
+      agentMessage: var_agentMessage,
     );
   }
 
@@ -15369,6 +15576,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartAgentMessageProjection?
+  sse_decode_opt_box_autoadd_dart_agent_message_projection(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_agent_message_projection(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  DartAgentMessageV1? sse_decode_opt_box_autoadd_dart_agent_message_v_1(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_agent_message_v_1(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartClientVersionInfo? sse_decode_opt_box_autoadd_dart_client_version_info(
     SseDeserializer deserializer,
   ) {
@@ -16133,6 +16369,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_agent_message_projection(
+    DartAgentMessageProjection self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_agent_message_projection(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_agent_message_v_1(
+    DartAgentMessageV1 self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_agent_message_v_1(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_attachment_send_request(
     DartAttachmentSendRequest self,
     SseSerializer serializer,
@@ -16646,6 +16900,71 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_agent_message_action(
+    DartAgentMessageAction self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_agent_message_kind(
+    DartAgentMessageKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_agent_message_projection(
+    DartAgentMessageProjection self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_agent_message_projection_state(self.state, serializer);
+    sse_encode_opt_box_autoadd_dart_agent_message_v_1(self.message, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_agent_message_projection_state(
+    DartAgentMessageProjectionState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_agent_message_requested_level(
+    DartAgentMessageRequestedLevel self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_agent_message_v_1(
+    DartAgentMessageV1 self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.schema, serializer);
+    sse_encode_String(self.eventId, serializer);
+    sse_encode_String(self.taskName, serializer);
+    sse_encode_dart_agent_message_kind(self.kind, serializer);
+    sse_encode_dart_agent_message_requested_level(
+      self.requestedLevel,
+      serializer,
+    );
+    sse_encode_String(self.summary, serializer);
+    sse_encode_opt_String(self.detail, serializer);
+    sse_encode_dart_agent_message_action(self.action, serializer);
+  }
+
+  @protected
   void sse_encode_dart_attachment_destination(
     DartAttachmentDestination self,
     SseSerializer serializer,
@@ -16769,6 +17088,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.logicalMessageId, serializer);
     sse_encode_dart_committed_message_source(self.source, serializer);
     sse_encode_dart_message_direction(self.direction, serializer);
+    sse_encode_opt_String(self.authoritativeReceivedAt, serializer);
     sse_encode_dart_message(self.message, serializer);
   }
 
@@ -16968,6 +17288,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_dart_conversation_snapshot_message_body(self.body, serializer);
     sse_encode_opt_String(self.sentAt, serializer);
     sse_encode_opt_String(self.receivedAt, serializer);
+    sse_encode_opt_String(self.authoritativeReceivedAt, serializer);
     sse_encode_opt_box_autoadd_i_64(self.serverSequence, serializer);
     sse_encode_opt_String(self.contentType, serializer);
     sse_encode_list_dart_message_metadata_attribute(
@@ -16986,6 +17307,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.kind, serializer);
     sse_encode_opt_String(self.payloadJson, serializer);
     sse_encode_opt_String(self.unsupportedContentType, serializer);
+    sse_encode_opt_box_autoadd_dart_agent_message_projection(
+      self.agentMessage,
+      serializer,
+    );
   }
 
   @protected
@@ -18491,6 +18816,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_dart_message_body_view(self.body, serializer);
     sse_encode_opt_String(self.sentAt, serializer);
     sse_encode_opt_String(self.receivedAt, serializer);
+    sse_encode_opt_String(self.authoritativeReceivedAt, serializer);
     sse_encode_dart_message_metadata(self.metadata, serializer);
   }
 
@@ -18504,6 +18830,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.kind, serializer);
     sse_encode_opt_String(self.payloadJson, serializer);
     sse_encode_opt_String(self.unsupportedContentType, serializer);
+    sse_encode_opt_box_autoadd_dart_agent_message_projection(
+      self.agentMessage,
+      serializer,
+    );
   }
 
   @protected
@@ -19681,6 +20011,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bool(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_agent_message_projection(
+    DartAgentMessageProjection? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_agent_message_projection(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_agent_message_v_1(
+    DartAgentMessageV1? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_agent_message_v_1(self, serializer);
     }
   }
 

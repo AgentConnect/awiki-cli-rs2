@@ -374,6 +374,23 @@ impl App {
         }
         if let Some(payload) = input.payload {
             plan.insert("payload".to_string(), payload.clone());
+            if matches!(
+                im_core::messages::project_agent_message_payload(payload),
+                Some(im_core::messages::AgentMessageProjection::Valid(_))
+            ) {
+                plan.insert(
+                    "receiver_capability_check".to_string(),
+                    Value::String("deferred_to_receiving_home".to_string()),
+                );
+                plan.insert(
+                    "receiver_capability_verified".to_string(),
+                    Value::Bool(false),
+                );
+                plan.insert(
+                    "urgent_authorization_checked".to_string(),
+                    Value::Bool(false),
+                );
+            }
         }
         if let Some(client_message_id) = input.client_message_id {
             plan.insert(
@@ -1273,6 +1290,28 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             )
         }
         MessageAdapterError::PublicServiceCode(service_code)
+            if service_code == "receiver_capability_unsupported" =>
+        {
+            ExitError::new(
+                "receiver_capability_unsupported",
+                5,
+                "The Receiving Home does not have an active AWiki Me installation that supports awiki.agent.message.v1.",
+                "Do not retry automatically or send a second fallback message unless the current workflow explicitly authorizes a new attempt.",
+            )
+        }
+        MessageAdapterError::PublicServiceCode(service_code)
+            if service_code == "receiver_capability_unverified" =>
+        {
+            let mut mapped = ExitError::new(
+                "receiver_capability_unverified",
+                5,
+                "The Receiving Home could not verify awiki.agent.message.v1 capability.",
+                "Retry the same client message ID and idempotency key only after the authority is available; do not create a new send identity.",
+            );
+            mapped.detail.retryable = true;
+            mapped
+        }
+        MessageAdapterError::PublicServiceCode(service_code)
             if matches!(
                 service_code.as_str(),
                 "anp.forbidden" | "anp.device_binding_required" | "anp.device_not_eligible"
@@ -1468,6 +1507,27 @@ mod tests {
             exit.detail.message,
             "message operation: remote service request failed."
         );
+    }
+
+    #[test]
+    fn message_exit_maps_receiving_home_capability_codes_without_private_details() {
+        let unsupported = message_exit(
+            MessageAdapterError::PublicServiceCode("receiver_capability_unsupported".to_owned()),
+            "fallback hint",
+        );
+        assert_eq!(unsupported.exit_code, 5);
+        assert_eq!(unsupported.detail.code, "receiver_capability_unsupported");
+        assert!(!unsupported.detail.retryable);
+        assert_eq!(unsupported.detail.details, serde_json::Value::Null);
+
+        let unverified = message_exit(
+            MessageAdapterError::PublicServiceCode("receiver_capability_unverified".to_owned()),
+            "fallback hint",
+        );
+        assert_eq!(unverified.exit_code, 5);
+        assert_eq!(unverified.detail.code, "receiver_capability_unverified");
+        assert!(unverified.detail.retryable);
+        assert_eq!(unverified.detail.details, serde_json::Value::Null);
     }
 
     #[test]

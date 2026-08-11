@@ -14,6 +14,10 @@ const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "read_state",
     "sync",
 ];
+const PUBLIC_EXACT_SERVICE_CODES: &[&str] = &[
+    "receiver_capability_unsupported",
+    "receiver_capability_unverified",
+];
 
 pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
     match err {
@@ -368,6 +372,9 @@ pub(crate) fn is_public_service_code(code: &str) -> bool {
         .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte))
     {
         return false;
+    }
+    if PUBLIC_EXACT_SERVICE_CODES.contains(&code) {
+        return true;
     }
 
     let Some((namespace, suffix)) = code.split_once('.') else {

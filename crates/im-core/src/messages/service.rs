@@ -2288,6 +2288,7 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        super::validate_agent_message_send_request(&request)?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
@@ -2389,6 +2390,7 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        super::validate_agent_message_send_request(&request)?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_secure_attachment_request(&request.body, &request.security)?;
@@ -2409,6 +2411,7 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        super::validate_agent_message_send_request(&request)?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
@@ -2829,6 +2832,7 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        super::validate_agent_message_send_request(&request)?;
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_secure_attachment_request(&request.body, &request.security)?;
@@ -4849,6 +4853,7 @@ pub(crate) fn resolve_conversation_send_target(
 }
 
 fn validate_plain_conversation_send(request: &super::SendMessageRequest) -> crate::ImResult<()> {
+    super::validate_agent_message_send_request(request)?;
     validate_body(&request.body)?;
     if matches!(request.body, super::MessageBody::Attachment { .. }) {
         return Err(crate::ImError::unsupported("conversation-attachment-send"));

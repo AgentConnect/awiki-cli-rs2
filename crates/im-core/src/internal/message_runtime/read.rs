@@ -5272,7 +5272,11 @@ fn message_body(value: &Value) -> crate::messages::MessageBodyView {
             value => value.clone(),
         };
         if payload.is_object() {
-            return crate::messages::MessageBodyView::Payload { payload };
+            return if content_type.as_deref() == Some("application/json") {
+                crate::messages::MessageBodyView::from_json_payload(payload)
+            } else {
+                crate::messages::MessageBodyView::Payload { payload }
+            };
         }
         return crate::messages::MessageBodyView::Unsupported { content_type };
     }

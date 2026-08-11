@@ -742,9 +742,15 @@ fn message_body(
     content_type: Option<&str>,
 ) -> crate::messages::MessageBodyView {
     let content_type = content_type.map(str::to_owned);
-    if content_type.as_deref() == Some("application/json")
-        || content_type.as_deref()
-            == Some(crate::attachments::manifest::attachment_manifest_content_type())
+    if content_type.as_deref() == Some("application/json") {
+        return serde_json::from_str::<serde_json::Value>(&record.content)
+            .ok()
+            .filter(serde_json::Value::is_object)
+            .map(crate::messages::MessageBodyView::from_json_payload)
+            .unwrap_or(crate::messages::MessageBodyView::Unsupported { content_type });
+    }
+    if content_type.as_deref()
+        == Some(crate::attachments::manifest::attachment_manifest_content_type())
     {
         return serde_json::from_str::<serde_json::Value>(&record.content)
             .ok()

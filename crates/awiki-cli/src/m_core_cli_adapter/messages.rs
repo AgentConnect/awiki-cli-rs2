@@ -34,20 +34,54 @@ pub fn send_message_request(
     let (security, warnings) = message_security(command, &target)?;
     let client_message_id = optional_message_id_flag(command, "client-message-id")?;
     let idempotency_key = optional_string_flag(command, "idempotency-key");
-    Ok((
-        SendMessageRequest {
-            target,
-            body,
-            security,
-            client_message_id,
-            delivery: MessageDeliveryOptions {
-                idempotency_key,
-                wait_for_final_acceptance: false,
-            },
-            delegated_signing: None,
+    let request = SendMessageRequest {
+        target,
+        body,
+        security,
+        client_message_id,
+        delivery: MessageDeliveryOptions {
+            idempotency_key,
+            wait_for_final_acceptance: false,
         },
-        warnings,
-    ))
+        delegated_signing: None,
+    };
+    im_core::messages::validate_agent_message_send_request(&request)
+        .map_err(agent_message_contract_to_exit_error)?;
+    Ok((request, warnings))
+}
+
+fn agent_message_contract_to_exit_error(error: im_core::ImError) -> ExitError {
+    match error {
+        im_core::ImError::UnsupportedCapability { capability }
+            if capability == "agent_message_direct_only" =>
+        {
+            ExitError::new(
+                "agent_message_direct_only",
+                2,
+                "awiki.agent.message.v1 is supported only for Direct targets",
+                "Use a Direct target; Group and raw Thread contexts fail closed.",
+            )
+        }
+        im_core::ImError::UnsupportedCapability { capability }
+            if capability == "agent_message_transport_protected_only" =>
+        {
+            ExitError::new(
+                "agent_message_transport_protected_only",
+                2,
+                "awiki.agent.message.v1 does not support E2EE message modes",
+                "Use the ordinary transport-protected Direct mode; do not downgrade an existing E2EE workflow implicitly.",
+            )
+        }
+        im_core::ImError::InvalidInput { field, message } => ExitError::new(
+            "invalid_argument",
+            2,
+            field
+                .map(|field| format!("{field}: {message}"))
+                .unwrap_or(message),
+            "Use the closed awiki.agent.message.v1 schema and provide stable --client-message-id and --idempotency-key values.",
+        ),
+        other => im_error_to_exit_error(other),
+    }
 }
 
 pub fn send_attachment_request(

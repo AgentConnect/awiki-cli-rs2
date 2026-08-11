@@ -1201,6 +1201,27 @@ Reliable sync 补充：
 `data.message.type` 为 `application/json`；不得将 payload 成功回执误判为仅允许
 text body 的内部错误。
 
+`awiki.agent.message.v1` 是该 generic payload 面中的唯一 typed visible exception。Core
+公开 `AgentMessageProjection::{Valid(AgentMessageV1), Invalid}` 及 scoped projector；valid 只包含
+`event_id`、必填安全 `task_name`、`message|task_result|alert`、
+`requested_level=normal|urgent`、安全
+`summary/detail` 和 `open_conversation`。invalid 没有原文或 reason。Direct context 才能得到
+valid；Group/raw Thread 强制为 invalid generic。Rust→Dart body projection 对 exact schema 不再
+返回 `payload_json`，从而避免 App 重复解析或展示 raw JSON。
+
+发送 preflight 仍接受现有 `SendMessageRequest`，不新增专用发送 API。exact schema 必须是
+Direct + `DefaultPlain|Plain`，并具有稳定 `client_message_id` 与 `delivery.idempotency_key`。
+`validate_agent_message_send_request` 只执行闭合 schema、Direct/transport-protected scope 与稳定
+`client_message_id + idempotency_key` 校验。通过后真实 `send` 继续进入现有 Direct 栈，由 Receiving
+Home 在接收端 mutation 前权威返回 accepted、`receiver_capability_unsupported` 或
+`receiver_capability_unverified`。调用方不得传一个自报 boolean/version 绕过；普通文本 fallback
+必须单发而非双发。
+
+Rust→Dart projection 的 live `DartMessage`、`DartConversationSnapshotMessage` 与
+`DartCommittedIncomingMessage` 都提供同名 `authoritative_received_at`。Core 只从认证 service
+`received_at|accepted_at` 选择该通知年龄时间，不从 `sent_at` fallback。host 只可用该字段执行
+`0 <= age <= 15m`；缺失、非法或未来值必须把 requested urgent 降为 normal。
+
 ## 9. directory：P2+
 
 ```rust

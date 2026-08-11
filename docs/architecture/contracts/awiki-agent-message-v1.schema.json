@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awiki:schema:agent-message:v1",
+  "title": "AWiki Agent Message V1",
+  "description": "One canonical Direct user-visible Coding Agent task notification. task_name is required display context; level is requested product semantics, never platform priority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "task_name",
+    "kind",
+    "level",
+    "content",
+    "action"
+  ],
+  "properties": {
+    "schema": {
+      "const": "awiki.agent.message.v1"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$"
+    },
+    "task_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "description": "Human-readable Coding Agent task name. It is display context, not an identifier, route, or authorization fact."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "message",
+        "task_result",
+        "alert"
+      ]
+    },
+    "level": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "urgent"
+      ],
+      "description": "Requested business semantic only. A receiver applies trust, preference, mute, age, and rate-limit policy."
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "open_conversation"
+        }
+      }
+    }
+  }
+}

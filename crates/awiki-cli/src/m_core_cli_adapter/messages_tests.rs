@@ -277,6 +277,29 @@ fn message_service_public_code_does_not_degrade_to_internal_error() {
 }
 
 #[test]
+fn message_service_receiver_capability_codes_are_stable_and_sanitized() {
+    let private_marker = "remote-private-capability-diagnostic";
+    for service_code in [
+        "receiver_capability_unsupported",
+        "receiver_capability_unverified",
+    ] {
+        let mapped = im_error_to_message_error(im_core::ImError::Service {
+            status_code: None,
+            code: Some(service_code.to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(json!({"private": private_marker})),
+        });
+
+        assert_eq!(
+            mapped,
+            MessageAdapterError::PublicServiceCode(service_code.to_owned())
+        );
+        assert!(!format!("{mapped:?}").contains(private_marker));
+        assert!(!mapped.to_string().contains(private_marker));
+    }
+}
+
+#[test]
 fn message_service_auth_status_precedes_public_service_code() {
     let private_marker = "remote-private-auth-error";
     for status_code in [401, 403] {

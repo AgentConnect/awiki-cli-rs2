@@ -888,6 +888,35 @@ Reliable message sync is split between service-owned event logs and
 `message-service/docs/api/ANP-client-server-api-sync.md`; this document records
 the SDK architecture boundary.
 
+### 14.1 Agent 可见消息投影
+
+`awiki.agent.message.v1` 是 `application/json` 中唯一的 Agent 可见 schema 例外。Core 的
+闭合 classifier 必须在 broad `awiki.*` control 判断之前处理它，并同时作为 incremental
+upsert、summary rebuild、read repair 与 Rust→Dart projection 的唯一 owner。valid 与 invalid
+exact schema 都是可见消息；其他已知或未知 `awiki.*` 继续是 hidden/read control。
+
+Core 只把普通 transport-protected Direct context 的 valid payload 投影为 typed
+`AgentMessageV1`。Group、E2EE 或无法证明为 Direct 的 raw Thread context 一律投影为 invalid
+generic。invalid、超限或 unsafe payload 不得把
+raw JSON、原文或 validation reason 传到 Rust/Dart/App；valid 也只传闭合字段，其中
+`task_name` 是所有 kind 必填的 Coding Agent 任务显示名称，不能从 summary、conversation 或
+Agent profile 猜测。历史上已被 broad
+classifier 标为 read 的 exact-schema 行，重建后可以进入 summary，但保留 read 状态、不补 unread，
+也不产生 retro-notification。
+
+Rust→Dart 的 live message、snapshot message 与 committed incoming message 都显式提供
+`authoritative_received_at`；这是 urgent 年龄策略的唯一 host 时间输入。Core 从认证 hydration
+的 `received_at` / `accepted_at` 选择，且绝不回退到 sender-controlled `sent_at`。host 对缺失、
+非法、未来或超过 15 分钟的时间必须降为 normal。`requested_level` 仅为业务请求
+语义，不能直接决定平台 priority、sound、vibration、wake 或 DND。
+
+发送仍复用 `MessageBody::Payload` / CLI `msg send --payload`，但只允许 Direct、普通
+transport-protected 路径，并要求稳定 `client_message_id + idempotency_key`。Core preflight 只执行
+闭合 schema、scope、安全模式和幂等字段校验；receiver capability 由 Receiving Home 在提交前
+权威裁决，并以稳定的 `receiver_capability_unsupported|receiver_capability_unverified` 返回。
+Core 不从 DID、Handle、展示资料或 payload 自报推断，也不接受 caller-supplied capability；旧客户端
+只允许由已授权 workflow 单发普通文本 fallback，不能双发。
+
 Ordinary v2 Direct/Group sync is the default product path for every valid
 account/device binding. Core does not accept an account allowlist, device
 cohort, or percentage rollout input. A host may explicitly disable the global

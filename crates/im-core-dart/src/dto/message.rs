@@ -99,12 +99,55 @@ pub enum DartMessageDirection {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartAgentMessageProjectionState {
+    Valid,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartAgentMessageKind {
+    Message,
+    TaskResult,
+    Alert,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartAgentMessageRequestedLevel {
+    Normal,
+    Urgent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartAgentMessageAction {
+    OpenConversation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartAgentMessageV1 {
+    pub schema: String,
+    pub event_id: String,
+    pub task_name: String,
+    pub kind: DartAgentMessageKind,
+    pub requested_level: DartAgentMessageRequestedLevel,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub action: DartAgentMessageAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartAgentMessageProjection {
+    pub state: DartAgentMessageProjectionState,
+    pub message: Option<DartAgentMessageV1>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartMessageBodyView {
     pub text: Option<String>,
     pub kind: Option<String>,
     pub payload_json: Option<String>,
     pub unsupported_content_type: Option<String>,
+    pub agent_message: Option<DartAgentMessageProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +235,9 @@ pub struct DartMessage {
     pub body: DartMessageBodyView,
     pub sent_at: Option<String>,
     pub received_at: Option<String>,
+    /// Core-selected receive time for urgency age checks. This never falls
+    /// back to the sender-controlled `sent_at` value.
+    pub authoritative_received_at: Option<String>,
     pub metadata: DartMessageMetadata,
 }
 
@@ -313,6 +359,8 @@ pub struct DartCommittedIncomingMessage {
     pub logical_message_id: String,
     pub source: DartCommittedMessageSource,
     pub direction: DartMessageDirection,
+    /// Core-selected service accepted/received time for notification age policy.
+    pub authoritative_received_at: Option<String>,
     pub message: DartMessage,
 }
 
@@ -490,6 +538,9 @@ pub struct DartConversationSnapshotMessage {
     pub body: DartConversationSnapshotMessageBody,
     pub sent_at: Option<String>,
     pub received_at: Option<String>,
+    /// Core-selected receive time for urgency age checks. This remains
+    /// explicit so snapshot consumers never guess from `sent_at`.
+    pub authoritative_received_at: Option<String>,
     pub server_sequence: Option<i64>,
     pub content_type: Option<String>,
     pub attributes: Vec<DartMessageMetadataAttribute>,
@@ -501,6 +552,7 @@ pub struct DartConversationSnapshotMessageBody {
     pub kind: Option<String>,
     pub payload_json: Option<String>,
     pub unsupported_content_type: Option<String>,
+    pub agent_message: Option<DartAgentMessageProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -20,6 +20,18 @@ This file is a **workflow reference**, not an entry Skill. Load it only when the
 
 This is a best-effort Agent workflow. The Skill can guide an Agent to send a notification, but it cannot guarantee execution when the Agent is killed, crashes, or does not load this reference.
 
+### Structured Agent message candidate
+
+`awiki.agent.message.v1` is a local receive/projection candidate, not an enabled Notify send mode.
+The current CLI/Core repository has no authoritative receiver AWiki Me version/capability and no
+recipient-scoped urgent authorization. An exact-schema `msg send --payload` preflight therefore
+returns `receiver_capability_unverified` before target resolution, network I/O, or local echo.
+
+Do not infer capability from a DID path, Handle, display name, sender inventory, or payload field.
+Do not retry with a second structured message. This workflow continues to send at most one
+authorized plain-text fallback using the existing contract below. `level=urgent` never authorizes
+platform priority, sound, vibration, wake, full-screen UI, or DND bypass.
+
 ## When to Use
 
 Use Notify only for one of these terminal states:

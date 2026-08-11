@@ -18,6 +18,10 @@ const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "read_state",
     "sync",
 ];
+const PUBLIC_EXACT_SERVICE_CODES: &[&str] = &[
+    "receiver_capability_unsupported",
+    "receiver_capability_unverified",
+];
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponseError {
@@ -104,6 +108,9 @@ pub(crate) fn is_public_service_code(code: &str) -> bool {
         .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte))
     {
         return false;
+    }
+    if PUBLIC_EXACT_SERVICE_CODES.contains(&code) {
+        return true;
     }
 
     let Some((namespace, suffix)) = code.split_once('.') else {
@@ -384,6 +391,35 @@ mod tests {
                 .and_then(|value| value.as_i64()),
             Some(-32002)
         );
+    }
+
+    #[test]
+    fn json_rpc_error_accepts_only_frozen_receiver_capability_codes() {
+        for service_code in PUBLIC_EXACT_SERVICE_CODES {
+            let raw = serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "error": {
+                    "code": -32010,
+                    "message": "private receiving home diagnostic",
+                    "data": {"awiki_code": service_code}
+                }
+            }))
+            .unwrap();
+
+            let error = decode_response(&raw).unwrap_err();
+            let crate::ImError::Service { code, data, .. } = error else {
+                panic!("expected service error")
+            };
+            assert_eq!(code.as_deref(), Some(*service_code));
+            assert_eq!(
+                data.and_then(|value| value.get("json_rpc_code").cloned()),
+                Some(json!(-32010))
+            );
+        }
+
+        assert!(!is_public_service_code("receiver_capability_unknown"));
+        assert!(!is_public_service_code("urgent_authorization_enabled"));
     }
 
     #[test]

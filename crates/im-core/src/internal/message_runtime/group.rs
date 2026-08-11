@@ -249,9 +249,9 @@ impl OutgoingGroupBody {
                 text: text.clone(),
                 kind: kind.clone(),
             },
-            Self::Payload { payload } => crate::messages::MessageBodyView::Payload {
-                payload: payload.clone(),
-            },
+            Self::Payload { payload } => {
+                crate::messages::MessageBodyView::from_json_payload(payload.clone())
+            }
         }
     }
 
