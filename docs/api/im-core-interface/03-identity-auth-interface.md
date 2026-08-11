@@ -163,6 +163,11 @@ impl IdentityRegistry<'_> {
 Vault records；它不等待远端 logout、realtime stop 或 host runtime dispose。Core open
 会恢复中断的退役阶段，并对已完成 tombstone 重放 identity-scoped Vault cleanup，防止
 删除开始前已进入执行的异步任务在删除返回后重新写入凭证。
+身份退役保留消息投影使用的 stable account binding。之后同 Handle 注册在服务端没有返回
+Recovery transition 时，只有本地 registry 已无相关身份、且唯一 binding 的 identity ID、
+DID、`protocol_device_id` 与已完成 retirement marker 全部精确一致，Core 才把它判定为
+“无本地凭证”并正常返回 ordinary `join_required`；缺失、未完成、部分匹配、多条或仍有
+live registry 身份的状态继续失败关闭为 `handle_recovery.transition_missing`。
 
 ```rust
 pub struct DeleteLocalIdentityResult {
@@ -194,13 +199,25 @@ Manifest 的 DID 和独立设备 signing/E2EE key，通过同一个 `register` R
 `{phone,purpose:"awiki.identity.register.v1",handle,domain,full_handle}`；Phone、Email、
 AlreadyVerified 和 Invite 的既有验证能力继续保留。
 
-如果 Handle 已存在且已经是完整 Manifest，注册正常返回 typed `join_required`，其中包含现有
-DID 和一次性 account verification grant；Core 不创建第二个 DID、不提交本地身份，也不发布
-P5。若服务端确认它仍是 phone-owned Legacy，注册响应可以表示服务端已原子恢复到本次新生成的
+如果 Handle 已存在且已经是完整 Manifest，注册正常返回 typed `join_required`。其中只包含
+opaque process-local preparation ID、typed mode、user-presence 要求、现有 DID 和完整 Handle；
+account verification token 与可选 Recovery transition 只保留在 Core 内部。Host 使用
+`begin_prepared_registration_device_join` 继续，不选择 owner、不构造独立 JSON continuation。
+Core 不创建第二个 DID、不提交本地身份，也不发布 P5；Recovery rebind 在远端 Join create 前
+先持久化 joined-device marker。进程重启后 preparation 失效，必须重新发起注册验证。
+已显式完成本地身份退役、但仍保留消息 binding 的同 Handle 也走上述 ordinary
+`join_required`，由 Host 继续提供 Join/Recovery 选择；Core 不把该 binding 误当成仍存在的
+本地身份。
+若服务端确认它仍是 phone-owned Legacy，注册响应可以表示服务端已原子恢复到本次新生成的
 vNext DID；该窄兼容路径保留原 `user_id`/Handle，不允许替换已有 Manifest 身份。
 新注册本地提交成功后必须生成并发布 exact-device P5 PreKey Bundle，发布失败保留同一
 PendingRegistration 供精确重试，不重放 `register`。V1 只保存 access token，不保存设备
 refresh token，也没有 Genesis 或独立设备 Token RPC。
+
+若 `register` 明确返回 `error.data.awiki_code=device.document_proof_expired`，Core 保留同一
+DID、root/device/daemon keys 与 device ID，只刷新顶层 root proof、更新 pending document hash，
+并在本次调用内重试一次。超时、连接失败、5xx、通用 `device.document_invalid` 或第二次过期均不
+触发继续重签；模糊结果仍按原 pending 做远端 reconciliation。
 
 Vault DTO boundary:
 

@@ -60,38 +60,62 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    IdentitySelector? selector,
+    required String fullHandle,
     required String phone,
-    required String handle,
-    required String operationId,
   }) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> prepareHandleRecovery({
-    required IdentitySelector selector,
+    required String operationId,
     required String phone,
     required String code,
-    required String handle,
-    required String operationId,
   }) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> activateHandleRecovery({
-    required String recoveryId,
+    required String operationId,
     required bool userPresenceConfirmed,
   }) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> resumeHandleRecovery(
-    String recoveryId,
+    String operationId,
   ) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> handleRecoveryStatus(
-    String recoveryId,
+    String operationId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryOperationSummary> discardHandleRecoveryPreAttempt(
+    String operationId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryOperationSummary>
+  quarantineHandleRecoveryKeyUnavailable({
+    required String operationId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryAccountEpochReceipt?> authorizedHandleRecoveryReceipt(
+    IdentitySelector selector,
   ) async {
     throw _unsupported();
   }
@@ -132,6 +156,15 @@ class AwikiImCore {
     required String operationId,
     int ttlSeconds = 600,
     required DeviceJoinAccountVerificationGrant accountVerificationGrant,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<AuthorizedJoinActivationProgress> beginPreparedRegistrationDeviceJoin({
+    required String preparationId,
+    required String operationId,
+    int ttlSeconds = 600,
+    required bool userPresenceConfirmed,
   }) async {
     throw _unsupported();
   }

@@ -16,7 +16,7 @@ use crate::app_bridge::personal_agent::{
     ensure_app_personal_agent_with_readiness, EnsureAppPersonalAgentOutcome,
 };
 use crate::commands::{RuntimeAgentCreateOutcome, RuntimeAgentMessageReadiness};
-use crate::registration::AgentRegistrationClient;
+use crate::registration::{AgentInventoryClient, AgentRegistrationClient};
 use crate::state::DaemonState;
 use crate::DaemonConfig;
 
@@ -64,7 +64,7 @@ pub fn handle_app_control_payload<C>(
     message: IncomingAppControlPayload,
 ) -> Result<AppControlOutcome>
 where
-    C: AgentRegistrationClient,
+    C: AgentRegistrationClient + AgentInventoryClient,
 {
     struct AssumeReady;
     impl RuntimeAgentMessageReadiness for AssumeReady {
@@ -89,7 +89,7 @@ pub fn handle_app_control_payload_with_readiness<C, R>(
     message: IncomingAppControlPayload,
 ) -> Result<AppControlOutcome>
 where
-    C: AgentRegistrationClient,
+    C: AgentRegistrationClient + AgentInventoryClient,
     R: RuntimeAgentMessageReadiness,
 {
     validate_application_json_payload(&message)?;
@@ -99,7 +99,16 @@ where
     if daemon_agent.agent_kind != AgentKind::Daemon {
         bail!("target agent is not a daemon agent");
     }
-    crate::agent_status::ensure_controller_identity_active(state, &daemon_agent.agent_did)?;
+    crate::controller_scope::verify_daemon_controller_sender(
+        config,
+        state,
+        registration_client,
+        &daemon_agent,
+        &message.sender_did,
+    )?;
+    let daemon_agent = state
+        .load_agent_definition(&message.target_agent_did)
+        .context("reload target daemon agent after controller sender verification")?;
     if message.sender_did != daemon_agent.controller_did {
         bail!("message sender is not the configured controller_did");
     }

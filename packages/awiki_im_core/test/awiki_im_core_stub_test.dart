@@ -4,6 +4,21 @@ import 'package:test/test.dart';
 import 'package:awiki_im_core/awiki_im_core.dart';
 
 void main() {
+  test('Handle Recovery V4 failure retryability is a closed table', () {
+    const cases = <HandleRecoveryFailureCode, bool>{
+      HandleRecoveryFailureCode.factorRetryRequired: true,
+      HandleRecoveryFailureCode.resultAbsent: true,
+      HandleRecoveryFailureCode.outcomeUnknown: true,
+      HandleRecoveryFailureCode.localKeyUnavailable: false,
+      HandleRecoveryFailureCode.localTransitionPending: true,
+      HandleRecoveryFailureCode.localMigrationUnsupported: false,
+      HandleRecoveryFailureCode.unknownEpoch: false,
+    };
+    for (final entry in cases.entries) {
+      expect(entry.key.retryable, entry.value, reason: entry.key.name);
+    }
+  });
+
   test('config model can be constructed', () {
     const config = AwikiImCoreConfig(
       serviceBaseUrl: 'https://awiki.ai',

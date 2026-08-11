@@ -24,11 +24,14 @@ pub(crate) struct ImCoreInner {
     pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
     pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) handle_recovery_enabled: bool,
+    pub(crate) multi_device_audience: Option<String>,
     pub(crate) handle_recovery_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
+    pub(crate) registration_join_preparations:
+        crate::internal::identity_registration_join_preparation::RegistrationJoinPreparationStore,
     pub(crate) root_key_transfer_authorizations:
         crate::internal::identity_root_transfer_runtime::RootKeyTransferAuthorizationStore,
     #[cfg(feature = "sqlite")]
@@ -88,6 +91,15 @@ impl ImCore {
                 detail: "identity secret storage policy is VaultRequired but no identity secret vault was provided".to_owned(),
             });
         }
+        let multi_device_audience = options.multi_device_audience.filter(|audience| {
+            !audience.is_empty() && audience == audience.trim() && audience.chars().count() <= 255
+        });
+        if options.multi_device_handle_recovery_enabled && multi_device_audience.is_none() {
+            return Err(crate::ImError::invalid_input(
+                Some("multi_device_audience".to_owned()),
+                "Handle Recovery requires the explicit User Service multi-device audience",
+            ));
+        }
         let core = Self {
             inner: Arc::new(ImCoreInner {
                 sdk_config,
@@ -100,8 +112,10 @@ impl ImCore {
                 device_revoke_lock: tokio::sync::Mutex::new(()),
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
+                multi_device_audience,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 device_join_approvals: Default::default(),
+                registration_join_preparations: Default::default(),
                 root_key_transfer_authorizations: Default::default(),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
@@ -851,6 +865,10 @@ impl ImCoreInner {
         self.handle_recovery_enabled
     }
 
+    pub(crate) fn multi_device_audience(&self) -> Option<&str> {
+        self.multi_device_audience.as_deref()
+    }
+
     pub(crate) fn handle_recovery_lock(
         &self,
         owner_identity_id: &str,
@@ -892,6 +910,67 @@ impl ImCoreInner {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handle_recovery_requires_exact_explicit_multi_device_audience() {
+        for invalid in [
+            None,
+            Some(""),
+            Some(" awiki-user-service"),
+            Some("awiki-user-service "),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut options =
+                ImCoreOpenOptions::default().with_multi_device_handle_recovery_enabled(true);
+            options.multi_device_audience = invalid.map(str::to_owned);
+            let error =
+                match ImCore::new_with_options(test_config(), test_paths(root.path()), options) {
+                    Ok(_) => panic!("invalid recovery audience must fail"),
+                    Err(error) => error,
+                };
+            assert!(matches!(
+                error,
+                crate::ImError::InvalidInput {
+                    field: Some(ref field),
+                    ..
+                } if field == "multi_device_audience"
+            ));
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let too_long = "a".repeat(256);
+        let error = match ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            ImCoreOpenOptions::default()
+                .with_multi_device_handle_recovery_enabled(true)
+                .with_multi_device_audience(too_long),
+        ) {
+            Ok(_) => panic!("overlong recovery audience must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "multi_device_audience"
+        ));
+
+        let root = tempfile::tempdir().unwrap();
+        let core = ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            ImCoreOpenOptions::default()
+                .with_multi_device_handle_recovery_enabled(true)
+                .with_multi_device_audience("awiki-user-service"),
+        )
+        .unwrap();
+        assert_eq!(
+            core.inner().multi_device_audience(),
+            Some("awiki-user-service")
+        );
+    }
 
     #[test]
     fn handle_recovery_locks_are_identity_scoped() {
@@ -1015,35 +1094,39 @@ mod tests {
     }
 
     fn test_core(root: &std::path::Path) -> ImCore {
-        ImCore::new(
-            crate::ImCoreConfig {
-                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
-                did_domain: "awiki.test".to_owned(),
-                client_version_info: None,
-                user_service_endpoint: None,
-                message_service_endpoint: None,
-                mail_service_endpoint: None,
-                anp_service_endpoint: None,
-                anp_service_did: None,
-                ca_bundle: None,
-                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+        ImCore::new(test_config(), test_paths(root)).unwrap()
+    }
+
+    fn test_config() -> crate::ImCoreConfig {
+        crate::ImCoreConfig {
+            service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+            did_domain: "awiki.test".to_owned(),
+            client_version_info: None,
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: crate::MessageTransportPolicy::HttpOnly,
+        }
+    }
+
+    fn test_paths(root: &std::path::Path) -> crate::ImCorePaths {
+        crate::ImCorePaths {
+            identities: crate::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities").join("registry.json"),
+                default_identity_path: Some(root.join("identities").join("default")),
             },
-            crate::ImCorePaths {
-                identities: crate::IdentityRegistryPaths {
-                    identity_root_dir: root.join("identities"),
-                    registry_path: root.join("identities").join("registry.json"),
-                    default_identity_path: Some(root.join("identities").join("default")),
-                },
-                local_state: crate::LocalStatePaths {
-                    sqlite_path: root.join("local").join("im.sqlite"),
-                },
-                runtime: crate::RuntimePaths {
-                    cache_dir: root.join("cache"),
-                    temp_dir: root.join("tmp"),
-                },
+            local_state: crate::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
             },
-        )
-        .unwrap()
+            runtime: crate::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        }
     }
 
     #[tokio::test]

@@ -93,7 +93,17 @@ The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recov
 A successful registered result exposes `HandleRegistrationResult.accountId`,
 which is the canonical User Service account ID persisted by Core. A
 `join_required` result leaves `accountId` null; Flutter/App code must not decode
-JWT claims or substitute a DID to manufacture it.
+JWT claims or substitute a DID to manufacture it. Its
+`HandleRegistrationJoinRequiredPreparation` is an opaque, process-local Core
+preparation containing only a preparation ID, typed mode, user-presence
+requirement, expected DID, and full Handle. The account verification token and
+recovery transition remain inside Core and are never exposed to Dart/App code.
+After an exact completed local identity retirement, Core may retain the stable
+message account binding while the related credential is absent. Re-registering
+that same Handle returns ordinary `join_required` when the retirement marker
+exactly closes over the binding identity, DID, and protocol device; Flutter
+hosts should keep presenting the explicit Join/Handle-Recovery choice rather
+than translating the historical binding into an error.
 
 The remote `registered.message` field is diagnostic text and is not exposed as
 registration authority. Core validates the exact DID, Handle, domain, binding
@@ -230,6 +240,16 @@ Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rol
 `beginDeviceJoin` 一次性消费。重启恢复与候选设备侧收敛继续使用
 `localDeviceJoinSessions`、`pollNewDeviceJoin` 和 `cancelNewDeviceJoin`。
 
+注册返回 `join_required` 时不走上述 host-supplied grant 接口。Host 只把 opaque
+`preparationId` 和正式 user-presence 结果传给
+`beginPreparedRegistrationDeviceJoin(...)`；Core 自行校验稳定 owner、消费内部 token，并在
+Recovery rebind 模式下先持久化 joined-device marker，再创建远端 Join。该 preparation
+故意不跨进程持久化；App/Core 重启后必须重新发起注册验证，不能缓存 token、推断 owner 或
+拼装独立 JSON continuation。
+本地凭证已通过 Core 完成退役、但同账号消息 binding 仍保留时，重新提交同 Handle 会继续得到
+ordinary `join_required`；App 仍显示 Join/Recovery 选择。缺失、未完成或不匹配的 retirement
+证据由 Core 失败关闭，Dart 不检查 SQLite、marker 或 identity registry 来自行降级。
+
 现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
 验证、durable dedupe 和本地 reducer commit 后，才发出可信
 `system_notification_changed` 事件；host 收到该信号后调用
@@ -283,10 +303,13 @@ raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 un
 Native hosts opt in with `ImCoreOpenOptions.multiDeviceHandleRecoveryEnabled`; the default is
 `false`. The generated Dart facade exposes `requestHandleRecoveryOtp`,
 `prepareHandleRecovery`, `activateHandleRecovery`, `resumeHandleRecovery`,
-`handleRecoveryStatus`, `activateAuthorizedJoin`, and
-`resumeAuthorizedJoinActivation`. Progress is a closed
-`prepared → remoteCommitPending → remoteCommitted → identityTransitionPending →
-identitySwitched → completed|blocked` projection. Phone, OTP, Recovery Grant, proof,
+`handleRecoveryStatus`, `listHandleRecoveryOperations`,
+`discardHandleRecoveryPreAttempt`, `quarantineHandleRecoveryKeyUnavailable`,
+`authorizedHandleRecoveryReceipt`, `activateAuthorizedJoin`, and
+`resumeAuthorizedJoinActivation`. V4.0 progress is the closed
+`awaitingFactor → readyToCommit → remoteOutcomeUnknown|remoteCommitted →
+identityTransitionPending → applied` projection, with `quarantinedKeyUnavailable` as the explicit
+key-loss escape state. Phone, OTP, Recovery Grant, proof,
 private keys, JWT, Vault refs, ciphertext, and filesystem paths are never returned.
 `HandleRecoveryProgress` also carries the secret-free impact counts used by confirmation UI and
 an optional Core-authorized Registry epoch reset tuple. Authorized Join returns
@@ -296,27 +319,40 @@ The public methods are wrappers on `AwikiImCore` itself; callers do not import g
 access its private native handle. Flutter Web exposes the same signatures and fails closed as
 unsupported.
 
-The host creates one non-secret operation ID before requesting the OTP and must pass that exact ID
-again to `prepareHandleRecovery`. Read-only `handleRecoveryStatus` requires the opaque recovery ID
-returned by prepare; Core does not guess a pending Recovery from an identity scope and does not
-return `null` for an unknown ID.
+`requestHandleRecoveryOtp` accepts a canonical full Handle, phone, and an optional identity selector;
+Core creates and returns the opaque operation ID plus its authoritative local owner ID. The host
+passes that exact ID to `prepareHandleRecovery`, activate, resume,
+status, discard, or quarantine. Core does not guess a pending Recovery from an identity scope and
+does not return `null` for an unknown ID. The public failure enum is closed to
+`factorRetryRequired`, `resultAbsent`, `outcomeUnknown`, `localKeyUnavailable`,
+`localTransitionPending`, `localMigrationUnsupported`, and `unknownEpoch`; no V3 aliases are
+accepted.
 
-The host supplies an explicit identity selector and foreground user-presence confirmation;
-native Core owns the keys, proof, exact retry, stable-owner local epoch reset, fresh JWT,
+The host may supply an exact identity selector and always supplies foreground user-presence
+confirmation. A global flow passes `null`; Core resolves an exact local Handle match or, when
+no local match exists, bootstraps a new local identity from the phone-verified Handle's public
+WNS binding. `null` never selects the current/default identity implicitly. Native Core owns the
+keys, proof, exact retry, stable-owner local epoch reset, fresh JWT,
 new P5 PreKey publication, and transport-only group rebind. Recovery never migrates old
 Ratchet/MLS material and never creates P6 or `awaitingP6` state. Only exact Handle-backed
 `transport-protected` groups are eligible; every missing, DID-only, E2EE, malformed, or
 conflicting profile fails closed.
+
+If the remote Commit has succeeded but fresh-JWT or P5 PreKey finalization cannot finish because
+of a retryable transport/auth/session/service/serialization failure, activate/resume throws the
+stable `localTransitionPending` failure while preserving the same durable operation. Flutter code
+must query and resume that exact operation; it must not translate the state into “not prepared” or
+start another Recovery. Once the operation becomes `applied`, Core clears its stale retry error.
 
 `legacyRegistryEpochAdoptionAuthority(selector)` is the narrow bridge for an App upgrading an
 already active legacy local device-registry epoch. It returns only the exact owner/account/DID/
 generation/device tuple and an opaque provenance ID. It returns `null` if any Handle Recovery
 transition marker exists, including completed markers. Dart must not synthesize this authority.
 
-V1 adds no Flutter route or widget, CLI command, Daemon task, Agent recovery flow, or
-process-global current identity. A later host surface must call these same typed APIs rather
-than own recovery state. The older one-shot phone-owned Legacy `recoverHandle` path remains a
-separate compatibility flow and is not Manifest Handle Recovery.
+V4.0 adds no CLI command, Daemon task, Agent recovery flow, or process-global current identity.
+A later host surface must call these same typed APIs rather than own recovery state. The older
+one-shot phone-owned Legacy `recoverHandle` API is not a V3 Manifest compatibility path and cannot
+resume, query, or authorize a V4 operation.
 
 ## Management-device root-key transfer
 
@@ -733,12 +769,15 @@ snapshot count is exposed to Dart. `syncDelta` remains a separate v1
 compatibility facade. Message edit, recall, delete, tombstone, Push, and
 E2EE/MLS multi-device synchronization remain outside this stage.
 
-`syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Rust CLI 的
-前台 Inbox 在 P5 gate 开启时，会在 `syncNow` 成功后使用 exact-device、
-`body.security_profile=direct-e2ee` 的本域 secure hydration，再读取统一 local projection；
+`syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Native Dart
+wrapper 在 P5 gate 开启时，会先使用 exact-device、
+`body.security_profile=direct-e2ee` 的本域 secure hydration，再在 Core 内重新加载同一
+stable identity 的 client，最后执行 ordinary `syncNow`；这确保 Root 导入推进设备认证代次后
+普通同步不会继续使用旧 client。Rust CLI 前台 Inbox 遵循相同顺序。
 secure hydration 在每页本地提交后只 ACK 已成功消费的 P5 raw delivery，并有 100 页硬上限；
 ACK/收敛失败保留已提交本地数据但不返回完整前台成功。
-该窄化方法不是 ordinary/Legacy Inbox fallback，目前也不新增 Dart public API。Flutter
+该窄化方法不是 ordinary/Legacy Inbox fallback，也不新增独立 Dart public API；它是
+`MessageApi.syncNow` 内部的 Core-owned 前置阶段。Flutter
 不得把空 local projection 当成是否需要 E2EE hydration 的启发式判断。
 
 AWiki Me 默认启用 `syncNow`，并对所有合法账号/设备 binding 使用同一协议；Dart SDK 不暴露

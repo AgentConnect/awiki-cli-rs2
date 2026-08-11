@@ -519,7 +519,7 @@ pub struct HandleRegistrationResult {
     pub handle: crate::ids::Handle,
     pub method: RegistrationMethod,
     pub state: HandleRegistrationState,
-    pub join_required: Option<HandleRegistrationJoinRequired>,
+    pub join_required: Option<HandleRegistrationJoinRequiredPreparation>,
     pub default_identity_change: Option<DefaultIdentityChange>,
     pub warnings: Vec<String>,
 }
@@ -552,19 +552,20 @@ pub struct LegacyRegistryEpochAdoptionAuthority {
     pub provenance_id: String,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HandleRegistrationJoinRequired {
-    pub did: crate::ids::Did,
-    pub account_verification_token: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleRegistrationJoinMode {
+    Ordinary,
+    HandleRecoveryRebind,
 }
 
-impl std::fmt::Debug for HandleRegistrationJoinRequired {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HandleRegistrationJoinRequired")
-            .field("did", &self.did)
-            .field("account_verification_token", &"<redacted>")
-            .finish()
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRegistrationJoinRequiredPreparation {
+    pub preparation_id: String,
+    pub mode: HandleRegistrationJoinMode,
+    pub requires_user_presence: bool,
+    pub expected_did: crate::ids::Did,
+    pub full_handle: crate::ids::Handle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

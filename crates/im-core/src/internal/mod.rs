@@ -28,12 +28,17 @@ pub(crate) mod identity_device_revoke_pending;
 pub(crate) mod identity_device_state;
 pub(crate) mod identity_document_cache;
 pub(crate) mod identity_generation;
+pub(crate) mod identity_handle_recovery_metrics;
+#[cfg(feature = "sqlite")]
+pub(crate) mod identity_handle_recovery_operation;
 pub(crate) mod identity_handle_recovery_pending;
 pub(crate) mod identity_handle_recovery_runtime;
 pub(crate) mod identity_join_activation_pending;
 pub(crate) mod identity_legacy_upgrade;
 pub(crate) mod identity_legacy_upgrade_pending;
 pub(crate) mod identity_legacy_upgrade_runtime;
+pub(crate) mod identity_local_owner_matcher;
+pub(crate) mod identity_registration_join_preparation;
 pub(crate) mod identity_registration_pending;
 pub(crate) mod identity_registration_runtime;
 pub(crate) mod identity_replace_did_execution;

@@ -44,12 +44,9 @@ pub fn controller_identity_change_observed(
 }
 
 pub fn ensure_controller_identity_active(
-    state: &DaemonState,
-    daemon_agent_did: &str,
+    _state: &DaemonState,
+    _daemon_agent_did: &str,
 ) -> Result<()> {
-    if controller_identity_change_observed(state, daemon_agent_did)? {
-        bail!(CONTROLLER_IDENTITY_CHANGED_ERROR);
-    }
     Ok(())
 }
 
@@ -395,10 +392,12 @@ pub fn update_user_service_latest(
     items: Vec<AgentLatestStatusUpdateItem>,
 ) -> Result<()> {
     let client = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
-    let auth = crate::controller_scope::daemon_auth_material(config, state, daemon)?;
-    let response = client.update_latest_status(&daemon.agent_did, items, &auth)?;
-    sync_controller_scope_from_response(state, &daemon.agent_did, &response)?;
-    Ok(())
+    crate::controller_scope::with_controller_reconcile_singleflight(daemon, || {
+        let daemon = state.load_agent_definition(&daemon.agent_did)?;
+        let auth = crate::controller_scope::daemon_auth_material(config, state, &daemon)?;
+        let response = client.update_latest_status(&daemon.agent_did, items, &auth)?;
+        sync_controller_scope_from_response(state, &daemon.agent_did, &response)
+    })
 }
 
 pub fn sync_controller_scope_from_response(
@@ -406,39 +405,20 @@ pub fn sync_controller_scope_from_response(
     daemon_agent_did: &str,
     response: &Value,
 ) -> Result<()> {
-    ensure_controller_identity_active(state, daemon_agent_did)?;
     let Some(controller) = controller_scope_from_response(daemon_agent_did, response) else {
         return Ok(());
     };
     let local = state.load_agent_definition(daemon_agent_did)?;
-    if controller
-        .controller_user_id
-        .as_deref()
-        .is_some_and(|value| value != local.controller_user_id)
-        || controller
-            .controller_full_handle
-            .as_deref()
-            .is_some_and(|value| value != local.controller_full_handle)
-    {
-        state.insert_audit_event_json(
-            "daemon.controller_scope_mismatch",
-            Some(daemon_agent_did),
-            None,
-            None,
-            None,
-            json!({
-                "local_controller_user_id": local.controller_user_id,
-                "local_controller_full_handle": local.controller_full_handle,
-                "remote_controller_user_id": controller.controller_user_id,
-                "remote_controller_full_handle": controller.controller_full_handle,
-            }),
-        )?;
-        bail!("controller_scope_mismatch");
-    }
-    if local.controller_did == controller.controller_did {
-        return Ok(());
-    }
-    record_controller_identity_changed(state, daemon_agent_did, "authoritative_status")
+    crate::controller_scope::reconcile_authoritative_controller_scope(
+        state,
+        &local,
+        controller.controller_user_id.as_deref(),
+        controller.controller_full_handle.as_deref(),
+        None,
+        &controller.controller_did,
+        "authoritative_status",
+        "daemon.controller_scope_mismatch",
+    )
 }
 
 pub fn sync_controller_did_from_latest_response(
@@ -1979,9 +1959,8 @@ mod tests {
         CreateCliRouteSession, HermesProfileRecord, UserDelegatedIdentityRecord,
     };
     use crate::workspace::WorkspaceMode;
-    use rusqlite::types::Value as SqlValue;
     use std::collections::BTreeSet;
-    use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+    use std::sync::{Mutex, MutexGuard};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2395,10 +2374,8 @@ mod tests {
 
         record_controller_identity_changed(&state, &daemon.agent_did, "test_authoritative_status")
             .unwrap_err();
-        let blocked = emit_daemon_heartbeat(&config, &state, &im_core, &outbox, &daemon, &release)
-            .unwrap_err();
-        assert_eq!(blocked.to_string(), CONTROLLER_IDENTITY_CHANGED_ERROR);
-        assert_eq!(outbox.agent_statuses().len(), 1);
+        emit_daemon_heartbeat(&config, &state, &im_core, &outbox, &daemon, &release).unwrap();
+        assert_eq!(outbox.agent_statuses().len(), 2);
     }
 
     #[test]
@@ -3760,7 +3737,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_status_controller_did_change_fails_closed_without_transferring_local_state() {
+    fn controller_rebind_from_latest_status_fences_old_work_and_updates_live_binding() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
@@ -3811,12 +3788,6 @@ mod tests {
                 [&task.task_id],
             )
             .unwrap();
-        let route = state
-            .get_or_create_cli_route_session(create_test_route_session(
-                root.path(),
-                "direct:did:human:alice",
-            ))
-            .unwrap();
         let delegated = UserDelegatedIdentityRecord {
             user_did: daemon.controller_did.clone(),
             verification_method: format!("{}#daemon-key-1", daemon.controller_did),
@@ -3848,77 +3819,64 @@ mod tests {
         };
         state.store_bootstrap_state(&delegated, &replay).unwrap();
 
-        fn rows(state: &DaemonState, sql: &str) -> Vec<Vec<SqlValue>> {
-            let connection = state.connection().unwrap();
-            let mut statement = connection.prepare(sql).unwrap();
-            let column_count = statement.column_count();
-            statement
-                .query_map([], |row| {
-                    (0..column_count)
-                        .map(|index| row.get(index))
-                        .collect::<rusqlite::Result<Vec<SqlValue>>>()
-                })
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap()
-        }
-        let agent_rows_before = rows(&state, "SELECT * FROM agent_definition ORDER BY agent_did");
-        let binding_rows_before = rows(
-            &state,
-            "SELECT * FROM runtime_daemon_binding ORDER BY runtime_agent_did",
-        );
-        let task_rows_before = rows(&state, "SELECT * FROM runtime_task ORDER BY task_id");
-        let route_before = state
-            .load_cli_route_session(&route.route_key)
-            .unwrap()
-            .unwrap();
-        let delegated_before = state
-            .load_user_delegated_identity(&delegated.verification_method)
-            .unwrap()
-            .unwrap();
-
-        let error = sync_controller_did_from_latest_response(
+        sync_controller_did_from_latest_response(
             &state,
             &daemon.agent_did,
             &json!({
                 "updated": [{
                     "agent_did": daemon.agent_did,
+                    "controller_user_id": daemon.controller_user_id,
+                    "controller_full_handle": daemon.controller_full_handle,
                     "controller_did": "did:human:alice-new",
                     "status": "ready",
                 }]
             }),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(error.to_string(), "controller_identity_changed");
         assert_eq!(
-            rows(&state, "SELECT * FROM agent_definition ORDER BY agent_did"),
-            agent_rows_before
-        );
-        assert_eq!(
-            rows(
-                &state,
-                "SELECT * FROM runtime_daemon_binding ORDER BY runtime_agent_did"
-            ),
-            binding_rows_before
-        );
-        assert_eq!(
-            rows(&state, "SELECT * FROM runtime_task ORDER BY task_id"),
-            task_rows_before
+            state
+                .load_agent_definition(&daemon.agent_did)
+                .unwrap()
+                .controller_did,
+            "did:human:alice-new"
         );
         assert_eq!(
             state
-                .load_cli_route_session(&route.route_key)
+                .load_agent_definition(&runtime.agent_did)
                 .unwrap()
-                .unwrap(),
-            route_before
+                .controller_did,
+            "did:human:alice-new"
         );
+        assert_eq!(
+            state
+                .load_runtime_daemon_binding(&runtime.agent_did)
+                .unwrap()
+                .unwrap()
+                .controller_did,
+            "did:human:alice-new"
+        );
+        let stored_task = state.load_runtime_task(&task.task_id).unwrap();
+        let stored_task_status: String = state
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM runtime_task WHERE task_id=?1",
+                [&task.task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_task_status, "failed");
+        assert_eq!(stored_task.controller_did, daemon.controller_did);
+        assert_eq!(stored_task.reply_recipient_did, daemon.controller_did);
+        assert_eq!(stored_task.conversation_id, task.conversation_id);
         assert_eq!(
             state
                 .load_user_delegated_identity(&delegated.verification_method)
                 .unwrap()
-                .unwrap(),
-            delegated_before
+                .unwrap()
+                .status,
+            "recovery_fenced"
         );
         assert!(state
             .load_user_delegated_identity("did:human:alice-new#daemon-key-1")
@@ -3926,30 +3884,31 @@ mod tests {
             .is_none());
         assert!(state
             .audit_event_exists(
-                "daemon.controller_identity_changed",
+                "daemon.controller_rebound",
                 Some(&daemon.agent_did),
-                Some("controller_identity_changed"),
+                Some("controller_recovered"),
             )
             .unwrap());
-        let repeated_error = sync_controller_did_from_latest_response(
+        sync_controller_did_from_latest_response(
             &state,
             &daemon.agent_did,
             &json!({
                 "updated": [{
                     "agent_did": daemon.agent_did,
+                    "controller_user_id": daemon.controller_user_id,
+                    "controller_full_handle": daemon.controller_full_handle,
                     "controller_did": "did:human:alice-new",
                     "status": "ready",
                 }]
             }),
         )
-        .unwrap_err();
-        assert_eq!(repeated_error.to_string(), "controller_identity_changed");
+        .unwrap();
         let event_count: i64 = state
             .connection()
             .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM audit_log WHERE event_type=?1 AND agent_did=?2",
-                [CONTROLLER_IDENTITY_CHANGED_EVENT, daemon.agent_did.as_str()],
+                ["daemon.controller_rebound", daemon.agent_did.as_str()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -3959,24 +3918,21 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT detail_json FROM audit_log WHERE event_type=?1 AND agent_did=?2",
-                [CONTROLLER_IDENTITY_CHANGED_EVENT, daemon.agent_did.as_str()],
+                ["daemon.controller_rebound", daemon.agent_did.as_str()],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(&detail_json).unwrap(),
-            json!({
-                "reason": "controller_identity_changed",
-                "source": "authoritative_status",
-            })
+            serde_json::from_str::<Value>(&detail_json).unwrap()["source"],
+            "authoritative_status"
         );
         assert!(!detail_json.contains("did:human:alice"));
-        assert!(!detail_json.contains("token"));
+        assert!(!detail_json.contains("device-access"));
         assert!(!detail_json.contains("private"));
     }
 
     #[test]
-    fn controller_identity_guard_is_default_clear_restart_durable_and_race_idempotent() {
+    fn controller_rebind_legacy_identity_change_audit_is_diagnostic_only() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
@@ -3985,26 +3941,8 @@ mod tests {
         let daemon_agent_did = "did:agent:daemon-race";
         ensure_controller_identity_active(&state, daemon_agent_did).unwrap();
 
-        let barrier = Arc::new(Barrier::new(8));
-        let threads = (0..8)
-            .map(|_| {
-                let state = state.clone();
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    record_controller_identity_changed(
-                        &state,
-                        daemon_agent_did,
-                        "concurrent_authoritative_status",
-                    )
-                    .unwrap_err()
-                    .to_string()
-                })
-            })
-            .collect::<Vec<_>>();
-        for thread in threads {
-            assert_eq!(thread.join().unwrap(), CONTROLLER_IDENTITY_CHANGED_ERROR);
-        }
+        record_controller_identity_changed(&state, daemon_agent_did, "legacy_authoritative_status")
+            .unwrap_err();
         let event_count: i64 = state
             .connection()
             .unwrap()
@@ -4017,8 +3955,8 @@ mod tests {
         assert_eq!(event_count, 1);
 
         let reopened = DaemonState::open(&config).unwrap();
-        let error = ensure_controller_identity_active(&reopened, daemon_agent_did).unwrap_err();
-        assert_eq!(error.to_string(), CONTROLLER_IDENTITY_CHANGED_ERROR);
+        assert!(controller_identity_change_observed(&reopened, daemon_agent_did).unwrap());
+        ensure_controller_identity_active(&reopened, daemon_agent_did).unwrap();
     }
 
     #[test]

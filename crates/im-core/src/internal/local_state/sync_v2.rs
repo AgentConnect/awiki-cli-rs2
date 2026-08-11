@@ -2186,23 +2186,67 @@ pub(crate) fn upsert_sync_thread_binding(
             ));
         }
     }
-    connection
-        .execute(
-            "INSERT INTO sync_thread_bindings
+    let rotated_direct_binding = if conflict.is_none() {
+        let existing = connection
+            .query_row(
+                "SELECT remote_thread_key, thread_kind
+                 FROM sync_thread_bindings
+                 WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                params![binding.owner_identity_id, binding.conversation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(super::local_state_unavailable)?;
+        if let Some((previous_remote_thread_key, previous_thread_kind)) = existing {
+            if previous_thread_kind != "direct" || binding.thread_kind != "direct" {
+                return Err(sync_error(
+                    "SYNC_THREAD_BINDING_CONFLICT",
+                    "canonical conversation cannot be rebound to another remote thread",
+                ));
+            }
+            connection
+                .execute(
+                    "UPDATE sync_thread_bindings
+                     SET remote_thread_key = ?1, updated_at = ?2
+                     WHERE owner_identity_id = ?3
+                       AND remote_thread_key = ?4
+                       AND conversation_id = ?5
+                       AND thread_kind = 'direct'",
+                    params![
+                        binding.remote_thread_key,
+                        binding.updated_at,
+                        binding.owner_identity_id,
+                        previous_remote_thread_key,
+                        binding.conversation_id,
+                    ],
+                )
+                .map_err(super::local_state_unavailable)?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !rotated_direct_binding {
+        connection
+            .execute(
+                "INSERT INTO sync_thread_bindings
                 (owner_identity_id, remote_thread_key, thread_kind, conversation_id, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(owner_identity_id, remote_thread_key) DO UPDATE SET
                 conversation_id = excluded.conversation_id,
                 updated_at = excluded.updated_at",
-            params![
-                binding.owner_identity_id,
-                binding.remote_thread_key,
-                binding.thread_kind,
-                binding.conversation_id,
-                binding.updated_at,
-            ],
-        )
-        .map_err(super::local_state_unavailable)?;
+                params![
+                    binding.owner_identity_id,
+                    binding.remote_thread_key,
+                    binding.thread_kind,
+                    binding.conversation_id,
+                    binding.updated_at,
+                ],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
     if let Some(state) = load_remote_read_state(
         connection,
         &binding.owner_identity_id,
@@ -3705,6 +3749,75 @@ mod tests {
                 ..
             } if code == "SYNC_THREAD_BINDING_CONFLICT"
         ));
+    }
+
+    #[test]
+    fn direct_thread_binding_rotation_replaces_remote_key_without_rewriting_history() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let account = binding();
+        upsert_identity_account_binding(&db, &account).unwrap();
+        let conversation_id = "dm:peer-scope:v1:stable-controller";
+        upsert_sync_thread_binding(
+            &db,
+            &SyncThreadBinding {
+                owner_identity_id: account.owner_identity_id.clone(),
+                remote_thread_key: "remote-thread-d1".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, conversation_id,
+                 wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+                 content_type, stored_at)
+             VALUES ('history-d1', ?1, ?2, ?3, ?3, 'direct',
+                     'did:example:controller-d1', 'resolved', 'text/plain', '1')",
+            params![
+                account.owner_identity_id,
+                account.current_did,
+                conversation_id
+            ],
+        )
+        .unwrap();
+
+        upsert_sync_thread_binding(
+            &db,
+            &SyncThreadBinding {
+                owner_identity_id: account.owner_identity_id.clone(),
+                remote_thread_key: "remote-thread-d2".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                updated_at: 2,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.query_row(
+                "SELECT remote_thread_key || '|' || updated_at
+                 FROM sync_thread_bindings
+                 WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                params![account.owner_identity_id, conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "remote-thread-d2|2"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT wire_thread_ref FROM messages
+                 WHERE owner_identity_id = ?1 AND msg_id = 'history-d1'",
+                [&account.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "did:example:controller-d1"
+        );
     }
 
     #[test]

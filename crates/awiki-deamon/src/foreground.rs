@@ -562,6 +562,16 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                         let _ = record_foreground_status_error(&state, &error.to_string());
                     }
                 };
+                match reconcile_controller_scopes_before_periodic_sync(
+                    &config,
+                    &state,
+                    &registration,
+                ) {
+                    Ok(agent_dids) => realtime_sync.mark_periodic_reconcile(agent_dids),
+                    Err(error) => {
+                        let _ = record_foreground_status_error(&state, &error.to_string());
+                    }
+                }
             }
             _ = tokio::time::sleep(foreground_control_tick_duration(started_at, options.max_runtime_ms)) => {}
         }
@@ -589,6 +599,29 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         runtime_ms: started_at.elapsed().as_millis(),
         exit_reason,
     })
+}
+
+fn reconcile_controller_scopes_before_periodic_sync(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration: &UserServiceAgentRegistrationClient,
+) -> Result<Vec<String>> {
+    for daemon in state.list_agent_definitions()?.into_iter().filter(|agent| {
+        agent.agent_kind == crate::agent::AgentKind::Daemon && agent.status == "active"
+    }) {
+        crate::controller_scope::sync_daemon_controller_scope(
+            config,
+            state,
+            registration,
+            &daemon,
+        )?;
+    }
+    Ok(state
+        .list_agent_definitions()?
+        .into_iter()
+        .filter(|agent| agent.status == "active")
+        .map(|agent| agent.agent_did)
+        .collect())
 }
 
 fn runtime_inbox_reconciliation_interval(options: &ForegroundOptions) -> Duration {
@@ -3069,6 +3102,14 @@ fn emit_external_direct_invocation_rejection(
             "active_mode": active_mode,
         }),
     )?;
+    // A sender without an active Handle is not an addressable requester. In
+    // particular, this is how a retired controller DID appears after Handle
+    // Recovery. Treat the denied input as terminal instead of repeatedly
+    // trying to send status/feedback to a principal that can no longer receive
+    // it; ordinary policy denials for active requesters still get feedback.
+    if reason == "sender_handle_not_found" {
+        return Ok(());
+    }
     let task_id = format!(
         "task_{}",
         external_direct_task_message_id(source_message_id, target_agent_did)

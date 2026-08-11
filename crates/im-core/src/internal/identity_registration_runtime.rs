@@ -2,7 +2,9 @@
 //!
 //! Every completed registration is a vNext identity with one bootstrap
 //! Manifest device. `PendingRegistration` keeps the exact generated material
-//! restart-safe until the remote and local identity commits have succeeded.
+//! restart-safe until the remote and local identity commits have succeeded. An
+//! explicit expired-root-proof service reason refreshes only that proof and is
+//! retried once; ambiguous transport errors never trigger re-signing.
 //! P5 PreKey publication has its own durable, idempotent local state and is
 //! reported as a non-fatal completion warning after that commit boundary.
 
@@ -17,6 +19,7 @@ const DEFAULT_EMAIL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_EMAIL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING: &str = "registration_prekey_publish_pending";
 const REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING: &str = "registration_pending_cleanup_required";
+const REGISTRATION_PROOF_EXPIRED_AWIKI_CODE: &str = "device.document_proof_expired";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IdentityRegistrationRuntimeResult {
@@ -177,7 +180,8 @@ where
             })?
         {
             store.delete(&pending_ref)?;
-            return join_required_result(&request, target.full_handle, join_required);
+            let preparation = prepare_join_required(self.core, join_required)?;
+            return join_required_result(&request, target.full_handle, preparation);
         }
         let mut result = commit_pending_registration(
             self.core,
@@ -347,40 +351,55 @@ where
             }
         }
         if pending.remote_result.is_none() {
-            pending.remote_attempted = true;
-            store.save(&pending)?;
-            let call = register_call(&pending, &request)?;
-            match self
-                .transport
-                .rpc(call.endpoint, call.method, call.params.clone())
-                .await
-            {
-                Ok(raw) => match parse_register_outcome(&pending, raw)? {
-                    RegistrationRemoteOutcome::Registered(result) => {
-                        pending.remote_result = Some(result);
-                        pending.phase =
-                                crate::internal::identity_registration_pending::PendingRegistrationPhase::RemoteCommitted;
-                    }
-                    RegistrationRemoteOutcome::JoinRequired(join_required) => {
-                        store.delete(&pending_ref)?;
-                        return join_required_result(&request, target.full_handle, join_required);
-                    }
-                },
-                Err(error @ crate::ImError::TransportUnavailable { .. }) => {
-                    match self
-                        .transport
-                        .reconcile_pending_registration(&pending)
-                        .await?
-                    {
-                        crate::internal::transport::PendingRegistrationReconciliation::Absent => {
-                            return Err(error);
+            let mut refreshed_expired_proof = false;
+            loop {
+                pending.remote_attempted = true;
+                store.save(&pending)?;
+                let call = register_call(&pending, &request)?;
+                match self
+                    .transport
+                    .rpc(call.endpoint, call.method, call.params.clone())
+                    .await
+                {
+                    Ok(raw) => match parse_register_outcome(&pending, raw)? {
+                        RegistrationRemoteOutcome::Registered(result) => {
+                            pending.remote_result = Some(result);
+                            pending.phase =
+                                    crate::internal::identity_registration_pending::PendingRegistrationPhase::RemoteCommitted;
                         }
-                        committed => apply_registration_reconciliation(&mut pending, committed)?,
+                        RegistrationRemoteOutcome::JoinRequired(join_required) => {
+                            store.delete(&pending_ref)?;
+                            let preparation = prepare_join_required(self.core, join_required)?;
+                            return join_required_result(&request, target.full_handle, preparation);
+                        }
+                    },
+                    Err(error @ crate::ImError::TransportUnavailable { .. }) => {
+                        match self
+                            .transport
+                            .reconcile_pending_registration(&pending)
+                            .await?
+                        {
+                            crate::internal::transport::PendingRegistrationReconciliation::Absent => {
+                                return Err(error);
+                            }
+                            committed => {
+                                apply_registration_reconciliation(&mut pending, committed)?
+                            }
+                        }
                     }
+                    Err(error)
+                        if !refreshed_expired_proof && registration_proof_expired(&error) =>
+                    {
+                        pending.refresh_expired_root_proof()?;
+                        store.save(&pending)?;
+                        refreshed_expired_proof = true;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
+                store.save(&pending)?;
+                break;
             }
-            store.save(&pending)?;
         }
         let mut result = commit_pending_registration_async(
             self.core,
@@ -574,7 +593,7 @@ fn ensure_remote_registration<T, P>(
     pending: &mut crate::internal::identity_registration_pending::PendingRegistration,
     request: &crate::identity::RegisterHandleRequest,
     mut persist: P,
-) -> crate::ImResult<Option<crate::identity::HandleRegistrationJoinRequired>>
+) -> crate::ImResult<Option<ParsedRegistrationJoinRequired>>
 where
     T: RpcTransport,
     P: FnMut(
@@ -595,40 +614,82 @@ where
         }
     }
 
-    // Persist before the first byte is sent. A process crash or lost response
-    // must enter signed reconciliation on restart and must never blindly
-    // replay register.
-    pending.remote_attempted = true;
-    persist(pending)?;
-    let call = register_call(pending, request)?;
-    match transport.rpc(call.endpoint, call.method, call.params) {
-        Ok(raw) => match parse_register_outcome(pending, raw)? {
-            RegistrationRemoteOutcome::Registered(result) => {
-                pending.remote_result = Some(result);
-                pending.phase =
-                        crate::internal::identity_registration_pending::PendingRegistrationPhase::RemoteCommitted;
-            }
-            RegistrationRemoteOutcome::JoinRequired(join_required) => {
-                return Ok(Some(join_required));
-            }
-        },
-        Err(error @ crate::ImError::TransportUnavailable { .. }) => {
-            match transport.reconcile_pending_registration(pending)? {
-                crate::internal::transport::PendingRegistrationReconciliation::Absent => {
-                    return Err(error);
+    let mut refreshed_expired_proof = false;
+    loop {
+        // Persist before the first byte is sent. A process crash or lost response
+        // must enter signed reconciliation on restart and must never blindly
+        // replay register.
+        pending.remote_attempted = true;
+        persist(pending)?;
+        let call = register_call(pending, request)?;
+        match transport.rpc(call.endpoint, call.method, call.params) {
+            Ok(raw) => match parse_register_outcome(pending, raw)? {
+                RegistrationRemoteOutcome::Registered(result) => {
+                    pending.remote_result = Some(result);
+                    pending.phase =
+                            crate::internal::identity_registration_pending::PendingRegistrationPhase::RemoteCommitted;
                 }
-                committed => apply_registration_reconciliation(pending, committed)?,
+                RegistrationRemoteOutcome::JoinRequired(join_required) => {
+                    return Ok(Some(join_required));
+                }
+            },
+            Err(error @ crate::ImError::TransportUnavailable { .. }) => {
+                match transport.reconcile_pending_registration(pending)? {
+                    crate::internal::transport::PendingRegistrationReconciliation::Absent => {
+                        return Err(error);
+                    }
+                    committed => apply_registration_reconciliation(pending, committed)?,
+                }
             }
+            Err(error) if !refreshed_expired_proof && registration_proof_expired(&error) => {
+                pending.refresh_expired_root_proof()?;
+                persist(pending)?;
+                refreshed_expired_proof = true;
+                continue;
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => return Err(error),
+        break;
     }
     persist(pending)?;
     Ok(None)
 }
 
+fn registration_proof_expired(error: &crate::ImError) -> bool {
+    let crate::ImError::Service {
+        data: Some(data), ..
+    } = error
+    else {
+        return false;
+    };
+    data.get("awiki_code").and_then(Value::as_str) == Some(REGISTRATION_PROOF_EXPIRED_AWIKI_CODE)
+}
+
 enum RegistrationRemoteOutcome {
     Registered(crate::internal::identity_registration_pending::PendingRegistrationRemoteResult),
-    JoinRequired(crate::identity::HandleRegistrationJoinRequired),
+    JoinRequired(ParsedRegistrationJoinRequired),
+}
+
+struct ParsedRegistrationJoinRequired {
+    raw_result_hash: String,
+    did: crate::ids::Did,
+    full_handle: crate::ids::Handle,
+    account_verification_token: crate::internal::platform_secret::SecretBytes,
+    transition:
+        Option<crate::internal::identity_registration_join_preparation::RegistrationJoinTransition>,
+}
+
+impl std::fmt::Debug for ParsedRegistrationJoinRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ParsedRegistrationJoinRequired")
+            .field("raw_result_hash", &self.raw_result_hash)
+            .field("did", &self.did)
+            .field("full_handle", &self.full_handle)
+            .field("account_verification_token", &"<redacted>")
+            .field("transition", &self.transition)
+            .finish()
+    }
 }
 
 fn parse_register_outcome(
@@ -637,8 +698,12 @@ fn parse_register_outcome(
 ) -> crate::ImResult<RegistrationRemoteOutcome> {
     let state = required_string(&raw, "state")?;
     if state == "join_required" {
-        require_exact_fields(
-            &raw,
+        let has_account = raw.get("account_user_id").is_some();
+        let has_transition = raw.get("identity_transition").is_some();
+        if has_account != has_transition {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let expected = if has_account {
             &[
                 "state",
                 "handle",
@@ -646,8 +711,20 @@ fn parse_register_outcome(
                 "full_handle",
                 "did",
                 "account_verification_token",
-            ],
-        )?;
+                "account_user_id",
+                "identity_transition",
+            ][..]
+        } else {
+            &[
+                "state",
+                "handle",
+                "domain",
+                "full_handle",
+                "did",
+                "account_verification_token",
+            ][..]
+        };
+        require_exact_fields(&raw, expected)?;
         let handle = required_string(&raw, "handle")?;
         let domain = required_string(&raw, "domain")?;
         let full_handle = required_string(&raw, "full_handle")?;
@@ -661,10 +738,54 @@ fn parse_register_outcome(
         {
             return Err(crate::ImError::PermissionDenied);
         }
+        let transition = if has_account {
+            let account_user_id = required_string(&raw, "account_user_id")?;
+            let raw_transition = raw
+                .get("identity_transition")
+                .ok_or(crate::ImError::PermissionDenied)?;
+            require_exact_fields(
+                raw_transition,
+                &["kind", "previous_did", "current_did", "binding_generation"],
+            )?;
+            if required_string(raw_transition, "kind")? != "handle_recovery" {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            let previous_did =
+                crate::ids::Did::parse(required_string(raw_transition, "previous_did")?)?
+                    .as_str()
+                    .to_owned();
+            let current_did =
+                crate::ids::Did::parse(required_string(raw_transition, "current_did")?)?
+                    .as_str()
+                    .to_owned();
+            let binding_generation = anp::wns::BindingGeneration::new(required_string(
+                raw_transition,
+                "binding_generation",
+            )?)
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .to_string();
+            if previous_did == current_did || current_did != did.as_str() {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Some(
+                crate::internal::identity_registration_join_preparation::RegistrationJoinTransition {
+                    account_user_id,
+                    previous_did,
+                    current_did,
+                    binding_generation,
+                },
+            )
+        } else {
+            None
+        };
         return Ok(RegistrationRemoteOutcome::JoinRequired(
-            crate::identity::HandleRegistrationJoinRequired {
+            ParsedRegistrationJoinRequired {
+                raw_result_hash: crate::internal::identity_registration_join_preparation::registration_result_hash(&raw)?,
                 did,
-                account_verification_token: token,
+                full_handle: crate::ids::Handle::parse(&full_handle, "")?,
+                account_verification_token:
+                    crate::internal::platform_secret::SecretBytes::from_vec(token.into_bytes()),
+                transition,
             },
         ));
     }
@@ -741,7 +862,7 @@ fn require_exact_fields(raw: &Value, expected: &[&str]) -> crate::ImResult<()> {
 fn join_required_result(
     request: &crate::identity::RegisterHandleRequest,
     handle: crate::ids::Handle,
-    join_required: crate::identity::HandleRegistrationJoinRequired,
+    join_required: crate::identity::HandleRegistrationJoinRequiredPreparation,
 ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
     Ok(IdentityRegistrationRuntimeResult {
         sdk_result: crate::identity::HandleRegistrationResult {
@@ -756,6 +877,78 @@ fn join_required_result(
         },
         raw: None,
     })
+}
+
+fn prepare_join_required(
+    core: &crate::core::ImCore,
+    parsed: ParsedRegistrationJoinRequired,
+) -> crate::ImResult<crate::identity::HandleRegistrationJoinRequiredPreparation> {
+    use crate::internal::identity_local_owner_matcher::{StableOwnerAuthority, StableOwnerMatch};
+
+    let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    let (mode, owner_identity_id) = match parsed.transition.as_ref() {
+        Some(transition) => match crate::internal::identity_local_owner_matcher::match_stable_owner(
+            sqlite_path,
+            &index,
+            StableOwnerAuthority {
+                account_user_id: &transition.account_user_id,
+                full_handle: parsed.full_handle.as_str(),
+                previous_did: &transition.previous_did,
+                binding_generation: &transition.binding_generation,
+            },
+            None,
+            None,
+        )? {
+            StableOwnerMatch::Exact(owner) => (
+                crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
+                Some(owner.owner_identity_id),
+            ),
+            StableOwnerMatch::None => {
+                (crate::identity::HandleRegistrationJoinMode::Ordinary, None)
+            }
+            StableOwnerMatch::Conflict => {
+                return Err(crate::internal::identity_registration_join_preparation::continuity_error(
+                    "handle_recovery.local_state_conflict",
+                ));
+            }
+        },
+        None => match crate::internal::identity_local_owner_matcher::match_stable_owner_without_transition(
+            sqlite_path,
+            &core.inner().sdk_paths().identities.identity_root_dir,
+            &index,
+            parsed.full_handle.as_str(),
+            parsed.did.as_str(),
+        )? {
+            StableOwnerMatch::None => {
+                (crate::identity::HandleRegistrationJoinMode::Ordinary, None)
+            }
+            StableOwnerMatch::Exact(_) | StableOwnerMatch::Conflict => {
+                return Err(crate::internal::identity_registration_join_preparation::continuity_error(
+                    "handle_recovery.transition_missing",
+                ));
+            }
+        },
+    };
+    core.inner().registration_join_preparations.issue(
+        crate::internal::identity_registration_join_preparation::RegistrationJoinPreparationInput {
+            raw_result_hash: parsed.raw_result_hash,
+            expected_did: parsed.did,
+            full_handle: parsed.full_handle,
+            account_verification_token: parsed.account_verification_token,
+            transition: parsed.transition,
+            mode,
+            owner_identity_id,
+            state_root_fingerprint:
+                crate::internal::identity_transition_pending::state_root_fingerprint(sqlite_path),
+            identity_index_fingerprint:
+                crate::internal::identity_registration_join_preparation::identity_index_fingerprint(
+                    &index,
+                )?,
+        },
+    )
 }
 
 fn apply_registration_reconciliation(
@@ -1206,8 +1399,11 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum RpcBehavior {
+        AlwaysExpired,
+        ExpiredThenJoinRequired,
         JoinRequired,
         Lost,
+        OtherServiceError,
         Succeeds,
     }
 
@@ -1230,16 +1426,30 @@ mod tests {
             assert_eq!(method, "register");
             self.rpc_calls += 1;
             match self.rpc_behavior {
-                RpcBehavior::JoinRequired => Ok(serde_json::json!({
-                    "state": "join_required",
-                    "handle": "alice",
-                    "domain": "example.test",
-                    "full_handle": "alice.example.test",
-                    "did": "did:wba:example.test:existing",
-                    "account_verification_token": "single-use-account-verification"
-                })),
+                RpcBehavior::AlwaysExpired => Err(expired_proof_error()),
+                RpcBehavior::ExpiredThenJoinRequired if self.rpc_calls == 1 => {
+                    Err(expired_proof_error())
+                }
+                RpcBehavior::ExpiredThenJoinRequired | RpcBehavior::JoinRequired => {
+                    Ok(serde_json::json!({
+                        "state": "join_required",
+                        "handle": "alice",
+                        "domain": "example.test",
+                        "full_handle": "alice.example.test",
+                        "did": "did:wba:example.test:existing",
+                        "account_verification_token": "single-use-account-verification"
+                    }))
+                }
                 RpcBehavior::Lost => Err(crate::ImError::TransportUnavailable {
                     detail: "response lost after remote commit".to_owned(),
+                }),
+                RpcBehavior::OtherServiceError => Err(crate::ImError::Service {
+                    status_code: Some(200),
+                    code: Some("-32004".to_owned()),
+                    message: "DID document root proof has expired".to_owned(),
+                    data: Some(serde_json::json!({
+                        "awiki_code": "device.document_invalid"
+                    })),
                 }),
                 RpcBehavior::Succeeds => Err(crate::ImError::Internal {
                     message: "test must synthesize success through reconciliation".to_owned(),
@@ -1277,7 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_handle_registration_returns_typed_join_required_without_remote_commit() {
+    fn registration_recovery_join_parses_ordinary_closed_shape_without_remote_commit() {
         let request = request();
         let mut pending = pending();
         let mut transport = RegistrationTransport {
@@ -1300,9 +1510,10 @@ mod tests {
         assert_eq!(transport.probe_calls, 0);
         assert_eq!(join_required.did.as_str(), "did:wba:example.test:existing");
         assert_eq!(
-            join_required.account_verification_token,
-            "single-use-account-verification"
+            join_required.account_verification_token.expose_secret(),
+            b"single-use-account-verification"
         );
+        assert!(join_required.transition.is_none());
         assert!(pending.remote_result.is_none());
         assert_eq!(
             pending.phase,
@@ -1315,6 +1526,51 @@ mod tests {
                 crate::internal::identity_registration_pending::PendingRegistrationPhase::Prepared
             )]
         );
+    }
+
+    #[test]
+    fn registration_recovery_join_accepts_only_the_closed_recovery_shape() {
+        let pending = pending();
+        let recovery = parse_register_outcome(
+            &pending,
+            serde_json::json!({
+                "state": "join_required",
+                "handle": "alice",
+                "domain": "example.test",
+                "full_handle": "alice.example.test",
+                "did": "did:wba:example.test:existing",
+                "account_verification_token": "single-use-account-verification",
+                "account_user_id": "account-alice",
+                "identity_transition": {
+                    "kind": "handle_recovery",
+                    "previous_did": "did:wba:example.test:previous",
+                    "current_did": "did:wba:example.test:existing",
+                    "binding_generation": "8"
+                }
+            }),
+        )
+        .unwrap();
+        let RegistrationRemoteOutcome::JoinRequired(recovery) = recovery else {
+            panic!("Recovery registration must require Join");
+        };
+        let transition = recovery.transition.expect("closed Recovery transition");
+        assert_eq!(transition.account_user_id, "account-alice");
+        assert_eq!(transition.previous_did, "did:wba:example.test:previous");
+        assert_eq!(transition.binding_generation, "8");
+
+        let malformed = parse_register_outcome(
+            &pending,
+            serde_json::json!({
+                "state": "join_required",
+                "handle": "alice",
+                "domain": "example.test",
+                "full_handle": "alice.example.test",
+                "did": "did:wba:example.test:existing",
+                "account_verification_token": "single-use-account-verification",
+                "account_user_id": "account-alice"
+            }),
+        );
+        assert!(matches!(malformed, Err(crate::ImError::PermissionDenied)));
     }
 
     #[test]
@@ -1354,6 +1610,85 @@ mod tests {
             pending.remote_result.as_ref().unwrap().access_token,
             access_token(&pending, &pending.generated.device_signing_key_id)
         );
+    }
+
+    #[test]
+    fn expired_root_proof_refreshes_same_identity_and_retries_once() {
+        let request = request();
+        let mut expired_pending = pending();
+        let original = expired_pending.generated.clone();
+        let original_hash = expired_pending.document_hash.clone();
+        let mut transport = RegistrationTransport {
+            rpc_behavior: RpcBehavior::ExpiredThenJoinRequired,
+            probe_behavior: ProbeBehavior::Absent,
+            rpc_calls: 0,
+            probe_calls: 0,
+        };
+        let mut persisted = Vec::new();
+
+        let outcome =
+            ensure_remote_registration(&mut transport, &mut expired_pending, &request, |state| {
+                persisted.push(state.remote_attempted);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(outcome.is_some());
+        assert_eq!(transport.rpc_calls, 2);
+        assert_eq!(transport.probe_calls, 0);
+        assert_eq!(expired_pending.generated.did, original.did);
+        assert_eq!(
+            expired_pending.generated.root_private_pem,
+            original.root_private_pem
+        );
+        assert_eq!(
+            expired_pending.generated.device_signing_private_pem,
+            original.device_signing_private_pem
+        );
+        assert_eq!(
+            expired_pending.generated.device_e2ee_private_pem,
+            original.device_e2ee_private_pem
+        );
+        assert_ne!(expired_pending.document_hash, original_hash);
+        assert_eq!(persisted, vec![true, false, true]);
+    }
+
+    #[test]
+    fn expired_root_proof_retry_is_capped_and_other_errors_do_not_refresh() {
+        let request = request();
+        let mut expired_pending = pending();
+        let mut transport = RegistrationTransport {
+            rpc_behavior: RpcBehavior::AlwaysExpired,
+            probe_behavior: ProbeBehavior::Absent,
+            rpc_calls: 0,
+            probe_calls: 0,
+        };
+
+        let error =
+            ensure_remote_registration(&mut transport, &mut expired_pending, &request, |_| Ok(()))
+                .unwrap_err();
+
+        assert!(registration_proof_expired(&error));
+        assert_eq!(transport.rpc_calls, 2);
+
+        let mut other_pending = pending();
+        let original_hash = other_pending.document_hash.clone();
+        let mut other_transport = RegistrationTransport {
+            rpc_behavior: RpcBehavior::OtherServiceError,
+            probe_behavior: ProbeBehavior::Absent,
+            rpc_calls: 0,
+            probe_calls: 0,
+        };
+
+        let error =
+            ensure_remote_registration(&mut other_transport, &mut other_pending, &request, |_| {
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(!registration_proof_expired(&error));
+        assert_eq!(other_transport.rpc_calls, 1);
+        assert_eq!(other_pending.document_hash, original_hash);
     }
 
     #[test]
@@ -1443,12 +1778,12 @@ mod tests {
             probe_calls: 0,
         };
 
-        assert_eq!(
+        assert!(matches!(
             ensure_remote_registration(&mut mismatch_transport, &mut mismatch, &request, |_| {
                 Ok(())
             }),
             Err(crate::ImError::PermissionDenied)
-        );
+        ));
         assert_eq!(mismatch_transport.probe_calls, 1);
         assert_eq!(mismatch_transport.rpc_calls, 0);
     }
@@ -1618,5 +1953,17 @@ mod tests {
             "e30.{}.signature",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
         )
+    }
+
+    fn expired_proof_error() -> crate::ImError {
+        crate::ImError::Service {
+            status_code: Some(200),
+            code: Some("-32004".to_owned()),
+            message: "DID document root proof has expired".to_owned(),
+            data: Some(serde_json::json!({
+                "awiki_code": REGISTRATION_PROOF_EXPIRED_AWIKI_CODE,
+                "retryable": true
+            })),
+        }
     }
 }

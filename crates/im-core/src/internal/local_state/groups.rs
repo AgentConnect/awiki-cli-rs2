@@ -710,6 +710,8 @@ fn validate_handle_generation_transition(
 #[cfg(feature = "sqlite")]
 fn canonical_generation(value: &str) -> Option<&str> {
     (!value.is_empty()
+        && value.len()
+            <= crate::internal::identity_wire::handle_recovery::MAX_BINDING_GENERATION_DIGITS
         && value != "0"
         && !value.starts_with('0')
         && value.bytes().all(|byte| byte.is_ascii_digit()))

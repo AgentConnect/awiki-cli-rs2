@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 35;
+pub(crate) const SCHEMA_VERSION: i64 = 36;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -14,6 +14,7 @@ const MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION: i64 = 32;
 const SYNC_INSTALLATION_ID_SCHEMA_VERSION: i64 = 33;
 const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
 const INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION: i64 = 35;
+const HANDLE_RECOVERY_V4_SCHEMA_VERSION: i64 = 36;
 const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
     "identity_account_bindings",
     "message_sync_state",
@@ -1030,6 +1031,9 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
                 ),
             });
         }
+        return migrate_v35_to_v36(connection);
+    }
+    if version == HANDLE_RECOVERY_V4_SCHEMA_VERSION {
         return create_schema(connection, false);
     }
     if version < SCHEMA_VERSION {
@@ -1147,6 +1151,60 @@ fn migrate_v34_to_v35(connection: &Connection) -> crate::ImResult<()> {
         &transaction,
         INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION,
     )?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION
+        || !merged_v35_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "sqlite schema v35 must be complete before adding Handle Recovery v4 state"
+                .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        &transaction,
+        "identity_transition_pending",
+        "current_device_id",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "identity_transition_pending",
+        "device_auth_generation",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "identity_transition_pending",
+        "registry_version",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "identity_transition_pending",
+        "applied_at",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "identity_transition_pending",
+        "metadata_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    transaction
+        .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .execute_batch(
+            crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,
+        )
+        .map_err(super::local_state_unavailable)?;
+    set_schema_version(&transaction, HANDLE_RECOVERY_V4_SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1303,6 +1361,11 @@ pub(super) fn create_schema(
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(
+            crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,
+        )
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)

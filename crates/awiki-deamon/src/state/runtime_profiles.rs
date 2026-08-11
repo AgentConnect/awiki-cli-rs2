@@ -1,6 +1,8 @@
 use super::row_mappers::*;
 use super::*;
 
+static CONTROLLER_REBIND_AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
 impl DaemonState {
     pub fn upsert_runtime_agent_profile(&self, profile: &RuntimeAgentProfile) -> Result<()> {
         self.upsert_runtime_agent_profile_with_handle(profile, &profile.agent_handle)
@@ -243,6 +245,554 @@ WHERE daemon_agent_did = ?2
             rusqlite::params![controller_did, daemon_agent_did],
         )?;
         Ok(updated)
+    }
+
+    pub(crate) fn rebind_controller_did_for_agent_family(
+        &self,
+        daemon_agent_did: &str,
+        expected_controller_user_id: &str,
+        expected_controller_full_handle: &str,
+        expected_controller_scope_key: &str,
+        new_controller_did: &str,
+        source: &'static str,
+    ) -> Result<bool> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("expected_controller_user_id", expected_controller_user_id),
+            (
+                "expected_controller_full_handle",
+                expected_controller_full_handle,
+            ),
+            (
+                "expected_controller_scope_key",
+                expected_controller_scope_key,
+            ),
+            ("new_controller_did", new_controller_did),
+            ("source", source),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+
+        let mut connection = self.connection()?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let local = transaction
+            .query_row(
+                r#"
+SELECT
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    agent_kind
+FROM agent_definition
+WHERE agent_did = ?1
+"#,
+                [daemon_agent_did],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .with_context(|| {
+                format!("load daemon definition for controller rebind {daemon_agent_did}")
+            })?;
+        if local.4 != AgentKind::Daemon.as_str() {
+            bail!("controller rebind target is not a daemon agent");
+        }
+        if local.0 != expected_controller_user_id
+            || local.1 != expected_controller_full_handle
+            || local.2 != expected_controller_scope_key
+        {
+            bail!("controller_scope_changed");
+        }
+        if local.3 == new_controller_did {
+            transaction.commit()?;
+            return Ok(false);
+        }
+
+        let old_controller_did = local.3;
+        let now = current_time_millis()?;
+        let now_text = now.to_string();
+        let fenced_rpc_tokens = transaction.execute(
+            r#"
+UPDATE runtime_rpc_tokens
+SET revoked_at = COALESCE(revoked_at, ?1),
+    revoked_at_ms = COALESCE(revoked_at_ms, ?2)
+WHERE revoked_at_ms IS NULL
+  AND run_id IN (
+      SELECT runtime_run.run_id
+      FROM runtime_run
+      INNER JOIN runtime_task ON runtime_task.task_id = runtime_run.task_id
+      WHERE runtime_task.agent_did IN (
+          SELECT runtime_agent_did
+          FROM runtime_daemon_binding
+          WHERE daemon_agent_did = ?3
+            AND controller_user_id = ?4
+            AND controller_full_handle = ?5
+            AND controller_scope_key = ?6
+            AND controller_did = ?7
+      )
+        AND runtime_task.controller_scope_key = ?6
+        AND runtime_task.controller_did = ?7
+        AND runtime_task.conversation_scope_kind = 'controller_private'
+  )
+"#,
+            rusqlite::params![
+                now_text,
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let fenced_runs = transaction.execute(
+            r#"
+UPDATE runtime_run
+SET status = 'failed',
+    completed_at = COALESCE(completed_at, ?1),
+    updated_at = ?1,
+    completed_at_ms = COALESCE(completed_at_ms, ?2),
+    updated_at_ms = ?2
+WHERE status IN ('pending', 'running')
+  AND task_id IN (
+      SELECT task_id
+      FROM runtime_task
+      WHERE agent_did IN (
+          SELECT runtime_agent_did
+          FROM runtime_daemon_binding
+          WHERE daemon_agent_did = ?3
+            AND controller_user_id = ?4
+            AND controller_full_handle = ?5
+            AND controller_scope_key = ?6
+            AND controller_did = ?7
+      )
+        AND controller_scope_key = ?6
+        AND controller_did = ?7
+        AND conversation_scope_kind = 'controller_private'
+  )
+"#,
+            rusqlite::params![
+                now_text,
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let fenced_retries = transaction.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = 'superseded',
+    updated_at_ms = ?1
+WHERE status IN ('queued', 'running')
+  AND task_id IN (
+      SELECT task_id
+      FROM runtime_task
+      WHERE agent_did IN (
+          SELECT runtime_agent_did
+          FROM runtime_daemon_binding
+          WHERE daemon_agent_did = ?2
+            AND controller_user_id = ?3
+            AND controller_full_handle = ?4
+            AND controller_scope_key = ?5
+            AND controller_did = ?6
+      )
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+        AND conversation_scope_kind = 'controller_private'
+  )
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let fenced_final_outbox = transaction.execute(
+            r#"
+UPDATE runtime_final_outbox
+SET status = 'failed_terminal',
+    last_error_code = 'recovery_fenced',
+    last_error_summary = 'Controller identity changed after recovery',
+    updated_at_ms = ?1
+WHERE status IN ('pending', 'sending')
+  AND agent_did IN (
+      SELECT runtime_agent_did
+      FROM runtime_daemon_binding
+      WHERE daemon_agent_did = ?2
+        AND controller_user_id = ?3
+        AND controller_full_handle = ?4
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+  )
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let fenced_route_queue = transaction.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'cancelled',
+    last_error_code = 'recovery_fenced',
+    last_error_summary = 'Controller identity changed after recovery',
+    updated_at_ms = ?1
+WHERE status IN ('queued', 'running')
+  AND agent_did IN (
+      SELECT runtime_agent_did
+      FROM runtime_daemon_binding
+      WHERE daemon_agent_did = ?2
+        AND controller_user_id = ?3
+        AND controller_full_handle = ?4
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+  )
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let released_cli_locks = transaction.execute(
+            r#"
+DELETE FROM cli_runtime_locks
+WHERE run_id IN (
+    SELECT run_id
+    FROM cli_driver_run
+    WHERE agent_did IN (
+        SELECT runtime_agent_did
+        FROM runtime_daemon_binding
+        WHERE daemon_agent_did = ?1
+          AND controller_user_id = ?2
+          AND controller_full_handle = ?3
+          AND controller_scope_key = ?4
+          AND controller_did = ?5
+    )
+      AND controller_scope_key = ?4
+      AND controller_did = ?5
+      AND status IN ('pending', 'running')
+)
+"#,
+            rusqlite::params![
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let fenced_cli_runs = transaction.execute(
+            r#"
+UPDATE cli_driver_run
+SET status = 'failed',
+    updated_at_ms = ?1
+WHERE status IN ('pending', 'running')
+  AND agent_did IN (
+      SELECT runtime_agent_did
+      FROM runtime_daemon_binding
+      WHERE daemon_agent_did = ?2
+        AND controller_user_id = ?3
+        AND controller_full_handle = ?4
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+  )
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let reset_route_sessions = transaction.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = 'reset',
+    native_session_id = NULL,
+    native_session_source = NULL,
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    last_error_code = 'recovery_fenced',
+    last_error_summary = 'Controller identity changed after recovery',
+    version = version + 1,
+    updated_at_ms = ?1
+WHERE status IN ('active', 'running', 'failed', 'queued')
+  AND agent_did IN (
+      SELECT runtime_agent_did
+      FROM runtime_daemon_binding
+      WHERE daemon_agent_did = ?2
+        AND controller_user_id = ?3
+        AND controller_full_handle = ?4
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+  )
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let reset_native_sessions = transaction.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET status = 'reset',
+    updated_at_ms = ?1
+WHERE status = 'active'
+  AND scope_kind = 'controller_private'
+  AND agent_did IN (
+      SELECT runtime_agent_did
+      FROM runtime_daemon_binding
+      WHERE daemon_agent_did = ?2
+        AND controller_user_id = ?3
+        AND controller_full_handle = ?4
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+  )
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let fenced_delegated_identities = transaction.execute(
+            r#"
+UPDATE user_delegated_identity
+SET status = 'recovery_fenced',
+    updated_at_ms = ?1
+WHERE daemon_agent_did = ?2
+  AND controller_did = ?3
+  AND status <> 'recovery_fenced'
+"#,
+            rusqlite::params![now, daemon_agent_did, old_controller_did],
+        )?;
+        let fenced_bootstrap_replays = transaction.execute(
+            r#"
+UPDATE bootstrap_replay
+SET status = 'recovery_fenced',
+    updated_at_ms = ?1
+WHERE daemon_agent_did = ?2
+  AND status <> 'recovery_fenced'
+  AND bootstrap_id IN (
+      SELECT bootstrap_id
+      FROM user_delegated_identity
+      WHERE daemon_agent_did = ?2
+        AND controller_did = ?3
+  )
+"#,
+            rusqlite::params![now, daemon_agent_did, old_controller_did],
+        )?;
+        let fenced_secure_bootstrap_replays = transaction.execute(
+            r#"
+UPDATE secure_bootstrap_replay
+SET status = 'recovery_fenced',
+    updated_at_ms = ?1
+WHERE recipient_daemon_did = ?2
+  AND sender_human_did = ?3
+  AND status <> 'recovery_fenced'
+"#,
+            rusqlite::params![now, daemon_agent_did, old_controller_did],
+        )?;
+        let fenced_control_commands = transaction.execute(
+            r#"
+UPDATE control_command_state
+SET status = 'failed',
+    result_json = '{"error_code":"recovery_fenced","status":"failed"}',
+    error_summary = 'Controller identity changed after recovery',
+    updated_at_ms = ?1
+WHERE daemon_agent_did = ?2
+  AND controller_scope_key = ?3
+  AND status IN ('in_progress', 'restart_scheduled')
+"#,
+            rusqlite::params![now, daemon_agent_did, expected_controller_scope_key],
+        )?;
+        let fenced_tasks = transaction.execute(
+            r#"
+UPDATE runtime_task
+SET status = 'failed',
+    updated_at_ms = ?1
+WHERE status IN ('pending', 'running')
+  AND conversation_scope_kind = 'controller_private'
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+  AND agent_did IN (
+      SELECT runtime_agent_did
+      FROM runtime_daemon_binding
+      WHERE daemon_agent_did = ?2
+        AND controller_user_id = ?3
+        AND controller_full_handle = ?4
+        AND controller_scope_key = ?5
+        AND controller_did = ?6
+  )
+"#,
+            rusqlite::params![
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let cleared_throttle = transaction.execute(
+            r#"
+DELETE FROM agent_status_query_throttle
+WHERE daemon_agent_did = ?1
+  AND controller_scope_key = ?2
+  AND controller_did = ?3
+"#,
+            rusqlite::params![
+                daemon_agent_did,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        let updated_definitions = transaction.execute(
+            r#"
+UPDATE agent_definition
+SET controller_did = ?1,
+    updated_at = ?2
+WHERE controller_user_id = ?3
+  AND controller_full_handle = ?4
+  AND controller_scope_key = ?5
+  AND controller_did = ?6
+  AND (
+      agent_did = ?7
+      OR agent_did IN (
+          SELECT runtime_agent_did
+          FROM runtime_daemon_binding
+          WHERE daemon_agent_did = ?7
+            AND controller_user_id = ?3
+            AND controller_full_handle = ?4
+            AND controller_scope_key = ?5
+            AND controller_did = ?6
+      )
+  )
+"#,
+            rusqlite::params![
+                new_controller_did,
+                now_text,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+                daemon_agent_did,
+            ],
+        )?;
+        let updated_bindings = transaction.execute(
+            r#"
+UPDATE runtime_daemon_binding
+SET controller_did = ?1,
+    updated_at_ms = ?2
+WHERE daemon_agent_did = ?3
+  AND controller_user_id = ?4
+  AND controller_full_handle = ?5
+  AND controller_scope_key = ?6
+  AND controller_did = ?7
+"#,
+            rusqlite::params![
+                new_controller_did,
+                now,
+                daemon_agent_did,
+                expected_controller_user_id,
+                expected_controller_full_handle,
+                expected_controller_scope_key,
+                old_controller_did,
+            ],
+        )?;
+        if updated_definitions == 0 {
+            bail!("controller rebind did not update the daemon definition");
+        }
+
+        let audit_sequence = CONTROLLER_REBIND_AUDIT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let audit_id = format!("audit_{now}_{audit_sequence}_controller_rebound");
+        let detail_json = serde_json::json!({
+            "reason": "controller_recovered",
+            "source": source,
+            "fenced": {
+                "rpc_tokens": fenced_rpc_tokens,
+                "runs": fenced_runs,
+                "tasks": fenced_tasks,
+                "retries": fenced_retries,
+                "final_outbox": fenced_final_outbox,
+                "route_queue": fenced_route_queue,
+                "cli_locks": released_cli_locks,
+                "cli_runs": fenced_cli_runs,
+                "route_sessions": reset_route_sessions,
+                "native_sessions": reset_native_sessions,
+                "delegated_identities": fenced_delegated_identities,
+                "bootstrap_replays": fenced_bootstrap_replays,
+                "secure_bootstrap_replays": fenced_secure_bootstrap_replays,
+                "control_commands": fenced_control_commands,
+                "throttle_rows": cleared_throttle,
+            },
+            "updated": {
+                "definitions": updated_definitions,
+                "bindings": updated_bindings,
+            }
+        })
+        .to_string();
+        transaction.execute(
+            r#"
+INSERT INTO audit_log (
+    audit_id,
+    event_type,
+    agent_did,
+    runtime_profile_id,
+    run_id,
+    token_id,
+    detail_json,
+    created_at_ms
+) VALUES (?1, 'daemon.controller_rebound', ?2, NULL, NULL, NULL, ?3, ?4)
+"#,
+            rusqlite::params![audit_id, daemon_agent_did, detail_json, now],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn mark_agent_archived(&self, agent_did: &str) -> Result<usize> {

@@ -1753,6 +1753,10 @@ struct DirectSendResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attempted_device_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    own_sync_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     previously_accepted_device_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     newly_accepted_device_count: Option<u64>,
@@ -1806,6 +1810,14 @@ impl DirectSendResult {
             attempted_device_count: message_u64_attribute(
                 &result.message.metadata.attributes,
                 "attempted_device_count",
+            ),
+            target_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "target_device_count",
+            ),
+            own_sync_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "own_sync_device_count",
             ),
             previously_accepted_device_count: message_u64_attribute(
                 &result.message.metadata.attributes,

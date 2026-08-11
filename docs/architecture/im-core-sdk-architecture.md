@@ -83,12 +83,22 @@ Rules:
 
 ### 4.2 Manifest Handle Recovery boundary
 
-Handle Recovery is an environment-level, host-neutral Core state machine behind the
+Manifest Handle Recovery V4.0 is an environment-level, host-neutral Core state machine behind the
 default-off `multi_device_handle_recovery_enabled` option. Core owns OTP/grant exchange,
 fresh root/device/E2EE generation, signed commit proof, Vault-only exact retry state,
-source-bound `identity_transition_pending`, stable-owner epoch migration, fresh JWT,
+the SQLite `handle_recovery_operations_v4` index, source-bound
+`identity_transition_pending`, stable-owner epoch migration, fresh JWT,
 new P5 PreKey publication, and transport-only P4 group convergence. Dart is a typed
-projection of the same seven operations; it does not implement a second state machine.
+projection of that state machine; it does not implement a second state machine. Core creates
+the opaque operation ID when OTP is requested, and every later call addresses that exact ID.
+
+`request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
+Core closes it against the requested Handle. Without one, Core first matches that Handle
+against the complete local identity index; if absent, it resolves the active public WNS
+binding during factor exchange and bootstraps a new local owner after phone verification. It never substitutes the
+process default/current identity. Existing-target recovery migrates only that owner's ordinary
+state; a newly bootstrapped target reports no local ordinary-data migration and leaves every
+other local identity unchanged.
 
 The transition marker is persisted before Registry checkpoint replacement. Initiator
 markers bind the authoritative commit operation ID; joined-device markers bind the exact
@@ -98,17 +108,31 @@ Only exact Handle-backed `transport-protected` groups are eligible. Missing, con
 DID-only, E2EE, or malformed profiles fail closed, and Recovery never enters P6/MLS or
 `awaiting_p6`.
 
-The JSON-RPC transport treats an HTTP success with a zero-byte response body as
-`TransportUnavailable` with a fixed, body-free diagnostic. For a Recovery Commit this is an
-ambiguous mutation outcome: Core keeps the durable proof in `remoteCommitPending`, returns
-`handle_recovery_outcome_unknown`, and a later resume replays the exact request. A non-empty
-malformed JSON body remains `Serialization`; neither classification exposes response content.
+After the remote Commit, JWT refresh and P5 PreKey publication are still part of the same
+durable local transition. Retryable transport/auth/session/service/serialization failures are
+projected as `local_transition_pending`; the host must resume the exact operation rather than
+start a second Recovery. Successful application clears the stale retry projection. Permission,
+Vault, local invariant, and persistence failures retain their original closed error instead of
+being mislabeled as transient connectivity.
 
-V1 deliberately has no CLI command, Daemon task, Agent recovery entrypoint, UI route, or
-process-global identity. Those hosts can be added later by calling the typed Core service
-with an explicit `IdentitySelector`; the cryptographic and durable orchestration remains
-inside Core. The separate legacy Registry epoch adoption authority is available for App
-migration only when the exact vNext binding is active and no transition marker exists.
+The JSON-RPC transport treats an HTTP success with a zero-byte response body as
+`TransportUnavailable` with a fixed, body-free diagnostic. For a V4 Commit this is an ambiguous
+mutation outcome: Core keeps the operation in `remote_outcome_unknown`, returns the closed public
+error `outcome_unknown`, and a later resume first calls `handle_recovery_result_get_v4`. A committed
+result is applied locally; `result_absent` permits the same frozen intent to retry Commit. Core never
+blindly creates a new intent or key after an uncertain outcome. A non-empty malformed JSON body
+remains `Serialization`; neither classification exposes response content.
+
+Pre-attempt discard first claims `pre_commit && commit_attempted=false` in the SQLite operation
+index and only then idempotently deletes Vault material, so concurrent activation and discard cannot
+both win. When a post-attempt Grant refresh observes a changed authoritative binding, Core performs
+a second Result Get before classifying the operation as superseded; this closes the
+`result_absent -> delayed Commit -> factor exchange` window without adding protocol or storage state.
+
+V4.0 has no V3 wire methods, V3 phase aliases, or V3 error aliases. CLI, Daemon, and Agent
+recovery entrypoints remain out of scope; any later host must call the typed Core service with an
+explicit `IdentitySelector`. The separate legacy Registry epoch adoption authority is not a
+Manifest Handle Recovery compatibility path and cannot authorize V4.0 N-k adoption.
 
 ### 4.1 Local multi-device authorization projection
 
@@ -288,6 +312,15 @@ operation admitted before host teardown cannot resurrect credentials after
 deletion returns. Directory deletion additionally verifies the persisted
 identity ID and DID, preventing an old retirement record from deleting a path
 that has since been reused by another identity.
+
+Identity retirement deliberately retains the stable account binding used by
+message projections. When registration later receives an existing-Handle
+response without a Recovery transition, Core treats that binding as having no
+live local credential only if the identity index has no related entry and one
+exact completed retirement marker matches the binding's identity ID, DID, and
+protocol device ID. That state returns the ordinary `join_required` path;
+missing, partial, mismatched, duplicate, or still-live state continues to fail
+closed as `handle_recovery.transition_missing`.
 
 An authorized New Device Join record is a crash-recovery journal for the local
 identity/device activation, not a permanent active session. When identity
@@ -881,14 +914,16 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   delta, and v2 delta converge idempotently instead of creating duplicate rows.
   These lifecycle records remain durable timeline facts but do not enter the
   ordinary committed-incoming notification list.
-- When the independent P5 gate is enabled, Foreground CLI Inbox compensation
-  first performs one bounded exact-device secure hydration through the local-only
+- When the independent P5 gate is enabled, foreground CLI Inbox compensation and
+  the native Dart `MessageApi.syncNow` wrapper first perform one bounded
+  exact-device secure hydration through the local-only
   `inbox.get` contract. This lets Root control messages finish local credential
   promotion before a changed device authorization generation is used for ordinary
-  sync. The CLI reopens `ImClient` for the same DID after hydration so the same
-  command cannot retain the pre-promotion device authorization generation, then
-  uses the exact-device v2 reader with reason `foreground_reconcile` for ordinary
-  messages. Secure hydration uses the closed
+  sync. Both hosts reload `ImClient` for the same stable local identity after
+  hydration so the same foreground operation cannot retain the pre-promotion
+  device authorization generation; the CLI then uses reason
+  `foreground_reconcile`, while Dart continues the caller's ordinary `syncNow`
+  request. Secure hydration uses the closed
   `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
   P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
   local commit, reloads bearer state before that ACK in case a Root control

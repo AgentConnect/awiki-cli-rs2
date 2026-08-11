@@ -2322,3 +2322,72 @@ fn assert_merged_v34_shape(db: &Connection) {
         assert_index_exists(db, index);
     }
 }
+
+#[test]
+fn v35_to_v36_adds_handle_recovery_receipt_fields_and_operation_index() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("state.sqlite");
+    let db = crate::internal::local_state::open_writable(&path).unwrap();
+    db.execute_batch(
+        r#"
+DROP INDEX IF EXISTS idx_identity_transition_source;
+DROP INDEX IF EXISTS idx_identity_transition_active_owner;
+DROP INDEX IF EXISTS idx_identity_transition_owner_phase;
+DROP INDEX IF EXISTS idx_identity_transition_account_generation;
+DROP INDEX IF EXISTS idx_identity_transition_handle_epoch;
+ALTER TABLE identity_transition_pending RENAME TO identity_transition_pending_v36;
+CREATE TABLE identity_transition_pending (
+    recovery_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    contract_version TEXT NOT NULL,
+    contract_hash TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('initiator','joined_device')),
+    source_id TEXT NOT NULL,
+    state_root_fingerprint TEXT NOT NULL,
+    account_user_id TEXT NOT NULL,
+    owner_identity_id TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    previous_did TEXT NOT NULL,
+    current_did TEXT NOT NULL,
+    binding_generation TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('pending','identity_switched','completed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+DROP TABLE identity_transition_pending_v36;
+DROP TABLE handle_recovery_operations_v4;
+PRAGMA user_version=35;
+"#,
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at) VALUES ('legacy-incomplete-receipt',1,?1,?2,'initiator','op_legacy_12345678',?3,'user-1','owner-1','alice.example.invalid','did:wba:example.invalid:users:alice-old','did:wba:example.invalid:users:alice-new','7','completed','2026-08-07T00:00:00Z','2026-08-07T00:00:01Z')",
+        rusqlite::params![
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH,
+            crate::internal::identity_transition_pending::state_root_fingerprint(&path),
+        ],
+    )
+    .unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), 36);
+    for column in [
+        "current_device_id",
+        "device_auth_generation",
+        "registry_version",
+        "applied_at",
+        "metadata_json",
+    ] {
+        assert_column_exists(&db, "identity_transition_pending", column);
+    }
+    assert_schema_object_exists(&db, "table", "handle_recovery_operations_v4");
+    assert_index_exists(&db, "idx_identity_transition_owner_phase");
+    assert_index_exists(&db, "idx_identity_transition_account_generation");
+    assert_index_exists(&db, "idx_identity_transition_handle_epoch");
+    assert!(
+        crate::internal::identity_transition_pending::load(&path, "legacy-incomplete-receipt")
+            .is_err()
+    );
+}

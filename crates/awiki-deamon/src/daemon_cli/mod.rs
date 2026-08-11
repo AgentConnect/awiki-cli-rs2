@@ -1245,47 +1245,49 @@ fn update_daemon_latest_status(
     agent: &AgentDefinition,
     service: &ServiceStatus,
 ) -> Result<()> {
-    let auth = crate::controller_scope::daemon_auth_material(config, state, agent)?;
-    let release = check_release_status(config);
-    let response = client.update_latest_status(
-        &agent.agent_did,
-        vec![AgentLatestStatusUpdateItem {
-            agent_did: agent.agent_did.clone(),
-            agent_kind: AgentKind::Daemon,
-            status: if release.needs_upgrade {
-                "needs_upgrade"
-            } else {
-                "ready"
-            }
-            .to_string(),
-            last_seen_at: None,
-            version: Some(release.current_version.clone()),
-            latest_version: release.latest_version.clone(),
-            min_supported_version: None,
-            platform: Some(current_platform_label()),
-            service: Some(
-                match service.platform {
-                    ServicePlatform::LaunchAgent => "launch_agent",
-                    ServicePlatform::SystemdUser => "systemd_user",
-                    ServicePlatform::Foreground => "foreground",
-                    ServicePlatform::Unsupported => "unsupported",
+    crate::controller_scope::with_controller_reconcile_singleflight(agent, || {
+        let agent = state.load_agent_definition(&agent.agent_did)?;
+        let auth = crate::controller_scope::daemon_auth_material(config, state, &agent)?;
+        let release = check_release_status(config);
+        let response = client.update_latest_status(
+            &agent.agent_did,
+            vec![AgentLatestStatusUpdateItem {
+                agent_did: agent.agent_did.clone(),
+                agent_kind: AgentKind::Daemon,
+                status: if release.needs_upgrade {
+                    "needs_upgrade"
+                } else {
+                    "ready"
                 }
                 .to_string(),
-            ),
-            needs_upgrade: release.needs_upgrade,
-            needs_config: false,
-            last_error_code: None,
-            last_error_summary: None,
-            diagnostics_summary: crate::agent_status::daemon_latest_diagnostics_summary(
-                config, state, agent, service, &release,
-            ),
-        }],
-        &auth,
-    )?;
-    crate::agent_status::sync_controller_did_from_latest_response(
-        state,
-        &agent.agent_did,
-        &response,
-    )?;
-    Ok(())
+                last_seen_at: None,
+                version: Some(release.current_version.clone()),
+                latest_version: release.latest_version.clone(),
+                min_supported_version: None,
+                platform: Some(current_platform_label()),
+                service: Some(
+                    match service.platform {
+                        ServicePlatform::LaunchAgent => "launch_agent",
+                        ServicePlatform::SystemdUser => "systemd_user",
+                        ServicePlatform::Foreground => "foreground",
+                        ServicePlatform::Unsupported => "unsupported",
+                    }
+                    .to_string(),
+                ),
+                needs_upgrade: release.needs_upgrade,
+                needs_config: false,
+                last_error_code: None,
+                last_error_summary: None,
+                diagnostics_summary: crate::agent_status::daemon_latest_diagnostics_summary(
+                    config, state, &agent, service, &release,
+                ),
+            }],
+            &auth,
+        )?;
+        crate::agent_status::sync_controller_did_from_latest_response(
+            state,
+            &agent.agent_did,
+            &response,
+        )
+    })
 }

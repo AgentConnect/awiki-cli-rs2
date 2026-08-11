@@ -4741,3 +4741,513 @@ fn daemon_sync_probe_public_shape_is_closed_and_identity_free() {
         assert!(!serialized.contains(forbidden));
     }
 }
+
+#[test]
+fn controller_rebind_atomically_fences_old_controller_work_without_rewriting_history() {
+    const DAEMON_DID: &str = "did:agent:daemon-controller-rebind";
+    const RUNTIME_DID: &str = "did:agent:runtime-controller-rebind";
+    const USER_ID: &str = "user-alice";
+    const FULL_HANDLE: &str = "alice.awiki.info";
+    const SCOPE_KEY: &str = "controller-scope:v1:user-alice:alice.awiki.info";
+    const OLD_DID: &str = "did:human:alice-old";
+    const NEW_DID: &str = "did:human:alice-new";
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let daemon = AgentDefinition {
+        agent_did: DAEMON_DID.to_owned(),
+        handle: "alice-daemon".to_owned(),
+        agent_kind: AgentKind::Daemon,
+        controller_user_id: USER_ID.to_owned(),
+        controller_full_handle: FULL_HANDLE.to_owned(),
+        controller_scope_key: SCOPE_KEY.to_owned(),
+        controller_did: OLD_DID.to_owned(),
+        runtime_plugin_id: None,
+        runtime_profile_id: None,
+        workspace_id: None,
+        policy_id: "default".to_owned(),
+        local_agent_db_path: "agents/daemon/agent.db".to_owned(),
+        message_db_path: "agents/daemon/messages.db".to_owned(),
+        status: "active".to_owned(),
+    };
+    let runtime = AgentDefinition {
+        agent_did: RUNTIME_DID.to_owned(),
+        handle: "alice-runtime".to_owned(),
+        agent_kind: AgentKind::Runtime,
+        controller_user_id: USER_ID.to_owned(),
+        controller_full_handle: FULL_HANDLE.to_owned(),
+        controller_scope_key: SCOPE_KEY.to_owned(),
+        controller_did: OLD_DID.to_owned(),
+        runtime_plugin_id: Some("generic-cli".to_owned()),
+        runtime_profile_id: Some("profile-controller-rebind".to_owned()),
+        workspace_id: Some("workspace-controller-rebind".to_owned()),
+        policy_id: "default".to_owned(),
+        local_agent_db_path: "agents/runtime/agent.db".to_owned(),
+        message_db_path: "agents/runtime/messages.db".to_owned(),
+        status: "active".to_owned(),
+    };
+    state.upsert_agent_definition(&daemon).unwrap();
+    state.upsert_agent_definition(&runtime).unwrap();
+    state
+        .upsert_runtime_daemon_binding(
+            RUNTIME_DID,
+            DAEMON_DID,
+            USER_ID,
+            FULL_HANDLE,
+            SCOPE_KEY,
+            OLD_DID,
+        )
+        .unwrap();
+
+    state
+        .connection()
+        .unwrap()
+        .execute_batch(
+            r#"
+INSERT INTO runtime_task (
+    task_id, agent_did, agent_handle, controller_user_id,
+    controller_full_handle, controller_scope_key, controller_did,
+    sender_did, requester_did, trigger_kind, conversation_scope_kind,
+    conversation_scope_key, invocation_authority, reply_recipient_did,
+    conversation_id, task_text, status, created_at_ms, updated_at_ms
+) VALUES (
+    'task-controller-rebind', 'did:agent:runtime-controller-rebind', 'alice-runtime',
+    'user-alice', 'alice.awiki.info',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old',
+    'did:human:alice-old', 'did:human:alice-old', 'controller_direct',
+    'controller_private',
+    'controller:controller-scope:v1:user-alice:alice.awiki.info',
+    'controller', 'did:human:alice-old', 'conversation-before-recovery',
+    'run old controller work', 'running', 1, 1
+);
+
+INSERT INTO runtime_run (
+    run_id, task_id, agent_did, runtime_profile_id, runtime_plugin_id,
+    status, started_at, updated_at, started_at_ms, updated_at_ms
+) VALUES (
+    'run-controller-rebind', 'task-controller-rebind',
+    'did:agent:runtime-controller-rebind', 'profile-controller-rebind',
+    'generic-cli', 'running', '1', '1', 1, 1
+);
+
+INSERT INTO runtime_rpc_tokens (
+    token_id, token_secret_hash, agent_did, runtime_profile_id, run_id,
+    allowed_methods_json, expires_at, expires_at_ms, single_use,
+    created_at, created_at_ms
+) VALUES (
+    'token-controller-rebind', 'hash', 'did:agent:runtime-controller-rebind',
+    'profile-controller-rebind', 'run-controller-rebind', '["msg.send"]',
+    '9999999999999', 9999999999999, 0, '1', 1
+);
+
+INSERT INTO runtime_retry_queue (
+    retry_id, original_run_id, task_id, agent_did, runtime_profile_id,
+    runtime_plugin_id, status, requested_by_command_id, attempts,
+    next_attempt_at_ms, created_at_ms, updated_at_ms
+) VALUES (
+    'retry-controller-rebind', 'run-controller-rebind',
+    'task-controller-rebind', 'did:agent:runtime-controller-rebind',
+    'profile-controller-rebind', 'generic-cli', 'queued',
+    'command-controller-rebind', 0, 1, 1, 1
+);
+
+INSERT INTO runtime_final_outbox (
+    idempotency_key, run_id, agent_did, runtime_profile_id,
+    controller_scope_key, controller_did, recipient_did, conversation_id,
+    final_text, final_source, final_body_hash, security, status,
+    attempt_count, next_attempt_at_ms, created_at_ms, updated_at_ms
+) VALUES (
+    'final-controller-rebind', 'run-controller-rebind',
+    'did:agent:runtime-controller-rebind', 'profile-controller-rebind',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old',
+    'did:human:alice-old', 'conversation-before-recovery', 'old final',
+    'runtime', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'default_plain', 'pending', 0, 1, 1, 1
+);
+
+INSERT INTO cli_driver_run (
+    run_id, agent_did, runtime_profile_id, driver_id, controller_user_id,
+    controller_full_handle, controller_scope_key, controller_did,
+    conversation_id, route_key, status, created_at_ms, updated_at_ms
+) VALUES (
+    'cli-run-controller-rebind', 'did:agent:runtime-controller-rebind',
+    'profile-controller-rebind', 'codex', 'user-alice', 'alice.awiki.info',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old',
+    'conversation-before-recovery', 'route-controller-rebind', 'running', 1, 1
+);
+
+INSERT INTO cli_runtime_locks (
+    lock_key, lock_kind, runtime_profile_id, driver_id, run_id, lock_owner,
+    lock_expires_at_ms, created_at_ms, updated_at_ms
+) VALUES (
+    'lock-controller-rebind', 'route', 'profile-controller-rebind', 'codex',
+    'cli-run-controller-rebind', 'worker', 9999999999999, 1, 1
+);
+
+INSERT INTO cli_route_message_queue (
+    queue_id, agent_did, runtime_profile_id, driver_id, controller_user_id,
+    controller_full_handle, controller_scope_key, controller_did,
+    conversation_id, route_key, route_key_hash, source_message_id, task_id,
+    run_id, status, enqueue_reason, attempts, next_attempt_at_ms,
+    route_sequence, created_at_ms, updated_at_ms
+) VALUES (
+    'queue-controller-rebind', 'did:agent:runtime-controller-rebind',
+    'profile-controller-rebind', 'codex', 'user-alice', 'alice.awiki.info',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old',
+    'conversation-before-recovery', 'route-controller-rebind',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'message-controller-rebind', 'task-controller-rebind',
+    'run-controller-rebind', 'queued', 'busy', 0, 1, 1, 1, 1
+);
+
+INSERT INTO cli_route_sessions (
+    route_key, route_key_hash, agent_did, runtime_profile_id, driver_id,
+    controller_user_id, controller_full_handle, controller_scope_key,
+    controller_did, conversation_id, workspace_path, session_dir,
+    native_session_id, native_session_source, status, lock_run_id,
+    lock_owner, lock_expires_at_ms, created_at_ms, updated_at_ms
+) VALUES (
+    'route-controller-rebind',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'did:agent:runtime-controller-rebind', 'profile-controller-rebind', 'codex',
+    'user-alice', 'alice.awiki.info',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old',
+    'conversation-before-recovery', '/workspace', '/sessions/old',
+    'native-controller-rebind', 'driver', 'running',
+    'cli-run-controller-rebind', 'worker', 9999999999999, 1, 1
+);
+
+INSERT INTO hermes_native_sessions (
+    id, runtime_session_id, agent_did, agent_handle, runtime_profile_id,
+    controller_scope_key, controller_did, session_actor_did, scope_kind,
+    scope_key, conversation_id, route_key, hermes_profile,
+    hermes_session_id, stored_session_id, session_kind, status,
+    created_at_ms, updated_at_ms
+) VALUES (
+    'native-controller-rebind', 'runtime-session-controller-rebind',
+    'did:agent:runtime-controller-rebind', 'alice-runtime',
+    'profile-controller-rebind',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old',
+    'did:human:alice-old', 'controller_private',
+    'controller:controller-scope:v1:user-alice:alice.awiki.info',
+    'conversation-before-recovery', 'hermes-route-controller-rebind',
+    'default', 'hermes-session-old', 'hermes-session-old',
+    'conversation', 'active', 1, 1
+);
+
+INSERT INTO user_delegated_identity (
+    verification_method, user_did, app_instance_id, controller_did,
+    daemon_agent_did, public_key_multibase, private_key_material,
+    allowed_scopes_json, status, bootstrap_id, idempotency_key,
+    created_at_ms, updated_at_ms
+) VALUES (
+    'did:human:alice-old#delegated', 'did:human:alice-old', 'app-old',
+    'did:human:alice-old', 'did:agent:daemon-controller-rebind',
+    'zPublic', 'vault-only', '[]', 'active', 'bootstrap-controller-rebind',
+    'bootstrap-key-controller-rebind', 1, 1
+);
+
+INSERT INTO bootstrap_replay (
+    bootstrap_id, idempotency_key, payload_hash, user_did,
+    verification_method, app_instance_id, daemon_agent_did, status,
+    created_at_ms, updated_at_ms
+) VALUES (
+    'bootstrap-controller-rebind', 'bootstrap-key-controller-rebind',
+    'payload-hash', 'did:human:alice-old', 'did:human:alice-old#delegated',
+    'app-old', 'did:agent:daemon-controller-rebind', 'active', 1, 1
+);
+
+INSERT INTO secure_bootstrap_replay (
+    operation_id, nonce, envelope_hash, recipient_daemon_did,
+    recipient_key_id, sender_human_did, bootstrap_id, idempotency_key,
+    expires_at, status, created_at_ms, updated_at_ms
+) VALUES (
+    'secure-controller-rebind', 'nonce-controller-rebind',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'did:agent:daemon-controller-rebind', 'key-old', 'did:human:alice-old',
+    'bootstrap-controller-rebind', 'bootstrap-key-controller-rebind',
+    '9999-01-01T00:00:00Z', 'active', 1, 1
+);
+
+INSERT INTO agent_status_query_throttle (
+    daemon_agent_did, controller_scope_key, controller_did, last_snapshot_at_ms
+) VALUES (
+    'did:agent:daemon-controller-rebind',
+    'controller-scope:v1:user-alice:alice.awiki.info', 'did:human:alice-old', 1
+);
+
+INSERT INTO control_command_state (
+    daemon_agent_did, controller_scope_key, command_id, command, message_id,
+    status, result_json, created_at_ms, updated_at_ms
+) VALUES (
+    'did:agent:daemon-controller-rebind',
+    'controller-scope:v1:user-alice:alice.awiki.info',
+    'control-controller-rebind', 'daemon.upgrade', 'message-control-rebind',
+    'in_progress', '{}', 1, 1
+);
+"#,
+        )
+        .unwrap();
+
+    assert!(state
+        .rebind_controller_did_for_agent_family(
+            DAEMON_DID,
+            USER_ID,
+            FULL_HANDLE,
+            SCOPE_KEY,
+            NEW_DID,
+            "controller_rebind_test",
+        )
+        .unwrap());
+
+    assert_eq!(
+        state
+            .load_agent_definition(DAEMON_DID)
+            .unwrap()
+            .controller_did,
+        NEW_DID
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(RUNTIME_DID)
+            .unwrap()
+            .controller_did,
+        NEW_DID
+    );
+    assert_eq!(
+        state
+            .load_runtime_daemon_binding(RUNTIME_DID)
+            .unwrap()
+            .unwrap()
+            .controller_did,
+        NEW_DID
+    );
+
+    let connection = state.connection().unwrap();
+    let task: (String, String, String, String) = connection
+        .query_row(
+            "SELECT status, controller_did, reply_recipient_did, conversation_id FROM runtime_task WHERE task_id='task-controller-rebind'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        task,
+        (
+            "failed".to_owned(),
+            OLD_DID.to_owned(),
+            OLD_DID.to_owned(),
+            "conversation-before-recovery".to_owned(),
+        )
+    );
+    let outbox: (String, String, String, String, String) = connection
+        .query_row(
+            "SELECT status, controller_did, recipient_did, conversation_id, last_error_code FROM runtime_final_outbox WHERE run_id='run-controller-rebind'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        outbox,
+        (
+            "failed_terminal".to_owned(),
+            OLD_DID.to_owned(),
+            OLD_DID.to_owned(),
+            "conversation-before-recovery".to_owned(),
+            "recovery_fenced".to_owned(),
+        )
+    );
+    for (table, id_column, id, expected_status) in [
+        ("runtime_run", "run_id", "run-controller-rebind", "failed"),
+        (
+            "runtime_retry_queue",
+            "retry_id",
+            "retry-controller-rebind",
+            "superseded",
+        ),
+        (
+            "cli_route_message_queue",
+            "queue_id",
+            "queue-controller-rebind",
+            "cancelled",
+        ),
+        (
+            "cli_driver_run",
+            "run_id",
+            "cli-run-controller-rebind",
+            "failed",
+        ),
+        (
+            "cli_route_sessions",
+            "route_key",
+            "route-controller-rebind",
+            "reset",
+        ),
+        (
+            "hermes_native_sessions",
+            "id",
+            "native-controller-rebind",
+            "reset",
+        ),
+        (
+            "user_delegated_identity",
+            "verification_method",
+            "did:human:alice-old#delegated",
+            "recovery_fenced",
+        ),
+        (
+            "bootstrap_replay",
+            "bootstrap_id",
+            "bootstrap-controller-rebind",
+            "recovery_fenced",
+        ),
+        (
+            "secure_bootstrap_replay",
+            "operation_id",
+            "secure-controller-rebind",
+            "recovery_fenced",
+        ),
+        (
+            "control_command_state",
+            "command_id",
+            "control-controller-rebind",
+            "failed",
+        ),
+    ] {
+        let status: String = connection
+            .query_row(
+                &format!("SELECT status FROM {table} WHERE {id_column}=?1"),
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, expected_status, "unexpected status in {table}");
+    }
+    let revoked_at_ms: Option<i64> = connection
+        .query_row(
+            "SELECT revoked_at_ms FROM runtime_rpc_tokens WHERE token_id='token-controller-rebind'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(revoked_at_ms.is_some());
+    let lock_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM cli_runtime_locks WHERE lock_key='lock-controller-rebind'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lock_count, 0);
+    let throttle_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM agent_status_query_throttle WHERE daemon_agent_did=?1",
+            [DAEMON_DID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(throttle_count, 0);
+    let route_history: (String, String) = connection
+        .query_row(
+            "SELECT controller_did, conversation_id FROM cli_route_sessions WHERE route_key='route-controller-rebind'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        route_history,
+        (
+            OLD_DID.to_owned(),
+            "conversation-before-recovery".to_owned()
+        )
+    );
+    let audit_detail: String = connection
+        .query_row(
+            "SELECT detail_json FROM audit_log WHERE event_type='daemon.controller_rebound' AND agent_did=?1",
+            [DAEMON_DID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!audit_detail.contains(OLD_DID));
+    assert!(!audit_detail.contains(NEW_DID));
+    assert!(!audit_detail.contains(USER_ID));
+    assert!(!audit_detail.contains(FULL_HANDLE));
+    drop(connection);
+
+    assert!(!state
+        .rebind_controller_did_for_agent_family(
+            DAEMON_DID,
+            USER_ID,
+            FULL_HANDLE,
+            SCOPE_KEY,
+            NEW_DID,
+            "controller_rebind_test",
+        )
+        .unwrap());
+    let rebound_audit_count: i64 = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type='daemon.controller_rebound' AND agent_did=?1",
+            [DAEMON_DID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rebound_audit_count, 1);
+}
+
+#[test]
+fn controller_rebind_rejects_changed_stable_scope_without_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let daemon = AgentDefinition {
+        agent_did: "did:agent:daemon-controller-rebind-mismatch".to_owned(),
+        handle: "alice-daemon".to_owned(),
+        agent_kind: AgentKind::Daemon,
+        controller_user_id: "user-alice".to_owned(),
+        controller_full_handle: "alice.awiki.info".to_owned(),
+        controller_scope_key: "controller-scope:v1:user-alice:alice.awiki.info".to_owned(),
+        controller_did: "did:human:alice-old".to_owned(),
+        runtime_plugin_id: None,
+        runtime_profile_id: None,
+        workspace_id: None,
+        policy_id: "default".to_owned(),
+        local_agent_db_path: "agents/daemon/agent.db".to_owned(),
+        message_db_path: "agents/daemon/messages.db".to_owned(),
+        status: "active".to_owned(),
+    };
+    state.upsert_agent_definition(&daemon).unwrap();
+
+    let error = state
+        .rebind_controller_did_for_agent_family(
+            &daemon.agent_did,
+            "user-bob",
+            &daemon.controller_full_handle,
+            &daemon.controller_scope_key,
+            "did:human:alice-new",
+            "controller_rebind_test",
+        )
+        .unwrap_err();
+    assert_eq!(error.to_string(), "controller_scope_changed");
+    assert_eq!(
+        state
+            .load_agent_definition(&daemon.agent_did)
+            .unwrap()
+            .controller_did,
+        "did:human:alice-old"
+    );
+    let audit_count: i64 = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type='daemon.controller_rebound'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit_count, 0);
+}

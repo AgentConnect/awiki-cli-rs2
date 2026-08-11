@@ -2428,6 +2428,45 @@ fn denied_external_direct_invocation_emits_feedback_and_failed_status_without_ru
 }
 
 #[test]
+fn controller_rebind_retired_sender_is_terminal_without_unroutable_feedback() {
+    let (root, _config, state) = fixture();
+    register_runtime_family(root.path(), &state);
+    let (status_sender, calls) = recording_status_sender("daemon-status");
+    let message_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime-message",
+        Arc::clone(&calls),
+    ));
+
+    emit_external_direct_invocation_rejection(
+        &state,
+        &message_sender,
+        &status_sender,
+        "did:agent:hermes",
+        "did:agent:daemon",
+        "controller-scope:v1:test-alice-anpclaw-com",
+        "msg_retired_controller",
+        Some("direct:did:human:alice-old"),
+        "did:human:alice-old",
+        None,
+        "sender_handle_not_found",
+        "blacklist",
+    )
+    .unwrap();
+
+    assert!(calls
+        .lock()
+        .expect("recorded calls lock poisoned")
+        .is_empty());
+    assert!(state
+        .audit_event_exists(
+            "daemon.direct_invocation.rejected",
+            Some("did:agent:hermes"),
+            Some("sender_handle_not_found"),
+        )
+        .unwrap());
+}
+
+#[test]
 fn runtime_group_inbox_skips_agent_senders_to_prevent_agent_loops() {
     let mut message = group_mention_message("did:group:team:11", "did:agent:hermes");
     message.sender = PeerRef::parse("did:wba:example.com:agent:other", "").unwrap();
@@ -3585,7 +3624,7 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
 }
 
 #[test]
-fn app_control_from_old_controller_stops_after_identity_change_observation() {
+fn app_control_controller_rebind_uses_authoritative_sender_and_ignores_legacy_guard() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient;
     let daemon = setup_daemon_agent(
@@ -3604,14 +3643,14 @@ fn app_control_from_old_controller_stops_after_identity_change_observation() {
     )
     .unwrap_err();
 
-    let error = handle_app_control_payload(
+    let outcome = handle_app_control_payload(
         &config,
         &state,
         &registration,
         IncomingAppControlPayload {
             message_id: "msg_after_controller_change".to_string(),
             conversation_id: Some("direct:did:agent:daemon".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:human:alice-new".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: json!({
@@ -3621,11 +3660,28 @@ fn app_control_from_old_controller_stops_after_identity_change_observation() {
             }),
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert_eq!(error.to_string(), "controller_identity_changed");
-    assert!(!state
+    assert!(matches!(
+        outcome,
+        AppControlOutcome::CapabilitiesReceived { .. }
+    ));
+    assert_eq!(
+        state
+            .load_agent_definition(&daemon.agent_did)
+            .unwrap()
+            .controller_did,
+        "did:human:alice-new"
+    );
+    assert!(state
         .audit_event_exists("app.capabilities.received", Some(&daemon.agent_did), None,)
+        .unwrap());
+    assert!(state
+        .audit_event_exists(
+            "daemon.controller_rebound",
+            Some(&daemon.agent_did),
+            Some("verified_controller_sender"),
+        )
         .unwrap());
 }
 
