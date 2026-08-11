@@ -753,6 +753,14 @@ Direct route; the former parallel scope/DID route projection is intentionally
 absent so a route cannot bypass Persona validation or be written twice.
 UI/profile consumers must eventually read display data by `peer_persona_id`;
 DID remains a credential snapshot or route address, not a profile identity key.
+Persona Profile display data is authoritative over legacy contact `name` /
+`nick_name`. Local hot reads may return stale Persona data for a stable first
+frame, but must expose freshness and legacy-fallback state so the App can
+schedule a coalesced refresh. A verified Profile that omits `display_name`
+clears the previous Persona name and falls back to Handle; it must not resurrect
+a contact-era alias. Current-owner Account State snapshots may update the local
+identity registry only through an owner-ID-scoped display projection operation;
+display projection never changes identity, routing, auth, or device facts.
 
 Inbound Direct v2 sync first filters wire peer DIDs against the local verified
 Persona projection and performs an authoritative DID-to-Handle lookup only for

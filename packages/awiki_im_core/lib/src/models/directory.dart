@@ -81,6 +81,8 @@ class DisplayProfile {
     this.profileUri,
     this.subjectType,
     required this.cacheHit,
+    this.isStale = false,
+    this.legacyFallback = false,
     this.warnings = const [],
   });
 
@@ -92,6 +94,8 @@ class DisplayProfile {
   final String? profileUri;
   final String? subjectType;
   final bool cacheHit;
+  final bool isStale;
+  final bool legacyFallback;
   final List<String> warnings;
 }
 

@@ -38,7 +38,7 @@ pub(crate) fn display_profile_for_peer(
         .query_row(
             r#"SELECT persona.full_handle, profile.display_name, profile.avatar_uri,
                       COALESCE(profile.subject_type, persona.subject_type),
-                      current_did.identifier_value
+                      current_did.identifier_value, profile.expires_at
 FROM peer_identifiers requested
 JOIN peer_personas persona
   ON persona.owner_identity_id = requested.owner_identity_id
@@ -67,14 +67,21 @@ LIMIT 1"#,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )
         .optional()
         .map_err(super::local_state_unavailable)?;
-    let Some((full_handle, display_name, avatar_uri, subject_type, current_did)) = row else {
+    let Some((full_handle, display_name, avatar_uri, subject_type, current_did, expires_at)) = row
+    else {
         return Ok(None);
     };
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let is_stale = expires_at
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+        .is_some_and(|value| value <= now);
     let did = if is_did {
         Some(crate::ids::Did::parse(peer_value)?)
     } else {
@@ -92,6 +99,8 @@ LIMIT 1"#,
         profile_uri: None,
         subject_type,
         cache_hit: true,
+        is_stale,
+        legacy_fallback: false,
         warnings: Vec::new(),
     }))
 }
@@ -120,7 +129,7 @@ pub(crate) fn upsert_from_verified_lookup(
      subject_type, profile_version, updated_at, fetched_at, expires_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 ON CONFLICT(owner_identity_id, peer_persona_id) DO UPDATE SET
-    display_name = COALESCE(excluded.display_name, peer_profiles.display_name),
+    display_name = excluded.display_name,
     full_handle = excluded.full_handle,
     avatar_uri = COALESCE(excluded.avatar_uri, peer_profiles.avatar_uri),
     subject_type = COALESCE(excluded.subject_type, peer_profiles.subject_type),

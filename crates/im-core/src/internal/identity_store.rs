@@ -1654,10 +1654,17 @@ impl<'a> IdentityStore<'a> {
         identity: &crate::identity::IdentitySummary,
         display_name: &str,
     ) -> crate::ImResult<()> {
-        let display_name = display_name.trim();
-        if display_name.is_empty() {
-            return Ok(());
-        }
+        self.set_display_name_projection(identity, Some(display_name))
+    }
+
+    pub(crate) fn set_display_name_projection(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+        display_name: Option<&str>,
+    ) -> crate::ImResult<()> {
+        let display_name = display_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let Some((alias, dir_name)) = self.local_alias_and_dir_name(identity)? else {
             return Ok(());
         };
@@ -1678,7 +1685,10 @@ impl<'a> IdentityStore<'a> {
                         .ok_or_else(|| crate::ImError::Serialization {
                             detail: "identity payload must be a JSON object".to_string(),
                         })?;
-                object.insert("name".to_string(), Value::String(display_name.to_string()));
+                object.insert(
+                    "name".to_string(),
+                    Value::String(display_name.unwrap_or_default().to_string()),
+                );
                 write_secure_json(&identity_path, &payload)?;
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -1693,16 +1703,32 @@ impl<'a> IdentityStore<'a> {
         identity: &crate::identity::IdentitySummary,
     ) -> crate::ImResult<Option<(String, String)>> {
         let index = self.load_index()?;
+        let id_matches = index
+            .credentials
+            .iter()
+            .filter(|(_, entry)| entry.unique_id == identity.id.as_str())
+            .collect::<Vec<_>>();
+        if let [item] = id_matches.as_slice() {
+            return Ok(Some((item.0.clone(), item.1.dir_name.clone())));
+        }
+        if id_matches.len() > 1 {
+            return Ok(None);
+        }
         let alias = identity.local_alias.as_deref().unwrap_or_default();
         if !alias.is_empty() {
             if let Some(entry) = index.credentials.get(alias) {
-                return Ok(Some((alias.to_string(), entry.dir_name.clone())));
+                if entry.did == identity.did.as_str() {
+                    return Ok(Some((alias.to_string(), entry.dir_name.clone())));
+                }
             }
         }
-        for (candidate_alias, entry) in &index.credentials {
-            if entry.unique_id == identity.id.as_str() || entry.did == identity.did.as_str() {
-                return Ok(Some((candidate_alias.clone(), entry.dir_name.clone())));
-            }
+        let did_matches = index
+            .credentials
+            .iter()
+            .filter(|(_, entry)| entry.did == identity.did.as_str())
+            .collect::<Vec<_>>();
+        if let [item] = did_matches.as_slice() {
+            return Ok(Some((item.0.clone(), item.1.dir_name.clone())));
         }
         Ok(None)
     }
@@ -1711,7 +1737,7 @@ impl<'a> IdentityStore<'a> {
         &self,
         identity: &crate::identity::IdentitySummary,
         alias: &str,
-        display_name: &str,
+        display_name: Option<&str>,
     ) -> crate::ImResult<()> {
         let _lock = self.lock_index_mutation()?;
         let raw = match fs::read(&self.paths.registry_path) {
@@ -1731,31 +1757,30 @@ impl<'a> IdentityStore<'a> {
             .and_then(|credentials| credentials.get_mut(alias))
             .and_then(Value::as_object_mut)
         {
-            entry.insert("name".to_string(), Value::String(display_name.to_string()));
+            entry.insert(
+                "name".to_string(),
+                Value::String(display_name.unwrap_or_default().to_string()),
+            );
             changed = true;
         } else if let Some(identities) = registry
             .as_object_mut()
             .and_then(|object| object.get_mut("identities"))
             .and_then(Value::as_array_mut)
         {
-            let local_alias = identity.local_alias.as_deref().unwrap_or_default();
-            for item in identities {
-                let Some(object) = item.as_object_mut() else {
-                    continue;
-                };
-                let id_matches =
-                    object.get("id").and_then(Value::as_str) == Some(identity.id.as_str());
-                let did_matches =
-                    object.get("did").and_then(Value::as_str) == Some(identity.did.as_str());
-                let alias_matches = !local_alias.is_empty()
-                    && object.get("local_alias").and_then(Value::as_str) == Some(local_alias);
-                if id_matches || did_matches || alias_matches {
-                    object.insert(
-                        "display_name".to_string(),
-                        Value::String(display_name.to_string()),
-                    );
+            if let Some(index) = identity_projection_registry_index(identities, identity) {
+                if let Some(object) = identities[index].as_object_mut() {
+                    match display_name {
+                        Some(display_name) => {
+                            object.insert(
+                                "display_name".to_string(),
+                                Value::String(display_name.to_string()),
+                            );
+                        }
+                        None => {
+                            object.remove("display_name");
+                        }
+                    }
                     changed = true;
-                    break;
                 }
             }
         }
@@ -1769,6 +1794,35 @@ impl<'a> IdentityStore<'a> {
         }
         Ok(())
     }
+}
+
+fn identity_projection_registry_index(
+    identities: &[Value],
+    identity: &crate::identity::IdentitySummary,
+) -> Option<usize> {
+    let matching_indices = |field: &str, expected: &str| {
+        identities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                (item.get(field).and_then(Value::as_str) == Some(expected)).then_some(index)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let id_matches = matching_indices("id", identity.id.as_str());
+    if !id_matches.is_empty() {
+        return (id_matches.len() == 1).then(|| id_matches[0]);
+    }
+    let local_alias = identity.local_alias.as_deref().unwrap_or_default();
+    if !local_alias.is_empty() {
+        let alias_matches = matching_indices("local_alias", local_alias);
+        if !alias_matches.is_empty() {
+            return (alias_matches.len() == 1).then(|| alias_matches[0]);
+        }
+    }
+    let did_matches = matching_indices("did", identity.did.as_str());
+    (did_matches.len() == 1).then(|| did_matches[0])
 }
 
 #[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
@@ -2987,6 +3041,50 @@ mod tests {
         assert_eq!(index.schema_version, INDEX_SCHEMA_VERSION);
         assert!(index.default_credential_name.is_empty());
         assert!(index.credentials.is_empty());
+    }
+
+    #[test]
+    fn display_name_projection_prefers_exact_id_and_rejects_ambiguous_fallback() {
+        let identity = crate::identity::IdentitySummary {
+            id: crate::ids::IdentityId::parse("target-id").unwrap(),
+            did: crate::ids::Did::parse("did:example:shared").unwrap(),
+            handle: None,
+            display_name: None,
+            local_alias: Some("target-alias".to_owned()),
+            device_id: None,
+            is_default: false,
+            readiness: crate::identity::IdentityReadiness {
+                ready_for_auth: true,
+                ready_for_messaging: true,
+                missing: Vec::new(),
+            },
+        };
+        let identities = vec![
+            serde_json::json!({
+                "id": "other-id",
+                "did": "did:example:shared",
+                "local_alias": "other-alias"
+            }),
+            serde_json::json!({
+                "id": "target-id",
+                "did": "did:example:shared",
+                "local_alias": "target-alias"
+            }),
+        ];
+        assert_eq!(
+            identity_projection_registry_index(&identities, &identity),
+            Some(1)
+        );
+
+        let ambiguous_identity = crate::identity::IdentitySummary {
+            id: crate::ids::IdentityId::parse("missing-id").unwrap(),
+            local_alias: None,
+            ..identity
+        };
+        assert_eq!(
+            identity_projection_registry_index(&identities, &ambiguous_identity),
+            None
+        );
     }
 
     #[test]

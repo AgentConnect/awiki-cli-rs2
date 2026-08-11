@@ -90,7 +90,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -2100158998;
+  int get rustContentHash => -463507728;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -840,6 +840,12 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<void> crateApiUnsupportedUnsupported({required String capability});
+
+  Future<DartIdentitySummary> crateApiIdentityUpdateDisplayNameProjection({
+    required ArcDartImCore core,
+    required String identityId,
+    String? displayName,
+  });
 
   Future<DartUserProfile> crateApiProfileUpdateProfile({
     required ArcDartImClient client,
@@ -6279,6 +6285,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "unsupported", argNames: ["capability"]);
 
   @override
+  Future<DartIdentitySummary> crateApiIdentityUpdateDisplayNameProjection({
+    required ArcDartImCore core,
+    required String identityId,
+    String? displayName,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
+            core,
+            serializer,
+          );
+          sse_encode_String(identityId, serializer);
+          sse_encode_opt_String(displayName, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 135,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_identity_summary,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiIdentityUpdateDisplayNameProjectionConstMeta,
+        argValues: [core, identityId, displayName],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiIdentityUpdateDisplayNameProjectionConstMeta =>
+      const TaskConstMeta(
+        debugName: "update_display_name_projection",
+        argNames: ["core", "identityId", "displayName"],
+      );
+
+  @override
   Future<DartUserProfile> crateApiProfileUpdateProfile({
     required ArcDartImClient client,
     required DartProfilePatch patch,
@@ -6295,7 +6341,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 135,
+            funcId: 136,
             port: port_,
           );
         },
@@ -6333,7 +6379,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 136,
+            funcId: 137,
             port: port_,
           );
         },
@@ -6365,7 +6411,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 137,
+            funcId: 138,
             port: port_,
           );
         },
@@ -6401,7 +6447,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 138,
+            funcId: 139,
             port: port_,
           );
         },
@@ -6437,7 +6483,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 139,
+            funcId: 140,
             port: port_,
           );
         },
@@ -6472,7 +6518,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 140,
+            funcId: 141,
             port: port_,
           );
         },
@@ -6517,7 +6563,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 141,
+            funcId: 142,
             port: port_,
           );
         },
@@ -6559,7 +6605,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 142,
+            funcId: 143,
             port: port_,
           );
         },
@@ -8051,8 +8097,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartDisplayProfile dco_decode_dart_display_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return DartDisplayProfile(
       did: dco_decode_opt_String(arr[0]),
       handle: dco_decode_opt_String(arr[1]),
@@ -8062,7 +8108,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       profileUri: dco_decode_opt_String(arr[5]),
       subjectType: dco_decode_opt_String(arr[6]),
       cacheHit: dco_decode_bool(arr[7]),
-      warnings: dco_decode_list_String(arr[8]),
+      isStale: dco_decode_bool(arr[8]),
+      legacyFallback: dco_decode_bool(arr[9]),
+      warnings: dco_decode_list_String(arr[10]),
     );
   }
 
@@ -12404,6 +12452,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_profileUri = sse_decode_opt_String(deserializer);
     var var_subjectType = sse_decode_opt_String(deserializer);
     var var_cacheHit = sse_decode_bool(deserializer);
+    var var_isStale = sse_decode_bool(deserializer);
+    var var_legacyFallback = sse_decode_bool(deserializer);
     var var_warnings = sse_decode_list_String(deserializer);
     return DartDisplayProfile(
       did: var_did,
@@ -12414,6 +12464,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       profileUri: var_profileUri,
       subjectType: var_subjectType,
       cacheHit: var_cacheHit,
+      isStale: var_isStale,
+      legacyFallback: var_legacyFallback,
       warnings: var_warnings,
     );
   }
@@ -17473,6 +17525,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.profileUri, serializer);
     sse_encode_opt_String(self.subjectType, serializer);
     sse_encode_bool(self.cacheHit, serializer);
+    sse_encode_bool(self.isStale, serializer);
+    sse_encode_bool(self.legacyFallback, serializer);
     sse_encode_list_String(self.warnings, serializer);
   }
 

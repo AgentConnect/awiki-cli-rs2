@@ -510,6 +510,23 @@ pub async fn resolve_identity(
         .map_err(DartImError::from)
 }
 
+pub async fn update_display_name_projection(
+    core: &Arc<crate::api::core::DartImCore>,
+    identity_id: String,
+    display_name: Option<String>,
+) -> Result<DartIdentitySummary, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .update_display_name_projection_async(
+            im_core::ids::IdentityId::parse(identity_id)?,
+            display_name,
+        )
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn identity_device_summary(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,

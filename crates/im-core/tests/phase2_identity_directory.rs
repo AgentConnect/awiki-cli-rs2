@@ -58,6 +58,16 @@ async fn identity_service_profile_uses_public_http_transport() {
     assert_eq!(profile.tags, vec!["sdk", "http"]);
     assert_eq!(profile.profile_version, None);
     assert_eq!(profile.version_id.as_deref(), Some("wns-profile-7"));
+    let local_identity = fixture
+        .core()
+        .identities()
+        .resolve(IdentitySelector::Id(IdentityId::parse("alice-id").unwrap()))
+        .unwrap();
+    assert_eq!(
+        local_identity.display_name.as_deref(),
+        Some("Alice Remote"),
+        "an authoritative get_me profile must refresh the local identity projection"
+    );
 
     let updated = client
         .identity()
@@ -84,6 +94,37 @@ async fn identity_service_profile_uses_public_http_transport() {
     assert!(requests
         .iter()
         .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
+}
+
+#[test]
+fn identity_registry_display_name_projection_is_id_scoped_and_clearable() {
+    let fixture = Fixture::new();
+    let core = fixture.core();
+    let identity_id = IdentityId::parse("alice-id").unwrap();
+    let original = core
+        .identities()
+        .resolve(IdentitySelector::Id(identity_id.clone()))
+        .unwrap();
+
+    let updated = core
+        .identities()
+        .update_display_name_projection(identity_id.clone(), Some("Alice Canonical"))
+        .unwrap();
+    assert_eq!(updated.display_name.as_deref(), Some("Alice Canonical"));
+    assert_eq!(updated.id, original.id);
+    assert_eq!(updated.did, original.did);
+    assert_eq!(updated.handle, original.handle);
+    assert_eq!(updated.local_alias, original.local_alias);
+    assert_eq!(updated.device_id, original.device_id);
+    assert_eq!(updated.readiness, original.readiness);
+
+    let cleared = core
+        .identities()
+        .update_display_name_projection(identity_id, None)
+        .unwrap();
+    assert_eq!(cleared.display_name, None);
+    assert_eq!(cleared.did, original.did);
+    assert_eq!(cleared.handle, original.handle);
 }
 
 #[tokio::test]
@@ -794,6 +835,8 @@ async fn directory_display_profile_hydration_reads_local_cache_only() {
 
     assert_eq!(hydrated.len(), 3);
     assert!(hydrated[0].cache_hit);
+    assert!(!hydrated[0].is_stale);
+    assert!(!hydrated[0].legacy_fallback);
     assert_eq!(
         hydrated[0].did.as_ref().unwrap().as_str(),
         "did:example:bob"
@@ -809,13 +852,135 @@ async fn directory_display_profile_hydration_reads_local_cache_only() {
     );
     assert_eq!(hydrated[0].subject_type.as_deref(), Some("person"));
     assert!(hydrated[1].cache_hit);
+    assert!(!hydrated[1].is_stale);
+    assert!(!hydrated[1].legacy_fallback);
     assert_eq!(hydrated[1].display_name.as_deref(), Some("Bob WNS"));
     assert!(!hydrated[2].cache_hit);
+    assert!(!hydrated[2].is_stale);
+    assert!(!hydrated[2].legacy_fallback);
     assert!(hydrated[2].did.is_none());
     assert_eq!(
         hydrated[2].handle.as_ref().unwrap().as_str(),
         "charlie.awiki.test"
     );
+}
+
+#[tokio::test]
+async fn directory_display_profile_marks_expired_persona_cache_as_stale() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/v1/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/v1/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+    client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(server.join().len(), 2);
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    connection
+        .execute("UPDATE peer_profiles SET expires_at = '0'", [])
+        .unwrap();
+    drop(connection);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob WNS"));
+    assert!(hydrated[0].is_stale);
+    assert!(!hydrated[0].legacy_fallback);
+}
+
+#[tokio::test]
+async fn directory_display_profile_does_not_restore_legacy_name_over_persona_profile() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/v1/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/v1/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+    client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(server.join().len(), 2);
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    connection
+        .execute("UPDATE peer_profiles SET display_name = NULL", [])
+        .unwrap();
+    drop(connection);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(hydrated[0].display_name, None);
+    assert_eq!(
+        hydrated[0].handle.as_ref().map(Handle::as_str),
+        Some("bob.awiki.test")
+    );
+    assert!(!hydrated[0].legacy_fallback);
+}
+
+#[tokio::test]
+async fn directory_display_profile_marks_contact_only_projection_as_legacy_fallback() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    client
+        .directory()
+        .save_contact_async(SaveContactRequest {
+            peer: PeerRef::parse("did:example:legacy", "").unwrap(),
+            did: Some(Did::parse("did:example:legacy").unwrap()),
+            handle: Some(Handle::parse("legacy.awiki.test", "").unwrap()),
+            display_name: Some("Legacy Name".to_string()),
+            relationship: Some("friend".to_string()),
+            note: Some("Local note".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:legacy", "").unwrap()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Legacy Name"));
+    assert!(hydrated[0].legacy_fallback);
+    assert!(!hydrated[0].is_stale);
 }
 
 #[tokio::test]

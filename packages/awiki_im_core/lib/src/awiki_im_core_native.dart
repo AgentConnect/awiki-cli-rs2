@@ -192,6 +192,21 @@ class AwikiImCore {
     return identity._toModel();
   }
 
+  Future<IdentitySummary> updateDisplayNameProjection({
+    required String identityId,
+    String? displayName,
+  }) async {
+    _ensureNotDisposed();
+    final identity = await _mapNativeErrors(
+      () => gen_identity_api.updateDisplayNameProjection(
+        core: _inner,
+        identityId: identityId,
+        displayName: displayName,
+      ),
+    );
+    return identity._toModel();
+  }
+
   Future<IdentityDeviceSummary> identityDeviceSummary(
     IdentitySelector selector,
   ) async {
@@ -2994,6 +3009,8 @@ extension on gen_directory_dto.DartDisplayProfile {
     profileUri: profileUri,
     subjectType: subjectType,
     cacheHit: cacheHit,
+    isStale: isStale,
+    legacyFallback: legacyFallback,
     warnings: warnings,
   );
 }

@@ -123,6 +123,35 @@ impl<'a> IdentityRegistry<'a> {
         self.resolve_from_snapshot(&registry, selector)
     }
 
+    pub fn update_display_name_projection(
+        &self,
+        identity_id: crate::ids::IdentityId,
+        display_name: Option<&str>,
+    ) -> crate::ImResult<super::IdentitySummary> {
+        let identity = self.resolve(super::IdentitySelector::Id(identity_id.clone()))?;
+        crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .set_display_name_projection(&identity, display_name)?;
+        self.resolve(super::IdentitySelector::Id(identity_id))
+    }
+
+    pub async fn update_display_name_projection_async(
+        &self,
+        identity_id: crate::ids::IdentityId,
+        display_name: Option<String>,
+    ) -> crate::ImResult<super::IdentitySummary> {
+        let core = self.core.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core)
+                .update_display_name_projection(identity_id, display_name.as_deref())
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
     /// Returns a narrowly scoped, secret-free authority for adopting an
     /// ordinary pre-Recovery Registry epoch. Any Recovery marker or tuple
     /// ambiguity returns `None` rather than widening adoption.
