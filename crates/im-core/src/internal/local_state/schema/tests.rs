@@ -2324,6 +2324,43 @@ fn assert_merged_v34_shape(db: &Connection) {
 }
 
 #[test]
+fn v35_to_v36_creates_handle_recovery_state_when_transition_table_is_absent() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch(
+        r#"
+DROP TABLE handle_recovery_operations_v4;
+DROP TABLE identity_transition_pending;
+PRAGMA user_version=35;
+"#,
+    )
+    .unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "identity_transition_pending");
+    assert_schema_object_exists(&db, "table", "handle_recovery_operations_v4");
+    for column in [
+        "current_device_id",
+        "device_auth_generation",
+        "registry_version",
+        "applied_at",
+        "metadata_json",
+    ] {
+        assert_column_exists(&db, "identity_transition_pending", column);
+    }
+    assert_index_exists(&db, "idx_identity_transition_source");
+    assert_index_exists(&db, "idx_identity_transition_active_owner");
+    assert_index_exists(&db, "idx_identity_transition_owner_phase");
+    assert_index_exists(&db, "idx_identity_transition_account_generation");
+    assert_index_exists(&db, "idx_identity_transition_handle_epoch");
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
 fn v35_to_v36_adds_handle_recovery_receipt_fields_and_operation_index() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("state.sqlite");
@@ -2386,6 +2423,15 @@ PRAGMA user_version=35;
     assert_index_exists(&db, "idx_identity_transition_owner_phase");
     assert_index_exists(&db, "idx_identity_transition_account_generation");
     assert_index_exists(&db, "idx_identity_transition_handle_epoch");
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM identity_transition_pending",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+    );
     assert!(
         crate::internal::identity_transition_pending::load(&path, "legacy-incomplete-receipt")
             .is_err()

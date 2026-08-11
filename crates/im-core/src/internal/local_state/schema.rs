@@ -1166,6 +1166,11 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
+    // Schema 35 was emitted both before and after the first transition table.
+    // Create the current shape first so both predecessor variants converge.
+    transaction
+        .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
+        .map_err(super::local_state_unavailable)?;
     ensure_column(
         &transaction,
         "identity_transition_pending",
@@ -1196,9 +1201,6 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
         "metadata_json",
         "TEXT NOT NULL DEFAULT '{}'",
     )?;
-    transaction
-        .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
-        .map_err(super::local_state_unavailable)?;
     transaction
         .execute_batch(
             crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,

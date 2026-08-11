@@ -70,7 +70,7 @@ assert(restored.targetSafetyCopyAvailable);
 ```
 
 Restore is not an in-process rollback for an open Core. It only accepts a
-completed canonical-upgrade journal, keeps the current schema-35 target as a private
+completed canonical-upgrade journal, keeps the current schema-36 target as a private
 safety copy, and is idempotent across interruption. The public result exposes
 versions/availability only, never filesystem backup paths.
 
@@ -81,6 +81,9 @@ It also recognizes the complete current/release shapes previously issued with ve
 side plus the schema-35 unresolved-message thread-binding association. Partial or
 unrecognized same-number shapes fail closed; applications must not invoke
 the release/0710 runner again or perform an automatic delete/archive fallback.
+Schema 35 stores may predate `identity_transition_pending` or contain its narrower
+pre-V4 shape. Ordinary Core open upgrades both reviewed variants transactionally to
+schema 36; hosts must not clear identities or archive the database to work around them.
 
 ## DTO policy
 

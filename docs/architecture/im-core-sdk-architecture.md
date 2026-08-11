@@ -817,12 +817,16 @@ invariants, and records a resumable redacted journal before replacing the live
 SQLite file set. The pre-open detector owns exactly schema 27; already canonical
 schemas 28 through current are a no-op there and remain owned by the ordinary
 atomic schema migration in Core open.
-The shadow transaction creates the complete schema-34 target, including release/0714
+The shadow transaction creates the complete current schema target, including release/0714
 multi-device/read-recovery state, the hydration projection, and subject-scoped checkpoints.
 An already canonical schema 28 through 34 database must not be routed back through
 release/0710 cutover. Ordinary Core open accepts the reviewed release predecessors and the
 known current/release v32-v34 branch shapes, converges either valid side atomically, and
 fails closed for partial or unrecognized same-number shapes.
+Schema 35 has two reviewed predecessor shapes: the pre-Handle-Recovery shape without
+`identity_transition_pending`, and the early Handle-Recovery shape with its narrower table.
+The ordinary 35-to-current transaction must create or extend these shapes in place before
+advancing `user_version`; it must not delete the local projection or identity state.
 The source allowlist is pinned to the exact deployed release/0710 daemon
 artifact, source ref, and schema fingerprint. Its checked-in fixture is built
 by that binary in an isolated state root and contains synthetic rows only.

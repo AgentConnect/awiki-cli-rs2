@@ -53,6 +53,50 @@ fn recovery_v4_error_retryability_is_a_closed_table() {
 }
 
 #[test]
+fn schema_35_without_recovery_tables_upgrades_through_the_compat_boundary() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
+    db.execute_batch(
+        r#"
+DROP TABLE handle_recovery_operations_v4;
+DROP TABLE identity_transition_pending;
+PRAGMA user_version=35;
+"#,
+    )
+    .unwrap();
+
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
+
+    assert_eq!(
+        awiki_im_core::compat::local_state::current_schema_version(&db).unwrap(),
+        awiki_im_core::compat::local_state::SCHEMA_VERSION,
+    );
+    for table in [
+        "identity_transition_pending",
+        "handle_recovery_operations_v4",
+    ] {
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+        );
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('identity_transition_pending') WHERE name='metadata_json'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+    );
+}
+
+#[test]
 fn activation_requires_an_explicit_user_presence_field() {
     let request = HandleRecoveryActivateRequest {
         operation_id: "recovery-public-ref".to_owned(),
