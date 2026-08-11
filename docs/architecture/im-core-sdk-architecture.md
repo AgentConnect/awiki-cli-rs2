@@ -934,6 +934,18 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   The secure request defensively drops every non-P5 row and is not a Legacy or
   ordinary-message fallback. The flow does not depend on a WebSocket hint and
   does not return stale projection when either required reconciliation fails.
+
+Long-lived host bindings must not replace an `ImClient` with an independently
+constructed client after this refresh. Core exposes one host-facing
+same-owner refresh boundary that requires the exact same `ImCore`, local
+identity ID, current DID, account ID, Protocol Device ID, and device key IDs.
+It rebinds refreshed identity/auth material while preserving the existing
+conversation, message, and system-notification runtime Store instances. Any
+owner, account, device, or binding-mode mismatch fails closed. The boundary
+also reports whether the effective authorization generation/role changed so a
+host can restart transport exactly when required; equivalent refreshes do not
+invalidate Realtime or Patch subscribers. CLI and Daemon keep their existing
+command/supervisor lifecycle and do not use this long-lived binding hook.
 - Before the first bootstrap for a local owner, Core persists a cryptographically
   random opaque `client_instance_id` in the local sync database. Lost responses,
   process restarts, and retries reuse it; a new/cleared local database generates

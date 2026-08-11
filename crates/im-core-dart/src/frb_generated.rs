@@ -12062,6 +12062,18 @@ impl SseDecode for crate::dto::secure::DartSecureDelivery {
     }
 }
 
+impl SseDecode for crate::dto::message::DartSecureInboxPreparation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        let mut var_authorizationContextChanged = <bool>::sse_decode(deserializer);
+        return crate::dto::message::DartSecureInboxPreparation {
+            warnings: var_warnings,
+            authorization_context_changed: var_authorizationContextChanged,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::secure::DartSecureOutboxEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -18194,6 +18206,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureDelivery>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSecureInboxPreparation {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.warnings.into_into_dart().into_dart(),
+            self.authorization_context_changed
+                .into_into_dart()
+                .into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartSecureInboxPreparation
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSecureInboxPreparation>
+    for crate::dto::message::DartSecureInboxPreparation
+{
+    fn into_into_dart(self) -> crate::dto::message::DartSecureInboxPreparation {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureOutboxEntry {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -21495,6 +21530,14 @@ impl SseEncode for crate::dto::secure::DartSecureDelivery {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Option<String>>::sse_encode(self.message_id, serializer);
         <String>::sse_encode(self.state, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartSecureInboxPreparation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+        <bool>::sse_encode(self.authorization_context_changed, serializer);
     }
 }
 

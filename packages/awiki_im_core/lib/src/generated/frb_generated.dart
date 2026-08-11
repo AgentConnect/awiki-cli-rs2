@@ -535,7 +535,7 @@ abstract class RustLibApi extends BaseApi {
     required String recipientDeviceId,
   });
 
-  Future<List<String>> crateApiMessagesPrepareSecureInboxForSync({
+  Future<DartSecureInboxPreparation> crateApiMessagesPrepareSecureInboxForSync({
     required ArcDartImClient client,
     required int limit,
   });
@@ -3998,7 +3998,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<List<String>> crateApiMessagesPrepareSecureInboxForSync({
+  Future<DartSecureInboxPreparation> crateApiMessagesPrepareSecureInboxForSync({
     required ArcDartImClient client,
     required int limit,
   }) {
@@ -4019,7 +4019,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_list_String,
+          decodeSuccessData: sse_decode_dart_secure_inbox_preparation,
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiMessagesPrepareSecureInboxForSyncConstMeta,
@@ -9627,6 +9627,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSecureInboxPreparation dco_decode_dart_secure_inbox_preparation(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return DartSecureInboxPreparation(
+      warnings: dco_decode_list_String(arr[0]),
+      authorizationContextChanged: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
   DartSecureOutboxEntry dco_decode_dart_secure_outbox_entry(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -14398,6 +14412,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSecureInboxPreparation sse_decode_dart_secure_inbox_preparation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_warnings = sse_decode_list_String(deserializer);
+    var var_authorizationContextChanged = sse_decode_bool(deserializer);
+    return DartSecureInboxPreparation(
+      warnings: var_warnings,
+      authorizationContextChanged: var_authorizationContextChanged,
+    );
+  }
+
+  @protected
   DartSecureOutboxEntry sse_decode_dart_secure_outbox_entry(
     SseDeserializer deserializer,
   ) {
@@ -18895,6 +18922,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_String(self.messageId, serializer);
     sse_encode_String(self.state, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_secure_inbox_preparation(
+    DartSecureInboxPreparation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_String(self.warnings, serializer);
+    sse_encode_bool(self.authorizationContextChanged, serializer);
   }
 
   @protected

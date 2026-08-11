@@ -517,7 +517,8 @@ fn registration_recovery_join_sync_prepares_secure_inbox_before_ordinary_sync() 
         .find("gen_messages.syncNow")
         .expect("ordinary message sync");
     assert!(prepare < ordinary);
-    assert!(sync_now.contains("...secureWarnings"));
+    assert!(sync_now.contains("...securePreparation.warnings"));
+    assert!(sync_now.contains("authorizationContextChanged"));
 
     let facade = include_str!("../src/api/messages.rs");
     let prepare = facade
@@ -526,7 +527,32 @@ fn registration_recovery_join_sync_prepares_secure_inbox_before_ordinary_sync() 
         .expect("Rust-Dart secure Inbox preparation");
     assert!(prepare.contains("hydrate_exact_device_secure_inbox_async"));
     assert!(prepare.contains("IdentitySelector::Id(identity_id.clone())"));
+    assert!(prepare.contains("client.lock_runtime_refresh().await"));
     assert!(prepare.contains("client.replace_inner(&identity_id, refreshed)"));
+    assert!(prepare.contains("authorization_context_changed"));
+}
+
+#[test]
+fn flutter_client_refresh_preserves_one_logical_realtime_lifecycle() {
+    let native = include_str!("../../../packages/awiki_im_core/lib/src/awiki_im_core_native.dart");
+    let sync_now = native
+        .split("Future<MessageSyncOutcome> syncNow(MessageSyncRequest request)")
+        .nth(1)
+        .expect("native syncNow wrapper");
+    assert!(sync_now.contains("_runClientLifecycle"));
+    assert!(sync_now.contains("authorizationContextChanged"));
+    assert!(sync_now.contains("_restartNativeRealtimeUnlocked"));
+
+    let realtime = native
+        .split("class RealtimeApi")
+        .nth(1)
+        .expect("native Realtime facade");
+    assert!(realtime.contains("_stopNativeRealtimeUnlocked"));
+    assert!(realtime.contains("_startNativeRealtimeUnlocked"));
+    assert!(realtime.contains("_realtimeLogicalSessionId"));
+    assert!(realtime.contains("_nativeRealtimeGeneration"));
+    assert!(realtime.contains("_isCurrentNativeRealtime"));
+    assert!(!realtime.contains("final gen_realtime.ArcDartRealtimeSession _session"));
 }
 
 #[test]
