@@ -1068,7 +1068,11 @@ native session and starts one replacement with the same `RealtimeOptions`,
 while preserving the public event streams and logical `RealtimeSession`
 handle. Native callbacks are generation-fenced, so an obsolete session cannot
 publish after restart. An equivalent identity reload does not restart
-Realtime.
+Realtime. Native shutdown stops the Realtime session before cancelling its
+Dart event subscription because the native stream closes as a consequence of
+that stop; reversing the order can make subscription cancellation wait on the
+stop that has not yet run. Both cleanup steps are still attempted and the first
+failure is reported.
 
 For any native client with an exact vNext account/device binding, Core requires
 the server to echo `awiki.sync.changed.v2`. `NoSubProtocol` is surfaced as a

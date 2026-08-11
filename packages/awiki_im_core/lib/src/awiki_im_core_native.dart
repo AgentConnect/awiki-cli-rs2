@@ -2020,12 +2020,6 @@ extension on AwikiImClient {
 
     Object? firstError;
     StackTrace? firstStackTrace;
-    try {
-      await subscription?.cancel();
-    } on Object catch (error, stackTrace) {
-      firstError = error;
-      firstStackTrace = stackTrace;
-    }
     if (session != null) {
       try {
         await _mapNativeErrors(
@@ -2035,6 +2029,15 @@ extension on AwikiImClient {
         firstError ??= error;
         firstStackTrace ??= stackTrace;
       }
+    }
+    // The native event stream ends when realtimeStop closes the session.
+    // Cancelling the Dart subscription first can therefore wait forever for
+    // the very stop operation that this lifecycle step has not run yet.
+    try {
+      await subscription?.cancel();
+    } on Object catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
     }
     if (firstError != null) {
       Error.throwWithStackTrace(firstError, firstStackTrace!);

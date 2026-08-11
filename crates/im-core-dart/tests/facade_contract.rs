@@ -553,6 +553,18 @@ fn flutter_client_refresh_preserves_one_logical_realtime_lifecycle() {
     assert!(realtime.contains("_nativeRealtimeGeneration"));
     assert!(realtime.contains("_isCurrentNativeRealtime"));
     assert!(!realtime.contains("final gen_realtime.ArcDartRealtimeSession _session"));
+
+    let stop = realtime
+        .split("Future<void> _stopNativeRealtimeUnlocked")
+        .nth(1)
+        .expect("serialized native Realtime stop helper");
+    let native_stop = stop
+        .find("gen_realtime.realtimeStop")
+        .expect("native session stop");
+    let stream_cancel = stop
+        .find("subscription?.cancel")
+        .expect("Dart event stream cancellation");
+    assert!(native_stop < stream_cancel);
 }
 
 #[test]
