@@ -210,9 +210,10 @@ Core 不创建第二个 DID、不提交本地身份，也不发布 P5；Recovery
 本地身份。
 若服务端确认它仍是 phone-owned Legacy，注册响应可以表示服务端已原子恢复到本次新生成的
 vNext DID；该窄兼容路径保留原 `user_id`/Handle，不允许替换已有 Manifest 身份。
-新注册本地提交成功后必须生成并发布 exact-device P5 PreKey Bundle，发布失败保留同一
-PendingRegistration 供精确重试，不重放 `register`。V1 只保存 access token，不保存设备
-refresh token，也没有 Genesis 或独立设备 Token RPC。
+新注册本地提交成功后必须生成并发布 exact-device P5 PreKey Bundle；启用 Group E2EE v2 时，
+还必须发布绑定 bootstrap device 的确定性 P6 KeyPackage family。发布失败不能重放 `register`
+或重新生成身份，并分别返回稳定的 P5/P6 completion warning。V1 只保存 access token，不保存
+设备 refresh token，也没有 Genesis 或独立设备 Token RPC。
 
 若 `register` 明确返回 `error.data.awiki_code=device.document_proof_expired`，Core 保留同一
 DID、root/device/daemon keys 与 device ID，只刷新顶层 root proof、更新 pending document hash，

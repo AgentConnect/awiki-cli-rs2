@@ -312,11 +312,11 @@ bootstrap auth_generation = 1
 事务内的存储方法只能 `add/flush`，由最外层统一 commit。邮件、积分和其他外部副作用只能在提交后
 执行，或通过既有 Outbox 收敛。
 
-新注册本地事务提交成功后，Core 必须继续生成并发布该 exact device 的 P5 PreKey Bundle，成功
-后才删除加密 PendingRegistration 并报告注册流程完成。发布失败时保留同一 pending、同一
-device E2EE key 和同一 PreKey 身份供精确重试，不得重新调用 `register` 或重新生成身份。旧
-`publish_v2_prekeys_after_genesis*` 实现只允许改名为 registration 语义并迁移调用点，不能随
-Genesis 入口一起删除。
+新注册本地事务提交成功后，Core 必须继续生成并发布该 exact device 的 P5 PreKey Bundle；
+启用 Group E2EE v2 时，还必须发布绑定 bootstrap device 的确定性 P6 KeyPackage family。
+发布失败不得重新调用 `register` 或重新生成身份，并分别通过稳定的 P5/P6 completion warning
+报告。旧 `publish_v2_prekeys_after_genesis*` 实现只允许改名为 registration 语义并迁移调用点，
+不能随 Genesis 入口一起删除。
 
 `register` 响应继续使用现有 `access_token` 字段，不增加 refresh token，也不增加
 `device_genesis`、Genesis grant 或另一套首设备注册入口。

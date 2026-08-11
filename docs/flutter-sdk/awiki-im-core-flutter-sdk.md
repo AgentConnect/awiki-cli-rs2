@@ -119,13 +119,17 @@ Me's few direct User Service HTTP adapters reuse the same package facts. All new
 User Service requests target `/user-service/v1/...` without an unversioned
 fallback.
 
-After the remote and local identity commits, P5 PreKey publication is a
-recoverable completion step. Failure returns the registered identity with the
-stable `registration_prekey_publish_pending` warning; registration pending
+After the remote and local identity commits, exact-device P5 PreKey publication
+is a recoverable completion step. When Group E2EE v2 is enabled, Core also
+publishes a deterministic, retry-safe P6 KeyPackage family for the bootstrap
+device so that another user can add the newly registered identity to an
+encrypted group. Failures return the registered identity with the stable
+`registration_prekey_publish_pending` or
+`registration_group_key_package_publish_pending` warning; registration pending
 cleanup failure uses `registration_pending_cleanup_required`. Flutter hosts
 must preserve these warnings, must activate the committed identity, and must
 not request another OTP or start a second registration. Later secure work
-reuses Core's durable local PreKey publication.
+reuses Core's durable local publication state.
 
 `recoverHandle` always requests the same canonical local-finalize behavior as the CLI. A
 successful recovery of an existing full Handle rotates its DID without changing the stable local
