@@ -1646,3 +1646,12 @@ fn macos_sdk_build_includes_group_e2ee_support() {
         "the macOS XCFramework must contain the feature-gated group E2EE implementation"
     );
 }
+
+#[test]
+fn linux_sdk_build_includes_group_e2ee_support() {
+    let script = include_str!("../../../scripts/flutter/build-linux.sh");
+    assert!(
+        script.contains("--features blocking,sqlite,http,linux,group-e2ee"),
+        "the Linux shared library must contain the feature-gated group E2EE implementation"
+    );
+}

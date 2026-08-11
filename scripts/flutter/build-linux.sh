@@ -60,7 +60,7 @@ cargo build \
   --release \
   --target "${TARGET}" \
   --no-default-features \
-  --features blocking,sqlite,http,linux
+  --features blocking,sqlite,http,linux,group-e2ee
 
 mkdir -p "${OUT_DIR}"
 cp "${SOURCE_LIB}" "${DEST_LIB}"
