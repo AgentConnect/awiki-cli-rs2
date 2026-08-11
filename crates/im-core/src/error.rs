@@ -21,6 +21,28 @@ pub enum IdentityVaultFailure {
     VerificationFailed,
 }
 
+/// Stable attachment transfer failures exposed to every SDK surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentTransferFailure {
+    Network,
+    Stalled,
+    Incomplete,
+    RangeRejected,
+    Cancelled,
+}
+
+impl AttachmentTransferFailure {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Network => "attachment_transfer_network",
+            Self::Stalled => "attachment_transfer_stalled",
+            Self::Incomplete => "attachment_transfer_incomplete",
+            Self::RangeRejected => "attachment_transfer_range_rejected",
+            Self::Cancelled => "attachment_transfer_cancelled",
+        }
+    }
+}
+
 impl IdentityVaultFailure {
     pub const fn code(self) -> &'static str {
         match self {
@@ -73,6 +95,13 @@ pub enum ImError {
         message_id: String,
     },
     TransportUnavailable {
+        detail: String,
+    },
+    AttachmentTransfer {
+        failure: AttachmentTransferFailure,
+        received_bytes: u64,
+        expected_bytes: Option<u64>,
+        retryable: bool,
         detail: String,
     },
     UnsupportedCapability {
@@ -203,6 +232,20 @@ impl fmt::Display for ImError {
             },
             Self::MessageNotFound { message_id } => write!(f, "message not found: {message_id}"),
             Self::TransportUnavailable { detail } => write!(f, "transport unavailable: {detail}"),
+            Self::AttachmentTransfer {
+                failure,
+                received_bytes,
+                expected_bytes,
+                retryable,
+                detail,
+            } => write!(
+                f,
+                "attachment transfer failed ({}): received {received_bytes} of {} bytes (retryable={retryable}): {detail}",
+                failure.code(),
+                expected_bytes
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned()),
+            ),
             Self::UnsupportedCapability { capability } => {
                 write!(f, "unsupported capability: {capability}")
             }

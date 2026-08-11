@@ -1579,6 +1579,11 @@ class AttachmentApi {
     );
     return result._toModel();
   }
+
+  Future<bool> cancelDownload(String localPath) async {
+    _client._ensureNotDisposed();
+    return gen_attachments.cancelAttachmentDownload(destination: localPath);
+  }
 }
 
 class EmailApi {

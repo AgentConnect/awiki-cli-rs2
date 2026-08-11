@@ -1095,6 +1095,30 @@ Secure attachment sends do not expose P7 control-plane calls, download tickets, 
 
 `UploadedAttachment.sizeBytes` / `size` describe the uploaded object bytes. For `object-e2ee` this is ciphertext size. `UploadedAttachment.plaintextSizeBytes` carries the original plaintext size when available.
 
+App 下载必须优先传 `AttachmentDestination.localFile(path)`，避免对象经过
+`Rust Vec -> FFI -> Dart Uint8List -> file` 的完整内存复制。Core 把未完成字节保存在固定
+`$path.awiki-part`，自动重取 ticket、请求 Range、校验 size/digest，并在成功后原子发布
+`path`。Dart 只读取暂存文件长度展示进度，不参与拼接或完整性判断。
+
+```dart
+final download = client.attachments.download(
+  DownloadAttachmentRequest(
+    thread: thread,
+    messageId: messageId,
+    destination: AttachmentDestination.localFile(stagingPath),
+    overwrite: true,
+  ),
+);
+
+// 用户主动暂停；返回 true 表示找到了该路径的活动传输。
+final cancelled = await client.attachments.cancelDownload(stagingPath);
+```
+
+主动取消以 `attachment_transfer_cancelled` 结束原 Future，但 `.awiki-part` 保留；再次对同一路径
+调用 `download` 即继续。App 不应为主动取消显示失败提示。网络中断、30 秒无字节进度、响应提前
+结束和 Range 不一致分别使用稳定的 `attachment_transfer_*` 错误码，Host 可提示用户重试，
+但不得自行绕过 Core 校验后发布部分文件。
+
 ## Codegen
 
 Generated files are committed so the package can be checked out and analyzed without requiring codegen first:

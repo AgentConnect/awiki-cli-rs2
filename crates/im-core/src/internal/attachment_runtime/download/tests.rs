@@ -262,6 +262,53 @@ async fn attachments_download_runtime_local_file_async_streams_to_file() {
     assert_eq!(object.ticket, "ticket-1");
 }
 
+#[tokio::test]
+async fn attachments_download_runtime_resumes_verified_local_partial() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let output = fixture.root.join("downloads").join("report-resumed.txt");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let partial =
+        crate::internal::attachment_runtime::atomic_write::resumable_partial_path(&output);
+    fs::write(&partial, b"downloaded").unwrap();
+
+    let result = AttachmentDownloadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+        },
+    )
+    .download_async(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("msg-attachment-1").unwrap(),
+            attachment_id: Some("att-1".to_string()),
+            destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+            overwrite: true,
+        },
+        resolved_peer_did: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        result.sdk_result.destination,
+        crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
+            if path == output
+    ));
+    assert_eq!(fs::read(&output).unwrap(), b"downloaded bytes");
+    assert!(!partial.exists());
+    let calls = calls.borrow();
+    let object = calls[3].object_get_stream("https://objects.example/att-1");
+    assert_eq!(object.offset, 10);
+}
+
 #[test]
 fn attachments_download_runtime_local_file_rejects_existing_destination_without_network() {
     let fixture = Fixture::new();
@@ -1448,11 +1495,45 @@ impl crate::internal::transport::AsyncAttachmentObjectTransport for RecordingTra
         self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
             object_uri: object_uri.to_string(),
             ticket: download_ticket.to_string(),
+            offset: 0,
         });
         Ok(
             crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
                 body: b"downloaded bytes".to_vec(),
                 content_type: Some("application/octet-stream".to_string()),
+                consumed: false,
+            },
+        )
+    }
+
+    async fn get_attachment_object_stream_from(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+        offset: u64,
+    ) -> crate::ImResult<crate::internal::transport::AsyncAttachmentObjectResponse> {
+        const BODY: &[u8] = b"downloaded bytes";
+        self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
+            object_uri: object_uri.to_string(),
+            ticket: download_ticket.to_string(),
+            offset,
+        });
+        let offset = usize::try_from(offset).map_err(|_| crate::ImError::InvalidInput {
+            field: Some("offset".to_owned()),
+            message: "test offset does not fit usize".to_owned(),
+        })?;
+        if offset > BODY.len() {
+            return Err(crate::ImError::InvalidInput {
+                field: Some("offset".to_owned()),
+                message: "test offset exceeds body".to_owned(),
+            });
+        }
+        Ok(
+            crate::internal::transport::AsyncAttachmentObjectResponse::RangedBytes {
+                body: BODY[offset..].to_vec(),
+                content_type: Some("application/octet-stream".to_owned()),
+                range_start: offset as u64,
+                total_size: BODY.len() as u64,
                 consumed: false,
             },
         )
@@ -1674,6 +1755,7 @@ impl crate::internal::transport::AsyncAttachmentObjectTransport for RuntimeP5Att
         self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
             object_uri: object_uri.to_owned(),
             ticket: download_ticket.to_owned(),
+            offset: 0,
         });
         Ok(
             crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
@@ -1823,6 +1905,7 @@ impl crate::internal::transport::AsyncAttachmentObjectTransport for E2eeTranspor
         self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
             object_uri: object_uri.to_string(),
             ticket: download_ticket.to_string(),
+            offset: 0,
         });
         Ok(
             crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
@@ -1852,6 +1935,7 @@ enum RecordedCall {
     GetObjectStream {
         object_uri: String,
         ticket: String,
+        offset: u64,
     },
 }
 
@@ -1884,7 +1968,7 @@ impl RecordedCall {
         match self {
             Self::GetObject { object_uri, ticket } => {
                 assert_eq!(object_uri, expected_uri);
-                RecordedGetObject { ticket }
+                RecordedGetObject { ticket, offset: 0 }
             }
             _ => panic!("expected object GET call {expected_uri}, got {self:?}"),
         }
@@ -1892,9 +1976,16 @@ impl RecordedCall {
 
     fn object_get_stream(&self, expected_uri: &str) -> RecordedGetObject<'_> {
         match self {
-            Self::GetObjectStream { object_uri, ticket } => {
+            Self::GetObjectStream {
+                object_uri,
+                ticket,
+                offset,
+            } => {
                 assert_eq!(object_uri, expected_uri);
-                RecordedGetObject { ticket }
+                RecordedGetObject {
+                    ticket,
+                    offset: *offset,
+                }
             }
             _ => panic!("expected object streaming GET call {expected_uri}, got {self:?}"),
         }
@@ -1912,6 +2003,7 @@ struct RecordedGetJson<'a> {
 
 struct RecordedGetObject<'a> {
     ticket: &'a str,
+    offset: u64,
 }
 
 fn direct_history_response(skip: Option<i64>) -> crate::ImResult<Value> {

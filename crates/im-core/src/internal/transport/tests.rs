@@ -8,6 +8,51 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOST_ACCOUNT_ID: &str = "agent-account-refresh";
 
+#[tokio::test]
+async fn attachment_stream_uses_idle_timeout_instead_of_total_request_deadline() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: application/octet-stream\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/object"))
+        .send()
+        .await
+        .unwrap();
+    let mut object = AsyncAttachmentObjectResponse::Response {
+        response,
+        content_type: Some("application/octet-stream".to_owned()),
+    };
+
+    let error = object
+        .next_chunk_with_idle_timeout(Duration::from_millis(10))
+        .await
+        .expect_err("idle object body should time out");
+
+    assert!(matches!(
+        error,
+        crate::ImError::AttachmentTransfer {
+            failure: crate::AttachmentTransferFailure::Stalled,
+            retryable: true,
+            ..
+        }
+    ));
+    server.await.unwrap();
+}
+
 #[test]
 fn client_version_header_is_single_and_uses_configured_build_facts() {
     let mut config = crate::ImCoreConfig::new(

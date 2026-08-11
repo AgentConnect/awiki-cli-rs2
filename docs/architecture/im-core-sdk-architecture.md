@@ -539,7 +539,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
 | messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
 | groups | lifecycle, members, profile/policy, group reads | group wire helpers, raw group receipts |
-| attachments | send/download, source/destination DTOs | upload slots, object commit, ticket params, encrypted manifest internals |
+| attachments | send/download/cancel, source/destination DTOs | upload slots, object commit, ticket params, Range negotiation, resumable partial registry, encrypted manifest internals |
 | secure | status, prepare, repair, outbox summary, secure send policy | ciphertext, prekeys, KeyPackage, MLS private state, provider IO |
 | realtime | status, runner, event stream, normalized `ImEvent` | WebSocket frame, request id, ping/pong, dispatch queues |
 | email | account, inbox, read, mark-read, send, attachment, notifications | mail RPC params, raw JSON payload, auth headers |
@@ -557,13 +557,19 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 - `directory`: DID/Handle lookup, public profile, contact projection, relationship APIs.
 - `messages`: direct/group send, inbox, history, conversations, mark-read, retry plan, local message projection.
 - `groups`: group lifecycle, members, profile/policy, group message reads, group E2EE lifecycle hooks.
-- `attachments`: upload, digest, manifest, message send, ticket download, local file or memory sinks.
+- `attachments`: streaming upload, digest, manifest, message send, ticket download, resumable local-file or memory sinks, cancellation and atomic publication.
 - `secure`: direct E2EE, group E2EE, status/prepare/repair, secure outbox, secure message orchestration.
 - `realtime`: embeddable WebSocket runner, reconnect, notification projection, host notification events.
 - `email`: account, inbox/read/send/mark-read, attachment download, mail notifications.
 - `content/site`: handle content pages and tenant bare-domain site pages.
 
 ## 8. Runtime and Features
+
+附件对象传输使用独立于普通 RPC 的 transport policy。普通 JSON/RPC 仍受有界总超时保护；对象
+传输没有固定总时限，而是以“连续无字节进度”超时判断卡死。Local-file sink 的续传、短期票据
+重取、size/digest 校验、同路径单 writer、取消注册和原子发布全部由 Core 持有，Host 只选择目标
+路径和投影进度。CLI、Daemon、Flutter 不得分别实现另一套 Range 拼接或完整性判断。Memory
+sink 只用于明确需要内存结果的兼容调用方，不是 App 大文件主路径。
 
 `im-core` is blocking-first. Flutter/Dart and App hosts expose async APIs by running SDK work on their own worker thread or platform runtime. Any future async public API must be designed separately from the current blocking contract.
 

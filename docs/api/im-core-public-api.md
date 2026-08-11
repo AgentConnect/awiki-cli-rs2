@@ -1498,7 +1498,10 @@ impl AttachmentService<'_> {
         request: SendConversationAttachmentRequest,
     ) -> ImResult<AttachmentSendResult>;
     pub fn download(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
+    pub async fn download_async(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
 }
+
+pub fn cancel_download(destination: impl AsRef<Path>) -> bool;
 
 pub struct AttachmentSendRequest {
     pub input: AttachmentInput,
@@ -1564,6 +1567,21 @@ target-first 调用方在首次消息尚未建立 canonical conversation 时，�
 使用相同上传和发送 runtime，不要求预先存在 conversation registry 记录。
 
 默认 public API 不暴露 `object_key_b64u`、`nonce_b64u`、download ticket、raw ciphertext、secure session state 或 MLS provider path。
+
+`AttachmentDestination::LocalFile` 是 App 和大文件调用方的权威下载模式。Core 使用与目标文件
+同目录的固定 `<destination>.awiki-part` 暂存文件：每次失败或进程退出后保留已完成字节，下一次
+调用重新申请短期 download ticket，并用单段 `Range: bytes=N-` 从已有长度继续。服务端忽略
+Range 并返回完整对象时，Core 清空暂存文件后完整重下，不拼接两个对象版本。下载只有在声明
+size 和 SHA-256 digest 均通过后才原子替换目标文件；E2EE 先完整校验密文对象，再解密并发布
+明文目标文件。普通 RPC 的 30 秒总超时不适用于对象传输；对象下载使用每段无进度超时和最多
+4 次有界重试。
+
+`cancel_download(destination)` 只取消同一进程内该精确目标路径的活动下载，返回是否找到活动
+传输。取消错误码为 `attachment_transfer_cancelled`，不会触发自动重试，也不会删除
+`.awiki-part`；调用方再次使用相同目标路径即可继续。相同路径启动新下载时，Core 会先取消旧
+传输，禁止两个 writer 并发追加同一暂存文件。其他稳定传输错误为
+`attachment_transfer_network | attachment_transfer_stalled |
+attachment_transfer_incomplete | attachment_transfer_range_rejected`。
 
 ## 13. realtime：P5+
 

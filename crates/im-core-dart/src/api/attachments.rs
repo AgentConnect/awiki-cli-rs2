@@ -47,3 +47,9 @@ pub async fn download_attachment(
         .map(Into::into)
         .map_err(DartImError::from)
 }
+
+/// Cancels the active local-file attachment download for this exact path.
+/// Completed partial bytes remain available for a later resumable download.
+pub async fn cancel_attachment_download(destination: String) -> bool {
+    im_core::attachments::cancel_download(destination)
+}

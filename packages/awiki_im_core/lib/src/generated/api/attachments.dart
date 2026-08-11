@@ -33,5 +33,12 @@ Future<DartDownloadedAttachment> downloadAttachment({
   request: request,
 );
 
+/// Cancels the active local-file attachment download for this exact path.
+/// Completed partial bytes remain available for a later resumable download.
+Future<bool> cancelAttachmentDownload({required String destination}) => RustLib
+    .instance
+    .api
+    .crateApiAttachmentsCancelAttachmentDownload(destination: destination);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImClient >>>
 abstract class ArcDartImClient implements RustOpaqueInterface {}

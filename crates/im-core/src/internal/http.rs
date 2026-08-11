@@ -21,6 +21,7 @@ pub(crate) struct HttpClient {
     #[cfg(feature = "blocking")]
     tls_config: Arc<ClientConfig>,
     async_client: Result<reqwest::Client, crate::ImError>,
+    attachment_async_client: Result<reqwest::Client, crate::ImError>,
     #[cfg(feature = "blocking")]
     init_error: Option<crate::ImError>,
 }
@@ -97,6 +98,7 @@ impl HttpClient {
                     .with_no_client_auth(),
             ),
             async_client: async_client(ca_bundle, follow_redirects),
+            attachment_async_client: build_async_client(ca_bundle, follow_redirects, None),
             #[cfg(feature = "blocking")]
             init_error,
         }
@@ -179,21 +181,35 @@ impl HttpClient {
     pub(crate) fn async_client(&self) -> crate::ImResult<reqwest::Client> {
         self.async_client.clone()
     }
+
+    pub(crate) fn attachment_async_client(&self) -> crate::ImResult<reqwest::Client> {
+        self.attachment_async_client.clone()
+    }
 }
 
 fn async_client(
     ca_bundle: Option<&str>,
     follow_redirects: bool,
 ) -> Result<reqwest::Client, crate::ImError> {
+    build_async_client(ca_bundle, follow_redirects, Some(RESPONSE_TIMEOUT))
+}
+
+fn build_async_client(
+    ca_bundle: Option<&str>,
+    follow_redirects: bool,
+    request_timeout: Option<Duration>,
+) -> Result<reqwest::Client, crate::ImError> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(RESPONSE_TIMEOUT)
         .redirect(if follow_redirects {
             reqwest::redirect::Policy::limited(10)
         } else {
             reqwest::redirect::Policy::none()
         });
+    if let Some(request_timeout) = request_timeout {
+        builder = builder.timeout(request_timeout);
+    }
     if let Some(ca_bundle) = ca_bundle {
         let raw =
             fs::read(Path::new(ca_bundle)).map_err(|err| crate::ImError::TransportUnavailable {

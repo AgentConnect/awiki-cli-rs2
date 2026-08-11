@@ -159,6 +159,31 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: transport unavailable: {detail}"),
             "Check the service endpoint, runtime mode, and network connectivity.",
         ),
+        im_core::ImError::AttachmentTransfer {
+            failure,
+            received_bytes,
+            expected_bytes,
+            retryable,
+            detail,
+        } => {
+            let cancelled = failure == im_core::AttachmentTransferFailure::Cancelled;
+            let mut mapped = ExitError::new(
+                failure.code(),
+                if cancelled { 2 } else { 5 },
+                format!("{context}: attachment transfer did not complete: {detail}"),
+                if cancelled {
+                    "The partial file was kept; run the download again to resume it."
+                } else {
+                    "Keep the partial file and retry when connectivity is available; the transfer will resume after verification."
+                },
+            );
+            mapped.detail.retryable = retryable;
+            mapped.detail.details = serde_json::json!({
+                "received_bytes": received_bytes,
+                "expected_bytes": expected_bytes,
+            });
+            mapped
+        }
         im_core::ImError::LocalStateUnavailable { detail } if detail.contains("secret vault") => {
             ExitError::new(
                 "vault_root_key_required",

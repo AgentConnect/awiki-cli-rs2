@@ -17,3 +17,9 @@ pub use self::selection::{
     ERR_ATTACHMENT_NOT_FOUND,
 };
 pub use self::service::AttachmentService;
+
+/// Cancels the active local-file download for `destination`, if one exists.
+/// The verified partial is retained and the next download resumes it.
+pub fn cancel_download(destination: impl AsRef<std::path::Path>) -> bool {
+    crate::internal::attachment_runtime::cancellation::cancel(destination.as_ref())
+}

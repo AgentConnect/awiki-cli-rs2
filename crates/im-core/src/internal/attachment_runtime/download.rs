@@ -1,7 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::transport::{
@@ -11,11 +12,179 @@ use crate::internal::transport::{
 
 const MESSAGE_RPC_ENDPOINT: &str = crate::internal::message_runtime::read::MESSAGE_RPC_ENDPOINT;
 const ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE: i64 = 100;
+const ATTACHMENT_TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const ATTACHMENT_TRANSFER_MAX_ATTEMPTS: usize = 4;
 
 pub(crate) struct AttachmentDownloadRuntime<'a, P, T> {
     client: &'a crate::core::ImClient,
     session_provider: P,
     transport: T,
+}
+
+fn declared_object_size(
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+) -> crate::ImResult<Option<u64>> {
+    parse_optional_u64(&selection.public.size, "size")
+}
+
+async fn append_response_to_memory(
+    destination: &mut Vec<u8>,
+    response: &mut crate::internal::transport::AsyncAttachmentObjectResponse,
+    expected_size: Option<u64>,
+    idle_timeout: Duration,
+) -> crate::ImResult<()> {
+    loop {
+        let chunk = response
+            .next_chunk_with_idle_timeout(idle_timeout)
+            .await
+            .map_err(|error| {
+                attachment_transfer_error(error, destination.len() as u64, expected_size)
+            })?;
+        let Some(chunk) = chunk else {
+            return Ok(());
+        };
+        let next_size = destination.len().saturating_add(chunk.len()) as u64;
+        if expected_size.is_some_and(|expected| next_size > expected) {
+            return Err(crate::ImError::AttachmentTransfer {
+                failure: crate::AttachmentTransferFailure::Incomplete,
+                received_bytes: next_size,
+                expected_bytes: expected_size,
+                retryable: false,
+                detail: "attachment response exceeded the declared object size".to_owned(),
+            });
+        }
+        destination.extend_from_slice(&chunk);
+    }
+}
+
+async fn verify_downloaded_file(
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+    path: &Path,
+) -> crate::ImResult<()> {
+    let actual_size = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| crate::ImError::Io {
+            detail: format!("inspect downloaded attachment {}: {error}", path.display()),
+        })?
+        .len();
+    if let Some(expected_size) = declared_object_size(selection)? {
+        if actual_size != expected_size {
+            return Err(incomplete_transfer(actual_size, Some(expected_size)));
+        }
+    }
+    let expected_digest = selection.public.digest_b64u.trim();
+    if !expected_digest.is_empty() {
+        let actual =
+            crate::internal::attachment_runtime::digest::sha256_digest_file_b64u(path).await?;
+        if actual != expected_digest {
+            let _ = tokio::fs::remove_file(path).await;
+            return Err(attachment_service_error(
+                "anp.attachment.digest_mismatch",
+                "attachment object digest mismatch",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn attachment_transfer_error(
+    error: crate::ImError,
+    received_bytes: u64,
+    expected_bytes: Option<u64>,
+) -> crate::ImError {
+    match error {
+        crate::ImError::AttachmentTransfer {
+            failure,
+            retryable,
+            detail,
+            ..
+        } => crate::ImError::AttachmentTransfer {
+            failure,
+            received_bytes,
+            expected_bytes,
+            retryable,
+            detail,
+        },
+        crate::ImError::TransportUnavailable { detail } => crate::ImError::AttachmentTransfer {
+            failure: crate::AttachmentTransferFailure::Network,
+            received_bytes,
+            expected_bytes,
+            retryable: true,
+            detail,
+        },
+        other => other,
+    }
+}
+
+fn incomplete_transfer(received_bytes: u64, expected_bytes: Option<u64>) -> crate::ImError {
+    crate::ImError::AttachmentTransfer {
+        failure: crate::AttachmentTransferFailure::Incomplete,
+        received_bytes,
+        expected_bytes,
+        retryable: true,
+        detail: "attachment response ended before the declared object was complete".to_owned(),
+    }
+}
+
+fn range_rejected(received_bytes: u64, expected_bytes: Option<u64>) -> crate::ImError {
+    crate::ImError::AttachmentTransfer {
+        failure: crate::AttachmentTransferFailure::RangeRejected,
+        received_bytes,
+        expected_bytes,
+        retryable: false,
+        detail: "attachment server returned a range that does not match the local partial"
+            .to_owned(),
+    }
+}
+
+fn attachment_transfer_retryable(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::AttachmentTransfer {
+            failure,
+            retryable: true,
+            ..
+        } if *failure != crate::AttachmentTransferFailure::Cancelled
+    )
+}
+
+async fn cancelled_local_file_transfer(
+    destination: &Path,
+    expected_bytes: Option<u64>,
+) -> crate::ImError {
+    let partial =
+        crate::internal::attachment_runtime::atomic_write::resumable_partial_path(destination);
+    let received_bytes = tokio::fs::metadata(partial)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    crate::ImError::AttachmentTransfer {
+        failure: crate::AttachmentTransferFailure::Cancelled,
+        received_bytes,
+        expected_bytes,
+        retryable: false,
+        detail: "attachment download was cancelled; partial bytes were retained".to_owned(),
+    }
+}
+
+fn attachment_digest_mismatch(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::Service {
+            code: Some(code),
+            ..
+        } if code == "anp.attachment.digest_mismatch"
+    )
+}
+
+async fn attachment_retry_delay(_attempt: usize) {
+    #[cfg(test)]
+    let delay = Duration::ZERO;
+    #[cfg(not(test))]
+    let delay = Duration::from_millis(200_u64.saturating_mul((_attempt + 1) as u64));
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -265,8 +434,34 @@ where
     T: AsyncAuthenticatedRpcTransport + AsyncRawJsonTransport + AsyncAttachmentObjectTransport,
 {
     pub(crate) async fn download_async(
+        self,
+        input: AttachmentDownloadInput,
+    ) -> crate::ImResult<AttachmentDownloadResult> {
+        let destination = match &input.request.destination {
+            crate::attachments::AttachmentDestination::LocalFile(path) => Some(path.clone()),
+            crate::attachments::AttachmentDestination::Memory => None,
+        };
+        let Some(destination) = destination else {
+            return self.download_async_inner(input, None).await;
+        };
+
+        let registration =
+            crate::internal::attachment_runtime::cancellation::register(&destination);
+        let cancellation = registration.token().clone();
+        let download = self.download_async_inner(input, Some(&cancellation));
+        tokio::select! {
+            biased;
+            result = download => result,
+            _ = cancellation.cancelled() => {
+                Err(cancelled_local_file_transfer(&destination, None).await)
+            }
+        }
+    }
+
+    async fn download_async_inner(
         mut self,
         input: AttachmentDownloadInput,
+        cancellation: Option<&tokio_util::sync::CancellationToken>,
     ) -> crate::ImResult<AttachmentDownloadResult> {
         let sink = crate::internal::blob::sink::attachment_destination_to_sink(
             input.request.destination,
@@ -297,43 +492,44 @@ where
         let attachment_service = self
             .resolve_attachment_service_async(&selection.public.sender_did)
             .await?;
-        let ticket = self
-            .get_download_ticket_async(&target, &selection, &attachment_service)
-            .await?;
-        let object = self
-            .transport
-            .get_attachment_object_stream(
-                &selection.public.object_uri,
-                &ticket.download_ticket_b64u,
-            )
-            .await?;
-        let object_content_type = object.content_type().map(ToOwned::to_owned);
-        let downloaded = object.into_bytes().await?;
-        let plaintext = verified_download_body(&selection, downloaded)?;
         let filename =
             Some(selection.public.filename.clone()).filter(|value| !value.trim().is_empty());
+        let (destination, plaintext_len, object_content_type, ticket) = match sink {
+            crate::internal::blob::sink::AttachmentSink::Memory => {
+                let (plaintext, content_type, ticket) = self
+                    .download_to_memory(&target, &selection, &attachment_service)
+                    .await?;
+                let plaintext_len = plaintext.len();
+                (
+                    crate::attachments::DownloadedAttachmentDestination::Memory(plaintext),
+                    plaintext_len,
+                    content_type,
+                    ticket,
+                )
+            }
+            crate::internal::blob::sink::AttachmentSink::LocalFile { path, overwrite } => {
+                let (path, plaintext_len, content_type, ticket) = self
+                    .download_to_local_file(
+                        &target,
+                        &selection,
+                        &attachment_service,
+                        path,
+                        overwrite,
+                        cancellation.expect("local-file download has cancellation registration"),
+                    )
+                    .await?;
+                (
+                    crate::attachments::DownloadedAttachmentDestination::LocalFile(path),
+                    plaintext_len,
+                    content_type,
+                    ticket,
+                )
+            }
+        };
         let mime_type = Some(selection.public.mime_type.clone())
             .filter(|value| !value.trim().is_empty())
             .or(object_content_type);
-        let size_bytes = output_size_bytes(&selection, plaintext.len());
-        let destination = match sink {
-            crate::internal::blob::sink::AttachmentSink::Memory => {
-                crate::attachments::DownloadedAttachmentDestination::Memory(plaintext)
-            }
-            crate::internal::blob::sink::AttachmentSink::LocalFile { path, overwrite } => {
-                let path = crate::internal::attachment_runtime::atomic_write::write_stream_atomic(
-                    &path,
-                    crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
-                        body: plaintext,
-                        content_type: None,
-                        consumed: false,
-                    },
-                    overwrite,
-                )
-                .await?;
-                crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
-            }
-        };
+        let size_bytes = output_size_bytes(&selection, plaintext_len);
         let public_selection = public_selection_for_download(&target, &selection);
         let sdk_result = crate::attachments::DownloadedAttachment {
             attachment_id: selection.public.attachment_id.clone(),
@@ -349,6 +545,259 @@ where
             selection: public_selection,
             ticket,
         })
+    }
+
+    async fn download_to_memory(
+        &mut self,
+        target: &DownloadTarget,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+    ) -> crate::ImResult<(
+        Vec<u8>,
+        Option<String>,
+        crate::internal::wire::attachment::AttachmentDownloadTicketResult,
+    )> {
+        let mut downloaded = Vec::new();
+        let mut expected_size = declared_object_size(selection)?;
+        let mut content_type = None;
+        let mut last_error = None;
+        for attempt in 0..ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+            let offset = downloaded.len() as u64;
+            let ticket = self
+                .get_download_ticket_async(target, selection, attachment_service)
+                .await?;
+            let response = self
+                .transport
+                .get_attachment_object_stream_from(
+                    &selection.public.object_uri,
+                    &ticket.download_ticket_b64u,
+                    offset,
+                )
+                .await;
+            let mut response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    let error = attachment_transfer_error(error, offset, expected_size);
+                    if !attachment_transfer_retryable(&error)
+                        || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
+                    {
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                    attachment_retry_delay(attempt).await;
+                    continue;
+                }
+            };
+            content_type = content_type.or_else(|| response.content_type().map(ToOwned::to_owned));
+            expected_size = expected_size.or_else(|| response.total_size());
+            let response_offset = response.range_start();
+            if response_offset != offset {
+                if response_offset == 0 {
+                    downloaded.clear();
+                } else {
+                    return Err(range_rejected(offset, expected_size));
+                }
+            }
+            let result = append_response_to_memory(
+                &mut downloaded,
+                &mut response,
+                expected_size,
+                ATTACHMENT_TRANSFER_IDLE_TIMEOUT,
+            )
+            .await;
+            if let Err(error) = result {
+                if !attachment_transfer_retryable(&error)
+                    || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
+                {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                attachment_retry_delay(attempt).await;
+                continue;
+            }
+            if expected_size.is_some_and(|expected| downloaded.len() as u64 != expected) {
+                let error = incomplete_transfer(downloaded.len() as u64, expected_size);
+                if attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                attachment_retry_delay(attempt).await;
+                continue;
+            }
+            let plaintext = verified_download_body(selection, downloaded)?;
+            return Ok((plaintext, content_type, ticket));
+        }
+        Err(last_error.unwrap_or_else(|| incomplete_transfer(0, expected_size)))
+    }
+
+    async fn download_to_local_file(
+        &mut self,
+        target: &DownloadTarget,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+        destination: PathBuf,
+        overwrite: bool,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> crate::ImResult<(
+        PathBuf,
+        usize,
+        Option<String>,
+        crate::internal::wire::attachment::AttachmentDownloadTicketResult,
+    )> {
+        let mut expected_size = declared_object_size(selection)?;
+        let (partial, mut received) =
+            crate::internal::attachment_runtime::atomic_write::prepare_resumable_partial(
+                &destination,
+                overwrite,
+                expected_size,
+            )
+            .await?;
+        let mut content_type = None;
+        let mut last_ticket = None;
+        let mut last_error = None;
+        for attempt in 0..ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+            if expected_size != Some(received) {
+                let ticket = self
+                    .get_download_ticket_async(target, selection, attachment_service)
+                    .await?;
+                last_ticket = Some(ticket.clone());
+                let response = self
+                    .transport
+                    .get_attachment_object_stream_from(
+                        &selection.public.object_uri,
+                        &ticket.download_ticket_b64u,
+                        received,
+                    )
+                    .await;
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let error = attachment_transfer_error(error, received, expected_size);
+                        if !attachment_transfer_retryable(&error)
+                            || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
+                        {
+                            return Err(error);
+                        }
+                        last_error = Some(error);
+                        attachment_retry_delay(attempt).await;
+                        continue;
+                    }
+                };
+                content_type =
+                    content_type.or_else(|| response.content_type().map(ToOwned::to_owned));
+                expected_size = expected_size.or_else(|| response.total_size());
+                let response_offset = response.range_start();
+                if response_offset != received {
+                    if response_offset == 0 {
+                        crate::internal::attachment_runtime::atomic_write::reset_resumable_partial(
+                            &partial,
+                        )
+                        .await?;
+                        received = 0;
+                    } else {
+                        return Err(range_rejected(received, expected_size));
+                    }
+                }
+                let appended =
+                    crate::internal::attachment_runtime::atomic_write::append_resumable_stream(
+                        &partial,
+                        response,
+                        received,
+                        expected_size,
+                        ATTACHMENT_TRANSFER_IDLE_TIMEOUT,
+                        cancellation,
+                    )
+                    .await;
+                match appended {
+                    Ok(value) => received = value,
+                    Err(error) => {
+                        if !attachment_transfer_retryable(&error)
+                            || attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS
+                        {
+                            return Err(error);
+                        }
+                        received = tokio::fs::metadata(&partial)
+                            .await
+                            .map(|metadata| metadata.len())
+                            .unwrap_or(received);
+                        last_error = Some(error);
+                        attachment_retry_delay(attempt).await;
+                        continue;
+                    }
+                }
+            }
+            if expected_size.is_some_and(|expected| received != expected) {
+                let error = incomplete_transfer(received, expected_size);
+                if attempt + 1 == ATTACHMENT_TRANSFER_MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                attachment_retry_delay(attempt).await;
+                continue;
+            }
+            if let Err(error) = verify_downloaded_file(selection, &partial).await {
+                if attachment_digest_mismatch(&error)
+                    && attempt + 1 < ATTACHMENT_TRANSFER_MAX_ATTEMPTS
+                {
+                    crate::internal::attachment_runtime::atomic_write::reset_resumable_partial(
+                        &partial,
+                    )
+                    .await?;
+                    received = 0;
+                    last_error = Some(error);
+                    attachment_retry_delay(attempt).await;
+                    continue;
+                }
+                return Err(error);
+            }
+            if last_ticket.is_none() {
+                last_ticket = Some(
+                    self.get_download_ticket_async(target, selection, attachment_service)
+                        .await?,
+                );
+            }
+            let (path, plaintext_len) = if selection.is_object_e2ee() {
+                let ciphertext =
+                    tokio::fs::read(&partial)
+                        .await
+                        .map_err(|error| crate::ImError::Io {
+                            detail: format!(
+                                "read encrypted attachment partial {}: {error}",
+                                partial.display()
+                            ),
+                        })?;
+                let plaintext = verified_download_body(selection, ciphertext)?;
+                let plaintext_len = plaintext.len();
+                let path = crate::internal::attachment_runtime::atomic_write::write_stream_atomic(
+                    &destination,
+                    crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
+                        body: plaintext,
+                        content_type: None,
+                        consumed: false,
+                    },
+                    overwrite,
+                )
+                .await?;
+                let _ = tokio::fs::remove_file(&partial).await;
+                (path, plaintext_len)
+            } else {
+                let path =
+                    crate::internal::attachment_runtime::atomic_write::commit_resumable_partial(
+                        &partial,
+                        &destination,
+                        overwrite,
+                    )
+                    .await?;
+                (path, received as usize)
+            };
+            return Ok((
+                path,
+                plaintext_len,
+                content_type,
+                last_ticket.expect("download ticket is set before completion"),
+            ));
+        }
+        Err(last_error.unwrap_or_else(|| incomplete_transfer(received, expected_size)))
     }
 
     async fn find_selection_async(

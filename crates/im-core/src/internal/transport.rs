@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub(crate) trait AuthenticatedRpcTransport {
     fn authenticated_rpc(
@@ -81,6 +82,20 @@ pub(crate) trait AsyncAttachmentObjectTransport {
             .await
             .map(AsyncAttachmentObjectResponse::from)
     }
+
+    async fn get_attachment_object_stream_from(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+        offset: u64,
+    ) -> crate::ImResult<AsyncAttachmentObjectResponse> {
+        if offset == 0 {
+            return self
+                .get_attachment_object_stream(object_uri, download_ticket)
+                .await;
+        }
+        Err(crate::ImError::unsupported("attachment-range-download"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +135,13 @@ pub(crate) enum AsyncAttachmentObjectResponse {
         content_type: Option<String>,
         consumed: bool,
     },
+    RangedBytes {
+        body: Vec<u8>,
+        content_type: Option<String>,
+        range_start: u64,
+        total_size: u64,
+        consumed: bool,
+    },
     Response {
         response: reqwest::Response,
         content_type: Option<String>,
@@ -129,15 +151,15 @@ pub(crate) enum AsyncAttachmentObjectResponse {
 impl AsyncAttachmentObjectResponse {
     pub(crate) fn content_type(&self) -> Option<&str> {
         match self {
-            Self::Bytes { content_type, .. } | Self::Response { content_type, .. } => {
-                content_type.as_deref()
-            }
+            Self::Bytes { content_type, .. }
+            | Self::RangedBytes { content_type, .. }
+            | Self::Response { content_type, .. } => content_type.as_deref(),
         }
     }
 
     pub(crate) async fn next_chunk(&mut self) -> crate::ImResult<Option<Vec<u8>>> {
         match self {
-            Self::Bytes { body, consumed, .. } => {
+            Self::Bytes { body, consumed, .. } | Self::RangedBytes { body, consumed, .. } => {
                 if *consumed {
                     Ok(None)
                 } else {
@@ -153,6 +175,52 @@ impl AsyncAttachmentObjectResponse {
         }
     }
 
+    pub(crate) async fn next_chunk_with_idle_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> crate::ImResult<Option<Vec<u8>>> {
+        tokio::time::timeout(timeout, self.next_chunk())
+            .await
+            .map_err(|_| crate::ImError::AttachmentTransfer {
+                failure: crate::AttachmentTransferFailure::Stalled,
+                received_bytes: 0,
+                expected_bytes: self.total_size(),
+                retryable: true,
+                detail: format!(
+                    "no attachment bytes arrived for {} seconds",
+                    timeout.as_secs()
+                ),
+            })?
+    }
+
+    pub(crate) fn range_start(&self) -> u64 {
+        match self {
+            Self::Bytes { .. } => 0,
+            Self::RangedBytes { range_start, .. } => *range_start,
+            Self::Response { response, .. } => response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_content_range)
+                .map(|range| range.0)
+                .unwrap_or(0),
+        }
+    }
+
+    pub(crate) fn total_size(&self) -> Option<u64> {
+        match self {
+            Self::Bytes { body, .. } => Some(body.len() as u64),
+            Self::RangedBytes { total_size, .. } => Some(*total_size),
+            Self::Response { response, .. } => response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_content_range)
+                .map(|range| range.2)
+                .or_else(|| response.content_length()),
+        }
+    }
+
     pub(crate) async fn into_bytes(mut self) -> crate::ImResult<Vec<u8>> {
         let mut bytes = Vec::new();
         while let Some(chunk) = self.next_chunk().await? {
@@ -160,6 +228,16 @@ impl AsyncAttachmentObjectResponse {
         }
         Ok(bytes)
     }
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let value = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.parse().ok()?;
+    let end = end.parse().ok()?;
+    let total = total.parse().ok()?;
+    (start <= end && end < total).then_some((start, end, total))
 }
 
 impl From<AttachmentObjectResponse> for AsyncAttachmentObjectResponse {
@@ -1475,10 +1553,8 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
         headers: BTreeMap<String, String>,
         body: AsyncAttachmentObjectBody,
     ) -> crate::ImResult<()> {
-        let client = self.http.async_client()?;
-        let mut builder = client
-            .request(reqwest::Method::PUT, upload_uri.trim())
-            .timeout(crate::internal::http::RESPONSE_TIMEOUT);
+        let client = self.http.attachment_async_client()?;
+        let mut builder = client.request(reqwest::Method::PUT, upload_uri.trim());
         for (key, value) in headers {
             builder = builder.header(key.trim(), value.trim());
         }
@@ -1530,14 +1606,27 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
         object_uri: &str,
         download_ticket: &str,
     ) -> crate::ImResult<AsyncAttachmentObjectResponse> {
-        let client = self.http.async_client()?;
-        let response = client
+        self.get_attachment_object_stream_from(object_uri, download_ticket, 0)
+            .await
+    }
+
+    async fn get_attachment_object_stream_from(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+        offset: u64,
+    ) -> crate::ImResult<AsyncAttachmentObjectResponse> {
+        let client = self.http.attachment_async_client()?;
+        let mut request = client
             .request(reqwest::Method::GET, object_uri.trim())
             .header(
                 reqwest::header::AUTHORIZATION,
                 format!("Bearer {}", download_ticket.trim()),
-            )
-            .timeout(crate::internal::http::RESPONSE_TIMEOUT)
+            );
+        if offset > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+        }
+        let response = request
             .send()
             .await
             .map_err(reqwest_transport_unavailable)?;
@@ -1556,6 +1645,23 @@ impl AsyncAttachmentObjectTransport for CoreHttpTransport<'_> {
                 .map_err(reqwest_transport_unavailable)?
                 .to_vec();
             return Err(service_error_from_http(status_code, &body));
+        }
+        if offset > 0 && status_code == reqwest::StatusCode::PARTIAL_CONTENT.as_u16() {
+            let actual_offset = response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_content_range)
+                .map(|range| range.0);
+            if actual_offset != Some(offset) {
+                return Err(crate::ImError::AttachmentTransfer {
+                    failure: crate::AttachmentTransferFailure::RangeRejected,
+                    received_bytes: offset,
+                    expected_bytes: None,
+                    retryable: false,
+                    detail: "attachment server returned an invalid Content-Range".to_owned(),
+                });
+            }
         }
         Ok(AsyncAttachmentObjectResponse::Response {
             response,

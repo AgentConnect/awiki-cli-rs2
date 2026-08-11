@@ -147,6 +147,29 @@ impl From<im_core::ImError> for DartImError {
                 "transport_unavailable",
                 format!("transport unavailable: {detail}"),
             ),
+            im_core::ImError::AttachmentTransfer {
+                failure,
+                received_bytes,
+                expected_bytes,
+                retryable,
+                detail,
+            } => Self {
+                code: failure.code().to_owned(),
+                message: format!("attachment transfer failed: {detail}"),
+                field: None,
+                status_code: None,
+                capability: None,
+                service_code: None,
+                service_data_json: Some(
+                    serde_json::json!({
+                        "received_bytes": received_bytes,
+                        "expected_bytes": expected_bytes,
+                        "retryable": retryable,
+                    })
+                    .to_string(),
+                ),
+                device_revoke_outcome_category: None,
+            },
             im_core::ImError::UnsupportedCapability { capability } => Self::unsupported(capability),
             im_core::ImError::LocalStateUnavailable { detail } => Self::simple(
                 "local_state_unavailable",

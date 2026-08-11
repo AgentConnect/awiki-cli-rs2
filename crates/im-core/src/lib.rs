@@ -42,7 +42,9 @@ pub use crate::core::{
 };
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
-pub use crate::error::{DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult};
+pub use crate::error::{
+    AttachmentTransferFailure, DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult,
+};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
     ActiveSyncAccountBinding, AgentIdentityKind, DeleteLocalIdentityResult,

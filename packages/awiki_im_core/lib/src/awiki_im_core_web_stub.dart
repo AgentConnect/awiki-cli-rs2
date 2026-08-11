@@ -473,6 +473,10 @@ class AttachmentApi {
   ) async {
     throw _unsupported();
   }
+
+  Future<bool> cancelDownload(String localPath) async {
+    throw _unsupported();
+  }
 }
 
 class SecureApi {

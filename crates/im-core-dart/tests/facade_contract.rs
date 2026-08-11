@@ -9,6 +9,31 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn dart_attachment_cancel_error_is_typed_and_non_retryable() {
+    let err = awiki_im_core::dto::error::DartImError::from(im_core::ImError::AttachmentTransfer {
+        failure: im_core::AttachmentTransferFailure::Cancelled,
+        received_bytes: 4096,
+        expected_bytes: Some(8192),
+        retryable: false,
+        detail: "cancelled".to_owned(),
+    });
+
+    assert_eq!(err.code, "attachment_transfer_cancelled");
+    let data: serde_json::Value =
+        serde_json::from_str(err.service_data_json.as_deref().unwrap()).unwrap();
+    assert_eq!(data["received_bytes"], 4096);
+    assert_eq!(data["expected_bytes"], 8192);
+    assert_eq!(data["retryable"], false);
+}
+
+#[tokio::test]
+async fn dart_attachment_cancel_api_reports_missing_transfer() {
+    let destination = format!("/tmp/awiki-no-active-transfer-{}", std::process::id());
+
+    assert!(!awiki_im_core::api::attachments::cancel_attachment_download(destination).await);
+}
+
+#[test]
 fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
     let mut core =
         im_core::identity::Profile::new(im_core::ids::Did::parse("did:example:alice").unwrap());
