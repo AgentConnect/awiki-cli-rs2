@@ -1049,6 +1049,8 @@ impl From<im_core::directory::DisplayProfile> for crate::dto::directory::DartDis
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
             cache_hit: value.cache_hit,
+            is_stale: value.is_stale,
+            legacy_fallback: value.legacy_fallback,
             warnings: value.warnings,
         }
     }

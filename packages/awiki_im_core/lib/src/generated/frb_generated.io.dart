@@ -1050,6 +1050,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw);
 
   @protected
+  DartSecureInboxPreparation dco_decode_dart_secure_inbox_preparation(
+    dynamic raw,
+  );
+
+  @protected
   DartSecureOutboxEntry dco_decode_dart_secure_outbox_entry(dynamic raw);
 
   @protected
@@ -2631,6 +2636,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSecureDelivery sse_decode_dart_secure_delivery(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSecureInboxPreparation sse_decode_dart_secure_inbox_preparation(
     SseDeserializer deserializer,
   );
 
@@ -4535,6 +4545,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_secure_delivery(
     DartSecureDelivery self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_secure_inbox_preparation(
+    DartSecureInboxPreparation self,
     SseSerializer serializer,
   );
 

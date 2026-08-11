@@ -312,6 +312,16 @@ Future<DartIdentitySummary> resolveIdentity({
   selector: selector,
 );
 
+Future<DartIdentitySummary> updateDisplayNameProjection({
+  required ArcDartImCore core,
+  required String identityId,
+  String? displayName,
+}) => RustLib.instance.api.crateApiIdentityUpdateDisplayNameProjection(
+  core: core,
+  identityId: identityId,
+  displayName: displayName,
+);
+
 Future<DartIdentityDeviceSummary> identityDeviceSummary({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

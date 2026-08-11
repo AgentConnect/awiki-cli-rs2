@@ -634,6 +634,8 @@ pub(crate) fn display_profile_from_record(
         profile_uri: contact.profile_uri,
         subject_type: contact.subject_type,
         cache_hit: true,
+        is_stale: false,
+        legacy_fallback: true,
         warnings: Vec::new(),
     })
 }

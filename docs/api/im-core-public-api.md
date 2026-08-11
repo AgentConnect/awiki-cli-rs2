@@ -1311,7 +1311,9 @@ string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私�
 `version_id` 仍是 WNS DID Subject Profile 的 `versionId` 展示元数据；二者来源和语义独立，
 旧响应只有 `versionId` 时 `profile_version` 保持 `None`。
 
-`hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
+`hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，过期 Persona Profile 返回 `is_stale = true`，仅由旧 contact `name/nick_name` 补出的兼容值额外返回 `legacy_fallback = true`。调用方可以先稳定显示旧值，再合并一次显式远端刷新，并始终按 `display_name -> handle -> did` fallback。Persona Profile 一旦存在，即使其 `display_name` 为空也不得用 contact 旧名称补回；权威响应清空名称时必须回退 Handle，而不是永久保留旧值。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
+
+当前身份的账号级 Profile 快照由 User Service Account State 持有。非 Core 调用方取得该权威快照后，只能通过 identity registry 的 owner-scoped、幂等 display projection API 更新本机 `IdentitySummary.display_name`；不得直接改写 registry 文件或按 credential alias 猜测目标身份。该投影只影响本机展示 cache，不改变 DID、Handle、认证、路由、设备绑定或 SessionEpoch。
 
 远程 Directory Handle lookup、Profile resolve 和 public-profile 查询都是幂等读取；遇到
 `TransportUnavailable` 时，Core 仅以完全相同的 endpoint、method 和 params 重放一次，

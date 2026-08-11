@@ -339,6 +339,12 @@ pub struct DartMessageSyncRequest {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSecureInboxPreparation {
+    pub warnings: Vec<String>,
+    pub authorization_context_changed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartMessageSyncStatus {
     Idle,

@@ -1020,7 +1020,6 @@ fn display_profile_from_local_projections(
     };
     profile.did = profile.did.or(contact.did);
     profile.handle = profile.handle.or(contact.handle);
-    profile.display_name = profile.display_name.or(contact.display_name);
     profile.avatar_uri = profile.avatar_uri.or(contact.avatar_uri);
     profile.avatar_url = profile.avatar_url.or(contact.avatar_url);
     profile.profile_uri = profile.profile_uri.or(contact.profile_uri);
@@ -1050,6 +1049,8 @@ fn display_profile_cache_miss(
         profile_uri: None,
         subject_type: None,
         cache_hit: false,
+        is_stale: false,
+        legacy_fallback: false,
         warnings,
     })
 }

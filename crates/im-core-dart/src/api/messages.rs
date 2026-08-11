@@ -11,11 +11,11 @@ use crate::dto::{
         DartConversationListSnapshot, DartConversationPage, DartConversationReadRef,
         DartConversationStorePatch, DartInboxHistoryOptions, DartMarkConversationReadRequest,
         DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartMessageSyncDiagnostics,
-        DartMessageSyncOutcome, DartMessageSyncRequest, DartSendConversationPayloadRequest,
-        DartSendConversationTextRequest, DartSendMessageResult, DartSendPayloadRequest,
-        DartSendTextRequest, DartSyncConversationAfterRequest, DartSyncDeltaRequest,
-        DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult,
-        DartThreadMessageStorePatch, DartThreadRef,
+        DartMessageSyncOutcome, DartMessageSyncRequest, DartSecureInboxPreparation,
+        DartSendConversationPayloadRequest, DartSendConversationTextRequest, DartSendMessageResult,
+        DartSendPayloadRequest, DartSendTextRequest, DartSyncConversationAfterRequest,
+        DartSyncDeltaRequest, DartSyncDeltaResult, DartSyncThreadAfterRequest,
+        DartSyncThreadAfterResult, DartThreadMessageStorePatch, DartThreadRef,
     },
 };
 use crate::frb_generated::StreamSink;
@@ -498,7 +498,8 @@ pub async fn sync_now(
 pub async fn prepare_secure_inbox_for_sync(
     client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
-) -> Result<Vec<String>, DartImError> {
+) -> Result<DartSecureInboxPreparation, DartImError> {
+    let _refresh_guard = client.lock_runtime_refresh().await;
     let inner = client.clone_inner()?;
     let identity_id = inner.current_identity().id.clone();
     let warnings = inner
@@ -511,8 +512,11 @@ pub async fn prepare_secure_inbox_for_sync(
         .client_async(im_core::identity::IdentitySelector::Id(identity_id.clone()))
         .await
         .map_err(DartImError::from)?;
-    client.replace_inner(&identity_id, refreshed)?;
-    Ok(warnings)
+    let authorization_context_changed = client.replace_inner(&identity_id, refreshed)?;
+    Ok(DartSecureInboxPreparation {
+        warnings,
+        authorization_context_changed,
+    })
 }
 
 pub async fn sync_diagnostics(

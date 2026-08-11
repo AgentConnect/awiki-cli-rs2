@@ -1202,6 +1202,27 @@ class DartScopedInboxToken {
           token == other.token;
 }
 
+class DartSecureInboxPreparation {
+  final List<String> warnings;
+  final bool authorizationContextChanged;
+
+  const DartSecureInboxPreparation({
+    required this.warnings,
+    required this.authorizationContextChanged,
+  });
+
+  @override
+  int get hashCode => warnings.hashCode ^ authorizationContextChanged.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSecureInboxPreparation &&
+          runtimeType == other.runtimeType &&
+          warnings == other.warnings &&
+          authorizationContextChanged == other.authorizationContextChanged;
+}
+
 class DartSendConversationPayloadRequest {
   final DartConversationReadRef conversation;
   final String payloadJson;

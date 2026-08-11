@@ -57,6 +57,8 @@ class DartDisplayProfile {
   final String? profileUri;
   final String? subjectType;
   final bool cacheHit;
+  final bool isStale;
+  final bool legacyFallback;
   final List<String> warnings;
 
   const DartDisplayProfile({
@@ -68,6 +70,8 @@ class DartDisplayProfile {
     this.profileUri,
     this.subjectType,
     required this.cacheHit,
+    required this.isStale,
+    required this.legacyFallback,
     required this.warnings,
   });
 
@@ -81,6 +85,8 @@ class DartDisplayProfile {
       profileUri.hashCode ^
       subjectType.hashCode ^
       cacheHit.hashCode ^
+      isStale.hashCode ^
+      legacyFallback.hashCode ^
       warnings.hashCode;
 
   @override
@@ -96,6 +102,8 @@ class DartDisplayProfile {
           profileUri == other.profileUri &&
           subjectType == other.subjectType &&
           cacheHit == other.cacheHit &&
+          isStale == other.isStale &&
+          legacyFallback == other.legacyFallback &&
           warnings == other.warnings;
 }
 

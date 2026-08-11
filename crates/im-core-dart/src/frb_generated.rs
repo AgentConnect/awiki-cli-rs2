@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2100158998;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -463507728;
 
 // Section: executor
 
@@ -8182,6 +8182,68 @@ fn wire__crate__api__unsupported__unsupported_impl(
         },
     )
 }
+fn wire__crate__api__identity__update_display_name_projection_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "update_display_name_projection",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_core = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
+            >>::sse_decode(&mut deserializer);
+            let api_identity_id = <String>::sse_decode(&mut deserializer);
+            let api_display_name = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_core_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_core, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_core_guard =
+                                        Some(api_core.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_core_guard = api_core_guard.unwrap();
+                        let output_ok = crate::api::identity::update_display_name_projection(
+                            &*api_core_guard,
+                            api_identity_id,
+                            api_display_name,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__profile__update_profile_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -10074,6 +10136,8 @@ impl SseDecode for crate::dto::directory::DartDisplayProfile {
         let mut var_profileUri = <Option<String>>::sse_decode(deserializer);
         let mut var_subjectType = <Option<String>>::sse_decode(deserializer);
         let mut var_cacheHit = <bool>::sse_decode(deserializer);
+        let mut var_isStale = <bool>::sse_decode(deserializer);
+        let mut var_legacyFallback = <bool>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::directory::DartDisplayProfile {
             did: var_did,
@@ -10084,6 +10148,8 @@ impl SseDecode for crate::dto::directory::DartDisplayProfile {
             profile_uri: var_profileUri,
             subject_type: var_subjectType,
             cache_hit: var_cacheHit,
+            is_stale: var_isStale,
+            legacy_fallback: var_legacyFallback,
             warnings: var_warnings,
         };
     }
@@ -12168,6 +12234,18 @@ impl SseDecode for crate::dto::secure::DartSecureDelivery {
     }
 }
 
+impl SseDecode for crate::dto::message::DartSecureInboxPreparation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        let mut var_authorizationContextChanged = <bool>::sse_decode(deserializer);
+        return crate::dto::message::DartSecureInboxPreparation {
+            warnings: var_warnings,
+            authorization_context_changed: var_authorizationContextChanged,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::secure::DartSecureOutboxEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -14105,39 +14183,45 @@ fn pde_ffi_dispatcher_primary_impl(
         ),
         133 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
         134 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        135 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        136 => wire__crate__api__identity__upgrade_legacy_identity_impl(
+        135 => wire__crate__api__identity__update_display_name_projection_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        137 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
+        136 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        137 => wire__crate__api__identity__upgrade_legacy_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        138 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        139 => wire__crate__api__identity__verify_identity_vault_impl(
+        138 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        140 => wire__crate__api__messages__watch_conversation_patches_impl(
+        139 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        140 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        141 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        141 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        142 => {
+        142 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        143 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -15811,6 +15895,8 @@ impl flutter_rust_bridge::IntoDart for crate::dto::directory::DartDisplayProfile
             self.profile_uri.into_into_dart().into_dart(),
             self.subject_type.into_into_dart().into_dart(),
             self.cache_hit.into_into_dart().into_dart(),
+            self.is_stale.into_into_dart().into_dart(),
+            self.legacy_fallback.into_into_dart().into_dart(),
             self.warnings.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -18463,6 +18549,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureDelivery>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSecureInboxPreparation {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.warnings.into_into_dart().into_dart(),
+            self.authorization_context_changed
+                .into_into_dart()
+                .into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartSecureInboxPreparation
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSecureInboxPreparation>
+    for crate::dto::message::DartSecureInboxPreparation
+{
+    fn into_into_dart(self) -> crate::dto::message::DartSecureInboxPreparation {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureOutboxEntry {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -20338,6 +20447,8 @@ impl SseEncode for crate::dto::directory::DartDisplayProfile {
         <Option<String>>::sse_encode(self.profile_uri, serializer);
         <Option<String>>::sse_encode(self.subject_type, serializer);
         <bool>::sse_encode(self.cache_hit, serializer);
+        <bool>::sse_encode(self.is_stale, serializer);
+        <bool>::sse_encode(self.legacy_fallback, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }
@@ -21864,6 +21975,14 @@ impl SseEncode for crate::dto::secure::DartSecureDelivery {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Option<String>>::sse_encode(self.message_id, serializer);
         <String>::sse_encode(self.state, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartSecureInboxPreparation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+        <bool>::sse_encode(self.authorization_context_changed, serializer);
     }
 }
 

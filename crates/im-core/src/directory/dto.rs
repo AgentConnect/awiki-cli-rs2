@@ -83,6 +83,8 @@ pub struct DisplayProfile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub cache_hit: bool,
+    pub is_stale: bool,
+    pub legacy_fallback: bool,
     pub warnings: Vec<String>,
 }
 

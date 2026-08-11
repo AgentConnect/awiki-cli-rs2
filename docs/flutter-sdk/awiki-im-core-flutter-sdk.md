@@ -500,7 +500,9 @@ Legacy compatibility fields remain available:
 
 Display fields must not be used for routing, authentication, authorization, service endpoint selection, E2EE binding, or security-profile negotiation. Apps should keep Handle or DID visible on profile and recipient-confirmation surfaces, especially for high-risk operations.
 
-`client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally; the app should fall back to `displayName -> handle -> did` without blocking list rendering. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
+`client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally, `isStale = true` when the Persona Profile TTL has expired, and `legacyFallback = true` when the visible name only came from an old contact `name/nick_name`. The app may render that stale value immediately and schedule one coalesced remote refresh; it should always fall back through `displayName -> handle -> did` without blocking list rendering. A stored Persona Profile, including one with no display name, takes precedence over legacy contact names. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
+
+`core.updateDisplayNameProjection(identityId: identityId, displayName: displayName)` updates only the selected local `IdentitySummary.displayName` projection. It is owner-ID scoped and idempotent, and is intended for an App that has already obtained an authoritative Account State Profile snapshot. It never changes the current identity, DID, Handle, device binding, authentication material, or routing state. Apps must still fence the result to the active session before publishing it to UI state.
 
 Remote Handle lookup, Profile resolve, and public-profile calls are idempotent reads. On
 `transportUnavailable`, Core replays the identical read once; service errors are not replayed,
@@ -774,6 +776,10 @@ wrapper 在 P5 gate 开启时，会先使用 exact-device、
 `body.security_profile=direct-e2ee` 的本域 secure hydration，再在 Core 内重新加载同一
 stable identity 的 client，最后执行 ordinary `syncNow`；这确保 Root 导入推进设备认证代次后
 普通同步不会继续使用旧 client。Rust CLI 前台 Inbox 遵循相同顺序。
+该“重新加载”在 Dart bridge 中不是无条件替换：Core 先验证同一 Core、owner、DID、账号和
+Protocol Device，再把新授权 runtime 绑定到原有 conversation/message/system-notification
+Store。由此，刷新前已建立的 Patch session 保持同一 Store 和单调版本；任何 scope 不一致都
+fail closed。
 secure hydration 在每页本地提交后只 ACK 已成功消费的 P5 raw delivery，并有 100 页硬上限；
 ACK/收敛失败保留已提交本地数据但不返回完整前台成功。
 该窄化方法不是 ordinary/Legacy Inbox fallback，也不新增独立 Dart public API；它是
@@ -1084,6 +1090,19 @@ if (capability.runnerExposed) {
 ```
 
 WebSocket remains an `im-core` internal transport concern. Transport details such as WebSocket URLs, raw frames, ping/pong, request IDs, bearer headers, and dispatch queues are internal to `im-core` and must not become Dart public API. App code should configure only `AwikiImCoreConfig.transportPolicy` and consume `client.events` / `client.connectionStates`.
+
+`AwikiImClient` owns one serialized logical Realtime lifecycle. `start`,
+`stop`, `dispose`, and the secure-Inbox prelude of `syncNow` cannot overlap.
+When Core reports a real authorization-context change, the SDK stops the old
+native session and starts one replacement with the same `RealtimeOptions`,
+while preserving the public event streams and logical `RealtimeSession`
+handle. Native callbacks are generation-fenced, so an obsolete session cannot
+publish after restart. An equivalent identity reload does not restart
+Realtime. Native shutdown stops the Realtime session before cancelling its
+Dart event subscription because the native stream closes as a consequence of
+that stop; reversing the order can make subscription cancellation wait on the
+stop that has not yet run. Both cleanup steps are still attempted and the first
+failure is reported.
 
 For any native client with an exact vNext account/device binding, Core requires
 the server to echo `awiki.sync.changed.v2`. `NoSubProtocol` is surfaced as a

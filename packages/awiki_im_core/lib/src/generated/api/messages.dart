@@ -144,7 +144,7 @@ Future<DartMessageSyncOutcome> syncNow({
 /// Hydrates the closed P5 exact-device Inbox before foreground ordinary sync,
 /// then reloads the same stable local identity so later calls use any device
 /// authorization generation advanced by a committed Root import.
-Future<List<String>> prepareSecureInboxForSync({
+Future<DartSecureInboxPreparation> prepareSecureInboxForSync({
   required ArcDartImClient client,
   required int limit,
 }) => RustLib.instance.api.crateApiMessagesPrepareSecureInboxForSync(

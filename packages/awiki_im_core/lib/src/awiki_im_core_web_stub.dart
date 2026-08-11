@@ -48,6 +48,13 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<IdentitySummary> updateDisplayNameProjection({
+    required String identityId,
+    String? displayName,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<IdentityDeviceSummary> identityDeviceSummary(
     IdentitySelector selector,
   ) async {

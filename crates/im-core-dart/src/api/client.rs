@@ -4,6 +4,7 @@ use crate::dto::{error::DartImError, identity::DartIdentitySelector};
 
 pub struct DartImClient {
     state: Arc<RwLock<DartImClientState>>,
+    runtime_refresh_lock: tokio::sync::Mutex<()>,
 }
 
 struct DartImClientState {
@@ -19,6 +20,7 @@ impl DartImClient {
                 core: None,
                 inner: Some(inner),
             })),
+            runtime_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -28,6 +30,7 @@ impl DartImClient {
                 core: Some(core),
                 inner: Some(inner),
             })),
+            runtime_refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -76,7 +79,7 @@ impl DartImClient {
         &self,
         expected_identity_id: &im_core::ids::IdentityId,
         inner: im_core::ImClient,
-    ) -> Result<(), DartImError> {
+    ) -> Result<bool, DartImError> {
         let mut guard = self
             .state
             .write()
@@ -85,15 +88,20 @@ impl DartImClient {
             .inner
             .as_ref()
             .ok_or_else(|| DartImError::object_closed("DartImClient"))?;
-        if &current.current_identity().id != expected_identity_id
-            || &inner.current_identity().id != expected_identity_id
-        {
+        if &current.current_identity().id != expected_identity_id {
             return Err(DartImError::internal(
                 "refreshed client identity does not match the active client",
             ));
         }
-        guard.inner = Some(inner);
-        Ok(())
+        let (refreshed, authorization_context_changed) = current
+            .refresh_runtime_from(inner)
+            .map_err(DartImError::from)?;
+        guard.inner = Some(refreshed);
+        Ok(authorization_context_changed)
+    }
+
+    pub(crate) async fn lock_runtime_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.runtime_refresh_lock.lock().await
     }
 
     pub(crate) fn close(&self) -> Result<(), DartImError> {

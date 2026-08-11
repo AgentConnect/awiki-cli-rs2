@@ -35,6 +35,47 @@ impl ImClient {
         &self.identity
     }
 
+    /// Rebinds refreshed identity/auth material to this client's existing
+    /// in-process projection stores.
+    ///
+    /// This host-facing lifecycle hook is intentionally strict: a refreshed
+    /// client must come from the same Core and represent the same local owner,
+    /// DID, account, and protocol device. It is used by long-lived language
+    /// bindings after an exact-device authorization refresh; ordinary SDK
+    /// consumers should create clients through [`super::ImCore::client`].
+    #[doc(hidden)]
+    pub fn refresh_runtime_from(&self, refreshed: Self) -> crate::ImResult<(Self, bool)> {
+        if !Arc::ptr_eq(&self.core, &refreshed.core) {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "refreshed client belongs to a different Core".to_owned(),
+            });
+        }
+        if self.current_identity().id != refreshed.current_identity().id
+            || self.did() != refreshed.did()
+            || self.runtime.owner.identity_id != refreshed.runtime.owner.identity_id
+            || self.runtime.owner.current_did != refreshed.runtime.owner.current_did
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "refreshed client owner identity does not match the active client"
+                    .to_owned(),
+            });
+        }
+
+        let authorization_context_changed =
+            same_owner_authorization_change(&self.runtime, &refreshed.runtime)?;
+        Ok((
+            Self {
+                core: refreshed.core,
+                identity: refreshed.identity,
+                runtime: refreshed.runtime,
+                conversation_store: self.conversation_store.clone(),
+                message_store: self.message_store.clone(),
+                system_notification_store: self.system_notification_store.clone(),
+            },
+            authorization_context_changed,
+        ))
+    }
+
     pub(crate) fn exact_protocol_device_id(&self) -> crate::ImResult<String> {
         if let Some(seed) = self.runtime.owner.sync_account.as_ref() {
             return Ok(seed.protocol_device_id.as_str().to_owned());
@@ -416,3 +457,52 @@ impl ImClient {
         }
     }
 }
+
+fn same_owner_authorization_change(
+    current: &crate::internal::identity_runtime::ClientIdentityRuntime,
+    refreshed: &crate::internal::identity_runtime::ClientIdentityRuntime,
+) -> crate::ImResult<bool> {
+    use crate::internal::identity_runtime::SyncAccountSeed;
+
+    fn validate_same_device_scope(
+        current: &SyncAccountSeed,
+        refreshed: &SyncAccountSeed,
+    ) -> crate::ImResult<()> {
+        if current.account_id != refreshed.account_id
+            || current.protocol_device_id != refreshed.protocol_device_id
+            || current.device_signing_key_id != refreshed.device_signing_key_id
+            || current.device_e2ee_key_id != refreshed.device_e2ee_key_id
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail:
+                    "refreshed client account or protocol device does not match the active client"
+                        .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    match (
+        current.owner.sync_account.as_ref(),
+        refreshed.owner.sync_account.as_ref(),
+    ) {
+        (None, None) => Ok(false),
+        (Some(current), Some(refreshed)) => {
+            validate_same_device_scope(current, refreshed)?;
+            Ok(
+                current.device_auth_generation != refreshed.device_auth_generation
+                    || current.identity_generation.get() != refreshed.identity_generation.get()
+                    || current.role != refreshed.role
+                    || current.management_ready != refreshed.management_ready,
+            )
+        }
+        _ => Err(crate::ImError::IdentityBindingConflict {
+            detail: "refreshed client account binding mode does not match the active client"
+                .to_owned(),
+        }),
+    }
+}
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;

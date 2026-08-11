@@ -192,6 +192,21 @@ class AwikiImCore {
     return identity._toModel();
   }
 
+  Future<IdentitySummary> updateDisplayNameProjection({
+    required String identityId,
+    String? displayName,
+  }) async {
+    _ensureNotDisposed();
+    final identity = await _mapNativeErrors(
+      () => gen_identity_api.updateDisplayNameProjection(
+        core: _inner,
+        identityId: identityId,
+        displayName: displayName,
+      ),
+    );
+    return identity._toModel();
+  }
+
   Future<IdentityDeviceSummary> identityDeviceSummary(
     IdentitySelector selector,
   ) async {
@@ -802,6 +817,12 @@ class AwikiImClient {
       StreamController<RealtimeConnectionState>.broadcast();
   gen_realtime.ArcDartRealtimeSession? _realtimeSession;
   StreamSubscription<RealtimeEvent>? _realtimeEventSubscription;
+  RealtimeOptions? _realtimeOptions;
+  int? _realtimeLogicalSessionId;
+  int _nextRealtimeLogicalSessionId = 0;
+  int _nativeRealtimeGeneration = 0;
+  Future<void> _lifecycleTail = Future<void>.value();
+  bool _disposing = false;
   bool _disposed = false;
 
   AuthApi get auth => AuthApi._(this);
@@ -830,16 +851,25 @@ class AwikiImClient {
   }
 
   Future<void> dispose() async {
-    if (_disposed) return;
-    await realtime.stop();
-    await _mapNativeErrors(() => gen_client.closeClient(client: _inner));
-    await _eventsController.close();
-    await _connectionStatesController.close();
-    _disposed = true;
+    if (_disposed || _disposing) return;
+    _disposing = true;
+    try {
+      await _runClientLifecycle(() async {
+        try {
+          await _stopNativeRealtimeUnlocked(clearLogicalSession: true);
+        } finally {
+          await _mapNativeErrors(() => gen_client.closeClient(client: _inner));
+        }
+      }, allowDisposing: true);
+    } finally {
+      _disposed = true;
+      await _eventsController.close();
+      await _connectionStatesController.close();
+    }
   }
 
   void _ensureNotDisposed() {
-    if (_disposed) {
+    if (_disposed || _disposing) {
       throw const AwikiImCoreException(
         code: 'object_closed',
         message: 'client disposed',
@@ -1276,39 +1306,44 @@ class MessageApi {
 
   Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
     _client._ensureNotDisposed();
-    final secureWarnings = await _mapNativeErrors(
-      () => gen_messages.prepareSecureInboxForSync(
-        client: _client._inner,
-        limit: request.limit ?? 100,
-      ),
-    );
-    final result = await _mapNativeErrors(
-      () => gen_messages.syncNow(
-        client: _client._inner,
-        request: gen_message.DartMessageSyncRequest(
-          reason: request.reason,
-          limit: request.limit,
+    return _client._runClientLifecycle(() async {
+      final securePreparation = await _mapNativeErrors(
+        () => gen_messages.prepareSecureInboxForSync(
+          client: _client._inner,
+          limit: request.limit ?? 100,
         ),
-      ),
-    );
-    final outcome = result._toModel();
-    if (secureWarnings.isEmpty) {
-      return outcome;
-    }
-    return MessageSyncOutcome(
-      status: outcome.status,
-      eventsApplied: outcome.eventsApplied,
-      pagesFetched: outcome.pagesFetched,
-      messagesHydrated: outcome.messagesHydrated,
-      duplicatesSkipped: outcome.duplicatesSkipped,
-      changedConversationIds: outcome.changedConversationIds,
-      committedIncomingMessages: outcome.committedIncomingMessages,
-      errorCode: outcome.errorCode,
-      warnings: List<String>.unmodifiable([
-        ...secureWarnings,
-        ...outcome.warnings,
-      ]),
-    );
+      );
+      if (securePreparation.authorizationContextChanged) {
+        await _client._restartNativeRealtimeUnlocked();
+      }
+      final result = await _mapNativeErrors(
+        () => gen_messages.syncNow(
+          client: _client._inner,
+          request: gen_message.DartMessageSyncRequest(
+            reason: request.reason,
+            limit: request.limit,
+          ),
+        ),
+      );
+      final outcome = result._toModel();
+      if (securePreparation.warnings.isEmpty) {
+        return outcome;
+      }
+      return MessageSyncOutcome(
+        status: outcome.status,
+        eventsApplied: outcome.eventsApplied,
+        pagesFetched: outcome.pagesFetched,
+        messagesHydrated: outcome.messagesHydrated,
+        duplicatesSkipped: outcome.duplicatesSkipped,
+        changedConversationIds: outcome.changedConversationIds,
+        committedIncomingMessages: outcome.committedIncomingMessages,
+        errorCode: outcome.errorCode,
+        warnings: List<String>.unmodifiable([
+          ...securePreparation.warnings,
+          ...outcome.warnings,
+        ]),
+      );
+    });
   }
 
   Future<MessageSyncDiagnostics> syncDiagnostics() async {
@@ -1838,52 +1873,41 @@ class RealtimeApi {
     RealtimeOptions options = const RealtimeOptions(),
   }) async {
     _client._ensureNotDisposed();
-    await stop();
-    final session = await _mapNativeErrors(
-      () => gen_realtime.realtimeStart(
-        client: _client._inner,
-        options: options._toGen(),
-      ),
-    );
-    _client._realtimeSession = session;
-    _client._realtimeEventSubscription = gen_realtime
-        .realtimeEventStream(session: session)
-        .map((event) => event._toModel())
-        .listen(
-          _client._emitRealtimeEvent,
-          onError: _client._eventsController.addError,
-        );
-    return _NativeRealtimeSession._(_client, session);
+    return _client._runClientLifecycle(() async {
+      await _client._stopNativeRealtimeUnlocked(clearLogicalSession: true);
+      final logicalSessionId = ++_client._nextRealtimeLogicalSessionId;
+      await _client._startNativeRealtimeUnlocked(
+        options: options,
+        logicalSessionId: logicalSessionId,
+      );
+      return _NativeRealtimeSession._(_client, logicalSessionId);
+    });
   }
 
   Future<void> stop() async {
     _client._ensureNotDisposed();
-    final session = _client._realtimeSession;
-    _client._realtimeSession = null;
-    if (session != null) {
-      await _mapNativeErrors(() => gen_realtime.realtimeStop(session: session));
-    }
-    await _client._realtimeEventSubscription?.cancel();
-    _client._realtimeEventSubscription = null;
+    await _client._runClientLifecycle(
+      () => _client._stopNativeRealtimeUnlocked(clearLogicalSession: true),
+    );
   }
 }
 
 class _NativeRealtimeSession implements RealtimeSession {
-  _NativeRealtimeSession._(this._client, this._session);
+  _NativeRealtimeSession._(this._client, this._logicalSessionId);
 
   final AwikiImClient _client;
-  final gen_realtime.ArcDartRealtimeSession _session;
+  final int _logicalSessionId;
   bool _disposed = false;
 
   @override
   Future<void> stop() async {
     if (_disposed) return;
-    if (!_client._disposed && identical(_client._realtimeSession, _session)) {
-      await _client.realtime.stop();
-    } else {
-      await _mapNativeErrors(
-        () => gen_realtime.realtimeStop(session: _session),
-      );
+    if (!_client._disposed && !_client._disposing) {
+      await _client._runClientLifecycle(() async {
+        if (_client._realtimeLogicalSessionId == _logicalSessionId) {
+          await _client._stopNativeRealtimeUnlocked(clearLogicalSession: true);
+        }
+      });
     }
     _disposed = true;
   }
@@ -1895,6 +1919,131 @@ class _NativeRealtimeSession implements RealtimeSession {
 }
 
 extension on AwikiImClient {
+  Future<T> _runClientLifecycle<T>(
+    Future<T> Function() operation, {
+    bool allowDisposing = false,
+  }) {
+    if (_disposed || (_disposing && !allowDisposing)) {
+      return Future<T>.error(
+        const AwikiImCoreException(
+          code: 'object_closed',
+          message: 'client disposed',
+        ),
+      );
+    }
+    final completer = Completer<T>();
+    _lifecycleTail = _lifecycleTail.then((_) async {
+      try {
+        completer.complete(await operation());
+      } on Object catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _startNativeRealtimeUnlocked({
+    required RealtimeOptions options,
+    required int logicalSessionId,
+  }) async {
+    final session = await _mapNativeErrors(
+      () =>
+          gen_realtime.realtimeStart(client: _inner, options: options._toGen()),
+    );
+    final nativeGeneration = ++_nativeRealtimeGeneration;
+    _realtimeSession = session;
+    _realtimeOptions = options;
+    _realtimeLogicalSessionId = logicalSessionId;
+    _realtimeEventSubscription = gen_realtime
+        .realtimeEventStream(session: session)
+        .map((event) => event._toModel())
+        .listen(
+          (event) {
+            if (_isCurrentNativeRealtime(
+              session: session,
+              logicalSessionId: logicalSessionId,
+              nativeGeneration: nativeGeneration,
+            )) {
+              _emitRealtimeEvent(event);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (_isCurrentNativeRealtime(
+                  session: session,
+                  logicalSessionId: logicalSessionId,
+                  nativeGeneration: nativeGeneration,
+                ) &&
+                !_eventsController.isClosed) {
+              _eventsController.addError(error, stackTrace);
+            }
+          },
+        );
+  }
+
+  bool _isCurrentNativeRealtime({
+    required gen_realtime.ArcDartRealtimeSession session,
+    required int logicalSessionId,
+    required int nativeGeneration,
+  }) {
+    return !_disposed &&
+        identical(_realtimeSession, session) &&
+        _realtimeLogicalSessionId == logicalSessionId &&
+        _nativeRealtimeGeneration == nativeGeneration;
+  }
+
+  Future<void> _restartNativeRealtimeUnlocked() async {
+    final session = _realtimeSession;
+    final options = _realtimeOptions;
+    final logicalSessionId = _realtimeLogicalSessionId;
+    if (session == null || options == null || logicalSessionId == null) {
+      return;
+    }
+    await _stopNativeRealtimeUnlocked(clearLogicalSession: false);
+    await _startNativeRealtimeUnlocked(
+      options: options,
+      logicalSessionId: logicalSessionId,
+    );
+  }
+
+  Future<void> _stopNativeRealtimeUnlocked({
+    required bool clearLogicalSession,
+  }) async {
+    final session = _realtimeSession;
+    final subscription = _realtimeEventSubscription;
+    _realtimeSession = null;
+    _realtimeEventSubscription = null;
+    _nativeRealtimeGeneration += 1;
+    if (clearLogicalSession) {
+      _realtimeOptions = null;
+      _realtimeLogicalSessionId = null;
+    }
+
+    Object? firstError;
+    StackTrace? firstStackTrace;
+    if (session != null) {
+      try {
+        await _mapNativeErrors(
+          () => gen_realtime.realtimeStop(session: session),
+        );
+      } on Object catch (error, stackTrace) {
+        firstError ??= error;
+        firstStackTrace ??= stackTrace;
+      }
+    }
+    // The native event stream ends when realtimeStop closes the session.
+    // Cancelling the Dart subscription first can therefore wait forever for
+    // the very stop operation that this lifecycle step has not run yet.
+    try {
+      await subscription?.cancel();
+    } on Object catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError, firstStackTrace!);
+    }
+  }
+
   void _emitRealtimeEvent(RealtimeEvent event) {
     if (!_eventsController.isClosed) {
       _eventsController.add(event);
@@ -2863,6 +3012,8 @@ extension on gen_directory_dto.DartDisplayProfile {
     profileUri: profileUri,
     subjectType: subjectType,
     cacheHit: cacheHit,
+    isStale: isStale,
+    legacyFallback: legacyFallback,
     warnings: warnings,
   );
 }

@@ -49,6 +49,7 @@ where
             .transport
             .authenticated_rpc(call.endpoint, call.method, call.params)?;
         let profile = profile_from_value(self.client, &raw)?;
+        persist_current_display_name_projection(self.client, profile.display_name.as_deref());
         Ok(ProfileReadResult { profile, raw })
     }
 
@@ -78,12 +79,7 @@ where
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(requested_display_name.as_str());
-            if !display_name.is_empty() {
-                let _ = crate::internal::identity_store::IdentityStore::new(
-                    &self.client.core_inner().sdk_paths().identities,
-                )
-                .update_display_name_projection(self.client.current_identity(), display_name);
-            }
+            persist_current_display_name_projection(self.client, Some(display_name));
         }
         Ok(ProfileUpdateResult {
             profile,
@@ -108,6 +104,11 @@ where
             .authenticated_rpc(call.endpoint, call.method, call.params)
             .await?;
         let profile = profile_from_value(self.client, &raw)?;
+        persist_current_display_name_projection_async(
+            self.client,
+            profile.display_name.as_deref().map(str::to_string),
+        )
+        .await;
         Ok(ProfileReadResult { profile, raw })
     }
 
@@ -141,16 +142,11 @@ where
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(requested_display_name.as_str());
-            if !display_name.is_empty() {
-                let paths = self.client.core_inner().sdk_paths().identities.clone();
-                let identity = self.client.current_identity().clone();
-                let display_name = display_name.to_string();
-                let _ = crate::internal::runtime::worker::run_blocking(move || {
-                    crate::internal::identity_store::IdentityStore::new(&paths)
-                        .update_display_name_projection(&identity, &display_name)
-                })
-                .await;
-            }
+            persist_current_display_name_projection_async(
+                self.client,
+                Some(display_name.to_string()),
+            )
+            .await;
         }
         Ok(ProfileUpdateResult {
             profile,
@@ -158,6 +154,29 @@ where
             changed_fields: update_call.changed_fields,
         })
     }
+}
+
+fn persist_current_display_name_projection(
+    client: &crate::core::ImClient,
+    display_name: Option<&str>,
+) {
+    let _ = crate::internal::identity_store::IdentityStore::new(
+        &client.core_inner().sdk_paths().identities,
+    )
+    .set_display_name_projection(client.current_identity(), display_name);
+}
+
+async fn persist_current_display_name_projection_async(
+    client: &crate::core::ImClient,
+    display_name: Option<String>,
+) {
+    let paths = client.core_inner().sdk_paths().identities.clone();
+    let identity = client.current_identity().clone();
+    let _ = crate::internal::runtime::worker::run_blocking(move || {
+        crate::internal::identity_store::IdentityStore::new(&paths)
+            .set_display_name_projection(&identity, display_name.as_deref())
+    })
+    .await;
 }
 
 pub(crate) fn update_profile_params_from_patch(
