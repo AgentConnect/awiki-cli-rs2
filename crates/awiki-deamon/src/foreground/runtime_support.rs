@@ -24,17 +24,22 @@ impl RuntimePlugin for UdsTestRuntimePlugin {
     }
 
     fn launch_run(&self, context: RuntimeLaunchContext) -> Result<RuntimeLaunchOutcome> {
+        let delay_ms = std::env::var("AWIKI_DAEMON_TEST_RUNTIME_PRE_FINISH_DELAY_MS")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .context("parse test Runtime pre-finish delay")
+            })
+            .transpose()?
+            .unwrap_or(0);
+        if delay_ms > 30_000 {
+            bail!("test Runtime pre-finish delay must not exceed 30000ms");
+        }
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
         let token = context.runtime_rpc_token.as_str().to_string();
-        ensure_runtime_rpc_success(call_uds_once(
-            &self.socket_path,
-            &CliWrapperRequest::task_status(
-                token.clone(),
-                context.task.task_id.clone(),
-                "running",
-                "runtime started",
-            )
-            .into_rpc_request(),
-        )?)?;
         ensure_runtime_rpc_success(call_uds_once(
             &self.socket_path,
             &CliWrapperRequest::task_finish(token, context.task.task_id, "runtime finished")

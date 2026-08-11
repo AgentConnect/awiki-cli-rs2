@@ -345,16 +345,22 @@ fn apply_runtime_rpc_side_effects(
             if let Some(progress) = progress.as_ref() {
                 progress.validate()?;
             }
-            state.update_runtime_run_status(&context.run_id, status)?;
-            let metadata = progress.map(|progress| json!({ "progress": progress }));
-            outbox.send_status_with_metadata(
-                context,
-                state_value,
-                params.get("text").and_then(Value::as_str),
-                None,
-                None,
-                metadata.as_ref(),
-            )?;
+            let current = state.load_runtime_run(&context.run_id)?;
+            let is_redundant_start = state_value == "running"
+                && current.status == RuntimeRunStatus::Running
+                && progress.is_none();
+            if !is_redundant_start {
+                state.update_runtime_run_status(&context.run_id, status)?;
+                let metadata = progress.map(|progress| json!({ "progress": progress }));
+                outbox.send_status_with_metadata(
+                    context,
+                    state_value,
+                    params.get("text").and_then(Value::as_str),
+                    None,
+                    None,
+                    metadata.as_ref(),
+                )?;
+            }
         }
         RpcMethod::TaskFinish => {
             let run = state.load_runtime_run(&context.run_id)?;

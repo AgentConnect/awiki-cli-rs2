@@ -15,8 +15,9 @@ use awiki_deamon::plugins::generic_cli::{
         codex_native_session_id_from_stdout_jsonl, CodexDriver, CodexDriverConfig, CodexResumeMode,
     },
     sanitize_cli_output_bytes, validate_native_session_id, validate_native_session_source,
-    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry,
-    GenericCliInvocationContext, GenericCliRuntimePlugin, TestGenericCliDriver,
+    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliExit,
+    GenericCliInvocation, GenericCliInvocationContext, GenericCliRuntimePlugin,
+    TestGenericCliDriver,
 };
 use awiki_deamon::runtime::host::{
     run_controller_text_task, run_controller_text_task_with_config,
@@ -35,6 +36,10 @@ use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 fn fixture() -> (tempfile::TempDir, DaemonState) {
     let root = tempfile::tempdir().unwrap();
@@ -411,6 +416,82 @@ fn controller_text_task_runs_generic_cli_and_records_callbacks() {
         )
         .unwrap();
     assert_eq!(audit_count, 2);
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionBoundaryObservingDriver {
+    state: DaemonState,
+    outbox: MemoryRuntimeOutbox,
+    observed_running_before_dispatch: Arc<AtomicBool>,
+}
+
+impl GenericCliDriver for ExecutionBoundaryObservingDriver {
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("execution boundary observing driver".to_string()),
+        })
+    }
+
+    fn run(&self, invocation: GenericCliInvocation) -> anyhow::Result<GenericCliExit> {
+        let persisted = self.state.load_runtime_run(&invocation.run_id)?;
+        let running_was_published = self.outbox.records().iter().any(|record| {
+            record.run_id == invocation.run_id
+                && record.kind == OutboxRecordKind::Status
+                && record.state.as_deref() == Some("running")
+        });
+        self.observed_running_before_dispatch.store(
+            persisted.status == RuntimeRunStatus::Running && running_was_published,
+            Ordering::SeqCst,
+        );
+        Ok(GenericCliExit {
+            exit_code: 0,
+            status: RuntimeRunStatus::Finished,
+            callbacks: invocation.callbacks,
+            metadata: json!({}),
+        })
+    }
+}
+
+#[test]
+fn generic_cli_persists_and_publishes_running_before_blocking_driver_dispatch() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let observed_running_before_dispatch = Arc::new(AtomicBool::new(false));
+    let plugin = GenericCliRuntimePlugin::new(ExecutionBoundaryObservingDriver {
+        state: state.clone(),
+        outbox: outbox.clone(),
+        observed_running_before_dispatch: Arc::clone(&observed_running_before_dispatch),
+    });
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_running_before_dispatch".to_string(),
+            conversation_id: Some("conv_running_before_dispatch".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
+            target_agent_did: profile.agent_did.clone(),
+            text: "observe lifecycle boundary".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert!(observed_running_before_dispatch.load(Ordering::SeqCst));
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].state.as_deref(), Some("finished"));
 }
 
 #[test]
@@ -1371,16 +1452,18 @@ fn generic_cli_launch_error_emits_failed_status_and_does_not_advance_message_wat
         .contains("load cli driver run"));
 
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
-    assert_eq!(records[0].last_error_code.as_deref(), Some("launch_failed"));
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(records[1].last_error_code.as_deref(), Some("launch_failed"));
     assert_eq!(
-        records[0].metadata.as_ref().unwrap()["next_action"].as_str(),
+        records[1].metadata.as_ref().unwrap()["next_action"].as_str(),
         Some("manual_review_required")
     );
     assert_eq!(
-        records[0].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        records[1].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
         Some("unsupported")
     );
     assert!(!records
@@ -1730,10 +1813,12 @@ fn duplicate_task_finish_callback_is_idempotent() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Final);
-    assert_eq!(records[0].text.as_deref(), Some("first done"));
-    let metadata = records[0]
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].text.as_deref(), Some("first done"));
+    let metadata = records[1]
         .metadata
         .as_ref()
         .expect("final callback metadata");
@@ -1805,15 +1890,17 @@ fn reset_rejects_late_task_finish_callback_without_polluting_new_route_lock() {
     assert_eq!(cli_run.status, "failed");
 
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
     assert_eq!(
-        records[0].last_error_code.as_deref(),
+        records[1].last_error_code.as_deref(),
         Some("late_callback_rejected")
     );
     assert_eq!(
-        records[0].metadata.as_ref().unwrap()["source"].as_str(),
+        records[1].metadata.as_ref().unwrap()["source"].as_str(),
         Some("route_lease_guard")
     );
     assert!(!records
@@ -1895,11 +1982,13 @@ fn reset_rejects_late_fallback_final_and_native_id_writeback() {
     assert_eq!(route.last_message_id, None);
 
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
     assert_eq!(
-        records[0].last_error_code.as_deref(),
+        records[1].last_error_code.as_deref(),
         Some("late_callback_rejected")
     );
     assert!(!records
@@ -2071,11 +2160,13 @@ fn generic_cli_runtime_profile_policy_allows_non_controller_msg_send() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:bob"));
-    assert_eq!(records[0].text.as_deref(), Some("hello from generic-cli"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:bob"));
+    assert_eq!(records[1].text.as_deref(), Some("hello from generic-cli"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Final);
 
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let allowed_recipients_json: String = connection
@@ -2124,15 +2215,17 @@ fn runtime_run_token_allows_current_conversation_attachment_send() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(
-        records[0].raw_recipient.as_deref(),
+        records[1].raw_recipient.as_deref(),
         Some("current_conversation")
     );
-    assert_eq!(records[0].text.as_deref(), Some("report ready"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].text.as_deref(), Some("report ready"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Final);
 
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let allowed_methods_json: String = connection
@@ -2189,7 +2282,10 @@ fn generic_cli_runtime_profile_policy_rejects_unlisted_msg_send() {
     .unwrap_err();
 
     assert!(error.to_string().contains("runtime callback"));
-    assert!(outbox.records().is_empty());
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
 }
 
 #[derive(Debug, Clone)]
@@ -2637,9 +2733,11 @@ PY
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Final);
-    assert_eq!(records[0].text.as_deref(), Some("registry finished"));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].text.as_deref(), Some("registry finished"));
 }
 
 #[cfg(unix)]

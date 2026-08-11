@@ -526,6 +526,7 @@ where
         runtime_rpc_token: issued.token.clone(),
         local_socket_path,
     };
+    begin_runtime_execution(state, outbox, &run)?;
     let launch_outcome = match plugin.launch_run(launch_context) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -606,24 +607,6 @@ where
     } else {
         true
     };
-
-    if generic_cli_route_still_locked
-        && state.update_runtime_run_status_if_status_in(
-            &run.run_id,
-            &[RuntimeRunStatus::Pending],
-            RuntimeRunStatus::Running,
-        )?
-    {
-        try_emit_runtime_status(
-            state,
-            outbox,
-            &run,
-            "running",
-            Some("Runtime started"),
-            None,
-            None,
-        )?;
-    }
 
     if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
         let hermes_failed = hermes_has_error(&launch_outcome.metadata)?;
@@ -1798,6 +1781,29 @@ fn mark_runtime_run_failed_with_status(
 
 fn mark_active_runtime_run_failed(state: &DaemonState, run_id: &str) -> Result<bool> {
     state.fail_active_runtime_run(run_id)
+}
+
+fn begin_runtime_execution(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+) -> Result<()> {
+    if state.update_runtime_run_status_if_status_in(
+        &run.run_id,
+        &[RuntimeRunStatus::Pending],
+        RuntimeRunStatus::Running,
+    )? {
+        try_emit_runtime_status(
+            state,
+            outbox,
+            run,
+            "running",
+            Some("Runtime started"),
+            None,
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 fn emit_runtime_status(
