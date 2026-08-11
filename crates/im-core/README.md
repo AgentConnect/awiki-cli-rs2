@@ -296,7 +296,7 @@ Path dependencies may be kept for local development only when paired with a
 published version, for example:
 
 ```toml
-anp = { version = "0.9.2", path = "../anp/anp/rust", default-features = false }
+anp = { version = "0.9.3", path = "../anp/anp/rust", default-features = false }
 ```
 
 ## Related documentation
