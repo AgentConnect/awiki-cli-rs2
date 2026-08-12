@@ -1116,6 +1116,8 @@ App 下载必须优先传 `AttachmentDestination.localFile(path)`，避免对象
 `Rust Vec -> FFI -> Dart Uint8List -> file` 的完整内存复制。Core 把未完成字节保存在固定
 `$path.awiki-part`，自动重取 ticket、请求 Range、校验 size/digest，并在成功后原子发布
 `path`。Dart 只读取暂存文件长度展示进度，不参与拼接或完整性判断。
+Windows Core 在原子发布前使用扩展长度绝对路径，因此长 storage scope / message ID 缓存
+路径不要求用户修改系统 `LongPathsEnabled`。
 
 ```dart
 final download = client.attachments.download(

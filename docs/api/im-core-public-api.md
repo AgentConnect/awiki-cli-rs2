@@ -1590,6 +1590,10 @@ size 和 SHA-256 digest 均通过后才原子替换目标文件；E2EE 先完整
 明文目标文件。普通 RPC 的 30 秒总超时不适用于对象传输；对象下载使用每段无进度超时和最多
 4 次有界重试。
 
+Windows 原子发布会把绝对 drive/UNC 路径转换为 `\\?\` / `\\?\UNC\` 扩展长度形式后再
+调用 `MoveFileExW`。因此 storage scope、群消息 ID 和 `.awiki-part` 组合超过传统
+`MAX_PATH` 时仍可发布，不依赖用户机器另行开启 `LongPathsEnabled`。
+
 `cancel_download(destination)` 只取消同一进程内该精确目标路径的活动下载，返回是否找到活动
 传输。取消错误码为 `attachment_transfer_cancelled`，不会触发自动重试，也不会删除
 `.awiki-part`；调用方再次使用相同目标路径即可继续。相同路径启动新下载时，Core 会先取消旧
