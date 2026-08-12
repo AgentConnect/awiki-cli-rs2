@@ -1673,11 +1673,32 @@ fn android_sdk_build_includes_group_e2ee_support() {
 }
 
 #[test]
+fn ios_sdk_build_includes_group_e2ee_support() {
+    let script = include_str!("../../../scripts/flutter/build-apple.sh");
+    assert_eq!(
+        script
+            .matches("blocking,sqlite,http,ios,group-e2ee")
+            .count(),
+        2,
+        "the iOS XCFramework build and manifest must contain the feature-gated group E2EE implementation"
+    );
+}
+
+#[test]
 fn macos_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-apple.sh");
     assert!(
         script.contains("--features blocking,sqlite,http,macos,group-e2ee"),
         "the macOS XCFramework must contain the feature-gated group E2EE implementation"
+    );
+}
+
+#[test]
+fn windows_sdk_build_includes_group_e2ee_support() {
+    let script = include_str!("../../../scripts/flutter/build-windows.ps1");
+    assert!(
+        script.contains("$Features = 'blocking,sqlite,http,windows,group-e2ee'"),
+        "the Windows DLL must contain the feature-gated group E2EE implementation"
     );
 }
 

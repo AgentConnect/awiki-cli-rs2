@@ -17,7 +17,7 @@ $Toolchain = if ([string]::IsNullOrWhiteSpace($env:AWIKI_IM_CORE_RUST_TOOLCHAIN)
 } else {
     $env:AWIKI_IM_CORE_RUST_TOOLCHAIN.Trim()
 }
-$Features = 'blocking,sqlite,http,windows'
+$Features = 'blocking,sqlite,http,windows,group-e2ee'
 $SourceDll = Join-Path $RootDir "target\$Target\release\awiki_im_core.dll"
 $DestinationDir = Join-Path $RootDir 'packages\awiki_im_core\windows\bin'
 $DestinationDll = Join-Path $DestinationDir 'awiki_im_core.dll'

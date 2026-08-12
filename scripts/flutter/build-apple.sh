@@ -165,7 +165,7 @@ for target in "${IOS_TARGETS[@]}"; do
     --release \
     --target "${target}" \
     --no-default-features \
-    --features blocking,sqlite,http,ios
+    --features blocking,sqlite,http,ios,group-e2ee
 done
 
 for target in "${MACOS_TARGETS[@]}"; do
@@ -251,7 +251,7 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
   python3 "${ARTIFACT_MANIFEST_TOOL}" write \
     --platform ios \
     --targets "${ios_targets}" \
-    --features blocking,sqlite,http,ios
+    --features blocking,sqlite,http,ios,group-e2ee
 fi
 
 if [[ "${BUILD_MACOS}" == "1" ]]; then

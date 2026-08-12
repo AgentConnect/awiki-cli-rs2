@@ -204,3 +204,25 @@ test("Android native IM Core includes group E2EE support", () => {
     /--features blocking,sqlite,http,android,group-e2ee/,
   );
 });
+
+test("iOS native IM Core includes group E2EE support", () => {
+  const source = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-apple.sh"),
+    "utf8",
+  );
+  assert.equal(
+    source.match(/blocking,sqlite,http,ios,group-e2ee/g)?.length,
+    2,
+  );
+});
+
+test("Windows native IM Core includes group E2EE support", () => {
+  const source = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-windows.ps1"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /\$Features = 'blocking,sqlite,http,windows,group-e2ee'/,
+  );
+});

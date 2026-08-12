@@ -8,6 +8,11 @@ Native support in v0.1 targets Android, iOS, macOS, Linux, and Windows x64.
 Flutter Web receives a stub that throws `UnsupportedError` at runtime. Windows
 ARM64 and 32-bit x86 are not supported.
 
+All supported native builds include the compile-time `group-e2ee` capability.
+Runtime configuration and explicit product flows still control its use; this
+does not make ordinary Direct messages or newly created groups encrypted by
+default.
+
 ## License
 
 This package is available under [GNU AGPLv3](LICENSE) or a separate
