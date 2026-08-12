@@ -78,6 +78,17 @@ Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。GitHub Acti
 镜像节点通过 `scripts/release/daemon/sync-download-mirror.sh` 从主源 HTTP(S) 拉取同步，
 同步脚本不接受命令行参数，只读取同目录 `sync-download-mirror.toml`。
 
+Daemon 自升级会在 `<bin_root>/.downloads` 保留与目标版本和 manifest SHA 绑定的部分安装包。
+网络中断后再次升级会通过 HTTP Range 从已有字节继续，服务端不支持正确 Range 时自动重下；
+安装前仍校验完整 SHA-256。下载进度只保留待上报的最新快照，远程状态发送变慢不会阻塞下载。
+成功安装会清理部分包；失败诊断与面向用户的错误摘要分别返回，避免把内部 URL 和 HTTP 错误
+直接展示给普通用户。
+
+断点续传和非阻塞进度上报由正在运行的 Daemon 执行，因此已经安装的旧版本不会因为服务器上
+出现新包而自动获得这些能力。首次切换到包含本机制的版本时，若旧版自升级仍反复中断，应在
+宿主机重新执行当前 `install.sh` 或由运维直接替换 Daemon；固定版本运行后，后续自升级才会
+使用上述可靠下载路径。
+
 Flutter SDK 变更还需要：
 
 ```bash

@@ -608,12 +608,17 @@ pub fn reconcile_daemon_upgrade_state(
     if release.error.is_some() || release.latest_version.is_none() {
         return Ok(());
     }
-    state.reconcile_daemon_upgrade_commands(
+    let active_command_ids = crate::commands::active_daemon_upgrade_command_ids(
+        &daemon.agent_did,
+        &daemon.controller_scope_key,
+    );
+    state.reconcile_daemon_upgrade_commands_with_active(
         &daemon.agent_did,
         &daemon.controller_scope_key,
         &release.current_version,
         release.latest_version.as_deref(),
         release.needs_upgrade,
+        &active_command_ids,
     )
 }
 

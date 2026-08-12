@@ -1683,6 +1683,42 @@ WHERE daemon_agent_did = ?5
         Ok(())
     }
 
+    pub fn touch_running_daemon_upgrade_command(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+    ) -> Result<bool> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command_id", command_id),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE control_command_state
+SET updated_at_ms = ?1
+WHERE daemon_agent_did = ?2
+  AND controller_scope_key = ?3
+  AND command_id = ?4
+  AND command = 'daemon.upgrade'
+  AND status IN ('in_progress', 'restart_scheduled')
+"#,
+            rusqlite::params![
+                current_time_millis()?,
+                daemon_agent_did,
+                controller_scope_key,
+                command_id,
+            ],
+        )?;
+        Ok(updated == 1)
+    }
+
     pub fn reconcile_daemon_upgrade_commands(
         &self,
         daemon_agent_did: &str,
@@ -1690,6 +1726,25 @@ WHERE daemon_agent_did = ?5
         current_version: &str,
         latest_version: Option<&str>,
         needs_upgrade: bool,
+    ) -> Result<()> {
+        self.reconcile_daemon_upgrade_commands_with_active(
+            daemon_agent_did,
+            controller_scope_key,
+            current_version,
+            latest_version,
+            needs_upgrade,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    pub fn reconcile_daemon_upgrade_commands_with_active(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        current_version: &str,
+        latest_version: Option<&str>,
+        needs_upgrade: bool,
+        active_command_ids: &std::collections::HashSet<String>,
     ) -> Result<()> {
         for (field_name, value) in [
             ("daemon_agent_did", daemon_agent_did),
@@ -1764,6 +1819,10 @@ ORDER BY created_at_ms ASC
                     }),
                     None,
                 )?;
+                continue;
+            }
+
+            if active_command_ids.contains(&record.command_id) {
                 continue;
             }
 

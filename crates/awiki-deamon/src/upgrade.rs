@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::service::{
     manage_service, restart_service_after_upgrade, ServiceAction, ServicePlatform, ServiceStatus,
@@ -157,6 +157,31 @@ struct ReleaseHttpTimeoutPolicy {
     total_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContentRange {
+    start: u64,
+    end: u64,
+    total: u64,
+}
+
+#[derive(Debug)]
+struct PackageDownloadInterrupted {
+    downloaded: u64,
+    expected: u64,
+}
+
+impl std::fmt::Display for PackageDownloadInterrupted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "daemon package response ended before the expected length ({}/{} bytes)",
+            self.downloaded, self.expected
+        )
+    }
+}
+
+impl std::error::Error for PackageDownloadInterrupted {}
 
 impl DaemonUpgradeRequest {
     pub fn from_env(config: &DaemonConfig, target_version: impl Into<String>) -> Result<Self> {
@@ -411,7 +436,15 @@ where
     std::fs::create_dir_all(&temp_root)
         .with_context(|| format!("create daemon upgrade staging {}", temp_root.display()))?;
     let temp_guard = UpgradeTempRootGuard::new(temp_root.clone());
-    let archive_path = temp_root.join("package.tar.gz");
+    let partial_root = request.bin_root.join(".downloads");
+    std::fs::create_dir_all(&partial_root).with_context(|| {
+        format!(
+            "create daemon partial download root {}",
+            partial_root.display()
+        )
+    })?;
+    let archive_path = partial_download_path(&partial_root, &package.version, &package.sha256)?;
+    cleanup_partial_downloads(&partial_root, &archive_path)?;
     let download_sources = package_download_base_urls(
         &initial_sources,
         &manifest.download_base_urls,
@@ -497,6 +530,9 @@ where
         set_executable_mode(&runtime_binary)?;
     }
     verify_candidate_binary(&install_dir.join("awiki-deamon"), &package.version)?;
+    temp_guard.cleanup_now();
+    let _ = std::fs::remove_file(&archive_path);
+    let _ = std::fs::remove_dir(&partial_root);
 
     let current_dir = request.bin_root.join("current");
     std::fs::create_dir_all(&current_dir).with_context(|| {
@@ -537,7 +573,6 @@ where
             detail: Some("service restart skipped for daemon upgrade".to_string()),
         }
     };
-    temp_guard.cleanup_now();
     cleanup_daemon_bin_root(
         &request.bin_root,
         &[
@@ -557,6 +592,38 @@ where
         restarted: request.restart_service,
         service,
     })
+}
+
+fn partial_download_path(root: &Path, version: &str, expected_sha256: &str) -> Result<PathBuf> {
+    let version = sanitize_version_segment(version)?;
+    let sha = expected_sha256.trim().to_ascii_lowercase();
+    if sha.len() != 64 || !sha.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("daemon package sha256 is invalid");
+    }
+    Ok(root.join(format!("{version}-{sha}.tar.gz.part")))
+}
+
+fn cleanup_partial_downloads(root: &Path, keep: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read {}", root.display()))?;
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("stat partial download {}", path.display()))?;
+        if metadata.is_file() || metadata.file_type().is_symlink() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("remove stale partial download {}", path.display()))?;
+        } else if metadata.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("remove stale partial download {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 struct UpgradeTempRootGuard {
@@ -1039,7 +1106,10 @@ where
                     attempt: Some(attempt),
                     source_index: Some(index + 1),
                     source_count: Some(candidates.len()),
-                    downloaded_bytes: Some(0),
+                    downloaded_bytes: std::fs::metadata(archive_path)
+                        .ok()
+                        .map(|metadata| metadata.len())
+                        .or(Some(0)),
                     total_bytes: None,
                     percent: Some(0.0),
                     speed_bytes_per_sec: candidate.score_bytes_per_sec,
@@ -1072,7 +1142,6 @@ where
                         attempt,
                         summary
                     ));
-                    let _ = std::fs::remove_file(archive_path);
                     if summary == DAEMON_UPGRADE_CANCELLED_ERROR {
                         return Err(error);
                     }
@@ -1156,20 +1225,88 @@ where
     }
     let client = release_package_http_client(candidate.route.as_ref())?;
     let route_label = candidate.route.as_ref().map(|route| route.label.as_str());
-    let response = client
-        .get(&candidate.package_url)
-        .send()
-        .await
-        .context("send HTTP request")?;
-    let response = response.error_for_status().context("HTTP error")?;
-    let total = response.content_length();
+    let (mut file, mut hasher, mut downloaded) = open_partial_archive(archive_path).await?;
+    let expected_sha256 = expected_sha256.trim();
+    if downloaded > 0 {
+        let existing_sha = sha256_digest_to_hex(hasher.clone().finalize());
+        if existing_sha.eq_ignore_ascii_case(expected_sha256) {
+            emit_download_progress(
+                progress,
+                target_version,
+                &candidate.base_url,
+                route_label,
+                attempt,
+                downloaded,
+                Some(downloaded),
+                Instant::now(),
+                downloaded,
+            );
+            return Ok(existing_sha);
+        }
+    }
+    let mut response = None;
+    for _ in 0..2 {
+        let mut request = client.get(&candidate.package_url);
+        if downloaded > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={downloaded}-"));
+        }
+        let received = request.send().await.context("send HTTP request")?;
+        if received.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && downloaded > 0 {
+            reset_partial_archive(&mut file).await?;
+            hasher = Sha256::new();
+            downloaded = 0;
+            continue;
+        }
+        let received = received.error_for_status().context("HTTP error")?;
+        if downloaded > 0 && received.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            let valid_range = content_range(received.headers()).is_some_and(|range| {
+                range.start == downloaded
+                    && range.end >= range.start
+                    && range.end < range.total
+                    && received
+                        .content_length()
+                        .is_none_or(|length| length == range.end - range.start + 1)
+            });
+            if !valid_range {
+                reset_partial_archive(&mut file).await?;
+                hasher = Sha256::new();
+                downloaded = 0;
+                continue;
+            }
+        }
+        if downloaded == 0 && received.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            let complete_range = content_range(received.headers())
+                .is_some_and(|range| range.start == 0 && range.end + 1 == range.total);
+            if !complete_range {
+                bail!(
+                    "daemon package server returned an incomplete response without a range request"
+                );
+            }
+        }
+        response = Some(received);
+        break;
+    }
+    let response = response.context("daemon package server rejected a fresh download")?;
+    let resumed = downloaded > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if downloaded > 0 && !resumed {
+        reset_partial_archive(&mut file).await?;
+        hasher = Sha256::new();
+        downloaded = 0;
+    }
+    let total = if resumed {
+        content_range(response.headers())
+            .map(|range| range.total)
+            .or_else(|| {
+                response
+                    .content_length()
+                    .map(|remaining| downloaded.saturating_add(remaining))
+            })
+    } else {
+        response.content_length()
+    };
     let mut stream = response.bytes_stream();
-    let mut file = tokio::fs::File::create(archive_path)
-        .await
-        .with_context(|| format!("create daemon package {}", archive_path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut downloaded = 0u64;
     let started_at = Instant::now();
+    let started_downloaded = downloaded;
     let mut last_progress_at = Instant::now() - RELEASE_PROGRESS_MIN_INTERVAL;
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
@@ -1193,17 +1330,94 @@ where
                 downloaded,
                 total,
                 started_at,
+                started_downloaded,
             );
         }
     }
     file.flush()
         .await
         .with_context(|| format!("flush daemon package {}", archive_path.display()))?;
+    if let Some(total) = total {
+        if downloaded < total {
+            return Err(PackageDownloadInterrupted {
+                downloaded,
+                expected: total,
+            }
+            .into());
+        }
+        if downloaded > total {
+            let _ = tokio::fs::remove_file(archive_path).await;
+            bail!(
+                "daemon package response exceeded the expected length ({downloaded}/{total} bytes)"
+            );
+        }
+    }
     let actual_sha = sha256_digest_to_hex(hasher.finalize());
     if !actual_sha.eq_ignore_ascii_case(expected_sha256.trim()) {
+        let _ = tokio::fs::remove_file(archive_path).await;
         bail!("daemon package sha256 mismatch");
     }
     Ok(actual_sha)
+}
+
+async fn open_partial_archive(path: &Path) -> Result<(tokio::fs::File, Sha256, u64)> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .await
+        .with_context(|| format!("open daemon partial package {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0u64;
+    let mut buffer = vec![0u8; 256 * 1024];
+    file.seek(std::io::SeekFrom::Start(0))
+        .await
+        .with_context(|| format!("rewind daemon partial package {}", path.display()))?;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .with_context(|| format!("read daemon partial package {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        downloaded = downloaded.saturating_add(read as u64);
+    }
+    file.seek(std::io::SeekFrom::End(0))
+        .await
+        .with_context(|| format!("append daemon partial package {}", path.display()))?;
+    Ok((file, hasher, downloaded))
+}
+
+async fn reset_partial_archive(file: &mut tokio::fs::File) -> Result<()> {
+    file.set_len(0)
+        .await
+        .context("truncate daemon partial package")?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .await
+        .context("rewind daemon partial package")?;
+    Ok(())
+}
+
+fn content_range(headers: &reqwest::header::HeaderMap) -> Option<ContentRange> {
+    let value = headers.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
+    let (unit, value) = value.trim().split_once(' ')?;
+    if !unit.eq_ignore_ascii_case("bytes") {
+        return None;
+    }
+    let (range, total) = value.split_once('/')?;
+    if total == "*" || range == "*" {
+        return None;
+    }
+    let (start, end) = range.split_once('-')?;
+    let parsed = ContentRange {
+        start: start.parse().ok()?,
+        end: end.parse().ok()?,
+        total: total.parse().ok()?,
+    };
+    (parsed.start <= parsed.end && parsed.end < parsed.total).then_some(parsed)
 }
 
 async fn copy_local_package<F>(
@@ -1228,6 +1442,7 @@ where
         .with_context(|| format!("write daemon package {}", archive_path.display()))?;
     let actual_sha = sha256_hex(&bytes);
     if !actual_sha.eq_ignore_ascii_case(expected_sha256.trim()) {
+        let _ = std::fs::remove_file(archive_path);
         bail!("daemon package sha256 mismatch");
     }
     emit_upgrade_progress_detailed(
@@ -1392,10 +1607,12 @@ fn emit_download_progress<F>(
     downloaded: u64,
     total: Option<u64>,
     started_at: Instant,
+    started_downloaded: u64,
 ) where
     F: FnMut(DaemonUpgradeProgress),
 {
     let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+    let session_downloaded = downloaded.saturating_sub(started_downloaded);
     let percent = total
         .filter(|total| *total > 0)
         .map(|total| ((downloaded as f64 / total as f64) * 100.0).min(100.0));
@@ -1413,7 +1630,7 @@ fn emit_download_progress<F>(
             downloaded_bytes: Some(downloaded),
             total_bytes: total,
             percent,
-            speed_bytes_per_sec: Some((downloaded as f64 / elapsed) as u64),
+            speed_bytes_per_sec: Some((session_downloaded as f64 / elapsed) as u64),
         },
     );
 }
@@ -1488,6 +1705,9 @@ async fn read_http_url_bytes_once(client: &reqwest::Client, url: &str) -> Result
 }
 
 fn release_http_error_is_retryable(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<PackageDownloadInterrupted>().is_some() {
+        return true;
+    }
     error.chain().any(|cause| {
         let Some(error) = cause.downcast_ref::<reqwest::Error>() else {
             return false;
@@ -1758,6 +1978,7 @@ fn sanitize_public_error_chain(chain: anyhow::Chain<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
@@ -1878,28 +2099,67 @@ mod tests {
 
     struct TestHttpResponse {
         status: u16,
+        headers: Vec<(String, String)>,
         body: Vec<u8>,
+        declared_content_length: Option<usize>,
+        body_bytes_to_write: Option<usize>,
     }
 
     impl TestHttpResponse {
         fn ok(body: &[u8]) -> Self {
             Self {
                 status: 200,
+                headers: Vec::new(),
                 body: body.to_vec(),
+                declared_content_length: None,
+                body_bytes_to_write: None,
             }
         }
 
         fn status(status: u16, body: &str) -> Self {
             Self {
                 status,
+                headers: Vec::new(),
                 body: body.as_bytes().to_vec(),
+                declared_content_length: None,
+                body_bytes_to_write: None,
+            }
+        }
+
+        fn partial(body: &[u8], start: usize, total: usize) -> Self {
+            let end = start + body.len() - 1;
+            Self {
+                status: 206,
+                headers: vec![(
+                    "Content-Range".to_string(),
+                    format!("bytes {start}-{end}/{total}"),
+                )],
+                body: body.to_vec(),
+                declared_content_length: None,
+                body_bytes_to_write: None,
+            }
+        }
+
+        fn interrupted(body: &[u8], body_bytes_to_write: usize) -> Self {
+            Self {
+                status: 200,
+                headers: Vec::new(),
+                body: body.to_vec(),
+                declared_content_length: Some(body.len()),
+                body_bytes_to_write: Some(body_bytes_to_write),
             }
         }
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TestHttpRequest {
+        path: String,
+        headers: BTreeMap<String, String>,
+    }
+
     struct TestHttpServer {
         address: String,
-        requests: Arc<Mutex<Vec<String>>>,
+        requests: Arc<Mutex<Vec<TestHttpRequest>>>,
         handle: Option<thread::JoinHandle<()>>,
     }
 
@@ -1929,7 +2189,21 @@ mod tests {
         }
 
         fn request_paths(&self) -> Vec<String> {
-            self.requests.lock().expect("request paths mutex").clone()
+            self.requests
+                .lock()
+                .expect("request paths mutex")
+                .iter()
+                .map(|request| request.path.clone())
+                .collect()
+        }
+
+        fn request_header(&self, index: usize, name: &str) -> Option<String> {
+            self.requests
+                .lock()
+                .expect("request paths mutex")
+                .get(index)
+                .and_then(|request| request.headers.get(&name.to_ascii_lowercase()))
+                .cloned()
         }
     }
 
@@ -1950,42 +2224,60 @@ mod tests {
 
     fn handle_http_request(
         mut stream: TcpStream,
-        requests: &Arc<Mutex<Vec<String>>>,
+        requests: &Arc<Mutex<Vec<TestHttpRequest>>>,
         response: TestHttpResponse,
     ) {
         let mut reader = BufReader::new(stream.try_clone().expect("clone test stream"));
         let mut request_line = String::new();
         let _ = reader.read_line(&mut request_line);
-        if let Some(path) = request_line.split_whitespace().nth(1) {
-            requests
-                .lock()
-                .expect("request paths mutex")
-                .push(path.to_string());
-        }
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
+        let mut headers = BTreeMap::new();
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) if line == "\r\n" || line == "\n" => break,
-                Ok(_) => {}
+                Ok(_) => {
+                    if let Some((name, value)) = line.trim().split_once(':') {
+                        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+                    }
+                }
             }
         }
-        let reason = if response.status == 200 {
-            "OK"
-        } else {
-            "ERROR"
+        requests
+            .lock()
+            .expect("request paths mutex")
+            .push(TestHttpRequest { path, headers });
+        let reason = match response.status {
+            200 => "OK",
+            206 => "Partial Content",
+            416 => "Range Not Satisfiable",
+            _ => "ERROR",
         };
-        let raw_headers = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            response.status,
-            reason,
-            response.body.len()
+        let content_length = response
+            .declared_content_length
+            .unwrap_or(response.body.len());
+        let mut raw_headers = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n",
+            response.status, reason, content_length
         );
+        for (name, value) in response.headers {
+            raw_headers.push_str(&format!("{name}: {value}\r\n"));
+        }
+        raw_headers.push_str("\r\n");
         stream
             .write_all(raw_headers.as_bytes())
             .expect("write response headers");
+        let body_bytes_to_write = response
+            .body_bytes_to_write
+            .unwrap_or(response.body.len())
+            .min(response.body.len());
         stream
-            .write_all(&response.body)
+            .write_all(&response.body[..body_bytes_to_write])
             .expect("write response body");
         let _ = stream.flush();
     }
@@ -2069,6 +2361,223 @@ mod tests {
             Some(RELEASE_MANIFEST_HTTP_TIMEOUT)
         );
         assert_eq!(manifest_policy.read_timeout, None);
+    }
+
+    fn test_download_candidate(server: &TestHttpServer) -> ReleaseDownloadCandidate {
+        ReleaseDownloadCandidate {
+            base_url: server.address.clone(),
+            package_url: server.url("/package.tar.gz"),
+            route: None,
+            score_bytes_per_sec: None,
+        }
+    }
+
+    fn run_package_download(
+        candidate: &ReleaseDownloadCandidate,
+        archive_path: &Path,
+        expected_sha256: &str,
+    ) -> Result<String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(download_package_once(
+            candidate,
+            archive_path,
+            expected_sha256,
+            "0.2.0",
+            1,
+            &DaemonUpgradeCancelToken::default(),
+            &mut |_| {},
+        ))
+    }
+
+    #[test]
+    fn interrupted_package_download_resumes_from_persistent_partial_file() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("package.tar.gz.part");
+        let package = (0..128 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let expected_sha = sha256_hex(&package);
+        let first_server =
+            TestHttpServer::new(vec![TestHttpResponse::interrupted(&package, 24 * 1024)]);
+
+        let error = run_package_download(
+            &test_download_candidate(&first_server),
+            &archive_path,
+            &expected_sha,
+        )
+        .unwrap_err();
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_body)
+        }));
+        let downloaded = std::fs::metadata(&archive_path).unwrap().len() as usize;
+        assert!(downloaded > 0);
+        assert!(downloaded < package.len());
+
+        let second_server = TestHttpServer::new(vec![TestHttpResponse::partial(
+            &package[downloaded..],
+            downloaded,
+            package.len(),
+        )]);
+        let actual_sha = run_package_download(
+            &test_download_candidate(&second_server),
+            &archive_path,
+            &expected_sha,
+        )
+        .unwrap();
+
+        assert_eq!(actual_sha, expected_sha);
+        assert_eq!(std::fs::read(&archive_path).unwrap(), package);
+        let expected_range = format!("bytes={downloaded}-");
+        assert_eq!(
+            second_server.request_header(0, "range").as_deref(),
+            Some(expected_range.as_str())
+        );
+    }
+
+    #[test]
+    fn server_ignoring_range_restarts_download_without_appending() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("package.tar.gz.part");
+        let package = b"complete daemon package";
+        std::fs::write(&archive_path, &package[..8]).unwrap();
+        let server = TestHttpServer::new(vec![TestHttpResponse::ok(package)]);
+
+        let actual_sha = run_package_download(
+            &test_download_candidate(&server),
+            &archive_path,
+            &sha256_hex(package),
+        )
+        .unwrap();
+
+        assert_eq!(actual_sha, sha256_hex(package));
+        assert_eq!(std::fs::read(&archive_path).unwrap(), package);
+        assert_eq!(
+            server.request_header(0, "range").as_deref(),
+            Some("bytes=8-")
+        );
+    }
+
+    #[test]
+    fn invalid_content_range_restarts_download_safely() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("package.tar.gz.part");
+        let package = b"complete daemon package";
+        std::fs::write(&archive_path, &package[..8]).unwrap();
+        let server = TestHttpServer::new(vec![
+            TestHttpResponse::partial(&package[8..], 7, package.len()),
+            TestHttpResponse::ok(package),
+        ]);
+
+        run_package_download(
+            &test_download_candidate(&server),
+            &archive_path,
+            &sha256_hex(package),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&archive_path).unwrap(), package);
+        assert_eq!(
+            server.request_header(0, "range").as_deref(),
+            Some("bytes=8-")
+        );
+        assert_eq!(server.request_header(1, "range"), None);
+    }
+
+    #[test]
+    fn complete_partial_package_is_reused_without_http_download() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("package.tar.gz.part");
+        let package = b"already complete daemon package";
+        std::fs::write(&archive_path, package).unwrap();
+        let server = TestHttpServer::new(Vec::new());
+
+        let actual_sha = run_package_download(
+            &test_download_candidate(&server),
+            &archive_path,
+            &sha256_hex(package),
+        )
+        .unwrap();
+
+        assert_eq!(actual_sha, sha256_hex(package));
+        assert!(server.request_paths().is_empty());
+    }
+
+    #[test]
+    fn sha_mismatch_removes_poisoned_partial_file() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("package.tar.gz.part");
+        let server = TestHttpServer::new(vec![TestHttpResponse::ok(b"poisoned package")]);
+
+        let error = run_package_download(
+            &test_download_candidate(&server),
+            &archive_path,
+            &sha256_hex(b"expected package"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("sha256 mismatch"));
+        assert!(!archive_path.exists());
+    }
+
+    #[test]
+    fn short_completed_response_keeps_partial_file_for_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("package.tar.gz.part");
+        std::fs::write(&archive_path, b"saved-").unwrap();
+        let response = TestHttpResponse::partial(b"partial package", 6, 128);
+        let server = TestHttpServer::new(vec![response]);
+
+        let error = run_package_download(
+            &test_download_candidate(&server),
+            &archive_path,
+            &sha256_hex(b"expected complete package"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("expected length"));
+        assert_eq!(
+            std::fs::read(&archive_path).unwrap(),
+            b"saved-partial package"
+        );
+        assert!(release_http_error_is_retryable(&error));
+    }
+
+    #[test]
+    fn content_range_requires_a_valid_complete_byte_interval() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_RANGE,
+            "bytes 8-15/24".parse().unwrap(),
+        );
+        assert_eq!(
+            content_range(&headers),
+            Some(ContentRange {
+                start: 8,
+                end: 15,
+                total: 24,
+            })
+        );
+
+        headers.insert(
+            reqwest::header::CONTENT_RANGE,
+            "BYTES 8-15/24".parse().unwrap(),
+        );
+        assert_eq!(content_range(&headers).unwrap().start, 8);
+
+        for invalid in [
+            "bytes 8-24/24",
+            "bytes 9-8/24",
+            "bytes */24",
+            "items 8-15/24",
+        ] {
+            headers.insert(reqwest::header::CONTENT_RANGE, invalid.parse().unwrap());
+            assert_eq!(content_range(&headers), None, "accepted {invalid}");
+        }
     }
 
     #[cfg(unix)]
@@ -2180,6 +2689,7 @@ mod tests {
         assert!(!bin_root.join("0.0.7").exists());
         assert!(!bin_root.join("0.0.8.backup.20260101000000").exists());
         assert!(!bin_root.join(".upgrade-0.0.7-123").exists());
+        assert!(!bin_root.join(".downloads").exists());
         assert!(!bin_root.read_dir().unwrap().any(|entry| entry
             .unwrap()
             .file_name()

@@ -2193,6 +2193,62 @@ fn daemon_upgrade_command_reconciliation_keeps_recent_pending_old_version() {
 }
 
 #[test]
+fn daemon_upgrade_reliability_heartbeat_keeps_old_running_command_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_heartbeat",
+            "daemon.upgrade",
+            "msg_upgrade_heartbeat",
+            Some("latest"),
+        )
+        .unwrap();
+    {
+        let connection = state.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE control_command_state SET updated_at_ms = updated_at_ms - 180000 WHERE command_id = ?1",
+                rusqlite::params!["cmd_upgrade_heartbeat"],
+            )
+            .unwrap();
+    }
+
+    assert!(state
+        .touch_running_daemon_upgrade_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_heartbeat",
+        )
+        .unwrap());
+    state
+        .reconcile_daemon_upgrade_commands(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "0.1.31",
+            Some("0.1.34"),
+            true,
+        )
+        .unwrap();
+
+    let stored = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_heartbeat",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "in_progress");
+    assert!(stored.error_summary.is_none());
+}
+
+#[test]
 fn daemon_upgrade_command_reconciliation_fails_stale_old_version() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -2270,6 +2326,58 @@ WHERE command_id = ?1
         )
         .unwrap();
     assert!(latest_pending.is_none());
+}
+
+#[test]
+fn daemon_upgrade_reconciliation_never_fails_an_active_task() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let command_id = "cmd_upgrade_active";
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            command_id,
+            "daemon.upgrade",
+            "msg_upgrade_active",
+            Some("latest"),
+        )
+        .unwrap();
+    {
+        let connection = state.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE control_command_state SET updated_at_ms = updated_at_ms - 3600000 WHERE command_id = ?1",
+                rusqlite::params![command_id],
+            )
+            .unwrap();
+    }
+    let active = std::collections::HashSet::from([command_id.to_string()]);
+
+    state
+        .reconcile_daemon_upgrade_commands_with_active(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "0.1.31",
+            Some("0.1.34"),
+            true,
+            &active,
+        )
+        .unwrap();
+
+    let stored = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            command_id,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "in_progress");
+    assert!(stored.error_summary.is_none());
 }
 
 #[test]

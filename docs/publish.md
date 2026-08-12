@@ -133,7 +133,16 @@ manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是�
 manifest 中的包条目只保存相对 `path` 和 `sha256`，不保存完整 URL。安装脚本会从
 `download_base_url` 和 `download_mirror_urls` 中选择可用且较快的下载源，下载包后用
 manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下一个源。Daemon 自升级也按
-持久化的 `download_base_url + package.path` 下载并校验。
+持久化的 `download_base_url + package.path` 下载并校验。自升级下载与远程进度上报相互
+解耦：下载线程只发布最新进度快照，不等待 IM 状态发送。未完成的包按版本和 SHA 保存到
+`<bin_root>/.downloads/*.part`，网络中断或进程重启后使用 HTTP Range 继续；服务器不支持或
+错误实现 Range 时会安全回退为完整下载，不会把两个响应拼接。完整包始终通过 SHA-256
+校验后才进入解压和安装，成功安装后会删除对应 `.part`。
+
+升级命令在运行期间会更新持久化心跳，并以进程内任务注册表作为当前运行事实；状态对账只
+收敛长期无心跳且不再活跃的遗留任务。失败结果将稳定的 `error_code`、`failed_stage`、
+`retryable`、用户安全摘要与脱敏诊断分开返回，客户端不应把下载 URL 或底层 HTTP 错误链
+直接作为主提示展示。
 
 脚本不会修改版本号、提交代码或推送代码。发布前需要先在
 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。

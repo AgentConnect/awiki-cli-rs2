@@ -37,6 +37,10 @@ use crate::upgrade::{
 use crate::workspace::WorkspaceMode;
 use crate::{DaemonConfig, ImCoreAdapter};
 
+mod latest_value_dispatcher;
+
+use latest_value_dispatcher::LatestValueDispatcher;
+
 const AGENT_COMMAND_SCHEMA: &str = "awiki.agent.command.v1";
 const AGENT_STATUS_SCHEMA: &str = "awiki.agent.status.v1";
 const RUNTIME_AGENT_CREATE: &str = "runtime.agent.create";
@@ -253,6 +257,22 @@ fn unregister_daemon_upgrade_task(key: &DaemonUpgradeTaskKey) {
         .lock()
         .expect("daemon upgrade cancel registry poisoned")
         .remove(key);
+}
+
+pub(crate) fn active_daemon_upgrade_command_ids(
+    daemon_agent_did: &str,
+    controller_scope_key: &str,
+) -> std::collections::HashSet<String> {
+    daemon_upgrade_cancel_tokens()
+        .lock()
+        .expect("daemon upgrade cancel registry poisoned")
+        .keys()
+        .filter(|key| {
+            key.daemon_agent_did == daemon_agent_did
+                && key.controller_scope_key == controller_scope_key
+        })
+        .map(|key| key.command_id.clone())
+        .collect()
 }
 
 fn cancel_daemon_upgrade_task(key: &DaemonUpgradeTaskKey) -> bool {
@@ -2005,15 +2025,53 @@ where
         &task_command_id,
     );
     register_daemon_upgrade_task(task_key.clone(), cancel_token.clone());
-    std::thread::Builder::new()
+    let registered_task_key = task_key.clone();
+    let spawn_result = std::thread::Builder::new()
         .name("awiki-daemon-upgrade-control".to_string())
         .spawn(move || {
             let mut restart_scheduled = false;
+            let progress_outbox = task_outbox.clone();
+            let progress_daemon_agent = task_daemon_agent.clone();
+            let progress_message = task_message.clone();
+            let progress_command_id = task_command_id.clone();
+            let progress_target_version = task_target_version.clone();
+            let progress_dispatcher =
+                LatestValueDispatcher::spawn("awiki-daemon-upgrade-progress", move |progress| {
+                    let _ = send_daemon_upgrade_progress(
+                        &progress_outbox,
+                        &progress_daemon_agent,
+                        &progress_message,
+                        &progress_command_id,
+                        &progress_target_version,
+                        &progress,
+                    );
+                });
+            let progress_dispatcher = match progress_dispatcher {
+                Ok(dispatcher) => dispatcher,
+                Err(error) => {
+                    unregister_daemon_upgrade_task(&task_key);
+                    finish_daemon_upgrade_task(
+                        &task_state,
+                        &task_outbox,
+                        &task_daemon_agent,
+                        &task_message,
+                        &task_command_id,
+                        &task_target_version,
+                        Err(error).context("start daemon upgrade progress reporter"),
+                    );
+                    return;
+                }
+            };
             let result = upgrade_daemon_with_progress_and_cancel(
                 &task_config,
                 request,
                 cancel_token,
                 |progress| {
+                    let _ = task_state.touch_running_daemon_upgrade_command(
+                        &task_daemon_agent.agent_did,
+                        &task_daemon_agent.controller_scope_key,
+                        &task_command_id,
+                    );
                     if progress.stage == "restarting" && !restart_scheduled {
                         restart_scheduled = true;
                         let restart_target_version = task_target_version.clone();
@@ -2031,16 +2089,10 @@ where
                             None,
                         );
                     }
-                    let _ = send_daemon_upgrade_progress(
-                        &task_outbox,
-                        &task_daemon_agent,
-                        &task_message,
-                        &task_command_id,
-                        &task_target_version,
-                        &progress,
-                    );
+                    progress_dispatcher.publish(progress);
                 },
             );
+            progress_dispatcher.close();
             unregister_daemon_upgrade_task(&task_key);
             finish_daemon_upgrade_task(
                 &task_state,
@@ -2051,8 +2103,11 @@ where
                 &task_target_version,
                 result,
             );
-        })
-        .context("spawn daemon upgrade control task")?;
+        });
+    if let Err(error) = spawn_result {
+        unregister_daemon_upgrade_task(&registered_task_key);
+        return Err(error).context("spawn daemon upgrade control task");
+    }
     Ok(())
 }
 
@@ -2105,24 +2160,34 @@ fn finish_daemon_upgrade_task<O>(
             );
         }
         Err(error) => {
-            let summary = sanitize_public_error_chain(error.chain());
-            let was_cancelled = summary.contains(DAEMON_UPGRADE_CANCELLED_ERROR);
+            let failure = classify_daemon_upgrade_failure(&error);
             let result = json!({
                 "command": DAEMON_UPGRADE,
                 "daemon_agent_did": daemon_agent.agent_did,
                 "target_version": target_version,
-                "status": if was_cancelled { "cancelled" } else { "failed" },
-                "error_code": if was_cancelled { "upgrade_cancelled" } else { "upgrade_failed" },
-                "last_error_summary": summary,
+                "status": if failure.cancelled { "cancelled" } else { "failed" },
+                "error_code": failure.error_code,
+                "failed_stage": failure.failed_stage,
+                "retryable": failure.retryable,
+                "last_error_summary": failure.public_summary,
+                "diagnostic_summary": failure.diagnostic_summary,
             });
             state
                 .mark_control_command_state(
                     &daemon_agent.agent_did,
                     &daemon_agent.controller_scope_key,
                     command_id,
-                    if was_cancelled { "cancelled" } else { "failed" },
+                    if failure.cancelled {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    },
                     result.clone(),
-                    if was_cancelled { None } else { Some(&summary) },
+                    if failure.cancelled {
+                        None
+                    } else {
+                        Some(failure.public_summary)
+                    },
                 )
                 .ok();
             let _ = send_command_status(
@@ -2130,8 +2195,12 @@ fn finish_daemon_upgrade_task<O>(
                 daemon_agent,
                 message,
                 command_id,
-                if was_cancelled { "cancelled" } else { "failed" },
-                Some(if was_cancelled {
+                if failure.cancelled {
+                    "cancelled"
+                } else {
+                    "failed"
+                },
+                Some(if failure.cancelled {
                     "daemon upgrade cancelled".to_string()
                 } else {
                     "daemon upgrade failed".to_string()
@@ -2139,6 +2208,79 @@ fn finish_daemon_upgrade_task<O>(
                 result,
             );
         }
+    }
+}
+
+struct DaemonUpgradeFailure {
+    cancelled: bool,
+    error_code: &'static str,
+    failed_stage: &'static str,
+    retryable: bool,
+    public_summary: &'static str,
+    diagnostic_summary: String,
+}
+
+fn classify_daemon_upgrade_failure(error: &anyhow::Error) -> DaemonUpgradeFailure {
+    let diagnostic_summary = sanitize_public_error_chain(error.chain());
+    let normalized = diagnostic_summary.to_ascii_lowercase();
+    let cancelled = normalized.contains(DAEMON_UPGRADE_CANCELLED_ERROR);
+    let (error_code, failed_stage, retryable, public_summary) = if cancelled {
+        (
+            "upgrade_cancelled",
+            "cancelled",
+            true,
+            "daemon upgrade was cancelled",
+        )
+    } else if normalized.contains("sha256") {
+        (
+            "upgrade_integrity_failed",
+            "verifying",
+            true,
+            "downloaded daemon package failed integrity verification",
+        )
+    } else if normalized.contains("download daemon package")
+        || normalized.contains("daemon package unavailable")
+        || normalized.contains("release manifest unavailable")
+        || normalized.contains("http error")
+        || normalized.contains("http body")
+        || normalized.contains("request timed out")
+        || normalized.contains("send http request")
+    {
+        (
+            "upgrade_download_failed",
+            "downloading",
+            true,
+            "daemon package download was interrupted after retries",
+        )
+    } else if normalized.contains("extract") || normalized.contains("archive") {
+        (
+            "upgrade_extract_failed",
+            "extracting",
+            true,
+            "daemon package could not be extracted",
+        )
+    } else if normalized.contains("restart") || normalized.contains("service") {
+        (
+            "upgrade_restart_failed",
+            "restarting",
+            true,
+            "daemon service could not restart after upgrade",
+        )
+    } else {
+        (
+            "upgrade_install_failed",
+            "installing",
+            false,
+            "daemon upgrade could not be installed",
+        )
+    };
+    DaemonUpgradeFailure {
+        cancelled,
+        error_code,
+        failed_stage,
+        retryable,
+        public_summary,
+        diagnostic_summary,
     }
 }
 
@@ -3329,5 +3471,37 @@ mod tests {
 
         assert!(summary.contains("download daemon package"));
         assert!(summary.contains("request timed out"));
+    }
+
+    #[test]
+    fn daemon_upgrade_download_failure_has_stable_public_contract() {
+        let error = anyhow::anyhow!("error decoding response body")
+            .context("read HTTP body")
+            .context(
+                "download daemon package https://anpclaw.com/daemon/releases/0.1.89/package.tar.gz",
+            );
+
+        let failure = classify_daemon_upgrade_failure(&error);
+
+        assert_eq!(failure.error_code, "upgrade_download_failed");
+        assert_eq!(failure.failed_stage, "downloading");
+        assert!(failure.retryable);
+        assert_eq!(
+            failure.public_summary,
+            "daemon package download was interrupted after retries"
+        );
+        assert!(failure.diagnostic_summary.contains("read HTTP body"));
+        assert!(!failure.public_summary.contains("https://"));
+    }
+
+    #[test]
+    fn daemon_upgrade_integrity_failure_is_distinct_from_network_failure() {
+        let error = anyhow::anyhow!("daemon package sha256 mismatch");
+
+        let failure = classify_daemon_upgrade_failure(&error);
+
+        assert_eq!(failure.error_code, "upgrade_integrity_failed");
+        assert_eq!(failure.failed_stage, "verifying");
+        assert!(failure.retryable);
     }
 }
