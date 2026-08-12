@@ -1914,7 +1914,7 @@ VALUES (?1,?2,?3,?3,'active','now',?4)"#,
     }
 
     #[test]
-    fn recovered_group_messages_from_previous_did_are_reclassified_as_outgoing() {
+    fn late_hydrated_recovered_group_messages_are_reclassified_as_outgoing() {
         let dir = tempfile::tempdir().unwrap();
         let sqlite_path = dir.path().join("im.sqlite");
         let marker =
@@ -1947,6 +1947,15 @@ VALUES (?1,?2,?3,?3,'active','now',?4)"#,
             "{}",
         )
         .unwrap();
+        assert_eq!(
+            repair_previous_group_message_directions(
+                &sqlite_path,
+                "owner",
+                "did:wba:example.com:alice:e1_new",
+            )
+            .unwrap(),
+            0,
+        );
         let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
         db.execute(
             r#"INSERT INTO messages

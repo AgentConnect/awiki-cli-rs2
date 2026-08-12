@@ -2215,6 +2215,11 @@ impl<'a> GroupService<'a> {
             self.client,
             &result.messages.items,
         );
+        let _ = crate::internal::group_rebind_recovery::repair_previous_group_message_directions(
+            &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+            self.client.current_identity().id.as_str(),
+            self.client.did().as_str(),
+        );
         result.replace_messages(
             crate::internal::message_runtime::read::merge_group_local_projection_best_effort(
                 self.client,
@@ -2250,6 +2255,11 @@ impl<'a> GroupService<'a> {
             &result.messages.items,
         )
         .await;
+        let _ = crate::internal::group_rebind_recovery::repair_previous_group_message_directions(
+            &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+            self.client.current_identity().id.as_str(),
+            self.client.did().as_str(),
+        );
         let merged =
             crate::internal::message_runtime::read::merge_group_local_projection_best_effort_async(
                 self.client,
