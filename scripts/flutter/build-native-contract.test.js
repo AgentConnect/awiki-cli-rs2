@@ -193,3 +193,14 @@ test("Android builds remove every generated shared library before compiling", ()
   );
   assert.match(source, /find "\$\{OUT_DIR\}" -type f -name "\*\.so" -delete/);
 });
+
+test("Android native IM Core includes group E2EE support", () => {
+  const source = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-android.sh"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /--features blocking,sqlite,http,android,group-e2ee/,
+  );
+});

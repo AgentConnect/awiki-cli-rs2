@@ -1664,6 +1664,15 @@ fn group_create_bridge_preserves_explicit_handle_mode_without_fallback() {
 }
 
 #[test]
+fn android_sdk_build_includes_group_e2ee_support() {
+    let script = include_str!("../../../scripts/flutter/build-android.sh");
+    assert!(
+        script.contains("--features blocking,sqlite,http,android,group-e2ee"),
+        "the Android shared library must contain the feature-gated group E2EE implementation"
+    );
+}
+
+#[test]
 fn macos_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-apple.sh");
     assert!(

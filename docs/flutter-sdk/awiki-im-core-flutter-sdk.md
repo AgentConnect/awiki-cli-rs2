@@ -1167,8 +1167,8 @@ scripts/flutter/build-apple.sh
 scripts/flutter/build-android.sh
 ```
 
-The macOS XCFramework and Linux shared library include the compile-time
-`group-e2ee` implementation.
+The Android shared library, macOS XCFramework, and Linux shared library include
+the compile-time `group-e2ee` implementation.
 Product discovery and use remain controlled by
 `multiDeviceGroupE2eeEnabled`; compiling the feature does not enable it by
 default.
