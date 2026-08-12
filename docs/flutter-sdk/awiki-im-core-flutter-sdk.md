@@ -897,7 +897,9 @@ final diagnostics = await client.messages.syncDiagnostics();
   transaction. Core never guesses this binding from a DID.
 - `message.read_state_updated` requires an explicit `thread_kind`; read-only
   sync commits publish the same conversation/thread patch contract as message
-  pages, so Flutter never needs to poll or merge read state itself.
+  pages, so Flutter never needs to poll or merge read state itself. Group read
+  invalidations always use the canonical `group:<group_did>` conversation ID,
+  including replicas that have not yet persisted a remote-thread binding.
 - `syncDelta` retains the earlier v1 checkpoint behavior and remains isolated
   from the v2 cursor.
 - `syncDiagnostics()` performs a local-only read and returns typed

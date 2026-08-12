@@ -3201,7 +3201,9 @@ fn v2_invalidation(
             .optional()
             .map_err(super::local_state_unavailable)?
             .or_else(|| {
-                (read_state.thread_kind == "group").then(|| read_state.remote_thread_key.clone())
+                (read_state.thread_kind == "group").then(|| {
+                    super::owner_scope::group_conversation_id(&read_state.remote_thread_key)
+                })
             });
         if let Some(conversation_id) = conversation_id.filter(|value| !value.trim().is_empty()) {
             conversation_ids.insert(conversation_id.clone());
@@ -5440,6 +5442,70 @@ mod tests {
             outcome.invalidation.thread_ids,
             vec![conversation_id.to_owned()]
         );
+    }
+
+    #[test]
+    fn unbound_group_read_delta_invalidates_canonical_conversation() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let group_did = "did:wba:awiki.info:groups:unbound-read-only";
+        let conversation_id =
+            crate::internal::local_state::owner_scope::group_conversation_id(group_did);
+        let outcome = apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: "11".to_owned(),
+                server_time: "2026-07-28T10:00:01Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: "event-unbound-group-read-11".to_owned(),
+                    event_seq: "11".to_owned(),
+                    event_type: "message.read_state_updated".to_owned(),
+                    read_states: vec![ReadStateApplyV2 {
+                        remote_thread_key: group_did.to_owned(),
+                        thread_kind: "group".to_owned(),
+                        read_watermark_seq: "9".to_owned(),
+                        read_watermark_message_id: None,
+                        state_version: "2".to_owned(),
+                        occurred_at: "2026-07-28T10:00:00Z".to_owned(),
+                    }],
+                    ..DeltaApplyEventV2::default()
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.invalidation.conversation_ids,
+            vec![conversation_id.clone()]
+        );
+        assert_eq!(outcome.invalidation.thread_ids, vec![conversation_id]);
     }
 
     #[test]
