@@ -346,14 +346,18 @@ where
                 break;
             };
             if let Err(error) = self.send_claimed_read_mutation(db, binding, &record).await {
+                let stale_direct_target = is_stale_direct_read_target(&record, &error);
+                let retry_at = now.saturating_add(if stale_direct_target { 300 } else { 5 });
                 db.retry_local_mutation(
                     &binding.owner_identity_id,
                     &record.mutation_id,
                     error_code(&error).unwrap_or("READ_STATE_RETRY"),
-                    now.saturating_add(5),
+                    retry_at,
                 )
                 .await?;
-                return Err(error);
+                if !stale_direct_target {
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -1876,6 +1880,24 @@ fn error_code(error: &crate::ImError) -> Option<&str> {
         } => Some(code.as_str()),
         _ => None,
     }
+}
+
+fn is_stale_direct_read_target(
+    record: &crate::internal::local_state::sync_v2::LocalMutationRecord,
+    error: &crate::ImError,
+) -> bool {
+    if error_code(error) != Some("anp.target_not_found") {
+        return false;
+    }
+    serde_json::from_str::<Value>(&record.payload_json)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("thread_kind")
+                .and_then(Value::as_str)
+                .map(|thread_kind| thread_kind == "direct")
+        })
+        .unwrap_or(false)
 }
 
 fn unix_time_i64() -> i64 {
@@ -4435,6 +4457,91 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stale_direct_read_target_does_not_block_delta_sync() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-stale-direct-target");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let conversation_id = "dm:peer-scope:v1:alice:stale-target";
+        seed_sync_read_direct_message(&client, &binding, "message-read-stale", conversation_id, 30)
+            .await;
+        apply_sync_read_thread_binding(
+            &client,
+            &binding,
+            "event-read-binding-stale",
+            "11",
+            "remote-thread-key-stale",
+            conversation_id,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse(conversation_id).unwrap(),
+                    ),
+                    read_watermark_message_id: Some("message-read-stale".to_owned()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Err(crate::ImError::Service {
+                        status_code: Some(404),
+                        code: Some("anp.target_not_found".to_owned()),
+                        message: "the old Direct target no longer exists".to_owned(),
+                        data: None,
+                    }),
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["read_state.mark_read", "sync.delta"]
+        );
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status || '|' || last_error_code
+                     FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "retryable|anp.target_not_found"
+        );
+    }
+
     #[test]
     fn read_state_event_requires_explicit_thread_kind() {
         let event = crate::internal::wire::sync_v2::SyncEventV2 {
@@ -5109,6 +5216,11 @@ mod tests {
             "remote-thread-bob"
         );
         assert_eq!(apply.thread_bindings[0].thread_kind, "direct");
+        assert_eq!(
+            serde_json::from_str::<Value>(&apply.messages[0].metadata).unwrap()
+                ["remote_thread_key"],
+            "remote-thread-bob"
+        );
         let message = public_messages.get("event-discovered").unwrap();
         assert_eq!(
             message.sent_at.as_deref(),
@@ -5131,6 +5243,74 @@ mod tests {
                 .iter()
                 .any(|attribute| attribute.key == key && attribute.value == value));
         }
+    }
+
+    #[test]
+    fn reduce_event_preserves_group_business_message_id_for_read_ack() {
+        let fixture = Fixture::new("group-business-message-id");
+        let client = fixture.client();
+        let group_did = "did:wba:awiki.info:groups:group-read-sync";
+        let event = crate::internal::wire::sync_v2::SyncEventV2 {
+            event_id: "event-group-22".to_owned(),
+            stream_epoch: "3".to_owned(),
+            event_seq: "22".to_owned(),
+            event_type: "message.created".to_owned(),
+            schema_version: 1,
+            ignore_safe: false,
+            account_id: "account-1".to_owned(),
+            recipient_device_id: None,
+            origin_did: Some("did:example:bob".to_owned()),
+            origin_device_id: Some("device-bob".to_owned()),
+            aggregate_kind: "group_message".to_owned(),
+            aggregate_id: "business-group-22".to_owned(),
+            state_version: None,
+            thread_key: Some(group_did.to_owned()),
+            occurred_at: "2026-08-12T09:00:00Z".to_owned(),
+            payload: json!({
+                "message_kind": "group_plain",
+                "direction": "incoming",
+                "group_did": group_did,
+                "sender_did_snapshot": "did:example:bob",
+                "recipient_did_snapshot": client.did().as_str(),
+                "client_message_id": "business-group-22"
+            }),
+            source: None,
+        };
+        let hydrated_message = json!({
+            "id": format!("{group_did}:22"),
+            "message_id": "business-group-22",
+            "thread_kind": "group",
+            "group_did": group_did,
+            "sender_did": "did:example:bob",
+            "content_type": "text/plain",
+            "content": "hello",
+            "server_seq": "22",
+            "created_at": "2026-08-12T09:00:00Z"
+        });
+        let mut public_messages = BTreeMap::new();
+
+        let apply = reduce_event(
+            &client,
+            &event,
+            Some(&hydrated_message),
+            None,
+            &mut public_messages,
+        )
+        .unwrap();
+
+        assert_eq!(apply.messages.len(), 1);
+        assert_eq!(apply.messages[0].msg_id, format!("{group_did}:22"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&apply.messages[0].metadata).unwrap()["raw_message_id"],
+            "business-group-22"
+        );
+        assert!(public_messages["event-group-22"]
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| {
+                attribute.key == "raw_message_id" && attribute.value == "business-group-22"
+            }));
     }
 
     #[test]

@@ -2347,6 +2347,7 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "remote_thread_key"
             | "security"
             | "decryption_state"
             | "secure_wire_content_type"

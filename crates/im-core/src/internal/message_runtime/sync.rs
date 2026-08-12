@@ -2084,6 +2084,17 @@ pub(super) fn sync_delta_message_from_payload(
             value: operation_id,
         });
     }
+    if is_group {
+        if let Some(raw_message_id) = string_from_object(Some(message), "raw_message_id")
+            .or_else(|| string_from_object(Some(message), "message_id"))
+            .filter(|raw_message_id| raw_message_id != &message_id)
+        {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: "raw_message_id".to_owned(),
+                value: raw_message_id,
+            });
+        }
+    }
     let thread = if is_group {
         crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&group_did)?)
     } else {
