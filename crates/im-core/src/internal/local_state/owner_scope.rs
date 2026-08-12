@@ -1,4 +1,6 @@
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwnerScope {
@@ -47,6 +49,112 @@ impl OwnerScope {
         self.credential_name = optional_trimmed(Some(credential_name.into()));
         self
     }
+}
+
+/// Removes every local-state row owned by one stable identity while leaving
+/// rows for other identities in the shared SQLite scope untouched.
+pub(crate) fn delete_owner_data(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    current_did: &str,
+) -> crate::ImResult<usize> {
+    let owner_identity_id = OwnerScope::require_identity_id(owner_identity_id.to_owned())?;
+    let current_did = require_non_empty("owner_did", current_did.to_owned())?;
+    let mut connection = super::open_writable(sqlite_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .pragma_update(None, "defer_foreign_keys", "ON")
+        .map_err(super::local_state_unavailable)?;
+
+    let mut owner_dids = BTreeSet::from([current_did]);
+    if table_has_column(&transaction, "identity_did_history", "owner_identity_id")? {
+        let mut statement = transaction
+            .prepare("SELECT did FROM identity_did_history WHERE owner_identity_id=?1")
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([owner_identity_id.as_str()], |row| row.get::<_, String>(0))
+            .map_err(super::local_state_unavailable)?;
+        for row in rows {
+            let did = row.map_err(super::local_state_unavailable)?;
+            if !did.trim().is_empty() {
+                owner_dids.insert(did);
+            }
+        }
+    }
+
+    let tables = user_tables(&transaction)?;
+    let mut deleted = 0usize;
+    for table in &tables {
+        if table_has_column(&transaction, table, "owner_identity_id")? {
+            deleted += transaction
+                .execute(
+                    &format!(
+                        "DELETE FROM {} WHERE owner_identity_id=?1",
+                        quote_identifier(table)
+                    ),
+                    [owner_identity_id.as_str()],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    for table in &tables {
+        if table_has_column(&transaction, table, "owner_identity_id")?
+            || !table_has_column(&transaction, table, "owner_did")?
+        {
+            continue;
+        }
+        for did in &owner_dids {
+            deleted += transaction
+                .execute(
+                    &format!("DELETE FROM {} WHERE owner_did=?1", quote_identifier(table)),
+                    [did.as_str()],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(deleted)
+}
+
+fn user_tables(connection: &rusqlite::Connection) -> crate::ImResult<Vec<String>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema \
+             WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(super::local_state_unavailable)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(super::local_state_unavailable)
+}
+
+fn table_has_column(
+    connection: &rusqlite::Connection,
+    table: &str,
+    expected: &str,
+) -> crate::ImResult<bool> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({})", quote_identifier(table)))
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(super::local_state_unavailable)?;
+    for row in rows {
+        if row.map_err(super::local_state_unavailable)? == expected {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +353,93 @@ mod tests {
         assert_ne!(
             direct_conversation_id_for_peer_scope(&old_owner),
             direct_conversation_id_for_peer_scope(&new_owner)
+        );
+    }
+
+    #[test]
+    fn deleting_owner_data_preserves_other_owner_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let sqlite_path = directory.path().join("local-state.sqlite");
+        let connection = super::super::open_writable(&sqlite_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages \
+                 (msg_id,owner_identity_id,owner_did,thread_id,stored_at) \
+                 VALUES ('alice-message','alice-owner','did:example:alice-old','dm:bob','now'), \
+                        ('bob-message','bob-owner','did:example:bob','dm:alice','now')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_did_history \
+                 (owner_identity_id,did,status,first_seen_at,last_seen_at) \
+                 VALUES ('alice-owner','did:example:alice-old','previous','now','now'), \
+                        ('alice-owner','did:example:alice-new','current','now','now'), \
+                        ('bob-owner','did:example:bob','current','now','now')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "CREATE TABLE legacy_owner_did_state (owner_did TEXT NOT NULL, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO legacy_owner_did_state (owner_did,value) \
+                 VALUES ('did:example:alice-old','alice-session'), \
+                        ('did:example:bob','bob-session')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let deleted =
+            delete_owner_data(&sqlite_path, "alice-owner", "did:example:alice-new").unwrap();
+
+        assert!(deleted >= 3);
+        let connection = super::super::open_writable(&sqlite_path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE owner_identity_id='alice-owner'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE owner_identity_id='bob-owner'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM legacy_owner_did_state WHERE owner_did='did:example:alice-old'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM legacy_owner_did_state WHERE owner_did='did:example:bob'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
         );
     }
 }

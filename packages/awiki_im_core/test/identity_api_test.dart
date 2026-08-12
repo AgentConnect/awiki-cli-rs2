@@ -5,6 +5,10 @@ import 'package:test/test.dart';
 Future<ActiveSyncAccountBinding> _activeBindingApiShape(AwikiImClient client) =>
     client.activeSyncAccountBinding();
 
+Future<DeleteLocalIdentityResult> _deleteIdentityDataApiShape(
+  AwikiImCore core,
+) => core.deleteLocalIdentityData(const IdentitySelector.id('identity-alice'));
+
 void main() {
   test(
     'active sync account binding exposes exactly the six stable strings',
@@ -58,5 +62,17 @@ void main() {
     );
 
     expect(result.accountId, 'account-alice');
+  });
+
+  test('owner data deletion is exposed by the native facade only', () async {
+    expect(_deleteIdentityDataApiShape, isA<Function>());
+    final core = web.AwikiImCore();
+
+    await expectLater(
+      core.deleteLocalIdentityData(
+        const IdentitySelector.id('identity-alice'),
+      ),
+      throwsA(isA<UnsupportedError>()),
+    );
   });
 }

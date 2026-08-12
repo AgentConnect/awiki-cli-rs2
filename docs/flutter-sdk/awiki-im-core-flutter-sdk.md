@@ -143,6 +143,14 @@ identity owner or supply a separate generated identity.
 This legacy API is not the multi-device Handle Recovery flow below and must
 never be used as its fallback.
 
+For an explicit destructive settings action, native Flutter hosts may call
+`AwikiImCore.deleteLocalIdentityData(selector)`. Unlike ordinary
+`deleteLocalIdentity`, this removes every Core-owned local projection for the
+selected stable identity before retiring its credential. It never deletes the
+remote Handle/account or another local identity. Product-owned App databases
+must be purged separately with the same stable owner identity ID; Web fails
+closed with `UnsupportedError`.
+
 Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
 Token is consumed only by the CLI/Rust onboarding path; App code signs and copies the instruction
 but does not pass the Token into im-core, persist it, or manage the resulting Skill Agent identity.

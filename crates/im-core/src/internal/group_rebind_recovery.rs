@@ -184,6 +184,26 @@ pub(crate) fn enqueue_recovery_jobs_for_connection(
     new_did: &str,
     binding_generation: &str,
 ) -> crate::ImResult<usize> {
+    enqueue_recovery_jobs_for_connection_with_transition(
+        connection,
+        owner_identity_id,
+        member_handle,
+        previous_dids,
+        new_did,
+        binding_generation,
+        None,
+    )
+}
+
+fn enqueue_recovery_jobs_for_connection_with_transition(
+    connection: &mut rusqlite::Connection,
+    owner_identity_id: &str,
+    member_handle: &str,
+    previous_dids: &[String],
+    new_did: &str,
+    binding_generation: &str,
+    transition_previous_did: Option<&str>,
+) -> crate::ImResult<usize> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
     let member_handle = canonical_recovery_handle(member_handle)?;
     let new_did = required("new_member_did", new_did)?;
@@ -227,7 +247,7 @@ WHERE gm.owner_identity_id = ?1
                 ))
             })
             .map_err(crate::internal::local_state::local_state_unavailable)?;
-        let mut values = Vec::new();
+        let mut values = std::collections::BTreeSet::new();
         for row in rows {
             let value = row.map_err(crate::internal::local_state::local_state_unavailable)?;
             if previous.contains(value.1.trim())
@@ -242,7 +262,32 @@ WHERE gm.owner_identity_id = ?1
                     .as_deref()
                     .is_some_and(exact_handle_recovery_transport_profile)
             {
-                values.push((value.0, value.1));
+                values.insert((value.0, value.1));
+            }
+        }
+        if let Some(previous_did) = transition_previous_did {
+            let mut statement = connection
+                .prepare(
+                    r#"
+SELECT COALESCE(NULLIF(group_did, ''), group_id), metadata
+FROM groups
+WHERE owner_identity_id = ?1
+  AND COALESCE(membership_status, 'active') NOT IN ('left','removed','inactive','non_member')"#,
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            let rows = statement
+                .query_map(rusqlite::params![owner_identity_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            for row in rows {
+                let (group_did, metadata) =
+                    row.map_err(crate::internal::local_state::local_state_unavailable)?;
+                if trusted_account_group_projection(metadata.as_deref(), new_did)
+                    && crate::ids::GroupRef::parse(&group_did).is_ok()
+                {
+                    values.insert((group_did, previous_did.to_owned()));
+                }
             }
         }
         values
@@ -336,8 +381,21 @@ pub(crate) fn reconcile_missing_recovery_jobs(
             )
         })?;
 
+    let transition_previous_did =
+        crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+            sqlite_path,
+            owner_identity_id,
+        )?
+        .filter(|marker| {
+            marker.owner_identity_id == owner_identity_id
+                && marker.handle == expected_handle.full
+                && marker.current_did == expected_current_did
+                && marker.binding_generation == binding_generation
+                && marker.previous_did != expected_current_did
+        })
+        .map(|marker| marker.previous_did);
     let mut connection = crate::internal::local_state::open_writable(sqlite_path)?;
-    let previous_dids = {
+    let mut previous_dids = {
         let mut statement = connection
             .prepare(
                 "SELECT did FROM identity_did_history WHERE owner_identity_id=?1 AND status='previous' AND did<>?2 ORDER BY did",
@@ -352,14 +410,89 @@ pub(crate) fn reconcile_missing_recovery_jobs(
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(crate::internal::local_state::local_state_unavailable)?
     };
-    enqueue_recovery_jobs_for_connection(
+    if let Some(previous_did) = transition_previous_did.as_ref() {
+        previous_dids.push(previous_did.clone());
+        previous_dids.sort();
+        previous_dids.dedup();
+    }
+    enqueue_recovery_jobs_for_connection_with_transition(
         &mut connection,
         owner_identity_id,
         &expected_handle.full,
         &previous_dids,
         expected_current_did,
         binding_generation,
+        transition_previous_did.as_deref(),
     )
+}
+
+fn trusted_account_group_projection(metadata: Option<&str>, current_did: &str) -> bool {
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    if exact_handle_recovery_transport_profile(metadata) {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(metadata) else {
+        return false;
+    };
+    value.get("source").and_then(Value::as_str) == Some("im-core.sync_delta")
+        && value.get("subject_did").and_then(Value::as_str) == Some(current_did)
+        && value
+            .get("membership_status")
+            .and_then(Value::as_str)
+            .is_none_or(|status| status == "active")
+}
+
+pub(crate) fn previous_recovery_did_matches(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    current_did: &str,
+    candidate_did: &str,
+) -> crate::ImResult<bool> {
+    if candidate_did == current_did {
+        return Ok(true);
+    }
+    Ok(
+        crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+            sqlite_path,
+            owner_identity_id,
+        )?
+        .is_some_and(|marker| {
+            marker.owner_identity_id == owner_identity_id
+                && marker.current_did == current_did
+                && marker.previous_did == candidate_did
+        }),
+    )
+}
+
+pub(crate) fn repair_previous_group_message_directions(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    current_did: &str,
+) -> crate::ImResult<usize> {
+    let Some(marker) = crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+        sqlite_path,
+        owner_identity_id,
+    )?
+    .filter(|marker| {
+        marker.owner_identity_id == owner_identity_id && marker.current_did == current_did
+    }) else {
+        return Ok(0);
+    };
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    connection
+        .execute(
+            r#"
+UPDATE messages
+SET direction=1, is_read=1
+WHERE owner_identity_id=?1
+  AND sender_did=?2
+  AND COALESCE(group_did, '')<>''
+  AND direction<>1"#,
+            rusqlite::params![owner_identity_id, marker.previous_did],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1690,6 +1823,167 @@ INSERT INTO group_members
             .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn fresh_recovery_reconciles_account_projected_group_without_local_roster() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite_path = dir.path().join("im.sqlite");
+        let marker =
+            crate::internal::identity_transition_pending::IdentityTransitionMarker::joined_device(
+                &sqlite_path,
+                "join-1",
+                "user-alice",
+                "owner",
+                "alice.example.com",
+                "did:wba:example.com:alice:e1_old",
+                "did:wba:example.com:alice:e1_new",
+                "3",
+            )
+            .unwrap();
+        crate::internal::identity_transition_pending::persist(&sqlite_path, &marker).unwrap();
+        crate::internal::identity_transition_pending::update_phase(
+            &sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::Pending,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+        )
+        .unwrap();
+        crate::internal::identity_transition_pending::mark_applied(
+            &sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+            "device-new",
+            "1",
+            "1",
+            "{}",
+        )
+        .unwrap();
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        db.execute(
+            r#"INSERT INTO groups
+(owner_identity_id,owner_did,group_id,group_did,membership_status,stored_at,metadata)
+VALUES (?1,?2,?3,?3,'active','now',?4)"#,
+            rusqlite::params![
+                "owner",
+                "did:wba:example.com:alice:e1_new",
+                "did:wba:example.com:groups:engineering",
+                r#"{"source":"im-core.sync_delta","subject_did":"did:wba:example.com:alice:e1_new","membership_status":"active"}"#,
+            ],
+        )
+        .unwrap();
+        drop(db);
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("alice.example.com", "").unwrap(),
+            did: crate::ids::Did::parse("did:wba:example.com:alice:e1_new").unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("example.com".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("3".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+
+        assert_eq!(
+            reconcile_missing_recovery_jobs(
+                &sqlite_path,
+                "owner",
+                "alice.example.com",
+                "did:wba:example.com:alice:e1_new",
+                &lookup,
+            )
+            .unwrap(),
+            1,
+        );
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        let job: (String, String, String) = db
+            .query_row(
+                "SELECT group_did,previous_member_did,new_member_did FROM group_rebind_outbox",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            job,
+            (
+                "did:wba:example.com:groups:engineering".to_owned(),
+                "did:wba:example.com:alice:e1_old".to_owned(),
+                "did:wba:example.com:alice:e1_new".to_owned(),
+            )
+        );
+    }
+
+    #[test]
+    fn recovered_group_messages_from_previous_did_are_reclassified_as_outgoing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite_path = dir.path().join("im.sqlite");
+        let marker =
+            crate::internal::identity_transition_pending::IdentityTransitionMarker::joined_device(
+                &sqlite_path,
+                "join-1",
+                "user-alice",
+                "owner",
+                "alice.example.com",
+                "did:wba:example.com:alice:e1_old",
+                "did:wba:example.com:alice:e1_new",
+                "3",
+            )
+            .unwrap();
+        crate::internal::identity_transition_pending::persist(&sqlite_path, &marker).unwrap();
+        crate::internal::identity_transition_pending::update_phase(
+            &sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::Pending,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+        )
+        .unwrap();
+        crate::internal::identity_transition_pending::mark_applied(
+            &sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+            "device-new",
+            "1",
+            "1",
+            "{}",
+        )
+        .unwrap();
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        db.execute(
+            r#"INSERT INTO messages
+(msg_id,owner_identity_id,owner_did,thread_id,direction,sender_did,group_id,group_did,stored_at,is_read)
+VALUES ('message-1','owner','did:wba:example.com:alice:e1_new','group-thread',0,
+        'did:wba:example.com:alice:e1_old','did:wba:example.com:groups:engineering',
+        'did:wba:example.com:groups:engineering','now',0)"#,
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        assert_eq!(
+            repair_previous_group_message_directions(
+                &sqlite_path,
+                "owner",
+                "did:wba:example.com:alice:e1_new",
+            )
+            .unwrap(),
+            1,
+        );
+        assert!(previous_recovery_did_matches(
+            &sqlite_path,
+            "owner",
+            "did:wba:example.com:alice:e1_new",
+            "did:wba:example.com:alice:e1_old",
+        )
+        .unwrap());
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        let row: (i64, i64) = db
+            .query_row(
+                "SELECT direction,is_read FROM messages WHERE msg_id='message-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (1, 1));
     }
 
     #[test]

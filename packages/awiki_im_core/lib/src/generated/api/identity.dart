@@ -378,6 +378,14 @@ Future<DartDeleteLocalIdentityResult> deleteLocalIdentity({
   selector: selector,
 );
 
+Future<DartDeleteLocalIdentityResult> deleteLocalIdentityData({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityDeleteLocalIdentityData(
+  core: core,
+  selector: selector,
+);
+
 Future<DartDaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

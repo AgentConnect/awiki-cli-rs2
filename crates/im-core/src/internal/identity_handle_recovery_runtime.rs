@@ -1923,8 +1923,8 @@ async fn apply_local_transition_v4(
                 &result.current_did,
                 &result.binding_generation,
             );
-            let _ = client.groups().resume_rebind_recovery_async(100).await;
         }
+        let _ = client.groups().resume_rebind_recovery_async(100).await;
     }
     let applied =
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?

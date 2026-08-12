@@ -617,6 +617,19 @@ pub async fn delete_local_identity(
         .map_err(DartImError::from)
 }
 
+pub async fn delete_local_identity_data(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartDeleteLocalIdentityResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .delete_local_identity_data_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn load_daemon_subkey_package(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,

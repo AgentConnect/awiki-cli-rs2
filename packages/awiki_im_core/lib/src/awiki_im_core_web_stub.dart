@@ -273,6 +273,12 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<DeleteLocalIdentityResult> deleteLocalIdentityData(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
   Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
     IdentitySelector selector,
   ) async {

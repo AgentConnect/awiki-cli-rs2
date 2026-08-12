@@ -723,6 +723,17 @@ impl<'a> GroupService<'a> {
         let sqlite_path = &self.client.core_inner().sdk_paths().local_state.sqlite_path;
         let owner_identity_id = self.client.current_identity().id.as_str();
         let mut summary = super::GroupRebindRecoverySummary::default();
+        let repaired =
+            crate::internal::group_rebind_recovery::repair_previous_group_message_directions(
+                sqlite_path,
+                owner_identity_id,
+                self.client.did().as_str(),
+            )?;
+        if repaired > 0 {
+            summary.warnings.push(format!(
+                "reclassified {repaired} recovered group message(s) as sent by this account"
+            ));
+        }
 
         if let Some(handle) = self.client.handle().cloned() {
             let lookup =

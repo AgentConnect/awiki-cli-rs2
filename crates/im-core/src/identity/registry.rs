@@ -46,10 +46,38 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        self.delete_local_identity_inner(selector, false)
+    }
+
+    /// Deletes one local identity and every business projection owned by its
+    /// stable identity ID. Remote account state and other local identities are
+    /// not changed.
+    pub fn delete_local_identity_data(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        self.delete_local_identity_inner(selector, true)
+    }
+
+    fn delete_local_identity_inner(
+        &self,
+        selector: super::IdentitySelector,
+        delete_owner_data: bool,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
         let mut registry = self.load_registry()?;
         let deleted_index = registry.find_index(selector)?;
         let deleted_entry = registry.entries.remove(deleted_index);
         let deleted = deleted_entry.summary.clone();
+        #[cfg(feature = "sqlite")]
+        if delete_owner_data {
+            crate::internal::local_state::owner_scope::delete_owner_data(
+                &self.core.inner().sdk_paths().local_state.sqlite_path,
+                deleted.id.as_str(),
+                deleted.did.as_str(),
+            )?;
+        }
+        #[cfg(not(feature = "sqlite"))]
+        let _ = delete_owner_data;
         let protocol_device_id = deleted_entry
             .device_state
             .as_ref()
@@ -100,6 +128,20 @@ impl<'a> IdentityRegistry<'a> {
         let core = self.core.clone();
         crate::internal::runtime::worker::run_blocking(move || {
             IdentityRegistry::new(&core).delete_local_identity(selector)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
+    pub async fn delete_local_identity_data_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        let core = self.core.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).delete_local_identity_data(selector)
         })
         .await
         .map_err(|error| crate::ImError::Internal {

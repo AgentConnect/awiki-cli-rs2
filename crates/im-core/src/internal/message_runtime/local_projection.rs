@@ -2097,7 +2097,7 @@ pub(crate) fn message_record_from_message(
 ) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
     let (content_type, content) =
         body_projection(&message.body, message.metadata.content_type.as_deref());
-    let direction = direction_value_for_message(client.did().as_str(), message);
+    let direction = direction_value_for_message(client, message);
     let conversation_id = conversation_id_for_message(client.did().as_str(), message);
     Ok(crate::internal::local_state::messages::MessageRecord {
         msg_id: message.id.as_str().to_owned(),
@@ -2199,7 +2199,22 @@ fn group_ref_for_message(message: &crate::messages::Message) -> Option<String> {
 }
 
 #[cfg(feature = "sqlite")]
-fn direction_value_for_message(owner_did: &str, message: &crate::messages::Message) -> i64 {
+fn direction_value_for_message(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> i64 {
+    let owner_did = client.did().as_str();
+    if group_ref_for_message(message).is_some()
+        && crate::internal::group_rebind_recovery::previous_recovery_did_matches(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+            client.current_identity().id.as_str(),
+            owner_did,
+            message.sender.as_str(),
+        )
+        .unwrap_or(false)
+    {
+        return 1;
+    }
     match message.direction {
         crate::messages::MessageDirection::Incoming => 0,
         crate::messages::MessageDirection::Outgoing => 1,

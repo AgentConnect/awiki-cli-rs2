@@ -681,6 +681,21 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  /// Deletes one local identity together with all of its owner-scoped local
+  /// projections. It does not change the remote account or other identities.
+  Future<DeleteLocalIdentityResult> deleteLocalIdentityData(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.deleteLocalIdentityData(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
     IdentitySelector selector,
   ) async {

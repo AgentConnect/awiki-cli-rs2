@@ -428,6 +428,10 @@ impl IdentityRegistry<'_> {
         &self,
         selector: IdentitySelector,
     ) -> ImResult<DeleteLocalIdentityResult>;
+    pub fn delete_local_identity_data(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<DeleteLocalIdentityResult>;
     pub fn legacy_upgrade_status(
         &self,
         selector: IdentitySelector,
@@ -543,6 +547,12 @@ records。Host 的 realtime stop、runtime dispose 和任何网络 logout 都不
 精确闭合时，后续同 Handle 注册才把它视为“无 live 本地凭证”并返回 ordinary
 `join_required`。缺失、未完成、冲突或部分匹配仍失败关闭为
 `handle_recovery.transition_missing`。
+
+`delete_local_identity_data` 只用于用户明确确认的“退出并删除当前数据”。它先按 stable
+identity ID 删除 Core SQLite 中该身份拥有的消息、会话、群、智能体投影、同步状态与密钥；
+对仅有 `owner_did` 的旧表，同时清理 identity DID history 中的当前及历史 DID，随后复用
+`delete_local_identity` 的 crash-safe 本地身份退役。其他本地身份和远端账号不受影响。
+该 API 不修改 ANP 协议，也不引入数据库 schema migration。
 
 Legacy upgrade 是 Core 内部可恢复事务；host 必须等待
 `upgrade_legacy_identity_async` 的 typed status，不得用更短的通用 UI request timeout
@@ -773,7 +783,10 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 PreKey，并只为 authoritative `required_security_profile=transport-protected` 的 Handle-backed
 群创建 P4 rebind。缺失、未知、冲突、DID-only、group-e2ee 均 fail closed；Recovery 任务绝不
 创建 P6/MLS 或 `awaiting_p6`。旧 Ratchet、PreKey/OPK、MLS 和 device-scoped checkpoint 被退役，
-业务历史仍保留。`identity_transition_pending` 在本地 epoch reset 前持久化，并按 initiator
+已有目标 owner 的普通业务历史仍保留；fresh owner 的新 sync replica 仍按 `tail_only` 启动，
+不会自动取得 Recovery 前的 Direct 历史。让 fresh Recovery replica 获得旧 Direct snapshot
+需要新增可审计的 sync bootstrap 恢复授权，V4.0 不通过本地猜测绕过该协议边界。
+`identity_transition_pending` 在本地 epoch reset 前持久化，并按 initiator
 operation ID 或 joined-device Join session ID 绑定来源。
 远端 Commit 成功后，新身份 JWT 刷新或 P5 PreKey 发布遇到可续跑的 transport/auth/session/
 service/serialization 失败时，Core 持久化稳定 `local_transition_pending`，并要求 Host 对同一
@@ -1432,7 +1445,7 @@ version/cursor 的首尾空白不会被规范化接受。stale 最多重启三�
 
 Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
 
-Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string 且严格大于本地成员 generation、旧成员 DID 精确属于当前 `IdentityId` 的 previous DID history。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
+Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string，旧成员 DID 来自当前 owner 的 previous DID history，或来自同一 state root 下已完成且 Handle/current DID/generation 精确一致的 Recovery receipt。fresh owner 没有旧 roster 时，只接受 reliable sync 写入、subject 为当前 DID 的 active Group projection 作为候选；最终仍由 Group Host 对旧 Handle/DID/generation 和 transport-only policy 做权威校验。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
 
 该 Group recovery 权威读取与跨域 Direct 使用同一公共 WNS 绑定边界，只消费
 `handle` / `did` / `status` / `binding_generation`；公共响应中的域内 `user_id` /
