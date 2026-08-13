@@ -1696,7 +1696,12 @@ fn normalize_baseline_group(value: &Value, owner_did: &str) -> Value {
         return value.clone();
     }
     let mut group = Map::new();
-    for field in ["group_did", "group_state_version", "group_event_seq"] {
+    for field in [
+        "group_did",
+        "group_state_version",
+        "group_event_seq",
+        "required_security_profile",
+    ] {
         if let Some(value) = object.get(field) {
             group.insert(field.to_owned(), value.clone());
         }
@@ -5026,7 +5031,7 @@ mod tests {
                 "creator_did": "did:example:alice",
                 "group_state_version": "17",
                 "group_event_seq": "23",
-                "required_security_profile": "plaintext",
+                "required_security_profile": "transport-protected",
                 "group_profile": {
                     "display_name": "Stage Two",
                     "description": "ordinary group"
@@ -5049,6 +5054,10 @@ mod tests {
         assert_eq!(
             normalized.pointer("/group/group_event_seq"),
             Some(&json!("23"))
+        );
+        assert_eq!(
+            normalized.pointer("/group/required_security_profile"),
+            Some(&json!("transport-protected"))
         );
         assert_eq!(
             normalized.pointer("/membership/subject_did"),
@@ -5084,7 +5093,7 @@ mod tests {
                 "creator_did": "did:example:alice",
                 "group_state_version": "17",
                 "group_event_seq": "23",
-                "required_security_profile": "plaintext",
+                "required_security_profile": "transport-protected",
                 "group_profile": {
                     "display_name": "Stage Two",
                     "description": "ordinary group"
@@ -5139,6 +5148,37 @@ mod tests {
                 23
             )
         );
+
+        let sparse = crate::internal::wire::sync::SyncDeltaEvent {
+            event_id: "group-profile-sparse".to_owned(),
+            event_seq: "24".to_owned(),
+            event_type: "group.profile_updated".to_owned(),
+            aggregate_kind: Some("group".to_owned()),
+            aggregate_id: Some("did:example:group".to_owned()),
+            owner_subject_id: None,
+            created_at: Some("2026-07-28T10:01:00Z".to_owned()),
+            payload: json!({
+                "group": {
+                    "group_did": "did:example:group",
+                    "group_state_version": "18",
+                    "group_event_seq": "24",
+                    "profile": {"display_name": "Stage Two Updated"}
+                }
+            }),
+        };
+        let sparse_group = super::sync::sync_delta_group_record(&client, &sparse).unwrap();
+        crate::internal::local_state::groups::upsert_group(&db, sparse_group).unwrap();
+        let metadata: String = db
+            .query_row(
+                "SELECT metadata FROM groups
+                 WHERE owner_identity_id = 'alice-id'
+                   AND group_id = 'did:example:group'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let metadata: Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["required_security_profile"], "transport-protected");
     }
 
     #[test]

@@ -106,7 +106,10 @@ ordinary Join session and are written before remote Join creation. Old crypto/de
 state is retired while business history remains under the same `owner_identity_id`.
 Only exact Handle-backed `transport-protected` groups are eligible. Missing, conflicting,
 DID-only, E2EE, or malformed profiles fail closed, and Recovery never enters P6/MLS or
-`awaiting_p6`.
+`awaiting_p6`. Message Sync V2 compact/bootstrap projection must persist the authoritative
+top-level `required_security_profile` in local Group metadata before Recovery starts; later
+sparse Group deltas preserve that value rather than making an eligible transport Group look
+unclassified and skipping its rebind job.
 
 After the remote Commit, JWT refresh and P5 PreKey publication are still part of the same
 durable local transition. Retryable transport/auth/session/service/serialization failures are

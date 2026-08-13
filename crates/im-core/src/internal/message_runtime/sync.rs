@@ -2234,6 +2234,7 @@ pub(super) fn sync_delta_group_record_for_owner(
         .ok_or_else(|| sync_invalid_page("group event missing group_did"))?;
     let group_state_version = string_from_object(group, "group_state_version");
     let group_event_seq = decimal_i64_from_object_opt(group, "group_event_seq");
+    let required_security_profile = string_from_object(group, "required_security_profile");
     let profile = group.and_then(|group| map_value(group.get("profile")));
     let subject_did = string_from_object(membership, "subject_did").unwrap_or_default();
     let membership_status = string_from_object(membership, "status")
@@ -2260,6 +2261,11 @@ pub(super) fn sync_delta_group_record_for_owner(
         &mut metadata,
         "group_state_version",
         group_state_version.as_deref(),
+    );
+    insert_json_string(
+        &mut metadata,
+        "required_security_profile",
+        required_security_profile.as_deref(),
     );
     if let Some(group_event_seq) = group_event_seq {
         metadata.insert(
