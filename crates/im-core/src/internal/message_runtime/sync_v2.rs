@@ -9,6 +9,7 @@ use crate::internal::message_runtime::read::MESSAGE_RPC_ENDPOINT;
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
 
 const PENDING_PERSONA_RESOLUTION_LIMIT: u32 = 32;
+const GROUP_SEQUENCE_ONLY_TARGET_NOT_FOUND_MAX_ATTEMPTS: i64 = 3;
 
 pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     client: &'a crate::core::ImClient,
@@ -346,8 +347,32 @@ where
                 break;
             };
             if let Err(error) = self.send_claimed_read_mutation(db, binding, &record).await {
-                let stale_direct_target = is_stale_direct_read_target(&record, &error);
-                let retry_at = now.saturating_add(if stale_direct_target { 300 } else { 5 });
+                let target_not_found = is_read_target_not_found(&record, &error);
+                let sequence_only_group_target_not_found =
+                    target_not_found && is_sequence_only_group_read(&record);
+                if sequence_only_group_target_not_found
+                    && record.attempt_count
+                        >= GROUP_SEQUENCE_ONLY_TARGET_NOT_FOUND_MAX_ATTEMPTS
+                {
+                    db.permanently_fail_local_mutation(
+                        &binding.owner_identity_id,
+                        &record.mutation_id,
+                        error_code(&error).unwrap_or("READ_STATE_TARGET_NOT_FOUND"),
+                        now,
+                    )
+                    .await?;
+                    continue;
+                }
+                let retry_delay = if sequence_only_group_target_not_found {
+                    sequence_only_group_read_retry_delay(record.attempt_count)
+                } else if target_not_found
+                    && read_mutation_thread_kind(&record) == Some("direct")
+                {
+                    300
+                } else {
+                    5
+                };
+                let retry_at = now.saturating_add(retry_delay);
                 db.retry_local_mutation(
                     &binding.owner_identity_id,
                     &record.mutation_id,
@@ -355,7 +380,7 @@ where
                     retry_at,
                 )
                 .await?;
-                if !stale_direct_target {
+                if !target_not_found {
                     return Err(error);
                 }
             }
@@ -1882,22 +1907,53 @@ fn error_code(error: &crate::ImError) -> Option<&str> {
     }
 }
 
-fn is_stale_direct_read_target(
+fn is_read_target_not_found(
     record: &crate::internal::local_state::sync_v2::LocalMutationRecord,
     error: &crate::ImError,
 ) -> bool {
-    if error_code(error) != Some("anp.target_not_found") {
+    error_code(error) == Some("anp.target_not_found")
+        && matches!(
+            read_mutation_thread_kind(record),
+            Some("direct") | Some("group")
+        )
+}
+
+fn is_sequence_only_group_read(
+    record: &crate::internal::local_state::sync_v2::LocalMutationRecord,
+) -> bool {
+    if read_mutation_thread_kind(record) != Some("group") {
         return false;
     }
     serde_json::from_str::<Value>(&record.payload_json)
         .ok()
         .and_then(|payload| {
             payload
-                .get("thread_kind")
+                .get("read_watermark_message_id")
                 .and_then(Value::as_str)
-                .map(|thread_kind| thread_kind == "direct")
+                .map(str::trim)
+                .filter(|message_id| !message_id.is_empty())
+                .map(|_| false)
         })
-        .unwrap_or(false)
+        .unwrap_or(true)
+}
+
+fn sequence_only_group_read_retry_delay(attempt_count: i64) -> i64 {
+    if attempt_count <= 1 {
+        5
+    } else {
+        30
+    }
+}
+
+fn read_mutation_thread_kind(
+    record: &crate::internal::local_state::sync_v2::LocalMutationRecord,
+) -> Option<&str> {
+    let payload = serde_json::from_str::<Value>(&record.payload_json).ok()?;
+    match payload.get("thread_kind").and_then(Value::as_str) {
+        Some("direct") => Some("direct"),
+        Some("group") => Some("group"),
+        _ => None,
+    }
 }
 
 fn unix_time_i64() -> i64 {
@@ -2093,6 +2149,12 @@ mod tests {
             canonical_read_remote_thread_key("direct", "dconv-alice-bob"),
             "dconv-alice-bob"
         );
+    }
+
+    #[test]
+    fn sequence_only_group_read_retries_use_bounded_backoff() {
+        assert_eq!(sequence_only_group_read_retry_delay(1), 5);
+        assert_eq!(sequence_only_group_read_retry_delay(2), 30);
     }
 
     struct Fixture {
@@ -2657,6 +2719,58 @@ mod tests {
         })
     }
 
+    fn sync_group_read_ack(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        group_did: &str,
+        seq: &str,
+        message_id: &str,
+        read_at: &str,
+    ) -> Value {
+        json!({
+            "user_did": binding.current_did,
+            "thread": {"kind": "group", "thread_key": group_did},
+            "updated_count": 0,
+            "remote_acknowledged": true,
+            "partial": false,
+            "fallback_used": false,
+            "pending_remote_ack": false,
+            "read_watermark_server_seq": seq,
+            "previous_read_watermark_server_seq": Value::Null,
+            "read_watermark_message_id": message_id,
+            "advanced": true,
+            "read_at": read_at,
+            "unread_count": Value::Null,
+            "warnings": []
+        })
+    }
+
+    async fn sync_group_read_target_not_found(
+        client: &crate::core::ImClient,
+        calls: Rc<RefCell<Vec<SyncSnapshotCall>>>,
+        next_scan_seq: &str,
+    ) -> crate::messages::MessageSyncOutcome {
+        MessageSyncRuntimeV2::new(
+            client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                calls,
+                vec![
+                    Err(crate::ImError::Service {
+                        status_code: Some(404),
+                        code: Some("anp.target_not_found".to_owned()),
+                        message: "the Group target is not visible".to_owned(),
+                        data: None,
+                    }),
+                    Ok(sync_snapshot_delta("1", next_scan_seq, vec![])),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap()
+    }
+
     fn sync_snapshot_message_event(
         binding: &crate::identity::ActiveSyncAccountBinding,
         event_id: &str,
@@ -2939,6 +3053,52 @@ mod tests {
                     server_seq: Some(server_seq),
                     sent_at: "2026-07-28T12:00:00Z".to_owned(),
                     stored_at: "2026-07-28T12:00:00Z".to_owned(),
+                    ..Default::default()
+                },
+            ])
+            .await
+            .unwrap();
+    }
+
+    async fn seed_sync_read_group_message(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        local_message_id: &str,
+        raw_message_id: Option<&str>,
+        group_did: &str,
+        server_seq: i64,
+    ) {
+        let conversation_id =
+            crate::internal::local_state::owner_scope::group_conversation_id(group_did);
+        let metadata = raw_message_id
+            .map(|message_id| json!({"raw_message_id": message_id}))
+            .unwrap_or_else(|| json!({}));
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .store_messages(vec![
+                crate::internal::local_state::messages::MessageRecord {
+                    msg_id: local_message_id.to_owned(),
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    conversation_id: conversation_id.clone(),
+                    wire_thread_kind: "group".to_owned(),
+                    wire_thread_ref: group_did.to_owned(),
+                    wire_identity_resolution_state: "resolved".to_owned(),
+                    thread_id: conversation_id,
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: binding.current_did.clone(),
+                    group_id: group_did.to_owned(),
+                    group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: format!("group message {server_seq}"),
+                    server_seq: Some(server_seq),
+                    sent_at: "2026-07-28T12:00:00Z".to_owned(),
+                    stored_at: "2026-07-28T12:00:00Z".to_owned(),
+                    metadata: metadata.to_string(),
                     ..Default::default()
                 },
             ])
@@ -4539,6 +4699,260 @@ mod tests {
                 )
                 .unwrap(),
             "retryable|anp.target_not_found"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_legacy_group_read_task_is_repaired_to_sequence_only() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-legacy-group-target");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let group_did = "did:wba:awiki.info:groups:legacy-read-target";
+        let local_message_id = format!("{group_did}:30");
+        seed_sync_read_group_message(
+            &client,
+            &binding,
+            &local_message_id,
+            Some("business-group-30"),
+            group_did,
+            30,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Group(
+                        crate::ids::GroupRef::parse(group_did).unwrap(),
+                    ),
+                    read_watermark_message_id: Some(local_message_id.clone()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+        rusqlite::Connection::open(fixture.sqlite_path())
+            .unwrap()
+            .execute(
+                "UPDATE local_mutation_outbox
+                 SET payload_json = json_set(
+                         payload_json,
+                         '$.read_watermark_message_id',
+                         ?1
+                     ),
+                     status = 'retryable', retry_at = 0,
+                     last_error_code = 'anp.target_not_found'",
+                [&local_message_id],
+            )
+            .unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(sync_group_read_ack(
+                        &binding,
+                        group_did,
+                        "30",
+                        "business-group-30",
+                        "2026-07-28T12:00:03Z",
+                    )),
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["read_state.mark_read", "sync.delta"]
+        );
+        assert_eq!(
+            calls[0].params.pointer("/body/read_up_to_server_seq"),
+            Some(&json!("30"))
+        );
+        assert_eq!(
+            calls[0].params.pointer("/body/read_up_to_message_id"),
+            None,
+            "a failed legacy Group task must drop its untrusted local message id"
+        );
+        drop(calls);
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status || '|' || COALESCE(
+                            json_type(payload_json, '$.read_watermark_message_id'),
+                            'missing'
+                        )
+                     FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "committed|missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn sequence_only_group_read_target_retries_before_becoming_permanent() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-missing-group-target");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let group_did = "did:wba:awiki.info:groups:missing-read-target";
+        let local_message_id = format!("{group_did}:30");
+        seed_sync_read_group_message(
+            &client,
+            &binding,
+            &local_message_id,
+            None,
+            group_did,
+            30,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Group(
+                        crate::ids::GroupRef::parse(group_did).unwrap(),
+                    ),
+                    read_watermark_message_id: Some(local_message_id),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = sync_group_read_target_not_found(&client, Rc::clone(&calls), "12").await;
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        {
+            let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT outbox.status || '|' || outbox.attempt_count || '|' ||
+                                read_state.pending_remote_ack
+                         FROM local_mutation_outbox outbox
+                         JOIN thread_read_state read_state
+                           ON read_state.owner_identity_id = outbox.owner_identity_id
+                          AND read_state.thread_id = json_extract(
+                              outbox.payload_json,
+                              '$.thread_id'
+                          )
+                         WHERE outbox.owner_identity_id = ?1",
+                        [binding.owner_identity_id.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                "retryable|1|1"
+            );
+            connection
+                .execute(
+                    "UPDATE local_mutation_outbox SET retry_at = 0
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                )
+                .unwrap();
+        }
+
+        let outcome = sync_group_read_target_not_found(&client, Rc::clone(&calls), "13").await;
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        {
+            let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT status || '|' || attempt_count
+                         FROM local_mutation_outbox
+                         WHERE owner_identity_id = ?1",
+                        [binding.owner_identity_id.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                "retryable|2"
+            );
+            connection
+                .execute(
+                    "UPDATE local_mutation_outbox SET retry_at = 0
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                )
+                .unwrap();
+        }
+
+        let outcome = sync_group_read_target_not_found(&client, Rc::clone(&calls), "14").await;
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "read_state.mark_read",
+                "sync.delta",
+                "read_state.mark_read",
+                "sync.delta",
+                "read_state.mark_read",
+                "sync.delta",
+            ]
+        );
+        for call in calls
+            .iter()
+            .filter(|call| call.method == "read_state.mark_read")
+        {
+            assert_eq!(call.params.pointer("/body/read_up_to_message_id"), None);
+        }
+        drop(calls);
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT outbox.status || '|' || outbox.attempt_count || '|' ||
+                            outbox.last_error_code || '|' || read_state.pending_remote_ack
+                     FROM local_mutation_outbox outbox
+                     JOIN thread_read_state read_state
+                       ON read_state.owner_identity_id = outbox.owner_identity_id
+                      AND read_state.thread_id = json_extract(
+                          outbox.payload_json,
+                          '$.thread_id'
+                      )
+                     WHERE outbox.owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "permanent_failure|3|anp.target_not_found|0"
         );
     }
 

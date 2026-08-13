@@ -105,6 +105,13 @@ enum LocalStateCommand {
         retry_at: i64,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    PermanentlyFailLocalMutation {
+        owner_identity_id: String,
+        mutation_id: String,
+        error_code: String,
+        failed_at: i64,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     EnsureConversation {
         owner_identity_id: String,
         owner_did: String,
@@ -839,6 +846,25 @@ impl LocalStateDb {
             mutation_id: mutation_id.into(),
             error_code: error_code.into(),
             retry_at,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn permanently_fail_local_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        mutation_id: impl Into<String>,
+        error_code: impl Into<String>,
+        failed_at: i64,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::PermanentlyFailLocalMutation {
+            owner_identity_id: owner_identity_id.into(),
+            mutation_id: mutation_id.into(),
+            error_code: error_code.into(),
+            failed_at,
             reply,
         })
         .await?;
@@ -2091,6 +2117,22 @@ fn run_actor(
                     &mutation_id,
                     &error_code,
                     retry_at,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::PermanentlyFailLocalMutation {
+                owner_identity_id,
+                mutation_id,
+                error_code,
+                failed_at,
+                reply,
+            } => {
+                let result = super::sync_v2::permanently_fail_local_mutation(
+                    &connection,
+                    &owner_identity_id,
+                    &mutation_id,
+                    &error_code,
+                    failed_at,
                 );
                 let _ = reply.send(result);
             }
