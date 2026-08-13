@@ -52,22 +52,8 @@ pub(crate) fn write_bytes_atomic(
     if overwrite {
         crate::internal::atomic_file::replace(temp.path(), destination)?;
         temp.persist();
-    } else {
-        match std::fs::hard_link(temp.path(), destination) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(destination_exists_error(destination));
-            }
-            Err(err) => {
-                return Err(crate::ImError::Io {
-                    detail: format!(
-                        "link temp file {} to {}: {err}",
-                        temp.path().display(),
-                        destination.display()
-                    ),
-                });
-            }
-        }
+    } else if !crate::internal::atomic_file::publish_if_absent(temp.path(), destination)? {
+        return Err(destination_exists_error(destination));
     }
     sync_parent_directory(destination)?;
 
@@ -100,22 +86,8 @@ pub(crate) async fn write_stream_atomic(
     if overwrite {
         crate::internal::atomic_file::replace(temp.path(), destination)?;
         temp.persist();
-    } else {
-        match tokio::fs::hard_link(temp.path(), destination).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(destination_exists_error(destination));
-            }
-            Err(err) => {
-                return Err(crate::ImError::Io {
-                    detail: format!(
-                        "link temp file {} to {}: {err}",
-                        temp.path().display(),
-                        destination.display()
-                    ),
-                });
-            }
-        }
+    } else if !crate::internal::atomic_file::publish_if_absent(temp.path(), destination)? {
+        return Err(destination_exists_error(destination));
     }
     sync_parent_directory(destination)?;
 
@@ -245,31 +217,21 @@ pub(crate) async fn commit_resumable_partial(
     validate_destination(destination, overwrite)?;
     if overwrite {
         crate::internal::atomic_file::replace(partial, destination)?;
-    } else {
-        match tokio::fs::hard_link(partial, destination).await {
-            Ok(()) => {
-                tokio::fs::remove_file(partial)
-                    .await
-                    .map_err(|err| crate::ImError::Io {
-                        detail: format!(
-                            "remove committed attachment partial {}: {err}",
-                            partial.display()
-                        ),
-                    })?;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(destination_exists_error(destination));
-            }
+    } else if crate::internal::atomic_file::publish_if_absent(partial, destination)? {
+        match tokio::fs::remove_file(partial).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 return Err(crate::ImError::Io {
                     detail: format!(
-                        "link attachment partial {} to {}: {err}",
-                        partial.display(),
-                        destination.display()
+                        "remove committed attachment partial {}: {err}",
+                        partial.display()
                     ),
                 });
             }
         }
+    } else {
+        return Err(destination_exists_error(destination));
     }
     sync_parent_directory(destination)?;
     Ok(destination.to_path_buf())
