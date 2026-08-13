@@ -89,6 +89,7 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::empty_secure_inbox(),
         TestResponse::ok(&json_rpc_error(1401, "expired inbox jwt")),
         TestResponse::sync_bootstrap().with_dynamic_access_token(),
         TestResponse::sync_delta_empty(),
@@ -141,20 +142,21 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     assert_eq!(json_body(&requests[0])["method"], "register");
     assert_eq!(
         json_body(&requests[1])["method"],
         "direct.e2ee.publish_prekey_bundle"
     );
-    assert_eq!(json_body(&requests[2])["method"], "sync.bootstrap");
-    assert!(!bearer_token(&requests[2]).is_empty());
+    assert_eq!(json_body(&requests[2])["method"], "inbox.get");
     assert_eq!(json_body(&requests[3])["method"], "sync.bootstrap");
-    assert_contains_text(&requests[3], "signature-input:");
-    assert_eq!(json_body(&requests[4])["method"], "sync.delta");
-    let refreshed_token = bearer_token(&requests[4]);
+    assert!(!bearer_token(&requests[3]).is_empty());
+    assert_eq!(json_body(&requests[4])["method"], "sync.bootstrap");
+    assert_contains_text(&requests[4], "signature-input:");
+    assert_eq!(json_body(&requests[5])["method"], "sync.delta");
+    let refreshed_token = bearer_token(&requests[5]);
     assert_eq!(
-        json_body(&requests[4])["params"]["body"]["reason"],
+        json_body(&requests[5])["params"]["body"]["reason"],
         "foreground_reconcile"
     );
 
@@ -251,28 +253,33 @@ fn assert_vault_auth_token_is_used(
     expected_token: &str,
     args: &[&str],
 ) {
-    let response = if args.windows(2).any(|pair| pair == ["msg", "inbox"]) {
-        TestResponse::sync_delta_empty()
+    let responses = if args.windows(2).any(|pair| pair == ["msg", "inbox"]) {
+        vec![
+            TestResponse::empty_secure_inbox(),
+            TestResponse::sync_delta_empty(),
+        ]
     } else {
-        TestResponse::ok(&json_rpc_result(json!({
+        vec![TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
             "final_acceptance": true,
             "messages": [],
             "total": 0,
             "source": "remote_http"
-        })))
+        })))]
     };
-    let server = TestServer::new(vec![response]);
+    let server = TestServer::new(responses);
     write_msg_config(workspace, &server.base_url());
 
     let output = awiki_cmd(args, workspace);
     assert_success(&output);
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert_contains_text(
-        &requests[0],
-        &format!("Authorization: Bearer {expected_token}\r\n"),
-    );
+    assert!(!requests.is_empty());
+    for request in &requests {
+        assert_contains_text(
+            request,
+            &format!("Authorization: Bearer {expected_token}\r\n"),
+        );
+    }
 
     let index_path = tenant_workspace(workspace)
         .join("identities")
@@ -497,6 +504,10 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
+    fn empty_secure_inbox() -> Self {
+        Self::ok("__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__")
+    }
+
     fn sync_bootstrap() -> Self {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
@@ -579,6 +590,10 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
+        "__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({"messages": [], "has_more": false, "warnings": []}),
+        ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = signed_device_binding(request);
             rpc_result_for_request(
