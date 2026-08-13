@@ -5156,7 +5156,9 @@ mod tests {
                 }
             }),
         };
-        let sparse_group = super::sync::sync_delta_group_record(&client, &sparse).unwrap();
+        let sparse_group =
+            crate::internal::message_runtime::sync::sync_delta_group_record(&client, &sparse)
+                .unwrap();
         crate::internal::local_state::groups::upsert_group(&db, sparse_group).unwrap();
         let metadata: String = db
             .query_row(
