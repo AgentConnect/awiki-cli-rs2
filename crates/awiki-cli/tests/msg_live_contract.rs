@@ -176,6 +176,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::empty_secure_inbox(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
@@ -270,11 +271,31 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert!(methods.starts_with(&[
         "register".to_owned(),
         "direct.e2ee.publish_prekey_bundle".to_owned(),
+        "inbox.get".to_owned(),
         "sync.bootstrap".to_owned(),
         "sync.delta".to_owned(),
         "message.get_batch".to_owned(),
     ]));
-    assert!(!methods.iter().any(|method| method == "inbox.get"));
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method.as_str() == "inbox.get")
+            .count(),
+        1
+    );
+    let secure_inbox = requests
+        .iter()
+        .find(|request| {
+            serde_json::from_str::<Value>(request_body(request))
+                .ok()
+                .is_some_and(|body| body["method"] == "inbox.get")
+        })
+        .expect("secure inbox hydration request");
+    assert_eq!(
+        serde_json::from_str::<Value>(request_body(secure_inbox)).unwrap()["params"]["body"]
+            ["security_profile"],
+        "direct-e2ee"
+    );
     let sync_delta = requests
         .iter()
         .find(|request| {
@@ -829,6 +850,10 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
+    fn empty_secure_inbox() -> Self {
+        Self::ok("__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__")
+    }
+
     fn sync_bootstrap() -> Self {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
@@ -927,6 +952,10 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
+        "__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({"messages": [], "has_more": false, "warnings": []}),
+        ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = device_binding_from_request(request);
             rpc_result_for_request(

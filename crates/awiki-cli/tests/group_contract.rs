@@ -559,6 +559,25 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
             "source": "remote_http"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": "Lifecycle Group"
+            },
+            "member_role": "member",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "2",
+            "group_profile": {
+                "display_name": "Lifecycle Group"
+            },
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            }
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
             "left": true,
             "source": "remote_http"
         }))),
@@ -626,7 +645,7 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
     assert_eq!(leave["data"]["group"], group_did);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 9);
     let bodies = requests
         .iter()
         .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
@@ -644,6 +663,8 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
             "group.join",
             "group.get",
             "group.list_members",
+            "group.get",
+            "group.get_info",
             "group.leave",
         ]
     );
@@ -674,11 +695,11 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         json!({"kind":"group","did":group_did})
     );
     assert_eq!(
-        bodies[6]["params"]["body"],
+        bodies[8]["params"]["body"],
         json!({"reason_text":"ignored by plain leave"})
     );
     assert_eq!(
-        bodies[6]["params"]["auth"]["scheme"],
+        bodies[8]["params"]["auth"]["scheme"],
         "anp-rfc9421-origin-proof-v1"
     );
 
@@ -725,14 +746,31 @@ fn group_lifecycle_dry_run_maps_e2ee_create_alias_to_secure_required() {
 #[test]
 fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     let workspace = TempDir::new().expect("workspace");
-    write_group_config(workspace.path(), "http://127.0.0.1:9");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_owner_guard";
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {"display_name": "Owner Guard"},
+            "member_role": "owner",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "1",
+            "group_profile": {"display_name": "Owner Guard"},
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            }
+        }))),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
     let alice = register_generated_group_identity(
         workspace.path(),
         "alice-owner-guard-cutover",
         "alice",
         "jwt-alice",
     );
-    let group_did = "did:wba:awiki.ai:groups:demo:e1_owner_guard";
     seed_group_snapshot(
         workspace.path(),
         &alice.unique_id,
@@ -758,6 +796,17 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     let envelope = error_json(&output);
     assert_eq!(envelope["error"]["code"], "invalid_argument");
     assert_contains(&envelope["error"]["message"], "group owner cannot leave");
+    let methods = server
+        .requests()
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request body")["method"]
+                .as_str()
+                .expect("request method")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(methods, ["group.get", "group.get_info"]);
 }
 
 #[test]
@@ -830,6 +879,22 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
             "status": "active"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {"display_name": "Mutation Group"},
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "1",
+            "group_profile": {"display_name": "Mutation Group"},
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            }
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
             "operation_id": "op-add",
             "source": "remote_http"
@@ -853,6 +918,22 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
             }],
             "total": 1,
             "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {"display_name": "Mutation Group"},
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": 2,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "2",
+            "group_profile": {"display_name": "Mutation Group"},
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            }
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
@@ -977,7 +1058,7 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     assert_eq!(update["data"]["delivery"].as_array().unwrap().len(), 2);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 10);
+    assert_eq!(requests.len(), 14);
     let bodies = requests
         .iter()
         .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
@@ -990,9 +1071,13 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         methods,
         vec![
             "lookup",
+            "group.get",
+            "group.get_info",
             "group.add",
             "group.get",
             "group.list_members",
+            "group.get",
+            "group.get_info",
             "group.remove",
             "group.get",
             "group.list_members",
@@ -1002,25 +1087,25 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         ]
     );
     assert_eq!(bodies[0]["params"]["handle"], "bob.awiki.ai");
-    assert_eq!(bodies[1]["params"]["body"]["member_handle"], "bob.awiki.ai");
-    assert!(bodies[1]["params"]["body"].get("member_did").is_none());
-    assert_eq!(bodies[1]["params"]["body"]["role"], "admin");
-    assert!(bodies[1]["params"]["body"].get("reason_text").is_none());
+    assert_eq!(bodies[3]["params"]["body"]["member_handle"], "bob.awiki.ai");
+    assert!(bodies[3]["params"]["body"].get("member_did").is_none());
+    assert_eq!(bodies[3]["params"]["body"]["role"], "admin");
+    assert!(bodies[3]["params"]["body"].get("reason_text").is_none());
     assert_eq!(
-        bodies[1]["params"]["auth"]["scheme"],
+        bodies[3]["params"]["auth"]["scheme"],
         "anp-rfc9421-origin-proof-v1"
     );
-    assert_eq!(bodies[4]["params"]["body"]["member_did"], bob_did);
-    assert_eq!(bodies[4]["params"]["body"]["reason_text"], "cleanup");
-    assert!(bodies[4]["params"]["body"].get("role").is_none());
+    assert_eq!(bodies[8]["params"]["body"]["member_did"], bob_did);
+    assert_eq!(bodies[8]["params"]["body"]["reason_text"], "cleanup");
+    assert!(bodies[8]["params"]["body"].get("role").is_none());
     assert_eq!(
-        bodies[7]["params"]["body"]["group_profile_patch"],
+        bodies[11]["params"]["body"]["group_profile_patch"],
         json!({
             "display_name": "Renamed Mutation Group",
             "description": "Updated through im-core",
         })
     );
-    let policy = &bodies[8]["params"]["body"]["group_policy_patch"];
+    let policy = &bodies[12]["params"]["body"]["group_policy_patch"];
     assert_eq!(policy["admission_mode"], "invite-only");
     assert_eq!(policy["attachments_allowed"], false);
     assert_eq!(policy["max_members"], "25");
@@ -1028,7 +1113,7 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     assert_eq!(policy["member_max_total_chars"], 4096);
     assert_eq!(policy["message_security_profile"], "transport-protected");
     assert_eq!(policy["permissions"]["update_policy"], "owner");
-    for index in [1_usize, 4, 7, 8] {
+    for index in [3_usize, 8, 11, 12] {
         assert_eq!(
             bodies[index]["params"]["meta"]["target"],
             json!({"kind":"group","did":group_did})
