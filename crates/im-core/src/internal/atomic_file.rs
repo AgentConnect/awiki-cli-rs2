@@ -152,14 +152,16 @@ fn publish_if_absent_platform(temporary: &Path, target: &Path) -> std::io::Resul
     let temporary = unix_c_path(temporary)?;
     let target = unix_c_path(target)?;
     // SAFETY: both pointers refer to live, NUL-terminated C strings for the
-    // duration of the call. RENAME_NOREPLACE fails instead of replacing.
+    // duration of the call. Use the syscall directly so Android support does
+    // not depend on the device's bionic version exporting renameat2.
     let renamed = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             temporary.as_ptr(),
             libc::AT_FDCWD,
             target.as_ptr(),
-            libc::RENAME_NOREPLACE as libc::c_uint,
+            libc::RENAME_NOREPLACE,
         )
     };
     if renamed == 0 {

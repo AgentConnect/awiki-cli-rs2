@@ -351,8 +351,7 @@ where
                 let sequence_only_group_target_not_found =
                     target_not_found && is_sequence_only_group_read(&record);
                 if sequence_only_group_target_not_found
-                    && record.attempt_count
-                        >= GROUP_SEQUENCE_ONLY_TARGET_NOT_FOUND_MAX_ATTEMPTS
+                    && record.attempt_count >= GROUP_SEQUENCE_ONLY_TARGET_NOT_FOUND_MAX_ATTEMPTS
                 {
                     db.permanently_fail_local_mutation(
                         &binding.owner_identity_id,
@@ -365,9 +364,7 @@ where
                 }
                 let retry_delay = if sequence_only_group_target_not_found {
                     sequence_only_group_read_retry_delay(record.attempt_count)
-                } else if target_not_found
-                    && read_mutation_thread_kind(&record) == Some("direct")
-                {
+                } else if target_not_found && read_mutation_thread_kind(&record) == Some("direct") {
                     300
                 } else {
                     5
@@ -4827,15 +4824,8 @@ mod tests {
         seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
         let group_did = "did:wba:awiki.info:groups:missing-read-target";
         let local_message_id = format!("{group_did}:30");
-        seed_sync_read_group_message(
-            &client,
-            &binding,
-            &local_message_id,
-            None,
-            group_did,
-            30,
-        )
-        .await;
+        seed_sync_read_group_message(&client, &binding, &local_message_id, None, group_did, 30)
+            .await;
         client
             .core_inner()
             .local_state_db()

@@ -3033,7 +3033,11 @@ fn normalize_claimed_group_read_mutation(
             "read outbox payload must be an object",
         ));
     };
-    if object.get("thread_kind").and_then(serde_json::Value::as_str) != Some("group") {
+    if object
+        .get("thread_kind")
+        .and_then(serde_json::Value::as_str)
+        != Some("group")
+    {
         return Ok(record);
     }
     if object
@@ -3044,11 +3048,7 @@ fn normalize_claimed_group_read_mutation(
     {
         return Ok(record);
     }
-    if !failed_group_read_message_id_is_untrusted(
-        connection,
-        &record.owner_identity_id,
-        object,
-    )? {
+    if !failed_group_read_message_id_is_untrusted(connection, &record.owner_identity_id, object)? {
         return Ok(record);
     }
 
@@ -3673,6 +3673,100 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn permanently_failing_one_read_keeps_a_newer_pending_watermark() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let group_did = "did:wba:awiki.info:group:e1_stale";
+        let thread_id = format!("group:{group_did}");
+        super::super::read_state::replace_thread_read_state(
+            &db,
+            &super::super::read_state::ThreadReadStateRecord {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                thread_scope: "group".to_owned(),
+                thread_id: thread_id.clone(),
+                conversation_id: thread_id.clone(),
+                read_watermark_message_id: Some(format!("{group_did}:6")),
+                read_watermark_seq: Some("6".to_owned()),
+                read_watermark_at: Some("2026-08-13T10:00:01Z".to_owned()),
+                pending_remote_ack: true,
+                remote_ack_at: None,
+                remote_state_version: None,
+                updated_at: "2026-08-13T10:00:01Z".to_owned(),
+            },
+        )
+        .unwrap();
+        for (mutation_id, status, seq, created_at) in [
+            ("read-old", "in_flight", "5", 1),
+            ("read-new", "pending", "6", 2),
+        ] {
+            enqueue_local_mutation(
+                &db,
+                &LocalMutationRecord {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    mutation_id: mutation_id.to_owned(),
+                    operation_id: format!("operation-{mutation_id}"),
+                    mutation_type: "read_state_mark_read".to_owned(),
+                    aggregate_id: group_did.to_owned(),
+                    payload_json: serde_json::json!({
+                        "thread_kind": "group",
+                        "thread_id": thread_id,
+                        "remote_thread_key": group_did,
+                        "read_watermark_seq": seq,
+                        "read_watermark_message_id": format!("{group_did}:{seq}"),
+                        "read_watermark_at": "2026-08-13T10:00:01Z"
+                    })
+                    .to_string(),
+                    status: status.to_owned(),
+                    attempt_count: i64::from(status == "in_flight"),
+                    retry_at: None,
+                    in_flight_since: (status == "in_flight").then_some(created_at),
+                    last_error_code: None,
+                    created_at,
+                    updated_at: created_at,
+                },
+            )
+            .unwrap();
+        }
+
+        permanently_fail_local_mutation(
+            &db,
+            &binding.owner_identity_id,
+            "read-old",
+            "anp.target_not_found",
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.query_row(
+                "SELECT GROUP_CONCAT(mutation_id || ':' || status, ',')
+                 FROM (
+                     SELECT mutation_id, status FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1 ORDER BY created_at
+                 )",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "read-old:permanent_failure,read-new:pending"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT pending_remote_ack FROM thread_read_state
+                 WHERE owner_identity_id = ?1 AND thread_id = ?2",
+                params![binding.owner_identity_id, thread_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -5507,8 +5601,7 @@ mod tests {
         let retried_payload: serde_json::Value =
             serde_json::from_str(&retried.payload_json).unwrap();
         assert_eq!(
-            retried_payload["read_watermark_message_id"],
-            "business-group-32",
+            retried_payload["read_watermark_message_id"], "business-group-32",
             "a target_not_found response must not strip a trusted raw message id"
         );
         assert_eq!(retried.attempt_count, 2);
