@@ -940,13 +940,14 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   delta, and v2 delta converge idempotently instead of creating duplicate rows.
   These lifecycle records remain durable timeline facts but do not enter the
   ordinary committed-incoming notification list.
-- When the independent P5 gate is enabled, foreground CLI Inbox compensation and
-  the native Dart `MessageApi.syncNow` wrapper first perform one bounded
+- Foreground CLI Inbox compensation and the native Dart `MessageApi.syncNow`
+  wrapper first resume any durable Root-import completion and reload the same
+  stable local identity. When the independent P5 gate is enabled, they then perform one bounded
   exact-device secure hydration through the local-only
   `inbox.get` contract. This lets Root control messages finish local credential
   promotion before a changed device authorization generation is used for ordinary
-  sync. Both hosts reload `ImClient` for the same stable local identity after
-  hydration so the same foreground operation cannot retain the pre-promotion
+  sync. The Dart host also reloads before hydration, and both hosts reload
+  `ImClient` for the same stable local identity after hydration, so the same foreground operation cannot retain the pre-promotion
   device authorization generation; the CLI then uses reason
   `foreground_reconcile`, while Dart continues the caller's ordinary `syncNow`
   request. Secure hydration uses the closed
@@ -1154,7 +1155,10 @@ including JWT refresh, a JSON-RPC `1401` remaining after the transport's
 bounded auth retry, or the live Registry fence codes
 `anp.device_not_eligible` / `anp.device_state_changed`, is classified as
 terminal `authRevoked`; transport and server failures outside that
-authorization boundary remain retryable.
+authorization boundary remain retryable. The Dart host may perform one
+same-owner/device convergence pass before publishing `authRevoked`, but retries
+ordinary sync only when that pass proves the local authorization generation
+advanced; a real Registry fence therefore remains terminal.
 
 The existing `sync_state` table remains the active checkpoint for the v1
 `sync.delta` compatibility implementation; v2 `syncNow` uses

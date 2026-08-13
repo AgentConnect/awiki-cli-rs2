@@ -3373,6 +3373,13 @@ impl<'a> MessageService<'a> {
         &self,
         limit: crate::ids::PageLimit,
     ) -> crate::ImResult<Vec<String>> {
+        // Root import can advance this exact device's authorization generation
+        // independently of ordinary message sync. Finish any accepted local
+        // transition first so callers never reuse the pre-promotion bearer.
+        crate::internal::identity_root_import_completion::recover_root_import_completions(
+            self.client,
+        )
+        .await?;
         if !self.client.core_inner().direct_e2ee_v2_enabled() {
             return Ok(Vec::new());
         }

@@ -787,7 +787,8 @@ compatibility facade. Message edit, recall, delete, tombstone, Push, and
 E2EE/MLS multi-device synchronization remain outside this stage.
 
 `syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Native Dart
-wrapper 在 P5 gate 开启时，会先使用 exact-device、
+wrapper 会先重放已落盘的 Root 导入收尾并重载同一 stable identity；在 P5 gate
+开启时，再使用 exact-device、
 `body.security_profile=direct-e2ee` 的本域 secure hydration，再在 Core 内重新加载同一
 stable identity 的 client，最后执行 ordinary `syncNow`；这确保 Root 导入推进设备认证代次后
 普通同步不会继续使用旧 client。Rust CLI 前台 Inbox 遵循相同顺序。
@@ -863,7 +864,11 @@ final diagnostics = await client.messages.syncDiagnostics();
   sync or its JWT refresh, JSON-RPC `1401` after Core's bounded auth retry,
   and the live Registry fence codes `anp.device_not_eligible` /
   `anp.device_state_changed` are also terminal `authRevoked`, not retryable
-  network failures. There is no second recover API.
+  network failures. Before publishing that terminal result, the Dart wrapper
+  performs one same-owner/device authorization convergence pass. It retries
+  ordinary sync exactly once only when Core proves that the local authorization
+  context advanced during the pass; a genuinely revoked device observes no
+  context change and remains terminal. There is no second recover API.
 - The raw recovery token remains on the Rust process stack only and is never
   written to SQLite or logs. Dart cannot observe or persist the token, recovery
   cursor/anchor, cutoff, policy limit, or returned snapshot count.

@@ -1,9 +1,9 @@
 //! Crash-repairable finalization for a verified root-key import.
 //!
 //! This module joins the encrypted Vault transition, atomic identity-index
-//! transition and secret-free SQLite coordinator transition. It does not
-//! interpret wire input and never exposes the pending Vault kind through a key
-//! provider.
+//! transition, local sync-account authorization generation and secret-free
+//! SQLite coordinator transition. It does not interpret wire input and never
+//! exposes the pending Vault kind through a key provider.
 
 use crate::internal::identity_device_state::IdentityInternalCheckpoint;
 use crate::internal::identity_store::{
@@ -91,6 +91,7 @@ fn converge_root_import_promotion(
         &local_device_id,
         &request.completed_message_id,
         &pending_ref_json,
+        request.auth_generation,
     )?;
 
     let SaveIdentitySecretStorage::Vault { vault, .. } = secret_storage else {
@@ -154,8 +155,18 @@ fn mark_coordinator_promoted(
     local_device_id: &str,
     completed_message_id: &str,
     pending_ref_json: &str,
+    auth_generation: u64,
 ) -> crate::ImResult<()> {
-    let changed = connection
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    advance_local_account_binding_generation(
+        &transaction,
+        owner_identity_id,
+        local_device_id,
+        auth_generation,
+    )?;
+    let changed = transaction
         .execute(
             r#"
 UPDATE identity_root_import_completion_v1
@@ -171,26 +182,93 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    if changed == 1 {
-        return Ok(());
-    }
-    let promoted: i64 = connection
-        .query_row(
-            r#"
+    if changed != 1 {
+        let promoted: i64 = transaction
+            .query_row(
+                r#"
 SELECT COUNT(*) FROM identity_root_import_completion_v1
 WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3
   AND pending_root_ref_json = ?4 AND phase = 'promoted'"#,
+                rusqlite::params![
+                    owner_identity_id,
+                    local_device_id,
+                    completed_message_id,
+                    pending_ref_json,
+                ],
+                |row| row.get(0),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if promoted != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(())
+}
+
+fn advance_local_account_binding_generation(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    local_device_id: &str,
+    auth_generation: u64,
+) -> crate::ImResult<()> {
+    use rusqlite::OptionalExtension as _;
+
+    let Some((stored_device_id, stored_generation)) = connection
+        .query_row(
+            "SELECT device_id, device_auth_generation
+             FROM identity_account_bindings
+             WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+    else {
+        // A fresh client will create the binding from the promoted identity
+        // index. Root import itself must not invent missing account metadata.
+        return Ok(());
+    };
+    if stored_device_id != local_device_id {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "root import local account binding targets another device".to_owned(),
+        });
+    }
+    let next_generation = auth_generation.to_string();
+    match crate::internal::local_state::sync_v2::compare_decimal(
+        &next_generation,
+        &stored_generation,
+    )? {
+        std::cmp::Ordering::Less => {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "root import device authorization generation cannot move backwards"
+                    .to_owned(),
+            });
+        }
+        std::cmp::Ordering::Equal => return Ok(()),
+        std::cmp::Ordering::Greater => {}
+    }
+    let changed = connection
+        .execute(
+            "UPDATE identity_account_bindings
+             SET device_auth_generation = ?1,
+                 updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+             WHERE owner_identity_id = ?2 AND device_id = ?3
+               AND device_auth_generation = ?4",
             rusqlite::params![
+                next_generation,
                 owner_identity_id,
                 local_device_id,
-                completed_message_id,
-                pending_ref_json,
+                stored_generation,
             ],
-            |row| row.get(0),
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    if promoted != 1 {
-        return Err(crate::ImError::PermissionDenied);
+    if changed != 1 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "root import local account binding changed concurrently".to_owned(),
+        });
     }
     Ok(())
 }
@@ -219,6 +297,12 @@ CREATE TABLE identity_root_import_completion_v1 (
     last_error_code TEXT,
     PRIMARY KEY (owner_identity_id, local_device_id, message_id)
 );
+CREATE TABLE identity_account_bindings (
+    owner_identity_id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    device_auth_generation TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 "#,
             )
             .unwrap();
@@ -245,6 +329,7 @@ INSERT INTO identity_root_import_completion_v1 (
             "device-a",
             "message-a",
             "pending-ref",
+            2,
         )
         .unwrap();
         mark_coordinator_promoted(
@@ -253,6 +338,7 @@ INSERT INTO identity_root_import_completion_v1 (
             "device-a",
             "message-a",
             "pending-ref",
+            2,
         )
         .unwrap();
 
@@ -277,6 +363,7 @@ INSERT INTO identity_root_import_completion_v1 (
             "device-a",
             "message-a",
             "pending-ref",
+            2,
         )
         .is_err());
         assert!(mark_coordinator_promoted(
@@ -285,7 +372,90 @@ INSERT INTO identity_root_import_completion_v1 (
             "device-a",
             "message-a",
             "different-ref",
+            2,
         )
         .is_err());
+    }
+
+    #[test]
+    fn coordinator_promotion_advances_binding_but_leaves_sync_epoch_for_bootstrap() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        coordinator(&connection, "registry_confirmed");
+        connection
+            .execute_batch(
+                r#"
+INSERT INTO identity_account_bindings (
+  owner_identity_id, device_id, device_auth_generation, updated_at
+) VALUES ('owner-a', 'device-a', '1', 1);
+CREATE TABLE message_sync_state (
+  owner_identity_id TEXT PRIMARY KEY,
+  device_auth_generation TEXT NOT NULL
+);
+INSERT INTO message_sync_state (owner_identity_id, device_auth_generation)
+VALUES ('owner-a', '1');
+"#,
+            )
+            .unwrap();
+
+        mark_coordinator_promoted(
+            &connection,
+            "owner-a",
+            "device-a",
+            "message-a",
+            "pending-ref",
+            2,
+        )
+        .unwrap();
+
+        let binding_generation: String = connection
+            .query_row(
+                "SELECT device_auth_generation FROM identity_account_bindings",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let sync_generation: String = connection
+            .query_row(
+                "SELECT device_auth_generation FROM message_sync_state",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(binding_generation, "2");
+        assert_eq!(sync_generation, "1");
+    }
+
+    #[test]
+    fn coordinator_promotion_replay_repairs_stale_binding_generation() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        coordinator(&connection, "promoted");
+        connection
+            .execute(
+                r#"
+INSERT INTO identity_account_bindings (
+  owner_identity_id, device_id, device_auth_generation, updated_at
+) VALUES ('owner-a', 'device-a', '1', 1)"#,
+                [],
+            )
+            .unwrap();
+
+        mark_coordinator_promoted(
+            &connection,
+            "owner-a",
+            "device-a",
+            "message-a",
+            "pending-ref",
+            2,
+        )
+        .unwrap();
+
+        let binding_generation: String = connection
+            .query_row(
+                "SELECT device_auth_generation FROM identity_account_bindings",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(binding_generation, "2");
     }
 }

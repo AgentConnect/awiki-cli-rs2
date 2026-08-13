@@ -492,31 +492,67 @@ pub async fn sync_now(
         .map_err(DartImError::from)
 }
 
-/// Hydrates the closed P5 exact-device Inbox before foreground ordinary sync,
-/// then reloads the same stable local identity so later calls use any device
-/// authorization generation advanced by a committed Root import.
+/// Reloads the stable local identity around closed P5 Inbox hydration so a
+/// concurrent Root import cannot leave foreground sync on the old device
+/// authorization generation.
 pub async fn prepare_secure_inbox_for_sync(
     client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
 ) -> Result<DartSecureInboxPreparation, DartImError> {
     let _refresh_guard = client.lock_runtime_refresh().await;
-    let inner = client.clone_inner()?;
-    let identity_id = inner.current_identity().id.clone();
-    let warnings = inner
-        .messages()
-        .hydrate_exact_device_secure_inbox_async(page_limit(limit)?)
-        .await
-        .map_err(DartImError::from)?;
+    let identity_id = client.clone_inner()?.current_identity().id.clone();
     let refreshed = client
         .clone_core()?
         .client_async(im_core::identity::IdentitySelector::Id(identity_id.clone()))
         .await
         .map_err(DartImError::from)?;
-    let authorization_context_changed = client.replace_inner(&identity_id, refreshed)?;
+    let mut authorization_context_changed = client.replace_inner(&identity_id, refreshed)?;
+
+    let hydration = client
+        .clone_inner()?
+        .messages()
+        .hydrate_exact_device_secure_inbox_async(page_limit(limit)?)
+        .await;
+    let refreshed = client
+        .clone_core()?
+        .client_async(im_core::identity::IdentitySelector::Id(identity_id.clone()))
+        .await
+        .map_err(DartImError::from)?;
+    authorization_context_changed |= client.replace_inner(&identity_id, refreshed)?;
+
+    let warnings = match hydration {
+        Ok(warnings) => warnings,
+        Err(error)
+            if authorization_context_changed && is_authorization_convergence_error(&error) =>
+        {
+            client
+                .clone_inner()?
+                .messages()
+                .hydrate_exact_device_secure_inbox_async(page_limit(limit)?)
+                .await
+                .map_err(DartImError::from)?
+        }
+        Err(error) => return Err(DartImError::from(error)),
+    };
     Ok(DartSecureInboxPreparation {
         warnings,
         authorization_context_changed,
     })
+}
+
+fn is_authorization_convergence_error(error: &im_core::ImError) -> bool {
+    match error {
+        im_core::ImError::IdentityBindingConflict { .. } => true,
+        im_core::ImError::Service {
+            status_code: Some(401 | 403),
+            ..
+        } => true,
+        im_core::ImError::Service { code, .. } => matches!(
+            code.as_deref(),
+            Some("anp.device_state_changed" | "SYNC_AUTH_GENERATION_MISMATCH")
+        ),
+        _ => false,
+    }
 }
 
 pub async fn sync_diagnostics(
