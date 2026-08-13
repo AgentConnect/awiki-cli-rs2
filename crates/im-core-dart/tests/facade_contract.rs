@@ -555,6 +555,13 @@ fn registration_recovery_join_sync_prepares_secure_inbox_before_ordinary_sync() 
     assert!(prepare.contains("client.lock_runtime_refresh().await"));
     assert!(prepare.contains("client.replace_inner(&identity_id, refreshed)"));
     assert!(prepare.contains("authorization_context_changed"));
+    assert!(
+        prepare
+            .match_indices("client.replace_inner(&identity_id, refreshed)")
+            .count()
+            >= 2,
+        "sync preparation must reload before and after Root Inbox hydration"
+    );
 }
 
 #[test]
@@ -567,6 +574,13 @@ fn flutter_client_refresh_preserves_one_logical_realtime_lifecycle() {
     assert!(sync_now.contains("_runClientLifecycle"));
     assert!(sync_now.contains("authorizationContextChanged"));
     assert!(sync_now.contains("_restartNativeRealtimeUnlocked"));
+    assert!(sync_now.contains("outcome.status == MessageSyncStatus.authRevoked"));
+    assert!(sync_now.contains("repair?.authorizationContextChanged ?? false"));
+    assert_eq!(
+        sync_now.matches("gen_messages.syncNow").count(),
+        2,
+        "auth convergence may retry ordinary sync exactly once"
+    );
 
     let realtime = native
         .split("class RealtimeApi")

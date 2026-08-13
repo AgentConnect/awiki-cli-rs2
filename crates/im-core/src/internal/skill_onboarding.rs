@@ -1970,7 +1970,8 @@ fn write_new_secure(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
 }
 
 /// Publishes a fully synced file without ever exposing a partial final path or
-/// replacing a concurrently-created record. The hard link is the publish point.
+/// replacing a concurrently-created record. The noreplace rename is the
+/// publish point.
 fn write_new_atomic_secure(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
     let parent = path
         .parent()
@@ -1987,13 +1988,21 @@ fn write_new_atomic_secure(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
     }
     let temp = unique_initial_write_temp_path(path);
     write_new_secure(&temp, raw)?;
-    let publish = fs::hard_link(&temp, path).map_err(crate::ImError::from);
-    if publish.is_ok() {
+    let created = crate::internal::atomic_file::publish_if_absent(&temp, path);
+    if matches!(&created, Ok(true)) {
         set_private_file_mode(path)?;
         sync_directory(parent);
     }
     let _ = fs::remove_file(&temp);
-    publish
+    match created {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "skill onboarding file already exists",
+        )
+        .into()),
+        Err(error) => Err(error),
+    }
 }
 
 fn initial_write_temp_path(path: &Path) -> PathBuf {

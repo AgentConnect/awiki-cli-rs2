@@ -105,11 +105,11 @@ enum LocalStateCommand {
         retry_at: i64,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
-    AbandonStaleReadMutation {
+    PermanentlyFailLocalMutation {
         owner_identity_id: String,
         mutation_id: String,
         error_code: String,
-        updated_at: i64,
+        failed_at: i64,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     EnsureConversation {
@@ -213,6 +213,12 @@ enum LocalStateCommand {
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    RefreshExistingPersonaProfile {
+        owner_identity_id: String,
+        did: crate::ids::Did,
+        profile: crate::identity::Profile,
+        reply: oneshot::Sender<crate::ImResult<bool>>,
     },
     UpsertDirectPeerRoute {
         record: super::direct_peer_routes::DirectPeerRouteRecord,
@@ -846,19 +852,19 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
-    pub(crate) async fn abandon_stale_read_mutation(
+    pub(crate) async fn permanently_fail_local_mutation(
         &self,
         owner_identity_id: impl Into<String>,
         mutation_id: impl Into<String>,
         error_code: impl Into<String>,
-        updated_at: i64,
+        failed_at: i64,
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::AbandonStaleReadMutation {
+        self.send(LocalStateCommand::PermanentlyFailLocalMutation {
             owner_identity_id: owner_identity_id.into(),
             mutation_id: mutation_id.into(),
             error_code: error_code.into(),
-            updated_at,
+            failed_at,
             reply,
         })
         .await?;
@@ -1080,6 +1086,23 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertContact { record, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn refresh_existing_persona_profile(
+        &self,
+        owner_identity_id: impl Into<String>,
+        did: crate::ids::Did,
+        profile: crate::identity::Profile,
+    ) -> crate::ImResult<bool> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RefreshExistingPersonaProfile {
+            owner_identity_id: owner_identity_id.into(),
+            did,
+            profile,
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -2097,19 +2120,19 @@ fn run_actor(
                 );
                 let _ = reply.send(result);
             }
-            LocalStateCommand::AbandonStaleReadMutation {
+            LocalStateCommand::PermanentlyFailLocalMutation {
                 owner_identity_id,
                 mutation_id,
                 error_code,
-                updated_at,
+                failed_at,
                 reply,
             } => {
-                let result = super::sync_v2::abandon_stale_read_mutation(
+                let result = super::sync_v2::permanently_fail_local_mutation(
                     &connection,
                     &owner_identity_id,
                     &mutation_id,
                     &error_code,
-                    updated_at,
+                    failed_at,
                 );
                 let _ = reply.send(result);
             }
@@ -2298,6 +2321,20 @@ fn run_actor(
                 let result = crate::internal::contact_store::records::upsert_contact(
                     &mut connection,
                     record,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RefreshExistingPersonaProfile {
+                owner_identity_id,
+                did,
+                profile,
+                reply,
+            } => {
+                let result = super::peer_profiles::refresh_existing_from_public_profile(
+                    &connection,
+                    &owner_identity_id,
+                    &did,
+                    &profile,
                 );
                 let _ = reply.send(result);
             }

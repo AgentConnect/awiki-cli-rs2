@@ -77,7 +77,20 @@ pub(crate) fn project_directory_resolution(
         Ok(record) => record,
         Err(_) => return,
     };
-    let _ = super::records::upsert_contact(&mut connection, record);
+    if super::records::upsert_contact(&mut connection, record).is_err() {
+        return;
+    }
+    if let Some(profile) = resolution.profile.as_ref() {
+        let Ok(scope) = OwnerScope::for_client(client) else {
+            return;
+        };
+        let _ = crate::internal::local_state::peer_profiles::refresh_existing_from_public_profile(
+            &connection,
+            &scope.owner_identity_id,
+            &resolution.did,
+            profile,
+        );
+    }
 }
 
 #[cfg(not(any(feature = "blocking", test)))]
@@ -93,7 +106,17 @@ pub(crate) async fn project_directory_resolution_async(
 ) -> crate::ImResult<()> {
     let record = record_from_directory_resolution(client, resolution)?;
     let db = client.core_inner().local_state_db().await?;
-    db.upsert_contact(record).await
+    db.upsert_contact(record).await?;
+    if let Some(profile) = resolution.profile.as_ref() {
+        let scope = OwnerScope::for_client(client)?;
+        db.refresh_existing_persona_profile(
+            scope.owner_identity_id,
+            resolution.did.clone(),
+            profile.clone(),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn record_from_directory_resolution(

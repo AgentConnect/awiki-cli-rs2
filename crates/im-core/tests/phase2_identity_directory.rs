@@ -866,6 +866,79 @@ async fn directory_display_profile_hydration_reads_local_cache_only() {
 }
 
 #[tokio::test]
+async fn public_profile_refresh_persists_persona_display_name_across_client_reopen() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/v1/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/v1/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+        ExpectedRpc::new(
+            "/user-service/v1/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            json!({
+                "did": "did:example:bob",
+                "handle": "bob.awiki.test",
+                "nick_name": "Bob Updated",
+                "avatar_uri": "https://cdn.test/bob-updated.png",
+                "versionId": "profile-8",
+                "updated_at": "2026-08-13T00:00:00Z",
+                "ttl": 300,
+            }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+    let refreshed = client
+        .directory()
+        .public_profile_async(IdentitySubject::Did(Did::parse("did:example:bob").unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed.profile.display_name.as_deref(),
+        Some("Bob Updated")
+    );
+    assert_eq!(server.join().len(), 3);
+    drop(client);
+
+    let reopened = fixture.client("alice");
+    let hydrated = reopened
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(hydrated.len(), 1);
+    assert!(hydrated[0].cache_hit);
+    assert!(!hydrated[0].legacy_fallback);
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob Updated"));
+    assert_eq!(
+        hydrated[0].handle.as_ref().map(|handle| handle.as_str()),
+        Some("bob.awiki.test")
+    );
+    assert_eq!(
+        hydrated[0].avatar_uri.as_deref(),
+        Some("https://cdn.test/bob-updated.png")
+    );
+}
+
+#[tokio::test]
 async fn directory_display_profile_marks_expired_persona_cache_as_stale() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
@@ -1209,6 +1282,16 @@ async fn directory_service_reads_public_profile_without_resolve_call() {
     assert_eq!(requests[0].rpc_method, "lookup");
     assert_eq!(requests[1].rpc_method, "get_public_profile");
     assert_eq!(requests[2].rpc_method, "get_public_profile");
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob"));
+    assert!(hydrated[0].legacy_fallback);
 }
 
 #[tokio::test]

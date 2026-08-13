@@ -9,7 +9,7 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `is_stopped`, `new`, `new`, `new`, `page_limit`, `read_watermark_to_core`, `spawn`, `stop`, `stop`, `stop`, `take_session`, `take_session`, `wait_for_patch_stream_cancel`
+// These functions are ignored because they are not marked as `pub`: `is_authorization_convergence_error`, `is_stopped`, `new`, `new`, `new`, `page_limit`, `read_watermark_to_core`, `spawn`, `stop`, `stop`, `stop`, `take_session`, `take_session`, `wait_for_patch_stream_cancel`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `PatchStreamLifecycle`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `drop`
 
@@ -141,9 +141,9 @@ Future<DartMessageSyncOutcome> syncNow({
   request: request,
 );
 
-/// Hydrates the closed P5 exact-device Inbox before foreground ordinary sync,
-/// then reloads the same stable local identity so later calls use any device
-/// authorization generation advanced by a committed Root import.
+/// Reloads the stable local identity around closed P5 Inbox hydration so a
+/// concurrent Root import cannot leave foreground sync on the old device
+/// authorization generation.
 Future<DartSecureInboxPreparation> prepareSecureInboxForSync({
   required ArcDartImClient client,
   required int limit,

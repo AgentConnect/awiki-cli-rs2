@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn publish_if_absent_creates_missing_target_and_leaves_existing_target() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("record.json");
+    let first = root.path().join("first.tmp");
+    let second = root.path().join("second.tmp");
+    std::fs::write(&first, b"first-secret").unwrap();
+    std::fs::write(&second, b"second-secret").unwrap();
+
+    assert!(publish_if_absent(&first, &target).unwrap());
+    assert!(!publish_if_absent(&second, &target).unwrap());
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"first-secret");
+}
+
+#[test]
+fn exclusive_publish_fallback_does_not_replace_existing_target() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("record.json");
+    let temporary = root.path().join("record.tmp");
+    std::fs::write(&target, b"existing").unwrap();
+    std::fs::write(&temporary, b"replacement").unwrap();
+
+    assert!(!publish_if_absent_exclusive(&temporary, &target).unwrap());
+    assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+
+    std::fs::remove_file(&target).unwrap();
+    assert!(publish_if_absent_exclusive(&temporary, &target).unwrap());
+    assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+}
+
+#[test]
 fn consecutive_replacements_keep_only_complete_images() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("state.json");

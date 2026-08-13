@@ -766,9 +766,15 @@ Persona Profile display data is authoritative over legacy contact `name` /
 frame, but must expose freshness and legacy-fallback state so the App can
 schedule a coalesced refresh. A verified Profile that omits `display_name`
 clears the previous Persona name and falls back to Handle; it must not resurrect
-a contact-era alias. Current-owner Account State snapshots may update the local
-identity registry only through an owner-ID-scoped display projection operation;
-display projection never changes identity, routing, auth, or device facts.
+a contact-era alias. An explicit public Profile refresh updates the
+Persona-keyed display profile only when the requested DID is already bound to a
+verified Persona. It never creates a Persona or route, and it retains the
+Persona's verified Handle while replacing mutable display fields. The refresh
+must therefore survive Core/client recreation without allowing a contact-only
+profile to gain canonical identity authority. Current-owner Account State
+snapshots may update the local identity registry only through an
+owner-ID-scoped display projection operation; display projection never changes
+identity, routing, auth, or device facts.
 
 Inbound Direct v2 sync first filters wire peer DIDs against the local verified
 Persona projection and performs an authoritative DID-to-Handle lookup only for
@@ -934,13 +940,14 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   delta, and v2 delta converge idempotently instead of creating duplicate rows.
   These lifecycle records remain durable timeline facts but do not enter the
   ordinary committed-incoming notification list.
-- When the independent P5 gate is enabled, foreground CLI Inbox compensation and
-  the native Dart `MessageApi.syncNow` wrapper first perform one bounded
+- Foreground CLI Inbox compensation and the native Dart `MessageApi.syncNow`
+  wrapper first resume any durable Root-import completion and reload the same
+  stable local identity. When the independent P5 gate is enabled, they then perform one bounded
   exact-device secure hydration through the local-only
   `inbox.get` contract. This lets Root control messages finish local credential
   promotion before a changed device authorization generation is used for ordinary
-  sync. Both hosts reload `ImClient` for the same stable local identity after
-  hydration so the same foreground operation cannot retain the pre-promotion
+  sync. The Dart host also reloads before hydration, and both hosts reload
+  `ImClient` for the same stable local identity after hydration, so the same foreground operation cannot retain the pre-promotion
   device authorization generation; the CLI then uses reason
   `foreground_reconcile`, while Dart continues the caller's ordinary `syncNow`
   request. Secure hydration uses the closed
@@ -1148,7 +1155,10 @@ including JWT refresh, a JSON-RPC `1401` remaining after the transport's
 bounded auth retry, or the live Registry fence codes
 `anp.device_not_eligible` / `anp.device_state_changed`, is classified as
 terminal `authRevoked`; transport and server failures outside that
-authorization boundary remain retryable.
+authorization boundary remain retryable. The Dart host may perform one
+same-owner/device convergence pass before publishing `authRevoked`, but retries
+ordinary sync only when that pass proves the local authorization generation
+advanced; a real Registry fence therefore remains terminal.
 
 The existing `sync_state` table remains the active checkpoint for the v1
 `sync.delta` compatibility implementation; v2 `syncNow` uses

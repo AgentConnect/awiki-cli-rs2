@@ -2019,7 +2019,7 @@ fn ordinary_read_outbox_target(
             conversation_id,
             read_watermark_seq,
         )
-        .map(|target| target.map(|(seq, message_id)| (seq, Some(message_id), None)));
+        .map(|target| target.map(|(seq, message_id)| (seq, message_id, None)));
     }
     validate_decimal("read_watermark_seq", read_watermark_seq)?;
     let target = connection
@@ -2070,56 +2070,46 @@ fn ordinary_group_read_target(
     owner_identity_id: &str,
     conversation_id: &str,
     read_watermark_seq: &str,
-) -> crate::ImResult<Option<(String, String)>> {
+) -> crate::ImResult<Option<(String, Option<String>)>> {
     validate_decimal("read_watermark_seq", read_watermark_seq)?;
     connection
         .query_row(
             r#"
-            SELECT server_seq, raw_message_id
-            FROM (
-                SELECT server_seq,
-                       CASE
-                           WHEN json_valid(COALESCE(metadata, ''))
-                           THEN COALESCE(
-                               NULLIF(
-                                   TRIM(json_extract(metadata, '$.raw_message_id')),
-                                   ''
-                               ),
-                               NULLIF(
-                                   TRIM(json_extract(metadata, '$.operation_id')),
-                                   ''
-                               ),
-                               CASE
-                                   WHEN COALESCE(
-                                       TRIM(json_extract(metadata, '$.message_role')),
-                                       ''
-                                   ) <> 'group_system_event'
-                                    AND msg_id = COALESCE(
-                                        NULLIF(TRIM(group_did), ''),
-                                        NULLIF(TRIM(group_id), ''),
-                                        NULLIF(TRIM(wire_thread_ref), '')
-                                    ) || ':' || CAST(server_seq AS TEXT)
-                                   THEN msg_id
-                                   ELSE NULL
-                               END
-                           )
-                           ELSE NULL
-                       END AS raw_message_id
-                FROM messages
-                WHERE owner_identity_id = ?1
-                  AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
-                  AND wire_thread_kind = 'group'
-                  AND hydration_state = 'hydrated'
-                  AND COALESCE(is_e2ee, 0) = 0
-                  AND server_seq IS NOT NULL
-                  AND server_seq <= CAST(?3 AS INTEGER)
-            ) AS candidate
-            WHERE raw_message_id IS NOT NULL
+            SELECT server_seq,
+                   CASE
+                       WHEN json_valid(COALESCE(metadata, ''))
+                       THEN NULLIF(
+                           TRIM(json_extract(metadata, '$.raw_message_id')),
+                           ''
+                       )
+                       ELSE NULL
+                   END AS raw_message_id
+            FROM messages
+            WHERE owner_identity_id = ?1
+              AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
+              AND wire_thread_kind = 'group'
+              AND hydration_state = 'hydrated'
+              AND COALESCE(is_e2ee, 0) = 0
+              AND server_seq IS NOT NULL
+              AND server_seq <= CAST(?3 AS INTEGER)
+              AND CASE
+                      WHEN json_valid(COALESCE(metadata, ''))
+                      THEN COALESCE(
+                          TRIM(json_extract(metadata, '$.message_role')),
+                          ''
+                      ) <> 'group_system_event'
+                      ELSE TRUE
+                  END
             ORDER BY server_seq DESC
             LIMIT 1
             "#,
             params![owner_identity_id, conversation_id, read_watermark_seq],
-            |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?.to_string(),
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
         )
         .optional()
         .map_err(super::local_state_unavailable)
@@ -2869,7 +2859,9 @@ pub(crate) fn claim_next_read_mutation(
             params![now, owner_identity_id, mutation_id],
         )
         .map_err(super::local_state_unavailable)?;
-    let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?;
+    let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?
+        .map(|record| normalize_claimed_group_read_mutation(&transaction, record))
+        .transpose()?;
     transaction
         .commit()
         .map_err(super::local_state_unavailable)?;
@@ -2930,7 +2922,9 @@ pub(crate) fn claim_read_mutation_by_operation_id(
             "read outbox claim lost its operation",
         ));
     }
-    let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?;
+    let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?
+        .map(|record| normalize_claimed_group_read_mutation(&transaction, record))
+        .transpose()?;
     transaction
         .commit()
         .map_err(super::local_state_unavailable)?;
@@ -2957,84 +2951,223 @@ pub(crate) fn retry_local_mutation(
     Ok(())
 }
 
-pub(crate) fn abandon_stale_read_mutation(
+pub(crate) fn permanently_fail_local_mutation(
     connection: &Connection,
     owner_identity_id: &str,
     mutation_id: &str,
     error_code: &str,
-    updated_at: i64,
+    failed_at: i64,
 ) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_required("mutation_id", mutation_id)?;
+    validate_required("error_code", error_code)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
-    let mutation = transaction
-        .query_row(
-            "SELECT payload_json, aggregate_id
-             FROM local_mutation_outbox
-             WHERE owner_identity_id = ?1 AND mutation_id = ?2
-               AND status = 'in_flight'",
-            params![owner_identity_id, mutation_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()
-        .map_err(super::local_state_unavailable)?;
-    let Some((payload_json, aggregate_id)) = mutation else {
-        transaction
-            .commit()
-            .map_err(super::local_state_unavailable)?;
-        return Ok(());
-    };
-    let payload: serde_json::Value = serde_json::from_str(&payload_json).map_err(|error| {
-        sync_error(
-            "SYNC_LOCAL_OUTBOX_CORRUPT",
-            format!("read outbox payload is invalid: {error}"),
-        )
-    })?;
-    let thread_id = payload
-        .get("thread_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            sync_error(
-                "SYNC_LOCAL_OUTBOX_CORRUPT",
-                "read outbox payload is missing thread_id",
-            )
-        })?;
-    transaction
+    let updated = transaction
         .execute(
             "UPDATE local_mutation_outbox
-             SET status = 'permanent_failure', in_flight_since = NULL,
-                 retry_at = NULL, last_error_code = ?1, updated_at = ?2
+             SET status = 'permanent_failure', retry_at = NULL,
+                 in_flight_since = NULL, last_error_code = ?1, updated_at = ?2
              WHERE owner_identity_id = ?3 AND mutation_id = ?4
                AND status = 'in_flight'",
-            params![error_code, updated_at, owner_identity_id, mutation_id],
+            params![error_code, failed_at, owner_identity_id, mutation_id],
         )
         .map_err(super::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(sync_error(
+            "SYNC_LOCAL_OUTBOX_CONFLICT",
+            "read outbox permanent failure lost its in-flight mutation",
+        ));
+    }
     transaction
         .execute(
             "UPDATE thread_read_state
-             SET pending_remote_ack = 0, remote_ack_at = NULL,
-                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch')
-             WHERE owner_identity_id = ?2 AND thread_id = ?3
+             SET pending_remote_ack = 0, remote_ack_at = NULL
+             WHERE owner_identity_id = ?1 AND thread_scope = 'group'
+               AND thread_id = (
+                   SELECT json_extract(payload_json, '$.thread_id')
+                   FROM local_mutation_outbox
+                   WHERE owner_identity_id = ?1 AND mutation_id = ?2
+               )
+               AND read_watermark_seq = (
+                   SELECT json_extract(payload_json, '$.read_watermark_seq')
+                   FROM local_mutation_outbox
+                   WHERE owner_identity_id = ?1 AND mutation_id = ?2
+               )
                AND NOT EXISTS (
                    SELECT 1 FROM local_mutation_outbox
-                   WHERE owner_identity_id = ?2
-                     AND status NOT IN ('committed', 'permanent_failure')
-                     AND (
-                         aggregate_id = ?4
-                         OR (
-                             json_valid(payload_json)
-                             AND json_extract(payload_json, '$.thread_id') = ?3
-                         )
+                   WHERE owner_identity_id = ?1
+                     AND aggregate_id = (
+                         SELECT aggregate_id FROM local_mutation_outbox
+                         WHERE owner_identity_id = ?1 AND mutation_id = ?2
                      )
+                     AND status NOT IN ('committed', 'permanent_failure')
                )",
-            params![updated_at, owner_identity_id, thread_id, aggregate_id],
+            params![owner_identity_id, mutation_id],
         )
         .map_err(super::local_state_unavailable)?;
     transaction
         .commit()
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+fn normalize_claimed_group_read_mutation(
+    connection: &Connection,
+    mut record: LocalMutationRecord,
+) -> crate::ImResult<LocalMutationRecord> {
+    if record.last_error_code.as_deref() != Some("anp.target_not_found") {
+        return Ok(record);
+    }
+    let mut payload =
+        serde_json::from_str::<serde_json::Value>(&record.payload_json).map_err(|error| {
+            sync_error(
+                "SYNC_LOCAL_OUTBOX_CORRUPT",
+                format!("read outbox payload is invalid: {error}"),
+            )
+        })?;
+    let Some(object) = payload.as_object_mut() else {
+        return Err(sync_error(
+            "SYNC_LOCAL_OUTBOX_CORRUPT",
+            "read outbox payload must be an object",
+        ));
+    };
+    if object
+        .get("thread_kind")
+        .and_then(serde_json::Value::as_str)
+        != Some("group")
+    {
+        return Ok(record);
+    }
+    if object
+        .get("read_watermark_message_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Ok(record);
+    }
+    if !failed_group_read_message_id_is_untrusted(connection, &record.owner_identity_id, object)? {
+        return Ok(record);
+    }
+
+    object.remove("read_watermark_message_id");
+    let payload_json = payload.to_string();
+    let updated = connection
+        .execute(
+            "UPDATE local_mutation_outbox
+             SET payload_json = ?1, attempt_count = 1,
+                 updated_at = MAX(updated_at, ?2)
+             WHERE owner_identity_id = ?3 AND mutation_id = ?4
+               AND status = 'in_flight'",
+            params![
+                &payload_json,
+                record.in_flight_since.unwrap_or(record.updated_at),
+                &record.owner_identity_id,
+                &record.mutation_id,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(sync_error(
+            "SYNC_LOCAL_OUTBOX_CONFLICT",
+            "read outbox normalization lost its in-flight mutation",
+        ));
+    }
+    record.payload_json = payload_json;
+    record.attempt_count = 1;
+    Ok(record)
+}
+
+fn failed_group_read_message_id_is_untrusted(
+    connection: &Connection,
+    owner_identity_id: &str,
+    payload: &serde_json::Map<String, serde_json::Value>,
+) -> crate::ImResult<bool> {
+    let Some(message_id) = payload
+        .get("read_watermark_message_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    let Some(thread_id) = payload
+        .get("thread_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    let Some(server_seq) = payload
+        .get("read_watermark_seq")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    validate_decimal("read_watermark_seq", server_seq)?;
+    let local_target = connection
+        .query_row(
+            r#"
+            SELECT msg_id,
+                   CASE
+                       WHEN json_valid(COALESCE(metadata, ''))
+                       THEN NULLIF(
+                           TRIM(json_extract(metadata, '$.raw_message_id')),
+                           ''
+                       )
+                       ELSE NULL
+                   END,
+                   CASE
+                       WHEN json_valid(COALESCE(metadata, ''))
+                       THEN NULLIF(
+                           TRIM(json_extract(metadata, '$.operation_id')),
+                           ''
+                       )
+                       ELSE NULL
+                   END
+            FROM messages
+            WHERE owner_identity_id = ?1
+              AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
+              AND wire_thread_kind = 'group'
+              AND hydration_state = 'hydrated'
+              AND COALESCE(is_e2ee, 0) = 0
+              AND server_seq = CAST(?3 AS INTEGER)
+              AND CASE
+                      WHEN json_valid(COALESCE(metadata, ''))
+                      THEN COALESCE(
+                          TRIM(json_extract(metadata, '$.message_role')),
+                          ''
+                      ) <> 'group_system_event'
+                      ELSE TRUE
+                  END
+            ORDER BY stored_at DESC, msg_id DESC
+            LIMIT 1
+            "#,
+            params![owner_identity_id, thread_id, server_seq],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((local_message_id, raw_message_id, operation_id)) = local_target else {
+        return Ok(false);
+    };
+    if raw_message_id.as_deref() == Some(message_id) {
+        return Ok(false);
+    }
+    Ok(raw_message_id.is_some()
+        || local_message_id == message_id
+        || operation_id.as_deref() == Some(message_id))
 }
 
 pub(crate) fn recover_interrupted_work(
@@ -3543,7 +3676,7 @@ mod tests {
     }
 
     #[test]
-    fn abandoning_stale_read_keeps_a_newer_pending_watermark() {
+    fn permanently_failing_one_read_keeps_a_newer_pending_watermark() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         create_schema(&db).unwrap();
@@ -3602,7 +3735,7 @@ mod tests {
             .unwrap();
         }
 
-        abandon_stale_read_mutation(
+        permanently_fail_local_mutation(
             &db,
             &binding.owner_identity_id,
             "read-old",
@@ -5307,7 +5440,7 @@ mod tests {
     }
 
     #[test]
-    fn group_read_outbox_uses_canonical_id_for_legacy_hydration() {
+    fn group_read_outbox_only_includes_a_trusted_server_message_id() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -5328,7 +5461,7 @@ mod tests {
                 binding.current_did,
                 conversation_id,
                 group_did,
-                serde_json::json!({}).to_string(),
+                serde_json::json!({"operation_id": "local-operation-30"}).to_string(),
             ],
         )
         .unwrap();
@@ -5388,18 +5521,90 @@ mod tests {
         .unwrap();
         assert_eq!(
             db.query_row(
-                "SELECT aggregate_id || '|' ||
-                        json_extract(payload_json, '$.remote_thread_key') || '|' ||
-                        json_extract(payload_json, '$.read_watermark_seq') || '|' ||
+                "SELECT aggregate_id,
+                        json_extract(payload_json, '$.remote_thread_key'),
+                        json_extract(payload_json, '$.read_watermark_seq'),
                         json_extract(payload_json, '$.read_watermark_message_id')
                  FROM local_mutation_outbox
                  WHERE owner_identity_id = ?1",
                 [&binding.owner_identity_id],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
             )
             .unwrap(),
-            format!("{group_did}|{group_did}|30|{group_did}:30")
+            (
+                group_did.to_owned(),
+                group_did.to_owned(),
+                "30".to_owned(),
+                None,
+            )
         );
+        db.execute(
+            "INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, conversation_id,
+                 wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+                 server_seq, hydration_state, is_e2ee, metadata, stored_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, 'group', ?5, 'resolved',
+                     32, 'hydrated', 0, ?6, '2026-07-28T10:00:02Z')",
+            params![
+                format!("{group_did}:32"),
+                binding.owner_identity_id,
+                binding.current_did,
+                conversation_id,
+                group_did,
+                serde_json::json!({"raw_message_id": "business-group-32"}).to_string(),
+            ],
+        )
+        .unwrap();
+        mark_thread_read_and_update_outbox(
+            &db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            super::super::messages::MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse(group_did).unwrap(),
+                ),
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("32".to_owned()),
+                read_watermark_at: Some("2026-07-28T10:00:02Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+        let claimed = claim_next_read_mutation(&db, &binding.owner_identity_id, 2)
+            .unwrap()
+            .unwrap();
+        let claimed_payload: serde_json::Value =
+            serde_json::from_str(&claimed.payload_json).unwrap();
+        assert_eq!(claimed_payload["read_watermark_seq"], "32");
+        assert_eq!(
+            claimed_payload["read_watermark_message_id"],
+            "business-group-32"
+        );
+        retry_local_mutation(
+            &db,
+            &binding.owner_identity_id,
+            &claimed.mutation_id,
+            "anp.target_not_found",
+            3,
+        )
+        .unwrap();
+        let retried = claim_next_read_mutation(&db, &binding.owner_identity_id, 4)
+            .unwrap()
+            .unwrap();
+        let retried_payload: serde_json::Value =
+            serde_json::from_str(&retried.payload_json).unwrap();
+        assert_eq!(
+            retried_payload["read_watermark_message_id"], "business-group-32",
+            "a target_not_found response must not strip a trusted raw message id"
+        );
+        assert_eq!(retried.attempt_count, 2);
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM local_mutation_outbox

@@ -515,7 +515,7 @@ Legacy compatibility fields remain available:
 
 Display fields must not be used for routing, authentication, authorization, service endpoint selection, E2EE binding, or security-profile negotiation. Apps should keep Handle or DID visible on profile and recipient-confirmation surfaces, especially for high-risk operations.
 
-`client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally, `isStale = true` when the Persona Profile TTL has expired, and `legacyFallback = true` when the visible name only came from an old contact `name/nick_name`. The app may render that stale value immediately and schedule one coalesced remote refresh; it should always fall back through `displayName -> handle -> did` without blocking list rendering. A stored Persona Profile, including one with no display name, takes precedence over legacy contact names. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
+`client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally, `isStale = true` when the Persona Profile TTL has expired, and `legacyFallback = true` when the visible name only came from an old contact `name/nick_name`. The app may render that stale value immediately and schedule one coalesced remote refresh; it should always fall back through `displayName -> handle -> did` without blocking list rendering. A stored Persona Profile, including one with no display name, takes precedence over legacy contact names. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path. A successful `loadPublicProfile` refresh also persists mutable display fields into an already verified Persona projection, so a later Core/client recreation hydrates the latest nickname and avatar. It does not create a Persona or route for a contact-only peer and does not replace the Persona's verified Handle.
 
 `core.updateDisplayNameProjection(identityId: identityId, displayName: displayName)` updates only the selected local `IdentitySummary.displayName` projection. It is owner-ID scoped and idempotent, and is intended for an App that has already obtained an authoritative Account State Profile snapshot. It never changes the current identity, DID, Handle, device binding, authentication material, or routing state. Apps must still fence the result to the active session before publishing it to UI state.
 
@@ -787,7 +787,8 @@ compatibility facade. Message edit, recall, delete, tombstone, Push, and
 E2EE/MLS multi-device synchronization remain outside this stage.
 
 `syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Native Dart
-wrapper 在 P5 gate 开启时，会先使用 exact-device、
+wrapper 会先重放已落盘的 Root 导入收尾并重载同一 stable identity；在 P5 gate
+开启时，再使用 exact-device、
 `body.security_profile=direct-e2ee` 的本域 secure hydration，再在 Core 内重新加载同一
 stable identity 的 client，最后执行 ordinary `syncNow`；这确保 Root 导入推进设备认证代次后
 普通同步不会继续使用旧 client。Rust CLI 前台 Inbox 遵循相同顺序。
@@ -863,7 +864,11 @@ final diagnostics = await client.messages.syncDiagnostics();
   sync or its JWT refresh, JSON-RPC `1401` after Core's bounded auth retry,
   and the live Registry fence codes `anp.device_not_eligible` /
   `anp.device_state_changed` are also terminal `authRevoked`, not retryable
-  network failures. There is no second recover API.
+  network failures. Before publishing that terminal result, the Dart wrapper
+  performs one same-owner/device authorization convergence pass. It retries
+  ordinary sync exactly once only when Core proves that the local authorization
+  context advanced during the pass; a genuinely revoked device observes no
+  context change and remains terminal. There is no second recover API.
 - The raw recovery token remains on the Rust process stack only and is never
   written to SQLite or logs. Dart cannot observe or persist the token, recovery
   cursor/anchor, cutoff, policy limit, or returned snapshot count.

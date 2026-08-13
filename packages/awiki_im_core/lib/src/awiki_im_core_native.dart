@@ -1322,7 +1322,7 @@ class MessageApi {
   Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
     _client._ensureNotDisposed();
     return _client._runClientLifecycle(() async {
-      final securePreparation = await _mapNativeErrors(
+      var securePreparation = await _mapNativeErrors(
         () => gen_messages.prepareSecureInboxForSync(
           client: _client._inner,
           limit: request.limit ?? 100,
@@ -1331,7 +1331,7 @@ class MessageApi {
       if (securePreparation.authorizationContextChanged) {
         await _client._restartNativeRealtimeUnlocked();
       }
-      final result = await _mapNativeErrors(
+      var result = await _mapNativeErrors(
         () => gen_messages.syncNow(
           client: _client._inner,
           request: gen_message.DartMessageSyncRequest(
@@ -1340,7 +1340,45 @@ class MessageApi {
           ),
         ),
       );
-      final outcome = result._toModel();
+      var outcome = result._toModel();
+      if (outcome.status == MessageSyncStatus.authRevoked) {
+        gen_message.DartSecureInboxPreparation? repair;
+        try {
+          repair = await _mapNativeErrors(
+            () => gen_messages.prepareSecureInboxForSync(
+              client: _client._inner,
+              limit: request.limit ?? 100,
+            ),
+          );
+        } on AwikiImCoreException {
+          // A truly revoked device cannot refresh its exact-device Inbox.
+          // Preserve the original terminal outcome in that case.
+        }
+        if (repair != null) {
+          securePreparation = gen_message.DartSecureInboxPreparation(
+            warnings: <String>[
+              ...securePreparation.warnings,
+              ...repair.warnings,
+            ],
+            authorizationContextChanged:
+                securePreparation.authorizationContextChanged ||
+                repair.authorizationContextChanged,
+          );
+        }
+        if (repair?.authorizationContextChanged ?? false) {
+          await _client._restartNativeRealtimeUnlocked();
+          result = await _mapNativeErrors(
+            () => gen_messages.syncNow(
+              client: _client._inner,
+              request: gen_message.DartMessageSyncRequest(
+                reason: request.reason,
+                limit: request.limit,
+              ),
+            ),
+          );
+          outcome = result._toModel();
+        }
+      }
       if (securePreparation.warnings.isEmpty) {
         return outcome;
       }
