@@ -98,6 +98,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::empty_secure_inbox(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_group(),
         TestResponse::message_batch(),
@@ -135,7 +136,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert_no_legacy_websocket_fallback_warning(&envelope);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     let bodies = requests
         .iter()
         .map(|request| {
@@ -149,8 +150,16 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert!(methods.contains(&"sync.bootstrap"));
     assert!(methods.contains(&"sync.delta"));
     assert!(methods.contains(&"message.get_batch"));
-    assert!(!methods.contains(&"inbox.get"));
+    assert!(methods.contains(&"inbox.get"));
     assert!(!methods.contains(&"group.list"));
+    let secure_inbox = bodies
+        .iter()
+        .find(|body| body["method"] == "inbox.get")
+        .expect("secure inbox hydration request");
+    assert_eq!(
+        secure_inbox["params"]["body"]["security_profile"],
+        "direct-e2ee"
+    );
     let delta = bodies
         .iter()
         .find(|body| body["method"] == "sync.delta")

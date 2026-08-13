@@ -242,10 +242,24 @@ fn group_add_live_error_preserves_go_owner_hint() {
     let workspace = TempDir::new("group-live-add-owner-hint").expect("workspace");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let member_did = "did:wba:awiki.ai:alice:e1_alice";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_error(
-        2403,
-        "actor cannot add members",
-    ))]);
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {"display_name": "Demo Group"},
+            "member_role": "owner",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "7",
+            "group_profile": {"display_name": "Demo Group"},
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            }
+        }))),
+        TestResponse::ok(&json_rpc_error(2403, "actor cannot add members")),
+    ]);
     write_group_config(workspace.path(), &server.base_url());
     register_ready_group_identity(workspace.path(), "bob-group", "bob", "jwt-bob");
 
@@ -278,12 +292,23 @@ fn group_add_live_error_preserves_go_owner_hint() {
     );
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
-    assert_eq!(body["method"], "group.add");
-    assert_eq!(body["params"]["body"]["member_did"], member_did);
-    assert_eq!(body["params"]["body"]["role"], "member");
+    assert_eq!(requests.len(), 3);
+    let bodies = requests
+        .iter()
+        .map(|request| {
+            assert!(request.starts_with("POST /im/rpc HTTP/1.1"));
+            serde_json::from_str::<Value>(request_body(request)).expect("request body")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies
+            .iter()
+            .map(|body| body["method"].as_str().expect("request method"))
+            .collect::<Vec<_>>(),
+        ["group.get", "group.get_info", "group.add"]
+    );
+    assert_eq!(bodies[2]["params"]["body"]["member_did"], member_did);
+    assert_eq!(bodies[2]["params"]["body"]["role"], "member");
 }
 
 #[test]
