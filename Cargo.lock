@@ -259,6 +259,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "idna",
+ "libc",
  "rand 0.8.6",
  "redb",
  "reqwest",

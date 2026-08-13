@@ -346,6 +346,16 @@ where
                 break;
             };
             if let Err(error) = self.send_claimed_read_mutation(db, binding, &record).await {
+                if is_stale_group_read_target(&record, &error) {
+                    db.abandon_stale_read_mutation(
+                        &binding.owner_identity_id,
+                        &record.mutation_id,
+                        error_code(&error).unwrap_or("READ_STATE_TARGET_GONE"),
+                        now,
+                    )
+                    .await?;
+                    continue;
+                }
                 let stale_direct_target = is_stale_direct_read_target(&record, &error);
                 let retry_at = now.saturating_add(if stale_direct_target { 300 } else { 5 });
                 db.retry_local_mutation(
@@ -1896,6 +1906,24 @@ fn is_stale_direct_read_target(
                 .get("thread_kind")
                 .and_then(Value::as_str)
                 .map(|thread_kind| thread_kind == "direct")
+        })
+        .unwrap_or(false)
+}
+
+fn is_stale_group_read_target(
+    record: &crate::internal::local_state::sync_v2::LocalMutationRecord,
+    error: &crate::ImError,
+) -> bool {
+    if error_code(error) != Some("anp.target_not_found") {
+        return false;
+    }
+    serde_json::from_str::<Value>(&record.payload_json)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("thread_kind")
+                .and_then(Value::as_str)
+                .map(|thread_kind| thread_kind == "group")
         })
         .unwrap_or(false)
 }
@@ -4540,6 +4568,127 @@ mod tests {
                 .unwrap(),
             "retryable|anp.target_not_found"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_group_read_target_is_abandoned_without_blocking_delta_sync() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-stale-group-target");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let group_did = "did:wba:awiki.test:groups:stale-target";
+        let conversation_id = format!("group:{group_did}");
+        let now = unix_time_i64();
+        let db = client.core_inner().local_state_db().await.unwrap();
+        db.mark_thread_read_watermark(
+            binding.owner_identity_id.clone(),
+            binding.current_did.clone(),
+            crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse(group_did).unwrap(),
+                ),
+                read_watermark_message_id: Some(format!("{group_did}:5")),
+                read_watermark_seq: Some("5".to_owned()),
+                read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .await
+        .unwrap();
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO local_mutation_outbox
+                 (owner_identity_id, mutation_id, operation_id, mutation_type,
+                  aggregate_id, payload_json, status, attempt_count, retry_at,
+                  in_flight_since, last_error_code, created_at, updated_at)
+                 VALUES (?1, 'read-stale-group', 'op-read-stale-group',
+                         'read_state_mark_read', ?2, ?3, 'pending', 0,
+                         NULL, NULL, NULL, ?4, ?4)",
+                rusqlite::params![
+                    binding.owner_identity_id,
+                    group_did,
+                    json!({
+                        "thread_kind": "group",
+                        "thread_id": conversation_id,
+                        "remote_thread_key": group_did,
+                        "read_watermark_seq": "5",
+                        "read_watermark_message_id": format!("{group_did}:5"),
+                        "read_watermark_at": "2026-07-28T12:00:02Z"
+                    })
+                    .to_string(),
+                    now,
+                ],
+            )
+            .unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Err(crate::ImError::Service {
+                        status_code: Some(404),
+                        code: Some("anp.target_not_found".to_owned()),
+                        message: "the old Group target no longer exists".to_owned(),
+                        data: None,
+                    }),
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["read_state.mark_read", "sync.delta"]
+        );
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status || '|' || last_error_code
+                     FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1 AND mutation_id = 'read-stale-group'",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "permanent_failure|anp.target_not_found"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pending_remote_ack FROM thread_read_state
+                     WHERE owner_identity_id = ?1 AND thread_id = ?2",
+                    [binding.owner_identity_id.as_str(), conversation_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        let diagnostics = client.messages().sync_diagnostics_async().await.unwrap();
+        assert_eq!(diagnostics.mode, crate::messages::MessageSyncMode::Idle);
+        assert_eq!(diagnostics.pending_mutation_count, 0);
+        assert_eq!(
+            diagnostics.dirty_domains,
+            [crate::messages::MessageSyncDirtyDomain::ReadState]
+        );
+        assert_eq!(
+            diagnostics.retry_state,
+            crate::messages::MessageSyncRetryState::PermanentFailure
+        );
+        assert_eq!(diagnostics.next_retry_at, None);
     }
 
     #[test]

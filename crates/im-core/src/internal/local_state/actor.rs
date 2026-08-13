@@ -105,6 +105,13 @@ enum LocalStateCommand {
         retry_at: i64,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    AbandonStaleReadMutation {
+        owner_identity_id: String,
+        mutation_id: String,
+        error_code: String,
+        updated_at: i64,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     EnsureConversation {
         owner_identity_id: String,
         owner_did: String,
@@ -833,6 +840,25 @@ impl LocalStateDb {
             mutation_id: mutation_id.into(),
             error_code: error_code.into(),
             retry_at,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn abandon_stale_read_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        mutation_id: impl Into<String>,
+        error_code: impl Into<String>,
+        updated_at: i64,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::AbandonStaleReadMutation {
+            owner_identity_id: owner_identity_id.into(),
+            mutation_id: mutation_id.into(),
+            error_code: error_code.into(),
+            updated_at,
             reply,
         })
         .await?;
@@ -2068,6 +2094,22 @@ fn run_actor(
                     &mutation_id,
                     &error_code,
                     retry_at,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::AbandonStaleReadMutation {
+                owner_identity_id,
+                mutation_id,
+                error_code,
+                updated_at,
+                reply,
+            } => {
+                let result = super::sync_v2::abandon_stale_read_mutation(
+                    &connection,
+                    &owner_identity_id,
+                    &mutation_id,
+                    &error_code,
+                    updated_at,
                 );
                 let _ = reply.send(result);
             }

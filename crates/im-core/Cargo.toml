@@ -38,6 +38,7 @@ x25519-dalek.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
 idna.workspace = true
+libc.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true

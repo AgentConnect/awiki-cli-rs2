@@ -1,3 +1,4 @@
+mod atomic_publish;
 mod crypto;
 pub(crate) mod policy;
 pub(crate) mod record;

@@ -1,3 +1,4 @@
+use super::atomic_publish::publish_noreplace;
 use super::record::{SecretRef, VaultSecretRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -32,8 +33,8 @@ impl FileSecretVaultStore {
     }
 
     /// Atomically publishes a complete encrypted record without replacing an
-    /// existing deterministic record. The hard-link is the linearization
-    /// point; the temporary file is fully synced before it becomes visible.
+    /// existing deterministic record. The platform publish operation is the
+    /// linearization point; the temporary file is fully synced first.
     pub(crate) fn put_if_absent(
         &self,
         record: &VaultSecretRecord,
@@ -58,18 +59,12 @@ impl FileSecretVaultStore {
             file.write_all(&raw).map_err(crate::ImError::from)?;
             file.sync_all().map_err(crate::ImError::from)?;
             drop(file);
-            let created = match fs::hard_link(&temp, &path) {
-                Ok(()) => true,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-                Err(error) => {
-                    return Err(crate::ImError::Io {
-                        detail: format!(
-                            "publish secret vault record {} without replacement: {error}",
-                            path.display()
-                        ),
-                    });
-                }
-            };
+            let created = publish_noreplace(&temp, &path).map_err(|error| crate::ImError::Io {
+                detail: format!(
+                    "publish secret vault record {} without replacement: {error}",
+                    path.display()
+                ),
+            })?;
             if created {
                 set_private_file_mode(&path)?;
             }
