@@ -153,3 +153,39 @@ ON CONFLICT(owner_identity_id, peer_persona_id) DO UPDATE SET
         .map_err(super::local_state_unavailable)?;
     Ok(())
 }
+
+pub(crate) fn refresh_existing_from_public_profile(
+    connection: &Connection,
+    owner_identity_id: &str,
+    did: &crate::ids::Did,
+    profile: &crate::identity::Profile,
+) -> crate::ImResult<bool> {
+    let binding = connection
+        .query_row(
+            r#"SELECT persona.peer_persona_id, persona.full_handle
+FROM peer_identifiers identifier
+JOIN peer_personas persona
+  ON persona.owner_identity_id = identifier.owner_identity_id
+ AND persona.peer_persona_id = identifier.peer_persona_id
+WHERE identifier.owner_identity_id = ?1
+  AND identifier.identifier_kind = 'did'
+  AND identifier.identifier_value = ?2
+  AND identifier.is_current = 1
+LIMIT 1"#,
+            (owner_identity_id.trim(), did.as_str()),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((peer_persona_id, full_handle)) = binding else {
+        return Ok(false);
+    };
+    upsert_from_verified_lookup(
+        connection,
+        owner_identity_id,
+        &peer_persona_id,
+        &full_handle,
+        profile,
+    )?;
+    Ok(true)
+}
