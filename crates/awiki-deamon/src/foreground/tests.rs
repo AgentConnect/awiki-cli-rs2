@@ -3214,18 +3214,31 @@ fn daemon_im_core_config_allows_realtime_sessions_without_changing_shared_defaul
 }
 
 #[test]
-fn runtime_inbox_reconciliation_interval_is_low_frequency_floor() {
+fn runtime_inbox_reconciliation_interval_adapts_to_realtime_health() {
     let mut options = ForegroundOptions::new(PathBuf::from("/tmp/awiki-test"));
     options.poll_interval_ms = 250;
 
     assert_eq!(
-        runtime_inbox_reconciliation_interval(&options),
-        RUNTIME_INBOX_RECONCILIATION_INTERVAL
+        runtime_inbox_reconciliation_interval(
+            &options,
+            runtime_realtime::DEGRADED_POLL_FALLBACK_INTERVAL,
+        ),
+        runtime_realtime::DEGRADED_POLL_FALLBACK_INTERVAL
+    );
+    assert_eq!(
+        runtime_inbox_reconciliation_interval(
+            &options,
+            runtime_realtime::HEALTHY_POLL_RECONCILIATION_INTERVAL,
+        ),
+        runtime_realtime::HEALTHY_POLL_RECONCILIATION_INTERVAL
     );
 
     options.poll_interval_ms = 45_000;
     assert_eq!(
-        runtime_inbox_reconciliation_interval(&options),
+        runtime_inbox_reconciliation_interval(
+            &options,
+            runtime_realtime::DEGRADED_POLL_FALLBACK_INTERVAL,
+        ),
         Duration::from_millis(45_000)
     );
 }

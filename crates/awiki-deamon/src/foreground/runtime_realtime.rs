@@ -22,6 +22,7 @@ const RELIABLE_SYNC_DEBOUNCE: Duration = Duration::from_millis(250);
 const RELIABLE_SYNC_RETRY_BASE: Duration = Duration::from_secs(5);
 const RELIABLE_SYNC_RETRY_MAX: Duration = Duration::from_secs(60);
 pub(super) const DEGRADED_POLL_FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+pub(super) const HEALTHY_POLL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RealtimeEndpointKind {
@@ -332,7 +333,8 @@ impl RealtimeDirtyReason {
     fn requires_degraded_poll(self) -> bool {
         matches!(
             self,
-            Self::Disconnected
+            Self::GapDetected
+                | Self::Disconnected
                 | Self::UnknownNotification
                 | Self::SessionEnded
                 | Self::ChannelPressure
@@ -376,9 +378,41 @@ impl DirtyAgentSync {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RealtimeReconciliationState {
+    generation: u64,
+    connected: bool,
+    gap_detected: bool,
+    last_reconcile_at: Option<Instant>,
+}
+
+impl RealtimeReconciliationState {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            connected: false,
+            gap_detected: false,
+            last_reconcile_at: None,
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.connected && !self.gap_detected
+    }
+
+    fn interval(&self) -> Duration {
+        if self.is_healthy() {
+            HEALTHY_POLL_RECONCILIATION_INTERVAL
+        } else {
+            DEGRADED_POLL_FALLBACK_INTERVAL
+        }
+    }
+}
+
 pub(super) struct RuntimeRealtimeSyncCoordinator {
     dirty: HashMap<String, DirtyAgentSync>,
     auth_revoked_generation: HashMap<String, u64>,
+    reconciliation: HashMap<String, RealtimeReconciliationState>,
 }
 
 impl RuntimeRealtimeSyncCoordinator {
@@ -386,6 +420,7 @@ impl RuntimeRealtimeSyncCoordinator {
         Self {
             dirty: HashMap::new(),
             auth_revoked_generation: HashMap::new(),
+            reconciliation: HashMap::new(),
         }
     }
 
@@ -401,6 +436,11 @@ impl RuntimeRealtimeSyncCoordinator {
         };
         if !hint.sync_dirty && !hint.gap_detected {
             return;
+        }
+        if hint.gap_detected {
+            if let Some(state) = self.reconciliation_state_for_source(source) {
+                state.gap_detected = true;
+            }
         }
         self.mark_dirty(
             source,
@@ -432,6 +472,9 @@ impl RuntimeRealtimeSyncCoordinator {
         source: &RealtimeSource,
         state: RealtimeConnectionState,
     ) {
+        if let Some(reconciliation) = self.reconciliation_state_for_source(source) {
+            reconciliation.connected = state == RealtimeConnectionState::Connected;
+        }
         match state {
             RealtimeConnectionState::Connected => {
                 self.mark_dirty(source, RealtimeDirtyReason::Reconnected, None, None);
@@ -453,6 +496,9 @@ impl RuntimeRealtimeSyncCoordinator {
     }
 
     pub(super) fn mark_session_ended(&mut self, source: &RealtimeSource) {
+        if let Some(state) = self.reconciliation_state_for_source(source) {
+            state.connected = false;
+        }
         self.mark_dirty(source, RealtimeDirtyReason::SessionEnded, None, None);
     }
 
@@ -462,11 +508,40 @@ impl RuntimeRealtimeSyncCoordinator {
 
     pub(super) fn mark_periodic_reconcile(&mut self, agent_dids: impl IntoIterator<Item = String>) {
         let now = Instant::now();
-        for agent_did in agent_dids {
-            if agent_did.trim().is_empty() || self.auth_revoked_generation.contains_key(&agent_did)
-            {
-                continue;
+        self.mark_periodic_reconcile_at(agent_dids, now);
+    }
+
+    fn mark_periodic_reconcile_at(
+        &mut self,
+        agent_dids: impl IntoIterator<Item = String>,
+        now: Instant,
+    ) {
+        let active_agent_dids = agent_dids
+            .into_iter()
+            .filter(|agent_did| {
+                !agent_did.trim().is_empty()
+                    && !self.auth_revoked_generation.contains_key(agent_did)
+            })
+            .collect::<HashSet<_>>();
+        self.reconciliation
+            .retain(|agent_did, _| active_agent_dids.contains(agent_did));
+
+        let mut due_agent_dids = Vec::new();
+        for agent_did in active_agent_dids {
+            let state = self
+                .reconciliation
+                .entry(agent_did.clone())
+                .or_insert_with(|| RealtimeReconciliationState::new(0));
+            let is_due = state.last_reconcile_at.is_none_or(|last_reconcile_at| {
+                now.saturating_duration_since(last_reconcile_at) >= state.interval()
+            });
+            if is_due {
+                state.last_reconcile_at = Some(now);
+                due_agent_dids.push(agent_did);
             }
+        }
+
+        for agent_did in due_agent_dids {
             match self.dirty.entry(agent_did) {
                 std::collections::hash_map::Entry::Occupied(mut occupied) => {
                     let entry = occupied.get_mut();
@@ -485,6 +560,43 @@ impl RuntimeRealtimeSyncCoordinator {
                     vacant.insert(entry);
                 }
             }
+        }
+    }
+
+    fn reconciliation_state_for_source(
+        &mut self,
+        source: &RealtimeSource,
+    ) -> Option<&mut RealtimeReconciliationState> {
+        if self
+            .auth_revoked_generation
+            .get(&source.agent_did)
+            .is_some_and(|generation| *generation == source.generation)
+        {
+            return None;
+        }
+        let state = self
+            .reconciliation
+            .entry(source.agent_did.clone())
+            .or_insert_with(|| RealtimeReconciliationState::new(source.generation));
+        if source.generation < state.generation {
+            return None;
+        }
+        if source.generation > state.generation {
+            *state = RealtimeReconciliationState::new(source.generation);
+        }
+        Some(state)
+    }
+
+    pub(super) fn reconciliation_interval(&self) -> Duration {
+        if !self.reconciliation.is_empty()
+            && self
+                .reconciliation
+                .values()
+                .all(RealtimeReconciliationState::is_healthy)
+        {
+            HEALTHY_POLL_RECONCILIATION_INTERVAL
+        } else {
+            DEGRADED_POLL_FALLBACK_INTERVAL
         }
     }
 
@@ -583,8 +695,29 @@ impl RuntimeRealtimeSyncCoordinator {
         }
     }
 
+    pub(super) fn mark_work_completed(&mut self, work: &RuntimeRealtimeSyncWork) {
+        let Some(state) = self.reconciliation.get_mut(&work.agent_did) else {
+            return;
+        };
+        if work
+            .source
+            .as_ref()
+            .is_some_and(|source| source.generation != state.generation)
+        {
+            return;
+        }
+        state.last_reconcile_at = Some(Instant::now());
+        if work
+            .reasons
+            .contains(&RealtimeDirtyReason::GapDetected.as_str())
+        {
+            state.gap_detected = false;
+        }
+    }
+
     pub(super) fn mark_auth_revoked(&mut self, work: &RuntimeRealtimeSyncWork) {
         self.dirty.remove(&work.agent_did);
+        self.reconciliation.remove(&work.agent_did);
         self.auth_revoked_generation.insert(
             work.agent_did.clone(),
             work.source.as_ref().map_or(0, |source| source.generation),
@@ -996,7 +1129,88 @@ mod tests {
         assert_eq!(work[0].agent_did, "did:agent:a");
         assert_eq!(work[0].groups, vec![group]);
         assert_eq!(work[0].reasons, vec!["gap_detected", "sync_hint"]);
-        assert!(!work[0].degraded_poll);
+        assert!(work[0].degraded_poll);
+    }
+
+    #[test]
+    fn reconciliation_interval_switches_with_connection_and_gap_health() {
+        let source = source("did:agent:a", 1);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        assert_eq!(
+            coordinator.reconciliation_interval(),
+            DEGRADED_POLL_FALLBACK_INTERVAL
+        );
+
+        coordinator.mark_connection_state(&source, RealtimeConnectionState::Connected);
+        assert_eq!(
+            coordinator.reconciliation_interval(),
+            HEALTHY_POLL_RECONCILIATION_INTERVAL
+        );
+
+        coordinator.mark_sync_hint(&source, Some(&sync_hint(true)), None, None);
+        assert_eq!(
+            coordinator.reconciliation_interval(),
+            DEGRADED_POLL_FALLBACK_INTERVAL
+        );
+
+        coordinator.mark_work_completed(&RuntimeRealtimeSyncWork {
+            agent_did: source.agent_did.clone(),
+            source: Some(source.clone()),
+            reasons: vec![RealtimeDirtyReason::GapDetected.as_str()],
+            degraded_poll: true,
+            threads: Vec::new(),
+            groups: Vec::new(),
+        });
+        assert_eq!(
+            coordinator.reconciliation_interval(),
+            HEALTHY_POLL_RECONCILIATION_INTERVAL
+        );
+
+        coordinator.mark_connection_state(&source, RealtimeConnectionState::Disconnected);
+        assert_eq!(
+            coordinator.reconciliation_interval(),
+            DEGRADED_POLL_FALLBACK_INTERVAL
+        );
+    }
+
+    #[test]
+    fn periodic_reconcile_uses_three_hundred_seconds_when_healthy_and_thirty_when_disconnected() {
+        let source = source("did:agent:a", 1);
+        let now = Instant::now();
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+        coordinator.mark_connection_state(&source, RealtimeConnectionState::Connected);
+        coordinator.dirty.clear();
+
+        coordinator.mark_periodic_reconcile_at([source.agent_did.clone()], now);
+        assert_eq!(coordinator.take_due_work().len(), 1);
+
+        coordinator.mark_periodic_reconcile_at(
+            [source.agent_did.clone()],
+            now + HEALTHY_POLL_RECONCILIATION_INTERVAL - Duration::from_millis(1),
+        );
+        assert!(coordinator.dirty.is_empty());
+        coordinator.mark_periodic_reconcile_at(
+            [source.agent_did.clone()],
+            now + HEALTHY_POLL_RECONCILIATION_INTERVAL,
+        );
+        assert_eq!(coordinator.dirty.len(), 1);
+        coordinator.dirty.clear();
+
+        coordinator.mark_connection_state(&source, RealtimeConnectionState::Disconnected);
+        assert!(coordinator.next_due_delay() <= DEGRADED_POLL_FALLBACK_INTERVAL);
+        coordinator.dirty.clear();
+        let disconnected_at = now + HEALTHY_POLL_RECONCILIATION_INTERVAL;
+        coordinator.mark_periodic_reconcile_at(
+            [source.agent_did.clone()],
+            disconnected_at + DEGRADED_POLL_FALLBACK_INTERVAL - Duration::from_millis(1),
+        );
+        assert!(coordinator.dirty.is_empty());
+        coordinator.mark_periodic_reconcile_at(
+            [source.agent_did],
+            disconnected_at + DEGRADED_POLL_FALLBACK_INTERVAL,
+        );
+        assert_eq!(coordinator.dirty.len(), 1);
     }
 
     #[test]

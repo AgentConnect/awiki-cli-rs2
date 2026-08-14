@@ -1080,6 +1080,17 @@ a replacement for v2, so this change requires neither a public API version bump
 nor a SQLite schema migration. No realtime notification advances the reliable
 cursor.
 
+The internal realtime transport sends a ping every 20 seconds and retains the
+15-second pong timeout, bounding half-open detection to about 35 seconds.
+`awiki-deamon` keeps reconciliation health per Runtime Agent session. A
+connected session with no unresolved sync gap uses a 300-second periodic
+reconcile interval; a missing/disconnected session or a detected gap uses 30
+seconds. A gap returns to the healthy interval only after reliable sync
+completes successfully. Reconnect and gap notifications still schedule their
+existing immediate reliable sync, independent of the periodic fallback. These
+are internal scheduling changes: they do not change the negotiated WebSocket
+schema, public SDK API, or protocol version.
+
 Daemon crash compensation reads committed local messages through an exact-client
 Core API, never by enumerating conversations or accepting a caller-provided
 owner/account/raw cursor. The API filters to the bound owner's hydrated incoming
