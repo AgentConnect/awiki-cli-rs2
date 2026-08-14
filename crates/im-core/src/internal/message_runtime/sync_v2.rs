@@ -44,6 +44,45 @@ where
         mut self,
         request: crate::messages::MessageSyncRequest,
     ) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
+        let mut device_epoch_refresh_attempted = false;
+        loop {
+            match self.sync_now_once(&request).await {
+                Err(error)
+                    if !device_epoch_refresh_attempted && is_device_epoch_rejection(&error) =>
+                {
+                    device_epoch_refresh_attempted = true;
+                    self.session_provider.refresh_session().await?;
+                    self.transport.reload_authentication_state()?;
+                }
+                Ok((mut outcome, Some(_error))) if !device_epoch_refresh_attempted => {
+                    self.session_provider.refresh_session().await?;
+                    self.transport.reload_authentication_state()?;
+                    let binding = self.client.active_sync_account_binding().await?;
+                    let owner_lock = owner_sync_lock(&binding.owner_identity_id);
+                    let _owner_guard = owner_lock.lock().await;
+                    let db = self.client.core_inner().local_state_db().await?;
+                    match self.drain_read_outbox(&db, &binding).await {
+                        Ok(None) => return Ok(outcome),
+                        Ok(Some(error)) => return Err(error),
+                        Err(_) => {
+                            outcome
+                                .warnings
+                                .push("sync.read_state_writeback_deferred".to_owned());
+                            return Ok(outcome);
+                        }
+                    }
+                }
+                Ok((_outcome, Some(error))) => return Err(error),
+                Ok((outcome, None)) => return Ok(outcome),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn sync_now_once(
+        &mut self,
+        request: &crate::messages::MessageSyncRequest,
+    ) -> crate::ImResult<(crate::messages::MessageSyncOutcome, Option<crate::ImError>)> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)
             .await?;
@@ -87,7 +126,6 @@ where
             }
         };
 
-        self.drain_read_outbox(&db, &binding).await?;
         let mut recovery_token_retries = 0_u8;
         loop {
             let cursor = crate::internal::wire::sync_v2::SyncCursorV2 {
@@ -294,7 +332,19 @@ where
                     } else {
                         crate::messages::MessageSyncStatus::Changed
                     };
-                return Ok(best_effort_cleanup(&db, &state, result).await);
+                let device_epoch_rejection = match self.drain_read_outbox(&db, &binding).await {
+                    Ok(error) => error,
+                    Err(_) => {
+                        result
+                            .warnings
+                            .push("sync.read_state_writeback_deferred".to_owned());
+                        None
+                    }
+                };
+                return Ok((
+                    best_effort_cleanup(&db, &state, result).await,
+                    device_epoch_rejection,
+                ));
             }
         }
     }
@@ -337,7 +387,7 @@ where
         &mut self,
         db: &crate::internal::local_state::actor::LocalStateDb,
         binding: &crate::identity::ActiveSyncAccountBinding,
-    ) -> crate::ImResult<()> {
+    ) -> crate::ImResult<Option<crate::ImError>> {
         for _ in 0..16 {
             let now = unix_time_i64();
             let Some(record) = db
@@ -347,6 +397,17 @@ where
                 break;
             };
             if let Err(error) = self.send_claimed_read_mutation(db, binding, &record).await {
+                if error_code(&error) == Some("SYNC_LOCAL_OUTBOX_CORRUPT") {
+                    db.permanently_fail_local_mutation(
+                        &binding.owner_identity_id,
+                        &record.mutation_id,
+                        "SYNC_LOCAL_OUTBOX_CORRUPT",
+                        now,
+                    )
+                    .await?;
+                    continue;
+                }
+                let device_epoch_rejection = is_device_epoch_rejection(&error);
                 let target_not_found = is_read_target_not_found(&record, &error);
                 let sequence_only_group_target_not_found =
                     target_not_found && is_sequence_only_group_read(&record);
@@ -369,7 +430,11 @@ where
                 } else {
                     5
                 };
-                let retry_at = now.saturating_add(retry_delay);
+                let retry_at = if device_epoch_rejection {
+                    now
+                } else {
+                    now.saturating_add(retry_delay)
+                };
                 db.retry_local_mutation(
                     &binding.owner_identity_id,
                     &record.mutation_id,
@@ -377,12 +442,12 @@ where
                     retry_at,
                 )
                 .await?;
-                if !target_not_found {
-                    return Err(error);
+                if device_epoch_rejection {
+                    return Ok(Some(error));
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn send_claimed_read_mutation(
@@ -1799,6 +1864,13 @@ fn empty_outcome() -> crate::messages::MessageSyncOutcome {
     }
 }
 
+fn is_device_epoch_rejection(error: &crate::ImError) -> bool {
+    matches!(
+        error_code(error),
+        Some("anp.device_not_eligible" | "anp.device_state_changed")
+    )
+}
+
 pub(crate) fn failure_outcome(
     error: &crate::ImError,
 ) -> Option<crate::messages::MessageSyncOutcome> {
@@ -2514,6 +2586,67 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RefreshingSyncSnapshotSessionProvider {
+        refresh_calls: Rc<RefCell<u32>>,
+        fail_refresh: bool,
+    }
+
+    impl AsyncSessionProvider for RefreshingSyncSnapshotSessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            assert_eq!(scope, crate::auth::AuthScope::Messaging);
+            Ok(crate::auth::SessionBundle {
+                subject: crate::ids::Did::parse("did:wba:awiki.test:alice:e1_root")?,
+                scope,
+                expires_at: None,
+                refreshed: false,
+                bearer_token: None,
+            })
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            *self.refresh_calls.borrow_mut() += 1;
+            if self.fail_refresh {
+                return Err(crate::ImError::AuthRequired);
+            }
+            Ok(crate::auth::SessionUpdate {
+                subject: crate::ids::Did::parse("did:wba:awiki.test:alice:e1_root")?,
+                previous_expires_at: None,
+                new_expires_at: None,
+                refreshed: true,
+                bearer_token: None,
+            })
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("sync snapshot tests never inspect session status")
+        }
+    }
+
+    struct ReloadingSyncSnapshotTransport {
+        inner: SyncSnapshotTransport,
+        authentication_reloads: Rc<RefCell<u32>>,
+    }
+
+    impl AsyncAuthenticatedRpcTransport for ReloadingSyncSnapshotTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            self.inner.authenticated_rpc(endpoint, method, params).await
+        }
+
+        fn reload_authentication_state(&mut self) -> crate::ImResult<()> {
+            *self.authentication_reloads.borrow_mut() += 1;
+            Ok(())
+        }
+    }
+
     struct NoopAsyncDirectoryTransport;
 
     impl AsyncRpcTransport for NoopAsyncDirectoryTransport {
@@ -2757,13 +2890,13 @@ mod tests {
             SyncSnapshotTransport::queued(
                 calls,
                 vec![
+                    Ok(sync_snapshot_delta("1", next_scan_seq, vec![])),
                     Err(crate::ImError::Service {
                         status_code: Some(404),
                         code: Some("anp.target_not_found".to_owned()),
                         message: "the Group target is not visible".to_owned(),
                         data: None,
                     }),
-                    Ok(sync_snapshot_delta("1", next_scan_seq, vec![])),
                 ],
             ),
             NoopAsyncDirectoryTransport,
@@ -4361,6 +4494,7 @@ mod tests {
             SyncSnapshotTransport::queued(
                 Rc::clone(&calls),
                 vec![
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
                     Ok(sync_read_ack(
                         &binding,
                         "remote-thread-key-exact-bob",
@@ -4368,7 +4502,6 @@ mod tests {
                         "message-read-30",
                         "2026-07-28T12:00:03Z",
                     )),
-                    Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
             NoopAsyncDirectoryTransport,
@@ -4383,17 +4516,17 @@ mod tests {
                 .iter()
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
-            ["read_state.mark_read", "sync.delta"]
+            ["sync.delta", "read_state.mark_read"]
         );
         assert_eq!(
-            calls[0].params.pointer("/body/thread"),
+            calls[1].params.pointer("/body/thread"),
             Some(&json!({
                 "kind": "direct",
                 "thread_key": "remote-thread-key-exact-bob"
             }))
         );
         assert_eq!(
-            calls[0].params.pointer("/meta/operation_id"),
+            calls[1].params.pointer("/meta/operation_id"),
             Some(&json!(operation_id))
         );
         let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
@@ -4468,6 +4601,7 @@ mod tests {
             SyncSnapshotTransport::queued(
                 Rc::new(RefCell::new(Vec::new())),
                 vec![
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
                     Ok(sync_read_ack(
                         &binding,
                         "remote-thread-key-higher-bob",
@@ -4475,7 +4609,6 @@ mod tests {
                         "message-read-high",
                         "2026-07-28T12:00:09Z",
                     )),
-                    Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
             NoopAsyncDirectoryTransport,
@@ -4525,7 +4658,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_read_outbox_pseudo_ack_returns_claim_to_retryable() {
+    async fn sync_read_outbox_pseudo_ack_does_not_change_delta_result() {
         let fixture = SyncSnapshotFixture::new("read-outbox-pseudo-ack");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
@@ -4577,22 +4710,34 @@ mod tests {
         );
         pseudo_ack["remote_acknowledged"] = json!(false);
         pseudo_ack["pending_remote_ack"] = json!(true);
-        let error = MessageSyncRuntimeV2::new(
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
             &client,
             ReadySyncSnapshotSessionProvider,
-            SyncSnapshotTransport::queued(Rc::new(RefCell::new(Vec::new())), vec![Ok(pseudo_ack)]),
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![Ok(sync_snapshot_delta("1", "12", vec![])), Ok(pseudo_ack)],
+            ),
             NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            crate::ImError::Service {
-                code: Some(code),
-                ..
-            } if code == "READ_STATE_INCOMPLETE_ACK"
-        ));
+        .unwrap();
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "read_state.mark_read"]
+        );
+        assert_eq!(
+            load_sync_snapshot_state(&client, &binding.owner_identity_id)
+                .await
+                .scan_seq,
+            "12"
+        );
         let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
         let state = connection
             .query_row(
@@ -4616,6 +4761,402 @@ mod tests {
                 None,
                 "READ_STATE_INCOMPLETE_ACK".to_owned(),
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn retryable_read_outbox_transport_failure_does_not_change_delta_result() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-transport-failure");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let conversation_id = "dm:peer-scope:v1:alice:transport-failure";
+        seed_sync_read_direct_message(
+            &client,
+            &binding,
+            "message-read-transport-failure",
+            conversation_id,
+            30,
+        )
+        .await;
+        apply_sync_read_thread_binding(
+            &client,
+            &binding,
+            "event-read-binding-transport-failure",
+            "11",
+            "remote-thread-key-transport-failure",
+            conversation_id,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse(conversation_id).unwrap(),
+                    ),
+                    read_watermark_message_id: Some("message-read-transport-failure".to_owned()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
+                    Err(crate::ImError::TransportUnavailable {
+                        detail: "read writeback transport unavailable".to_owned(),
+                    }),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(
+            load_sync_snapshot_state(&client, &binding.owner_identity_id)
+                .await
+                .scan_seq,
+            "12"
+        );
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "read_state.mark_read"]
+        );
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status || '|' || last_error_code
+                     FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "retryable|READ_STATE_RETRY"
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_read_outbox_is_permanently_failed_after_delta_commits() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-corrupt");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let conversation_id = "dm:peer-scope:v1:alice:corrupt-outbox";
+        seed_sync_read_direct_message(
+            &client,
+            &binding,
+            "message-read-corrupt-outbox",
+            conversation_id,
+            30,
+        )
+        .await;
+        apply_sync_read_thread_binding(
+            &client,
+            &binding,
+            "event-read-binding-corrupt-outbox",
+            "11",
+            "remote-thread-key-corrupt-outbox",
+            conversation_id,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse(conversation_id).unwrap(),
+                    ),
+                    read_watermark_message_id: Some("message-read-corrupt-outbox".to_owned()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+        rusqlite::Connection::open(fixture.sqlite_path())
+            .unwrap()
+            .execute(
+                "UPDATE local_mutation_outbox SET payload_json = 'not-json'
+                 WHERE owner_identity_id = ?1",
+                [binding.owner_identity_id.as_str()],
+            )
+            .unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![Ok(sync_snapshot_delta("1", "12", vec![]))],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta"]
+        );
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status || '|' || last_error_code
+                     FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "permanent_failure|SYNC_LOCAL_OUTBOX_CORRUPT"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_epoch_refresh_retries_read_outbox_after_delta_commits() {
+        let fixture = SyncSnapshotFixture::new("device-epoch-refresh");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let group_did = "did:wba:awiki.test:groups:device-epoch-refresh";
+        seed_sync_read_group_message(
+            &client,
+            &binding,
+            &format!("{group_did}:30"),
+            None,
+            group_did,
+            30,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Group(
+                        crate::ids::GroupRef::parse(group_did).unwrap(),
+                    ),
+                    read_watermark_message_id: Some(format!("{group_did}:30")),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let event_id = "event-after-device-epoch-refresh";
+        let message_id = "message-after-device-epoch-refresh";
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let refresh_calls = Rc::new(RefCell::new(0));
+        let authentication_reloads = Rc::new(RefCell::new(0));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            RefreshingSyncSnapshotSessionProvider {
+                refresh_calls: Rc::clone(&refresh_calls),
+                fail_refresh: false,
+            },
+            ReloadingSyncSnapshotTransport {
+                inner: SyncSnapshotTransport::queued(
+                    Rc::clone(&calls),
+                    vec![
+                        Ok(sync_snapshot_delta(
+                            "1",
+                            "12",
+                            vec![sync_snapshot_message_event(
+                                &binding, event_id, "1", "12", message_id, group_did,
+                            )],
+                        )),
+                        Ok(json!({
+                            "items": [{
+                                "event_id": event_id,
+                                "message": sync_snapshot_message(
+                                    &binding,
+                                    message_id,
+                                    group_did,
+                                    "31",
+                                    "message delivered after device epoch refresh",
+                                )
+                            }],
+                            "unavailable": []
+                        })),
+                        Err(crate::ImError::Service {
+                            status_code: Some(409),
+                            code: Some("anp.device_state_changed".to_owned()),
+                            message: "device authorization epoch is stale".to_owned(),
+                            data: None,
+                        }),
+                        Ok(sync_group_read_ack(
+                            &binding,
+                            group_did,
+                            "30",
+                            &format!("{group_did}:30"),
+                            "2026-07-28T12:00:03Z",
+                        )),
+                    ],
+                ),
+                authentication_reloads: Rc::clone(&authentication_reloads),
+            },
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Changed);
+        assert_eq!(outcome.events_applied, 1);
+        assert!(fixture.has_message_content("message delivered after device epoch refresh"));
+        assert_eq!(*refresh_calls.borrow(), 1);
+        assert_eq!(*authentication_reloads.borrow(), 1);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "sync.delta",
+                "message.get_batch",
+                "read_state.mark_read",
+                "read_state.mark_read"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_device_epoch_rejection_is_terminal_after_one_refresh() {
+        let fixture = SyncSnapshotFixture::new("device-epoch-refresh-exhausted");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let refresh_calls = Rc::new(RefCell::new(0));
+        let authentication_reloads = Rc::new(RefCell::new(0));
+        let rejected = || crate::ImError::Service {
+            status_code: Some(403),
+            code: Some("anp.device_not_eligible".to_owned()),
+            message: "device remains ineligible".to_owned(),
+            data: None,
+        };
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            RefreshingSyncSnapshotSessionProvider {
+                refresh_calls: Rc::clone(&refresh_calls),
+                fail_refresh: false,
+            },
+            ReloadingSyncSnapshotTransport {
+                inner: SyncSnapshotTransport::queued(
+                    Rc::clone(&calls),
+                    vec![Err(rejected()), Err(rejected())],
+                ),
+                authentication_reloads: Rc::clone(&authentication_reloads),
+            },
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+
+        let outcome = failure_outcome(&error).expect("device rejection must be classified");
+        assert_eq!(
+            outcome.status,
+            crate::messages::MessageSyncStatus::AuthRevoked
+        );
+        assert_eq!(*refresh_calls.borrow(), 1);
+        assert_eq!(*authentication_reloads.borrow(), 1);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "sync.delta"]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_device_epoch_refresh_is_auth_revoked() {
+        let fixture = SyncSnapshotFixture::new("device-epoch-refresh-failed");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let refresh_calls = Rc::new(RefCell::new(0));
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            RefreshingSyncSnapshotSessionProvider {
+                refresh_calls: Rc::clone(&refresh_calls),
+                fail_refresh: true,
+            },
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![Err(crate::ImError::Service {
+                    status_code: Some(409),
+                    code: Some("anp.device_state_changed".to_owned()),
+                    message: "device authorization epoch is stale".to_owned(),
+                    data: None,
+                })],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+
+        let outcome = failure_outcome(&error).expect("refresh failure must be classified");
+        assert_eq!(
+            outcome.status,
+            crate::messages::MessageSyncStatus::AuthRevoked
+        );
+        assert_eq!(*refresh_calls.borrow(), 1);
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta"]
         );
     }
 
@@ -4665,13 +5206,13 @@ mod tests {
             SyncSnapshotTransport::queued(
                 Rc::clone(&calls),
                 vec![
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
                     Err(crate::ImError::Service {
                         status_code: Some(404),
                         code: Some("anp.target_not_found".to_owned()),
                         message: "the old Direct target no longer exists".to_owned(),
                         data: None,
                     }),
-                    Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
             NoopAsyncDirectoryTransport,
@@ -4687,7 +5228,7 @@ mod tests {
                 .iter()
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
-            ["read_state.mark_read", "sync.delta"]
+            ["sync.delta", "read_state.mark_read"]
         );
         let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
         assert_eq!(
@@ -4763,6 +5304,7 @@ mod tests {
             SyncSnapshotTransport::queued(
                 Rc::clone(&calls),
                 vec![
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
                     Ok(sync_group_read_ack(
                         &binding,
                         group_did,
@@ -4770,7 +5312,6 @@ mod tests {
                         "business-group-30",
                         "2026-07-28T12:00:03Z",
                     )),
-                    Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
             NoopAsyncDirectoryTransport,
@@ -4786,14 +5327,14 @@ mod tests {
                 .iter()
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
-            ["read_state.mark_read", "sync.delta"]
+            ["sync.delta", "read_state.mark_read"]
         );
         assert_eq!(
-            calls[0].params.pointer("/body/read_up_to_server_seq"),
+            calls[1].params.pointer("/body/read_up_to_server_seq"),
             Some(&json!("30"))
         );
         assert_eq!(
-            calls[0].params.pointer("/body/read_up_to_message_id"),
+            calls[1].params.pointer("/body/read_up_to_message_id"),
             None,
             "a failed legacy Group task must drop its untrusted local message id"
         );
@@ -4914,12 +5455,12 @@ mod tests {
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
             [
-                "read_state.mark_read",
                 "sync.delta",
                 "read_state.mark_read",
                 "sync.delta",
                 "read_state.mark_read",
                 "sync.delta",
+                "read_state.mark_read",
             ]
         );
         for call in calls

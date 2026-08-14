@@ -1067,9 +1067,11 @@ Reliable sync 补充：
   snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；
   snapshot 或 post-anchor delta 失败返回 `retryable_failure`，授权或 generation fence 返回
   `auth_revoked`；同步链路在认证刷新或服务调用中收到 HTTP 401/403，或 Core transport
-  完成有界认证重试后仍收到 JSON-RPC `1401`，或在线 Registry 校验返回
-  `anp.device_not_eligible` / `anp.device_state_changed`，也属于终止性
-  `auth_revoked`，不得进入网络重试循环。没有第二个 public recover API，raw token、
+  完成有界认证重试后仍收到 JSON-RPC `1401`，属于终止性 `auth_revoked`。在线 Registry
+  校验返回 `anp.device_not_eligible` / `anp.device_state_changed` 时，Core 会先执行一次有界
+  session 刷新、transport auth reload 和 active binding 重取，然后重试被拒的 delta 或
+  read outbox；刷新失败或再次收到 Registry fence 才终止为 `auth_revoked`。没有第二个
+  public recover API，raw token、
   cursor/anchor、cutoff、policy
   limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
@@ -1091,7 +1093,10 @@ Reliable sync 补充：
   `remote_acknowledged=true`、`pending_remote_ack=false`、`partial=false`、
   且 server watermark 不低于发送值，才可提交本地 ACK。`fallback_used` 只描述服务端
   采用的兼容路径，不削弱上述最终 ACK 条件。transport、
-  parse、协议验证或本地 ACK transaction 失败都必须把 claim 退回 `retryable`。
+  parse、协议验证或本地 ACK transaction 失败都必须把 claim 退回 `retryable`，且 drain
+  发生在最终 delta commit 之后，不能覆盖已提交的同步结果；损坏的本地 payload 进入
+  `permanent_failure`。Registry fence 的 mutation 在上述单次 session/binding 刷新后立即
+  重发。本行为调整不修改 `anp.read_state.local.v1` wire schema 或 public DTO，不升级协议版本。
 - Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
   snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
   durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，

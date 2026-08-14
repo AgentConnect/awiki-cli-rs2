@@ -2989,11 +2989,13 @@ pub(crate) fn permanently_fail_local_mutation(
                    SELECT json_extract(payload_json, '$.thread_id')
                    FROM local_mutation_outbox
                    WHERE owner_identity_id = ?1 AND mutation_id = ?2
+                     AND json_valid(payload_json)
                )
                AND read_watermark_seq = (
                    SELECT json_extract(payload_json, '$.read_watermark_seq')
                    FROM local_mutation_outbox
                    WHERE owner_identity_id = ?1 AND mutation_id = ?2
+                     AND json_valid(payload_json)
                )
                AND NOT EXISTS (
                    SELECT 1 FROM local_mutation_outbox

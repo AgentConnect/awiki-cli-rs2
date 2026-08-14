@@ -932,7 +932,10 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   commits event receipts, canonical projection changes, and the next v2 cursor
   in one SQLite transaction. Required hydration, schema, identity, or route
   failure rolls back the whole page and does not write a receipt or advance the
-  cursor. Although the wire method accepts at most 100 event IDs and the service
+  cursor. Durable read-state writeback is drained only after the final delta
+  page commits; its transport, decode, validation, or local ACK failure is
+  recorded for retry and cannot replace the committed delta outcome. Although
+  the wire method accepts at most 100 event IDs and the service
   enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
   headroom for compact-JSON framing and escaping; any unavailable item in any
   chunk aborts the full delta page.
@@ -1154,14 +1157,15 @@ rejects unknown top-level/policy/exclusion/read/Group fields, duplicate event
 IDs or sequences, messages before the server cutoff, and malformed state
 timestamps. Core does not calculate or widen the 48-hour/500-message policy.
 An HTTP 401 or 403 observed anywhere in this authenticated sync operation,
-including JWT refresh, a JSON-RPC `1401` remaining after the transport's
-bounded auth retry, or the live Registry fence codes
-`anp.device_not_eligible` / `anp.device_state_changed`, is classified as
-terminal `authRevoked`; transport and server failures outside that
-authorization boundary remain retryable. The Dart host may perform one
-same-owner/device convergence pass before publishing `authRevoked`, but retries
-ordinary sync only when that pass proves the local authorization generation
-advanced; a real Registry fence therefore remains terminal.
+including JWT refresh, or a JSON-RPC `1401` remaining after the transport's
+bounded auth retry, is classified as terminal `authRevoked`. For the live
+Registry fence codes `anp.device_not_eligible` / `anp.device_state_changed`,
+Core first performs one bounded session refresh, reloads transport
+authentication, re-reads the active account/device binding, and retries the
+rejected delta or read-state writeback. Only refresh failure or a repeated
+Registry fence is terminal `authRevoked`; other transport and server failures
+remain retryable. The Dart host's same-owner/device convergence pass remains a
+pre-sync credential-promotion boundary, not a second unbounded retry loop.
 
 The existing `sync_state` table remains the active checkpoint for the v1
 `sync.delta` compatibility implementation; v2 `syncNow` uses
@@ -1259,7 +1263,10 @@ Conversation-level read state is separate from reliable sync checkpoints:
   response echoes the exact DID/thread, reports a non-partial final remote ack,
   and returns a server watermark at least as high as the sent watermark. Every
   transport, decode, validation, or local-commit failure returns the claim to
-  `retryable`.
+  `retryable` without changing an already committed delta result; corrupt local
+  payloads become `permanent_failure`. A Registry fence makes the claim
+  immediately eligible for the single bounded session/binding refresh and
+  resend described above.
 - `message.read_state_updated` is a required known v2 event. `thread_kind` is
   mandatory and is never inferred from a thread key. A read-only delta or
   snapshot emits a committed conversation/thread invalidation after the read

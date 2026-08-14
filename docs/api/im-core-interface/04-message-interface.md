@@ -683,6 +683,14 @@ timeline、read ack 的唯一 routing key。
 11. `legacy_message_ids` 只作为 fallback diagnostics；App 不应依赖它作为 thread
     mark-read 的核心结果。
 
+普通消息 v2 `syncNow` 只在最后一页 `sync.delta` 已原子提交后 drain durable read outbox。
+read writeback 的 transport、decode、响应校验或本地 ACK 失败只把 mutation 记为
+`retryable`，不会覆盖已提交 delta 的 `changed` / `idle` 结果；损坏的本地 outbox payload
+记为 `permanent_failure`。`anp.device_not_eligible` / `anp.device_state_changed` 会触发一次有界
+session 刷新、transport auth reload 和 active binding 重取，并立即重发 mutation；刷新失败或
+刷新后再次收到同一类 fence 才按 `authRevoked` 终止。该调整不改变
+`anp.read_state.local.v1` wire schema 或 public DTO，因此无需协议版本升级。
+
 `conversation_summaries` 是 rebuildable projection；当前热路径对普通 message upsert、
 bounded mark-read、`mark_conversation_read` 和 legacy `mark_thread_read` 使用增量维护，只有无法安全增量判断的场景才回退 rebuild。conversation mark-read 同步维护 summary unread 字段；public 契约不因此变化。
 
