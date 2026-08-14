@@ -912,6 +912,50 @@ fn parse_event(value: &Value) -> crate::ImResult<SyncEventV2> {
     })
 }
 
+pub(crate) fn parse_inline_event(value: &Value) -> crate::ImResult<SyncEventV2> {
+    let object = object(value, "inline sync event")?;
+    exact_fields(
+        object,
+        &[
+            "event_id",
+            "stream_epoch",
+            "event_seq",
+            "event_type",
+            "schema_version",
+            "ignore_safe",
+            "account_id",
+            "recipient_device_id",
+            "origin_did",
+            "origin_device_id",
+            "aggregate_kind",
+            "aggregate_id",
+            "state_version",
+            "thread_key",
+            "occurred_at",
+            "payload",
+            "source",
+        ],
+        "inline sync event",
+    )?;
+    parse_event(value)
+}
+
+pub(crate) fn parse_inline_message(event_id: &str, message: &Value) -> crate::ImResult<Value> {
+    let batch = parse_message_batch(
+        &json!({
+            "items": [{"event_id": event_id, "message": message}],
+            "unavailable": [],
+        }),
+        &[event_id.to_owned()],
+    )?;
+    batch
+        .items
+        .into_iter()
+        .next()
+        .map(|item| item.message)
+        .ok_or_else(|| invalid_page("inline message projection is missing"))
+}
+
 fn parse_cursor(value: &Value) -> crate::ImResult<SyncCursorV2> {
     let object = object(value, "cursor")?;
     let cursor = SyncCursorV2 {

@@ -71,7 +71,7 @@ pub(crate) struct WsTransport {
     stream: Box<dyn ReadWrite>,
     default_read_timeout: Option<Duration>,
     ping_counter: i32,
-    sync_changed_v2: bool,
+    sync_subprotocol: super::SyncNotificationSubprotocol,
 }
 
 trait ReadWrite: Read + Write + Send {
@@ -103,12 +103,13 @@ impl WsTransport {
         let key = websocket_key();
         write_handshake_request(&mut stream, &parsed, bearer_token, &key, client_version)?;
         let headers = read_http_headers(&mut stream)?;
-        let sync_changed_v2 = validate_handshake_response(&headers, &key, require_sync_changed_v2)?;
+        let sync_subprotocol =
+            validate_handshake_response(&headers, &key, require_sync_changed_v2)?;
         Ok(Self {
             stream,
             default_read_timeout: Some(DEFAULT_READ_TIMEOUT),
             ping_counter: 0,
-            sync_changed_v2,
+            sync_subprotocol,
         })
     }
 
@@ -154,7 +155,7 @@ impl WsTransport {
                 WsFrame::Text(raw) => {
                     let message = decode_json_object(raw.as_bytes())?;
                     if crate::internal::realtime::accepts_negotiated_notification(
-                        self.sync_changed_v2,
+                        self.sync_subprotocol,
                         &message,
                     ) {
                         return Ok(message);
@@ -163,7 +164,7 @@ impl WsTransport {
                 WsFrame::Binary(raw) => {
                     let message = decode_json_object(&raw)?;
                     if crate::internal::realtime::accepts_negotiated_notification(
-                        self.sync_changed_v2,
+                        self.sync_subprotocol,
                         &message,
                     ) {
                         return Ok(message);
@@ -611,10 +612,11 @@ fn write_handshake_request(
 
 fn handshake_request_head(parsed: &ParsedWsUrl, key: &str) -> String {
     format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: awiki-im-core\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Protocol: {}\r\n",
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: awiki-im-core\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Protocol: {}, {}\r\n",
         parsed.path_and_query,
         parsed.host_header(),
         key,
+        crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
         crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL,
     )
 }
@@ -641,7 +643,7 @@ fn validate_handshake_response(
     headers: &str,
     key: &str,
     require_sync_changed_v2: bool,
-) -> WsResult<bool> {
+) -> WsResult<super::SyncNotificationSubprotocol> {
     let mut lines = headers.lines();
     let status_line = lines
         .next()
@@ -674,19 +676,27 @@ fn validate_handshake_response(
         .iter()
         .find(|(name, _)| name == "sec-websocket-protocol")
         .map(|(_, value)| value.as_str());
-    if selected_subprotocol.is_some()
-        && selected_subprotocol != Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL)
+    let selected_subprotocol = match selected_subprotocol {
+        None => super::SyncNotificationSubprotocol::Legacy,
+        Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL) => {
+            super::SyncNotificationSubprotocol::V2
+        }
+        Some(crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL) => {
+            super::SyncNotificationSubprotocol::V3
+        }
+        Some(_) => {
+            return Err(ws_message(
+                "websocket server selected an unsupported sync subprotocol",
+            ));
+        }
+    };
+    if require_sync_changed_v2 && selected_subprotocol == super::SyncNotificationSubprotocol::Legacy
     {
         return Err(ws_message(
-            "websocket server selected an unsupported sync subprotocol",
+            "exact-device websocket requires a versioned AWiki sync subprotocol",
         ));
     }
-    if require_sync_changed_v2 && selected_subprotocol.is_none() {
-        return Err(ws_message(
-            "exact-device websocket requires awiki.sync.changed.v2",
-        ));
-    }
-    Ok(selected_subprotocol.is_some())
+    Ok(selected_subprotocol)
 }
 
 fn parse_status_code(status_line: &str) -> WsResult<u16> {
@@ -847,11 +857,25 @@ mod tests {
         let valid = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v2\r\n\r\n"
         );
-        assert!(validate_handshake_response(&valid, key, false).unwrap());
+        assert_eq!(
+            validate_handshake_response(&valid, key, false).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::V2
+        );
+
+        let inline = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.event.v3\r\n\r\n"
+        );
+        assert_eq!(
+            validate_handshake_response(&inline, key, true).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::V3
+        );
 
         let missing =
             format!("HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
-        assert!(!validate_handshake_response(&missing, key, false).unwrap());
+        assert_eq!(
+            validate_handshake_response(&missing, key, false).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::Legacy
+        );
         assert!(validate_handshake_response(&missing, key, true).is_err());
 
         let wrong = format!(
@@ -861,9 +885,11 @@ mod tests {
     }
 
     #[test]
-    fn websocket_handshake_requests_sync_changed_v2_subprotocol() {
+    fn websocket_handshake_requests_v3_with_v2_fallback_subprotocols() {
         let parsed = ParsedWsUrl::parse("wss://example.test/im/ws").unwrap();
         let request = handshake_request_head(&parsed, "test-key");
-        assert!(request.contains("\r\nSec-WebSocket-Protocol: awiki.sync.changed.v2\r\n"));
+        assert!(request.contains(
+            "\r\nSec-WebSocket-Protocol: awiki.sync.event.v3, awiki.sync.changed.v2\r\n"
+        ));
     }
 }

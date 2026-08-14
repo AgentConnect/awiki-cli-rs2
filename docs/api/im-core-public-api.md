@@ -531,8 +531,16 @@ SecretVault Token，不得记录 Token，也不得顺带改写密钥、身份或
 不得把本地构造成功表述为 JWT cryptographic verification。
 
 Realtime 子协议严格性也从该 exact binding 自动派生。exact vNext 必须收到
-`awiki.sync.changed.v2` 回显，`NoSubProtocol` 或缺失回显直接返回 transport error，
-不能无子协议重连；只有无 exact binding 的 Legacy/Hosted client 可走兼容 fallback。
+`awiki.sync.event.v3` 或 `awiki.sync.changed.v2` 回显：Core 按该顺序同时 offer，服务端选择
+v3 时可发送内联 `message.created`，也可对超限/不可内联事件发送 schema 2 hint；选择 v2 时
+只能接收 schema 2。`NoSubProtocol` 或缺失回显直接返回 transport error，不能无子协议重连；
+只有无 exact binding 的 Legacy/Hosted client 可走兼容 fallback。
+
+V3 是可协商的兼容新增，不替换 v2，也不改变任何 public DTO。内联正文只提前提交既有
+message/thread projection：WS 不写消费回执、不推进 Sync V2 cursor；跨 epoch、未知 Group 或
+Direct Persona 未验证时只保留 dirty/gap hint 并调度 delta。可靠 delta 随后按 `event_id`
+提交回执和 cursor，并跳过已由 WS 提交的正文。因此本次无需 public API、协议替换或本地数据
+schema 版本提升。
 
 普通消息 v2 同步对每个合法 binding 默认生效，不存在 public API 级账号/设备 allowlist 或
 百分比灰度。host 只可通过全局配置做应急回滚；该配置不改变 cursor、replica 或 Event

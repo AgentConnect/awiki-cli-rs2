@@ -160,6 +160,10 @@ enum LocalStateCommand {
         input: super::sync_v2::DeltaApplyInputV2,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
     },
+    ApplyRealtimeMessageV3 {
+        input: super::sync_v2::RealtimeMessageApplyInputV3,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::RealtimeMessageApplyOutcomeV3>>,
+    },
     ApplySyncSnapshotV2 {
         input: super::sync_v2::SnapshotApplyInputV2,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
@@ -974,6 +978,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDeltaV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_realtime_message_v3(
+        &self,
+        input: super::sync_v2::RealtimeMessageApplyInputV3,
+    ) -> crate::ImResult<super::sync_v2::RealtimeMessageApplyOutcomeV3> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplyRealtimeMessageV3 { input, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -2238,6 +2252,10 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDeltaV2 { input, reply } => {
                 let result = super::sync_v2::apply_delta_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplyRealtimeMessageV3 { input, reply } => {
+                let result = super::sync_v2::apply_realtime_message_v3(&connection, input);
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplySyncSnapshotV2 { input, reply } => {

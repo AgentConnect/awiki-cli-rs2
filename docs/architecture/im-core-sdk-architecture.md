@@ -1040,10 +1040,27 @@ top-level WebSocket `sync` member. The hint is scheduling metadata for
 duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
 Realtime projection is allowed to keep the UI fresh, but receiving a realtime
 hint or applying a realtime projection does not advance the reliable checkpoint.
+After exact negotiation of `awiki.sync.event.v3`, a closed schema-3
+`message.created` notification may carry the same event as `sync.delta` and the
+same ordinary Direct/Group projection as `message.get_batch`. Core reuses those
+decoders and the Sync V2 reducer, then applies the message and remote-thread
+binding in one SQLite transaction. This fast transaction writes neither
+`message_sync_state` nor `sync_applied_events`. It retains `sync_event_id` in
+private message metadata so a later reliable delta can record the receipt,
+advance the cursor, and skip reapplying an already projected body. The reverse
+order is also a no-op for realtime.
+
+The fast path is fenced by the current account/device binding and exact
+`stream_epoch`. A different epoch, an unknown Group, or a Direct peer without a
+verified Persona produces only a dirty/gap hint; it does not create a temporary
+conversation, write the inbound-resolution backlog, or emit an authoritative
+timeline patch. Reliable delta remains the only source of consumption receipts
+and cursor progress.
 If a realtime incoming message cannot be projected or its local SQLite write
-fails, it must not emit an authoritative conversation/timeline patch. Identity-
-unresolved realtime messages are durably backlogged by the same canonical
-ingress used for remote history and are replayed only after verified Persona
+fails, it must not emit an authoritative conversation/timeline patch. Outside
+the schema-3 fast path, identity-unresolved Legacy realtime messages are
+durably backlogged by the same canonical ingress used for remote history and
+are replayed only after verified Persona
 projection; the next reliable sync or repair path remains responsible for
 convergence. When the Handle authority lookup succeeds, Persona projection and
 the inbound message commit happen in that order in the same local-state actor
@@ -1052,11 +1069,16 @@ Persona conversation without briefly materializing a DID conversation.
 
 WebSocket subprotocol strictness is derived from the validated client identity,
 not from App/CLI/Agent labels or a host flag. A client with an exact sync
-account seed always offers and requires `awiki.sync.changed.v2`; a missing echo
-or `NoSubProtocol` is a transport/provisioning failure and the async transport
-must not reconnect without a subprotocol. Only a Legacy or generic hosted
-client with no exact binding may use the compatibility fallback. The hint still
-does not advance the reliable cursor.
+account seed offers `awiki.sync.event.v3` followed by
+`awiki.sync.changed.v2` and requires the server to select either versioned
+token; a missing echo or `NoSubProtocol` is a transport/provisioning failure and
+the async transport must not reconnect without a subprotocol. A v3 session also
+accepts schema-2 fallback hints for non-inline or oversized events. A v2 session
+rejects schema 3. Only a Legacy or generic hosted client with no exact binding
+may reconnect without a subprotocol. V3 is an additive negotiated protocol, not
+a replacement for v2, so this change requires neither a public API version bump
+nor a SQLite schema migration. No realtime notification advances the reliable
+cursor.
 
 Daemon crash compensation reads committed local messages through an exact-client
 Core API, never by enumerating conversations or accepting a caller-provided
@@ -1106,7 +1128,8 @@ the current `sync_delta()` wire behavior:
   invented before an explicit bootstrap.
 - `sync_applied_events` stores idempotency receipts with bounded pruning that
   retains at least 10,000 recent receipts per owner and protects the active
-  recovery window.
+  recovery window. Only reliable delta/snapshot apply writes these receipts;
+  the schema-3 WebSocket fast path never does.
 - `sync_recovery_state` stores restart-safe recovery metadata and hashes only;
   raw recovery tokens are forbidden.
 - `local_mutation_outbox` initially admits only

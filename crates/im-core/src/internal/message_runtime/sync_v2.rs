@@ -18,6 +18,154 @@ pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     directory_transport: R,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RealtimeInlineMessageApplyOutcome {
+    NotApplicable,
+    Applied {
+        message: crate::messages::Message,
+        local_scan_seq: String,
+    },
+    Deferred,
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+pub(crate) fn apply_realtime_inline_message_v3(
+    client: &crate::core::ImClient,
+    notification: &Value,
+) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    let Some((message, input)) = prepare_realtime_inline_message_v3(client, notification)? else {
+        return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
+    };
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    finish_realtime_inline_message_v3(
+        client,
+        message,
+        crate::internal::local_state::sync_v2::apply_realtime_message_v3(&connection, input)?,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn apply_realtime_inline_message_v3_async(
+    client: &crate::core::ImClient,
+    notification: &Value,
+) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    let Some((message, input)) = prepare_realtime_inline_message_v3(client, notification)? else {
+        return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
+    };
+    let outcome = client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .apply_realtime_message_v3(input)
+        .await?;
+    finish_realtime_inline_message_v3(client, message, outcome)
+}
+
+#[cfg(feature = "sqlite")]
+fn prepare_realtime_inline_message_v3(
+    client: &crate::core::ImClient,
+    notification: &Value,
+) -> crate::ImResult<
+    Option<(
+        crate::messages::Message,
+        crate::internal::local_state::sync_v2::RealtimeMessageApplyInputV3,
+    )>,
+> {
+    let Some(inline) =
+        crate::internal::realtime::notification::parse_inline_sync_event_v3(notification)?
+    else {
+        return Ok(None);
+    };
+    let context = client.sync_account_context()?;
+    if inline.event.account_id != context.account_id
+        || inline
+            .event
+            .recipient_device_id
+            .as_deref()
+            .is_some_and(|device_id| device_id != context.protocol_device_id)
+    {
+        return Err(sync_error(
+            "SYNC_ACCOUNT_BINDING_MISMATCH",
+            "realtime sync event does not match the active account device",
+        ));
+    }
+    let projection_id = inline
+        .projection
+        .get("id")
+        .or_else(|| inline.projection.get("message_id"))
+        .and_then(Value::as_str);
+    if projection_id != Some(inline.event.aggregate_id.as_str())
+        || inline
+            .event
+            .payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            != Some(inline.event.aggregate_id.as_str())
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "realtime message projection conflicts with its event aggregate",
+        ));
+    }
+    let mut public_messages = BTreeMap::new();
+    let event = reduce_event(
+        client,
+        &inline.event,
+        Some(&inline.projection),
+        None,
+        &mut public_messages,
+    )?;
+    let message = public_messages
+        .remove(&inline.event.event_id)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "realtime message reducer did not produce a public projection",
+            )
+        })?;
+    Ok(Some((
+        message,
+        crate::internal::local_state::sync_v2::RealtimeMessageApplyInputV3 {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            account_id: context.account_id,
+            protocol_device_id: context.protocol_device_id,
+            device_auth_generation: context.device_auth_generation,
+            stream_epoch: inline.event.stream_epoch,
+            event,
+        },
+    )))
+}
+
+#[cfg(feature = "sqlite")]
+fn finish_realtime_inline_message_v3(
+    client: &crate::core::ImClient,
+    message: crate::messages::Message,
+    outcome: crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3,
+) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    match outcome {
+        crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::Applied {
+            local_scan_seq,
+            invalidation,
+        } => {
+            super::sync::emit_committed_sync_invalidation(client, &invalidation);
+            client.emit_committed_local_message_projection("sync_v2_realtime_fast_path");
+            Ok(RealtimeInlineMessageApplyOutcome::Applied {
+                message,
+                local_scan_seq,
+            })
+        }
+        crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::Duplicate {
+            ..
+        }
+        | crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::HintOnly {
+            ..
+        } => Ok(RealtimeInlineMessageApplyOutcome::Deferred),
+    }
+}
+
 impl<'a, P, T, R> MessageSyncRuntimeV2<'a, P, T, R> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
@@ -2963,6 +3111,40 @@ mod tests {
         })
     }
 
+    fn realtime_inline_group_notification(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        event_id: &str,
+        event_seq: &str,
+        message_id: &str,
+        group_did: &str,
+        content: &str,
+    ) -> Value {
+        let mut event =
+            sync_snapshot_message_event(binding, event_id, "1", event_seq, message_id, group_did);
+        event["payload"]["message_id"] = Value::String(message_id.to_owned());
+        json!({
+            "jsonrpc": "2.0",
+            "method": "sync.changed",
+            "params": {
+                "domains": ["message"],
+                "reason": "group_message_available"
+            },
+            "sync": {
+                "schema_version": 3,
+                "account_scan_seq_hint": event_seq,
+                "domain_versions": {},
+                "event": event,
+                "projection": sync_snapshot_message(
+                    binding,
+                    message_id,
+                    group_did,
+                    "1",
+                    content
+                )
+            }
+        })
+    }
+
     fn sync_direct_message_event(
         binding: &crate::identity::ActiveSyncAccountBinding,
         event_id: &str,
@@ -3115,6 +3297,89 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn realtime_inline_v3_reuses_sync_reducer_and_commits_without_reliable_receipt() {
+        let fixture = SyncSnapshotFixture::new("realtime-inline-v3");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let group_did = "did:wba:awiki.test:group:e1_realtime";
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .upsert_group(crate::internal::local_state::groups::GroupRecord {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                group_id: group_did.to_owned(),
+                group_did: group_did.to_owned(),
+                membership_status: "active".to_owned(),
+                stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let notification = realtime_inline_group_notification(
+            &binding,
+            "sev2g_realtime_11",
+            "11",
+            "msg_realtime_11",
+            group_did,
+            "zero RTT",
+        );
+
+        let outcome = apply_realtime_inline_message_v3_async(&client, &notification)
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            RealtimeInlineMessageApplyOutcome::Applied {
+                message,
+                local_scan_seq
+            } if message.id.as_str() == "msg_realtime_11"
+                && matches!(
+                    message.body,
+                    crate::messages::MessageBodyView::Text {
+                        ref text,
+                        kind: crate::messages::MessageKind::Text,
+                    } if text == "zero RTT"
+                )
+                && local_scan_seq == "10"
+        ));
+        let db = client.core_inner().local_state_db().await.unwrap();
+        let state = db
+            .load_message_sync_state(binding.owner_identity_id.clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            state,
+            crate::internal::local_state::sync_v2::MessageSyncStateAccess::Ready(state)
+                if state.scan_seq == "10"
+        ));
+        db.shutdown().await.unwrap();
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| row
+                    .get::<_, i64>(0),)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT content FROM messages
+                     WHERE json_extract(metadata, '$.sync_event_id') = 'sev2g_realtime_11'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "zero RTT"
+        );
     }
 
     async fn seed_sync_snapshot_message(

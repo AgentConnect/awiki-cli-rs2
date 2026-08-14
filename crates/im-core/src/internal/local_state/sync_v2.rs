@@ -459,6 +459,31 @@ pub(crate) struct DeltaApplyOutcomeV2 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RealtimeMessageApplyInputV3 {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) account_id: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) event: DeltaApplyEventV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RealtimeMessageApplyOutcomeV3 {
+    Applied {
+        local_scan_seq: String,
+        invalidation: super::sync_state::SyncDeltaInvalidation,
+    },
+    Duplicate {
+        local_scan_seq: String,
+    },
+    HintOnly {
+        local_scan_seq: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
@@ -809,6 +834,171 @@ pub(crate) fn apply_bootstrap_v2(
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
+pub(crate) fn apply_realtime_message_v3(
+    connection: &Connection,
+    input: RealtimeMessageApplyInputV3,
+) -> crate::ImResult<RealtimeMessageApplyOutcomeV3> {
+    validate_required("owner_identity_id", &input.owner_identity_id)?;
+    validate_required("owner_did", &input.owner_did)?;
+    validate_required("account_id", &input.account_id)?;
+    validate_required("protocol_device_id", &input.protocol_device_id)?;
+    validate_positive_decimal("device_auth_generation", &input.device_auth_generation)?;
+    validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
+    validate_required("event_id", &input.event.event_id)?;
+    validate_positive_decimal("event_seq", &input.event.event_seq)?;
+    if input.event.event_type != "message.created" {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: None,
+        });
+    }
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let Some(binding) = load_identity_account_binding(&transaction, &input.owner_identity_id)?
+    else {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: None,
+        });
+    };
+    if binding.account_id != input.account_id
+        || binding.current_did != input.owner_did
+        || binding.protocol_device_id != input.protocol_device_id
+        || binding.device_auth_generation != input.device_auth_generation
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: None,
+        });
+    }
+    let current = match load_message_sync_state(&transaction, &input.owner_identity_id)? {
+        MessageSyncStateAccess::Ready(state) => state,
+        MessageSyncStateAccess::BootstrapRequired(_) => {
+            return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: None,
+            });
+        }
+    };
+    let local_scan_seq = current.scan_seq.clone();
+    if current.account_id != input.account_id
+        || current.protocol_device_id != input.protocol_device_id
+        || current.device_auth_generation != input.device_auth_generation
+        || current.stream_epoch != input.stream_epoch
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    if let Some((stream_epoch, event_seq)) = applied_event_position(
+        &transaction,
+        &input.owner_identity_id,
+        &input.event.event_id,
+    )? {
+        return if stream_epoch == input.stream_epoch && event_seq == input.event.event_seq {
+            Ok(RealtimeMessageApplyOutcomeV3::Duplicate { local_scan_seq })
+        } else {
+            Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: Some(local_scan_seq),
+            })
+        };
+    }
+
+    let mut event = input.event;
+    let Some(message) = event.messages.first() else {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    };
+    if message_event_thread_binding(&event, &input.owner_identity_id).is_err()
+        || validate_message_owner(message, &input.owner_identity_id).is_err()
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    if message_has_sync_event_id(
+        &transaction,
+        &input.owner_identity_id,
+        &message.msg_id,
+        &event.event_id,
+    )? {
+        return Ok(RealtimeMessageApplyOutcomeV3::Duplicate { local_scan_seq });
+    }
+    if message_exists(&transaction, &input.owner_identity_id, message)? {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    if message.wire_thread_kind == "group"
+        && super::groups::get_group_snapshot_for_owner_identity(
+            &transaction,
+            &input.owner_identity_id,
+            &input.owner_did,
+            message.group_did.trim(),
+        )?
+        .is_none()
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    let message = match super::inbound_resolution_backlog::canonicalize_inbound_message(
+        &transaction,
+        message.clone(),
+    ) {
+        Ok(message) => message,
+        Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
+            return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: Some(local_scan_seq),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let canonical_conversation_ids = BTreeSet::from([message.conversation_id.clone()]);
+    canonicalize_message_event_thread_bindings(
+        &mut event.thread_bindings,
+        &event.event_type,
+        &input.owner_identity_id,
+        &canonical_conversation_ids,
+    )?;
+    for binding in &event.thread_bindings {
+        upsert_sync_thread_binding(&transaction, binding)?;
+    }
+    let mut invalidation = v2_invalidation(
+        &transaction,
+        &input.owner_identity_id,
+        &input.owner_did,
+        &local_scan_seq,
+        std::slice::from_ref(&message),
+        &[],
+        &[],
+    )?;
+    invalidation.reason = "sync_v2_realtime_fast_path".to_owned();
+    let touched = super::messages::upsert_messages_with_touched(
+        &transaction,
+        std::slice::from_ref(&message),
+    )?;
+    let mut conversation_ids = invalidation
+        .conversation_ids
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut thread_ids = invalidation.thread_ids.into_iter().collect::<BTreeSet<_>>();
+    for (_, conversation_id) in touched {
+        if !conversation_id.trim().is_empty() {
+            conversation_ids.insert(conversation_id.clone());
+            thread_ids.insert(conversation_id);
+        }
+    }
+    invalidation.conversation_ids = conversation_ids.into_iter().collect();
+    invalidation.thread_ids = thread_ids.into_iter().collect();
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(RealtimeMessageApplyOutcomeV3::Applied {
+        local_scan_seq,
+        invalidation,
+    })
+}
+
 pub(crate) fn apply_delta_v2(
     connection: &Connection,
     input: DeltaApplyInputV2,
@@ -915,6 +1105,23 @@ pub(crate) fn apply_delta_v2(
         if !inserted {
             duplicate_events = duplicate_events.saturating_add(1);
             continue;
+        }
+        if event.event_type == "message.created"
+            && event.messages.len() == 1
+            && event.thread_bindings.len() == 1
+        {
+            validate_message_owner(&event.messages[0], &input.owner_identity_id)?;
+            message_event_thread_binding(&event, &input.owner_identity_id)?;
+            if message_has_sync_event_id(
+                &transaction,
+                &input.owner_identity_id,
+                &event.messages[0].msg_id,
+                &event.event_id,
+            )? {
+                applied_event_ids.push(event_id);
+                duplicate_events = duplicate_events.saturating_add(1);
+                continue;
+            }
         }
         if let Some(notification) = event.system_notification.take() {
             if notification.owner_identity_id != input.owner_identity_id
@@ -1526,6 +1733,91 @@ pub(crate) fn record_applied_event(
         )
         .map_err(super::local_state_unavailable)?;
     Ok(true)
+}
+
+fn applied_event_position(
+    connection: &Connection,
+    owner_identity_id: &str,
+    event_id: &str,
+) -> crate::ImResult<Option<(String, String)>> {
+    connection
+        .query_row(
+            "SELECT stream_epoch, event_seq
+             FROM sync_applied_events
+             WHERE owner_identity_id = ?1 AND event_id = ?2",
+            params![owner_identity_id, event_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
+fn message_exists(
+    connection: &Connection,
+    owner_identity_id: &str,
+    message: &super::messages::MessageRecord,
+) -> crate::ImResult<bool> {
+    let group_ref = if message.group_did.trim().is_empty() {
+        message.group_id.trim()
+    } else {
+        message.group_did.trim()
+    };
+    connection
+        .query_row(
+            "SELECT 1 FROM messages
+             WHERE owner_identity_id = ?1
+               AND (
+                   msg_id = ?2
+                   OR (
+                       ?3 = 'group'
+                       AND server_seq = ?4
+                       AND COALESCE(NULLIF(TRIM(group_did), ''), TRIM(group_id)) = ?5
+                   )
+               )
+             LIMIT 1",
+            params![
+                owner_identity_id,
+                message.msg_id,
+                message.wire_thread_kind,
+                message.server_seq,
+                group_ref,
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(super::local_state_unavailable)
+}
+
+fn message_has_sync_event_id(
+    connection: &Connection,
+    owner_identity_id: &str,
+    message_id: &str,
+    event_id: &str,
+) -> crate::ImResult<bool> {
+    connection
+        .query_row(
+            "SELECT CASE
+                        WHEN json_valid(COALESCE(metadata, ''))
+                        THEN json_extract(metadata, '$.sync_event_id')
+                        ELSE NULL
+                    END
+             FROM messages
+             WHERE owner_identity_id = ?1
+               AND (
+                   msg_id = ?2
+                   OR (
+                       json_valid(COALESCE(metadata, ''))
+                       AND json_extract(metadata, '$.sync_event_id') = ?3
+                   )
+               )
+             LIMIT 1",
+            params![owner_identity_id, message_id, event_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten().as_deref() == Some(event_id))
+        .map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn prune_applied_events(
@@ -3674,6 +3966,400 @@ mod tests {
             device_auth_generation: "2".to_owned(),
             created_at: 1,
             updated_at: 1,
+        }
+    }
+
+    fn realtime_ready_db(with_group: bool) -> (Connection, IdentityAccountBinding, String) {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                scan_seq: "20501".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let group_did = "did:wba:awiki.info:group:e1_realtime".to_owned();
+        if with_group {
+            super::super::groups::upsert_group(
+                &db,
+                super::super::groups::GroupRecord {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    group_id: group_did.clone(),
+                    group_did: group_did.clone(),
+                    membership_status: "active".to_owned(),
+                    stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                    credential_name: binding.owner_identity_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        (db, binding, group_did)
+    }
+
+    fn realtime_group_event(
+        binding: &IdentityAccountBinding,
+        group_did: &str,
+    ) -> DeltaApplyEventV2 {
+        let conversation_id = super::super::owner_scope::group_conversation_id(group_did);
+        DeltaApplyEventV2 {
+            event_id: "sev2g_20502".to_owned(),
+            event_seq: "20502".to_owned(),
+            event_type: "message.created".to_owned(),
+            messages: vec![super::super::messages::MessageRecord {
+                msg_id: "msg_20502".to_owned(),
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id.clone(),
+                direction: 0,
+                sender_did: "did:wba:awiki.info:user:bob".to_owned(),
+                receiver_did: binding.current_did.clone(),
+                group_id: group_did.to_owned(),
+                group_did: group_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "inline hello".to_owned(),
+                server_seq: Some(901),
+                sent_at: "2026-08-15T00:00:00Z".to_owned(),
+                stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                metadata: serde_json::json!({
+                    "sync_event_id": "sev2g_20502",
+                    "sync_event_seq": "20502",
+                    "sync_event_type": "message.created"
+                })
+                .to_string(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            }
+            .with_resolved_wire_thread("group", group_did)],
+            thread_bindings: vec![SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: group_did.to_owned(),
+                thread_kind: "group".to_owned(),
+                conversation_id,
+                updated_at: 1,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn realtime_direct_event(binding: &IdentityAccountBinding) -> DeltaApplyEventV2 {
+        let peer_did = "did:wba:awiki.info:user:unresolved";
+        let conversation_id = super::super::owner_scope::direct_conversation_id(peer_did);
+        DeltaApplyEventV2 {
+            event_id: "sev2d_20502".to_owned(),
+            event_seq: "20502".to_owned(),
+            event_type: "message.created".to_owned(),
+            messages: vec![super::super::messages::MessageRecord {
+                msg_id: "msg_direct_20502".to_owned(),
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id.clone(),
+                direction: 0,
+                sender_did: peer_did.to_owned(),
+                receiver_did: binding.current_did.clone(),
+                content_type: "text/plain".to_owned(),
+                content: "inline direct".to_owned(),
+                server_seq: Some(901),
+                sent_at: "2026-08-15T00:00:00Z".to_owned(),
+                stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                metadata: serde_json::json!({
+                    "sync_event_id": "sev2d_20502",
+                    "sync_event_seq": "20502",
+                    "sync_event_type": "message.created"
+                })
+                .to_string(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            }
+            .with_resolved_wire_thread("direct", peer_did)],
+            thread_bindings: vec![SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: "dconv_unresolved".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id,
+                updated_at: 1,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn realtime_input(
+        binding: &IdentityAccountBinding,
+        stream_epoch: &str,
+        event: DeltaApplyEventV2,
+    ) -> RealtimeMessageApplyInputV3 {
+        RealtimeMessageApplyInputV3 {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            owner_did: binding.current_did.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: stream_epoch.to_owned(),
+            event,
+        }
+    }
+
+    #[test]
+    fn realtime_message_then_delta_is_idempotent_and_only_delta_advances_reliable_state() {
+        let (db, binding, group_did) = realtime_ready_db(true);
+        let event = realtime_group_event(&binding, &group_did);
+
+        let realtime =
+            apply_realtime_message_v3(&db, realtime_input(&binding, "3", event.clone())).unwrap();
+        assert!(matches!(
+            realtime,
+            RealtimeMessageApplyOutcomeV3::Applied {
+                local_scan_seq,
+                ..
+            } if local_scan_seq == "20501"
+        ));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready sync state");
+        };
+        assert_eq!(state.scan_seq, "20501");
+
+        let delta = apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                next_scan_seq: "20502".to_owned(),
+                server_time: "2026-08-15T00:00:01Z".to_owned(),
+                events: vec![event],
+            },
+        )
+        .unwrap();
+        assert_eq!(delta.applied_event_ids, ["sev2g_20502"]);
+        assert!(delta.projected_message_event_ids.is_empty());
+        assert_eq!(delta.duplicate_events, 1);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready sync state");
+        };
+        assert_eq!(state.scan_seq, "20502");
+
+        let (delta_only_db, delta_only_binding, delta_only_group_did) = realtime_ready_db(true);
+        apply_delta_v2(
+            &delta_only_db,
+            DeltaApplyInputV2 {
+                owner_identity_id: delta_only_binding.owner_identity_id.clone(),
+                owner_did: delta_only_binding.current_did.clone(),
+                account_id: delta_only_binding.account_id.clone(),
+                protocol_device_id: delta_only_binding.protocol_device_id.clone(),
+                device_auth_generation: delta_only_binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                next_scan_seq: "20502".to_owned(),
+                server_time: "2026-08-15T00:00:01Z".to_owned(),
+                events: vec![realtime_group_event(
+                    &delta_only_binding,
+                    &delta_only_group_did,
+                )],
+            },
+        )
+        .unwrap();
+        let projected_row = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT conversation_id, thread_id, content, server_seq, metadata
+                     FROM messages LIMIT 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(projected_row(&db), projected_row(&delta_only_db));
+    }
+
+    #[test]
+    fn delta_then_realtime_message_is_a_noop() {
+        let (db, binding, group_did) = realtime_ready_db(true);
+        let event = realtime_group_event(&binding, &group_did);
+        apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                next_scan_seq: "20502".to_owned(),
+                server_time: "2026-08-15T00:00:01Z".to_owned(),
+                events: vec![event.clone()],
+            },
+        )
+        .unwrap();
+
+        let realtime =
+            apply_realtime_message_v3(&db, realtime_input(&binding, "3", event)).unwrap();
+        assert!(matches!(
+            realtime,
+            RealtimeMessageApplyOutcomeV3::Duplicate { local_scan_seq }
+                if local_scan_seq == "20502"
+        ));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn realtime_message_cross_epoch_is_hint_only_without_reliable_or_projection_writes() {
+        let (db, binding, group_did) = realtime_ready_db(true);
+        let outcome = apply_realtime_message_v3(
+            &db,
+            realtime_input(&binding, "4", realtime_group_event(&binding, &group_did)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: Some(local_scan_seq)
+            } if local_scan_seq == "20501"
+        ));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready sync state");
+        };
+        assert_eq!(state.scan_seq, "20501");
+    }
+
+    #[test]
+    fn realtime_message_missing_group_prerequisite_degrades_without_backlog() {
+        let (db, binding, group_did) = realtime_ready_db(false);
+        let outcome = apply_realtime_message_v3(
+            &db,
+            realtime_input(&binding, "3", realtime_group_event(&binding, &group_did)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RealtimeMessageApplyOutcomeV3::HintOnly { .. }
+        ));
+        for table in [
+            "messages",
+            "sync_applied_events",
+            "sync_thread_bindings",
+            "inbound_resolution_backlog",
+        ] {
+            let count = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must remain unchanged");
+        }
+    }
+
+    #[test]
+    fn realtime_message_missing_direct_persona_degrades_without_backlog() {
+        let (db, binding, _) = realtime_ready_db(false);
+        let outcome = apply_realtime_message_v3(
+            &db,
+            realtime_input(&binding, "3", realtime_direct_event(&binding)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RealtimeMessageApplyOutcomeV3::HintOnly { .. }
+        ));
+        for table in [
+            "messages",
+            "sync_applied_events",
+            "sync_thread_bindings",
+            "inbound_resolution_backlog",
+        ] {
+            let count = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must remain unchanged");
         }
     }
 

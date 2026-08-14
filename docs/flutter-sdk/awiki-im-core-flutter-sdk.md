@@ -995,6 +995,13 @@ Realtime integration:
   detection.
 - Receiving a realtime hint or successfully projecting a realtime notification must
   not advance the reliable checkpoint.
+- On an exact `awiki.sync.event.v3` session, Core may validate and atomically
+  store an inline ordinary `message.created` projection before delta. This is
+  implementation-only: Dart receives the existing `MessageReceived` and patch
+  shapes. The WS transaction writes no reliable event receipt or cursor.
+- A mismatched stream epoch, unknown Group, or unresolved Direct Persona is a
+  dirty/gap hint only. Core emits no authoritative message patch and lets the
+  existing `syncNow` coordinator converge through reliable delta.
 - Successfully projecting a realtime incoming message to local SQLite does emit
   committed conversation/thread patches for active subscribers; the hint alone
   is never an authoritative patch source.
@@ -1097,9 +1104,13 @@ stop that has not yet run. Both cleanup steps are still attempted and the first
 failure is reported.
 
 For any native client with an exact vNext account/device binding, Core requires
-the server to echo `awiki.sync.changed.v2`. `NoSubProtocol` is surfaced as a
-typed transport failure and is never retried as a Legacy connection. Flutter
-must not add a client-kind flag or fallback switch for this behavior.
+the server to echo either offered versioned token: Core offers
+`awiki.sync.event.v3, awiki.sync.changed.v2` in that order. V3 may carry closed
+inline events plus schema-2 fallback hints; a v2 selection remains hint-only.
+`NoSubProtocol` is surfaced as a typed transport failure and is never retried as
+a Legacy connection. Flutter must not add a client-kind flag or fallback switch
+for this behavior. This additive negotiation does not change the Dart API or
+require a facade version bump.
 
 Flutter Web still receives a stub and does not support native realtime.
 

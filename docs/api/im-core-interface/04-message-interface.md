@@ -754,6 +754,20 @@ pub struct RealtimeSyncHint {
 }
 ```
 
+Realtime wire capability 是 Core 私有实现细节。exact vNext WebSocket 同时 offer
+`awiki.sync.event.v3` 与 `awiki.sync.changed.v2`；v3 的 schema 3 仅接受 closed
+`message.created`，其 `event`/`projection` 分别复用 `sync.delta` 与
+`message.get_batch` 的解析和 reducer。成功时 Core 在一个 SQLite transaction 中提交
+message 与 `sync_thread_bindings`，再发射既有 committed projection；public Rust/Dart DTO
+不增加来源字段。
+
+V3 快路径没有 cursor authority：它不修改 `message_sync_state`，也不写
+`sync_applied_events`。消息私有 metadata 保留 `sync_event_id`，使可靠 delta 在写入正式
+receipt、推进 cursor 的同时跳过重复正文。先 delta 后 WS 同样 no-op。epoch 不一致、未知
+Group、Direct Persona 未验证、schema/投影不闭合或本地 apply 失败时，只保留 dirty/gap hint
+并触发 delta，不写临时 conversation/backlog，也不发 authoritative message patch。该能力是
+可协商新增，不替换 v2，因而不提升 public API 或 SQLite schema 版本。
+
 `sync_delta(request)` 行为：
 
 1. 从本地 SQLite `sync_state` 读取当前 `owner_identity_id + sync_subject_id` 的 checkpoint。`owner_identity_id` 是稳定的本地业务 owner，`sync_subject_id` 是服务端事件流主体；当前 message service 使用 canonical DID 作为 subject，因此 DID recovery 后新 DID 从 `0` 开始，不能继承旧 DID sequence。
@@ -808,10 +822,9 @@ checkpoint 边界：
   `storeGlobalCheckpoint`、手动 `since_event_seq` 或手动 checkpoint advance。
 - Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
   realtime projection 成功，也不得推进 checkpoint。
-- 在线收到首条 Direct realtime 消息时，Core 必须先按 wire peer DID 调用权威 Handle
-  lookup，校验返回 DID 与 wire snapshot 一致，并先提交 verified Persona/route，再提交消息。
-  lookup 不可用、响应不合法、发生冲突或 DID 不一致时继续写入
-  `inbound_resolution_backlog`，不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送
+- schema-3 快路径不增加网络 RTT：在线收到首条 Direct 时只复用已提交的 verified Persona；
+  缺失时静默降级到 delta。Legacy realtime ingress 仍可走既有权威 Handle lookup 与 durable
+  backlog，但任何路径都不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送未提交的
   authoritative patch。
 
 ### 5.3 Conversation / Thread Snapshot And Patch API
