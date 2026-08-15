@@ -20,7 +20,10 @@ const sourceName = process.platform === 'win32'
   : process.platform === 'darwin'
     ? 'libawiki_im_core_node.dylib'
     : 'libawiki_im_core_node.so'
-const libc = process.platform === 'linux' ? 'gnu' : undefined
+const glibcVersion = process.platform === 'linux'
+  ? process.report.getReport().header.glibcVersionRuntime
+  : undefined
+const libc = process.platform === 'linux' ? (glibcVersion ? 'gnu' : 'musl') : undefined
 const targetName = [process.platform, process.arch, libc].filter(Boolean).join('-')
 const nativeDir = join(packageRoot, 'native')
 await mkdir(nativeDir, { recursive: true })

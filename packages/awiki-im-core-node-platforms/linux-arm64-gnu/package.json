@@ -1,0 +1,22 @@
+{
+  "name": "@awiki/im-core-node-linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "Linux arm64 glibc native addon for @awiki/im-core-node",
+  "license": "AGPL-3.0-only",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "main": "./awiki-im-core-node.linux-arm64-gnu.node",
+  "files": [
+    "awiki-im-core-node.linux-arm64-gnu.node",
+    "README.md",
+    "LICENSE",
+    "COMMERCIAL-LICENSING.md",
+    "NOTICE.md",
+    "SOURCE.md",
+    "checksums.json",
+    "provenance.json",
+    "sbom.cdx.json"
+  ]
+}

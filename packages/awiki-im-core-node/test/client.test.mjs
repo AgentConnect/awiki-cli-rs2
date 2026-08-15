@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { ImCoreNodeError, openImCoreNodeClient } from '../dist/index.js'
+import { nativePlatformPackages, resolveNativeTarget } from '../dist/targets.js'
 
 function options(stateRoot) {
   return {
@@ -91,4 +92,40 @@ test('returns a stable redacted error for an invalid state root', async () => {
       && error.message === error.safeMessage
       && !error.message.includes('token-secret'),
   )
+})
+
+test('resolves libc explicitly and has no musl or TypeScript fallback', () => {
+  assert.equal(resolveNativeTarget('linux', 'x64', '2.34'), 'linux-x64-gnu')
+  assert.equal(resolveNativeTarget('linux', 'arm64', undefined), 'linux-arm64-musl')
+  assert.equal(resolveNativeTarget('darwin', 'arm64', undefined), 'darwin-arm64')
+  assert.equal(nativePlatformPackages['linux-x64-gnu'], '@awiki/im-core-node-linux-x64-gnu')
+  assert.equal(nativePlatformPackages['linux-arm64-musl'], undefined)
+})
+
+test('candidate platform manifests match the root optional dependency contract', async () => {
+  const packageRoot = join(import.meta.dirname, '..')
+  const rootManifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+  assert.deepEqual(
+    Object.keys(rootManifest.optionalDependencies).sort(),
+    Object.values(nativePlatformPackages).sort(),
+  )
+  const candidates = {
+    'linux-x64-gnu': ['linux-x64-gnu', '@awiki/im-core-node-linux-x64-gnu'],
+    'linux-arm64-gnu': ['linux-arm64-gnu', '@awiki/im-core-node-linux-arm64-gnu'],
+    'darwin-x64': ['darwin-x64', '@awiki/im-core-node-darwin-x64'],
+    'darwin-arm64': ['darwin-arm64', '@awiki/im-core-node-darwin-arm64'],
+    'win32-x64-msvc': ['win32-x64-msvc', '@awiki/im-core-node-win32-x64-msvc'],
+  }
+  for (const [directory, [target, packageName]] of Object.entries(candidates)) {
+    const manifest = JSON.parse(await readFile(
+      join(packageRoot, '../awiki-im-core-node-platforms', directory, 'package.json'),
+      'utf8',
+    ))
+    assert.equal(manifest.name, packageName)
+    assert.equal(manifest.version, rootManifest.version)
+    assert.equal(rootManifest.optionalDependencies[packageName], `workspace:${rootManifest.version}`)
+    assert.equal(manifest.license, 'AGPL-3.0-only')
+    assert.equal(manifest.main, `./awiki-im-core-node.${target}.node`)
+    assert.equal(manifest.scripts, undefined)
+  }
 })

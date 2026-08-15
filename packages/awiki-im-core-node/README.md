@@ -48,3 +48,10 @@ import。
 
 当前仓库内构建产生内部测试 addon；正式平台包、provenance 与许可证发布门禁在后续原生制品
 步骤完成。AGPL/商业发行审批完成前不得把该内部制品作为正式 release 发布。
+
+## 原生制品
+
+候选平台使用独立 optional package；wrapper 会显式区分 glibc 与 musl，不做运行期下载，也不
+回退 TypeScript SDK。当前候选矩阵、临时 artifact 构建、SBOM、checksum、provenance 和无源码
+安装验证见 `docs/node-sdk/awiki-im-core-node-artifacts.md`。Tier 1 与发行许可尚未获批，因此仓库
+没有 npm publish 命令或 job。
