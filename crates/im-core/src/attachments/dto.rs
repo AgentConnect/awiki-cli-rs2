@@ -98,6 +98,19 @@ pub struct DownloadAttachmentRequest {
     pub overwrite: bool,
 }
 
+/// Canonical-conversation variant of [`DownloadAttachmentRequest`].
+///
+/// Hosts that already hold a conversation ID must use this input instead of
+/// rebuilding a Direct or Group `ThreadRef` from display metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadConversationAttachmentRequest {
+    pub conversation: crate::messages::ConversationReadRef,
+    pub message_id: crate::ids::MessageId,
+    pub attachment_id: Option<String>,
+    pub destination: AttachmentDestination,
+    pub overwrite: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentDestination {
     LocalFile(PathBuf),

@@ -88,9 +88,11 @@ pub(crate) async fn request_otp(
             RecoveryLocalContext {
                 owner_identity_id: entry.unique_id.clone(),
                 local_alias: entry.credential_name.clone(),
-                display_name: (!entry.name.trim().is_empty())
-                    .then(|| entry.name.clone())
-                    .unwrap_or_else(|| canonical.local_part.clone()),
+                display_name: if !entry.name.trim().is_empty() {
+                    entry.name.clone()
+                } else {
+                    canonical.local_part.clone()
+                },
                 make_default: entry.is_default,
                 local_previous_did: entry.did.clone(),
                 fresh_local_state: false,

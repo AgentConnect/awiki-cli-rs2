@@ -364,6 +364,23 @@ impl<'a> AttachmentService<'a> {
         .map(|result| result.sdk_result)
     }
 
+    /// Downloads one attachment through a canonical conversation route.
+    pub fn download_conversation(
+        &self,
+        request: super::DownloadConversationAttachmentRequest,
+    ) -> crate::ImResult<super::DownloadedAttachment> {
+        self.download(download_request_for_conversation(self.client, request)?)
+    }
+
+    /// Async variant of [`Self::download_conversation`].
+    pub async fn download_conversation_async(
+        &self,
+        request: super::DownloadConversationAttachmentRequest,
+    ) -> crate::ImResult<super::DownloadedAttachment> {
+        self.download_async(download_request_for_conversation(self.client, request)?)
+            .await
+    }
+
     fn resolve_conversation_attachment_request(
         &self,
         request: super::SendConversationAttachmentRequest,
@@ -392,6 +409,31 @@ impl<'a> AttachmentService<'a> {
             ),
         })
     }
+}
+
+fn download_request_for_conversation(
+    client: &crate::core::ImClient,
+    request: super::DownloadConversationAttachmentRequest,
+) -> crate::ImResult<super::DownloadAttachmentRequest> {
+    let resolved =
+        crate::messages::resolve_conversation_send_target(client, &request.conversation)?;
+    let thread = match resolved.target {
+        crate::messages::MessageTarget::Direct(peer) => {
+            let peer = resolved
+                .target_did
+                .as_deref()
+                .unwrap_or_else(|| peer.as_str());
+            crate::messages::ThreadRef::Direct(crate::ids::PeerRef::parse(peer, "")?)
+        }
+        crate::messages::MessageTarget::Group(group) => crate::messages::ThreadRef::Group(group),
+    };
+    Ok(super::DownloadAttachmentRequest {
+        thread,
+        message_id: request.message_id,
+        attachment_id: request.attachment_id,
+        destination: request.destination,
+        overwrite: request.overwrite,
+    })
 }
 
 fn attachment_security_is_secure(security: &crate::messages::MessageSecurityMode) -> bool {

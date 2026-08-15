@@ -5539,10 +5539,11 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
                     sender_did: "did:example:bob".to_owned(),
                     receiver_did: "did:example:alice".to_owned(),
                     content_type: "text/plain".to_owned(),
-                    content: (hydration_state == MessageHydrationState::Hydrated)
-                        .then_some("complete")
-                        .unwrap_or_default()
-                        .to_owned(),
+                    content: if hydration_state == MessageHydrationState::Hydrated {
+                        "complete".to_owned()
+                    } else {
+                        String::new()
+                    },
                     server_seq: Some(server_seq),
                     hydration_state,
                     stored_at: format!("2026-07-24T00:00:0{server_seq}Z"),
@@ -7589,9 +7590,11 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
                     server_seq: Some(sequence),
                     sent_at: format!("2026-08-02T00:00:{sequence:02}Z"),
                     stored_at: format!("2026-08-02T00:00:{sequence:02}Z"),
-                    metadata: (message_id == "group-canonical")
-                        .then(|| serde_json::json!({"raw_message_id": "group-alias"}).to_string())
-                        .unwrap_or_default(),
+                    metadata: if message_id == "group-canonical" {
+                        serde_json::json!({"raw_message_id": "group-alias"}).to_string()
+                    } else {
+                        String::new()
+                    },
                     ..MessageRecord::default()
                 },
             )

@@ -64,7 +64,7 @@ impl Fixture {
                 temp_dir: workspace.join("tmp"),
             },
         };
-        let core = if vault_required {
+        if vault_required {
             crate::core::ImCore::new_with_options(
                 config,
                 paths,
@@ -81,8 +81,7 @@ impl Fixture {
             .unwrap()
         } else {
             crate::core::ImCore::new(config, paths).unwrap()
-        };
-        core
+        }
     }
 
     fn journal_text(&self) -> String {

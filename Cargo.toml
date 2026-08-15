@@ -2,6 +2,7 @@
 members = [
     "crates/user-dirs",
     "crates/im-core",
+    "crates/im-core-node",
     "crates/im-core-dart",
     "crates/awiki-cli",
     "crates/awiki-deamon",
@@ -35,6 +36,8 @@ sha2 = "0.10"
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 fs2 = "0.4"
+napi = { version = "=3.12.1", default-features = false, features = ["napi8", "async", "serde-json", "dyn-symbols"] }
+napi-derive = "=3.6.3"
 anp = { version = "0.9.3", path = "../anp/anp/rust", default-features = false }
 rand = "0.8"
 redb = "=2.6.3"

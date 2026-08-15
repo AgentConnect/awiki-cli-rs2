@@ -28,6 +28,72 @@ const REGISTRATION_GROUP_KEY_PACKAGE_PUBLISH_PENDING_WARNING: &str =
 const REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING: &str = "registration_pending_cleanup_required";
 const REGISTRATION_PROOF_EXPIRED_AWIKI_CODE: &str = "device.document_proof_expired";
 
+pub(crate) fn registration_otp_challenge(
+    raw: Option<&Value>,
+) -> crate::ImResult<crate::identity::RegistrationOtpChallenge> {
+    let object = raw
+        .and_then(Value::as_object)
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "registration OTP response must be an object".to_owned(),
+        })?;
+    let retry_after_seconds = object
+        .get("retry_after_seconds")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "registration OTP retry_after_seconds is invalid".to_owned(),
+        })?;
+    let retry_at = object
+        .get("retry_at")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .filter(|value| value.offset().local_minus_utc() == 0)
+        .map(|value| {
+            value
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        })
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "registration OTP retry_at is invalid".to_owned(),
+        })?;
+    Ok(crate::identity::RegistrationOtpChallenge {
+        retry_after_seconds,
+        retry_at,
+    })
+}
+
+#[cfg(test)]
+mod registration_otp_challenge_tests {
+    use serde_json::json;
+
+    #[test]
+    fn accepts_the_public_retry_boundary() {
+        let value = json!({
+            "ok": true,
+            "message": "sent",
+            "retry_after_seconds": 60,
+            "retry_at": "2026-08-15T12:00:00Z"
+        });
+        let challenge = super::registration_otp_challenge(Some(&value)).unwrap();
+        assert_eq!(challenge.retry_after_seconds, 60);
+        assert_eq!(challenge.retry_at, "2026-08-15T12:00:00Z");
+    }
+
+    #[test]
+    fn rejects_missing_or_non_utc_retry_metadata() {
+        for value in [
+            json!({"retry_after_seconds": 0, "retry_at": "2026-08-15T12:00:00Z"}),
+            json!({"retry_after_seconds": 60, "retry_at": "2026-08-15T12:00:00+08:00"}),
+            json!({"retry_after_seconds": 60}),
+        ] {
+            assert!(super::registration_otp_challenge(Some(&value)).is_err());
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IdentityRegistrationRuntimeResult {
     pub(crate) sdk_result: crate::identity::HandleRegistrationResult,

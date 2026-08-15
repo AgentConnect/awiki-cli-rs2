@@ -331,6 +331,16 @@ pub struct RegisterHandleRequest {
     pub make_default: bool,
 }
 
+/// Server-issued retry boundary for a phone registration OTP request.
+///
+/// The timestamp is an RFC 3339 UTC value returned by the User Service. It is
+/// diagnostic scheduling metadata only and is not registration authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationOtpChallenge {
+    pub retry_after_seconds: u32,
+    pub retry_at: String,
+}
+
 pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V1: &str = "awiki.daemon.user_subkey_package.v1";
 pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
 pub const DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM: &str = "pem";

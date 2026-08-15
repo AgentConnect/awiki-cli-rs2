@@ -1,0 +1,88 @@
+name: IM Core Node CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/im-core-node-ci.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/im-core/**'
+      - 'crates/im-core-node/**'
+      - 'packages/awiki-im-core-node/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/im-core-node-ci.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/im-core/**'
+      - 'crates/im-core-node/**'
+      - 'packages/awiki-im-core-node/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout awiki-cli-rs2
+        uses: actions/checkout@v6
+        with:
+          path: awiki-cli-rs2
+
+      - name: Read pinned ANP SDK commit
+        id: release
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pinned ANP SDK
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp
+          ref: ${{ steps.release.outputs.anp_commit }}
+          path: anp/anp
+
+      - name: Set up Rust 1.88
+        shell: bash
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+
+      - name: Set up Node 22.19
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+
+      - name: Set up pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.27.0 --activate
+
+      - name: Install Node dependencies without release postinstall
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify Rust facade and Node bridge
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          cargo fmt --check
+          cargo clippy -p awiki-im-core --all-targets --all-features -- -D warnings
+          cargo clippy -p awiki-im-core-node --all-targets --all-features -- -D warnings
+          cargo test -p awiki-im-core
+          cargo test -p awiki-im-core-node
+
+      - name: Verify Node package
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          pnpm --filter @awiki/im-core-node run build
+          pnpm --filter @awiki/im-core-node run typecheck
+          pnpm --filter @awiki/im-core-node run test

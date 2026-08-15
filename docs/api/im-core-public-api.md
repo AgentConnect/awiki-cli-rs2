@@ -458,11 +458,20 @@ impl IdentityRegistry<'_> {
         &self,
         request: RegisterHandleRequest,
     ) -> ImResult<IdentityRegistration>;
+    pub async fn request_registration_otp_async(
+        &self,
+        request: RegisterHandleRequest,
+    ) -> ImResult<RegistrationOtpChallenge>;
 
     pub fn plan_default_identity_change(
         &self,
         selector: IdentitySelector,
     ) -> ImResult<DefaultIdentityChange>;
+}
+
+pub struct RegistrationOtpChallenge {
+    pub retry_after_seconds: u32,
+    pub retry_at: String, // RFC 3339 UTC
 }
 
 pub struct DeleteLocalIdentityResult {
@@ -569,7 +578,12 @@ pending 记录固定保存同一组 device ID/keys 和目标文档；重试时�
 若明确仍是 Legacy 才允许保留原 device keys 刷新 root proof，任何其他 Manifest 或无法确认的远端
 状态都失败关闭。
 
-`register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
+`request_registration_otp_async` 是 phone 注册的第一阶段，只接受 OTP 为空的
+`VerificationInput::Phone`，并返回 User Service 给出的正数重试秒数和 RFC 3339 UTC
+`retry_at`。它不把 token、pending checkpoint 或原始 service response 暴露给 host；第二阶段
+仍用同一 `RegisterHandleRequest` 填入 OTP 调用 `register_handle_async`。
+
+`register_handle` 是唯一完成注册的入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
 Core 将账号验证 token 和可选 Recovery transition 保存在短生命周期、进程内的 opaque
@@ -944,6 +958,16 @@ impl MessageService<'_> {
         limit: PageLimit,
     ) -> ImResult<Vec<String>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
+    pub fn conversation_history(
+        &self,
+        conversation: ConversationReadRef,
+        query: HistoryQuery,
+    ) -> ImResult<Page<Message>>;
+    pub async fn conversation_history_async(
+        &self,
+        conversation: ConversationReadRef,
+        query: HistoryQuery,
+    ) -> ImResult<Page<Message>>;
     pub fn local_history(
         &self,
         thread: ThreadRef,
@@ -958,6 +982,11 @@ impl MessageService<'_> {
     ) -> ImResult<SyncThreadAfterResult>;
 }
 ```
+
+`conversation_history(_async)` 只接受 directory、conversation list 或
+`ensure_conversation` 已确认的 canonical `conversation_id`。Direct peer-scope ID 由 Core
+解析到当前 DID/Handle route，Group ID 解析到 group route；host 不得用展示字段重建
+`ThreadRef`。该约束与 `send_conversation_*`、`mark_conversation_read` 相同。
 
 P3+ API：
 
@@ -1513,6 +1542,14 @@ impl AttachmentService<'_> {
     ) -> ImResult<AttachmentSendResult>;
     pub fn download(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
     pub async fn download_async(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
+    pub fn download_conversation(
+        &self,
+        request: DownloadConversationAttachmentRequest,
+    ) -> ImResult<DownloadedAttachment>;
+    pub async fn download_conversation_async(
+        &self,
+        request: DownloadConversationAttachmentRequest,
+    ) -> ImResult<DownloadedAttachment>;
 }
 
 pub fn cancel_download(destination: impl AsRef<Path>) -> bool;
@@ -1565,6 +1602,14 @@ pub enum AttachmentDestination {
     LocalFile(PathBuf),
     Memory,
 }
+
+pub struct DownloadConversationAttachmentRequest {
+    pub conversation: ConversationReadRef,
+    pub message_id: MessageId,
+    pub attachment_id: Option<String>,
+    pub destination: AttachmentDestination,
+    pub overwrite: bool,
+}
 ```
 
 `AttachmentSendRequest.security = DefaultPlain | Plain` 保持 `transport-protected + encryption_info.mode=none`。
@@ -1574,6 +1619,11 @@ pub enum AttachmentDestination {
 SDK resolver 先把 canonical `conversation_id` 映射到 direct / group storage route，再写入
 durable projection 并 emit committed patch。plain/default 附件路径在 projection 失败时返回错误；
 App 不再需要 presentation fallback 来补 conversation list/detail correctness。
+
+`DownloadConversationAttachmentRequest` 对下载应用同一 canonical route 规则，Node/Flutter 等
+已经持有 conversation ID 的 host 不再从 peer DID 或 Group DID 猜测 `ThreadRef`。公开
+`parse_attachment_manifest` 只返回 `AttachmentManifest` 的 redacted descriptor、caption 和
+digest；不会返回 object key、nonce、ticket 或密文运行时状态。
 
 target-first 调用方在首次消息尚未建立 canonical conversation 时，可以使用
 `send_with_client_message_id(_async)` 显式传入逻辑消息 ID，并通过

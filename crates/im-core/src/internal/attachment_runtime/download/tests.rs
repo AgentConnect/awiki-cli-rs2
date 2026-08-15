@@ -727,20 +727,21 @@ async fn direct_attachment_runtime_pages_fresh_p5_wire_by_raw_count_and_reuses_c
             if bytes == correct_object.plaintext
     ));
 
-    let recorded_calls = calls.borrow();
-    let history_calls = recorded_calls
-        .iter()
-        .filter_map(|call| match call {
-            RecordedCall::Rpc { method, params, .. } if method == "direct.get_history" => {
-                Some(params)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(history_calls.len(), 2);
-    assert_eq!(history_calls[0]["body"].get("skip"), None);
-    assert_eq!(history_calls[1]["body"]["skip"], 2);
-    drop(recorded_calls);
+    {
+        let recorded_calls = calls.borrow();
+        let history_calls = recorded_calls
+            .iter()
+            .filter_map(|call| match call {
+                RecordedCall::Rpc { method, params, .. } if method == "direct.get_history" => {
+                    Some(params)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(history_calls.len(), 2);
+        assert_eq!(history_calls[0]["body"].get("skip"), None);
+        assert_eq!(history_calls[1]["body"]["skip"], 2);
+    }
 
     let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
     let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(

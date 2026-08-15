@@ -690,7 +690,7 @@ async fn ephemeral_bearer_401_does_not_retry_or_persist_response_token() {
     std::fs::write(identity_dir.join("private.key"), "unused\n").unwrap();
     let auth_path = identity_dir.join("auth.json");
     std::fs::write(&auth_path, r#"{"jwt_token":"persisted-old-token"}"#).unwrap();
-    let endpoint = crate::config::ServiceEndpoint::parse(&format!("http://{address}")).unwrap();
+    let endpoint = crate::config::ServiceEndpoint::parse(format!("http://{address}")).unwrap();
     let core = crate::core::ImCore::new(
         crate::config::ImCoreConfig {
             service_base_url: endpoint,

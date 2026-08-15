@@ -1,7 +1,8 @@
 pub use crate::attachments::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
-    AttachmentSendResult, AttachmentService, DownloadAttachmentRequest, DownloadedAttachment,
-    DownloadedAttachmentDestination, SendConversationAttachmentRequest, UploadedAttachment,
+    AttachmentSendResult, AttachmentService, DownloadAttachmentRequest,
+    DownloadConversationAttachmentRequest, DownloadedAttachment, DownloadedAttachmentDestination,
+    SendConversationAttachmentRequest, UploadedAttachment,
 };
 pub use crate::auth::{AuthScope, AuthService, AuthStatus, SessionBundle, SessionUpdate};
 pub use crate::content::{

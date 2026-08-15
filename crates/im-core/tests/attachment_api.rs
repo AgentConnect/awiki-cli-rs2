@@ -95,6 +95,23 @@ fn conversation_attachment_request_is_conversation_first() {
     assert!(request.wait_for_final_acceptance);
 }
 
+#[test]
+fn conversation_download_request_is_conversation_first() {
+    let conversation_id = "group:did:example:group".to_string();
+    let request = DownloadConversationAttachmentRequest {
+        conversation: ConversationReadRef::new(conversation_id.clone()).unwrap(),
+        message_id: MessageId::parse("msg-download-1").unwrap(),
+        attachment_id: Some("att-download-1".to_string()),
+        destination: AttachmentDestination::Memory,
+        overwrite: false,
+    };
+
+    assert_eq!(request.conversation.conversation_id, conversation_id);
+    assert_eq!(request.message_id.as_str(), "msg-download-1");
+    assert_eq!(request.attachment_id.as_deref(), Some("att-download-1"));
+    assert!(matches!(request.destination, AttachmentDestination::Memory));
+}
+
 #[tokio::test]
 async fn attachments_service_send_conversation_direct_uses_canonical_projection() {
     let server = AttachmentServiceTestServer::spawn(vec![
@@ -260,7 +277,12 @@ async fn attachments_service_send_conversation_group_uses_group_route() {
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
-    seed_active_group_conversation(&paths, "did:example:group");
+    seed_active_group_conversation(
+        &paths,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        "did:example:group",
+    );
 
     let result = client
         .attachments()
@@ -376,7 +398,7 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
 
 #[test]
 fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
-    let core = test_core();
+    let (core, paths) = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
@@ -411,6 +433,28 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
         overwrite: false,
     });
     assert!(matches!(download, Err(ImError::AuthRequired)));
+
+    seed_active_group_conversation(
+        &paths,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        "did:example:group",
+    );
+    client
+        .messages()
+        .ensure_conversation(ConversationReadRef::new("group:did:example:group").unwrap())
+        .unwrap();
+    let conversation_download =
+        client
+            .attachments()
+            .download_conversation(DownloadConversationAttachmentRequest {
+                conversation: ConversationReadRef::new("group:did:example:group").unwrap(),
+                message_id: MessageId::parse("msg-1").unwrap(),
+                attachment_id: Some("att-1".to_string()),
+                destination: AttachmentDestination::Memory,
+                overwrite: false,
+            });
+    assert!(matches!(conversation_download, Err(ImError::AuthRequired)));
 }
 
 #[tokio::test]
@@ -1542,12 +1586,14 @@ fn attachment_wire_maps_validation_to_core_errors() {
     ));
 }
 
-fn test_core() -> ImCore {
-    ImCore::new(
+fn test_core() -> (ImCore, ImCorePaths) {
+    let paths = test_paths();
+    let core = ImCore::new(
         test_config_with_base_url("https://example.test"),
-        test_paths(),
+        paths.clone(),
     )
-    .unwrap()
+    .unwrap();
+    (core, paths)
 }
 
 fn test_core_with_base_url_and_ready_identity(base_url: &str) -> ImCore {
@@ -1615,7 +1661,12 @@ fn local_message_rows(paths: &ImCorePaths, statement: &str) -> Vec<Value> {
         .collect()
 }
 
-fn seed_active_group_conversation(paths: &ImCorePaths, group_did: &str) {
+fn seed_active_group_conversation(
+    paths: &ImCorePaths,
+    owner_identity_id: &str,
+    owner_did: &str,
+    group_did: &str,
+) {
     fs::create_dir_all(
         paths
             .local_state
@@ -1630,9 +1681,9 @@ fn seed_active_group_conversation(paths: &ImCorePaths, group_did: &str) {
         r#"
 INSERT INTO groups
     (owner_identity_id, owner_did, group_id, group_did, membership_status, stored_at, metadata)
-VALUES ('alice-id', 'did:example:alice', ?1, ?1, 'active', '2026-07-14T00:00:00Z', '{}')
+VALUES (?1, ?2, ?3, ?3, 'active', '2026-07-14T00:00:00Z', '{}')
 "#,
-        [group_did],
+        (owner_identity_id, owner_did, group_did),
     )
     .unwrap();
 }

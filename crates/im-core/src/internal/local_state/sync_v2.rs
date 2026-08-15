@@ -5679,17 +5679,15 @@ mod tests {
             .unwrap(),
             0
         );
-        assert_eq!(
-            db.query_row(
+        assert!(!db
+            .query_row(
                 "SELECT pending_remote_ack
                  FROM thread_read_state
                  WHERE owner_identity_id = ?1 AND conversation_id = ?2",
                 params![binding.owner_identity_id, conversation_id],
                 |row| row.get::<_, bool>(0),
             )
-            .unwrap(),
-            false
-        );
+            .unwrap());
     }
 
     #[test]
