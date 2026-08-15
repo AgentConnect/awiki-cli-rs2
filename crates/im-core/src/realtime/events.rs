@@ -155,8 +155,8 @@ pub struct RealtimeSyncHint {
     /// through the application SDK boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// Legacy v1 sequence, or the v2 account scan high-water hint. A hint never
-    /// advances a durable sync cursor.
+    /// Legacy v1 sequence, or the v2/v3 account scan high-water hint. A hint
+    /// never advances a durable sync cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_seq: Option<String>,
     /// Legacy v1 transport metadata.

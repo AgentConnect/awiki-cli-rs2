@@ -1056,6 +1056,19 @@ verified Persona produces only a dirty/gap hint; it does not create a temporary
 conversation, write the inbound-resolution backlog, or emit an authoritative
 timeline patch. Reliable delta remains the only source of consumption receipts
 and cursor progress.
+Even when schema 3 applies the inline message and detects no gap, its internal
+hint remains `sync_dirty = true`, so the host still schedules the prompt reliable
+delta. The latency win is early committed projection, not removal of the
+notification-driven delta: that delta records the event receipt, advances the
+cursor, and converges non-inline events such as read state. The 300-second healthy
+interval below replaces only idle periodic reconciliation. Suppressing this delta
+would require a separate bounded-convergence contract and is not current behavior.
+
+`RealtimeSyncHint.event_seq` is compatibility scheduling metadata: schema 1 maps
+the event's own sequence, while schemas 2 and 3 map `account_scan_seq_hint`.
+Callers must not compare those meanings across schemas or treat either as a
+reliable cursor; the schema-3 inline event keeps its own `event.event_seq` inside
+the validated fast-path payload.
 If a realtime incoming message cannot be projected or its local SQLite write
 fails, it must not emit an authoritative conversation/timeline patch. Outside
 the schema-3 fast path, identity-unresolved Legacy realtime messages are

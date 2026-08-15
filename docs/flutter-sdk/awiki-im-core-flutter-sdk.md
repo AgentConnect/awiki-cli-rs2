@@ -989,10 +989,17 @@ a full history/catch-up projection hydrates the same message ID in place.
 
 Realtime integration:
 
-- Realtime events may include a readonly `RealtimeSyncHint` with `eventId`,
-  `eventSeq`, and `eventType`.
+- Dart realtime events may include a readonly `RealtimeSyncHint` with `domains`,
+  `reason`, `syncDirty`, `gapDetected`, and `hasUnknownDomain`. Core-internal
+  compatibility metadata is not bridged to Dart: its `event_seq` means the
+  event's own sequence for schema 1 but `account_scan_seq_hint` for schemas 2
+  and 3.
 - App code may use the hint to schedule `syncDelta` after duplicate/gap/dirty
   detection.
+- A successfully applied schema-3 inline message still has `syncDirty = true` and
+  schedules prompt reliable delta. The fast path removes the first-paint network
+  dependency; it does not remove event receipt/cursor convergence. The 300-second
+  healthy reconcile interval applies only to idle periodic fallback.
 - Receiving a realtime hint or successfully projecting a realtime notification must
   not advance the reliable checkpoint.
 - On an exact `awiki.sync.event.v3` session, Core may validate and atomically
