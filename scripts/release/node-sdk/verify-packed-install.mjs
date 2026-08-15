@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { spawnSyncPortable } from './spawn-command.mjs'
 
 function fail(message) {
   throw new Error(message)
@@ -15,8 +15,11 @@ function argument(name) {
 }
 
 function run(command, args, options) {
-  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 60_000, ...options })
-  if (result.status !== 0) fail(`${command} failed: ${(result.stderr || result.stdout).trim()}`)
+  const result = spawnSyncPortable(command, args, { encoding: 'utf8', timeout: 60_000, ...options })
+  if (result.status !== 0) {
+    const detail = result.error?.message || result.stderr || result.stdout || `exit status ${result.status}`
+    fail(`${command} failed: ${String(detail).trim()}`)
+  }
   return result.stdout.trim()
 }
 

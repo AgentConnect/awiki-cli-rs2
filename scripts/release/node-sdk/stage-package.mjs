@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSyncPortable } from './spawn-command.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDir, '../../..')
@@ -19,10 +19,7 @@ function argument(name) {
 }
 
 function run(command, args, options = {}) {
-  const executable = process.platform === 'win32' && ['npm', 'pnpm'].includes(command)
-    ? `${command}.cmd`
-    : command
-  const result = spawnSync(executable, args, {
+  const result = spawnSyncPortable(command, args, {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,

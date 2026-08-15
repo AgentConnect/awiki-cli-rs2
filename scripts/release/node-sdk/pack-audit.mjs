@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSyncPortable } from './spawn-command.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
@@ -23,8 +23,7 @@ async function sha256(path) {
 const packageDirectory = resolve(repositoryRoot, argument('package-dir'))
 const destination = resolve(repositoryRoot, argument('destination'))
 await mkdir(destination, { recursive: true })
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-const result = spawnSync(npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', destination], {
+const result = spawnSyncPortable('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', destination], {
   cwd: packageDirectory,
   encoding: 'utf8',
   maxBuffer: 16 * 1024 * 1024,
