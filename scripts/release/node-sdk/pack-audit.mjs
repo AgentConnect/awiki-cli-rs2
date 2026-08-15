@@ -23,12 +23,16 @@ async function sha256(path) {
 const packageDirectory = resolve(repositoryRoot, argument('package-dir'))
 const destination = resolve(repositoryRoot, argument('destination'))
 await mkdir(destination, { recursive: true })
-const result = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', destination], {
+const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const result = spawnSync(npm, ['pack', '--json', '--ignore-scripts', '--pack-destination', destination], {
   cwd: packageDirectory,
   encoding: 'utf8',
   maxBuffer: 16 * 1024 * 1024,
 })
-if (result.status !== 0) fail((result.stderr || result.stdout).trim())
+if (result.status !== 0) {
+  const detail = result.error?.message || result.stderr || result.stdout || `exit status ${result.status}`
+  fail(String(detail).trim())
+}
 const packed = JSON.parse(result.stdout)[0]
 if (!packed?.filename || !Array.isArray(packed.files)) fail('npm pack did not return an auditable file list')
 

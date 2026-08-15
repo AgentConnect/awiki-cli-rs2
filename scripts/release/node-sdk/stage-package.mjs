@@ -19,14 +19,18 @@ function argument(name) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const executable = process.platform === 'win32' && ['npm', 'pnpm'].includes(command)
+    ? `${command}.cmd`
+    : command
+  const result = spawnSync(executable, args, {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     ...options,
   })
   if (result.status !== 0) {
-    fail(`${command} ${args.join(' ')} failed: ${(result.stderr || result.stdout).trim()}`)
+    const detail = result.error?.message || result.stderr || result.stdout || `exit status ${result.status}`
+    fail(`${command} ${args.join(' ')} failed: ${String(detail).trim()}`)
   }
   return result.stdout.trim()
 }
