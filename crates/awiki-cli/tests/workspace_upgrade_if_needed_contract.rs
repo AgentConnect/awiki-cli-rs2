@@ -1396,7 +1396,8 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
                 return Some(stream);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > std::time::Duration::from_secs(5) {
+                // Parallel workspace tests can delay the debug CLI process startup on macOS.
+                if start.elapsed() > std::time::Duration::from_secs(30) {
                     return None;
                 }
                 thread::sleep(std::time::Duration::from_millis(10));

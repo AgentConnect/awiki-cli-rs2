@@ -8,8 +8,17 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+static HOST_RUNTIME_CONTRACT_LOCK: Mutex<()> = Mutex::new(());
+
+fn host_runtime_contract_guard() -> std::sync::MutexGuard<'static, ()> {
+    HOST_RUNTIME_CONTRACT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn runtime_mode_and_listener_config_round_trip() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
 
     let mode_before = awiki_cmd_with_workspace(&["runtime", "mode", "get"], workspace.path());
@@ -49,6 +58,7 @@ fn runtime_mode_and_listener_config_round_trip() {
 
 #[test]
 fn runtime_validation_and_dry_run_plans_match_go_contracts() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
 
     let invalid_mode =
@@ -85,6 +95,7 @@ fn runtime_validation_and_dry_run_plans_match_go_contracts() {
 
 #[test]
 fn listener_status_preserves_saved_diagnostics_without_trusting_saved_running_state() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let runtime_dir = tenant_workspace(workspace.path()).join("runtime");
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
@@ -147,6 +158,7 @@ fn listener_status_preserves_saved_diagnostics_without_trusting_saved_running_st
 
 #[test]
 fn listener_restart_requires_installed_service_like_go_contract() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let output = awiki_cmd_with_workspace(&["runtime", "listener", "restart"], workspace.path());
 
@@ -161,6 +173,7 @@ fn listener_restart_requires_installed_service_like_go_contract() {
 
 #[test]
 fn host_notify_openclaw_config_redacts_token() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
 
     let sink = awiki_cmd_with_workspace(
@@ -259,6 +272,7 @@ fn host_notify_openclaw_config_redacts_token() {
 
 #[test]
 fn host_notify_openclaw_routes_round_trip_and_config_view() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let server = TestServer::new(vec![TestResponse::ok(r#"{"ok":true,"runId":"run-123"}"#)]);
 
@@ -470,6 +484,7 @@ fn host_notify_openclaw_routes_round_trip_and_config_view() {
 
 #[test]
 fn host_notify_openclaw_route_add_uses_auto_detected_gateway_port() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let server = TestServer::new(vec![TestResponse::ok(r#"{"ok":true,"runId":"auto-123"}"#)]);
     let gateway_port = server.port().to_string();
@@ -535,6 +550,7 @@ fn host_notify_openclaw_route_add_uses_auto_detected_gateway_port() {
 
 #[test]
 fn host_notify_openclaw_uses_openclaw_config_probe() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let openclaw_config = workspace.path().join("openclaw.json");
     std::fs::write(
@@ -588,6 +604,7 @@ fn host_notify_openclaw_uses_openclaw_config_probe() {
 
 #[test]
 fn host_notify_openclaw_route_add_uses_openclaw_config_path_and_token() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let server = TestServer::new(vec![TestResponse::ok(r#"{"ok":true,"runId":"cfg-123"}"#)]);
     let openclaw_config = workspace.path().join("openclaw-route.json");
@@ -649,6 +666,7 @@ fn host_notify_openclaw_route_add_uses_openclaw_config_path_and_token() {
 
 #[test]
 fn host_notify_openclaw_token_precedence_matches_go_contract() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let openclaw_config = workspace.path().join("openclaw-token.json");
     std::fs::write(
@@ -730,6 +748,7 @@ fn host_notify_openclaw_token_precedence_matches_go_contract() {
 
 #[test]
 fn host_notify_openclaw_route_add_warns_when_confirmation_fails() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
     let server = TestServer::new(vec![TestResponse::status(500, "boom")]);
 
@@ -789,6 +808,7 @@ fn host_notify_openclaw_route_add_warns_when_confirmation_fails() {
 
 #[test]
 fn host_notify_openclaw_route_validation_matches_go_contract() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
 
     let missing = awiki_cmd_with_workspace(
@@ -829,6 +849,7 @@ fn host_notify_openclaw_route_validation_matches_go_contract() {
 
 #[test]
 fn host_notify_validation_and_dry_run_plans_match_go_contracts() {
+    let _test_guard = host_runtime_contract_guard();
     let workspace = TempDir::new().expect("temp workspace");
 
     let missing_sink = awiki_cmd_with_workspace(
@@ -1103,7 +1124,8 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
                 return Some(stream);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > Duration::from_secs(5) {
+                // Parallel workspace tests can delay the debug CLI process startup on macOS.
+                if start.elapsed() > Duration::from_secs(30) {
                     return None;
                 }
                 thread::sleep(Duration::from_millis(10));
