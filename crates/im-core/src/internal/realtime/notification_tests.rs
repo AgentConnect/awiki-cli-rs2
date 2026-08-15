@@ -75,8 +75,9 @@ fn inline_v3_reuses_closed_event_and_hydrated_message_decoders() {
         .unwrap();
 
     assert_eq!(parsed.account_scan_seq_hint.as_deref(), Some("20502"));
-    assert_eq!(parsed.event.event_id, "sev2d_01J");
-    assert_eq!(parsed.event.aggregate_id, "msg_901");
+    let event = parsed.ordinary_event.as_ref().unwrap();
+    assert_eq!(event.event_id, "sev2d_01J");
+    assert_eq!(event.aggregate_id, "msg_901");
     assert_eq!(parsed.projection["content"], "hello");
     let hint =
         crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("20500"))
@@ -85,6 +86,16 @@ fn inline_v3_reuses_closed_event_and_hydrated_message_decoders() {
     assert_eq!(hint.event_seq.as_deref(), Some("20502"));
     assert!(hint.sync_dirty);
     assert!(hint.gap_detected);
+
+    let mut explicit_ordinary = notification;
+    explicit_ordinary["sync"]["event"]["lane"] = json!("ordinary");
+    assert_eq!(
+        super::parse_inline_sync_event_v3(&explicit_ordinary)
+            .unwrap()
+            .unwrap()
+            .lane,
+        super::InlineSyncLaneV3::Ordinary
+    );
 }
 
 #[test]
@@ -109,4 +120,60 @@ fn inline_v3_rejects_event_ahead_of_hint_and_ignores_v2_hint() {
         "sync": {"schema_version": 2}
     });
     assert_eq!(super::parse_inline_sync_event_v3(&v2).unwrap(), None);
+}
+
+#[test]
+fn inline_v3_accepts_closed_p5_and_p6_lane_shapes() {
+    let p5 = json!({
+        "method": "sync.changed",
+        "params": {"domains": ["message"], "reason": "direct_message_available"},
+        "sync": {
+            "schema_version": 3,
+            "domain_versions": {},
+            "event": {
+                "lane": "p5_device",
+                "event_id": "p5-delivery-1",
+                "stream_epoch": "41",
+                "event_seq": "37",
+                "event_type": "p5.delivery.created"
+            },
+            "projection": {
+                "meta": {
+                    "profile": "anp.direct.e2ee.v2",
+                    "security_profile": "direct-e2ee"
+                },
+                "body": {},
+                "server_seq": 7
+            }
+        }
+    });
+    let parsed = super::parse_inline_sync_event_v3(&p5).unwrap().unwrap();
+    assert_eq!(parsed.lane, super::InlineSyncLaneV3::P5Device);
+    assert_eq!(parsed.event_id, "p5-delivery-1");
+    assert!(parsed.ordinary_event.is_none());
+
+    let mut p6 = p5;
+    p6["sync"]["event"] = json!({
+        "lane": "p6_group",
+        "event_id": "p6-delivery-1",
+        "stream_epoch": "42",
+        "event_seq": "59",
+        "event_type": "p6.delivery.created",
+        "group_did": "did:wba:example.com:groups:team",
+        "group_event_seq": "12"
+    });
+    p6["sync"]["projection"] = json!({
+        "meta": {
+            "profile": "anp.group.e2ee.v2",
+            "security_profile": "group-e2ee"
+        },
+        "auth": {},
+        "body": {}
+    });
+    let parsed = super::parse_inline_sync_event_v3(&p6).unwrap().unwrap();
+    assert_eq!(parsed.lane, super::InlineSyncLaneV3::P6Group);
+    assert_eq!(parsed.group_event_seq.as_deref(), Some("12"));
+
+    p6["sync"]["projection"]["meta"]["profile"] = json!("anp.direct.e2ee.v2");
+    assert!(super::parse_inline_sync_event_v3(&p6).is_err());
 }

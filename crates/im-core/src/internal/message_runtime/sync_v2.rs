@@ -23,7 +23,7 @@ pub(crate) enum RealtimeInlineMessageApplyOutcome {
     NotApplicable,
     Applied {
         message: crate::messages::Message,
-        local_scan_seq: String,
+        local_scan_seq: Option<String>,
     },
     Deferred,
 }
@@ -33,6 +33,13 @@ pub(crate) fn apply_realtime_inline_message_v3(
     client: &crate::core::ImClient,
     notification: &Value,
 ) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    if crate::internal::realtime::notification::parse_inline_sync_event_v3(notification)?
+        .is_some_and(|inline| {
+            inline.lane != crate::internal::realtime::notification::InlineSyncLaneV3::Ordinary
+        })
+    {
+        return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
+    }
     let Some((message, input)) = prepare_realtime_inline_message_v3(client, notification)? else {
         return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
     };
@@ -51,6 +58,14 @@ pub(crate) async fn apply_realtime_inline_message_v3_async(
     client: &crate::core::ImClient,
     notification: &Value,
 ) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    let Some(inline) =
+        crate::internal::realtime::notification::parse_inline_sync_event_v3(notification)?
+    else {
+        return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
+    };
+    if inline.lane != crate::internal::realtime::notification::InlineSyncLaneV3::Ordinary {
+        return apply_realtime_e2ee_lane_v3_async(client, inline).await;
+    }
     let Some((message, input)) = prepare_realtime_inline_message_v3(client, notification)? else {
         return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
     };
@@ -61,6 +76,106 @@ pub(crate) async fn apply_realtime_inline_message_v3_async(
         .apply_realtime_message_v3(input)
         .await?;
     finish_realtime_inline_message_v3(client, message, outcome)
+}
+
+#[cfg(feature = "sqlite")]
+async fn apply_realtime_e2ee_lane_v3_async(
+    client: &crate::core::ImClient,
+    inline: crate::internal::realtime::notification::InlineSyncEventV3,
+) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    apply_realtime_e2ee_lane_v3_with_directory_async(client, inline, &mut directory_transport).await
+}
+
+#[cfg(feature = "sqlite")]
+async fn apply_realtime_e2ee_lane_v3_with_directory_async<R>(
+    client: &crate::core::ImClient,
+    inline: crate::internal::realtime::notification::InlineSyncEventV3,
+    directory_transport: &mut R,
+) -> crate::ImResult<RealtimeInlineMessageApplyOutcome>
+where
+    R: AsyncRpcTransport,
+{
+    use crate::internal::local_state::sync_v2::{SyncLaneEventReceipt, SyncLaneEventReceiptMatch};
+    use crate::internal::realtime::notification::InlineSyncLaneV3;
+    use crate::internal::wire::sync_v2::SyncLaneV3;
+
+    let context = client.sync_account_context()?;
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    let db = client.core_inner().local_state_db().await?;
+    let lane = match inline.lane {
+        InlineSyncLaneV3::Ordinary => unreachable!("ordinary inline events use the v2 reducer"),
+        InlineSyncLaneV3::P5Device => SyncLaneV3::P5Device,
+        InlineSyncLaneV3::P6Group => SyncLaneV3::P6Group,
+    };
+    let Some(lane_state) = db
+        .load_lane_sync_states(owner_identity_id.clone())
+        .await?
+        .into_iter()
+        .find(|state| state.lane == lane)
+    else {
+        return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
+    };
+    if lane_state.stream_epoch != inline.stream_epoch {
+        return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
+    }
+    let receipt = SyncLaneEventReceipt {
+        owner_identity_id,
+        lane,
+        event_id: inline.event_id.clone(),
+        stream_epoch: inline.stream_epoch.clone(),
+        event_seq: inline.event_seq.clone(),
+        group_did: inline.group_did.clone(),
+        group_event_seq: inline.group_event_seq.clone(),
+        applied_at: unix_time_i64(),
+    };
+    match db.match_sync_lane_event_receipt(receipt.clone()).await? {
+        SyncLaneEventReceiptMatch::Exact | SyncLaneEventReceiptMatch::Conflict => {
+            return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
+        }
+        SyncLaneEventReceiptMatch::Missing => {}
+    }
+
+    let message = match inline.lane {
+        InlineSyncLaneV3::P5Device => {
+            match apply_p5_lane_projection_async(
+                client,
+                &inline.event_id,
+                &inline.projection,
+                directory_transport,
+            )
+            .await?
+            {
+                P5LaneProjectionOutcome::Projected(message) => Some(message),
+                P5LaneProjectionOutcome::TerminalControl => None,
+                P5LaneProjectionOutcome::ReplayWithoutReceipt
+                | P5LaneProjectionOutcome::Deferred => {
+                    return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
+                }
+            }
+        }
+        InlineSyncLaneV3::P6Group => {
+            validate_p6_inline_binding(&inline)?;
+            match apply_p6_lane_delivery_projection_async(client, &inline.projection).await {
+                Ok(message) => Some(message),
+                Err(_) => return Ok(RealtimeInlineMessageApplyOutcome::Deferred),
+            }
+        }
+        InlineSyncLaneV3::Ordinary => unreachable!("ordinary lane was handled above"),
+    };
+    // The receipt proves idempotent local application, but deliberately does
+    // not carry a checkpoint. sync.delta remains the sole authoritative ACK.
+    db.commit_sync_lane_event(receipt, None, false).await?;
+    if let Some(message) = message {
+        client.emit_committed_local_message_projection("sync_v3_e2ee_realtime_fast_path");
+        Ok(RealtimeInlineMessageApplyOutcome::Applied {
+            message,
+            local_scan_seq: None,
+        })
+    } else {
+        let _ = context;
+        Ok(RealtimeInlineMessageApplyOutcome::Deferred)
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -78,10 +193,16 @@ fn prepare_realtime_inline_message_v3(
     else {
         return Ok(None);
     };
+    if inline.lane != crate::internal::realtime::notification::InlineSyncLaneV3::Ordinary {
+        return Ok(None);
+    }
+    let event = inline
+        .ordinary_event
+        .as_ref()
+        .expect("ordinary inline event carries its frozen event");
     let context = client.sync_account_context()?;
-    if inline.event.account_id != context.account_id
-        || inline
-            .event
+    if event.account_id != context.account_id
+        || event
             .recipient_device_id
             .as_deref()
             .is_some_and(|device_id| device_id != context.protocol_device_id)
@@ -96,35 +217,30 @@ fn prepare_realtime_inline_message_v3(
         .get("id")
         .or_else(|| inline.projection.get("message_id"))
         .and_then(Value::as_str);
-    if projection_id != Some(inline.event.aggregate_id.as_str())
-        || inline
-            .event
-            .payload
-            .get("message_id")
-            .and_then(Value::as_str)
-            != Some(inline.event.aggregate_id.as_str())
+    if projection_id != Some(event.aggregate_id.as_str())
+        || event.payload.get("message_id").and_then(Value::as_str)
+            != Some(event.aggregate_id.as_str())
     {
         return Err(sync_error(
             "SYNC_INVALID_PAGE",
             "realtime message projection conflicts with its event aggregate",
         ));
     }
+    let stream_epoch = event.stream_epoch.clone();
     let mut public_messages = BTreeMap::new();
     let event = reduce_event(
         client,
-        &inline.event,
+        event,
         Some(&inline.projection),
         None,
         &mut public_messages,
     )?;
-    let message = public_messages
-        .remove(&inline.event.event_id)
-        .ok_or_else(|| {
-            sync_error(
-                "SYNC_INVALID_PAGE",
-                "realtime message reducer did not produce a public projection",
-            )
-        })?;
+    let message = public_messages.remove(&event.event_id).ok_or_else(|| {
+        sync_error(
+            "SYNC_INVALID_PAGE",
+            "realtime message reducer did not produce a public projection",
+        )
+    })?;
     Ok(Some((
         message,
         crate::internal::local_state::sync_v2::RealtimeMessageApplyInputV3 {
@@ -133,7 +249,7 @@ fn prepare_realtime_inline_message_v3(
             account_id: context.account_id,
             protocol_device_id: context.protocol_device_id,
             device_auth_generation: context.device_auth_generation,
-            stream_epoch: inline.event.stream_epoch,
+            stream_epoch,
             event,
         },
     )))
@@ -154,7 +270,7 @@ fn finish_realtime_inline_message_v3(
             client.emit_committed_local_message_projection("sync_v2_realtime_fast_path");
             Ok(RealtimeInlineMessageApplyOutcome::Applied {
                 message,
-                local_scan_seq,
+                local_scan_seq: Some(local_scan_seq),
             })
         }
         crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::Duplicate {
@@ -164,6 +280,267 @@ fn finish_realtime_inline_message_v3(
             ..
         } => Ok(RealtimeInlineMessageApplyOutcome::Deferred),
     }
+}
+
+#[cfg(feature = "sqlite")]
+enum P5LaneProjectionOutcome {
+    Projected(crate::messages::Message),
+    TerminalControl,
+    ReplayWithoutReceipt,
+    Deferred,
+}
+
+#[cfg(feature = "sqlite")]
+async fn apply_p5_lane_projection_async<R>(
+    client: &crate::core::ImClient,
+    expected_delivery_id: &str,
+    envelope: &Value,
+    directory_transport: &mut R,
+) -> crate::ImResult<P5LaneProjectionOutcome>
+where
+    R: AsyncRpcTransport,
+{
+    let raw_message_id = envelope
+        .pointer("/meta/message_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.trim() == *value)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "P5 lane envelope requires canonical meta.message_id",
+            )
+        })?
+        .to_owned();
+    if raw_message_id != expected_delivery_id {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "P5 delivery id conflicts with envelope meta.message_id",
+        ));
+    }
+    let mut raw = json!({
+        "messages": [envelope.clone()],
+        "has_more": false,
+        "warnings": []
+    });
+    let mut provenance = super::read::project_secure_direct_messages_from_reliable_sync_async(
+        client,
+        &mut raw,
+        directory_transport,
+    )
+    .await;
+    match provenance.disposition_for_raw_message_id(&raw_message_id) {
+        super::read::DirectP5ProjectionDisposition::Projected => {
+            super::read::annotate_direct_peer_scopes_async(
+                client,
+                &mut raw,
+                directory_transport,
+                None,
+                None,
+                Some(&mut provenance),
+            )
+            .await;
+            let page = super::read::page_from_raw(client, &raw, crate::ids::PageLimit::new(1)?)?;
+            let [message] = page.items.as_slice() else {
+                return Err(sync_error(
+                    "SYNC_P5_APPLICATION_INCOMPLETE",
+                    "P5 delivery did not produce one durable message projection",
+                ));
+            };
+            let outcome = super::read::persist_projection_async(
+                client,
+                std::slice::from_ref(message),
+                &provenance,
+            )
+            .await?;
+            if outcome
+                .stored_messages
+                .saturating_add(outcome.backlogged_messages)
+                != 1
+            {
+                return Err(sync_error(
+                    "SYNC_P5_APPLICATION_INCOMPLETE",
+                    "P5 delivery was not durably stored or backlogged",
+                ));
+            }
+            Ok(P5LaneProjectionOutcome::Projected(message.clone()))
+        }
+        super::read::DirectP5ProjectionDisposition::TerminalControl => {
+            Ok(P5LaneProjectionOutcome::TerminalControl)
+        }
+        super::read::DirectP5ProjectionDisposition::Replay => {
+            Ok(P5LaneProjectionOutcome::ReplayWithoutReceipt)
+        }
+        super::read::DirectP5ProjectionDisposition::NotConsumed => {
+            Ok(P5LaneProjectionOutcome::Deferred)
+        }
+    }
+}
+
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+async fn apply_p6_lane_delivery_projection_async(
+    client: &crate::core::ImClient,
+    envelope: &Value,
+) -> crate::ImResult<crate::messages::Message> {
+    let mut projected = p6_projection_for_application(envelope)?;
+    crate::internal::message_runtime::read::apply_cached_group_e2ee_messages_async(
+        client,
+        std::slice::from_mut(&mut projected),
+    )
+    .await;
+    if projected.get("decryption_state").and_then(Value::as_str) != Some("decrypted") {
+        crate::internal::message_runtime::read::project_p6_v2_incoming_message(
+            client,
+            &mut projected,
+        )
+        .await?;
+    } else if let Some(object) = projected.as_object_mut() {
+        object.remove("meta");
+        object.remove("body");
+        object.remove("auth");
+    }
+    crate::internal::message_runtime::read::cache_attachment_manifests_for_internal_download_async(
+        client,
+        std::slice::from_ref(&projected),
+    )
+    .await;
+    crate::internal::message_runtime::read::redact_attachment_manifests_for_public_projection(
+        std::slice::from_mut(&mut projected),
+    );
+    let raw = json!({"messages": [projected], "has_more": false});
+    let page = super::read::page_from_raw(client, &raw, crate::ids::PageLimit::new(1)?)?;
+    let [message] = page.items.as_slice() else {
+        return Err(sync_error(
+            "SYNC_P6_APPLICATION_INCOMPLETE",
+            "P6 delivery did not produce one durable message projection",
+        ));
+    };
+    let outcome = super::read::persist_projection_async(
+        client,
+        std::slice::from_ref(message),
+        &super::read::DirectP5ProjectionProvenance::default(),
+    )
+    .await?;
+    if outcome
+        .stored_messages
+        .saturating_add(outcome.backlogged_messages)
+        != 1
+    {
+        return Err(sync_error(
+            "SYNC_P6_APPLICATION_INCOMPLETE",
+            "P6 delivery was not durably stored or backlogged",
+        ));
+    }
+    Ok(message.clone())
+}
+
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn p6_projection_for_application(envelope: &Value) -> crate::ImResult<Value> {
+    let mut projected = envelope.clone();
+    let object = projected
+        .as_object_mut()
+        .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "P6 envelope must be an object"))?;
+    let meta = object
+        .get("meta")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "P6 envelope meta is missing"))?;
+    let body = object
+        .get("body")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "P6 envelope body is missing"))?;
+    let group_did = body
+        .get("group_did")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.trim() == *value)
+        .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "P6 body.group_did is invalid"))?;
+    let group_event_seq = body
+        .get("group_event_seq")
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| value.as_u64().map(|value| value.to_string()))
+        })
+        .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "P6 body.group_event_seq is invalid"))?;
+    crate::internal::local_state::sync_v2::validate_positive_decimal(
+        "group_event_seq",
+        &group_event_seq,
+    )?;
+    let raw_message_id = meta
+        .get("message_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.trim() == *value)
+        .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "P6 meta.message_id is invalid"))?;
+    for (key, value) in [
+        (
+            "id",
+            Value::String(format!("{group_did}:{group_event_seq}")),
+        ),
+        ("message_id", Value::String(raw_message_id.to_owned())),
+        ("raw_message_id", Value::String(raw_message_id.to_owned())),
+        ("group_did", Value::String(group_did.to_owned())),
+        ("group_event_seq", Value::String(group_event_seq)),
+        ("direction", Value::from(0)),
+    ] {
+        object.insert(key.to_owned(), value);
+    }
+    for key in ["group_state_version", "accepted_at", "group_cipher_object"] {
+        if let Some(value) = body.get(key).cloned() {
+            object.insert(key.to_owned(), value);
+        }
+    }
+    for key in ["sender_did", "sender_device_id", "content_type"] {
+        if let Some(value) = meta.get(key).cloned() {
+            object.insert(key.to_owned(), value);
+        }
+    }
+    if let Some(receiver_did) = meta
+        .get("target")
+        .and_then(Value::as_object)
+        .and_then(|target| target.get("did"))
+        .cloned()
+    {
+        object.insert("receiver_did".to_owned(), receiver_did);
+    }
+    Ok(projected)
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "group-e2ee")))]
+async fn apply_p6_lane_delivery_projection_async(
+    _client: &crate::core::ImClient,
+    _envelope: &Value,
+) -> crate::ImResult<crate::messages::Message> {
+    Err(crate::ImError::unsupported("group-e2ee"))
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_p6_inline_binding(
+    inline: &crate::internal::realtime::notification::InlineSyncEventV3,
+) -> crate::ImResult<()> {
+    let body_group_did = inline
+        .projection
+        .pointer("/body/group_did")
+        .and_then(Value::as_str);
+    let body_group_event_seq =
+        inline
+            .projection
+            .pointer("/body/group_event_seq")
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .or_else(|| value.as_u64().map(|value| value.to_string()))
+            });
+    if body_group_did != inline.group_did.as_deref()
+        || body_group_event_seq.as_deref() != inline.group_event_seq.as_deref()
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "P6 inline event position conflicts with its envelope",
+        ));
+    }
+    Ok(())
 }
 
 impl<'a, P, T, R> MessageSyncRuntimeV2<'a, P, T, R> {
@@ -199,12 +576,10 @@ where
                     if !device_epoch_refresh_attempted && is_device_epoch_rejection(&error) =>
                 {
                     device_epoch_refresh_attempted = true;
-                    self.session_provider.refresh_session().await?;
-                    self.transport.reload_authentication_state()?;
+                    self.refresh_session_and_lane_epoch().await?;
                 }
                 Ok((mut outcome, Some(_error))) if !device_epoch_refresh_attempted => {
-                    self.session_provider.refresh_session().await?;
-                    self.transport.reload_authentication_state()?;
+                    self.refresh_session_and_lane_epoch().await?;
                     let binding = self.client.active_sync_account_binding().await?;
                     let owner_lock = owner_sync_lock(&binding.owner_identity_id);
                     let _owner_guard = owner_lock.lock().await;
@@ -225,6 +600,23 @@ where
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    async fn refresh_session_and_lane_epoch(&mut self) -> crate::ImResult<()> {
+        self.session_provider.refresh_session().await?;
+        self.transport.reload_authentication_state()?;
+        let binding = self.client.active_sync_account_binding().await?;
+        let owner_lock = owner_sync_lock(&binding.owner_identity_id);
+        let _owner_guard = owner_lock.lock().await;
+        let db = self.client.core_inner().local_state_db().await?;
+        if !db
+            .load_lane_sync_states(binding.owner_identity_id.clone())
+            .await?
+            .is_empty()
+        {
+            let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
+        }
+        Ok(())
     }
 
     async fn sync_now_once(
@@ -273,19 +665,60 @@ where
                 self.bootstrap(&db, &binding, &mut result).await?
             }
         };
+        if db
+            .lane_capability_negotiation_required(
+                owner_identity_id.clone(),
+                binding.device_auth_generation.clone(),
+            )
+            .await?
+        {
+            self.refresh_lane_bootstrap(&db, &binding).await?;
+        }
+        let mut lane_states =
+            lane_state_map(db.load_lane_sync_states(owner_identity_id.clone()).await?);
+        self.retry_p6_lane_blockers(&db, &binding, &lane_states, &mut result)
+            .await;
 
         let mut recovery_token_retries = 0_u8;
+        let mut blocked_lanes = BTreeSet::new();
+        let mut p5_lane_recovery_attempted = false;
         loop {
             let cursor = crate::internal::wire::sync_v2::SyncCursorV2 {
                 stream_epoch: state.stream_epoch.clone(),
                 scan_seq: state.scan_seq.clone(),
             };
-            let params = crate::internal::wire::sync_v2::build_delta_params(
-                &wire_identity(self.client),
-                &cursor,
-                limit,
-                reason,
-            )?;
+            let requested_lanes = lane_states
+                .iter()
+                .filter(|(lane, _)| !blocked_lanes.contains(*lane))
+                .map(|(lane, state)| {
+                    (
+                        *lane,
+                        crate::internal::wire::sync_v2::SyncLaneCursorV3 {
+                            cursor: crate::internal::wire::sync_v2::SyncCursorV2 {
+                                stream_epoch: state.stream_epoch.clone(),
+                                scan_seq: state.scan_seq.clone(),
+                            },
+                            committed_seq: state.committed_seq.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let params = if requested_lanes.is_empty() {
+                crate::internal::wire::sync_v2::build_delta_params(
+                    &wire_identity(self.client),
+                    &cursor,
+                    limit,
+                    reason,
+                )?
+            } else {
+                crate::internal::wire::sync_v2::build_delta_params_with_lanes(
+                    &wire_identity(self.client),
+                    &cursor,
+                    limit,
+                    reason,
+                    &requested_lanes,
+                )?
+            };
             let raw = self
                 .transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.delta", params)
@@ -460,6 +893,18 @@ where
                     .emit_committed_system_notification(notification.clone());
             }
             super::sync::emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            let lane_has_more = self
+                .apply_lane_delta_sections(
+                    &db,
+                    &binding,
+                    &page.lanes,
+                    &requested_lanes,
+                    &mut lane_states,
+                    &mut blocked_lanes,
+                    &mut p5_lane_recovery_attempted,
+                    &mut result,
+                )
+                .await?;
             state.scan_seq = page.next_cursor.scan_seq;
             state.stream_epoch = page.next_cursor.stream_epoch;
             state.bootstrap_state = "active".to_owned();
@@ -471,7 +916,9 @@ where
                     "sync.delta returned has_more without cursor progress",
                 ));
             }
-            if !page.has_more {
+            if !page.has_more && !lane_has_more {
+                self.retry_p6_lane_blockers(&db, &binding, &lane_states, &mut result)
+                    .await;
                 result.changed_conversation_ids.sort();
                 result.changed_conversation_ids.dedup();
                 result.status =
@@ -495,6 +942,546 @@ where
                 ));
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_lane_delta_sections(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        sections: &BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::wire::sync_v2::SyncLaneDeltaSectionV3,
+        >,
+        requested: &BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::wire::sync_v2::SyncLaneCursorV3,
+        >,
+        lane_states: &mut BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::local_state::sync_v2::LaneSyncState,
+        >,
+        blocked_lanes: &mut BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+        p5_lane_recovery_attempted: &mut bool,
+        result: &mut crate::messages::MessageSyncOutcome,
+    ) -> crate::ImResult<bool> {
+        use crate::internal::wire::sync_v2::{SyncLaneDeltaSectionV3, SyncLaneV3};
+
+        if requested.is_empty() {
+            if !sections.is_empty() {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "sync.delta returned unrequested lane sections",
+                ));
+            }
+            return Ok(false);
+        }
+        if requested.keys().any(|lane| !sections.contains_key(lane))
+            || sections.keys().any(|lane| !requested.contains_key(lane))
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "sync.delta lane sections do not match the requested lanes",
+            ));
+        }
+        let mut any_has_more = false;
+        for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
+            let Some(section) = sections.get(&lane) else {
+                continue;
+            };
+            match section {
+                SyncLaneDeltaSectionV3::Error(error) => {
+                    result
+                        .warnings
+                        .push(format!("sync.lane.{}.{}", lane.as_str(), error.anp_code));
+                    if lane == SyncLaneV3::P5Device
+                        && error.anp_code == "p5_device_recovery_required"
+                        && !*p5_lane_recovery_attempted
+                    {
+                        *p5_lane_recovery_attempted = true;
+                        match self.refresh_lane_bootstrap(db, binding).await {
+                            Ok(refreshed) => {
+                                *lane_states = refreshed;
+                                return Ok(true);
+                            }
+                            Err(_) => result
+                                .warnings
+                                .push("sync.lane.p5_device.recovery_deferred".to_owned()),
+                        }
+                    }
+                    blocked_lanes.insert(lane);
+                }
+                SyncLaneDeltaSectionV3::Page {
+                    events,
+                    next_cursor,
+                    has_more,
+                } => {
+                    let current = lane_states.get(&lane).cloned().ok_or_else(|| {
+                        sync_error(
+                            "SYNC_LANE_BOOTSTRAP_REQUIRED",
+                            "requested lane has no local bootstrap state",
+                        )
+                    })?;
+                    if current.stream_epoch != next_cursor.stream_epoch
+                        || crate::internal::local_state::sync_v2::compare_decimal(
+                            &next_cursor.scan_seq,
+                            &current.scan_seq,
+                        )? == std::cmp::Ordering::Less
+                    {
+                        return Err(sync_error(
+                            "SYNC_INVALID_PAGE",
+                            "lane next cursor conflicts with the local checkpoint",
+                        ));
+                    }
+                    validate_lane_page_progress(&current, events, next_cursor)?;
+                    let completed = match lane {
+                        SyncLaneV3::P5Device => {
+                            self.apply_p5_lane_events(
+                                db,
+                                binding,
+                                events,
+                                lane_states,
+                                blocked_lanes,
+                                result,
+                            )
+                            .await?
+                        }
+                        SyncLaneV3::P6Group => {
+                            self.apply_p6_lane_events(
+                                db,
+                                binding,
+                                events,
+                                lane_states,
+                                blocked_lanes,
+                                result,
+                            )
+                            .await?
+                        }
+                    };
+                    if completed {
+                        let previous_scan_seq = lane_states
+                            .get(&lane)
+                            .map(|state| state.scan_seq.clone())
+                            .ok_or_else(|| {
+                                sync_error(
+                                    "SYNC_LANE_BOOTSTRAP_REQUIRED",
+                                    "lane state disappeared during application",
+                                )
+                            })?;
+                        let next = crate::internal::local_state::sync_v2::LaneSyncState {
+                            owner_identity_id: binding.owner_identity_id.clone(),
+                            lane,
+                            stream_epoch: next_cursor.stream_epoch.clone(),
+                            scan_seq: next_cursor.scan_seq.clone(),
+                            committed_seq: next_cursor.scan_seq.clone(),
+                        };
+                        db.advance_lane_sync_state(next.clone()).await?;
+                        lane_states.insert(lane, next);
+                        if *has_more && previous_scan_seq == next_cursor.scan_seq {
+                            return Err(sync_error(
+                                "SYNC_INVALID_PAGE",
+                                "lane returned has_more without cursor progress",
+                            ));
+                        }
+                        any_has_more |= *has_more;
+                    }
+                }
+            }
+        }
+        Ok(any_has_more)
+    }
+
+    async fn apply_p5_lane_events(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        events: &[crate::internal::wire::sync_v2::SyncLaneEventV3],
+        lane_states: &mut BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::local_state::sync_v2::LaneSyncState,
+        >,
+        blocked_lanes: &mut BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+        result: &mut crate::messages::MessageSyncOutcome,
+    ) -> crate::ImResult<bool> {
+        use crate::internal::local_state::sync_v2::SyncLaneEventReceiptMatch;
+        use crate::internal::wire::sync_v2::{SyncLaneEventV3, SyncLaneV3};
+
+        for event in events {
+            let SyncLaneEventV3::P5Delivery {
+                delivery_id,
+                seq,
+                envelope,
+            } = event
+            else {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "P5 lane contains a non-P5 event",
+                ));
+            };
+            let state = lane_states
+                .get(&SyncLaneV3::P5Device)
+                .cloned()
+                .ok_or_else(|| {
+                    sync_error("SYNC_LANE_BOOTSTRAP_REQUIRED", "P5 lane state is missing")
+                })?;
+            let receipt = lane_event_receipt(
+                binding,
+                SyncLaneV3::P5Device,
+                delivery_id,
+                &state.stream_epoch,
+                seq,
+                None,
+                None,
+            );
+            let receipt_match = db.match_sync_lane_event_receipt(receipt.clone()).await?;
+            if receipt_match == SyncLaneEventReceiptMatch::Conflict {
+                blocked_lanes.insert(SyncLaneV3::P5Device);
+                result
+                    .warnings
+                    .push("sync.lane.p5_device.receipt_conflict".to_owned());
+                return Ok(false);
+            }
+            let next = lane_state_at_event(&state, seq);
+            if receipt_match == SyncLaneEventReceiptMatch::Exact {
+                db.commit_sync_lane_event(receipt, Some(next.clone()), false)
+                    .await?;
+                lane_states.insert(SyncLaneV3::P5Device, next);
+                result.duplicates_skipped = result.duplicates_skipped.saturating_add(1);
+                continue;
+            }
+            let projection = apply_p5_lane_projection_async(
+                self.client,
+                delivery_id,
+                envelope,
+                &mut self.directory_transport,
+            )
+            .await;
+            let projected_message = match projection {
+                Ok(P5LaneProjectionOutcome::Projected(message)) => Some(message),
+                Ok(P5LaneProjectionOutcome::TerminalControl) => None,
+                Ok(
+                    P5LaneProjectionOutcome::ReplayWithoutReceipt
+                    | P5LaneProjectionOutcome::Deferred,
+                )
+                | Err(_) => {
+                    blocked_lanes.insert(SyncLaneV3::P5Device);
+                    result
+                        .warnings
+                        .push("sync.lane.p5_device.deferred".to_owned());
+                    return Ok(false);
+                }
+            };
+            db.commit_sync_lane_event(receipt, Some(next.clone()), false)
+                .await?;
+            lane_states.insert(SyncLaneV3::P5Device, next);
+            result.events_applied = result.events_applied.saturating_add(1);
+            if let Some(message) = projected_message {
+                result.messages_hydrated = result.messages_hydrated.saturating_add(1);
+                result
+                    .changed_conversation_ids
+                    .push(message_conversation_id(&message, binding));
+                if message.direction == crate::messages::MessageDirection::Incoming {
+                    result.committed_incoming_messages.push(
+                        crate::messages::CommittedIncomingMessage {
+                            event_id: delivery_id.clone(),
+                            logical_message_id: message.id.as_str().to_owned(),
+                            source: "live_delta_p5_device".to_owned(),
+                            direction: crate::messages::MessageDirection::Incoming,
+                            message,
+                        },
+                    );
+                }
+                self.client
+                    .emit_committed_local_message_projection("sync_v3_p5_device_delta");
+            }
+        }
+        Ok(true)
+    }
+
+    async fn apply_p6_lane_events(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        events: &[crate::internal::wire::sync_v2::SyncLaneEventV3],
+        lane_states: &mut BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::local_state::sync_v2::LaneSyncState,
+        >,
+        blocked_lanes: &mut BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>,
+        result: &mut crate::messages::MessageSyncOutcome,
+    ) -> crate::ImResult<bool> {
+        use crate::internal::local_state::sync_v2::SyncLaneEventReceiptMatch;
+        use crate::internal::wire::sync_v2::{SyncLaneEventV3, SyncLaneV3};
+
+        for event in events {
+            let state = lane_states
+                .get(&SyncLaneV3::P6Group)
+                .cloned()
+                .ok_or_else(|| {
+                    sync_error("SYNC_LANE_BOOTSTRAP_REQUIRED", "P6 lane state is missing")
+                })?;
+            let (event_id, seq, group_did, group_event_seq, event_type, payload) = match event {
+                SyncLaneEventV3::P6Delivery {
+                    delivery_id,
+                    seq,
+                    group_did,
+                    group_event_seq,
+                    envelope,
+                } => (
+                    delivery_id,
+                    seq,
+                    group_did,
+                    Some(group_event_seq.as_str()),
+                    "p6.delivery.created",
+                    envelope,
+                ),
+                SyncLaneEventV3::P6ControlNotice {
+                    notice_id,
+                    seq,
+                    group_did,
+                    notice,
+                } => (notice_id, seq, group_did, None, "p6.control.notice", notice),
+                SyncLaneEventV3::P5Delivery { .. } => {
+                    return Err(sync_error(
+                        "SYNC_INVALID_PAGE",
+                        "P6 lane contains a P5 event",
+                    ));
+                }
+            };
+            let receipt = lane_event_receipt(
+                binding,
+                SyncLaneV3::P6Group,
+                event_id,
+                &state.stream_epoch,
+                seq,
+                Some(group_did.clone()),
+                group_event_seq.map(ToOwned::to_owned),
+            );
+            let receipt_match = db.match_sync_lane_event_receipt(receipt.clone()).await?;
+            if receipt_match == SyncLaneEventReceiptMatch::Conflict {
+                blocked_lanes.insert(SyncLaneV3::P6Group);
+                result
+                    .warnings
+                    .push("sync.lane.p6_group.receipt_conflict".to_owned());
+                return Ok(false);
+            }
+            let next = lane_state_at_event(&state, seq);
+            if receipt_match == SyncLaneEventReceiptMatch::Exact {
+                db.commit_sync_lane_event(receipt, Some(next.clone()), true)
+                    .await?;
+                lane_states.insert(SyncLaneV3::P6Group, next);
+                result.duplicates_skipped = result.duplicates_skipped.saturating_add(1);
+                continue;
+            }
+            let projected = match event {
+                SyncLaneEventV3::P6Delivery {
+                    group_did,
+                    group_event_seq,
+                    envelope,
+                    ..
+                } => {
+                    validate_p6_delta_binding(group_did, group_event_seq, envelope)
+                        .and_then(|_| Ok(()))?;
+                    apply_p6_lane_delivery_projection_async(self.client, envelope)
+                        .await
+                        .map(Some)
+                }
+                SyncLaneEventV3::P6ControlNotice { notice, .. } => {
+                    super::read::consume_group_e2ee_control_notice_from_reliable_sync_async(
+                        self.client,
+                        notice,
+                    )
+                    .await
+                    .map(|_| None)
+                }
+                SyncLaneEventV3::P5Delivery { .. } => unreachable!(),
+            };
+            match projected {
+                Ok(message) => {
+                    db.commit_sync_lane_event(receipt, Some(next.clone()), true)
+                        .await?;
+                    lane_states.insert(SyncLaneV3::P6Group, next);
+                    result.events_applied = result.events_applied.saturating_add(1);
+                    if let Some(message) = message {
+                        result.messages_hydrated = result.messages_hydrated.saturating_add(1);
+                        result
+                            .changed_conversation_ids
+                            .push(message_conversation_id(&message, binding));
+                        if message.direction == crate::messages::MessageDirection::Incoming {
+                            result.committed_incoming_messages.push(
+                                crate::messages::CommittedIncomingMessage {
+                                    event_id: event_id.clone(),
+                                    logical_message_id: message.id.as_str().to_owned(),
+                                    source: "live_delta_p6_group".to_owned(),
+                                    direction: crate::messages::MessageDirection::Incoming,
+                                    message,
+                                },
+                            );
+                        }
+                        self.client
+                            .emit_committed_local_message_projection("sync_v3_p6_group_delta");
+                    }
+                }
+                Err(error) => {
+                    let now = unix_time_i64();
+                    db.record_p6_lane_blocker_and_advance(
+                        crate::internal::local_state::sync_v2::P6LaneBlocker {
+                            owner_identity_id: binding.owner_identity_id.clone(),
+                            event_id: event_id.clone(),
+                            stream_epoch: state.stream_epoch.clone(),
+                            event_seq: seq.clone(),
+                            event_type: event_type.to_owned(),
+                            group_did: group_did.clone(),
+                            group_event_seq: group_event_seq.map(ToOwned::to_owned),
+                            payload_json: serde_json::to_string(payload).map_err(|error| {
+                                sync_error(
+                                    "SYNC_INVALID_PAGE",
+                                    format!("serialize P6 blocker payload: {error}"),
+                                )
+                            })?,
+                            attempt_count: 1,
+                            last_error_code: error_code(&error)
+                                .unwrap_or("SYNC_P6_DEFERRED")
+                                .to_owned(),
+                            created_at: now,
+                            updated_at: now,
+                        },
+                        next.clone(),
+                    )
+                    .await?;
+                    lane_states.insert(SyncLaneV3::P6Group, next);
+                    result
+                        .warnings
+                        .push("sync.lane.p6_group.deferred".to_owned());
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    async fn retry_p6_lane_blockers(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        lane_states: &BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::local_state::sync_v2::LaneSyncState,
+        >,
+        result: &mut crate::messages::MessageSyncOutcome,
+    ) {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        let Some(current) = lane_states.get(&SyncLaneV3::P6Group) else {
+            return;
+        };
+        let Ok(blockers) = db
+            .list_p6_lane_blockers(binding.owner_identity_id.clone(), 100)
+            .await
+        else {
+            result
+                .warnings
+                .push("sync.lane.p6_group.backlog_unavailable".to_owned());
+            return;
+        };
+        for blocker in blockers {
+            if blocker.stream_epoch != current.stream_epoch {
+                result
+                    .warnings
+                    .push("sync.lane.p6_group.backlog_epoch_mismatch".to_owned());
+                continue;
+            }
+            let payload = match serde_json::from_str::<Value>(&blocker.payload_json) {
+                Ok(payload) => payload,
+                Err(_) => continue,
+            };
+            let projected = match blocker.event_type.as_str() {
+                "p6.delivery.created" => {
+                    if let Some(group_event_seq) = blocker.group_event_seq.as_deref() {
+                        if validate_p6_delta_binding(&blocker.group_did, group_event_seq, &payload)
+                            .is_err()
+                        {
+                            continue;
+                        }
+                    }
+                    apply_p6_lane_delivery_projection_async(self.client, &payload)
+                        .await
+                        .map(Some)
+                }
+                "p6.control.notice" => {
+                    super::read::consume_group_e2ee_control_notice_from_reliable_sync_async(
+                        self.client,
+                        &payload,
+                    )
+                    .await
+                    .map(|_| None)
+                }
+                _ => continue,
+            };
+            let receipt = lane_event_receipt(
+                binding,
+                SyncLaneV3::P6Group,
+                &blocker.event_id,
+                &blocker.stream_epoch,
+                &blocker.event_seq,
+                Some(blocker.group_did.clone()),
+                blocker.group_event_seq.clone(),
+            );
+            match projected {
+                Ok(message) => {
+                    if db
+                        .commit_sync_lane_event(receipt, None, true)
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    result.events_applied = result.events_applied.saturating_add(1);
+                    if let Some(message) = message {
+                        result.messages_hydrated = result.messages_hydrated.saturating_add(1);
+                        result
+                            .changed_conversation_ids
+                            .push(message_conversation_id(&message, binding));
+                        if message.direction == crate::messages::MessageDirection::Incoming {
+                            result.committed_incoming_messages.push(
+                                crate::messages::CommittedIncomingMessage {
+                                    event_id: blocker.event_id.clone(),
+                                    logical_message_id: message.id.as_str().to_owned(),
+                                    source: "p6_group_backlog".to_owned(),
+                                    direction: crate::messages::MessageDirection::Incoming,
+                                    message,
+                                },
+                            );
+                        }
+                        self.client
+                            .emit_committed_local_message_projection("sync_v3_p6_group_backlog");
+                    }
+                }
+                Err(error) => {
+                    let now = unix_time_i64();
+                    let mut retry = blocker;
+                    retry.last_error_code =
+                        error_code(&error).unwrap_or("SYNC_P6_DEFERRED").to_owned();
+                    retry.updated_at = now;
+                    let _ = db
+                        .record_p6_lane_blocker_and_advance(retry, current.clone())
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn refresh_lane_bootstrap(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+    ) -> crate::ImResult<
+        BTreeMap<
+            crate::internal::wire::sync_v2::SyncLaneV3,
+            crate::internal::local_state::sync_v2::LaneSyncState,
+        >,
+    > {
+        refresh_lane_bootstrap_with_transport_async(self.client, &mut self.transport, db, binding)
+            .await
     }
 
     async fn resolve_unresolved_peer_dids(
@@ -1055,6 +2042,56 @@ where
     }
 }
 
+pub(crate) async fn refresh_lane_bootstrap_with_transport_async<T>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+) -> crate::ImResult<
+    BTreeMap<
+        crate::internal::wire::sync_v2::SyncLaneV3,
+        crate::internal::local_state::sync_v2::LaneSyncState,
+    >,
+>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
+    let client_instance_id = db
+        .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+        .await?;
+    let params = crate::internal::wire::sync_v2::build_bootstrap_params(
+        &wire_identity(client),
+        &client_instance_id,
+    )?;
+    let raw = transport
+        .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.bootstrap", params)
+        .await?;
+    let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
+    let (account_id, device_id, lane_bootstrap) = match &response {
+        crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) => (
+            bootstrap.account_id.as_str(),
+            bootstrap.device_id.as_str(),
+            &bootstrap.lane_bootstrap,
+        ),
+        crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
+            account_id,
+            device_id,
+            lane_bootstrap,
+            ..
+        } => (account_id.as_str(), device_id.as_str(), lane_bootstrap),
+    };
+    if account_id != binding.account_id || device_id != binding.protocol_device_id {
+        return Err(sync_error(
+            "SYNC_ACCOUNT_BINDING_MISMATCH",
+            "lane bootstrap does not match the active account device",
+        ));
+    }
+    let states = lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap);
+    db.replace_lane_sync_states(&binding.owner_identity_id, states.clone())
+        .await?;
+    Ok(lane_state_map(states))
+}
+
 fn lane_states_from_bootstrap(
     owner_identity_id: &str,
     bootstrap: &crate::internal::wire::sync_v2::SyncLaneBootstrapV3,
@@ -1073,6 +2110,114 @@ fn lane_states_from_bootstrap(
             },
         )
         .collect()
+}
+
+fn lane_state_map(
+    states: Vec<crate::internal::local_state::sync_v2::LaneSyncState>,
+) -> BTreeMap<
+    crate::internal::wire::sync_v2::SyncLaneV3,
+    crate::internal::local_state::sync_v2::LaneSyncState,
+> {
+    states
+        .into_iter()
+        .map(|state| (state.lane, state))
+        .collect()
+}
+
+fn lane_state_at_event(
+    current: &crate::internal::local_state::sync_v2::LaneSyncState,
+    event_seq: &str,
+) -> crate::internal::local_state::sync_v2::LaneSyncState {
+    crate::internal::local_state::sync_v2::LaneSyncState {
+        owner_identity_id: current.owner_identity_id.clone(),
+        lane: current.lane,
+        stream_epoch: current.stream_epoch.clone(),
+        scan_seq: event_seq.to_owned(),
+        committed_seq: event_seq.to_owned(),
+    }
+}
+
+fn validate_lane_page_progress(
+    current: &crate::internal::local_state::sync_v2::LaneSyncState,
+    events: &[crate::internal::wire::sync_v2::SyncLaneEventV3],
+    next_cursor: &crate::internal::wire::sync_v2::SyncCursorV2,
+) -> crate::ImResult<()> {
+    let expected_next = events
+        .last()
+        .map(crate::internal::wire::sync_v2::SyncLaneEventV3::seq)
+        .unwrap_or(current.scan_seq.as_str());
+    if expected_next != next_cursor.scan_seq {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "lane next cursor must equal the last returned event sequence",
+        ));
+    }
+    if events.first().is_some_and(|event| {
+        crate::internal::local_state::sync_v2::compare_decimal(event.seq(), &current.scan_seq)
+            .map(|order| order != std::cmp::Ordering::Greater)
+            .unwrap_or(true)
+    }) {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "lane events must be strictly ahead of the requested cursor",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lane_event_receipt(
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    event_id: &str,
+    stream_epoch: &str,
+    event_seq: &str,
+    group_did: Option<String>,
+    group_event_seq: Option<String>,
+) -> crate::internal::local_state::sync_v2::SyncLaneEventReceipt {
+    crate::internal::local_state::sync_v2::SyncLaneEventReceipt {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        lane,
+        event_id: event_id.to_owned(),
+        stream_epoch: stream_epoch.to_owned(),
+        event_seq: event_seq.to_owned(),
+        group_did,
+        group_event_seq,
+        applied_at: unix_time_i64(),
+    }
+}
+
+fn validate_p6_delta_binding(
+    group_did: &str,
+    group_event_seq: &str,
+    envelope: &Value,
+) -> crate::ImResult<()> {
+    let body_group_did = envelope.pointer("/body/group_did").and_then(Value::as_str);
+    let body_group_event_seq = envelope.pointer("/body/group_event_seq").and_then(|value| {
+        value
+            .as_str()
+            .map(ToOwned::to_owned)
+            .or_else(|| value.as_u64().map(|value| value.to_string()))
+    });
+    if body_group_did != Some(group_did) || body_group_event_seq.as_deref() != Some(group_event_seq)
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "P6 delivery position conflicts with its envelope",
+        ));
+    }
+    Ok(())
+}
+
+fn message_conversation_id(
+    message: &crate::messages::Message,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+) -> String {
+    crate::messages::ConversationIdentity::from_thread_ref_for_owner(
+        &message.thread,
+        &binding.current_did,
+    )
+    .conversation_id
 }
 
 fn direct_peer_dids_from_events(
@@ -2907,6 +4052,201 @@ mod tests {
         })
     }
 
+    fn sync_snapshot_delta_with_lanes(
+        stream_epoch: &str,
+        next_scan_seq: &str,
+        lanes: Value,
+    ) -> Value {
+        let mut response = sync_snapshot_delta(stream_epoch, next_scan_seq, Vec::new());
+        response["lanes"] = lanes;
+        response
+    }
+
+    fn poison_p5_lane_event(event_id: &str, seq: &str) -> Value {
+        json!({
+            "event_type": "p5.delivery.created",
+            "delivery_id": event_id,
+            "seq": seq,
+            "envelope": {
+                "meta": {
+                    "profile": "anp.direct.e2ee.v2",
+                    "security_profile": "direct-e2ee",
+                    "message_id": event_id
+                },
+                "body": {},
+                "server_seq": 1
+            }
+        })
+    }
+
+    fn p5_lane_event(delivery_id: &str, seq: &str, envelope: &Value) -> Value {
+        json!({
+            "event_type": "p5.delivery.created",
+            "delivery_id": delivery_id,
+            "seq": seq,
+            "envelope": envelope
+        })
+    }
+
+    fn accounted_p6_lane_event(
+        delivery_id: &str,
+        seq: &str,
+        group_did: &str,
+        group_event_seq: &str,
+    ) -> Value {
+        json!({
+            "event_type": "p6.delivery.created",
+            "delivery_id": delivery_id,
+            "seq": seq,
+            "group_did": group_did,
+            "group_event_seq": group_event_seq,
+            "envelope": {
+                "meta": {
+                    "profile": "anp.group.e2ee.v2",
+                    "security_profile": "group-e2ee"
+                },
+                "auth": {},
+                "body": {
+                    "group_did": group_did,
+                    "group_event_seq": group_event_seq
+                }
+            }
+        })
+    }
+
+    fn realtime_inline_p5_notification(
+        delivery_id: &str,
+        stream_epoch: &str,
+        event_seq: &str,
+        envelope: &Value,
+    ) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "sync.changed",
+            "params": {
+                "domains": ["message"],
+                "reason": "direct_message_available"
+            },
+            "sync": {
+                "schema_version": 3,
+                "domain_versions": {},
+                "event": {
+                    "lane": "p5_device",
+                    "event_id": delivery_id,
+                    "stream_epoch": stream_epoch,
+                    "event_seq": event_seq,
+                    "event_type": "p5.delivery.created"
+                },
+                "projection": envelope
+            }
+        })
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    fn p6_lane_envelope(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        message_id: &str,
+        group_did: &str,
+        group_event_seq: &str,
+    ) -> Value {
+        json!({
+            "meta": {
+                "anp_version": "2.0",
+                "profile": "anp.group.e2ee.v2",
+                "security_profile": "group-e2ee",
+                "sender_did": binding.current_did.clone(),
+                "sender_device_id": binding.protocol_device_id.clone(),
+                "target": {"kind": "agent", "did": binding.current_did.clone()},
+                "recipient_device_id": binding.protocol_device_id.clone(),
+                "operation_id": message_id,
+                "message_id": message_id,
+                "content_type": anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2
+            },
+            "auth": {
+                "scheme": anp::group_e2ee::RFC9421_ORIGIN_PROOF_SCHEME_V2,
+                "origin_proof": {
+                    "contentDigest": "digest",
+                    "signatureInput": "signature-input",
+                    "signature": "signature"
+                }
+            },
+            "body": {
+                "group_did": group_did,
+                "group_event_seq": group_event_seq,
+                "group_state_version": "1",
+                "accepted_at": "2026-08-15T00:00:00Z",
+                "group_receipt": {},
+                "group_cipher_object": {
+                    "crypto_group_id_b64u": "AA",
+                    "epoch": "1",
+                    "private_message_b64u": "AA",
+                    "group_state_ref": {
+                        "group_did": group_did,
+                        "group_state_version": "1"
+                    }
+                }
+            }
+        })
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    fn realtime_inline_p6_notification(
+        delivery_id: &str,
+        stream_epoch: &str,
+        event_seq: &str,
+        group_did: &str,
+        group_event_seq: &str,
+        envelope: &Value,
+    ) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "sync.changed",
+            "params": {
+                "domains": ["message"],
+                "reason": "group_message_available"
+            },
+            "sync": {
+                "schema_version": 3,
+                "domain_versions": {},
+                "event": {
+                    "lane": "p6_group",
+                    "event_id": delivery_id,
+                    "stream_epoch": stream_epoch,
+                    "event_seq": event_seq,
+                    "event_type": "p6.delivery.created",
+                    "group_did": group_did,
+                    "group_event_seq": group_event_seq
+                },
+                "projection": envelope
+            }
+        })
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    fn p6_lane_event(
+        delivery_id: &str,
+        seq: &str,
+        group_did: &str,
+        group_event_seq: &str,
+        envelope: &Value,
+    ) -> Value {
+        json!({
+            "event_type": "p6.delivery.created",
+            "delivery_id": delivery_id,
+            "seq": seq,
+            "group_did": group_did,
+            "group_event_seq": group_event_seq,
+            "envelope": envelope
+        })
+    }
+
+    fn sqlite_count(path: &std::path::Path, sql: &str) -> i64 {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row(sql, [], |row| row.get(0))
+            .unwrap()
+    }
+
     fn sync_group_member_changed_event(
         binding: &crate::identity::ActiveSyncAccountBinding,
         event_id: &str,
@@ -3305,6 +4645,23 @@ mod tests {
         stream_epoch: &str,
         scan_seq: &str,
     ) {
+        seed_legacy_sync_snapshot_ready_state(client, binding, stream_epoch, scan_seq).await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .replace_lane_sync_states(&binding.owner_identity_id, Vec::new())
+            .await
+            .unwrap();
+    }
+
+    async fn seed_legacy_sync_snapshot_ready_state(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        stream_epoch: &str,
+        scan_seq: &str,
+    ) {
         client
             .core_inner()
             .local_state_db()
@@ -3326,6 +4683,862 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    async fn seed_lane_states(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        lanes: &[(crate::internal::wire::sync_v2::SyncLaneV3, &str)],
+    ) {
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .replace_lane_sync_states(
+                &binding.owner_identity_id,
+                lanes
+                    .iter()
+                    .map(
+                        |(lane, epoch)| crate::internal::local_state::sync_v2::LaneSyncState {
+                            owner_identity_id: binding.owner_identity_id.clone(),
+                            lane: *lane,
+                            stream_epoch: (*epoch).to_owned(),
+                            scan_seq: "0".to_owned(),
+                            committed_seq: "0".to_owned(),
+                        },
+                    )
+                    .collect(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    async fn seed_cached_p6_plaintext(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        group_did: &str,
+        group_event_seq: &str,
+        content: &str,
+    ) {
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .store_messages(vec![
+                crate::internal::local_state::messages::MessageRecord {
+                    msg_id: format!("{group_did}:{group_event_seq}"),
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    conversation_id: format!("group:{group_did}"),
+                    thread_id: format!("group:{group_did}"),
+                    direction: -1,
+                    sender_did: binding.current_did.clone(),
+                    group_id: group_did.to_owned(),
+                    group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: content.to_owned(),
+                    server_seq: group_event_seq.parse().ok(),
+                    is_e2ee: true,
+                    metadata: json!({
+                        "decryption_state": "decrypted",
+                        "security": "group-e2ee"
+                    })
+                    .to_string(),
+                    ..crate::internal::local_state::messages::MessageRecord::default()
+                },
+            ])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgraded_client_negotiates_lane_capabilities_before_first_delta() {
+        use crate::internal::wire::sync_v2::{SyncLaneV3, SYNC_CAPABILITY_P5_DEVICE_V1};
+
+        let fixture = SyncSnapshotFixture::new("lane-capability-upgrade");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_legacy_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let bootstrap = json!({
+            "mode": "tail_only",
+            "account_id": binding.account_id,
+            "device_id": binding.protocol_device_id,
+            "server_time": "2026-08-15T00:00:00Z",
+            "cursor": {"stream_epoch": "1", "scan_seq": "10"},
+            "read_state_baseline": [],
+            "group_state_baseline": [],
+            "warnings": [],
+            "sync_capabilities": [SYNC_CAPABILITY_P5_DEVICE_V1],
+            "lanes": {
+                "p5_device": {
+                    "cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                    "committed_seq": "0"
+                }
+            }
+        });
+        let delta = sync_snapshot_delta_with_lanes(
+            "1",
+            "10",
+            json!({
+                "p5_device": {
+                    "events": [],
+                    "next_cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                    "has_more": false
+                }
+            }),
+        );
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(Rc::clone(&calls), vec![Ok(bootstrap), Ok(delta)]),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.bootstrap", "sync.delta"]
+        );
+        assert_eq!(
+            calls[1]
+                .params
+                .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
+            Some(&json!("41"))
+        );
+        drop(calls);
+        let db = client.core_inner().local_state_db().await.unwrap();
+        assert!(!db
+            .lane_capability_negotiation_required(
+                binding.owner_identity_id.clone(),
+                binding.device_auth_generation,
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            db.load_lane_sync_states(binding.owner_identity_id)
+                .await
+                .unwrap()[0]
+                .lane,
+            SyncLaneV3::P5Device
+        );
+
+        let second_calls = Rc::new(RefCell::new(Vec::new()));
+        MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&second_calls),
+                vec![Ok(sync_snapshot_delta_with_lanes(
+                    "1",
+                    "10",
+                    json!({
+                        "p5_device": {
+                            "events": [],
+                            "next_cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                            "has_more": false
+                        }
+                    }),
+                ))],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_eq!(
+            second_calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta"]
+        );
+    }
+
+    #[tokio::test]
+    async fn poison_p5_lane_stops_only_p5_while_ordinary_and_p6_advance() {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        let fixture = SyncSnapshotFixture::new("p5-poison-isolated");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_lane_states(
+            &client,
+            &binding,
+            &[(SyncLaneV3::P5Device, "41"), (SyncLaneV3::P6Group, "42")],
+        )
+        .await;
+        let p6_group_did = "did:wba:awiki.test:groups:p6-accounted";
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .commit_sync_lane_event(
+                lane_event_receipt(
+                    &binding,
+                    SyncLaneV3::P6Group,
+                    "p6-accounted-1",
+                    "42",
+                    "1",
+                    Some(p6_group_did.to_owned()),
+                    Some("1".to_owned()),
+                ),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let response = sync_snapshot_delta_with_lanes(
+            "1",
+            "11",
+            json!({
+                "p5_device": {
+                    "events": [poison_p5_lane_event("p5-poison-1", "1")],
+                    "next_cursor": {"stream_epoch": "41", "scan_seq": "1"},
+                    "has_more": false
+                },
+                "p6_group": {
+                    "events": [accounted_p6_lane_event(
+                        "p6-accounted-1",
+                        "1",
+                        p6_group_did,
+                        "1"
+                    )],
+                    "next_cursor": {"stream_epoch": "42", "scan_seq": "1"},
+                    "has_more": false
+                }
+            }),
+        );
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(Rc::clone(&calls), vec![Ok(response.clone())]),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_ne!(
+            outcome.status,
+            crate::messages::MessageSyncStatus::AuthRevoked
+        );
+        assert!(outcome
+            .warnings
+            .contains(&"sync.lane.p5_device.deferred".to_owned()));
+        assert_eq!(
+            load_sync_snapshot_state(&client, &binding.owner_identity_id)
+                .await
+                .scan_seq,
+            "11"
+        );
+        let lanes = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_lane_sync_states(binding.owner_identity_id.clone())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|state| (state.lane, state.scan_seq))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(lanes[&SyncLaneV3::P5Device], "0");
+        assert_eq!(lanes[&SyncLaneV3::P6Group], "1");
+        {
+            let calls = calls.borrow();
+            let request = &calls[0].params;
+            assert!(request.pointer("/body/lanes/p5_device").is_some());
+            assert!(request.pointer("/body/lanes/p6_group").is_some());
+        }
+
+        let mut retry_response = response;
+        retry_response["lanes"]["p6_group"]["events"] = json!([]);
+        let retry = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(Rc::clone(&calls), vec![Ok(retry_response)]),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert!(retry
+            .warnings
+            .contains(&"sync.lane.p5_device.deferred".to_owned()));
+        let calls = calls.borrow();
+        assert_eq!(
+            calls[1].params["body"]["lanes"]["p5_device"]["cursor"]["scan_seq"],
+            "0"
+        );
+        assert_eq!(
+            calls[1].params["body"]["lanes"]["p6_group"]["cursor"]["scan_seq"],
+            "1"
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_p5_receipt_is_accounted_by_delta_without_second_crypto_application() {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        let fixture = SyncSnapshotFixture::new("p5-inline-then-delta");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
+        let receipt = lane_event_receipt(
+            &binding,
+            SyncLaneV3::P5Device,
+            "p5-inline-1",
+            "41",
+            "1",
+            None,
+            None,
+        );
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .commit_sync_lane_event(receipt, None, false)
+            .await
+            .unwrap();
+        let response = sync_snapshot_delta_with_lanes(
+            "1",
+            "10",
+            json!({
+                "p5_device": {
+                    "events": [poison_p5_lane_event("p5-inline-1", "1")],
+                    "next_cursor": {"stream_epoch": "41", "scan_seq": "1"},
+                    "has_more": false
+                }
+            }),
+        );
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(Rc::new(RefCell::new(Vec::new())), vec![Ok(response)]),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_eq!(outcome.duplicates_skipped, 1);
+        let db = client.core_inner().local_state_db().await.unwrap();
+        assert_eq!(
+            db.load_lane_sync_states(binding.owner_identity_id.clone())
+                .await
+                .unwrap()[0]
+                .scan_seq,
+            "1"
+        );
+        db.shutdown().await.unwrap();
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_lane_applied_events", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn real_p5_delivery_is_exactly_once_for_inline_then_delta_and_reverse_order() {
+        use crate::internal::secure_direct::v2_product::v2_product_tests::{
+            prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+            RuntimeP5TestWire,
+        };
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        const PEER_DID: &str = "did:example:sync-lane-bob";
+        for inline_first in [true, false] {
+            let fixture = RuntimeP5TestClientFixture::new(if inline_first {
+                "lane-inline-first"
+            } else {
+                "lane-delta-first"
+            });
+            let client = fixture.client();
+            let binding = client.active_sync_account_binding().await.unwrap();
+            seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+            seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
+            let envelope = prepare_runtime_p5_test_wires(
+                &client,
+                vec![RuntimeP5TestWire {
+                    peer_did: PEER_DID,
+                    peer_device_id: if inline_first {
+                        "lane-bob-inline"
+                    } else {
+                        "lane-bob-delta"
+                    },
+                    seed: if inline_first { 201 } else { 211 },
+                    logical_message_id: if inline_first {
+                        "logical-lane-inline-first"
+                    } else {
+                        "logical-lane-delta-first"
+                    },
+                    server_seq: 1,
+                    body: RuntimeP5TestBody::Text(if inline_first {
+                        "lane inline first plaintext"
+                    } else {
+                        "lane delta first plaintext"
+                    }),
+                }],
+            )
+            .await
+            .pop()
+            .unwrap();
+            let delivery_id = envelope["meta"]["message_id"].as_str().unwrap().to_owned();
+            let notification = realtime_inline_p5_notification(&delivery_id, "41", "1", &envelope);
+            let delta = sync_snapshot_delta_with_lanes(
+                "1",
+                "10",
+                json!({
+                    "p5_device": {
+                        "events": [p5_lane_event(&delivery_id, "1", &envelope)],
+                        "next_cursor": {"stream_epoch": "41", "scan_seq": "1"},
+                        "has_more": false
+                    }
+                }),
+            );
+
+            if inline_first {
+                let inline = crate::internal::realtime::notification::parse_inline_sync_event_v3(
+                    &notification,
+                )
+                .unwrap()
+                .unwrap();
+                let applied = apply_realtime_e2ee_lane_v3_with_directory_async(
+                    &client,
+                    inline,
+                    &mut DirectLookupTransport {
+                        expected_did: PEER_DID.to_owned(),
+                        calls: Rc::new(RefCell::new(0)),
+                    },
+                )
+                .await
+                .unwrap();
+                assert!(matches!(
+                    applied,
+                    RealtimeInlineMessageApplyOutcome::Applied {
+                        local_scan_seq: None,
+                        ..
+                    }
+                ));
+                assert_eq!(
+                    client
+                        .core_inner()
+                        .local_state_db()
+                        .await
+                        .unwrap()
+                        .load_lane_sync_states(binding.owner_identity_id.clone())
+                        .await
+                        .unwrap()[0]
+                        .scan_seq,
+                    "0",
+                    "inline must not advance the P5 checkpoint"
+                );
+            }
+
+            let outcome = MessageSyncRuntimeV2::new(
+                &client,
+                ReadySyncSnapshotSessionProvider,
+                SyncSnapshotTransport::queued(Rc::new(RefCell::new(Vec::new())), vec![Ok(delta)]),
+                DirectLookupTransport {
+                    expected_did: PEER_DID.to_owned(),
+                    calls: Rc::new(RefCell::new(0)),
+                },
+            )
+            .sync_now(sync_snapshot_request())
+            .await
+            .unwrap();
+            assert_eq!(
+                client
+                    .core_inner()
+                    .local_state_db()
+                    .await
+                    .unwrap()
+                    .load_lane_sync_states(binding.owner_identity_id.clone())
+                    .await
+                    .unwrap()[0]
+                    .scan_seq,
+                "1"
+            );
+            if inline_first {
+                assert_eq!(outcome.duplicates_skipped, 1);
+            } else {
+                let before_inline = client
+                    .core_inner()
+                    .local_state_db()
+                    .await
+                    .unwrap()
+                    .load_lane_sync_states(binding.owner_identity_id.clone())
+                    .await
+                    .unwrap()[0]
+                    .clone();
+                let inline = crate::internal::realtime::notification::parse_inline_sync_event_v3(
+                    &notification,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    apply_realtime_e2ee_lane_v3_with_directory_async(
+                        &client,
+                        inline,
+                        &mut NoopAsyncDirectoryTransport,
+                    )
+                    .await
+                    .unwrap(),
+                    RealtimeInlineMessageApplyOutcome::Deferred
+                );
+                assert_eq!(
+                    client
+                        .core_inner()
+                        .local_state_db()
+                        .await
+                        .unwrap()
+                        .load_lane_sync_states(binding.owner_identity_id.clone())
+                        .await
+                        .unwrap()[0],
+                    before_inline,
+                    "delta-first inline replay must not move the P5 checkpoint"
+                );
+            }
+
+            let path = fixture.sqlite_path();
+            assert_eq!(
+                sqlite_count(&path, "SELECT COUNT(*) FROM direct_e2ee_v2_replay"),
+                1,
+                "the inbound ratchet/replay transaction commits exactly once"
+            );
+            assert_eq!(
+                sqlite_count(
+                    &path,
+                    "SELECT COUNT(*) FROM sync_lane_applied_events WHERE lane = 'p5_device'"
+                ),
+                1
+            );
+            assert_eq!(
+                sqlite_count(&path, "SELECT COUNT(*) FROM messages WHERE is_e2ee = 1"),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_p5_inline_does_not_pollute_ratchet_and_delta_retry_succeeds() {
+        use crate::internal::secure_direct::v2_product::v2_product_tests::{
+            prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+            RuntimeP5TestWire,
+        };
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        const PEER_DID: &str = "did:example:sync-lane-retry-bob";
+        let fixture = RuntimeP5TestClientFixture::new("lane-inline-retry");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
+        let envelope = prepare_runtime_p5_test_wires(
+            &client,
+            vec![RuntimeP5TestWire {
+                peer_did: PEER_DID,
+                peer_device_id: "lane-retry-bob-device",
+                seed: 221,
+                logical_message_id: "logical-lane-inline-retry",
+                server_seq: 1,
+                body: RuntimeP5TestBody::Text("delta recovers rejected inline ciphertext"),
+            }],
+        )
+        .await
+        .pop()
+        .unwrap();
+        let delivery_id = envelope["meta"]["message_id"].as_str().unwrap().to_owned();
+        let mut tampered = envelope.clone();
+        tampered["body"]["ciphertext_b64u"] = json!("QU5PVEhFUi1WQUxJRC1DSVBIRVJURVhU");
+        let notification = realtime_inline_p5_notification(&delivery_id, "41", "1", &tampered);
+        let inline =
+            crate::internal::realtime::notification::parse_inline_sync_event_v3(&notification)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            apply_realtime_e2ee_lane_v3_with_directory_async(
+                &client,
+                inline,
+                &mut NoopAsyncDirectoryTransport,
+            )
+            .await
+            .unwrap(),
+            RealtimeInlineMessageApplyOutcome::Deferred
+        );
+        assert_eq!(
+            client
+                .core_inner()
+                .local_state_db()
+                .await
+                .unwrap()
+                .load_lane_sync_states(binding.owner_identity_id.clone())
+                .await
+                .unwrap()[0]
+                .scan_seq,
+            "0"
+        );
+        assert_eq!(
+            sqlite_count(
+                &fixture.sqlite_path(),
+                "SELECT COUNT(*) FROM direct_e2ee_v2_replay"
+            ),
+            0,
+            "rejected inline ciphertext must not commit ratchet/replay state"
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::new(RefCell::new(Vec::new())),
+                vec![Ok(sync_snapshot_delta_with_lanes(
+                    "1",
+                    "10",
+                    json!({
+                        "p5_device": {
+                            "events": [p5_lane_event(&delivery_id, "1", &envelope)],
+                            "next_cursor": {"stream_epoch": "41", "scan_seq": "1"},
+                            "has_more": false
+                        }
+                    }),
+                ))],
+            ),
+            DirectLookupTransport {
+                expected_did: PEER_DID.to_owned(),
+                calls: Rc::new(RefCell::new(0)),
+            },
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_ne!(
+            outcome.status,
+            crate::messages::MessageSyncStatus::AuthRevoked
+        );
+        assert_eq!(
+            client
+                .core_inner()
+                .local_state_db()
+                .await
+                .unwrap()
+                .load_lane_sync_states(binding.owner_identity_id.clone())
+                .await
+                .unwrap()[0]
+                .scan_seq,
+            "1"
+        );
+        assert_eq!(
+            sqlite_count(
+                &fixture.sqlite_path(),
+                "SELECT COUNT(*) FROM direct_e2ee_v2_replay"
+            ),
+            1
+        );
+        assert_eq!(
+            sqlite_count(
+                &fixture.sqlite_path(),
+                "SELECT COUNT(*) FROM messages WHERE content = 'delta recovers rejected inline ciphertext'"
+            ),
+            1
+        );
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[tokio::test]
+    async fn p6_out_of_order_inline_defers_then_delta_uses_durable_plaintext_cache() {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        let fixture = SyncSnapshotFixture::new("p6-inline-deferred-delta");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_lane_states(&client, &binding, &[(SyncLaneV3::P6Group, "42")]).await;
+        let group_did = "did:wba:awiki.test:groups:p6-inline-delta";
+        let delivery_id = "p6-lane-delivery-1";
+        let envelope = p6_lane_envelope(&binding, "p6-wire-message-1", group_did, "7");
+        let notification =
+            realtime_inline_p6_notification(delivery_id, "42", "1", group_did, "7", &envelope);
+        let inline =
+            crate::internal::realtime::notification::parse_inline_sync_event_v3(&notification)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            apply_realtime_e2ee_lane_v3_with_directory_async(
+                &client,
+                inline,
+                &mut NoopAsyncDirectoryTransport,
+            )
+            .await
+            .unwrap(),
+            RealtimeInlineMessageApplyOutcome::Deferred
+        );
+        assert_eq!(
+            client
+                .core_inner()
+                .local_state_db()
+                .await
+                .unwrap()
+                .load_lane_sync_states(binding.owner_identity_id.clone())
+                .await
+                .unwrap()[0]
+                .scan_seq,
+            "0",
+            "a deferred P6 inline event must not advance its checkpoint"
+        );
+        assert_eq!(
+            sqlite_count(
+                &fixture.sqlite_path(),
+                "SELECT COUNT(*) FROM sync_lane_applied_events WHERE lane = 'p6_group'"
+            ),
+            0
+        );
+
+        seed_cached_p6_plaintext(
+            &client,
+            &binding,
+            group_did,
+            "7",
+            "cached P6 plaintext after prerequisite repair",
+        )
+        .await;
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::new(RefCell::new(Vec::new())),
+                vec![Ok(sync_snapshot_delta_with_lanes(
+                    "1",
+                    "10",
+                    json!({
+                        "p6_group": {
+                            "events": [p6_lane_event(
+                                delivery_id,
+                                "1",
+                                group_did,
+                                "7",
+                                &envelope
+                            )],
+                            "next_cursor": {"stream_epoch": "42", "scan_seq": "1"},
+                            "has_more": false
+                        }
+                    }),
+                ))],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_ne!(
+            outcome.status,
+            crate::messages::MessageSyncStatus::AuthRevoked
+        );
+        assert_eq!(
+            client
+                .core_inner()
+                .local_state_db()
+                .await
+                .unwrap()
+                .load_lane_sync_states(binding.owner_identity_id.clone())
+                .await
+                .unwrap()[0]
+                .scan_seq,
+            "1"
+        );
+        assert_eq!(
+            sqlite_count(
+                &fixture.sqlite_path(),
+                "SELECT COUNT(*) FROM sync_lane_applied_events WHERE lane = 'p6_group'"
+            ),
+            1
+        );
+        assert_eq!(
+            sqlite_count(
+                &fixture.sqlite_path(),
+                "SELECT COUNT(*) FROM p6_lane_blockers"
+            ),
+            0
+        );
+
+        let second_delivery_id = "p6-lane-delivery-2";
+        let second_envelope = p6_lane_envelope(&binding, "p6-wire-message-2", group_did, "8");
+        seed_cached_p6_plaintext(
+            &client,
+            &binding,
+            group_did,
+            "8",
+            "cached P6 inline plaintext",
+        )
+        .await;
+        let second_notification = realtime_inline_p6_notification(
+            second_delivery_id,
+            "42",
+            "2",
+            group_did,
+            "8",
+            &second_envelope,
+        );
+        let inline = crate::internal::realtime::notification::parse_inline_sync_event_v3(
+            &second_notification,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            apply_realtime_e2ee_lane_v3_with_directory_async(
+                &client,
+                inline,
+                &mut NoopAsyncDirectoryTransport,
+            )
+            .await
+            .unwrap(),
+            RealtimeInlineMessageApplyOutcome::Applied {
+                local_scan_seq: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            client
+                .core_inner()
+                .local_state_db()
+                .await
+                .unwrap()
+                .load_lane_sync_states(binding.owner_identity_id.clone())
+                .await
+                .unwrap()[0]
+                .scan_seq,
+            "1",
+            "a successfully applied P6 inline event still must not advance its checkpoint"
+        );
     }
 
     #[tokio::test]
@@ -3377,7 +5590,7 @@ mod tests {
                         kind: crate::messages::MessageKind::Text,
                     } if text == "zero RTT"
                 )
-                && local_scan_seq == "10"
+                && local_scan_seq.as_deref() == Some("10")
         ));
         let db = client.core_inner().local_state_db().await.unwrap();
         let state = db
@@ -5355,6 +7568,112 @@ mod tests {
                 "read_state.mark_read",
                 "read_state.mark_read"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn device_epoch_refresh_revalidates_p5_lane_epoch_before_retry() {
+        use crate::internal::wire::sync_v2::{SyncLaneV3, SYNC_CAPABILITY_P5_DEVICE_V1};
+
+        let fixture = SyncSnapshotFixture::new("device-epoch-p5-lane-refresh");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let refresh_calls = Rc::new(RefCell::new(0));
+        let authentication_reloads = Rc::new(RefCell::new(0));
+        let rejected = crate::ImError::Service {
+            status_code: Some(403),
+            code: Some("anp.device_not_eligible".to_owned()),
+            message: "device authorization epoch is stale".to_owned(),
+            data: None,
+        };
+        let lane_bootstrap = json!({
+            "mode": "tail_only",
+            "account_id": binding.account_id,
+            "device_id": binding.protocol_device_id,
+            "server_time": "2026-08-15T00:00:00Z",
+            "cursor": {"stream_epoch": "1", "scan_seq": "10"},
+            "read_state_baseline": [],
+            "group_state_baseline": [],
+            "warnings": [],
+            "sync_capabilities": [SYNC_CAPABILITY_P5_DEVICE_V1],
+            "lanes": {
+                "p5_device": {
+                    "cursor": {"stream_epoch": "51", "scan_seq": "0"},
+                    "committed_seq": "0"
+                }
+            }
+        });
+        let retry_delta = sync_snapshot_delta_with_lanes(
+            "1",
+            "10",
+            json!({
+                "p5_device": {
+                    "events": [],
+                    "next_cursor": {"stream_epoch": "51", "scan_seq": "0"},
+                    "has_more": false
+                }
+            }),
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            RefreshingSyncSnapshotSessionProvider {
+                refresh_calls: Rc::clone(&refresh_calls),
+                fail_refresh: false,
+            },
+            ReloadingSyncSnapshotTransport {
+                inner: SyncSnapshotTransport::queued(
+                    Rc::clone(&calls),
+                    vec![Err(rejected), Ok(lane_bootstrap), Ok(retry_delta)],
+                ),
+                authentication_reloads: Rc::clone(&authentication_reloads),
+            },
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(*refresh_calls.borrow(), 1);
+        assert_eq!(*authentication_reloads.borrow(), 1);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "sync.bootstrap", "sync.delta"]
+        );
+        assert_eq!(
+            calls[0]
+                .params
+                .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
+            Some(&json!("41"))
+        );
+        assert_eq!(
+            calls[2]
+                .params
+                .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
+            Some(&json!("51"))
+        );
+        drop(calls);
+        let lane = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_lane_sync_states(binding.owner_identity_id)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            (lane.stream_epoch.as_str(), lane.scan_seq.as_str()),
+            ("51", "0")
         );
     }
 

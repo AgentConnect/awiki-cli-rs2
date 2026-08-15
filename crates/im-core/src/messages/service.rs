@@ -3394,6 +3394,22 @@ impl<'a> MessageService<'a> {
         #[cfg(feature = "sqlite")]
         {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+            let db = self.client.core_inner().local_state_db().await?;
+            if db
+                .lane_capability_negotiation_required(
+                    binding.owner_identity_id.clone(),
+                    binding.device_auth_generation.clone(),
+                )
+                .await?
+            {
+                crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
+                    self.client,
+                    &mut transport,
+                    &db,
+                    &binding,
+                )
+                .await?;
+            }
             let mut directory_transport =
                 crate::internal::transport::CoreHttpTransport::new(self.client);
             return crate::internal::message_runtime::read::hydrate_exact_device_secure_inbox_async(

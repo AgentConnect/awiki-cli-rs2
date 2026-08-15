@@ -164,6 +164,11 @@ enum LocalStateCommand {
         owner_identity_id: String,
         reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::LaneSyncState>>>,
     },
+    LaneCapabilityNegotiationRequired {
+        owner_identity_id: String,
+        device_auth_generation: String,
+        reply: oneshot::Sender<crate::ImResult<bool>>,
+    },
     ReplaceLaneSyncStates {
         owner_identity_id: String,
         states: Vec<super::sync_v2::LaneSyncState>,
@@ -172,6 +177,26 @@ enum LocalStateCommand {
     AdvanceLaneSyncState {
         state: super::sync_v2::LaneSyncState,
         reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    MatchSyncLaneEventReceipt {
+        receipt: super::sync_v2::SyncLaneEventReceipt,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncLaneEventReceiptMatch>>,
+    },
+    CommitSyncLaneEvent {
+        receipt: super::sync_v2::SyncLaneEventReceipt,
+        next_state: Option<super::sync_v2::LaneSyncState>,
+        resolve_p6_blocker: bool,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    RecordP6LaneBlockerAndAdvance {
+        blocker: super::sync_v2::P6LaneBlocker,
+        next_state: super::sync_v2::LaneSyncState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    ListP6LaneBlockers {
+        owner_identity_id: String,
+        limit: u32,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::P6LaneBlocker>>>,
     },
     ApplyRealtimeMessageV3 {
         input: super::sync_v2::RealtimeMessageApplyInputV3,
@@ -1008,6 +1033,21 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn lane_capability_negotiation_required(
+        &self,
+        owner_identity_id: impl Into<String>,
+        device_auth_generation: impl Into<String>,
+    ) -> crate::ImResult<bool> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LaneCapabilityNegotiationRequired {
+            owner_identity_id: owner_identity_id.into(),
+            device_auth_generation: device_auth_generation.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn replace_lane_sync_states(
         &self,
         owner_identity_id: impl Into<String>,
@@ -1030,6 +1070,63 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::AdvanceLaneSyncState { state, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn match_sync_lane_event_receipt(
+        &self,
+        receipt: super::sync_v2::SyncLaneEventReceipt,
+    ) -> crate::ImResult<super::sync_v2::SyncLaneEventReceiptMatch> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::MatchSyncLaneEventReceipt { receipt, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn commit_sync_lane_event(
+        &self,
+        receipt: super::sync_v2::SyncLaneEventReceipt,
+        next_state: Option<super::sync_v2::LaneSyncState>,
+        resolve_p6_blocker: bool,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CommitSyncLaneEvent {
+            receipt,
+            next_state,
+            resolve_p6_blocker,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn record_p6_lane_blocker_and_advance(
+        &self,
+        blocker: super::sync_v2::P6LaneBlocker,
+        next_state: super::sync_v2::LaneSyncState,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RecordP6LaneBlockerAndAdvance {
+            blocker,
+            next_state,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_p6_lane_blockers(
+        &self,
+        owner_identity_id: impl Into<String>,
+        limit: u32,
+    ) -> crate::ImResult<Vec<super::sync_v2::P6LaneBlocker>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListP6LaneBlockers {
+            owner_identity_id: owner_identity_id.into(),
+            limit,
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -2312,6 +2409,18 @@ fn run_actor(
                 let result = super::sync_v2::load_lane_sync_states(&connection, &owner_identity_id);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::LaneCapabilityNegotiationRequired {
+                owner_identity_id,
+                device_auth_generation,
+                reply,
+            } => {
+                let result = super::sync_v2::lane_capability_negotiation_required(
+                    &connection,
+                    &owner_identity_id,
+                    &device_auth_generation,
+                );
+                let _ = reply.send(result);
+            }
             LocalStateCommand::ReplaceLaneSyncStates {
                 owner_identity_id,
                 states,
@@ -2326,6 +2435,45 @@ fn run_actor(
             }
             LocalStateCommand::AdvanceLaneSyncState { state, reply } => {
                 let result = super::sync_v2::advance_lane_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::MatchSyncLaneEventReceipt { receipt, reply } => {
+                let result = super::sync_v2::sync_lane_event_receipt_match(&connection, &receipt);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CommitSyncLaneEvent {
+                receipt,
+                next_state,
+                resolve_p6_blocker,
+                reply,
+            } => {
+                let result = super::sync_v2::commit_sync_lane_event(
+                    &connection,
+                    &receipt,
+                    next_state.as_ref(),
+                    resolve_p6_blocker,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RecordP6LaneBlockerAndAdvance {
+                blocker,
+                next_state,
+                reply,
+            } => {
+                let result = super::sync_v2::record_p6_lane_blocker_and_advance(
+                    &connection,
+                    &blocker,
+                    &next_state,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListP6LaneBlockers {
+                owner_identity_id,
+                limit,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::list_p6_lane_blockers(&connection, &owner_identity_id, limit);
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplyRealtimeMessageV3 { input, reply } => {

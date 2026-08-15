@@ -177,6 +177,8 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         TestResponse::registration(),
         TestResponse::prekey_publication(),
         TestResponse::sync_bootstrap(),
+        TestResponse::empty_secure_inbox(),
+        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
         TestResponse::directory_lookup(),
@@ -271,10 +273,20 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         "register".to_owned(),
         "direct.e2ee.publish_prekey_bundle".to_owned(),
         "sync.bootstrap".to_owned(),
+        "inbox.get".to_owned(),
+        "sync.bootstrap".to_owned(),
         "sync.delta".to_owned(),
         "message.get_batch".to_owned(),
     ]));
-    assert!(!methods.iter().any(|method| method == "inbox.get"));
+    let secure_inbox = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .find(|body| body["method"] == "inbox.get")
+        .expect("downgraded exact-device Inbox request");
+    assert_eq!(
+        secure_inbox["params"]["body"]["security_profile"],
+        "direct-e2ee"
+    );
     let sync_delta = requests
         .iter()
         .find(|request| {
@@ -833,6 +845,10 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
 
+    fn empty_secure_inbox() -> Self {
+        Self::ok("__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__")
+    }
+
     fn sync_delta_direct() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__")
     }
@@ -903,7 +919,8 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Parallel workspace tests can delay the debug CLI process startup on macOS.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -943,6 +960,14 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                 }),
             )
         }
+        "__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "messages": [],
+                "has_more": false,
+                "warnings": []
+            }),
+        ),
         "__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__" => {
             let binding = device_binding_from_request(request);
             rpc_result_for_request(

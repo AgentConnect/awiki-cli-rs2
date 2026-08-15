@@ -650,7 +650,7 @@ where
                 return realtime_inline_message_projection(
                     &notification,
                     message,
-                    &local_scan_seq,
+                    local_scan_seq.as_deref(),
                 );
             }
             Ok(
@@ -768,7 +768,7 @@ where
                 return realtime_inline_message_projection(
                     &notification,
                     message,
-                    &local_scan_seq,
+                    local_scan_seq.as_deref(),
                 );
             }
             Ok(
@@ -811,7 +811,7 @@ where
 fn realtime_inline_message_projection(
     notification: &Value,
     message: crate::messages::Message,
-    local_scan_seq: &str,
+    local_scan_seq: Option<&str>,
 ) -> RealtimeProjectionOutcome {
     RealtimeProjectionOutcome {
         event: Some(super::ImEvent::MessageReceived(
@@ -821,7 +821,7 @@ fn realtime_inline_message_projection(
                 download_action: None,
                 sync: crate::internal::realtime::projection::sync_hint_with_gap(
                     notification,
-                    Some(local_scan_seq),
+                    local_scan_seq,
                 ),
                 warnings: Vec::new(),
             },

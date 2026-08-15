@@ -810,7 +810,7 @@ fn parse_lane_event_v3(lane: SyncLaneV3, value: &Value) -> crate::ImResult<SyncL
     }
 }
 
-fn validate_lane_envelope_v3(
+pub(crate) fn validate_lane_envelope_v3(
     value: &Value,
     expected_profile: &str,
     expected_security_profile: &str,

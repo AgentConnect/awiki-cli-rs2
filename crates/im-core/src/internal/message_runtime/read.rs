@@ -1621,6 +1621,14 @@ where
             "secure Inbox hydration limit must be between 1 and 100",
         ));
     }
+    if sync_lane_capability_enabled_async(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+    )
+    .await?
+    {
+        return Ok(Vec::new());
+    }
     const MAX_PAGES_PER_RUN: usize = 100;
     let identity = crate::internal::wire::common::WireIdentity {
         did: client.did().as_str().to_owned(),
@@ -1728,6 +1736,16 @@ pub(crate) async fn hydrate_reliable_direct_message_async(
 ) -> crate::ImResult<Vec<String>> {
     if expected_message_id.trim().is_empty() || limit <= 0 {
         return Err(crate::ImError::PermissionDenied);
+    }
+    if sync_lane_capability_enabled_async(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+    )
+    .await?
+    {
+        return Err(crate::ImError::unsupported(
+            "reliable-p5-hydration-owned-by-sync-lane",
+        ));
     }
     let params = crate::internal::wire::inbox::build_inbox_rpc_params(
         &crate::internal::wire::common::WireIdentity {
@@ -2571,6 +2589,13 @@ pub(crate) fn project_secure_direct_messages(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
 ) -> DirectP5ProjectionProvenance {
+    if sync_lane_capability_enabled_blocking(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+    ) {
+        retain_non_p5_messages(raw);
+        return DirectP5ProjectionProvenance::default();
+    }
     project_secure_direct_messages_impl(client, raw, directory_transport, true, None)
 }
 
@@ -2710,6 +2735,16 @@ pub(crate) async fn project_secure_direct_messages_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
 ) -> DirectP5ProjectionProvenance {
+    if sync_lane_capability_enabled_async(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+    )
+    .await
+    .unwrap_or(true)
+    {
+        retain_non_p5_messages(raw);
+        return DirectP5ProjectionProvenance::default();
+    }
     project_secure_direct_messages_async_impl(
         client,
         raw,
@@ -2718,6 +2753,24 @@ pub(crate) async fn project_secure_direct_messages_async(
         None,
         Some(
             crate::internal::identity_root_import_completion::TrustedDirectDeliverySource::Mailbox,
+        ),
+    )
+    .await
+}
+
+pub(crate) async fn project_secure_direct_messages_from_reliable_sync_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(
+        client,
+        raw,
+        directory_transport,
+        true,
+        None,
+        Some(
+            crate::internal::identity_root_import_completion::TrustedDirectDeliverySource::ReliableSync,
         ),
     )
     .await
@@ -2857,11 +2910,23 @@ async fn project_secure_direct_messages_async_impl(
                             }
                             _ => None,
                         };
-                        apply_p5_v2_product_outcome(&mut message_values[index], outcome);
+                        apply_p5_v2_product_outcome(&mut message_values[index], outcome.clone());
                         if let Some(logical_message_id) = logical_message_id {
                             p5_provenance.record(&logical_message_id, cache_binding);
                         } else {
-                            p5_provenance.record_consumed_raw_message_id(&cache_binding.message_id);
+                            match outcome {
+                                crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Replay => {
+                                    p5_provenance.record_replay(&cache_binding.message_id);
+                                }
+                                crate::internal::secure_direct::v2_product::V2InboundProductOutcome::ConsumedControl
+                                | crate::internal::secure_direct::v2_product::V2InboundProductOutcome::SuppressedControl => {
+                                    p5_provenance.record_terminal_control(&cache_binding.message_id);
+                                }
+                                crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(_)
+                                | crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(_) => {
+                                    unreachable!("business outcomes carry a logical message id")
+                                }
+                            }
                         }
                     }
                     Err(_) => {
@@ -3135,6 +3200,98 @@ fn is_p5_v2_projection_candidate(message: &Value) -> bool {
         == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
 }
 
+fn retain_non_p5_messages(raw: &mut Value) {
+    if let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) {
+        messages.retain(|message| !is_p5_v2_projection_candidate(message));
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn sync_lane_capability_enabled_async(
+    client: &crate::core::ImClient,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+) -> crate::ImResult<bool> {
+    let db = client.core_inner().local_state_db().await?;
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    let Some(binding) = db
+        .load_identity_account_binding(owner_identity_id.clone())
+        .await?
+    else {
+        return Ok(false);
+    };
+    if db
+        .lane_capability_negotiation_required(
+            owner_identity_id.clone(),
+            binding.device_auth_generation,
+        )
+        .await?
+    {
+        // An existing v2 installation must bootstrap the lane capability set
+        // before selecting either transport. Do not race legacy Inbox against
+        // the first lane-enabled sync.delta in the same foreground run.
+        return Ok(true);
+    }
+    Ok(db
+        .load_lane_sync_states(owner_identity_id)
+        .await?
+        .into_iter()
+        .any(|state| state.lane == lane))
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn sync_lane_capability_enabled_async(
+    _client: &crate::core::ImClient,
+    _lane: crate::internal::wire::sync_v2::SyncLaneV3,
+) -> crate::ImResult<bool> {
+    Ok(false)
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_lane_capability_enabled_blocking(
+    client: &crate::core::ImClient,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+) -> bool {
+    let connection = match crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) {
+        Ok(connection) => connection,
+        Err(_) => return true,
+    };
+    let owner_identity_id = client.current_identity().id.as_str();
+    let binding = match crate::internal::local_state::sync_v2::load_identity_account_binding(
+        &connection,
+        owner_identity_id,
+    ) {
+        Ok(Some(binding)) => binding,
+        Ok(None) | Err(crate::ImError::IdentityBindingConflict { .. }) => return false,
+        Err(_) => return true,
+    };
+    match crate::internal::local_state::sync_v2::lane_capability_negotiation_required(
+        &connection,
+        owner_identity_id,
+        &binding.device_auth_generation,
+    ) {
+        Ok(true) => true,
+        Err(_) => true,
+        Ok(false) => match crate::internal::local_state::sync_v2::load_lane_sync_states(
+            &connection,
+            owner_identity_id,
+        ) {
+            Ok(states) => states.into_iter().any(|state| state.lane == lane),
+            Err(crate::ImError::IdentityBindingConflict { .. }) => false,
+            Err(_) => true,
+        },
+    }
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn sync_lane_capability_enabled_blocking(
+    _client: &crate::core::ImClient,
+    _lane: crate::internal::wire::sync_v2::SyncLaneV3,
+) -> bool {
+    false
+}
+
 fn is_p6_v2_projection_candidate(message: &Value) -> bool {
     message
         .get("meta")
@@ -3242,7 +3399,18 @@ pub(crate) struct DirectP5ProjectionProvenance {
     verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
     consumed_raw_message_ids: Vec<String>,
     consumed_raw_message_id_set: HashSet<String>,
+    projected_raw_message_ids: HashSet<String>,
+    terminal_control_raw_message_ids: HashSet<String>,
+    replay_raw_message_ids: HashSet<String>,
     expected_peer_did: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectP5ProjectionDisposition {
+    Projected,
+    TerminalControl,
+    Replay,
+    NotConsumed,
 }
 
 impl DirectP5ProjectionProvenance {
@@ -3257,7 +3425,23 @@ impl DirectP5ProjectionProvenance {
             raw_message_id: raw_message_id.to_owned(),
         };
         self.record_consumed_raw_message_id(raw_message_id);
+        self.projected_raw_message_ids
+            .insert(raw_message_id.to_owned());
         self.bindings.entry(key).or_default().push(binding);
+    }
+
+    fn record_terminal_control(&mut self, raw_message_id: &str) {
+        let raw_message_id = raw_message_id.trim();
+        self.record_consumed_raw_message_id(raw_message_id);
+        self.terminal_control_raw_message_ids
+            .insert(raw_message_id.to_owned());
+    }
+
+    fn record_replay(&mut self, raw_message_id: &str) {
+        let raw_message_id = raw_message_id.trim();
+        self.record_consumed_raw_message_id(raw_message_id);
+        self.replay_raw_message_ids
+            .insert(raw_message_id.to_owned());
     }
 
     fn record_consumed_raw_message_id(&mut self, raw_message_id: &str) {
@@ -3273,8 +3457,26 @@ impl DirectP5ProjectionProvenance {
             .push(raw_message_id.to_owned());
     }
 
-    fn consumed_raw_message_ids(&self) -> Vec<String> {
+    pub(crate) fn consumed_raw_message_ids(&self) -> Vec<String> {
         self.consumed_raw_message_ids.clone()
+    }
+
+    pub(crate) fn disposition_for_raw_message_id(
+        &self,
+        raw_message_id: &str,
+    ) -> DirectP5ProjectionDisposition {
+        if self.projected_raw_message_ids.contains(raw_message_id) {
+            DirectP5ProjectionDisposition::Projected
+        } else if self
+            .terminal_control_raw_message_ids
+            .contains(raw_message_id)
+        {
+            DirectP5ProjectionDisposition::TerminalControl
+        } else if self.replay_raw_message_ids.contains(raw_message_id) {
+            DirectP5ProjectionDisposition::Replay
+        } else {
+            DirectP5ProjectionDisposition::NotConsumed
+        }
     }
 
     fn retain_unambiguous_projected_instances(
@@ -4117,9 +4319,14 @@ fn consume_group_e2ee_control_messages(client: &crate::core::ImClient, raw: &mut
     let message_values = std::mem::take(messages);
     let mut retained = Vec::with_capacity(message_values.len());
     let mut warnings = Vec::new();
+    let lane_enabled = sync_lane_capability_enabled_blocking(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+    );
     for message in message_values {
         if crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&message) {
-            if client.core_inner().group_e2ee_v2_enabled()
+            if !lane_enabled
+                && client.core_inner().group_e2ee_v2_enabled()
                 && crate::internal::group_e2ee::v2_notice::consume_for_client(client, &message)
                     .is_err()
             {
@@ -4159,9 +4366,16 @@ async fn consume_group_e2ee_control_messages_async(
     let message_values = std::mem::take(messages);
     let mut retained = Vec::with_capacity(message_values.len());
     let mut warnings = Vec::new();
+    let lane_enabled = sync_lane_capability_enabled_async(
+        client,
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+    )
+    .await
+    .unwrap_or(true);
     for message in message_values {
         if crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&message) {
-            if client.core_inner().group_e2ee_v2_enabled()
+            if !lane_enabled
+                && client.core_inner().group_e2ee_v2_enabled()
                 && crate::internal::group_e2ee::v2_notice::consume_for_client_async(
                     client, &message,
                 )
@@ -4179,6 +4393,29 @@ async fn consume_group_e2ee_control_messages_async(
     }
     *messages = retained;
     append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn consume_group_e2ee_control_notice_from_reliable_sync_async(
+    client: &crate::core::ImClient,
+    notice: &Value,
+) -> crate::ImResult<()> {
+    if !crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(notice)
+        || !client.core_inner().group_e2ee_v2_enabled()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    crate::internal::group_e2ee::v2_notice::consume_for_client_async(client, notice)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+pub(crate) async fn consume_group_e2ee_control_notice_from_reliable_sync_async(
+    _client: &crate::core::ImClient,
+    _notice: &Value,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("group-e2ee"))
 }
 
 #[cfg(not(feature = "group-e2ee"))]

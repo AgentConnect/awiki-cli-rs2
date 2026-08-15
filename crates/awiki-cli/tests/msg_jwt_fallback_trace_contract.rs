@@ -84,13 +84,15 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
 }
 
 #[test]
-fn inbox_http_1401_refreshes_inside_im_core_transport() {
+fn inbox_preflight_http_1401_refreshes_inside_im_core_transport() {
     let workspace = TempDir::new("msg-jwt-fallback-inbox").expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::ok(&json_rpc_error(1401, "expired inbox jwt")),
+        TestResponse::ok(&json_rpc_error(1401, "expired sync bootstrap jwt")),
         TestResponse::sync_bootstrap().with_dynamic_access_token(),
+        TestResponse::empty_secure_inbox(),
+        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -141,7 +143,7 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 7);
     assert_eq!(json_body(&requests[0])["method"], "register");
     assert_eq!(
         json_body(&requests[1])["method"],
@@ -151,10 +153,16 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     assert!(!bearer_token(&requests[2]).is_empty());
     assert_eq!(json_body(&requests[3])["method"], "sync.bootstrap");
     assert_contains_text(&requests[3], "signature-input:");
-    assert_eq!(json_body(&requests[4])["method"], "sync.delta");
-    let refreshed_token = bearer_token(&requests[4]);
+    assert_eq!(json_body(&requests[4])["method"], "inbox.get");
     assert_eq!(
-        json_body(&requests[4])["params"]["body"]["reason"],
+        json_body(&requests[4])["params"]["body"]["security_profile"],
+        "direct-e2ee"
+    );
+    assert_eq!(json_body(&requests[5])["method"], "sync.bootstrap");
+    assert_eq!(json_body(&requests[6])["method"], "sync.delta");
+    let refreshed_token = bearer_token(&requests[6]);
+    assert_eq!(
+        json_body(&requests[6])["params"]["body"]["reason"],
         "foreground_reconcile"
     );
 
@@ -251,28 +259,34 @@ fn assert_vault_auth_token_is_used(
     expected_token: &str,
     args: &[&str],
 ) {
-    let response = if args.windows(2).any(|pair| pair == ["msg", "inbox"]) {
-        TestResponse::sync_delta_empty()
+    let is_inbox = args.windows(2).any(|pair| pair == ["msg", "inbox"]);
+    let responses = if is_inbox {
+        vec![
+            TestResponse::empty_secure_inbox(),
+            TestResponse::sync_delta_empty(),
+        ]
     } else {
-        TestResponse::ok(&json_rpc_result(json!({
+        vec![TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
             "final_acceptance": true,
             "messages": [],
             "total": 0,
             "source": "remote_http"
-        })))
+        })))]
     };
-    let server = TestServer::new(vec![response]);
+    let server = TestServer::new(responses);
     write_msg_config(workspace, &server.base_url());
 
     let output = awiki_cmd(args, workspace);
     assert_success(&output);
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert_contains_text(
-        &requests[0],
-        &format!("Authorization: Bearer {expected_token}\r\n"),
-    );
+    assert_eq!(requests.len(), if is_inbox { 2 } else { 1 });
+    for request in &requests {
+        assert_contains_text(
+            request,
+            &format!("Authorization: Bearer {expected_token}\r\n"),
+        );
+    }
 
     let index_path = tenant_workspace(workspace)
         .join("identities")
@@ -501,6 +515,14 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
 
+    fn empty_secure_inbox() -> Self {
+        Self::ok(&json_rpc_result(json!({
+            "messages": [],
+            "has_more": false,
+            "warnings": []
+        })))
+    }
+
     fn sync_delta_empty() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__")
     }
@@ -555,7 +577,8 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Parallel workspace tests can delay the debug CLI process startup on macOS.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -580,7 +603,7 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
-            let binding = signed_device_binding(request);
+            let binding = device_binding_from_authentication(request);
             rpc_result_for_request(
                 request,
                 json!({
@@ -680,6 +703,38 @@ struct SignedDeviceBinding {
     account_id: String,
     device_id: String,
     key_id: String,
+}
+
+fn device_binding_from_authentication(request: &str) -> SignedDeviceBinding {
+    if request.lines().any(|line| {
+        line.split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("signature-input"))
+    }) {
+        return signed_device_binding(request);
+    }
+    let token = bearer_token(request);
+    let payload = token.split('.').nth(1).expect("access token payload");
+    let claims: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("decode access token claims"),
+    )
+    .expect("access token claims JSON");
+    SignedDeviceBinding {
+        did: claims["did"].as_str().expect("access token DID").to_owned(),
+        account_id: claims["user_id"]
+            .as_str()
+            .expect("access token account ID")
+            .to_owned(),
+        device_id: claims["device_id"]
+            .as_str()
+            .expect("access token device ID")
+            .to_owned(),
+        key_id: claims["key_id"]
+            .as_str()
+            .expect("access token key ID")
+            .to_owned(),
+    }
 }
 
 fn signed_device_binding(request: &str) -> SignedDeviceBinding {

@@ -506,8 +506,10 @@ same-user wire sender as the Direct peer; the committed wire route, canonical
 Persona conversation, sender/receiver snapshots, and UI hint all use the same
 external peer.
 
-For P6, blocking/async read and realtime share the same internal notice
-consumer. A standard `group.e2ee.notice` is bound to the current owner
+For P6, the lane and legacy blocking/async/realtime paths share the same
+internal notice consumer. Once `lanes.p6_group.v1` is negotiated, the legacy
+Inbox piggyback path drops the control candidate without consuming it so only
+the reliable lane owns progress. A standard `group.e2ee.notice` is bound to the current owner
 DID/device, resolved against the current P4 group-member DID documents, and
 passed to the SDK's durable, idempotent MLS notice state machine. Controls are
 never projected as messages or events; malformed, unknown-profile, wrong-device,
@@ -917,16 +919,18 @@ Reliable message sync is split between service-owned event logs and
 `message-service/docs/api/ANP-client-server-api-sync.md`; this document records
 the SDK architecture boundary.
 
-Ordinary v2 Direct/Group sync is the default product path for every valid
-account/device binding. Core does not accept an account allowlist, device
-cohort, or percentage rollout input. A host may explicitly disable the global
-v2 reader only for emergency rollback; the independent P5/P6 E2EE gates in
-Section 4.2 remain default-off and do not control ordinary synchronization.
+Ordinary V2 Direct/Group sync remains the default product path for every valid
+account/device binding. The V2 request has an optional V3 lane extension:
+`p5_device` and `p6_group` share the same authenticated `sync.delta` call while
+retaining independent cursors and commit semantics. Core does not accept an
+account allowlist, device cohort, or percentage rollout input. The P5/P6
+product gates still control cryptographic admission; bootstrap capabilities
+control whether transport moves from legacy Inbox/per-group catch-up to lanes.
 
 `im-core` Rust/SQLite owns the global reliable checkpoint:
 
-- `messages.sync_now()` / Dart `client.messages.syncNow(...)` are the v2 ordinary
-  Direct/Group main path. Rust derives account/device binding internally,
+- `messages.sync_now()` / Dart `client.messages.syncNow(...)` are the unified
+  ordinary/P5/P6 main path. Rust derives account/device binding internally,
   bootstraps a tail-only cursor and Group baseline when required, exactly
   hydrates every required `message.created` through `message.get_batch`, and
   commits event receipts, canonical projection changes, and the next v2 cursor
@@ -939,6 +943,25 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
   headroom for compact-JSON framing and escaping; any unavailable item in any
   chunk aborts the full delta page.
+- `sync.bootstrap` advertises `lanes.p5_device.v1` / `lanes.p6_group.v1` and a
+  cursor per advertised lane. Core persists the negotiated generation even
+  when the capability set is empty, so an upgraded V2 database performs one
+  capability bootstrap instead of probing on every run. A device auth
+  generation change invalidates that marker and revalidates the P5 stream
+  epoch. After negotiation, one `sync.delta` request carries ordinary plus all
+  enabled lanes; without lanes its body remains the exact legacy V2 shape.
+- P5 applies an exact-device delivery through the existing Direct E2EE v2
+  decrypt/ratchet/replay and durable projection pipeline. Only after that
+  succeeds may delta write the P5 receipt and advance both `scan_seq` and
+  `committed_seq`. A poison delivery leaves the P5 cursor unchanged for retry
+  but does not stop ordinary or P6. P6 uses aggregate per-device sequence for
+  transport and `group_did + group_event_seq` for logical idempotency; a failed
+  group is recorded as a durable per-group blocker while aggregate progress
+  and other groups continue. Lane errors remain lane-local retry/warning state
+  and never become `AuthRevoked`.
+- Lane admission is bidirectional and closed: P5 accepts only Direct E2EE v2,
+  P6 accepts only Group E2EE v2 delivery/control shapes, and the ordinary event
+  parser retains its existing E2EE/MLS discriminator rejection unchanged.
 - Required `group.member_changed` and `group.profile_updated` events atomically
   commit both the owner-scoped Group projection and one read Group system
   timeline message. The message uses canonical
@@ -946,27 +969,16 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   delta, and v2 delta converge idempotently instead of creating duplicate rows.
   These lifecycle records remain durable timeline facts but do not enter the
   ordinary committed-incoming notification list.
-- Foreground CLI Inbox compensation and the native Dart `MessageApi.syncNow`
-  wrapper first resume any durable Root-import completion and reload the same
-  stable local identity. When the independent P5 gate is enabled, they then perform one bounded
-  exact-device secure hydration through the local-only
-  `inbox.get` contract. This lets Root control messages finish local credential
-  promotion before a changed device authorization generation is used for ordinary
-  sync. The Dart host also reloads before hydration, and both hosts reload
-  `ImClient` for the same stable local identity after hydration, so the same foreground operation cannot retain the pre-promotion
-  device authorization generation; the CLI then uses reason
-  `foreground_reconcile`, while Dart continues the caller's ordinary `syncNow`
-  request. Secure hydration uses the closed
-  `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
-  P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
-  local commit, reloads bearer state before that ACK in case a Root control
-  advanced the device authorization generation, and repeats bounded unread
-  pages until `has_more=false` before reading the committed exact-owner local
-  Inbox projection. A failed/partial ACK
-  preserves the committed local data but fails foreground reconciliation.
-  The secure request defensively drops every non-P5 row and is not a Legacy or
-  ordinary-message fallback. The flow does not depend on a WebSocket hint and
-  does not return stale projection when either required reconciliation fails.
+- Foreground CLI/Dart first resume durable Root-import completion and obtain the
+  exact active binding. Before choosing a P5 transport they finish lane
+  capability negotiation for that device generation. If P5 lane is enabled,
+  legacy secure hydration returns without `inbox.get`/`inbox.mark_read` and the
+  following unified delta owns the delivery. If P5 lane is absent, the bounded
+  closed `body.security_profile=direct-e2ee` Inbox hydration and post-commit ACK
+  behavior is unchanged. Unknown capability state is not allowed to race both
+  paths in one foreground operation; delivery receipts remain an additional
+  migration-time idempotency fence. The legacy function and service RPCs are
+  retained for rollback and old servers, not used as ordinary-message fallback.
 
 Long-lived host bindings must not replace an `ImClient` with an independently
 constructed client after this refresh. Core exposes one host-facing
@@ -1050,6 +1062,17 @@ private message metadata so a later reliable delta can record the receipt,
 advance the cursor, and skip reapplying an already projected body. The reverse
 order is also a no-op for realtime.
 
+The same unpublished schema 3 now has a closed `event.lane`: absent or
+`ordinary`, `p5_device`, or `p6_group`. P5/P6 accept only
+`p5.delivery.created` / `p6.delivery.created` with the corresponding Direct
+E2EE v2 / Group E2EE v2 envelope. They reuse the reliable cryptographic and
+durable projection paths. P5 dedupes by delivery ID; P6 dedupes by
+`group_did + group_event_seq`. Successful E2EE inline application writes only
+an idempotency receipt and returns no local lane scan sequence. It never updates
+`lane_sync_state`; delta remains the sole authority that converts the receipt
+into committed lane progress. Failed P5 crypto or unmet P6 order/epoch simply
+defers to delta and does not contaminate ratchet, backlog, or a lane cursor.
+
 The fast path is fenced by the current account/device binding and exact
 `stream_epoch`. A different epoch, an unknown Group, or a Direct peer without a
 verified Persona produces only a dirty/gap hint; it does not create a temporary
@@ -1068,7 +1091,9 @@ would require a separate bounded-convergence contract and is not current behavio
 the event's own sequence, while schemas 2 and 3 map `account_scan_seq_hint`.
 Callers must not compare those meanings across schemas or treat either as a
 reliable cursor; the schema-3 inline event keeps its own `event.event_seq` inside
-the validated fast-path payload.
+the validated fast-path payload. `RealtimeSyncHint.dirty_lanes` is likewise a
+closed scheduling set (`ordinary | p5_device | p6_group`), not checkpoint or ACK
+state.
 If a realtime incoming message cannot be projected or its local SQLite write
 fails, it must not emit an authoritative conversation/timeline patch. Outside
 the schema-3 fast path, identity-unresolved Legacy realtime messages are
@@ -1086,12 +1111,15 @@ account seed offers `awiki.sync.event.v3` followed by
 `awiki.sync.changed.v2` and requires the server to select either versioned
 token; a missing echo or `NoSubProtocol` is a transport/provisioning failure and
 the async transport must not reconnect without a subprotocol. A v3 session also
-accepts schema-2 fallback hints for non-inline or oversized events. A v2 session
-rejects schema 3. Only a Legacy or generic hosted client with no exact binding
-may reconnect without a subprotocol. V3 is an additive negotiated protocol, not
-a replacement for v2, so this change requires neither a public API version bump
-nor a SQLite schema migration. No realtime notification advances the reliable
-cursor.
+accepts schema-2 fallback hints for non-inline or oversized events. Such a hint
+may carry closed, sorted `dirty_lanes`, but only when sent to a connection that
+already negotiated v3; a pure v2 session must retain the historical three-field
+schema exactly. A v2 session rejects schema 3. Only a Legacy or generic hosted
+client with no exact binding may reconnect without a subprotocol. The lane
+extension modifies the still-unpublished `awiki.sync.event.v3`; it does not add
+v4. Local SQLite adds lane checkpoints, application receipts, negotiation state,
+and P6 blockers, but no public checkpoint setter. No realtime notification
+advances any reliable cursor.
 
 The internal realtime transport sends a ping every 20 seconds and retains the
 15-second pong timeout, bounding half-open detection to about 35 seconds.

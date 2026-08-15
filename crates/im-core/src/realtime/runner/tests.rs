@@ -1539,6 +1539,7 @@ fn direct_message_event_with_sync(
             event_type: Some("message.created".to_owned()),
             domains: std::collections::BTreeSet::from([super::super::SyncDomain::Message]),
             reason: Some("message.created".to_owned()),
+            dirty_lanes: std::collections::BTreeSet::new(),
             sync_dirty: true,
             gap_detected: true,
             has_unknown_domain: false,

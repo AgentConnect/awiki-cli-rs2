@@ -71,7 +71,7 @@ im-core public API exposes current SendRequest / InboxRequest / RPC params
 | `messages().send_conversation_text()` / `messages().send_conversation_payload()` | conversation resolver + local projection + network send | 当前 AWiki Me conversation UI send 主路径；pending/accepted/sent/failed 由 `im-core` durable projection 表达。 |
 | `messages().inbox()` | current inbox | P1 返回 `Page<Message>`，不返回默认 raw JSON payload。 |
 | `messages().history()` | current history | direct/group history 统一成 `ThreadRef`。 |
-| `messages().sync_delta()` | message-service `sync.delta` + local SQLite apply | `since_event_seq` 和 checkpoint 只在 `im-core` 内部；不得由 CLI/App 传入。协商 `awiki.sync.event.v3` 后，realtime 可提前复用同一 reducer 提交普通消息正文，但 receipt/cursor 仍只由本行可靠 delta 写入。 |
+| `messages().sync_delta()` | message-service `sync.delta` + local SQLite apply | `since_event_seq` 和 ordinary/P5/P6 checkpoint 只在 `im-core` 内部；不得由 CLI/App 传入。bootstrap 协商后，同一请求携带 `p5_device` / `p6_group` 独立 lane；未协商时保持旧 V2 body。`awiki.sync.event.v3` 可内联 ordinary/P5/P6，但所有 lane 的 receipt 记账与 cursor authority 仍只属于可靠 delta。 |
 | `messages().sync_thread_after()` | message-service `sync.thread_after` | thread-local 补新；不得直接返回本地合并的 `history_async` page。 |
 | `messages().sync_conversation_after()` | `sync_thread_after` + `ConversationReadRef` resolver | AWiki Me / Dart 主路径；用 canonical `conversation_id` 解析 storage thread，不让 App 自己拼 alias。 |
 | `messages().local_conversation_timeline()` | SQLite `messages` projection | conversationId-first local-first timeline；远端 history/backfill 只有持久化后才能通过这里成为 UI 事实。 |

@@ -1092,6 +1092,7 @@ mod tests {
             event_type: Some("message.created".to_string()),
             domains: Default::default(),
             reason: None,
+            dirty_lanes: Default::default(),
             sync_dirty: true,
             gap_detected,
             has_unknown_domain: false,
