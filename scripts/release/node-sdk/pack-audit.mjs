@@ -60,6 +60,7 @@ for (const path of paths) {
 
 const nativeFiles = paths.filter(path => path.endsWith('.node'))
 if (manifest.main?.endsWith('.node')) {
+  if (manifest.type !== 'commonjs') fail('platform package must declare its native entry as commonjs')
   if (nativeFiles.length !== 1 || nativeFiles[0] !== manifest.main.replace(/^\.\//, '')) {
     fail('platform package must contain exactly its declared native addon')
   }
@@ -71,7 +72,7 @@ else {
   }
   const optionalVersions = Object.values(manifest.optionalDependencies || {})
   if (optionalVersions.length !== 5 || optionalVersions.some(version => version !== manifest.version)) {
-    fail('wrapper must pin all five candidate platform packages to its exact version')
+    fail('wrapper must pin all five Tier 1 platform packages to its exact version')
   }
 }
 
@@ -79,8 +80,8 @@ const provenance = JSON.parse(await readFile(join(packageDirectory, 'provenance.
 if (provenance.package.name !== manifest.name || provenance.package.version !== manifest.version) {
   fail('provenance package identity mismatch')
 }
-if (provenance.distributionPolicy !== 'temporary-test-artifact-only-license-approval-not-recorded') {
-  fail('artifact is missing the non-release distribution gate')
+if (provenance.distributionPolicy !== 'agpl-3.0-only-approved-test-channel') {
+  fail('artifact is missing the approved AGPL test-channel policy')
 }
 const sbom = JSON.parse(await readFile(join(packageDirectory, 'sbom.cdx.json'), 'utf8'))
 if (sbom.bomFormat !== 'CycloneDX' || sbom.specVersion !== '1.6') fail('invalid CycloneDX SBOM')

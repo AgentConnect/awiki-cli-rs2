@@ -1,4 +1,4 @@
-/** Candidate native packages. The release Tier 1 list still requires deployment-owner approval. */
+/** Approved first-release Tier 1 native packages. */
 export const nativePlatformPackages: Readonly<Record<string, string>> = {
   'linux-x64-gnu': '@awiki/im-core-node-linux-x64-gnu',
   'linux-arm64-gnu': '@awiki/im-core-node-linux-arm64-gnu',

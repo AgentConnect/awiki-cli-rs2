@@ -1,4 +1,4 @@
-name: IM Core Node Candidate Artifacts
+name: IM Core Node Tier 1 Artifacts
 
 on:
   workflow_dispatch:
@@ -37,7 +37,7 @@ env:
 
 jobs:
   build-platform:
-    name: Build candidate ${{ matrix.target_name }}
+    name: Build Tier 1 ${{ matrix.target_name }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -129,7 +129,7 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         env:
-          MACOSX_DEPLOYMENT_TARGET: '11.0'
+          MACOSX_DEPLOYMENT_TARGET: '13.5'
         run: cargo build --locked --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"
 
       - name: Build Linux addon inside manylinux 2.28
@@ -162,7 +162,17 @@ jobs:
           dpkg --compare-versions "${highest}" le 2.28
           echo "highest required glibc symbol: ${highest}"
 
-      - name: Stage and audit temporary package
+      - name: Enforce macOS 13.5 deployment target
+        if: startsWith(matrix.target_name, 'darwin-')
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          addon="${{ matrix.target_dir }}/${{ matrix.rust_target }}/release/${{ matrix.library }}"
+          minos="$(otool -l "${addon}" | awk '$1 == "minos" { print $2; exit }')"
+          test "${minos}" = '13.5'
+          echo "minimum macOS deployment target: ${minos}"
+
+      - name: Stage and audit platform package
         working-directory: awiki-cli-rs2
         shell: bash
         env:
@@ -178,16 +188,17 @@ jobs:
             --package-dir "dist/node-sdk/staged/${{ matrix.target_name }}" \
             --destination "dist/node-sdk/tarballs"
 
-      - name: Upload temporary candidate artifact
+      - name: Upload Tier 1 build artifact
         uses: actions/upload-artifact@v7
         with:
           name: im-core-node-${{ matrix.target_name }}
           path: awiki-cli-rs2/dist/node-sdk/tarballs/*
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
 
   build-wrapper:
-    name: Build candidate root wrapper
+    name: Build root wrapper after platform packages
+    needs: build-platform
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout awiki-cli-rs2
@@ -240,13 +251,13 @@ jobs:
             --package-dir dist/node-sdk/staged/wrapper \
             --destination dist/node-sdk/tarballs
 
-      - name: Upload temporary wrapper artifact
+      - name: Upload wrapper build artifact
         uses: actions/upload-artifact@v7
         with:
           name: im-core-node-wrapper
           path: awiki-cli-rs2/dist/node-sdk/tarballs/*
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
 
   packed-install:
     name: Packed install ${{ matrix.target.name }} / Node ${{ matrix.node }}
@@ -313,13 +324,31 @@ jobs:
             --wrapper "${wrapper}" \
             --expect-missing
 
-  distribution-gate:
-    name: Confirm artifacts remain non-release
+  publish-test-channel:
+    name: Publish approved AGPL test channel
     needs: [build-platform, build-wrapper, packed-install]
     runs-on: ubuntu-22.04
     steps:
-      - name: Enforce external approval boundary
+      - name: Download verified packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: im-core-node-*
+          path: channel
+          merge-multiple: true
+
+      - name: Verify complete release order output
         shell: bash
         run: |
-          echo 'Candidate matrix and temporary artifacts passed.'
-          echo 'No npm publish step is permitted until Tier 1 and license approvals are recorded.'
+          test "$(find channel -maxdepth 1 -name '*.tgz' -type f | wc -l)" -eq 6
+          test "$(find channel -maxdepth 1 -name '*.tgz.sha256' -type f | wc -l)" -eq 6
+          while IFS= read -r checksum; do
+            (cd channel && sha256sum --check "$(basename "${checksum}")")
+          done < <(find channel -maxdepth 1 -name '*.tgz.sha256' -type f | sort)
+
+      - name: Upload AGPL test channel
+        uses: actions/upload-artifact@v7
+        with:
+          name: im-core-node-agpl-test-channel-${{ github.run_id }}
+          path: channel/*
+          if-no-files-found: error
+          retention-days: 30

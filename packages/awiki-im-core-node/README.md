@@ -46,12 +46,12 @@ import。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 
-当前仓库内构建产生内部测试 addon；正式平台包、provenance 与许可证发布门禁在后续原生制品
-步骤完成。AGPL/商业发行审批完成前不得把该内部制品作为正式 release 发布。
+平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
+AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。
 
 ## 原生制品
 
-候选平台使用独立 optional package；wrapper 会显式区分 glibc 与 musl，不做运行期下载，也不
-回退 TypeScript SDK。当前候选矩阵、临时 artifact 构建、SBOM、checksum、provenance 和无源码
-安装验证见 `docs/node-sdk/awiki-im-core-node-artifacts.md`。Tier 1 与发行许可尚未获批，因此仓库
-没有 npm publish 命令或 job。
+Tier 1 平台使用独立 optional package；wrapper 会显式区分 glibc 与 musl，不做运行期下载，也
+不回退 TypeScript SDK。第一版五平台矩阵、AGPL test channel、SBOM、checksum、provenance 和
+无源码安装验证见 `docs/node-sdk/awiki-im-core-node-artifacts.md`。仓库不包含自动 npm publish
+job；正式 registry 发布仍是独立 release 动作。

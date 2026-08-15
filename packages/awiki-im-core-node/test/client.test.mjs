@@ -102,21 +102,21 @@ test('resolves libc explicitly and has no musl or TypeScript fallback', () => {
   assert.equal(nativePlatformPackages['linux-arm64-musl'], undefined)
 })
 
-test('candidate platform manifests match the root optional dependency contract', async () => {
+test('Tier 1 platform manifests match the root optional dependency contract', async () => {
   const packageRoot = join(import.meta.dirname, '..')
   const rootManifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
   assert.deepEqual(
     Object.keys(rootManifest.optionalDependencies).sort(),
     Object.values(nativePlatformPackages).sort(),
   )
-  const candidates = {
+  const tier1 = {
     'linux-x64-gnu': ['linux-x64-gnu', '@awiki/im-core-node-linux-x64-gnu'],
     'linux-arm64-gnu': ['linux-arm64-gnu', '@awiki/im-core-node-linux-arm64-gnu'],
     'darwin-x64': ['darwin-x64', '@awiki/im-core-node-darwin-x64'],
     'darwin-arm64': ['darwin-arm64', '@awiki/im-core-node-darwin-arm64'],
     'win32-x64-msvc': ['win32-x64-msvc', '@awiki/im-core-node-win32-x64-msvc'],
   }
-  for (const [directory, [target, packageName]] of Object.entries(candidates)) {
+  for (const [directory, [target, packageName]] of Object.entries(tier1)) {
     const manifest = JSON.parse(await readFile(
       join(packageRoot, '../awiki-im-core-node-platforms', directory, 'package.json'),
       'utf8',
@@ -125,6 +125,7 @@ test('candidate platform manifests match the root optional dependency contract',
     assert.equal(manifest.version, rootManifest.version)
     assert.equal(rootManifest.optionalDependencies[packageName], `workspace:${rootManifest.version}`)
     assert.equal(manifest.license, 'AGPL-3.0-only')
+    assert.equal(manifest.type, 'commonjs')
     assert.equal(manifest.main, `./awiki-im-core-node.${target}.node`)
     assert.equal(manifest.scripts, undefined)
   }
