@@ -124,6 +124,20 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Verify Windows package-manager launcher
+        if: matrix.target_name == 'win32-x64-msvc'
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSyncPortable } from './scripts/release/node-sdk/spawn-command.mjs'
+          for (const command of ['npm', 'pnpm']) {
+            const result = spawnSyncPortable(command, ['--version'], { encoding: 'utf8' })
+            if (result.status !== 0) throw result.error || new Error(result.stderr || `${command} failed`)
+            console.log(`${command}: ${result.stdout.trim()}`)
+          }
+          NODE
+
       - name: Build release addon on non-Linux targets
         if: matrix.linux_gnu == false
         working-directory: awiki-cli-rs2

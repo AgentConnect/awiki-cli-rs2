@@ -5,15 +5,9 @@ export function spawnSyncPortable(command, args, options = {}) {
     return spawnSync(command, args, options)
   }
 
-  const argumentEnvironment = Object.fromEntries(
-    args.map((argument, index) => [`AWIKI_NODE_SDK_ARG_${index}`, argument]),
+  return spawnSync(
+    process.env.ComSpec || 'cmd.exe',
+    ['/d', '/c', `${command}.cmd`, ...args],
+    options,
   )
-  const commandLine = [
-    `${command}.cmd`,
-    ...args.map((_, index) => `"%AWIKI_NODE_SDK_ARG_${index}%"`),
-  ].join(' ')
-  return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', commandLine], {
-    ...options,
-    env: { ...process.env, ...options.env, ...argumentEnvironment },
-  })
 }
