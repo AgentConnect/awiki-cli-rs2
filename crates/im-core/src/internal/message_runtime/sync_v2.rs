@@ -935,6 +935,7 @@ where
             account_id,
             device_id,
             recovery,
+            lane_bootstrap,
         } = &response
         {
             if account_id != &binding.account_id || device_id != &binding.protocol_device_id {
@@ -978,6 +979,11 @@ where
             let state = self
                 .recover_snapshot(db, binding, &previous, recovery, result)
                 .await?;
+            db.replace_lane_sync_states(
+                &binding.owner_identity_id,
+                lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap),
+            )
+            .await?;
             return Ok(state);
         }
         let crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) = response
@@ -1006,6 +1012,8 @@ where
             .map(read_state_from_snapshot)
             .collect::<crate::ImResult<Vec<_>>>()?;
         let now = unix_time_i64();
+        let lane_states =
+            lane_states_from_bootstrap(&binding.owner_identity_id, &bootstrap.lane_bootstrap);
         let state = crate::internal::local_state::sync_v2::MessageSyncState {
             owner_identity_id: binding.owner_identity_id.clone(),
             account_id: binding.account_id.clone(),
@@ -1039,11 +1047,32 @@ where
                 state: state.clone(),
                 groups,
                 read_states,
+                lane_states,
             },
         )
         .await?;
         Ok(state)
     }
+}
+
+fn lane_states_from_bootstrap(
+    owner_identity_id: &str,
+    bootstrap: &crate::internal::wire::sync_v2::SyncLaneBootstrapV3,
+) -> Vec<crate::internal::local_state::sync_v2::LaneSyncState> {
+    bootstrap
+        .lanes
+        .iter()
+        .filter(|(lane, _)| bootstrap.capabilities.contains(lane))
+        .map(
+            |(lane, state)| crate::internal::local_state::sync_v2::LaneSyncState {
+                owner_identity_id: owner_identity_id.to_owned(),
+                lane: *lane,
+                stream_epoch: state.cursor.stream_epoch.clone(),
+                scan_seq: state.cursor.scan_seq.clone(),
+                committed_seq: state.committed_seq.clone(),
+            },
+        )
+        .collect()
 }
 
 fn direct_peer_dids_from_events(

@@ -124,6 +124,34 @@ CREATE TABLE IF NOT EXISTS message_sync_state (
 CREATE UNIQUE INDEX IF NOT EXISTS message_sync_state_account_device_idx
 ON message_sync_state(account_id, device_id);
 
+CREATE TABLE IF NOT EXISTS lane_sync_state (
+    owner_identity_id  TEXT NOT NULL,
+    lane               TEXT NOT NULL,
+    stream_epoch       TEXT NOT NULL,
+    scan_seq           TEXT NOT NULL,
+    committed_seq      TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, lane),
+    CHECK (lane IN ('p5_device', 'p6_group')),
+    CHECK (
+        stream_epoch <> ''
+        AND stream_epoch NOT GLOB '*[^0-9]*'
+        AND substr(stream_epoch, 1, 1) <> '0'
+    ),
+    CHECK (
+        scan_seq <> ''
+        AND scan_seq NOT GLOB '*[^0-9]*'
+        AND (scan_seq = '0' OR substr(scan_seq, 1, 1) <> '0')
+    ),
+    CHECK (
+        committed_seq <> ''
+        AND committed_seq NOT GLOB '*[^0-9]*'
+        AND (committed_seq = '0' OR substr(committed_seq, 1, 1) <> '0')
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS sync_applied_events (
     owner_identity_id  TEXT NOT NULL,
     event_id           TEXT NOT NULL,
@@ -272,6 +300,15 @@ pub(crate) struct MessageSyncState {
     pub(crate) updated_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaneSyncState {
+    pub(crate) owner_identity_id: String,
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) stream_epoch: String,
+    pub(crate) scan_seq: String,
+    pub(crate) committed_seq: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageSyncBootstrapReason {
     MissingState,
@@ -364,6 +401,7 @@ pub(crate) struct BootstrapApplyInputV2 {
     pub(crate) state: MessageSyncState,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
     pub(crate) read_states: Vec<ReadStateApplyV2>,
+    pub(crate) lane_states: Vec<LaneSyncState>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -817,6 +855,11 @@ pub(crate) fn apply_bootstrap_v2(
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
     upsert_identity_account_binding(&transaction, &input.binding)?;
+    replace_lane_sync_states_in_transaction(
+        &transaction,
+        &input.binding.owner_identity_id,
+        &input.lane_states,
+    )?;
     for group in input.groups {
         validate_group_owner(&group, &input.binding.owner_identity_id)?;
         super::groups::upsert_group(&transaction, group)?;
@@ -832,6 +875,188 @@ pub(crate) fn apply_bootstrap_v2(
     upsert_bootstrap_state(&transaction, &input.state)?;
     complete_active_recovery(&transaction, &input.state)?;
     transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn replace_lane_sync_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+    states: &[LaneSyncState],
+) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    replace_lane_sync_states_in_transaction(&transaction, owner_identity_id, states)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn replace_lane_sync_states_in_transaction(
+    connection: &Connection,
+    owner_identity_id: &str,
+    states: &[LaneSyncState],
+) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if load_identity_account_binding(connection, owner_identity_id)?.is_none() {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane sync state requires an active account binding".to_owned(),
+        });
+    }
+    let mut lanes = BTreeSet::new();
+    for state in states {
+        validate_lane_sync_state(state)?;
+        if state.owner_identity_id != owner_identity_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "lane sync state belongs to another owner".to_owned(),
+            });
+        }
+        if !lanes.insert(state.lane) {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "lane bootstrap contains a duplicate lane",
+            ));
+        }
+    }
+    connection
+        .execute(
+            "DELETE FROM lane_sync_state WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    for state in states {
+        connection
+            .execute(
+                r#"
+INSERT INTO lane_sync_state(
+    owner_identity_id, lane, stream_epoch, scan_seq, committed_seq
+) VALUES (?1, ?2, ?3, ?4, ?5)"#,
+                params![
+                    state.owner_identity_id,
+                    state.lane.as_str(),
+                    state.stream_epoch,
+                    state.scan_seq,
+                    state.committed_seq,
+                ],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn load_lane_sync_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<LaneSyncState>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if load_identity_account_binding(connection, owner_identity_id)?.is_none() {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane sync state requires an active account binding".to_owned(),
+        });
+    }
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT owner_identity_id, lane, stream_epoch, scan_seq, committed_seq
+FROM lane_sync_state
+WHERE owner_identity_id = ?1
+ORDER BY CASE lane WHEN 'p5_device' THEN 1 ELSE 2 END"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut states = Vec::new();
+    for row in rows {
+        let (owner_identity_id, lane, stream_epoch, scan_seq, committed_seq) =
+            row.map_err(super::local_state_unavailable)?;
+        let state = LaneSyncState {
+            owner_identity_id,
+            lane: parse_lane_name(&lane)?,
+            stream_epoch,
+            scan_seq,
+            committed_seq,
+        };
+        validate_lane_sync_state(&state)?;
+        states.push(state);
+    }
+    Ok(states)
+}
+
+pub(crate) fn advance_lane_sync_state(
+    connection: &Connection,
+    next: &LaneSyncState,
+) -> crate::ImResult<()> {
+    validate_lane_sync_state(next)?;
+    let current = load_lane_sync_states(connection, &next.owner_identity_id)?
+        .into_iter()
+        .find(|state| state.lane == next.lane)
+        .ok_or_else(|| sync_error("SYNC_LANE_BOOTSTRAP_REQUIRED", "lane state is missing"))?;
+    if current.stream_epoch != next.stream_epoch {
+        return Err(sync_error(
+            "SYNC_LANE_EPOCH_MISMATCH",
+            "lane stream epoch does not match the bootstrapped cursor",
+        ));
+    }
+    if compare_decimal(&next.scan_seq, &current.scan_seq)? == std::cmp::Ordering::Less
+        || compare_decimal(&next.committed_seq, &current.committed_seq)? == std::cmp::Ordering::Less
+    {
+        return Err(sync_error(
+            "SYNC_CURSOR_REGRESSION",
+            "lane cursor and committed watermark cannot move backwards",
+        ));
+    }
+    let updated = connection
+        .execute(
+            r#"
+UPDATE lane_sync_state
+SET scan_seq = ?3, committed_seq = ?4
+WHERE owner_identity_id = ?1 AND lane = ?2 AND stream_epoch = ?5"#,
+            params![
+                next.owner_identity_id,
+                next.lane.as_str(),
+                next.scan_seq,
+                next.committed_seq,
+                next.stream_epoch,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane sync cursor changed while it was being advanced".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_lane_sync_state(state: &LaneSyncState) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &state.owner_identity_id)?;
+    validate_positive_decimal("stream_epoch", &state.stream_epoch)?;
+    validate_decimal("scan_seq", &state.scan_seq)?;
+    validate_decimal("committed_seq", &state.committed_seq)?;
+    if compare_decimal(&state.committed_seq, &state.scan_seq)? == std::cmp::Ordering::Greater {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "lane committed watermark cannot exceed its scan cursor",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_lane_name(value: &str) -> crate::ImResult<crate::internal::wire::sync_v2::SyncLaneV3> {
+    match value {
+        "p5_device" => Ok(crate::internal::wire::sync_v2::SyncLaneV3::P5Device),
+        "p6_group" => Ok(crate::internal::wire::sync_v2::SyncLaneV3::P6Group),
+        _ => Err(sync_error(
+            "SYNC_LOCAL_STATE_CORRUPT",
+            "stored lane name is invalid",
+        )),
+    }
 }
 
 pub(crate) fn apply_realtime_message_v3(
@@ -5200,6 +5425,7 @@ mod tests {
                 state,
                 groups: vec![invalid_group],
                 read_states: Vec::new(),
+                lane_states: Vec::new(),
             }
         )
         .is_err());
@@ -7243,6 +7469,103 @@ mod tests {
                 .unwrap()
                 .status,
             "completed"
+        );
+    }
+
+    #[test]
+    fn lane_sync_state_is_owner_scoped_canonical_and_monotonic() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let states = vec![
+            LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "36".to_owned(),
+                committed_seq: "36".to_owned(),
+            },
+            LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                stream_epoch: "42".to_owned(),
+                scan_seq: "58".to_owned(),
+                committed_seq: "57".to_owned(),
+            },
+        ];
+        replace_lane_sync_states(&db, &binding.owner_identity_id, &states).unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            states
+        );
+
+        let mut next = states[0].clone();
+        next.scan_seq = "37".to_owned();
+        next.committed_seq = "37".to_owned();
+        advance_lane_sync_state(&db, &next).unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0],
+            next
+        );
+
+        let mut regression = next.clone();
+        regression.scan_seq = "36".to_owned();
+        regression.committed_seq = "36".to_owned();
+        assert!(advance_lane_sync_state(&db, &regression).is_err());
+        let mut invalid = next;
+        invalid.scan_seq = "038".to_owned();
+        assert!(advance_lane_sync_state(&db, &invalid).is_err());
+    }
+
+    #[test]
+    fn lane_bootstrap_replaces_capability_set_and_cascades_with_owner() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+        )
+        .unwrap();
+        replace_lane_sync_states(&db, &binding.owner_identity_id, &[]).unwrap();
+        assert!(load_lane_sync_states(&db, &binding.owner_identity_id)
+            .unwrap()
+            .is_empty());
+
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                stream_epoch: "42".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM identity_account_bindings WHERE owner_identity_id = ?1",
+            [&binding.owner_identity_id],
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM lane_sync_state", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
         );
     }
 }

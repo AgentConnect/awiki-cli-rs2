@@ -160,6 +160,19 @@ enum LocalStateCommand {
         input: super::sync_v2::DeltaApplyInputV2,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
     },
+    LoadLaneSyncStates {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::LaneSyncState>>>,
+    },
+    ReplaceLaneSyncStates {
+        owner_identity_id: String,
+        states: Vec<super::sync_v2::LaneSyncState>,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    AdvanceLaneSyncState {
+        state: super::sync_v2::LaneSyncState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     ApplyRealtimeMessageV3 {
         input: super::sync_v2::RealtimeMessageApplyInputV3,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::RealtimeMessageApplyOutcomeV3>>,
@@ -978,6 +991,44 @@ impl LocalStateDb {
     ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDeltaV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_lane_sync_states(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Vec<super::sync_v2::LaneSyncState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadLaneSyncStates {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn replace_lane_sync_states(
+        &self,
+        owner_identity_id: impl Into<String>,
+        states: Vec<super::sync_v2::LaneSyncState>,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ReplaceLaneSyncStates {
+            owner_identity_id: owner_identity_id.into(),
+            states,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn advance_lane_sync_state(
+        &self,
+        state: super::sync_v2::LaneSyncState,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::AdvanceLaneSyncState { state, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -2252,6 +2303,29 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDeltaV2 { input, reply } => {
                 let result = super::sync_v2::apply_delta_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadLaneSyncStates {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_lane_sync_states(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ReplaceLaneSyncStates {
+                owner_identity_id,
+                states,
+                reply,
+            } => {
+                let result = super::sync_v2::replace_lane_sync_states(
+                    &connection,
+                    &owner_identity_id,
+                    &states,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::AdvanceLaneSyncState { state, reply } => {
+                let result = super::sync_v2::advance_lane_sync_state(&connection, &state);
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplyRealtimeMessageV3 { input, reply } => {
