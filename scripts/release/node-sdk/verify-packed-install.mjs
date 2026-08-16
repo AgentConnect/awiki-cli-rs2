@@ -58,6 +58,9 @@ try {
     : `
       const client = await openImCoreNodeClient(options)
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
+      const cleared = await client.clearLocalData()
+      if (cleared?.cleared !== true) throw new Error('expected initialized Rust state to be cleared')
+      if (await client.getDefaultIdentity() !== null) throw new Error('expected a usable empty client after clear')
       await client.close()
       console.log('packed-smoke-ok')
     `
