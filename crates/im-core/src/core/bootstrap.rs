@@ -138,6 +138,19 @@ impl<'a> CoreBootstrap<'a> {
         })
     }
 
+    /// Stop the local-state actor and wait until its SQLite handle is released.
+    ///
+    /// This is a terminal lifecycle hook for hosts that must remove the local
+    /// state files. The owning [`super::ImCore`] must be dropped afterwards.
+    #[doc(hidden)]
+    pub async fn shutdown_local_state_async(&self) -> crate::ImResult<()> {
+        #[cfg(feature = "sqlite")]
+        if let Some(db) = self.core.inner().local_state_db.get() {
+            db.shutdown().await?;
+        }
+        Ok(())
+    }
+
     pub fn migrate_local_state(&self) -> crate::ImResult<MigrationReport> {
         #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
         return Err(crate::ImError::unsupported("sync-bootstrap-local-state"));

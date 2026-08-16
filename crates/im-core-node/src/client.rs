@@ -656,6 +656,10 @@ impl NativeImCoreNodeClient {
             state,
         } = environment;
         drop(client);
+        core.bootstrap()
+            .shutdown_local_state_async()
+            .await
+            .map_err(SafeError::from_im)?;
         drop(core);
 
         let (state, cleared) = self

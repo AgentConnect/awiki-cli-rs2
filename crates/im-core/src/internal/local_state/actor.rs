@@ -1947,6 +1947,7 @@ fn run_actor(
         }
     };
 
+    let mut shutdown_reply = None;
     while let Some(command) = receiver.blocking_recv() {
         match command {
             LocalStateCommand::CurrentSchemaVersion { reply } => {
@@ -2986,10 +2987,14 @@ fn run_actor(
                 let _ = reply.send(result);
             }
             LocalStateCommand::Shutdown { reply } => {
-                let _ = reply.send(());
+                shutdown_reply = Some(reply);
                 break;
             }
         }
+    }
+    drop(connection);
+    if let Some(reply) = shutdown_reply {
+        let _ = reply.send(());
     }
 }
 
