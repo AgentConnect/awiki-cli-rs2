@@ -76,6 +76,55 @@ impl StateRoot {
     pub(crate) fn harden_permissions(&self) -> SafeResult<()> {
         harden_tree(&self.root)
     }
+
+    pub(crate) fn clear_owned_data(&self) -> SafeResult<bool> {
+        let root_metadata = fs::symlink_metadata(&self.root).map_err(|_| SafeError::internal())?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err(SafeError::internal());
+        }
+        let lock_path = self.root.join(".awiki-im-core-node.lock");
+        let lock_metadata = fs::symlink_metadata(lock_path).map_err(|_| SafeError::internal())?;
+        if lock_metadata.file_type().is_symlink() || !lock_metadata.is_file() {
+            return Err(SafeError::internal());
+        }
+        let mut cleared = false;
+        for relative in ["identities", "local", "cache", "tmp"] {
+            let path = self.root.join(relative);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(SafeError::internal());
+                }
+                Ok(_) => {
+                    if fs::read_dir(&path)
+                        .map_err(|_| SafeError::internal())?
+                        .next()
+                        .is_some()
+                    {
+                        cleared = true;
+                    }
+                    fs::remove_dir_all(&path).map_err(|_| SafeError::internal())?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(SafeError::internal()),
+            }
+            create_private_dir(&path)?;
+        }
+
+        let metadata_path = self.root.join("compatibility.json");
+        match fs::symlink_metadata(&metadata_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(SafeError::internal());
+            }
+            Ok(_) => {
+                fs::remove_file(&metadata_path).map_err(|_| SafeError::internal())?;
+                cleared = true;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SafeError::internal()),
+        }
+        self.harden_permissions()?;
+        Ok(cleared)
+    }
 }
 
 #[derive(Debug)]

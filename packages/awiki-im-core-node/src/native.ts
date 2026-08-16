@@ -32,6 +32,7 @@ export interface NativeImCoreNodeClient {
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: Omit<SendAttachmentInput, 'bytes'> & { readonly bytes: Buffer }): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<Omit<NodeDownload, 'bytes'> & { readonly bytes: Buffer }>
+  clearLocalData(): Promise<{ readonly cleared: boolean }>
   close(): Promise<void>
 }
 

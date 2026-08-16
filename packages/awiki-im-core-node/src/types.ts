@@ -204,6 +204,8 @@ export interface ImCoreNodeClient {
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: SendAttachmentInput): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload>
+  /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
+  clearLocalData(): Promise<{ readonly cleared: boolean }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */
   close(): Promise<void>
 }

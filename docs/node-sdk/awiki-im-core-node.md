@@ -20,6 +20,7 @@
 | 文本 | `sendText` | `messages().send_conversation_text_async` |
 | 单附件发送 | `sendAttachment` | `attachments().send_conversation_async` |
 | 附件下载 | `downloadAttachment` | `attachments().download_conversation_async` |
+| 清空本地状态 | `clearLocalData` | Node 环境生命周期拥有的 state root |
 
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
 import API；TypeScript SDK 的 `identity.json` 不会被读取或转换。
@@ -30,8 +31,11 @@ import API；TypeScript SDK 的 `identity.json` 不会被读取或转换。
 identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不在 Node event loop
 上执行阻塞网络或数据库操作。
 
-生命周期固定为 `open → closing → closed`：
+普通关闭的生命周期固定为 `open → closing → closed`：
 
+- `clearLocalData()` 在持有 mutation/write gate 和 state-root 锁期间等待既有操作退出，释放
+  Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp` 与兼容元数据，然后重新初始化
+  空 Core；client 保持 open，同一 state root 不会暴露给其他实例；
 - `close()` 进入 closing 后立即拒绝新任务；
 - sync、下载等可安全取消的任务收到取消信号；
 - 已接受任务释放读 gate 后才销毁 Core 并释放 state-root 锁；
@@ -53,6 +57,9 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 `stateRoot` 必须为绝对路径并由单个进程/实例独占。Unix 目录权限收紧为 `0700`、文件为
 `0600`；冲突返回 `state_in_use`，不会创建临时身份。无秘密的 `compatibility.json` 只保存
 identity ID 到注册 Unix 毫秒的映射，使 `registeredAtMs` 重启稳定。
+
+`clearLocalData()` 是不可撤销的本地操作，只清理上述 SDK-owned 路径，不删除远端账号或 Handle，
+不跟随被替换为符号链接的运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。
 
 Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件

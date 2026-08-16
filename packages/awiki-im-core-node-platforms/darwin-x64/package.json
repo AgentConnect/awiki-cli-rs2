@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node-darwin-x64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS Intel native addon for @awiki/im-core-node",
   "type": "commonjs",
   "license": "AGPL-3.0-only",

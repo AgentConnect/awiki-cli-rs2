@@ -4,6 +4,7 @@ use napi_derive::napi;
 
 use crate::error::{SafeError, SafeResult};
 
+#[derive(Clone)]
 #[napi(object)]
 pub struct NodeOpenOptions {
     pub state_root: String,
@@ -15,6 +16,12 @@ pub struct NodeOpenOptions {
     pub anp_service_did: Option<String>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeClearLocalDataResult {
+    pub cleared: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

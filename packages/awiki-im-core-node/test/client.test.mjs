@@ -32,6 +32,19 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
   )
 })
 
+test('clears SDK-owned local data and keeps the client usable', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-clear-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const client = await openImCoreNodeClient(options(root))
+  t.after(() => client.close())
+  await writeFile(join(root, 'cache', 'owned.bin'), 'private', { mode: 0o600 })
+
+  assert.deepEqual(await client.clearLocalData(), { cleared: true })
+  await assert.rejects(readFile(join(root, 'cache', 'owned.bin')), { code: 'ENOENT' })
+  assert.equal(await client.getDefaultIdentity(), null)
+  assert.deepEqual(await client.clearLocalData(), { cleared: true })
+})
+
 test('fails loudly when another process owns the same state root', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-lock-'))
   t.after(() => rm(root, { recursive: true, force: true }))

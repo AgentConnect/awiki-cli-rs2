@@ -17,6 +17,7 @@ const client = await openImCoreNodeClient({
 try {
   const identity = await client.getDefaultIdentity()
   const conversations = identity ? await client.listConversations() : undefined
+  // 经产品层显式二次确认后，可调用 await client.clearLocalData()
 }
 finally {
   await client.close()
@@ -30,6 +31,8 @@ finally {
 - 所有 I/O 都是 Promise；Rust async 任务不会阻塞 Node event loop。
 - `close()` 开始后拒绝新任务，取消可安全取消的任务，等待已接受任务释放状态，再释放
   state-root 文件锁；重复调用是幂等的。
+- `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
+  兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
 - JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
 
 ## state root

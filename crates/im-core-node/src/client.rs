@@ -33,6 +33,7 @@ struct ClientInner {
     closed: Notify,
     operation_timeout: Duration,
     sync_timeout: Duration,
+    options: NodeOpenOptions,
 }
 
 struct OperationGuard<'a> {
@@ -639,6 +640,41 @@ impl NativeImCoreNodeClient {
     pub async fn close(&self) -> napi::Result<()> {
         napi_result(self.inner.close().await)
     }
+
+    #[napi(catch_unwind)]
+    pub async fn clear_local_data(&self) -> napi::Result<NodeClearLocalDataResult> {
+        napi_result(self.clear_local_data_inner().await)
+    }
+
+    async fn clear_local_data_inner(&self) -> SafeResult<NodeClearLocalDataResult> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut slot = self.inner.write_operation().await?;
+        let environment = slot.take().ok_or_else(SafeError::closed)?;
+        let Environment {
+            core,
+            client,
+            state,
+        } = environment;
+        drop(client);
+        drop(core);
+
+        let (state, cleared) = self
+            .inner
+            .wait_safe(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let cleared = state.clear_owned_data()?;
+                        Ok((state, cleared))
+                    })
+                    .await
+                    .map_err(|_| SafeError::internal())?
+                },
+                self.inner.operation_timeout,
+            )
+            .await?;
+        *slot = Some(initialize_environment(self.inner.options.clone(), state).await?);
+        Ok(NodeClearLocalDataResult { cleared })
+    }
 }
 
 impl Drop for NativeImCoreNodeClient {
@@ -660,6 +696,25 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
     let state = tokio::task::spawn_blocking(move || StateRoot::open(PathBuf::from(state_root)))
         .await
         .map_err(|_| SafeError::internal())??;
+    let environment = initialize_environment(options.clone(), state).await?;
+    Ok(NativeImCoreNodeClient {
+        inner: Arc::new(ClientInner {
+            lifecycle: AtomicU8::new(LIFECYCLE_OPEN),
+            environment: RwLock::new(Some(environment)),
+            mutation: tokio::sync::Mutex::new(()),
+            cancellation: CancellationToken::new(),
+            closed: Notify::new(),
+            operation_timeout,
+            sync_timeout,
+            options,
+        }),
+    })
+}
+
+async fn initialize_environment(
+    options: NodeOpenOptions,
+    state: StateRoot,
+) -> SafeResult<Environment> {
     let paths = state.paths();
     let config = core_config(options)?;
     let core = im_core::ImCore::open_with_options(
@@ -687,20 +742,10 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
         ),
         None => None,
     };
-    Ok(NativeImCoreNodeClient {
-        inner: Arc::new(ClientInner {
-            lifecycle: AtomicU8::new(LIFECYCLE_OPEN),
-            environment: RwLock::new(Some(Environment {
-                core,
-                client,
-                state,
-            })),
-            mutation: tokio::sync::Mutex::new(()),
-            cancellation: CancellationToken::new(),
-            closed: Notify::new(),
-            operation_timeout,
-            sync_timeout,
-        }),
+    Ok(Environment {
+        core,
+        client,
+        state,
     })
 }
 
@@ -873,6 +918,24 @@ mod tests {
         drop(operation);
         close.await.unwrap().unwrap();
         open(options(directory.path())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn clear_local_data_removes_owned_state_and_keeps_the_client_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        std::fs::write(directory.path().join("cache/owned.bin"), b"private").unwrap();
+        std::fs::write(directory.path().join("compatibility.json"), b"{}").unwrap();
+
+        assert!(client.clear_local_data_inner().await.unwrap().cleared);
+        assert!(!directory.path().join("cache/owned.bin").exists());
+        assert!(!directory.path().join("compatibility.json").exists());
+        assert_eq!(client.get_default_identity_inner().await.unwrap(), None);
+        assert!(client.clear_local_data_inner().await.unwrap().cleared);
+        assert_eq!(
+            open(options(directory.path())).await.err().unwrap().code,
+            "state_in_use"
+        );
     }
 
     #[test]

@@ -66,6 +66,11 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "AttachmentService::download_conversation_async",
     },
     PublicParity {
+        capability: "local_reset",
+        node_method: "clearLocalData",
+        core_facade: "environment lifecycle-owned state root",
+    },
+    PublicParity {
         capability: "lifecycle",
         node_method: "close",
         core_facade: "environment lifecycle gate",
@@ -87,6 +92,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "text",
         "attachment_send",
         "attachment_download",
+        "local_reset",
         "lifecycle",
     ];
     assert_eq!(

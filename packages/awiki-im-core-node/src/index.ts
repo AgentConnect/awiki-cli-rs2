@@ -111,6 +111,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return { attachment: value.attachment, bytes: value.bytes }
   }
 
+  public clearLocalData(): Promise<{ readonly cleared: boolean }> {
+    return call(() => this.native.clearLocalData())
+  }
+
   public close(): Promise<void> {
     return call(() => this.native.close())
   }

@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "awiki-im-core",
  "base64",
