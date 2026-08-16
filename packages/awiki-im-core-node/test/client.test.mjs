@@ -12,6 +12,9 @@ import { nativePlatformPackages, resolveNativeTarget } from '../dist/targets.js'
 function options(stateRoot) {
   return {
     stateRoot,
+    vaultRootKey: Buffer.alloc(32, 7),
+    vaultWorkspaceId: 'im-core-node-tests',
+    vaultDeviceId: 'test-device',
     serviceBaseUrl: 'https://example.test',
     didDomain: 'example.test',
     operationTimeoutMs: 1000,
@@ -51,10 +54,13 @@ test('fails loudly when another process owns the same state root', async t => {
   const client = await openImCoreNodeClient(options(root))
   t.after(() => client.close())
   const moduleUrl = pathToFileURL(join(import.meta.dirname, '../dist/index.js')).href
+  const childOptions = { ...options(root), vaultRootKey: [...options(root).vaultRootKey] }
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import { openImCoreNodeClient } from ${JSON.stringify(moduleUrl)}
     try {
-      await openImCoreNodeClient(${JSON.stringify(options(root))})
+      const options = ${JSON.stringify(childOptions)}
+      options.vaultRootKey = Buffer.from(options.vaultRootKey)
+      await openImCoreNodeClient(options)
       console.log(JSON.stringify({ code: 'unexpected_success' }))
       process.exitCode = 2
     }
@@ -73,9 +79,12 @@ test('a normal open and close lets Node exit without process.exit()', async t =>
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-exit-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const moduleUrl = pathToFileURL(join(import.meta.dirname, '../dist/index.js')).href
+  const childOptions = { ...options(root), vaultRootKey: [...options(root).vaultRootKey] }
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import { openImCoreNodeClient } from ${JSON.stringify(moduleUrl)}
-    const client = await openImCoreNodeClient(${JSON.stringify(options(root))})
+    const options = ${JSON.stringify(childOptions)}
+    options.vaultRootKey = Buffer.from(options.vaultRootKey)
+    const client = await openImCoreNodeClient(options)
     await client.close()
     console.log('closed')
   `], { encoding: 'utf8', timeout: 10000 })
@@ -105,6 +114,21 @@ test('returns a stable redacted error for an invalid state root', async () => {
       && error.message === error.safeMessage
       && !error.message.includes('token-secret'),
   )
+})
+
+test('rejects a malformed host vault root key without exposing it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-vault-key-'))
+  try {
+    await assert.rejects(
+      openImCoreNodeClient({ ...options(root), vaultRootKey: Buffer.from('private') }),
+      error => error instanceof ImCoreNodeError
+        && error.code === 'invalid_input'
+        && !error.message.includes('private'),
+    )
+  }
+  finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('resolves libc explicitly and has no musl or TypeScript fallback', () => {

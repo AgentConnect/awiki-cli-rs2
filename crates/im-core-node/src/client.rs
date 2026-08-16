@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +19,17 @@ const LIFECYCLE_CLOSED: u8 = 2;
 const DEFAULT_OPERATION_TIMEOUT_MS: u32 = 120_000;
 const DEFAULT_SYNC_TIMEOUT_MS: u32 = 15_000;
 const MAX_TIMEOUT_MS: u32 = 600_000;
+const LIST_CONVERSATIONS_SYNC_REASON: &str = "foreground_reconcile";
+
+type BoxImFuture<'a, T> = Pin<Box<dyn Future<Output = im_core::ImResult<T>> + Send + 'a>>;
+
+// Keep deep Core futures behind dynamic dispatch before N-API adds timeout/select wrappers.
+fn box_im_future<'a, T, F>(future: F) -> BoxImFuture<'a, T>
+where
+    F: Future<Output = im_core::ImResult<T>> + Send + 'a,
+{
+    Box::pin(future)
+}
 
 struct Environment {
     core: im_core::ImCore,
@@ -423,7 +435,7 @@ impl NativeImCoreNodeClient {
                 client
                     .messages()
                     .sync_now_async(im_core::messages::MessageSyncRequest {
-                        reason: "node_list_conversations".to_owned(),
+                        reason: LIST_CONVERSATIONS_SYNC_REASON.to_owned(),
                         limit: Some(100),
                     }),
                 self.inner.sync_timeout,
@@ -534,24 +546,23 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
         let conversation_id = input.conversation_id;
+        let messages = client.messages();
+        let send = box_im_future(
+            messages.send_conversation_text_async(im_core::messages::SendConversationTextRequest {
+                conversation: im_core::messages::ConversationReadRef::new(&conversation_id)
+                    .map_err(SafeError::from_im)?,
+                text: input.text,
+                markdown: input.markdown.unwrap_or(false),
+                security: im_core::messages::MessageSecurityMode::DefaultPlain,
+                client_message_id: optional_message_id(input.client_message_id)?,
+                idempotency_key: non_empty_optional(input.idempotency_key),
+                wait_for_final_acceptance: false,
+                delegated_signing: None,
+            }),
+        );
         let result = self
             .inner
-            .wait_im(
-                client.messages().send_conversation_text_async(
-                    im_core::messages::SendConversationTextRequest {
-                        conversation: im_core::messages::ConversationReadRef::new(&conversation_id)
-                            .map_err(SafeError::from_im)?,
-                        text: input.text,
-                        markdown: input.markdown.unwrap_or(false),
-                        security: im_core::messages::MessageSecurityMode::DefaultPlain,
-                        client_message_id: optional_message_id(input.client_message_id)?,
-                        idempotency_key: non_empty_optional(input.idempotency_key),
-                        wait_for_final_acceptance: false,
-                        delegated_signing: None,
-                    },
-                ),
-                self.inner.operation_timeout,
-            )
+            .wait_im(send, self.inner.operation_timeout)
             .await?;
         crate::dto::sent_message(result.message, &conversation_id)
     }
@@ -571,30 +582,31 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
         let conversation_id = input.conversation_id;
+        let attachments = client.attachments();
+        let send = box_im_future(
+            attachments.send_conversation_async(
+                im_core::attachments::SendConversationAttachmentRequest {
+                    conversation: im_core::messages::ConversationReadRef::new(&conversation_id)
+                        .map_err(SafeError::from_im)?,
+                    input: im_core::attachments::AttachmentInput::Bytes {
+                        filename: Some(input.file_name.clone()),
+                        mime_type: Some(input.mime_type.clone()),
+                        bytes: input.bytes.to_vec(),
+                    },
+                    caption: non_empty_optional(input.caption),
+                    mention_payload: None,
+                    mime_type: Some(input.mime_type),
+                    filename: Some(input.file_name),
+                    security: im_core::messages::MessageSecurityMode::DefaultPlain,
+                    client_message_id: optional_message_id(input.client_message_id)?,
+                    idempotency_key: non_empty_optional(input.idempotency_key),
+                    wait_for_final_acceptance: false,
+                },
+            ),
+        );
         let result = self
             .inner
-            .wait_im(
-                client.attachments().send_conversation_async(
-                    im_core::attachments::SendConversationAttachmentRequest {
-                        conversation: im_core::messages::ConversationReadRef::new(&conversation_id)
-                            .map_err(SafeError::from_im)?,
-                        input: im_core::attachments::AttachmentInput::Bytes {
-                            filename: Some(input.file_name.clone()),
-                            mime_type: Some(input.mime_type.clone()),
-                            bytes: input.bytes.to_vec(),
-                        },
-                        caption: non_empty_optional(input.caption),
-                        mention_payload: None,
-                        mime_type: Some(input.mime_type),
-                        filename: Some(input.file_name),
-                        security: im_core::messages::MessageSecurityMode::DefaultPlain,
-                        client_message_id: optional_message_id(input.client_message_id)?,
-                        idempotency_key: non_empty_optional(input.idempotency_key),
-                        wait_for_final_acceptance: false,
-                    },
-                ),
-                self.inner.operation_timeout,
-            )
+            .wait_im(send, self.inner.operation_timeout)
             .await?;
         crate::dto::uploaded_attachment(result, &conversation_id)
     }
@@ -614,25 +626,23 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
         let timeout = optional_timeout(input.timeout_ms, self.inner.operation_timeout)?;
-        let result = self
-            .inner
-            .wait_im(
-                client.attachments().download_conversation_async(
-                    im_core::attachments::DownloadConversationAttachmentRequest {
-                        conversation: im_core::messages::ConversationReadRef::new(
-                            input.conversation_id,
-                        )
+        let attachments = client.attachments();
+        let download = box_im_future(
+            attachments.download_conversation_async(
+                im_core::attachments::DownloadConversationAttachmentRequest {
+                    conversation: im_core::messages::ConversationReadRef::new(
+                        input.conversation_id,
+                    )
+                    .map_err(SafeError::from_im)?,
+                    message_id: im_core::ids::MessageId::parse(input.message_id)
                         .map_err(SafeError::from_im)?,
-                        message_id: im_core::ids::MessageId::parse(input.message_id)
-                            .map_err(SafeError::from_im)?,
-                        attachment_id: non_empty_optional(input.attachment_id),
-                        destination: im_core::attachments::AttachmentDestination::Memory,
-                        overwrite: false,
-                    },
-                ),
-                timeout,
-            )
-            .await?;
+                    attachment_id: non_empty_optional(input.attachment_id),
+                    destination: im_core::attachments::AttachmentDestination::Memory,
+                    overwrite: false,
+                },
+            ),
+        );
+        let result = self.inner.wait_im(download, timeout).await?;
         crate::dto::downloaded_attachment(result)
     }
 
@@ -720,14 +730,11 @@ async fn initialize_environment(
     state: StateRoot,
 ) -> SafeResult<Environment> {
     let paths = state.paths();
-    let config = core_config(options)?;
-    let core = im_core::ImCore::open_with_options(
-        config,
-        paths,
-        im_core::ImCoreOpenOptions::file_compat(),
-    )
-    .await
-    .map_err(SafeError::from_im)?;
+    let config = core_config(&options)?;
+    let core =
+        im_core::ImCore::open_with_options(config, paths, core_open_options(&options, &state)?)
+            .await
+            .map_err(SafeError::from_im)?;
     core.bootstrap()
         .initialize_local_state_async()
         .await
@@ -753,17 +760,40 @@ async fn initialize_environment(
     })
 }
 
-fn core_config(options: NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
+fn core_open_options(
+    options: &NodeOpenOptions,
+    state: &StateRoot,
+) -> SafeResult<im_core::ImCoreOpenOptions> {
+    let root_key: [u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN] = options
+        .vault_root_key
+        .as_ref()
+        .try_into()
+        .map_err(|_| SafeError::new("invalid_input", "The IM request is invalid.", false))?;
+    Ok(
+        im_core::ImCoreOpenOptions::default().with_identity_secret_vault(
+            im_core::IdentitySecretStoragePolicy::VaultRequired,
+            im_core::ImCoreSecretVaultOptions::new(
+                im_core::vault::DeviceVaultRootKey::from_bytes(root_key),
+                state.vault_dir(),
+                options.vault_workspace_id.clone(),
+                options.vault_device_id.clone(),
+            ),
+        ),
+    )
+}
+
+fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
     let mut config = im_core::ImCoreConfig::new(
-        im_core::ServiceEndpoint::parse(options.service_base_url).map_err(SafeError::from_im)?,
-        options.did_domain,
+        im_core::ServiceEndpoint::parse(&options.service_base_url).map_err(SafeError::from_im)?,
+        options.did_domain.clone(),
     )
     .map_err(SafeError::from_im)?;
-    config.user_service_endpoint = optional_endpoint(options.user_service_endpoint)?;
-    config.message_service_endpoint = optional_endpoint(options.message_service_endpoint)?;
-    config.anp_service_endpoint = optional_endpoint(options.anp_service_endpoint)?;
+    config.user_service_endpoint = optional_endpoint(options.user_service_endpoint.clone())?;
+    config.message_service_endpoint = optional_endpoint(options.message_service_endpoint.clone())?;
+    config.anp_service_endpoint = optional_endpoint(options.anp_service_endpoint.clone())?;
     config.anp_service_did = options
         .anp_service_did
+        .clone()
         .map(im_core::ids::Did::parse)
         .transpose()
         .map_err(SafeError::from_im)?;
@@ -864,7 +894,7 @@ fn sync_request(
                 .reason
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "node_explicit".to_owned()),
+                .unwrap_or_else(|| "manual_refresh".to_owned()),
             limit: input.limit,
         },
         optional_timeout(input.timeout_ms, default_timeout)?,
@@ -886,6 +916,9 @@ mod tests {
     fn options(state_root: &std::path::Path) -> NodeOpenOptions {
         NodeOpenOptions {
             state_root: state_root.display().to_string(),
+            vault_root_key: vec![7_u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN].into(),
+            vault_workspace_id: "im-core-node-tests".to_owned(),
+            vault_device_id: "test-device".to_owned(),
             service_base_url: "https://example.test".to_owned(),
             did_domain: "example.test".to_owned(),
             user_service_endpoint: None,
@@ -929,10 +962,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let client = open(options(directory.path())).await.unwrap();
         std::fs::write(directory.path().join("cache/owned.bin"), b"private").unwrap();
+        std::fs::write(directory.path().join("vault/owned.bin"), b"private").unwrap();
         std::fs::write(directory.path().join("compatibility.json"), b"{}").unwrap();
 
         assert!(client.clear_local_data_inner().await.unwrap().cleared);
         assert!(!directory.path().join("cache/owned.bin").exists());
+        assert!(!directory.path().join("vault/owned.bin").exists());
         assert!(!directory.path().join("compatibility.json").exists());
         assert_eq!(client.get_default_identity_inner().await.unwrap(), None);
         assert!(client.clear_local_data_inner().await.unwrap().cleared);
@@ -949,6 +984,22 @@ mod tests {
         assert_eq!(
             optional_timeout(Some(10), Duration::from_secs(1)).unwrap(),
             Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn node_sync_defaults_use_core_supported_reasons() {
+        let (request, _) = sync_request(None, Duration::from_secs(1)).unwrap();
+        assert_eq!(request.reason, "manual_refresh");
+        assert_eq!(LIST_CONVERSATIONS_SYNC_REASON, "foreground_reconcile");
+    }
+
+    #[test]
+    fn heavyweight_core_futures_use_a_boxed_dispatch_boundary() {
+        let future: BoxImFuture<'static, ()> = box_im_future(async { Ok(()) });
+        assert_eq!(
+            std::mem::size_of_val(&future),
+            2 * std::mem::size_of::<usize>()
         );
     }
 }

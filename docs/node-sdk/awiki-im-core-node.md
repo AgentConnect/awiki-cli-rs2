@@ -25,6 +25,10 @@
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
 import API；TypeScript SDK 的 `identity.json` 不会被读取或转换。
 
+Node host 必须为每个 state root 提供稳定的 32-byte `vaultRootKey` 以及
+`vaultWorkspaceId` / `vaultDeviceId` 上下文。Facade 只把 host 提供的 key 传给
+`VaultRequired` IM Core，不生成、持久化、记录或返回 root key。
+
 ## 生命周期和并发
 
 每个 `openImCoreNodeClient` 创建一个环境级 `ImCore`，并在已有默认身份时复用一个
@@ -34,7 +38,7 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 普通关闭的生命周期固定为 `open → closing → closed`：
 
 - `clearLocalData()` 在持有 mutation/write gate 和 state-root 锁期间等待既有操作退出，释放
-  Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp` 与兼容元数据，然后重新初始化
+  Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp`、`vault` 与兼容元数据，然后重新初始化
   空 Core；client 保持 open，同一 state root 不会暴露给其他实例；
 - `close()` 进入 closing 后立即拒绝新任务；
 - sync、下载等可安全取消的任务收到取消信号；

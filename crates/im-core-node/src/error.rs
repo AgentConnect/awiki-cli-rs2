@@ -170,7 +170,10 @@ impl SafeError {
 
 fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
     let code = code.unwrap_or_default().trim().to_ascii_lowercase();
-    if matches!(code.as_str(), "invalid_otp" | "otp_invalid") {
+    if matches!(
+        code.as_str(),
+        "invalid_otp" | "otp_invalid" | "identity.registration_verification_invalid"
+    ) {
         return SafeError::new("invalid_otp", "The registration OTP is invalid.", false);
     }
     if matches!(code.as_str(), "otp_expired" | "challenge_expired") {
@@ -190,7 +193,7 @@ fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
             false,
         );
     }
-    if code == "otp_rate_limited" || status == Some(429) {
+    if matches!(code.as_str(), "otp_rate_limited" | "-32005") || status == Some(429) {
         return SafeError::new(
             "rate_limited",
             "The IM service rate-limited the request.",
@@ -257,6 +260,30 @@ mod tests {
         });
         assert_eq!(error.code, "invalid_otp");
         assert_eq!(error.safe_message, "The registration OTP is invalid.");
+    }
+
+    #[test]
+    fn numeric_registration_rate_limit_is_actionable() {
+        let error = SafeError::from_im(im_core::ImError::Service {
+            status_code: None,
+            code: Some("-32005".to_owned()),
+            message: "localized message must not be parsed".to_owned(),
+            data: Some(serde_json::json!({"code": "otp_rate_limited"})),
+        });
+        assert_eq!(error.code, "rate_limited");
+        assert!(error.retryable);
+    }
+
+    #[test]
+    fn registration_verification_code_maps_without_parsing_service_text() {
+        let error = SafeError::from_im(im_core::ImError::Service {
+            status_code: Some(400),
+            code: Some("identity.registration_verification_invalid".to_owned()),
+            message: "localized message must not be parsed".to_owned(),
+            data: Some(serde_json::json!({"retryable": false})),
+        });
+        assert_eq!(error.code, "invalid_otp");
+        assert!(!error.retryable);
     }
 
     #[test]

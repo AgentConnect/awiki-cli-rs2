@@ -2,6 +2,12 @@
 export interface ImCoreNodeOpenOptions {
   /** Absolute, process-exclusive root for identities, SQLite, cache, and metadata. */
   readonly stateRoot: string
+  /** Host-provided 32-byte no-prompt SecretVault root key. Never log this value. */
+  readonly vaultRootKey: Uint8Array
+  /** Stable host-owned SecretVault workspace context. */
+  readonly vaultWorkspaceId: string
+  /** Stable host-owned local SecretVault device context. */
+  readonly vaultDeviceId: string
   readonly serviceBaseUrl: string
   readonly didDomain: string
   readonly userServiceEndpoint?: string

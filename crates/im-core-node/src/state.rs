@@ -29,7 +29,7 @@ impl StateRoot {
             ));
         }
         create_private_dir(&root)?;
-        for relative in ["identities", "local", "cache", "tmp"] {
+        for relative in ["identities", "local", "cache", "tmp", "vault"] {
             create_private_dir(&root.join(relative))?;
         }
 
@@ -73,6 +73,10 @@ impl StateRoot {
         self.metadata.clone()
     }
 
+    pub(crate) fn vault_dir(&self) -> PathBuf {
+        self.root.join("vault")
+    }
+
     pub(crate) fn harden_permissions(&self) -> SafeResult<()> {
         harden_tree(&self.root)
     }
@@ -88,7 +92,7 @@ impl StateRoot {
             return Err(SafeError::internal());
         }
         let mut cleared = false;
-        for relative in ["identities", "local", "cache", "tmp"] {
+        for relative in ["identities", "local", "cache", "tmp", "vault"] {
             let path = self.root.join(relative);
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
