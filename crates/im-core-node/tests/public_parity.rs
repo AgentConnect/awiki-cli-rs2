@@ -56,6 +56,11 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "MessageService::sync_now_async",
     },
     PublicParity {
+        capability: "realtime",
+        node_method: "startRealtime",
+        core_facade: "RealtimeService::start_async / RealtimeSession::subscribe",
+    },
+    PublicParity {
         capability: "conversation",
         node_method: "listConversations",
         core_facade: "MessageService::conversations_async",
@@ -115,6 +120,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "group_create",
         "group_member_add",
         "sync",
+        "realtime",
         "conversation",
         "history",
         "local_timeline",

@@ -1,6 +1,7 @@
 import {
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
+  type RealtimeEvent,
   ImCoreNodeError,
   openImCoreNodeClient,
 } from '../src/index.js'
@@ -31,6 +32,16 @@ void opened.then(async client => {
   localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
   const profiles = await client.hydrateDisplayProfiles({ peers: ['did:wba:awiki.info:user:alice'] })
   profiles satisfies readonly import('../src/index.js').NodeDisplayProfile[]
+  const realtime = await client.startRealtime()
+  const event: RealtimeEvent | null = await realtime.nextEvent()
+  if (event?.kind === 'sync_required') {
+    event.cause satisfies string
+    event.dirty satisfies boolean
+    await client.syncNow({
+      reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',
+    })
+  }
+  await realtime.stop()
   await client.sendAttachment({
     conversationId: 'group:did:example:group',
     fileName: 'bytes.bin',

@@ -221,6 +221,39 @@ pub struct NodeSyncResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
+pub struct NodeRealtimeOptions {
+    /// Bounded native event buffer. Defaults to 128.
+    pub event_buffer: Option<u32>,
+    /// Initial exponential reconnect delay. Defaults to 1 second.
+    pub reconnect_base_delay_ms: Option<u32>,
+    /// Maximum exponential reconnect delay. Defaults to 30 seconds.
+    pub reconnect_max_delay_ms: Option<u32>,
+    /// When absent, reconnect attempts are not artificially capped.
+    pub reconnect_max_attempts: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRealtimeStatus {
+    pub connected: bool,
+    /// `disconnected`, `connecting`, `connected`, `reconnecting`, or `closed`.
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRealtimeEvent {
+    /// `connection_state_changed` or `sync_required`.
+    pub kind: String,
+    pub state: Option<String>,
+    /// High-level scheduling cause. Never a wire event type or checkpoint.
+    pub cause: Option<String>,
+    pub dirty: Option<bool>,
+    pub gap_detected: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
 pub struct NodePageOfConversations {
     pub items: Vec<NodeConversation>,
     pub next_cursor: Option<String>,

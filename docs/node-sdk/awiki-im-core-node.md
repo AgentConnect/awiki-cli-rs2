@@ -18,6 +18,7 @@
 | 创建群聊 | `createGroup` | `groups().create_async` |
 | 添加群成员 | `addGroupMember` | `groups().add_member_async` |
 | 同步 | `syncNow` | `messages().sync_now_async` |
+| Realtime | `startRealtime` | `realtime().start_async` + `RealtimeSession::subscribe` |
 | 会话列表 | `listConversations` | `messages().conversations_async` |
 | 历史 | `getHistory` | `messages().conversation_history_async` |
 | 本地会话首屏 | `getLocalConversationTimeline` | `messages().local_conversation_timeline_async` |
@@ -78,6 +79,11 @@ DID-WBA 等多个 scheme；Rust 只选择唯一且格式合法的 DID-WBA challe
 的 Bearer `401` 会先按指纹清理本次旧 Token，即使随后因为未知签名组件而拒绝重试，也不会在
 下一次请求中继续复用该 Token。
 
+`0.1.3` 首次用 Vault 配置打开 `0.1.2` 的 file-backed state root 时，会调用 Core 的
+`migrate_identity_vault_async`。Core 在原始私钥和 auth compatibility 文件仍保留的前提下完成
+seal、回读验证和 metadata commit；Node 随后核对 identity ID、DID 和 Handle 均未改变。迁移失败
+会 fail closed，不删除、替换或重新注册身份。
+
 ## 生命周期和并发
 
 每个 `openImCoreNodeClient` 创建一个环境级 `ImCore`，并在已有默认身份时复用一个
@@ -90,6 +96,7 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
   Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp`、`vault` 与兼容元数据，然后重新初始化
   空 Core；client 保持 open，同一 state root 不会暴露给其他实例；
 - `close()` 进入 closing 后立即拒绝新任务；
+- `close()` 和 `clearLocalData()` 都会先请求 active realtime session 停止并 join Core worker；
 - sync、下载等可安全取消的任务收到取消信号；
 - 已接受任务释放读 gate 后才销毁 Core 并释放 state-root 锁；
 - 重复 `close()` 幂等；GC drop 只是取消兜底，不替代 host 显式 teardown。
@@ -102,6 +109,39 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 首屏；返回的 opaque local cursor 只能继续传给同一 local timeline 方法，不能传给
 `getHistory`。需要新鲜度或远端 backfill 时，Host 应在首屏之后显式调用现有同步/history
 能力，并在 Core 提交后重新读取 local timeline。
+
+## Realtime 与可靠同步
+
+`startRealtime()` 每个 client 同时只允许一个 Core-owned session。默认启用有界 exponential
+reconnect；Node 只订阅消息提示，不实现 WebSocket、URL、bearer 或重连状态机。`nextEvent()` 的
+公开事件只有：
+
+- `connection_state_changed`：`disconnected|connecting|connected|reconnecting|closed`，仅供诊断；
+- `sync_required`：`connection_ready|reconnected|message|message_update|group|system_notification|stream_recovery`，
+  只表示 host 应调用 `syncNow()`。
+
+首次连接 ready、每次重连、消息 hint、dirty、gap、未知 domain 或 stream recovery 都产生
+`sync_required`。事件不携带消息正文、raw frame、WebSocket URL、bearer、wire event type、event
+sequence、cursor 或 checkpoint。Realtime hint 不是可靠 checkpoint；host 必须在启动及每个
+`sync_required` 后调用 canonical `syncNow()`，成功后再读取 committed conversation/history。
+
+```ts
+const realtime = await client.startRealtime()
+try {
+  for (;;) {
+    const event = await realtime.nextEvent()
+    if (event === null) break
+    if (event.kind === 'sync_required') {
+      await client.syncNow({
+        reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',
+      })
+    }
+  }
+}
+finally {
+  await realtime.stop()
+}
+```
 
 ## DTO 边界
 
@@ -132,8 +172,10 @@ Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 
-Native contract version 为 `4`。wrapper 在加载时必须拒绝其他版本的 addon，避免旧二进制
-缺少群管理、本地时间线或展示资料方法却被静默当作兼容实现。
+当前源码 candidate 的 Native contract version 为 `4`。v4 在 v3 external HTTP auth 与 local
+conversation timeline 基础上增加群管理、展示资料和 realtime；wrapper 在加载时必须拒绝其他版本的 addon，避免旧
+二进制缺少对应方法却被静默当作兼容实现。registry `0.1.3` 仍是 v2；后续正式 patch 必须把
+v4 wrapper 和全部 Tier 1 addon 一起发布。
 
 ## 构建与验证
 
@@ -152,5 +194,6 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-当前构建只生成内部测试 addon。平台包、校验和、provenance 和许可证发行审批属于后续原生
-制品步骤；审批完成前不得把该内部产物标记为正式 release。
+`0.1.3` 本地 candidate 由同一个 committed source OID 构建 wrapper 和当前平台包，并通过
+`stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
+registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。

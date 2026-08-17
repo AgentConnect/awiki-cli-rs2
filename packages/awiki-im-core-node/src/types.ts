@@ -139,9 +139,19 @@ export interface Page<T> {
   readonly hasMore: boolean
 }
 
-/** Explicit reliable-sync input. */
+/** Core-supported canonical reliable-sync reasons retained from 0.1.2. */
+export type SyncReason =
+  | 'session_start'
+  | 'app_resume'
+  | 'websocket_hint'
+  | 'websocket_reconnect'
+  | 'foreground_reconcile'
+  | 'manual_refresh'
+  | 'after_mutation'
+
+/** Explicit reliable-sync input. Omitted `reason` defaults to `manual_refresh`. */
 export interface SyncOptions {
-  readonly reason?: string
+  readonly reason?: SyncReason
   readonly limit?: number
   readonly timeoutMs?: number
 }
@@ -157,6 +167,61 @@ export interface SyncResult {
   readonly duplicatesSkipped: number
   readonly changedConversationIds: readonly string[]
   readonly warnings: readonly string[]
+}
+
+export type RealtimeConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'closed'
+
+/** Bounded reconnect policy. The native facade defaults to exponential reconnect without an attempt cap. */
+export interface RealtimeOptions {
+  readonly eventBuffer?: number
+  readonly reconnectBaseDelayMs?: number
+  readonly reconnectMaxDelayMs?: number
+  readonly reconnectMaxAttempts?: number
+}
+
+export interface RealtimeStatus {
+  readonly connected: boolean
+  readonly state: RealtimeConnectionState
+}
+
+export interface RealtimeConnectionStateChangedEvent {
+  readonly kind: 'connection_state_changed'
+  readonly state: RealtimeConnectionState
+}
+
+export type RealtimeSyncCause =
+  | 'connection_ready'
+  | 'reconnected'
+  | 'message'
+  | 'message_update'
+  | 'group'
+  | 'system_notification'
+  | 'stream_recovery'
+
+/**
+ * A scheduling signal to run `syncNow()`. It is never a reliable cursor or checkpoint.
+ * Message bodies, wire event sequence values, raw frames, URLs, and credentials are excluded.
+ */
+export interface RealtimeSyncRequiredEvent {
+  readonly kind: 'sync_required'
+  readonly cause: RealtimeSyncCause
+  readonly dirty: boolean
+  readonly gapDetected: boolean
+}
+
+export type RealtimeEvent = RealtimeConnectionStateChangedEvent | RealtimeSyncRequiredEvent
+
+export interface RealtimeSession {
+  /** Returns null after the native stream has closed. Only one consumer should call this method. */
+  nextEvent(): Promise<RealtimeEvent | null>
+  getStatus(): Promise<RealtimeStatus>
+  /** Idempotently stops and joins the native realtime worker. */
+  stop(): Promise<void>
 }
 
 /** One canonical Direct or Group conversation. */
@@ -278,6 +343,8 @@ export interface ImCoreNodeClient {
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
+  /** Starts the single Core-owned realtime session for this client. */
+  startRealtime(input?: RealtimeOptions): Promise<RealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
   /** Read only the committed local timeline; never starts sync, history, or Directory RPC. */

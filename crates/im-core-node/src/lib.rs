@@ -5,7 +5,7 @@ mod dto;
 mod error;
 mod state;
 
-pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient};
+pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient, NativeRealtimeSession};
 pub use dto::*;
 
 use napi_derive::napi;
@@ -26,7 +26,7 @@ pub fn native_api_version() -> u32 {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn display_profile_hydration_contract_uses_native_api_v4() {
+    fn group_and_realtime_contracts_use_native_api_v4() {
         assert_eq!(super::native_api_version(), 4);
     }
 }

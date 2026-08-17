@@ -26,6 +26,9 @@ import type {
   SendTextInput,
   SyncOptions,
   SyncResult,
+  RealtimeEvent,
+  RealtimeOptions,
+  RealtimeStatus,
 } from './types.js'
 
 export interface NativeExternalHttpAuthAttempt {
@@ -34,6 +37,12 @@ export interface NativeExternalHttpAuthAttempt {
   getHeaderPatch(): ExternalHttpHeader[]
   getRetryCount(): number
   handleResponse(response: ExternalHttpResponse): Promise<NativeExternalHttpAuthAttempt | null>
+}
+
+export interface NativeRealtimeSession {
+  nextEvent(): Promise<RealtimeEvent | null>
+  getStatus(): Promise<RealtimeStatus>
+  stop(): Promise<void>
 }
 
 export interface NativeImCoreNodeClient {
@@ -52,6 +61,7 @@ export interface NativeImCoreNodeClient {
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
+  startRealtime(input?: RealtimeOptions): Promise<NativeRealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
   getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>

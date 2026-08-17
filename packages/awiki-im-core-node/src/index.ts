@@ -1,5 +1,9 @@
 import { loadNativeBinding } from './loader.js'
-import type { NativeExternalHttpAuthAttempt, NativeImCoreNodeClient } from './native.js'
+import type {
+  NativeExternalHttpAuthAttempt,
+  NativeImCoreNodeClient,
+  NativeRealtimeSession,
+} from './native.js'
 import {
   ImCoreNodeError,
   type AddGroupMemberInput,
@@ -31,6 +35,10 @@ import {
   type SendTextInput,
   type SyncOptions,
   type SyncResult,
+  type RealtimeEvent,
+  type RealtimeOptions,
+  type RealtimeSession,
+  type RealtimeStatus,
 } from './types.js'
 
 export * from './types.js'
@@ -120,6 +128,11 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.syncNow(input))
   }
 
+  public async startRealtime(input?: RealtimeOptions): Promise<RealtimeSession> {
+    const native = await call(() => this.native.startRealtime(input))
+    return new RustRealtimeSession(native)
+  }
+
   public listConversations(input?: PageInput): Promise<Page<NodeConversation>> {
     return call(() => this.native.listConversations(input))
   }
@@ -183,6 +196,22 @@ class RustExternalHttpAuthAttempt implements ExternalHttpAuthAttempt {
 
 function copyHeaders(headers: readonly ExternalHttpHeader[]): ExternalHttpHeader[] {
   return headers.map(header => ({ name: header.name, value: header.value }))
+}
+
+class RustRealtimeSession implements RealtimeSession {
+  public constructor(private readonly native: NativeRealtimeSession) {}
+
+  public nextEvent(): Promise<RealtimeEvent | null> {
+    return call(() => this.native.nextEvent())
+  }
+
+  public getStatus(): Promise<RealtimeStatus> {
+    return call(() => this.native.getStatus())
+  }
+
+  public stop(): Promise<void> {
+    return call(() => this.native.stop())
+  }
 }
 
 /**

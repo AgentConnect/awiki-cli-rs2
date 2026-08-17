@@ -66,6 +66,21 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
   )
 })
 
+test('realtime facade requires an identity and returns only the stable redacted error', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-realtime-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const client = await openImCoreNodeClient(options(root))
+  t.after(() => client.close())
+  await assert.rejects(
+    client.startRealtime(),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required'
+      && error.safeMessage === 'A registered IM identity is required.'
+      && !error.message.includes('websocket')
+      && !error.message.includes('http'),
+  )
+})
+
 test('clears SDK-owned local data and keeps the client usable', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-clear-'))
   t.after(() => rm(root, { recursive: true, force: true }))
