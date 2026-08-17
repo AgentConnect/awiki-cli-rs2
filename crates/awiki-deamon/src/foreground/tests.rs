@@ -2537,7 +2537,7 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
 }
 
 #[test]
-fn foreground_controller_identity_change_blocks_new_and_old_sender_without_rebinding() {
+fn foreground_controller_identity_change_rebinds_authoritative_same_scope_sender() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
     let registration = MockRegistrationClient;
@@ -2551,42 +2551,59 @@ fn foreground_controller_identity_change_blocks_new_and_old_sender_without_rebin
     let runtime_before = state.load_agent_definition(&created.agent_did).unwrap();
     let binding_before = daemon_binding.clone();
 
-    let changed = verify_runtime_controller_sender(
+    let verified = verify_runtime_controller_sender(
         &config,
         &state,
         &registration,
         &created.agent_did,
         "did:human:alice-new",
     )
-    .unwrap_err();
-    assert_eq!(changed.to_string(), "controller_identity_changed");
+    .unwrap();
+    assert_eq!(verified.controller_did, "did:human:alice-new");
+    assert_eq!(verified.sender_did, "did:human:alice-new");
+    assert_eq!(
+        verified.controller_scope_key,
+        binding_before.controller_scope_key
+    );
+
+    let mut expected_daemon = daemon_before;
+    expected_daemon.controller_did = "did:human:alice-new".to_string();
     assert_eq!(
         state
             .load_agent_definition(&daemon_binding.daemon_agent_did)
             .unwrap(),
-        daemon_before
+        expected_daemon
     );
+    let mut expected_runtime = runtime_before;
+    expected_runtime.controller_did = "did:human:alice-new".to_string();
     assert_eq!(
         state.load_agent_definition(&created.agent_did).unwrap(),
-        runtime_before
+        expected_runtime
+    );
+    let binding_after = state
+        .load_runtime_daemon_binding(&created.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(binding_after.controller_did, "did:human:alice-new");
+    assert_eq!(
+        binding_after.controller_scope_key,
+        binding_before.controller_scope_key
     );
     assert_eq!(
-        state
-            .load_runtime_daemon_binding(&created.agent_did)
-            .unwrap()
-            .unwrap(),
-        binding_before
+        binding_after.controller_user_id,
+        binding_before.controller_user_id
     );
-
-    let old_principal = verify_runtime_controller_sender(
-        &config,
-        &state,
-        &registration,
-        &created.agent_did,
-        "did:human:alice",
-    )
-    .unwrap_err();
-    assert_eq!(old_principal.to_string(), "controller_identity_changed");
+    assert_eq!(
+        binding_after.controller_full_handle,
+        binding_before.controller_full_handle
+    );
+    assert!(state
+        .audit_event_exists(
+            "daemon.controller_rebound",
+            Some(&daemon_binding.daemon_agent_did),
+            Some("verified_controller_sender"),
+        )
+        .unwrap());
 }
 
 #[test]
@@ -3726,9 +3743,7 @@ fn app_action_result_from_non_controller_is_rejected_without_audit() {
     )
     .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("message sender is not the configured controller_did"));
+    assert!(error.to_string().contains("controller_scope_mismatch"));
     assert!(!state
         .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
         .unwrap());
