@@ -1,6 +1,6 @@
 [package]
 name = "awiki-im-core-node"
-version = "0.1.1"
+version = "0.1.2"
 description = "Node-API facade for the Awiki Rust IM SDK"
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ fs2.workspace = true
 im-core = { package = "awiki-im-core", path = "../im-core" }
 napi.workspace = true
 napi-derive.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

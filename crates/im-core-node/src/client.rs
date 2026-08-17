@@ -18,6 +18,7 @@ const LIFECYCLE_CLOSED: u8 = 2;
 const DEFAULT_OPERATION_TIMEOUT_MS: u32 = 120_000;
 const DEFAULT_SYNC_TIMEOUT_MS: u32 = 15_000;
 const MAX_TIMEOUT_MS: u32 = 600_000;
+const MANUAL_REFRESH_SYNC_REASON: &str = "manual_refresh";
 
 struct Environment {
     core: im_core::ImCore,
@@ -422,10 +423,7 @@ impl NativeImCoreNodeClient {
             .wait_im(
                 client
                     .messages()
-                    .sync_now_async(im_core::messages::MessageSyncRequest {
-                        reason: "node_list_conversations".to_owned(),
-                        limit: Some(100),
-                    }),
+                    .sync_now_async(list_conversations_sync_request()),
                 self.inner.sync_timeout,
             )
             .await?;
@@ -721,10 +719,12 @@ async fn initialize_environment(
 ) -> SafeResult<Environment> {
     let paths = state.paths();
     let config = core_config(options)?;
+    let vault = state.identity_vault_options()?;
     let core = im_core::ImCore::open_with_options(
         config,
         paths,
-        im_core::ImCoreOpenOptions::file_compat(),
+        im_core::ImCoreOpenOptions::default()
+            .with_identity_secret_vault(im_core::IdentitySecretStoragePolicy::VaultRequired, vault),
     )
     .await
     .map_err(SafeError::from_im)?;
@@ -864,11 +864,18 @@ fn sync_request(
                 .reason
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "node_explicit".to_owned()),
+                .unwrap_or_else(|| MANUAL_REFRESH_SYNC_REASON.to_owned()),
             limit: input.limit,
         },
         optional_timeout(input.timeout_ms, default_timeout)?,
     ))
+}
+
+fn list_conversations_sync_request() -> im_core::messages::MessageSyncRequest {
+    im_core::messages::MessageSyncRequest {
+        reason: MANUAL_REFRESH_SYNC_REASON.to_owned(),
+        limit: Some(100),
+    }
 }
 
 fn ensure_sync_readable(status: im_core::messages::MessageSyncStatus) -> SafeResult<()> {
@@ -952,3 +959,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "client_sync_tests.rs"]
+mod client_sync_tests;

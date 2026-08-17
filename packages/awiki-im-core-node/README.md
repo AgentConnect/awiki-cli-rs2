@@ -29,17 +29,23 @@ finally {
 - 一个 client 对应一个环境级 `ImCore` 和一个 default identity-bound `ImClient`，不会为
   每次请求重开 SQLite 或身份目录。
 - 所有 I/O 都是 Promise；Rust async 任务不会阻塞 Node event loop。
+- addon 使用专用 Tokio runtime，async worker 具有 16 MiB 栈，保证 Debug/Release 消息发送 future
+  不会因 NAPI 默认 worker 栈不足而终止 Node Host。
+- `listConversations()` 的读取前同步与未指定 reason 的 `syncNow()` 均使用 Core 支持的
+  `manual_refresh`；`SyncReason` 类型只允许 Core 协议枚举值。
 - `close()` 开始后拒绝新任务，取消可安全取消的任务，等待已接受任务释放状态，再释放
   state-root 文件锁；重复调用是幂等的。
-- `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
-  兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
+- `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件、
+  加密 vault 和兼容元数据，轮换 vault 根密钥后再重新初始化空 Core；client 保持可用。它不删除
+  远端账号或 Handle。
 - JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
 
 ## state root
 
 `stateRoot` 必须是绝对路径。同一路径在同一时间只能由一个实例/进程打开。Unix 上目录收紧为
-`0700`、文件收紧为 `0600`。包不读取旧 TypeScript SDK 的 `identity.json`，也不提供 legacy
-import。
+`0700`、文件收紧为 `0600`。Node facade 始终使用 `VaultRequired`，在 SDK-owned `vault` 目录
+创建并复用私有根密钥与加密记录，不回退 `file_compat`。包不读取旧 TypeScript SDK 的
+`identity.json`，也不提供 legacy import。
 
 ## DTO 与错误
 
@@ -48,9 +54,13 @@ import。
   JSON 或 base64。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
+- User Service 的注册验证稳定码会分别归一化为 `invalid_otp` 与 `challenge_expired`，不会因
+  通用 HTTP 400/409 状态退化为 `service_error` 或 `conflict`。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。
+本地 macOS 源码构建会在复制 Mach-O addon 后执行 ad-hoc 重签，避免复制后的代码页被 dyld
+判定为签名无效；正式平台制品仍由 release workflow 维护其签名与 provenance。
 
 ## 原生制品
 

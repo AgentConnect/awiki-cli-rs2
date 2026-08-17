@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "awiki-im-core",
  "base64",
@@ -291,6 +291,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",

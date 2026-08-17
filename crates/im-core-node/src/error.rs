@@ -170,10 +170,16 @@ impl SafeError {
 
 fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
     let code = code.unwrap_or_default().trim().to_ascii_lowercase();
-    if matches!(code.as_str(), "invalid_otp" | "otp_invalid") {
+    if matches!(
+        code.as_str(),
+        "invalid_otp" | "otp_invalid" | "identity.registration_verification_invalid"
+    ) {
         return SafeError::new("invalid_otp", "The registration OTP is invalid.", false);
     }
-    if matches!(code.as_str(), "otp_expired" | "challenge_expired") {
+    if matches!(
+        code.as_str(),
+        "otp_expired" | "challenge_expired" | "identity.registration_verification_unavailable"
+    ) {
         return SafeError::new(
             "challenge_expired",
             "The registration challenge expired.",
@@ -248,15 +254,47 @@ mod tests {
     }
 
     #[test]
-    fn service_classification_uses_only_stable_code_and_status() {
-        let error = SafeError::from_im(im_core::ImError::Service {
-            status_code: None,
-            code: Some("invalid_otp".to_owned()),
-            message: "token=secret path=/private".to_owned(),
-            data: Some(serde_json::json!({"private": "secret"})),
+    fn registration_service_codes_map_before_generic_http_statuses() {
+        for (status_code, service_code, expected_code, expected_message) in [
+            (
+                Some(400),
+                "identity.registration_verification_invalid",
+                "invalid_otp",
+                "The registration OTP is invalid.",
+            ),
+            (
+                Some(409),
+                "identity.registration_verification_unavailable",
+                "challenge_expired",
+                "The registration challenge expired.",
+            ),
+            (
+                None,
+                "invalid_otp",
+                "invalid_otp",
+                "The registration OTP is invalid.",
+            ),
+        ] {
+            let error = SafeError::from_im(im_core::ImError::Service {
+                status_code,
+                code: Some(service_code.to_owned()),
+                message: "token=secret path=/private".to_owned(),
+                data: Some(serde_json::json!({"private": "secret"})),
+            });
+            let payload = serde_json::to_string(&error).unwrap();
+            assert_eq!(error.code, expected_code);
+            assert_eq!(error.safe_message, expected_message);
+            assert!(!payload.contains("secret"));
+            assert!(!payload.contains("/private"));
+        }
+
+        let unknown_conflict = SafeError::from_im(im_core::ImError::Service {
+            status_code: Some(409),
+            code: Some("identity.registration.unknown".to_owned()),
+            message: "private".to_owned(),
+            data: None,
         });
-        assert_eq!(error.code, "invalid_otp");
-        assert_eq!(error.safe_message, "The registration OTP is invalid.");
+        assert_eq!(unknown_conflict.code, "conflict");
     }
 
     #[test]

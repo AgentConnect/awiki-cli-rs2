@@ -25,6 +25,10 @@
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
 import API；TypeScript SDK 的 `identity.json` 不会被读取或转换。
 
+Node addon 在模块初始化时注册专用 Tokio multi-thread runtime，async worker 使用 16 MiB 栈。
+这覆盖 Debug 与 Release 原生制品中的深层消息发送 future，避免 NAPI 默认 worker 栈在本地投影
+持久化阶段溢出并终止整个 Host 进程。
+
 ## 生命周期和并发
 
 每个 `openImCoreNodeClient` 创建一个环境级 `ImCore`，并在已有默认身份时复用一个
@@ -34,8 +38,8 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 普通关闭的生命周期固定为 `open → closing → closed`：
 
 - `clearLocalData()` 在持有 mutation/write gate 和 state-root 锁期间等待既有操作退出，释放
-  Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp` 与兼容元数据，然后重新初始化
-  空 Core；client 保持 open，同一 state root 不会暴露给其他实例；
+  Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp`、加密 vault 与兼容元数据，
+  轮换 vault 根密钥后重新初始化空 Core；client 保持 open，同一 state root 不会暴露给其他实例；
 - `close()` 进入 closing 后立即拒绝新任务；
 - sync、下载等可安全取消的任务收到取消信号；
 - 已接受任务释放读 gate 后才销毁 Core 并释放 state-root 锁；
@@ -43,6 +47,8 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 
 `listConversations` 先执行一次有界可靠同步，只在 `idle` 或 `changed` 时读取本地投影；超时、
 认证撤销、需要恢复或可重试失败都返回结构化错误，不把陈旧投影伪装为成功。
+该读取前同步与未指定 `reason` 的 `syncNow` 都使用 Core 支持的 `manual_refresh`，TypeScript
+`SyncReason` 只暴露 Core 协议允许的 reason 枚举，不构造 Node facade 私有 reason。
 
 ## DTO 边界
 
@@ -55,15 +61,21 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 ## 状态与错误
 
 `stateRoot` 必须为绝对路径并由单个进程/实例独占。Unix 目录权限收紧为 `0700`、文件为
-`0600`；冲突返回 `state_in_use`，不会创建临时身份。无秘密的 `compatibility.json` 只保存
-identity ID 到注册 Unix 毫秒的映射，使 `registeredAtMs` 重启稳定。
+`0600`；冲突返回 `state_in_use`，不会创建临时身份。Node facade 始终以 `VaultRequired`
+打开 Core，在 SDK-owned `vault` 目录创建并复用本机私有根密钥与加密记录，不回退到
+`file_compat`。无秘密的 `compatibility.json` 只保存 identity ID 到注册 Unix 毫秒的映射，
+使 `registeredAtMs` 重启稳定。
 
 `clearLocalData()` 是不可撤销的本地操作，只清理上述 SDK-owned 路径，不删除远端账号或 Handle，
 不跟随被替换为符号链接的运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。
 
 Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
-bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
+bytes 不进入 JS 错误。User Service 的
+`identity.registration_verification_invalid` 与
+`identity.registration_verification_unavailable` 分别收敛为 `invalid_otp` 与
+`challenge_expired`，且稳定服务码优先于通用 HTTP 400/409 分类。未知 native/loader 异常统一为
+`internal`。
 
 ## 构建与验证
 

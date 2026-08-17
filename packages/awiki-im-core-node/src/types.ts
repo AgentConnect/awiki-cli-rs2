@@ -63,9 +63,19 @@ export interface Page<T> {
   readonly hasMore: boolean
 }
 
-/** Explicit reliable-sync input. */
+/** Core-supported reliable-sync reasons. */
+export type SyncReason =
+  | 'session_start'
+  | 'app_resume'
+  | 'websocket_hint'
+  | 'websocket_reconnect'
+  | 'foreground_reconcile'
+  | 'manual_refresh'
+  | 'after_mutation'
+
+/** Explicit reliable-sync input. Omitted `reason` defaults to `manual_refresh`. */
 export interface SyncOptions {
-  readonly reason?: string
+  readonly reason?: SyncReason
   readonly limit?: number
   readonly timeoutMs?: number
 }

@@ -5,11 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::{rngs::OsRng, RngCore as _};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{SafeError, SafeResult};
 
 const METADATA_SCHEMA_VERSION: u32 = 1;
+const VAULT_DIRECTORY: &str = "vault";
+const VAULT_ROOT_KEY_FILE: &str = "root-key.b64u";
+const VAULT_WORKSPACE_ID: &str = "awiki-im-core-node";
+const VAULT_CONTEXT_DEVICE_ID: &str = "primary";
 
 #[derive(Debug)]
 pub(crate) struct StateRoot {
@@ -29,7 +35,7 @@ impl StateRoot {
             ));
         }
         create_private_dir(&root)?;
-        for relative in ["identities", "local", "cache", "tmp"] {
+        for relative in ["identities", "local", "cache", "tmp", VAULT_DIRECTORY] {
             create_private_dir(&root.join(relative))?;
         }
 
@@ -73,6 +79,18 @@ impl StateRoot {
         self.metadata.clone()
     }
 
+    pub(crate) fn identity_vault_options(&self) -> SafeResult<im_core::ImCoreSecretVaultOptions> {
+        let vault_dir = self.root.join(VAULT_DIRECTORY);
+        create_private_dir(&vault_dir)?;
+        let root_key = load_or_create_vault_root_key(&vault_dir.join(VAULT_ROOT_KEY_FILE))?;
+        Ok(im_core::ImCoreSecretVaultOptions::new(
+            root_key,
+            vault_dir,
+            VAULT_WORKSPACE_ID,
+            VAULT_CONTEXT_DEVICE_ID,
+        ))
+    }
+
     pub(crate) fn harden_permissions(&self) -> SafeResult<()> {
         harden_tree(&self.root)
     }
@@ -88,7 +106,7 @@ impl StateRoot {
             return Err(SafeError::internal());
         }
         let mut cleared = false;
-        for relative in ["identities", "local", "cache", "tmp"] {
+        for relative in ["identities", "local", "cache", "tmp", VAULT_DIRECTORY] {
             let path = self.root.join(relative);
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -230,6 +248,45 @@ fn unix_time_millis() -> SafeResult<String> {
     Ok(millis.to_string())
 }
 
+fn load_or_create_vault_root_key(path: &Path) -> SafeResult<im_core::vault::DeviceVaultRootKey> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(SafeError::internal());
+        }
+        Ok(_) => {
+            let encoded = fs::read_to_string(path).map_err(|_| SafeError::internal())?;
+            let decoded = URL_SAFE_NO_PAD
+                .decode(encoded.trim())
+                .map_err(|_| SafeError::internal())?;
+            let bytes: [u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN] =
+                decoded.try_into().map_err(|_| SafeError::internal())?;
+            set_private_file_mode(path)?;
+            return Ok(im_core::vault::DeviceVaultRootKey::from_bytes(bytes));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(SafeError::internal()),
+    }
+
+    let mut bytes = [0_u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|_| SafeError::internal())?;
+    let encoded = URL_SAFE_NO_PAD.encode(bytes);
+    let result = (|| -> SafeResult<()> {
+        let mut file = create_private_file(path)?;
+        file.write_all(encoded.as_bytes())
+            .map_err(|_| SafeError::internal())?;
+        file.write_all(b"\n").map_err(|_| SafeError::internal())?;
+        file.sync_all().map_err(|_| SafeError::internal())?;
+        set_private_file_mode(path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result?;
+    Ok(im_core::vault::DeviceVaultRootKey::from_bytes(bytes))
+}
+
 fn create_private_dir(path: &Path) -> SafeResult<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -361,6 +418,36 @@ mod tests {
             restarted.ensure_registered_at_with("identity-1", "2000".to_owned()),
             Ok("1000".to_owned())
         );
+    }
+
+    #[test]
+    fn vault_root_key_is_private_stable_and_rotated_by_clear() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = StateRoot::open(directory.path().to_path_buf()).unwrap();
+        state.identity_vault_options().unwrap();
+        let root_key_path = directory
+            .path()
+            .join(VAULT_DIRECTORY)
+            .join(VAULT_ROOT_KEY_FILE);
+        let first = fs::read(&root_key_path).unwrap();
+        assert_eq!(first.len(), 44);
+
+        state.identity_vault_options().unwrap();
+        assert_eq!(fs::read(&root_key_path).unwrap(), first);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&root_key_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        assert!(state.clear_owned_data().unwrap());
+        assert!(!root_key_path.exists());
+        state.identity_vault_options().unwrap();
+        assert_ne!(fs::read(root_key_path).unwrap(), first);
     }
 
     #[cfg(unix)]

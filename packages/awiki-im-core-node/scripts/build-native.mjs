@@ -26,8 +26,16 @@ const glibcVersion = process.platform === 'linux'
 const libc = process.platform === 'linux' ? (glibcVersion ? 'gnu' : 'musl') : undefined
 const targetName = [process.platform, process.arch, libc].filter(Boolean).join('-')
 const nativeDir = join(packageRoot, 'native')
+const nativePath = join(nativeDir, `awiki-im-core-node.${targetName}.node`)
 await mkdir(nativeDir, { recursive: true })
 await copyFile(
   join(repositoryRoot, 'target', profile, sourceName),
-  join(nativeDir, `awiki-im-core-node.${targetName}.node`),
+  nativePath,
 )
+
+if (process.platform === 'darwin') {
+  const codesign = spawnSync('/usr/bin/codesign', ['--force', '--sign', '-', nativePath], {
+    stdio: 'inherit',
+  })
+  if (codesign.status !== 0) process.exit(codesign.status ?? 1)
+}
