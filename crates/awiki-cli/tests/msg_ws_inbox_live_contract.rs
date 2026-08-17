@@ -109,7 +109,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     );
     let _bob = register_exact_msg_identity(workspace.path());
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "bob",
@@ -403,6 +403,24 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli binary")
 }
 
+fn awiki_cmd_without_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "0")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli binary")
+}
+
 fn assert_success(output: &Output) {
     assert_eq!(
         output.status.code(),
@@ -619,7 +637,9 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Real registration and foreground sync may be delayed while the full
+    // workspace suite runs many CLI subprocesses in parallel.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

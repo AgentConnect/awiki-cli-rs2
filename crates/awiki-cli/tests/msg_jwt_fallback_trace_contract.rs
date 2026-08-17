@@ -48,7 +48,6 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
         ],
         workspace.path(),
     );
-
     assert_success(&output);
     let envelope = success_json_with_stderr(&output);
     assert_eq!(envelope["summary"], "Sent a direct text message");
@@ -109,7 +108,7 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     );
     assert_success(&register);
 
-    let output = awiki_trace_cmd(
+    let output = awiki_trace_cmd_without_direct_e2ee(
         &[
             "--identity",
             "bob",
@@ -122,7 +121,6 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
         ],
         workspace.path(),
     );
-
     assert_success(&output);
     let envelope = success_json_with_stderr(&output);
     assert_eq!(envelope["summary"], "Loaded 0 inbox messages");
@@ -265,7 +263,11 @@ fn assert_vault_auth_token_is_used(
     let server = TestServer::new(vec![response]);
     write_msg_config(workspace, &server.base_url());
 
-    let output = awiki_cmd(args, workspace);
+    let output = if args.windows(2).any(|pair| pair == ["msg", "inbox"]) {
+        awiki_cmd_without_direct_e2ee(args, workspace)
+    } else {
+        awiki_cmd(args, workspace)
+    };
     assert_success(&output);
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -307,24 +309,34 @@ fn awiki_trace_cmd(args: &[&str], workspace: &Path) -> Output {
     awiki_trace_cmd_owned(&args, workspace)
 }
 
-fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
-    command
-        .args(args)
-        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
-        .env("HOME", workspace.join("home"))
-        .env("USERPROFILE", workspace.join("home"))
-        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
-        .env_remove("AWIKI_WORKSPACE")
-        .env_remove("AWIKI_WORKSPACE_HOME")
-        .env_remove("AWIKI_HOME")
-        .env_remove("AVIKI_WORKSPACE_HOME")
-        .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
+fn awiki_cmd_without_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let mut command = awiki_command(&args, workspace);
+    command.env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "0");
     command.output().expect("run awiki-cli binary")
 }
 
-fn awiki_trace_cmd_owned(args: &[String], workspace: &Path) -> Output {
+fn awiki_trace_cmd_without_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let mut command = awiki_command(&args, workspace);
+    command
+        .env("AWIKI_CLI_TRACE_TIMING", "1")
+        .env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "0");
+    command.output().expect("run awiki-cli binary")
+}
+
+fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
+    let mut command = awiki_command(args, workspace);
+    command.output().expect("run awiki-cli binary")
+}
+
+fn awiki_command(args: &[String], workspace: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -332,13 +344,18 @@ fn awiki_trace_cmd_owned(args: &[String], workspace: &Path) -> Output {
         .env("HOME", workspace.join("home"))
         .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
-        .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
+    command
+}
+
+fn awiki_trace_cmd_owned(args: &[String], workspace: &Path) -> Output {
+    let mut command = awiki_command(args, workspace);
+    command.env("AWIKI_CLI_TRACE_TIMING", "1");
     command.output().expect("run awiki-cli binary")
 }
 
@@ -555,7 +572,9 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The real CLI opens the identity, Vault, and transport before the first
+    // request; parallel workspace tests can make that exceed five seconds.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

@@ -220,7 +220,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         "Phase 3",
     );
 
-    let inbox = awiki_cmd(
+    let inbox = awiki_cmd_without_direct_e2ee(
         &["--identity", "bob", "msg", "inbox", "--scope", "direct"],
         workspace.path(),
     );
@@ -230,7 +230,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(inbox_json["data"]["messages"][0]["id"], "msg-direct-1");
     assert_eq!(inbox_json["data"]["messages"][0]["content"], "hello bob");
 
-    let history = awiki_cmd(
+    let history = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "bob",
@@ -248,7 +248,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(history_json["summary"], "Loaded 1 direct history messages");
     assert_eq!(history_json["data"]["messages"][0]["id"], "msg-direct-1");
 
-    let mark = awiki_cmd(
+    let mark = awiki_cmd_without_direct_e2ee(
         &["--identity", "bob", "msg", "mark-read", "msg-direct-1"],
         workspace.path(),
     );
@@ -587,7 +587,22 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     )
 }
 
+fn awiki_cmd_without_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let mut command = awiki_command(&args, workspace);
+    command.env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "0");
+    command.output().expect("run awiki-cli binary")
+}
+
 fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
+    let mut command = awiki_command(args, workspace);
+    command.output().expect("run awiki-cli binary")
+}
+
+fn awiki_command(args: &[String], workspace: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -601,7 +616,7 @@ fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
-    command.output().expect("run awiki-cli binary")
+    command
 }
 
 fn assert_success(output: &Output) {
@@ -903,7 +918,9 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Real CLI registration and Core bootstrap can exceed five seconds when
+    // this file runs alongside the full workspace test matrix.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

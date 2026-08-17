@@ -242,10 +242,26 @@ fn group_add_live_error_preserves_go_owner_hint() {
     let workspace = TempDir::new("group-live-add-owner-hint").expect("workspace");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let member_did = "did:wba:awiki.ai:alice:e1_alice";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_error(
-        2403,
-        "actor cannot add members",
-    ))]);
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "v7",
+            "group_profile": {"display_name": "Demo Group"},
+            "member_role": "member",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": "v7",
+            "group_profile": {"display_name": "Demo Group"},
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            },
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_error(2403, "actor cannot add members")),
+    ]);
     write_group_config(workspace.path(), &server.base_url());
     register_ready_group_identity(workspace.path(), "bob-group", "bob", "jwt-bob");
 
@@ -278,9 +294,19 @@ fn group_add_live_error_preserves_go_owner_hint() {
     );
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(requests.len(), 3);
+    let methods = requests
+        .iter()
+        .map(|raw| {
+            serde_json::from_str::<Value>(request_body(raw)).expect("request body")["method"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(methods, vec!["group.get", "group.get_info", "group.add"]);
+    assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body["method"], "group.add");
     assert_eq!(body["params"]["body"]["member_did"], member_did);
     assert_eq!(body["params"]["body"]["role"], "member");
@@ -661,7 +687,10 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Each contract launches the real debug CLI and may contend with sibling
+    // tests while it opens the identity and Vault. Keep the local fixture
+    // alive long enough to test the HTTP contract rather than host load.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

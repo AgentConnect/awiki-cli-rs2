@@ -1103,7 +1103,9 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
                 return Some(stream);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > Duration::from_secs(5) {
+                // Route setup runs two real CLI commands before the hook is
+                // contacted and can be delayed by the full workspace matrix.
+                if start.elapsed() > Duration::from_secs(30) {
                     return None;
                 }
                 thread::sleep(Duration::from_millis(10));

@@ -183,7 +183,7 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
         .as_str()
         .expect("registered DID");
 
-    let first = awiki_cmd(
+    let first = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "alice",
@@ -215,7 +215,7 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
     );
     assert_eq!(envelope["data"]["messages"][0]["receiver_did"], alice_did);
 
-    let second = awiki_cmd(
+    let second = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "alice",
@@ -248,7 +248,7 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
         "reconciliation must project the logical message exactly once"
     );
 
-    let failed = awiki_cmd(
+    let failed = awiki_cmd_without_direct_e2ee(
         &["--identity", "alice", "msg", "inbox", "--scope", "all"],
         workspace.path(),
     );
@@ -415,7 +415,7 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
         workspace.path(),
     );
     success_json(&register);
-    let inbox = awiki_cmd(
+    let inbox = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "alice",
@@ -433,7 +433,7 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
         .as_str()
         .expect("projected message id");
 
-    let mark_read = awiki_cmd(
+    let mark_read = awiki_cmd_without_direct_e2ee(
         &["--identity", "alice", "msg", "mark-read", message_id],
         workspace.path(),
     );
@@ -466,7 +466,7 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
         1
     );
 
-    let refreshed = awiki_cmd(
+    let refreshed = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "alice",
@@ -482,7 +482,7 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
     let refreshed = success_json(&refreshed);
     assert_eq!(refreshed["data"]["messages"][0]["is_read"], true);
 
-    let unread = awiki_cmd(
+    let unread = awiki_cmd_without_direct_e2ee(
         &[
             "--identity",
             "alice",
@@ -807,6 +807,24 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli")
 }
 
+fn awiki_cmd_without_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "0")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli")
+}
+
 fn awiki_cmd_with_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -1072,7 +1090,9 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Real CLI registration and Core bootstrap can contend with sibling
+    // workspace tests before the first request reaches this local fixture.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
