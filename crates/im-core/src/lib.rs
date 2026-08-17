@@ -11,6 +11,7 @@ pub mod core;
 pub mod directory;
 pub mod email;
 pub mod error;
+pub mod external_http_auth;
 pub mod groups;
 pub mod identity;
 pub mod ids;
@@ -44,6 +45,10 @@ pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
 pub use crate::error::{
     AttachmentTransferFailure, DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult,
+};
+pub use crate::external_http_auth::{
+    ExternalHttpAuthAttempt, ExternalHttpAuthDecision, ExternalHttpAuthService, ExternalHttpHeader,
+    ExternalHttpRequest, ExternalHttpResponse, EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES,
 };
 pub use crate::groups::GroupService;
 pub use crate::identity::{

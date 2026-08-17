@@ -3279,6 +3279,7 @@ mod tests {
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
                 multi_device_audience: None,
+                external_http_allow_insecure_loopback_for_testing: false,
             },
         )
         .unwrap();
@@ -3598,6 +3599,7 @@ mod tests {
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
                 multi_device_audience: None,
+                external_http_allow_insecure_loopback_for_testing: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),
