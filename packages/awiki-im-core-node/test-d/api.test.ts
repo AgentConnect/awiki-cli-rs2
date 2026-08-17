@@ -32,9 +32,14 @@ void opened.then(async client => {
   localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
   const profiles = await client.hydrateDisplayProfiles({ peers: ['did:wba:awiki.info:user:alice'] })
   profiles satisfies readonly import('../src/index.js').NodeDisplayProfile[]
-  const realtime = await client.startRealtime()
+  let realtime = await client.startRealtime()
   const event: RealtimeEvent | null = await realtime.nextEvent()
-  if (event?.kind === 'sync_required') {
+  if (event === null) {
+    await realtime.stop()
+    await client.syncNow({ reason: 'websocket_reconnect' })
+    realtime = await client.startRealtime()
+  }
+  else if (event.kind === 'sync_required') {
     event.cause satisfies string
     event.dirty satisfies boolean
     await client.syncNow({

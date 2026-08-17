@@ -35,11 +35,16 @@ try {
       })
     : undefined
   if (identity) {
-    const realtime = await client.startRealtime()
+    let realtime = await client.startRealtime()
     try {
       for (;;) {
         const event = await realtime.nextEvent()
-        if (event === null) break
+        if (event === null) {
+          await realtime.stop()
+          await client.syncNow({ reason: 'websocket_reconnect' })
+          realtime = await client.startRealtime()
+          continue
+        }
         if (event.kind === 'sync_required') {
           await client.syncNow({
             reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',
@@ -122,7 +127,9 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
 状态和 `sync_required`；后者覆盖首次 ready、reconnected、消息 hint、dirty/gap 与 stream
 recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取 committed history。事件不暴露
 消息正文、raw frame/URL/bearer、event sequence、cursor 或 checkpoint，hint 也不具备 checkpoint
-语义。
+语义。Core event buffer 满或 native stream 结束时，`nextEvent()` 返回 `null`；Host 必须把它视为
+stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
+恢复，不得只退出监听循环，也不得跳过 canonical sync。
 
 ## DTO 与错误
 

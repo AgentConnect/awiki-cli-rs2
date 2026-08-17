@@ -125,12 +125,23 @@ reconnect；Node 只订阅消息提示，不实现 WebSocket、URL、bearer 或�
 sequence、cursor 或 checkpoint。Realtime hint 不是可靠 checkpoint；host 必须在启动及每个
 `sync_required` 后调用 canonical `syncNow()`，成功后再读取 committed conversation/history。
 
+Core event buffer 满或 native stream 因其他原因关闭时没有可再投递的事件，`nextEvent()` 返回
+`null`。`null` 本身就是 stream recovery 边界，Host 必须按固定顺序执行：停止并 join 旧 session、
+调用 `syncNow({ reason: 'websocket_reconnect' })` 完成 canonical reconciliation、再调用
+`startRealtime()` 建立 replacement。不能把 stream recovery 仅等同于
+`UnknownNotification`/`sync_required`，也不能在未同步时直接重连。
+
 ```ts
-const realtime = await client.startRealtime()
+let realtime = await client.startRealtime()
 try {
   for (;;) {
     const event = await realtime.nextEvent()
-    if (event === null) break
+    if (event === null) {
+      await realtime.stop()
+      await client.syncNow({ reason: 'websocket_reconnect' })
+      realtime = await client.startRealtime()
+      continue
+    }
     if (event.kind === 'sync_required') {
       await client.syncNow({
         reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',

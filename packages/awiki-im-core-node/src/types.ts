@@ -217,7 +217,11 @@ export interface RealtimeSyncRequiredEvent {
 export type RealtimeEvent = RealtimeConnectionStateChangedEvent | RealtimeSyncRequiredEvent
 
 export interface RealtimeSession {
-  /** Returns null after the native stream has closed. Only one consumer should call this method. */
+  /**
+   * Returns null after the native stream has closed, including event-buffer exhaustion.
+   * Treat null as stream recovery: stop this session, run canonical `syncNow()` with
+   * `websocket_reconnect`, then start a replacement session. Only one consumer should call this.
+   */
   nextEvent(): Promise<RealtimeEvent | null>
   getStatus(): Promise<RealtimeStatus>
   /** Idempotently stops and joins the native realtime worker. */
