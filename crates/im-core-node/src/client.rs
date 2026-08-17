@@ -53,6 +53,8 @@ struct ClientInner {
     options: NodeOpenOptions,
     realtime: tokio::sync::Mutex<Option<RealtimeSlot>>,
     next_realtime_id: AtomicU64,
+    #[cfg(test)]
+    realtime_close_error: std::sync::Mutex<Option<SafeError>>,
 }
 
 struct RealtimeSlot {
@@ -147,12 +149,8 @@ impl ClientInner {
         ) {
             Ok(_) => {
                 self.cancellation.cancel();
-                self.stop_realtime(None).await?;
-                let mut environment = self.environment.write().await;
-                environment.take();
-                self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
-                self.closed.notify_waiters();
-                Ok(())
+                let realtime_result = self.teardown_realtime_for_close().await;
+                self.complete_close(realtime_result).await
             }
             Err(LIFECYCLE_CLOSED) => Ok(()),
             Err(LIFECYCLE_CLOSING) => loop {
@@ -187,6 +185,28 @@ impl ClientInner {
                 self.closed.notify_waiters();
             }
         }
+    }
+
+    async fn complete_close(&self, realtime_result: SafeResult<()>) -> SafeResult<()> {
+        let mut environment = self.environment.write().await;
+        environment.take();
+        self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
+        self.closed.notify_waiters();
+        realtime_result
+    }
+
+    async fn teardown_realtime_for_close(&self) -> SafeResult<()> {
+        let result = self.stop_realtime(None).await;
+        #[cfg(test)]
+        if let Some(error) = self
+            .realtime_close_error
+            .lock()
+            .expect("realtime close error lock")
+            .take()
+        {
+            return Err(error);
+        }
+        result
     }
 
     async fn stop_realtime(&self, expected_id: Option<u64>) -> SafeResult<()> {
@@ -1115,6 +1135,8 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
             options,
             realtime: tokio::sync::Mutex::new(None),
             next_realtime_id: AtomicU64::new(1),
+            #[cfg(test)]
+            realtime_close_error: std::sync::Mutex::new(None),
         }),
     })
 }
@@ -1520,6 +1542,31 @@ mod tests {
         assert!(!close.is_finished());
         drop(operation);
         close.await.unwrap().unwrap();
+        open(options(directory.path())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_error_still_reaches_closed_notifies_waiters_and_releases_state_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        let expected = SafeError::new(
+            "realtime_join_failed",
+            "The realtime session failed while closing.",
+            false,
+        );
+        *client
+            .inner
+            .realtime_close_error
+            .lock()
+            .expect("realtime close error lock") = Some(expected.clone());
+
+        let error = client.inner.close().await.unwrap_err();
+
+        assert_eq!(error, expected);
+        tokio::time::timeout(Duration::from_millis(250), client.inner.close())
+            .await
+            .expect("a second close must not wait in closing")
+            .unwrap();
         open(options(directory.path())).await.unwrap();
     }
 
