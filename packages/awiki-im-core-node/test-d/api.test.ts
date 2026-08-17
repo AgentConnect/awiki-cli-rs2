@@ -7,9 +7,6 @@ import {
 
 const options: ImCoreNodeOpenOptions = {
   stateRoot: '/tmp/awiki-im-core-node-types',
-  vaultRootKey: new Uint8Array(32),
-  vaultWorkspaceId: 'type-tests',
-  vaultDeviceId: 'test-device',
   serviceBaseUrl: 'https://awiki.info',
   didDomain: 'awiki.info',
 }

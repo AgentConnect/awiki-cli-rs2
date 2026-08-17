@@ -26,9 +26,9 @@
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
 import API；TypeScript SDK 的 `identity.json` 不会被读取或转换。
 
-Node host 必须为每个 state root 提供稳定的 32-byte `vaultRootKey` 以及
-`vaultWorkspaceId` / `vaultDeviceId` 上下文。Facade 只把 host 提供的 key 传给
-`VaultRequired` IM Core，不生成、持久化、记录或返回 root key。
+Node facade 延续已发布 `0.1.2` 的 Vault contract：它在 process-exclusive `stateRoot/vault`
+内部创建并私有保存稳定的 32-byte root key，以固定 workspace/device context 打开
+`VaultRequired` IM Core。Host 不接触、不传入、不记录或导出 root key。
 
 ## 外部 HTTP ANP 认证
 
@@ -101,6 +101,10 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 `stateRoot` 必须为绝对路径并由单个进程/实例独占。Unix 目录权限收紧为 `0700`、文件为
 `0600`；冲突返回 `state_in_use`，不会创建临时身份。无秘密的 `compatibility.json` 只保存
 identity ID 到注册 Unix 毫秒的映射，使 `registeredAtMs` 重启稳定。
+
+`stateRoot/vault/root-key.b64u` 由 Node facade 独占，Unix 权限为 `0600`。普通重启复用同一
+key；`clearLocalData()` 删除整个 SDK-owned Vault 后重新生成 key。该文件不是 Host 配置，
+不得复制到 DSH API、日志或诊断 DTO。
 
 `clearLocalData()` 是不可撤销的本地操作，只清理上述 SDK-owned 路径，不删除远端账号或 Handle，
 不跟随被替换为符号链接的运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。

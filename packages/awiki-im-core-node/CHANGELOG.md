@@ -7,3 +7,5 @@
   response token capture, and one bounded `401` signature retry.
 - Add an explicit test-only literal-loopback HTTP option; production targets
   remain HTTPS-only.
+- Preserve the published 0.1.2 open contract: the Node facade owns its private
+  state-root Vault key and does not require host key material.

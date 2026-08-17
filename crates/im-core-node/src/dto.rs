@@ -7,9 +7,6 @@ use crate::error::{SafeError, SafeResult};
 #[napi(object)]
 pub struct NodeOpenOptions {
     pub state_root: String,
-    pub vault_root_key: Buffer,
-    pub vault_workspace_id: String,
-    pub vault_device_id: String,
     pub service_base_url: String,
     pub did_domain: String,
     pub user_service_endpoint: Option<String>,
@@ -25,9 +22,6 @@ impl Clone for NodeOpenOptions {
     fn clone(&self) -> Self {
         Self {
             state_root: self.state_root.clone(),
-            vault_root_key: self.vault_root_key.as_ref().to_vec().into(),
-            vault_workspace_id: self.vault_workspace_id.clone(),
-            vault_device_id: self.vault_device_id.clone(),
             service_base_url: self.service_base_url.clone(),
             did_domain: self.did_domain.clone(),
             user_service_endpoint: self.user_service_endpoint.clone(),

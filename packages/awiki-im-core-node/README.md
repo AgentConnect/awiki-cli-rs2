@@ -8,9 +8,6 @@ import { openImCoreNodeClient } from '@awiki/im-core-node'
 
 const client = await openImCoreNodeClient({
   stateRoot: '/absolute/private/path/awiki/im-core',
-  vaultRootKey: await loadHostVaultRootKey(), // exact 32-byte Uint8Array
-  vaultWorkspaceId: 'my-node-host',
-  vaultDeviceId: 'local-device',
   serviceBaseUrl: 'https://awiki.info',
   didDomain: 'awiki.info',
   userServiceEndpoint: 'https://awiki.info',
@@ -71,8 +68,9 @@ HTTP Message Signature 之间选择；成功响应只从 `Authentication-Info` �
 
 `stateRoot` 必须是绝对路径。同一路径在同一时间只能由一个实例/进程打开。Unix 上目录收紧为
 `0700`、文件收紧为 `0600`。包不读取旧 TypeScript SDK 的 `identity.json`，也不提供 legacy
-import。Node host 必须稳定提供 32-byte `vaultRootKey` 和 Vault workspace/device context；
-facade 以 `VaultRequired` 打开 Core，但不生成、持久化、记录或返回这个 root key。
+import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私有保存稳定 root key，
+以固定 context 打开 `VaultRequired` Core；Host 不接触或传入 root key。普通重启复用该 key，
+`clearLocalData()` 删除 Vault 并在重新初始化时生成新 key。
 
 ## DTO 与错误
 

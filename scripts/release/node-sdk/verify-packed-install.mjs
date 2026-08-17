@@ -71,9 +71,6 @@ try {
     import { openImCoreNodeClient } from '@awiki/im-core-node'
     const options = {
       stateRoot: ${JSON.stringify(stateRoot)},
-      vaultRootKey: new Uint8Array(32).fill(7),
-      vaultWorkspaceId: 'packed-install',
-      vaultDeviceId: 'packed-device',
       serviceBaseUrl: 'https://example.test',
       didDomain: 'example.test',
       operationTimeoutMs: 1000,

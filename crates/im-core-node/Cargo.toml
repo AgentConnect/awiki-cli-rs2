@@ -17,6 +17,7 @@ fs2.workspace = true
 im-core = { package = "awiki-im-core", path = "../im-core" }
 napi.workspace = true
 napi-derive.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

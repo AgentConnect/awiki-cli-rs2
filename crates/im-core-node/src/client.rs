@@ -911,20 +911,10 @@ fn core_open_options(
     options: &NodeOpenOptions,
     state: &StateRoot,
 ) -> SafeResult<im_core::ImCoreOpenOptions> {
-    let root_key: [u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN] = options
-        .vault_root_key
-        .as_ref()
-        .try_into()
-        .map_err(|_| SafeError::new("invalid_input", "The IM request is invalid.", false))?;
     Ok(im_core::ImCoreOpenOptions::default()
         .with_identity_secret_vault(
             im_core::IdentitySecretStoragePolicy::VaultRequired,
-            im_core::ImCoreSecretVaultOptions::new(
-                im_core::vault::DeviceVaultRootKey::from_bytes(root_key),
-                state.vault_dir(),
-                options.vault_workspace_id.clone(),
-                options.vault_device_id.clone(),
-            ),
+            state.identity_vault_options()?,
         )
         .with_external_http_allow_insecure_loopback_for_testing(
             options
@@ -1067,9 +1057,6 @@ mod tests {
     fn options(state_root: &std::path::Path) -> NodeOpenOptions {
         NodeOpenOptions {
             state_root: state_root.display().to_string(),
-            vault_root_key: vec![7_u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN].into(),
-            vault_workspace_id: "im-core-node-tests".to_owned(),
-            vault_device_id: "test-device".to_owned(),
             service_base_url: "https://example.test".to_owned(),
             did_domain: "example.test".to_owned(),
             user_service_endpoint: None,
