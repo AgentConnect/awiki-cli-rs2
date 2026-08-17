@@ -118,7 +118,7 @@ async function writeCommonFiles(output, manifest, target, binary) {
     schemaVersion: 1,
     package: { name: manifest.name, version: manifest.version },
     target: target || 'platform-independent-wrapper',
-    nativeApiVersion: 1,
+    nativeApiVersion: 2,
     source: {
       repository: 'https://github.com/AgentConnect/awiki-cli-rs2',
       commit: source.commit,
@@ -197,6 +197,12 @@ async function stage() {
   }
   await writeFile(join(output, 'package.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`)
   await copyFile(join(packageDirectory, 'README.md'), join(output, 'README.md'))
+  try {
+    await copyFile(join(packageDirectory, 'CHANGELOG.md'), join(output, 'CHANGELOG.md'))
+  }
+  catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
 
   let target
   let binary

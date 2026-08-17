@@ -173,8 +173,155 @@ pub struct NativeImCoreNodeClient {
     inner: Arc<ClientInner>,
 }
 
+/// Opaque, single-use external HTTP authentication attempt.
+#[napi(js_name = "NativeExternalHttpAuthAttempt")]
+pub struct NativeExternalHttpAuthAttempt {
+    inner: Arc<ClientInner>,
+    attempt: tokio::sync::Mutex<Option<im_core::ExternalHttpAuthAttempt>>,
+    target_url: String,
+    method: String,
+    header_patch: Vec<(String, String)>,
+    retry_count: u32,
+}
+
+impl std::fmt::Debug for NativeExternalHttpAuthAttempt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeExternalHttpAuthAttempt")
+            .field("target_url", &"<redacted-url>")
+            .field("method", &self.method)
+            .field(
+                "header_names",
+                &self
+                    .header_patch
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .field("retry_count", &self.retry_count)
+            .finish()
+    }
+}
+
+impl NativeExternalHttpAuthAttempt {
+    fn new(inner: Arc<ClientInner>, attempt: im_core::ExternalHttpAuthAttempt) -> Self {
+        let target_url = attempt.target_url().to_owned();
+        let method = attempt.method().to_owned();
+        let header_patch = attempt
+            .header_patch()
+            .iter()
+            .map(|header| (header.name().to_owned(), header.value().to_owned()))
+            .collect();
+        let retry_count = u32::from(attempt.retry_count());
+        Self {
+            inner,
+            attempt: tokio::sync::Mutex::new(Some(attempt)),
+            target_url,
+            method,
+            header_patch,
+            retry_count,
+        }
+    }
+
+    async fn handle_response_inner(
+        &self,
+        input: NodeExternalHttpResponse,
+    ) -> SafeResult<Option<Self>> {
+        let attempt = self.attempt.lock().await.take().ok_or_else(|| {
+            SafeError::new(
+                "external_http_attempt_consumed",
+                "The external HTTP authentication attempt was already completed.",
+                false,
+            )
+        })?;
+        let response = crate::dto::external_http_response(input)?;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let decision = self
+            .inner
+            .wait_im(
+                client
+                    .external_http_auth()
+                    .handle_response_async(attempt, response),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        match decision {
+            im_core::ExternalHttpAuthDecision::Complete => Ok(None),
+            im_core::ExternalHttpAuthDecision::Retry(attempt) => {
+                Ok(Some(Self::new(self.inner.clone(), attempt)))
+            }
+        }
+    }
+}
+
+#[napi]
+impl NativeExternalHttpAuthAttempt {
+    #[napi(catch_unwind)]
+    pub fn get_target_url(&self) -> String {
+        self.target_url.clone()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_method(&self) -> String {
+        self.method.clone()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_header_patch(&self) -> Vec<NodeExternalHttpHeader> {
+        self.header_patch
+            .iter()
+            .map(|(name, value)| NodeExternalHttpHeader {
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_retry_count(&self) -> u32 {
+        self.retry_count
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn handle_response(
+        &self,
+        input: NodeExternalHttpResponse,
+    ) -> napi::Result<Option<NativeExternalHttpAuthAttempt>> {
+        napi_result(self.handle_response_inner(input).await)
+    }
+}
+
 #[napi]
 impl NativeImCoreNodeClient {
+    #[napi(catch_unwind)]
+    pub async fn prepare_external_http_request(
+        &self,
+        input: NodeExternalHttpRequest,
+    ) -> napi::Result<NativeExternalHttpAuthAttempt> {
+        napi_result(self.prepare_external_http_request_inner(input).await)
+    }
+
+    async fn prepare_external_http_request_inner(
+        &self,
+        input: NodeExternalHttpRequest,
+    ) -> SafeResult<NativeExternalHttpAuthAttempt> {
+        let request = crate::dto::external_http_request(input)?;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let attempt = self
+            .inner
+            .wait_im(
+                client.external_http_auth().prepare_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(NativeExternalHttpAuthAttempt::new(
+            self.inner.clone(),
+            attempt,
+        ))
+    }
+
     #[napi(catch_unwind)]
     pub async fn get_default_identity(&self) -> napi::Result<Option<NodeIdentity>> {
         napi_result(self.get_default_identity_inner().await)
@@ -769,8 +916,8 @@ fn core_open_options(
         .as_ref()
         .try_into()
         .map_err(|_| SafeError::new("invalid_input", "The IM request is invalid.", false))?;
-    Ok(
-        im_core::ImCoreOpenOptions::default().with_identity_secret_vault(
+    Ok(im_core::ImCoreOpenOptions::default()
+        .with_identity_secret_vault(
             im_core::IdentitySecretStoragePolicy::VaultRequired,
             im_core::ImCoreSecretVaultOptions::new(
                 im_core::vault::DeviceVaultRootKey::from_bytes(root_key),
@@ -778,8 +925,12 @@ fn core_open_options(
                 options.vault_workspace_id.clone(),
                 options.vault_device_id.clone(),
             ),
-        ),
-    )
+        )
+        .with_external_http_allow_insecure_loopback_for_testing(
+            options
+                .external_http_allow_insecure_loopback_for_testing
+                .unwrap_or(false),
+        ))
 }
 
 fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
@@ -927,6 +1078,7 @@ mod tests {
             anp_service_did: None,
             operation_timeout_ms: Some(1_000),
             sync_timeout_ms: Some(100),
+            external_http_allow_insecure_loopback_for_testing: None,
         }
     }
 
@@ -1001,5 +1153,230 @@ mod tests {
             std::mem::size_of_val(&future),
             2 * std::mem::size_of::<usize>()
         );
+    }
+
+    #[tokio::test]
+    async fn external_http_attempt_reuses_token_and_is_single_use() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        install_external_http_identity(&client).await;
+
+        let initial = client
+            .prepare_external_http_request_inner(external_http_request(
+                "https://api.example.test/orders",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(initial.get_target_url(), "https://api.example.test/orders");
+        assert_eq!(initial.get_method(), "POST");
+        assert_eq!(initial.get_retry_count(), 0);
+        assert!(node_header(&initial.get_header_patch(), "Signature").is_some());
+        assert!(initial
+            .handle_response_inner(NodeExternalHttpResponse {
+                status_code: 200,
+                headers: vec![NodeExternalHttpHeader {
+                    name: "Authentication-Info".to_owned(),
+                    value: r#"access_token="node-token", token_type="Bearer", expires_in=3600"#
+                        .to_owned(),
+                }],
+            })
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            initial
+                .handle_response_inner(NodeExternalHttpResponse {
+                    status_code: 200,
+                    headers: Vec::new(),
+                })
+                .await
+                .unwrap_err()
+                .code,
+            "external_http_attempt_consumed"
+        );
+
+        let bearer = client
+            .prepare_external_http_request_inner(external_http_request(
+                "https://api.example.test/next",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            node_header(&bearer.get_header_patch(), "Authorization"),
+            Some("Bearer node-token")
+        );
+        assert!(!format!("{bearer:?}").contains("node-token"));
+    }
+
+    #[tokio::test]
+    async fn external_http_attempt_returns_only_one_retry_and_obeys_lifecycle() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        install_external_http_identity(&client).await;
+
+        let initial = client
+            .prepare_external_http_request_inner(external_http_request(
+                "https://api.example.test/orders",
+            ))
+            .await
+            .unwrap();
+        let retry = initial
+            .handle_response_inner(recoverable_external_401())
+            .await
+            .unwrap()
+            .expect("one retry");
+        assert_eq!(retry.get_retry_count(), 1);
+        assert!(node_header(&retry.get_header_patch(), "Signature").is_some());
+        assert!(retry
+            .handle_response_inner(recoverable_external_401())
+            .await
+            .unwrap()
+            .is_none());
+
+        let before_clear = client
+            .prepare_external_http_request_inner(external_http_request(
+                "https://api.example.test/clear",
+            ))
+            .await
+            .unwrap();
+        client.clear_local_data_inner().await.unwrap();
+        assert_eq!(
+            before_clear
+                .handle_response_inner(NodeExternalHttpResponse {
+                    status_code: 200,
+                    headers: Vec::new(),
+                })
+                .await
+                .unwrap_err()
+                .code,
+            "identity_required"
+        );
+        assert_eq!(
+            client
+                .prepare_external_http_request_inner(external_http_request(
+                    "https://api.example.test/after-clear",
+                ))
+                .await
+                .unwrap_err()
+                .code,
+            "identity_required"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_http_loopback_requires_the_explicit_node_option() {
+        let denied_root = tempfile::tempdir().unwrap();
+        let denied = open(options(denied_root.path())).await.unwrap();
+        install_external_http_identity(&denied).await;
+        assert_eq!(
+            denied
+                .prepare_external_http_request_inner(external_http_request(
+                    "http://127.0.0.1:3000/orders",
+                ))
+                .await
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+
+        let allowed_root = tempfile::tempdir().unwrap();
+        let mut allowed_options = options(allowed_root.path());
+        allowed_options.external_http_allow_insecure_loopback_for_testing = Some(true);
+        let allowed = open(allowed_options).await.unwrap();
+        install_external_http_identity(&allowed).await;
+        allowed
+            .prepare_external_http_request_inner(external_http_request(
+                "http://127.0.0.1:3000/orders",
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_http_attempt_fails_closed_after_client_close() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        install_external_http_identity(&client).await;
+        let attempt = client
+            .prepare_external_http_request_inner(external_http_request(
+                "https://api.example.test/orders",
+            ))
+            .await
+            .unwrap();
+        client.inner.close().await.unwrap();
+        assert_eq!(
+            attempt
+                .handle_response_inner(NodeExternalHttpResponse {
+                    status_code: 200,
+                    headers: Vec::new(),
+                })
+                .await
+                .unwrap_err()
+                .code,
+            "client_closed"
+        );
+    }
+
+    async fn install_external_http_identity(client: &NativeImCoreNodeClient) {
+        let bundle = anp::authentication::create_did_wba_document(
+            "example.test",
+            anp::authentication::DidDocumentOptions::default(),
+        )
+        .unwrap();
+        let did = bundle.did_document["id"].as_str().unwrap().to_owned();
+        let mut slot = client.inner.write_operation().await.unwrap();
+        let environment = slot.as_mut().unwrap();
+        environment.client = Some(
+            environment
+                .core
+                .client_with_identity_material(im_core::identity::HostedIdentityMaterial {
+                    identity_id: "node-external-http-auth".to_owned(),
+                    did,
+                    handle: None,
+                    display_name: None,
+                    did_document: bundle.did_document.clone(),
+                    default_signing_private_key_pem: bundle.keys["key-1"].private_key_pem.clone(),
+                    e2ee_agreement_private_key_pem: None,
+                    auth_token: None,
+                })
+                .unwrap(),
+        );
+    }
+
+    fn external_http_request(url: &str) -> NodeExternalHttpRequest {
+        NodeExternalHttpRequest {
+            url: url.to_owned(),
+            method: "POST".to_owned(),
+            headers: vec![NodeExternalHttpHeader {
+                name: "Content-Type".to_owned(),
+                value: "application/json".to_owned(),
+            }],
+            body: Some(br#"{"ok":true}"#.to_vec().into()),
+        }
+    }
+
+    fn recoverable_external_401() -> NodeExternalHttpResponse {
+        NodeExternalHttpResponse {
+            status_code: 401,
+            headers: vec![
+                NodeExternalHttpHeader {
+                    name: "WWW-Authenticate".to_owned(),
+                    value: r#"DIDWba realm="api.example.test", error="invalid_signature""#
+                        .to_owned(),
+                },
+                NodeExternalHttpHeader {
+                    name: "Accept-Signature".to_owned(),
+                    value: r#"sig1=("@method" "@target-uri" "@authority" "content-digest");created;expires;nonce;keyid"#
+                        .to_owned(),
+                },
+            ],
+        }
+    }
+
+    fn node_header<'a>(headers: &'a [NodeExternalHttpHeader], name: &str) -> Option<&'a str> {
+        headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case(name))
+            .map(|header| header.value.as_str())
     }
 }

@@ -18,6 +18,7 @@ pub struct NodeOpenOptions {
     pub anp_service_did: Option<String>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+    pub external_http_allow_insecure_loopback_for_testing: Option<bool>,
 }
 
 impl Clone for NodeOpenOptions {
@@ -35,8 +36,67 @@ impl Clone for NodeOpenOptions {
             anp_service_did: self.anp_service_did.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
             sync_timeout_ms: self.sync_timeout_ms,
+            external_http_allow_insecure_loopback_for_testing: self
+                .external_http_allow_insecure_loopback_for_testing,
         }
     }
+}
+
+#[napi(object)]
+pub struct NodeExternalHttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[napi(object)]
+pub struct NodeExternalHttpRequest {
+    pub url: String,
+    pub method: String,
+    pub headers: Vec<NodeExternalHttpHeader>,
+    pub body: Option<Buffer>,
+}
+
+#[napi(object)]
+pub struct NodeExternalHttpResponse {
+    pub status_code: u32,
+    pub headers: Vec<NodeExternalHttpHeader>,
+}
+
+pub(crate) fn external_http_headers(
+    headers: Vec<NodeExternalHttpHeader>,
+) -> SafeResult<Vec<im_core::ExternalHttpHeader>> {
+    headers
+        .into_iter()
+        .map(|header| {
+            im_core::ExternalHttpHeader::new(header.name, header.value).map_err(SafeError::from_im)
+        })
+        .collect()
+}
+
+pub(crate) fn external_http_request(
+    input: NodeExternalHttpRequest,
+) -> SafeResult<im_core::ExternalHttpRequest> {
+    im_core::ExternalHttpRequest::new(
+        input.url,
+        input.method,
+        external_http_headers(input.headers)?,
+        input.body.map(|body| body.as_ref().to_vec()),
+    )
+    .map_err(SafeError::from_im)
+}
+
+pub(crate) fn external_http_response(
+    input: NodeExternalHttpResponse,
+) -> SafeResult<im_core::ExternalHttpResponse> {
+    let status_code = u16::try_from(input.status_code).map_err(|_| {
+        SafeError::new(
+            "invalid_input",
+            "The external HTTP response is invalid.",
+            false,
+        )
+    })?;
+    im_core::ExternalHttpResponse::new(status_code, external_http_headers(input.headers)?)
+        .map_err(SafeError::from_im)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

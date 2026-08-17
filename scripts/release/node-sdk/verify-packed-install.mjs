@@ -57,6 +57,9 @@ try {
     `
     : `
       const client = await openImCoreNodeClient(options)
+      if (typeof client.prepareExternalHttpRequest !== 'function') {
+        throw new Error('expected native API v2 external HTTP auth facade')
+      }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()
       if (cleared?.cleared !== true) throw new Error('expected initialized Rust state to be cleared')
@@ -68,6 +71,9 @@ try {
     import { openImCoreNodeClient } from '@awiki/im-core-node'
     const options = {
       stateRoot: ${JSON.stringify(stateRoot)},
+      vaultRootKey: new Uint8Array(32).fill(7),
+      vaultWorkspaceId: 'packed-install',
+      vaultDeviceId: 'packed-device',
       serviceBaseUrl: 'https://example.test',
       didDomain: 'example.test',
       operationTimeoutMs: 1000,

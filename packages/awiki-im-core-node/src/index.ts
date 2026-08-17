@@ -1,8 +1,12 @@
 import { loadNativeBinding } from './loader.js'
-import type { NativeImCoreNodeClient } from './native.js'
+import type { NativeExternalHttpAuthAttempt, NativeImCoreNodeClient } from './native.js'
 import {
   ImCoreNodeError,
   type DownloadAttachmentInput,
+  type ExternalHttpAuthAttempt,
+  type ExternalHttpHeader,
+  type ExternalHttpRequest,
+  type ExternalHttpResponse,
   type HistoryInput,
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
@@ -61,6 +65,19 @@ async function call<T>(operation: () => Promise<T>): Promise<T> {
 class RustImCoreNodeClient implements ImCoreNodeClient {
   public constructor(private readonly native: NativeImCoreNodeClient) {}
 
+  public async prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt> {
+    const body = input.body === undefined
+      ? undefined
+      : Buffer.from(input.body.buffer, input.body.byteOffset, input.body.byteLength)
+    const native = await call(() => this.native.prepareExternalHttpRequest({
+      url: input.url,
+      method: input.method,
+      headers: copyHeaders(input.headers),
+      ...(body === undefined ? {} : { body }),
+    }))
+    return new RustExternalHttpAuthAttempt(native)
+  }
+
   public getDefaultIdentity(): Promise<NodeIdentity | null> {
     return call(() => this.native.getDefaultIdentity())
   }
@@ -118,6 +135,32 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
   public close(): Promise<void> {
     return call(() => this.native.close())
   }
+}
+
+class RustExternalHttpAuthAttempt implements ExternalHttpAuthAttempt {
+  public readonly targetUrl: string
+  public readonly method: string
+  public readonly headerPatch: readonly ExternalHttpHeader[]
+  public readonly retryCount: number
+
+  public constructor(private readonly native: NativeExternalHttpAuthAttempt) {
+    this.targetUrl = native.getTargetUrl()
+    this.method = native.getMethod()
+    this.headerPatch = copyHeaders(native.getHeaderPatch())
+    this.retryCount = native.getRetryCount()
+  }
+
+  public async handleResponse(response: ExternalHttpResponse): Promise<ExternalHttpAuthAttempt | null> {
+    const retry = await call(() => this.native.handleResponse({
+      statusCode: response.statusCode,
+      headers: copyHeaders(response.headers),
+    }))
+    return retry === null ? null : new RustExternalHttpAuthAttempt(retry)
+  }
+}
+
+function copyHeaders(headers: readonly ExternalHttpHeader[]): ExternalHttpHeader[] {
+  return headers.map(header => ({ name: header.name, value: header.value }))
 }
 
 /**

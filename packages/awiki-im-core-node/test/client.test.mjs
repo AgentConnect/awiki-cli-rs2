@@ -27,11 +27,37 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
   assert.equal(await client.getDefaultIdentity(), null)
+  await assert.rejects(
+    client.prepareExternalHttpRequest({
+      url: 'https://api.example.test/orders',
+      method: 'POST',
+      headers: [{ name: 'content-type', value: 'application/json' }],
+      body: new Uint8Array(),
+    }),
+    error => error instanceof ImCoreNodeError && error.code === 'identity_required',
+  )
+  await assert.rejects(
+    client.prepareExternalHttpRequest({
+      url: 'https://api.example.test/orders',
+      method: 'POST',
+      headers: [],
+      body: new Uint8Array(4 * 1024 * 1024 + 1),
+    }),
+    error => error instanceof ImCoreNodeError && error.code === 'invalid_input',
+  )
   await client.close()
   await client.close()
   await assert.rejects(
     client.getDefaultIdentity(),
     error => error instanceof ImCoreNodeError && error.code === 'client_closed' && error.message === error.safeMessage,
+  )
+  await assert.rejects(
+    client.prepareExternalHttpRequest({
+      url: 'https://api.example.test/orders',
+      method: 'GET',
+      headers: [],
+    }),
+    error => error instanceof ImCoreNodeError && error.code === 'client_closed',
   )
 })
 

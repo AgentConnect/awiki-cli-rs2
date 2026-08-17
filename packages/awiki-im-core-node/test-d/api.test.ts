@@ -16,6 +16,16 @@ const options: ImCoreNodeOpenOptions = {
 
 const opened: Promise<ImCoreNodeClient> = openImCoreNodeClient(options)
 void opened.then(async client => {
+  const attempt = await client.prepareExternalHttpRequest({
+    url: 'https://api.example.com/orders',
+    method: 'POST',
+    headers: [{ name: 'content-type', value: 'application/json' }],
+    body: new Uint8Array(),
+  })
+  attempt.targetUrl satisfies string
+  attempt.headerPatch satisfies readonly { readonly name: string, readonly value: string }[]
+  const retry = await attempt.handleResponse({ statusCode: 200, headers: [] })
+  retry satisfies import('../src/index.js').ExternalHttpAuthAttempt | null
   await client.sendAttachment({
     conversationId: 'group:did:example:group',
     fileName: 'bytes.bin',

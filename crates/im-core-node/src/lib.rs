@@ -5,7 +5,7 @@ mod dto;
 mod error;
 mod state;
 
-pub use client::NativeImCoreNodeClient;
+pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient};
 pub use dto::*;
 
 use napi_derive::napi;
@@ -20,5 +20,13 @@ pub async fn open_native_client(options: NodeOpenOptions) -> napi::Result<Native
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    1
+    2
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn external_http_auth_contract_uses_native_api_v2() {
+        assert_eq!(super::native_api_version(), 2);
+    }
 }

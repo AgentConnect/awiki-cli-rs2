@@ -6,6 +6,11 @@ struct PublicParity {
 
 const PUBLIC_PARITY: &[PublicParity] = &[
     PublicParity {
+        capability: "external_http_auth",
+        node_method: "prepareExternalHttpRequest",
+        core_facade: "ExternalHttpAuthService::prepare_async/handle_response_async",
+    },
+    PublicParity {
         capability: "identity",
         node_method: "getDefaultIdentity",
         core_facade: "ImCore::identities().default_identity_async",
@@ -80,6 +85,7 @@ const PUBLIC_PARITY: &[PublicParity] = &[
 #[test]
 fn dsh_required_capabilities_have_one_public_facade_route() {
     let expected = [
+        "external_http_auth",
         "identity",
         "registration_otp",
         "registration",

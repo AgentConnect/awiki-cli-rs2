@@ -1,6 +1,6 @@
 [package]
 name = "awiki-im-core-node"
-version = "0.1.1"
+version = "0.1.3"
 description = "Node-API facade for the Awiki Rust IM SDK"
 edition.workspace = true
 rust-version.workspace = true
@@ -27,4 +27,5 @@ tokio-util.workspace = true
 napi-build = "=2.4.1"
 
 [dev-dependencies]
+anp.workspace = true
 tempfile = "=3.3.0"

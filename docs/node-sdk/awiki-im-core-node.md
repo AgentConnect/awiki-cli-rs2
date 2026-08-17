@@ -8,6 +8,7 @@
 
 | 能力 | Node 方法 | `awiki-im-core` public facade |
 | --- | --- | --- |
+| 外部 HTTP ANP 认证 | `prepareExternalHttpRequest` + opaque attempt `handleResponse` | `external_http_auth().prepare_async/handle_response_async` |
 | 默认身份 | `getDefaultIdentity` | `identities().default_identity_async` |
 | OTP 第一阶段 | `requestRegistrationOtp` | `identities().request_registration_otp_async` |
 | 完成注册 | `completeRegistration` | `identities().register_handle_async` |
@@ -28,6 +29,44 @@ import API；TypeScript SDK 的 `identity.json` 不会被读取或转换。
 Node host 必须为每个 state root 提供稳定的 32-byte `vaultRootKey` 以及
 `vaultWorkspaceId` / `vaultDeviceId` 上下文。Facade 只把 host 提供的 key 传给
 `VaultRequired` IM Core，不生成、持久化、记录或返回 root key。
+
+## 外部 HTTP ANP 认证
+
+Node facade 把 Rust Core 的 prepare/response 状态机映射为一个 single-use opaque
+attempt；它不发送网络请求，也不读取响应正文。可信 Host 先提交 canonical URL、uppercase
+method、header pairs 和可选原始 body bytes：
+
+```ts
+const attempt = await client.prepareExternalHttpRequest({
+  url: 'https://api.example.com/orders',
+  method: 'POST',
+  headers: [{ name: 'content-type', value: 'application/json' }],
+  body: new TextEncoder().encode('{"productId":"123"}'),
+})
+
+const headers = new Headers()
+for (const header of attempt.headerPatch) headers.set(header.name, header.value)
+
+// Host sends attempt.targetUrl + attempt.method + exact original body bytes.
+const response = await hostTransport(/* ... */)
+const retry = await attempt.handleResponse({
+  statusCode: response.status,
+  headers: [...response.headers].map(([name, value]) => ({ name, value })),
+})
+```
+
+`body: undefined` 表示没有正文；空 `Uint8Array` 表示显式空正文，仍会生成
+`Content-Digest`。最大正文为 4 MiB。Rust 自动选择当前 origin 的进程内 Bearer 或当前设备
+request-signing key 的 HTTP Message Signature；Token、nonce、key ID、retry counter 和
+challenge 逻辑不由调用方选择。Token 只接受成功响应的 `Authentication-Info`，不会从响应
+`Authorization` 读取，也不会跨进程重启持久化。
+
+attempt 的 `headerPatch` 含敏感认证值，禁止记录。attempt 只能调用一次
+`handleResponse`；`401` 最多返回一个 `retryCount === 1` 的新 attempt，后者不会生成第三次
+请求。生产只接受 HTTPS；`externalHttpAllowInsecureLoopbackForTesting` 只允许 literal
+loopback HTTP，不允许 remote HTTP。该低层 API 只能留在可信 Node Host，不得转发给浏览器、
+模型工具或远程签名服务。DSH 产品层使用 `externalHttpAuth.dispatch` 封装 transport 和唯一一次
+重试，不把该低层状态机交给插件调用者。
 
 ## 生命周期和并发
 
@@ -55,6 +94,7 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 - 可选输出字段缺失时是 `undefined`，只有 `getDefaultIdentity` 明确用 `null` 表示未注册。
 - 上传、下载使用 `Uint8Array`/Buffer 直接跨 N-API；附件正文不经 JSON/base64。
 - 当前范围只有单附件，不扩展多附件 UI 或领域 API。
+- External HTTP body 只用 `Uint8Array`/Buffer 跨 N-API；response body 永不跨该接口。
 
 ## 状态与错误
 
@@ -68,6 +108,9 @@ identity ID 到注册 Unix 毫秒的映射，使 `registeredAtMs` 重启稳定�
 Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
+
+Native contract version 为 `2`。wrapper 在加载时必须拒绝 v1 或其他版本的 addon，避免旧
+二进制缺少 opaque external HTTP attempt 却被静默当作兼容实现。
 
 ## 构建与验证
 

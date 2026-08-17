@@ -18,6 +18,41 @@ export interface ImCoreNodeOpenOptions {
   readonly operationTimeoutMs?: number
   /** Timeout for bounded synchronization before list reads. */
   readonly syncTimeoutMs?: number
+  /** Test-only exception for literal loopback HTTP external-auth targets. */
+  readonly externalHttpAllowInsecureLoopbackForTesting?: boolean
+}
+
+/** One exact HTTP field. Authentication field values are sensitive. */
+export interface ExternalHttpHeader {
+  readonly name: string
+  readonly value: string
+}
+
+/** Exact request bytes authenticated by Rust and sent by a trusted host. */
+export interface ExternalHttpRequest {
+  readonly url: string
+  readonly method: string
+  readonly headers: readonly ExternalHttpHeader[]
+  /** `undefined` means no body; an empty Uint8Array is an explicit empty body. */
+  readonly body?: Uint8Array
+}
+
+/** Response metadata observed without transferring or consuming its body. */
+export interface ExternalHttpResponse {
+  readonly statusCode: number
+  readonly headers: readonly ExternalHttpHeader[]
+}
+
+/** Opaque, single-use external HTTP authentication attempt. */
+export interface ExternalHttpAuthAttempt {
+  /** Canonical target URI covered by the signature. */
+  readonly targetUrl: string
+  readonly method: string
+  /** Apply this patch only to the exact request represented by this attempt. */
+  readonly headerPatch: readonly ExternalHttpHeader[]
+  readonly retryCount: number
+  /** Returns the only allowed retry, or `null` when authentication is complete. */
+  handleResponse(response: ExternalHttpResponse): Promise<ExternalHttpAuthAttempt | null>
 }
 
 /** Public identity projection. No token, private key, or local path is exposed. */
@@ -198,6 +233,7 @@ export class ImCoreNodeError extends Error {
 
 /** Environment-scoped Promise API backed by one Rust ImCore/ImClient pair. */
 export interface ImCoreNodeClient {
+  prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>

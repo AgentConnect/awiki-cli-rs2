@@ -9,6 +9,8 @@ on:
       - 'crates/im-core/**'
       - 'crates/im-core-node/**'
       - 'packages/awiki-im-core-node/**'
+      - 'packages/awiki-im-core-node-platforms/**'
+      - 'scripts/release/node-sdk/**'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
   push:
@@ -20,6 +22,8 @@ on:
       - 'crates/im-core/**'
       - 'crates/im-core-node/**'
       - 'packages/awiki-im-core-node/**'
+      - 'packages/awiki-im-core-node-platforms/**'
+      - 'scripts/release/node-sdk/**'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
 

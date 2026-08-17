@@ -27,6 +27,35 @@ finally {
 }
 ```
 
+## 外部 HTTP ANP 认证
+
+可信 Node Host 可以让 Rust 为外部 transport 的请求准备 ANP 认证头。SDK 不发送请求：
+
+```ts
+const attempt = await client.prepareExternalHttpRequest({
+  url: 'https://api.example.com/orders',
+  method: 'POST',
+  headers: [{ name: 'content-type', value: 'application/json' }],
+  body: new TextEncoder().encode('{"productId":"123"}'),
+})
+
+// Apply attempt.headerPatch and send attempt.targetUrl/method with the exact body.
+const retry = await attempt.handleResponse({
+  statusCode: response.status,
+  headers: [...response.headers].map(([name, value]) => ({ name, value })),
+})
+```
+
+attempt 是 single-use opaque 对象。Rust 自动在 origin-scoped 进程内 Bearer cache 和当前设备
+HTTP Message Signature 之间选择；成功响应只从 `Authentication-Info` 接受 Token。一次
+`401` 最多产生一个 retry attempt。正文最大 4 MiB；`undefined` 表示无正文，空
+`Uint8Array` 表示需要摘要绑定的显式空正文。
+
+`headerPatch` 含敏感凭证，禁止日志记录或序列化。生产只允许 HTTPS；可选
+`externalHttpAllowInsecureLoopbackForTesting` 仅为 literal loopback 测试。该 API 不能暴露给
+浏览器、模型工具或远程调用者。DSH 插件应使用其 Host-only `externalHttpAuth.dispatch`，而
+不是直接让第三方编排 attempt。
+
 ## 生命周期与线程
 
 - 一个 client 对应一个环境级 `ImCore` 和一个 default identity-bound `ImClient`，不会为
@@ -52,6 +81,7 @@ facade 以 `VaultRequired` 打开 Core，但不生成、持久化、记录或返
   JSON 或 base64。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
+- Native contract version 固定为 `2`；wrapper 拒绝旧 v1 addon。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。
