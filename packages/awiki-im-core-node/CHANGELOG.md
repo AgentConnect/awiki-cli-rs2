@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.4
 
-- Add the native API v3 local conversation timeline read for local-first Host UI.
+- Add the local conversation timeline read for local-first Host UI.
+- Add `createGroup` for private, open-join, transport-protected groups and return
+  the Core-derived canonical conversation ID.
+- Add `addGroupMember` with Core-owned Handle/DID resolution.
+- Add local-only `hydrateDisplayProfiles` batch lookup for cached sender Handle
+  and display-name projection without a Directory network request.
+- Raise the native addon contract to v4 so wrappers reject binaries that do not
+  contain the group-management and display-profile hydration methods.
 
 ## 0.1.3
 

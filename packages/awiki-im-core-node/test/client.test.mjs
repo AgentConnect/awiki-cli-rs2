@@ -79,6 +79,41 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })
 
+test('routes group management and profile hydration through native v4 with structured identity errors', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const client = await openImCoreNodeClient(options(root))
+  t.after(() => client.close())
+
+  await assert.rejects(
+    client.createGroup({ name: 'Release Crew' }),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required'
+      && error.message === error.safeMessage,
+  )
+  await assert.rejects(
+    client.addGroupMember({
+      groupDid: 'did:wba:example.test:group:release-crew',
+      member: 'alice.example.test',
+    }),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required'
+      && error.message === error.safeMessage,
+  )
+  await assert.rejects(
+    client.getLocalConversationTimeline({ conversationId: 'group:did:wba:example.test:group:release-crew' }),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required'
+      && error.message === error.safeMessage,
+  )
+  await assert.rejects(
+    client.hydrateDisplayProfiles({ peers: ['did:wba:example.test:user:alice'] }),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required'
+      && error.message === error.safeMessage,
+  )
+})
+
 test('fails loudly when another process owns the same state root', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-lock-'))
   t.after(() => rm(root, { recursive: true, force: true }))

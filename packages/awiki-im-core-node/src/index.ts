@@ -2,6 +2,9 @@ import { loadNativeBinding } from './loader.js'
 import type { NativeExternalHttpAuthAttempt, NativeImCoreNodeClient } from './native.js'
 import {
   ImCoreNodeError,
+  type AddGroupMemberInput,
+  type CreateGroupInput,
+  type DisplayProfileBatchInput,
   type DownloadAttachmentInput,
   type ExternalHttpAuthAttempt,
   type ExternalHttpHeader,
@@ -13,6 +16,9 @@ import {
   type MarkReadResult,
   type NodeConversation,
   type NodeDownload,
+  type NodeDisplayProfile,
+  type NodeGroup,
+  type NodeGroupMember,
   type NodeIdentity,
   type NodeMessage,
   type NodePeer,
@@ -96,6 +102,18 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public resolvePeer(peer: string): Promise<NodePeer> {
     return call(() => this.native.resolvePeer(peer))
+  }
+
+  public hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]> {
+    return call(() => this.native.hydrateDisplayProfiles({ peers: [...input.peers] }))
+  }
+
+  public createGroup(input: CreateGroupInput): Promise<NodeGroup> {
+    return call(() => this.native.createGroup(input))
+  }
+
+  public addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember> {
+    return call(() => this.native.addGroupMember(input))
   }
 
   public syncNow(input?: SyncOptions): Promise<SyncResult> {

@@ -140,6 +140,53 @@ pub struct NodePeer {
     pub conversation_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeDisplayProfileBatchInput {
+    pub peers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeDisplayProfile {
+    pub did: Option<String>,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub cache_hit: bool,
+    pub is_stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeCreateGroupInput {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroup {
+    pub did: String,
+    pub conversation_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub member_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeAddGroupMemberInput {
+    pub group_did: String,
+    pub member: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupMember {
+    pub did: String,
+    pub handle: Option<String>,
+}
+
 #[napi(object)]
 pub struct NodePageInput {
     pub cursor: Option<String>,
@@ -312,6 +359,125 @@ pub(crate) fn peer(value: im_core::directory::DirectoryResolution) -> NodePeer {
         handle: value.handle.map(|handle| handle.as_str().to_owned()),
         display_name: value.profile.and_then(|profile| profile.display_name),
         conversation_id: value.conversation_id,
+    }
+}
+
+pub(crate) fn display_profile_batch_request(
+    input: NodeDisplayProfileBatchInput,
+    default_domain: &str,
+) -> SafeResult<im_core::directory::DisplayProfileBatchRequest> {
+    if input.peers.len() > 100 {
+        return Err(SafeError::new(
+            "invalid_input",
+            "The display profile batch exceeds 100 peers.",
+            false,
+        ));
+    }
+    Ok(im_core::directory::DisplayProfileBatchRequest {
+        peers: input
+            .peers
+            .into_iter()
+            .map(|peer| {
+                im_core::ids::PeerRef::parse(peer, default_domain).map_err(SafeError::from_im)
+            })
+            .collect::<SafeResult<Vec<_>>>()?,
+    })
+}
+
+pub(crate) fn display_profiles(
+    values: Vec<im_core::directory::DisplayProfile>,
+) -> Vec<NodeDisplayProfile> {
+    values
+        .into_iter()
+        .map(|value| NodeDisplayProfile {
+            did: value.did.map(|did| did.as_str().to_owned()),
+            handle: value.handle.map(|handle| handle.as_str().to_owned()),
+            display_name: value.display_name,
+            cache_hit: value.cache_hit,
+            is_stale: value.is_stale,
+        })
+        .collect()
+}
+
+pub(crate) fn group_create_request(
+    input: NodeCreateGroupInput,
+) -> SafeResult<im_core::groups::GroupCreateRequest> {
+    let name = input.name.trim().to_owned();
+    if name.is_empty() {
+        return Err(SafeError::new(
+            "invalid_input",
+            "The group name must not be empty.",
+            false,
+        ));
+    }
+    let mut request = im_core::groups::GroupCreateRequest::new(name);
+    request.description = input
+        .description
+        .map(|description| description.trim().to_owned())
+        .filter(|description| !description.is_empty());
+    request.discoverability = Some(im_core::groups::GroupDiscoverability::Private);
+    request.admission_mode = Some(im_core::groups::GroupAdmissionMode::OpenJoin);
+    request.message_security_profile =
+        Some(im_core::groups::GroupMessageSecurityProfile::TransportProtected);
+    Ok(request)
+}
+
+pub(crate) fn created_group(
+    value: im_core::groups::GroupReadResult,
+    fallback_title: &str,
+) -> SafeResult<NodeGroup> {
+    let snapshot = value.group.ok_or_else(SafeError::internal)?;
+    Ok(created_group_from_snapshot(snapshot, fallback_title))
+}
+
+pub(crate) fn created_group_from_snapshot(
+    snapshot: im_core::groups::GroupSnapshot,
+    fallback_title: &str,
+) -> NodeGroup {
+    let conversation_id = im_core::messages::ConversationIdentity::from_thread_ref(
+        &im_core::messages::ThreadRef::Group(snapshot.did.clone()),
+    )
+    .conversation_id;
+    let title = snapshot
+        .display_name
+        .clone()
+        .or_else(|| snapshot.name.clone())
+        .unwrap_or_else(|| fallback_title.to_owned());
+    NodeGroup {
+        did: snapshot.did.as_str().to_owned(),
+        conversation_id,
+        title,
+        description: snapshot.description,
+        member_count: snapshot.member_count,
+    }
+}
+
+pub(crate) fn group_member_mutation_request(
+    input: NodeAddGroupMemberInput,
+    default_domain: &str,
+) -> SafeResult<im_core::groups::GroupMemberMutationRequest> {
+    Ok(im_core::groups::GroupMemberMutationRequest {
+        group: im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?,
+        member: im_core::groups::GroupMemberRef::parse(input.member, default_domain)
+            .map_err(SafeError::from_im)?,
+        role: None,
+        reason_text: None,
+        leave_request_id: None,
+        security: im_core::groups::GroupSecurityRequirement::default(),
+    })
+}
+
+pub(crate) fn added_group_member(
+    value: im_core::groups::GroupReadResult,
+) -> SafeResult<NodeGroupMember> {
+    let member = value.resolved_member.ok_or_else(SafeError::internal)?;
+    Ok(group_member(member))
+}
+
+pub(crate) fn group_member(member: im_core::groups::GroupMemberResolution) -> NodeGroupMember {
+    NodeGroupMember {
+        did: member.did.as_str().to_owned(),
+        handle: member.handle.map(|handle| handle.as_str().to_owned()),
     }
 }
 
@@ -514,7 +680,9 @@ fn message(
     };
     let sender_handle = message_attribute(&value, "sender_handle")
         .or_else(|| message_attribute(&value, "peer_full_handle"));
-    let sender_display_name = message_attribute(&value, "sender_display_name");
+    let sender_display_name = message_attribute(&value, "sender_display_name")
+        .or_else(|| message_attribute(&value, "senderName"))
+        .or_else(|| message_attribute(&value, "sender_name"));
     Ok(NodeMessage {
         id: value.id.as_str().to_owned(),
         conversation_id: canonical_conversation_id,
@@ -741,12 +909,19 @@ mod tests {
             },
             sent_at: Some("2026-08-15T12:00:00Z".to_owned()),
             received_at: None,
-            metadata: im_core::messages::MessageMetadata::default(),
+            metadata: im_core::messages::MessageMetadata {
+                attributes: vec![im_core::messages::MessageMetadataAttribute {
+                    key: "sender_name".to_owned(),
+                    value: "Bob".to_owned(),
+                }],
+                ..Default::default()
+            },
         };
         let mapped = sent_message(message, "group:did:example:group").unwrap();
         assert_eq!(mapped.id, "message-1");
         assert_eq!(mapped.conversation_id, "group:did:example:group");
         assert_eq!(mapped.conversation_kind, "group");
+        assert_eq!(mapped.sender_display_name.as_deref(), Some("Bob"));
         assert_eq!(mapped.content.kind, "text");
         assert_eq!(mapped.content.text.as_deref(), Some("hello"));
 
@@ -768,6 +943,44 @@ mod tests {
         assert_eq!(download.attachment.id, "attachment-1");
         assert_eq!(download.attachment.size_bytes, expected.len().to_string());
         assert_eq!(download.bytes.to_vec(), expected);
+    }
+
+    #[test]
+    fn display_profile_batch_is_bounded_and_preserves_cached_labels() {
+        let request = display_profile_batch_request(
+            NodeDisplayProfileBatchInput {
+                peers: vec!["did:wba:awiki.ai:user:bob".to_owned()],
+            },
+            "awiki.ai",
+        )
+        .unwrap();
+        assert_eq!(request.peers[0].as_str(), "did:wba:awiki.ai:user:bob");
+
+        let mapped = display_profiles(vec![im_core::directory::DisplayProfile {
+            did: Some(im_core::ids::Did::parse("did:wba:awiki.ai:user:bob").unwrap()),
+            handle: Some(im_core::ids::Handle::parse("bob.awiki.ai", "awiki.ai").unwrap()),
+            display_name: Some("Bob".to_owned()),
+            avatar_uri: None,
+            avatar_url: None,
+            profile_uri: None,
+            subject_type: None,
+            cache_hit: true,
+            is_stale: false,
+            legacy_fallback: false,
+            warnings: Vec::new(),
+        }]);
+        assert_eq!(mapped[0].handle.as_deref(), Some("bob.awiki.ai"));
+        assert_eq!(mapped[0].display_name.as_deref(), Some("Bob"));
+        assert!(mapped[0].cache_hit);
+
+        let error = display_profile_batch_request(
+            NodeDisplayProfileBatchInput {
+                peers: vec!["did:wba:awiki.ai:user:bob".to_owned(); 101],
+            },
+            "awiki.ai",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_input");
     }
 
     #[test]

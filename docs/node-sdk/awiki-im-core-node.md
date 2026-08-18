@@ -14,6 +14,9 @@
 | 完成注册 | `completeRegistration` | `identities().register_handle_async` |
 | Profile | `updateDisplayName` | `identity().update_profile_async` |
 | Directory | `resolvePeer` | `directory().resolve_peer_async` |
+| 本地显示资料 | `hydrateDisplayProfiles` | `directory().hydrate_display_profiles_async` |
+| 创建群聊 | `createGroup` | `groups().create_async` |
+| 添加群成员 | `addGroupMember` | `groups().add_member_async` |
 | 同步 | `syncNow` | `messages().sync_now_async` |
 | 会话列表 | `listConversations` | `messages().conversations_async` |
 | 历史 | `getHistory` | `messages().conversation_history_async` |
@@ -107,6 +110,9 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 - 可选输出字段缺失时是 `undefined`，只有 `getDefaultIdentity` 明确用 `null` 表示未注册。
 - 上传、下载使用 `Uint8Array`/Buffer 直接跨 N-API；附件正文不经 JSON/base64。
 - 当前范围只有单附件，不扩展多附件 UI 或领域 API。
+- `createGroup` 的 Node 产品契约固定为 private、open-join、transport-protected；返回的
+  canonical conversation ID 由 Core 生成，Host 不拼接。初始成员由 `addGroupMember` 逐个添加，
+  该方法接受 Handle 或 DID 并返回 Core 权威解析后的身份。
 - External HTTP body 只用 `Uint8Array`/Buffer 跨 N-API；response body 永不跨该接口。
 
 ## 状态与错误
@@ -126,10 +132,8 @@ Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 
-当前源码 candidate 的 Native contract version 为 `3`。v3 在 v2 external HTTP auth 基础上
-增加 local conversation timeline；wrapper 在加载时必须拒绝其他版本的 addon，避免旧
-二进制缺少 local-first 方法却被静默当作兼容实现。registry `0.1.3` 仍是 v2；后续正式
-patch 必须把 v3 wrapper 和全部 Tier 1 addon 一起发布。
+Native contract version 为 `4`。wrapper 在加载时必须拒绝其他版本的 addon，避免旧二进制
+缺少群管理、本地时间线或展示资料方法却被静默当作兼容实现。
 
 ## 构建与验证
 
