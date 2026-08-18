@@ -57,8 +57,8 @@ try {
     `
     : `
       const client = await openImCoreNodeClient(options)
-      if (typeof client.prepareExternalHttpRequest !== 'function') {
-        throw new Error('expected native API v2 external HTTP auth facade')
+      if (typeof client.getLocalConversationTimeline !== 'function') {
+        throw new Error('expected native API v3 local timeline facade')
       }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()

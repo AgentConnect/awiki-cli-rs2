@@ -51,6 +51,11 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "MessageService::conversation_history_async",
     },
     PublicParity {
+        capability: "local_timeline",
+        node_method: "getLocalConversationTimeline",
+        core_facade: "MessageService::local_conversation_timeline_async",
+    },
+    PublicParity {
         capability: "mark_read",
         node_method: "markConversationRead",
         core_facade: "MessageService::mark_conversation_read_async",
@@ -94,6 +99,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "sync",
         "conversation",
         "history",
+        "local_timeline",
         "mark_read",
         "text",
         "attachment_send",
@@ -114,6 +120,32 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         assert!(!entry.core_facade.contains("internal::"));
         assert!(!entry.core_facade.contains("sqlite"));
         assert!(!entry.core_facade.contains("redb"));
+    }
+}
+
+#[test]
+fn local_timeline_route_uses_only_the_public_local_read_facade() {
+    let source = include_str!("../src/client.rs");
+    let start = source
+        .find("async fn get_local_conversation_timeline_inner")
+        .expect("local timeline inner method");
+    let tail = &source[start..];
+    let end = tail
+        .find("    #[napi(catch_unwind)]")
+        .expect("next public method boundary");
+    let method = &tail[..end];
+
+    assert!(method.contains("local_conversation_timeline_async"));
+    for forbidden in [
+        "conversation_history_async",
+        "sync_now_async",
+        "resolve_peer_async",
+        "history_async(",
+    ] {
+        assert!(
+            !method.contains(forbidden),
+            "local timeline route must not call {forbidden}"
+        );
     }
 }
 

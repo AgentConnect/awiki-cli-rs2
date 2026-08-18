@@ -647,6 +647,42 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn get_local_conversation_timeline(
+        &self,
+        input: NodeHistoryInput,
+    ) -> napi::Result<NodePageOfMessages> {
+        napi_result(self.get_local_conversation_timeline_inner(input).await)
+    }
+
+    async fn get_local_conversation_timeline_inner(
+        &self,
+        input: NodeHistoryInput,
+    ) -> SafeResult<NodePageOfMessages> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let conversation = im_core::messages::ConversationReadRef::new(&input.conversation_id)
+            .map_err(SafeError::from_im)?;
+        let page = self
+            .inner
+            .wait_im(
+                client.messages().local_conversation_timeline_async(
+                    conversation,
+                    im_core::messages::LocalHistoryQuery {
+                        limit: page_limit(input.limit)?,
+                        cursor: input
+                            .cursor
+                            .map(im_core::ids::Cursor::parse)
+                            .transpose()
+                            .map_err(SafeError::from_im)?,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::messages(page, &input.conversation_id)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn mark_conversation_read(
         &self,
         conversation_id: String,
@@ -1077,6 +1113,18 @@ mod tests {
         client.inner.close().await.unwrap();
         assert_eq!(
             client.get_default_identity_inner().await.unwrap_err().code,
+            "client_closed"
+        );
+        assert_eq!(
+            client
+                .get_local_conversation_timeline_inner(NodeHistoryInput {
+                    conversation_id: "dm:did:example:bob".to_owned(),
+                    cursor: None,
+                    limit: None,
+                })
+                .await
+                .unwrap_err()
+                .code,
             "client_closed"
         );
         open(options(directory.path())).await.unwrap();

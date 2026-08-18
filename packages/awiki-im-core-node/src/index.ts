@@ -110,6 +110,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.getHistory(input))
   }
 
+  public getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>> {
+    return call(() => this.native.getLocalConversationTimeline(input))
+  }
+
   public markConversationRead(conversationId: string): Promise<MarkReadResult> {
     return call(() => this.native.markConversationRead(conversationId))
   }

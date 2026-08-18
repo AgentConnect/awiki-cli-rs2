@@ -45,6 +45,7 @@ export interface NativeImCoreNodeClient {
   syncNow(input?: SyncOptions): Promise<SyncResult>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
+  getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>
   markConversationRead(conversationId: string): Promise<MarkReadResult>
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: Omit<SendAttachmentInput, 'bytes'> & { readonly bytes: Buffer }): Promise<NodeMessage>

@@ -236,6 +236,8 @@ export interface ImCoreNodeClient {
   syncNow(input?: SyncOptions): Promise<SyncResult>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
+  /** Read only the committed local timeline; never starts sync, history, or Directory RPC. */
+  getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>
   markConversationRead(conversationId: string): Promise<MarkReadResult>
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: SendAttachmentInput): Promise<NodeMessage>

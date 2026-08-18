@@ -17,6 +17,7 @@
 | 同步 | `syncNow` | `messages().sync_now_async` |
 | 会话列表 | `listConversations` | `messages().conversations_async` |
 | 历史 | `getHistory` | `messages().conversation_history_async` |
+| 本地会话首屏 | `getLocalConversationTimeline` | `messages().local_conversation_timeline_async` |
 | 已读 | `markConversationRead` | `messages().mark_conversation_read_async` |
 | 文本 | `sendText` | `messages().send_conversation_text_async` |
 | 单附件发送 | `sendAttachment` | `attachments().send_conversation_async` |
@@ -93,6 +94,12 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 `listConversations` 先执行一次有界可靠同步，只在 `idle` 或 `changed` 时读取本地投影；超时、
 认证撤销、需要恢复或可重试失败都返回结构化错误，不把陈旧投影伪装为成功。
 
+`getLocalConversationTimeline` 只读取 canonical conversation 的 committed SQLite projection，
+不会触发可靠同步、远端 Direct/Group history 或 Directory RPC。它用于 Host/UI 的 local-first
+首屏；返回的 opaque local cursor 只能继续传给同一 local timeline 方法，不能传给
+`getHistory`。需要新鲜度或远端 backfill 时，Host 应在首屏之后显式调用现有同步/history
+能力，并在 Core 提交后重新读取 local timeline。
+
 ## DTO 边界
 
 - ID 和 cursor 是不透明字符串，任何 host 都不得重建 canonical conversation ID。
@@ -119,8 +126,10 @@ Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 
-Native contract version 为 `2`。wrapper 在加载时必须拒绝 v1 或其他版本的 addon，避免旧
-二进制缺少 opaque external HTTP attempt 却被静默当作兼容实现。
+当前源码 candidate 的 Native contract version 为 `3`。v3 在 v2 external HTTP auth 基础上
+增加 local conversation timeline；wrapper 在加载时必须拒绝其他版本的 addon，避免旧
+二进制缺少 local-first 方法却被静默当作兼容实现。registry `0.1.3` 仍是 v2；后续正式
+patch 必须把 v3 wrapper 和全部 Tier 1 addon 一起发布。
 
 ## 构建与验证
 

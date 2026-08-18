@@ -17,12 +17,22 @@ const client = await openImCoreNodeClient({
 try {
   const identity = await client.getDefaultIdentity()
   const conversations = identity ? await client.listConversations() : undefined
+  const localTimeline = conversations?.items[0]
+    ? await client.getLocalConversationTimeline({
+        conversationId: conversations.items[0].id,
+        limit: 50,
+      })
+    : undefined
   // 经产品层显式二次确认后，可调用 await client.clearLocalData()
 }
 finally {
   await client.close()
 }
 ```
+
+`getLocalConversationTimeline` 只读取 Core 已提交的本地 conversation projection，不发起
+同步、远端 history 或 Directory RPC。它适合首屏显示；远端刷新应在后台进行，并在 Core
+提交后重新读取该 local timeline。它返回的 local cursor 不得传给 `getHistory`。
 
 ## 外部 HTTP ANP 认证
 
@@ -83,7 +93,8 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
   JSON 或 base64。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
-- Native contract version 固定为 `2`；wrapper 拒绝旧 v1 addon。
+- 当前源码 candidate 的 Native contract version 为 `3`；wrapper 拒绝其他版本的 addon。
+  registry `0.1.3` 仍是 v2，后续正式 patch 必须同步发布 v3 wrapper 与平台 addon。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。

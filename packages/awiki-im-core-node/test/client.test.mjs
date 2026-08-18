@@ -25,6 +25,10 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
   const client = await openImCoreNodeClient(options(root))
   assert.equal(await client.getDefaultIdentity(), null)
   await assert.rejects(
+    client.getLocalConversationTimeline({ conversationId: 'dm:did:example:bob' }),
+    error => error instanceof ImCoreNodeError && error.code === 'identity_required',
+  )
+  await assert.rejects(
     client.prepareExternalHttpRequest({
       url: 'https://api.example.test/orders',
       method: 'POST',
@@ -47,6 +51,10 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
   await assert.rejects(
     client.getDefaultIdentity(),
     error => error instanceof ImCoreNodeError && error.code === 'client_closed' && error.message === error.safeMessage,
+  )
+  await assert.rejects(
+    client.getLocalConversationTimeline({ conversationId: 'dm:did:example:bob' }),
+    error => error instanceof ImCoreNodeError && error.code === 'client_closed',
   )
   await assert.rejects(
     client.prepareExternalHttpRequest({

@@ -18,10 +18,11 @@ checksum 和 provenance。
 `linux-<arch>-musl` 并返回 `unsupported_platform`，绝不会错误加载 glibc 包、运行期下载或回退
 TypeScript SDK。
 
-当前 external HTTP auth facade 对应 wrapper/platform package `0.1.3`，native contract
-version 为 `2`。v2 新增 opaque single-use attempt；wrapper、所有 Tier 1 addon、provenance
-中的 `nativeApiVersion` 和 packed-install 测试必须同时升级，不能把 v1 addon 与 v2 wrapper
-混装。
+registry wrapper/platform package `0.1.3` 的 native contract version 为 `2`，包含 opaque
+single-use external HTTP auth attempt。当前源码 candidate 增加 local conversation timeline，
+native contract 升为 `3`；下一次正式 patch 必须同时发布 wrapper、全部 Tier 1 addon，并让
+provenance `nativeApiVersion` 与 packed-install 测试统一为 v3，不能混装 v2 addon 与 v3
+wrapper。
 
 最低边界取 Node 24/26 和 Rust 目标共同支持范围中更严格的一侧，并只承诺仍处于厂商支持期的
 系统。Node 24/26 的官方平台表把 Linux x64/arm64 基线定为 kernel 4.18、glibc 2.28，把 macOS

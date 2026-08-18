@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add the native API v3 local conversation timeline read for local-first Host UI.
+
 ## 0.1.3
 
 - Add the native API v2 external HTTP ANP authentication facade.

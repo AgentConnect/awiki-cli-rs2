@@ -23,6 +23,11 @@ void opened.then(async client => {
   attempt.headerPatch satisfies readonly { readonly name: string, readonly value: string }[]
   const retry = await attempt.handleResponse({ statusCode: 200, headers: [] })
   retry satisfies import('../src/index.js').ExternalHttpAuthAttempt | null
+  const localTimeline = await client.getLocalConversationTimeline({
+    conversationId: 'group:did:example:group',
+    limit: 50,
+  })
+  localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
   await client.sendAttachment({
     conversationId: 'group:did:example:group',
     fileName: 'bytes.bin',
