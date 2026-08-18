@@ -420,6 +420,21 @@ async fn prepare_p6_delivery_session_async(
     if !required {
         return Ok(None);
     }
+    let mut retry = 0_u32;
+    loop {
+        match prepare_p6_delivery_session_once_async(client).await {
+            Err(error) if retry < 2 && is_transient_sqlite_lock(&error) => {
+                retry += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(u64::from(retry) * 100)).await;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+async fn prepare_p6_delivery_session_once_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<Option<String>> {
     let binding = client.active_sync_account_binding().await?;
     let owner_identity_id = client.current_identity().id.as_str();
     if binding.owner_identity_id != owner_identity_id
@@ -449,6 +464,39 @@ async fn prepare_p6_delivery_session_async(
     db.load_or_create_sync_client_instance_id(owner_identity_id.to_owned())
         .await
         .map(Some)
+}
+
+fn is_transient_sqlite_lock(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { detail }
+            if detail == "database is locked" || detail == "database table is locked"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_sqlite_lock;
+
+    #[test]
+    fn realtime_p6_preflight_retries_only_sqlite_locks() {
+        assert!(is_transient_sqlite_lock(
+            &crate::ImError::LocalStateUnavailable {
+                detail: "database is locked".to_owned(),
+            }
+        ));
+        assert!(is_transient_sqlite_lock(
+            &crate::ImError::LocalStateUnavailable {
+                detail: "database table is locked".to_owned(),
+            }
+        ));
+        assert!(!is_transient_sqlite_lock(
+            &crate::ImError::LocalStateUnavailable {
+                detail: "disk I/O error".to_owned(),
+            }
+        ));
+        assert!(!is_transient_sqlite_lock(&crate::ImError::PermissionDenied));
+    }
 }
 
 pub fn bearer_authorization_header(token: &str) -> String {
