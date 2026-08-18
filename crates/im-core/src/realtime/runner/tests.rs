@@ -63,7 +63,7 @@ fn p4_terminal_signal_is_exact_self_scoped() {
     };
     assert_eq!(
         p4_terminal_signal(&client, &event),
-        Some(anp::group_e2ee::operations::v2::V2TerminalSignal::MemberRemoved)
+        Some(RealtimeP4TerminalSignal::MemberRemoved)
     );
 
     let mut sibling = event;

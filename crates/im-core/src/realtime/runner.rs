@@ -1231,7 +1231,7 @@ async fn project_realtime_group_updated_async(
 fn p4_terminal_signal(
     client: &crate::core::ImClient,
     event: &super::GroupUpdatedEvent,
-) -> Option<anp::group_e2ee::operations::v2::V2TerminalSignal> {
+) -> Option<RealtimeP4TerminalSignal> {
     if event.subject_did.as_deref() != Some(client.did().as_str()) {
         return None;
     }
@@ -1240,11 +1240,9 @@ fn p4_terminal_signal(
         event.membership_status.as_deref(),
     ) {
         (Some("member-removed"), _) | (_, Some("removed")) => {
-            Some(anp::group_e2ee::operations::v2::V2TerminalSignal::MemberRemoved)
+            Some(RealtimeP4TerminalSignal::MemberRemoved)
         }
-        (Some("member-left"), _) | (_, Some("left")) => {
-            Some(anp::group_e2ee::operations::v2::V2TerminalSignal::MemberLeft)
-        }
+        (Some("member-left"), _) | (_, Some("left")) => Some(RealtimeP4TerminalSignal::MemberLeft),
         _ => None,
     }
 }
@@ -1253,8 +1251,16 @@ fn p4_terminal_signal(
 fn apply_p4_terminal_signal(
     client: &crate::core::ImClient,
     group_did: &str,
-    signal: anp::group_e2ee::operations::v2::V2TerminalSignal,
+    signal: RealtimeP4TerminalSignal,
 ) -> crate::ImResult<()> {
+    let signal = match signal {
+        RealtimeP4TerminalSignal::MemberRemoved => {
+            anp::group_e2ee::operations::v2::V2TerminalSignal::MemberRemoved
+        }
+        RealtimeP4TerminalSignal::MemberLeft => {
+            anp::group_e2ee::operations::v2::V2TerminalSignal::MemberLeft
+        }
+    };
     crate::internal::group_e2ee::v2_runtime::mark_terminal_intent_for_client(
         client, group_did, signal,
     )
@@ -1264,7 +1270,7 @@ fn apply_p4_terminal_signal(
 fn apply_p4_terminal_signal(
     _client: &crate::core::ImClient,
     _group_did: &str,
-    _signal: anp::group_e2ee::operations::v2::V2TerminalSignal,
+    _signal: RealtimeP4TerminalSignal,
 ) -> crate::ImResult<()> {
     Ok(())
 }
@@ -1273,8 +1279,15 @@ fn apply_p4_terminal_signal(
 fn p4_terminal_signal(
     _client: &crate::core::ImClient,
     _event: &super::GroupUpdatedEvent,
-) -> Option<anp::group_e2ee::operations::v2::V2TerminalSignal> {
+) -> Option<RealtimeP4TerminalSignal> {
     None
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeP4TerminalSignal {
+    MemberRemoved,
+    MemberLeft,
 }
 
 #[cfg(feature = "sqlite")]
