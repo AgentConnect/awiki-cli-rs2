@@ -2797,6 +2797,27 @@ fn p6_v2_cached_projection_removes_all_live_wire_fields() {
     }
 }
 
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_plaintext_cache_retries_only_sqlite_lock_errors() {
+    assert!(is_transient_sqlite_lock(
+        &crate::ImError::LocalStateUnavailable {
+            detail: "database is locked".to_owned(),
+        }
+    ));
+    assert!(is_transient_sqlite_lock(
+        &crate::ImError::LocalStateUnavailable {
+            detail: "database table is locked".to_owned(),
+        }
+    ));
+    assert!(!is_transient_sqlite_lock(
+        &crate::ImError::LocalStateUnavailable {
+            detail: "disk I/O error".to_owned(),
+        }
+    ));
+    assert!(!is_transient_sqlite_lock(&crate::ImError::PermissionDenied));
+}
+
 #[cfg(feature = "group-e2ee")]
 fn p6_v2_incoming_wire() -> Value {
     json!({

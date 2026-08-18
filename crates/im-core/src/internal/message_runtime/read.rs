@@ -4572,33 +4572,39 @@ async fn persist_newly_decrypted_p6_messages_async(
     if messages.is_empty() {
         return Ok(());
     }
-    let outcome =
+    let mut retry = 0_u32;
+    let outcome = loop {
         match persist_projection_async(client, messages, &DirectP5ProjectionProvenance::default())
             .await
         {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                eprintln!("P6 plaintext cache commit failed: {error}");
-                return Err(error);
+            Ok(outcome) => break outcome,
+            Err(error) if retry < 2 && is_transient_sqlite_lock(&error) => {
+                retry += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(u64::from(retry) * 100)).await;
             }
-        };
+            Err(error) => return Err(error),
+        }
+    };
     if outcome
         .stored_messages
         .saturating_add(outcome.backlogged_messages)
         != messages.len()
     {
-        eprintln!(
-            "P6 plaintext cache commit was incomplete: expected={}, stored={}, backlogged={}",
-            messages.len(),
-            outcome.stored_messages,
-            outcome.backlogged_messages
-        );
         return Err(crate::ImError::LocalProjectionUnavailable {
             detail: "P6 plaintext projection was not durably stored".to_owned(),
         });
     }
     client.emit_committed_local_message_projection(source);
     Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+fn is_transient_sqlite_lock(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { detail }
+            if detail == "database is locked" || detail == "database table is locked"
+    )
 }
 
 #[cfg(feature = "group-e2ee")]
