@@ -51,8 +51,14 @@ SDK 的可恢复 WAL：`preparing -> prepared -> accepted -> finalized/aborted`�
 message。Core 先绑定当前 owner DID/device，从 P4 当前群成员集合解析所需 DID Document，再由
 SDK 校验 profile、operation、group/state、subject、epoch、Commit/Welcome 与 MLS Leaf。receipt
 与 MLS 状态持久化由 SDK 保证幂等；重启后的相同 notice 返回相同结果，不重复推进 epoch。
-`group.incoming` 只有通过标准结构校验、精确 recipient DID/device 校验和 MLS 解密后，才返回
-Application plaintext 供后续业务投影。
+`group.incoming` 只有通过 strict 新 wire 结构校验（包括 required
+`auth.origin_context`）、P1 逻辑 submission 重建、精确 recipient DID/device 校验和 MLS
+解密后，才返回 Application plaintext 供后续业务投影。digest、target/method 或 sender
+binding 冲突整条拒绝；P2 历史 key 不可解析或 signature-only failure 只标记 unproven，仍必须
+完整通过 MLS。新客户端不保留 legacy live-wire parser。
+
+`group.e2ee.notice.notice_id` 在新 wire 中是 required stable ID。本地升级只允许通过稳定旧行
+主键/确定性 digest 做一次性 storage adapter；该兼容不会重新发出 legacy notice。
 
 public `messages.send` 在 P6 gate 开启时读取标准 P4 group state，并把每条 Text、JSON 或附件
 Manifest 恰好加密成一个 MLS Application Ciphertext、提交一次。返回值仍是一条逻辑

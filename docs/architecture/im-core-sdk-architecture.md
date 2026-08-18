@@ -1107,17 +1107,18 @@ Persona conversation without briefly materializing a DID conversation.
 
 WebSocket subprotocol strictness is derived from the validated client identity,
 not from App/CLI/Agent labels or a host flag. A client with an exact sync
-account seed offers `awiki.sync.event.v3` followed by
-`awiki.sync.changed.v2` and requires the server to select either versioned
-token; a missing echo or `NoSubProtocol` is a transport/provisioning failure and
-the async transport must not reconnect without a subprotocol. A v3 session also
+account seed first activates `p6.delivery_context.v1` with its stable
+`client_instance_id`, then offers only
+`awiki.sync.event.v3.p6-delivery-context.v1` and requires the server to select
+that exact token. A missing echo or `NoSubProtocol` is a transport/provisioning
+failure and the async transport must not reconnect with an older subprotocol. A strict session also
 accepts schema-2 fallback hints for non-inline or oversized events. Such a hint
 may carry closed, sorted `dirty_lanes`, but only when sent to a connection that
 already negotiated v3; a pure v2 session must retain the historical three-field
-schema exactly. A v2 session rejects schema 3. Only a Legacy or generic hosted
-client with no exact binding may reconnect without a subprotocol. The lane
-extension modifies the still-unpublished `awiki.sync.event.v3`; it does not add
-v4. Local SQLite adds lane checkpoints, application receipts, negotiation state,
+schema exactly. A v2 session rejects schema 3. Only a generic hosted client
+without an exact account binding may connect without the strict subprotocol.
+The P6 capability is bound to authenticated account/device/auth-generation plus
+client installation and is never inferred from a product version. Local SQLite adds lane checkpoints, application receipts, negotiation state,
 and P6 blockers, but no public checkpoint setter. No realtime notification
 advances any reliable cursor.
 

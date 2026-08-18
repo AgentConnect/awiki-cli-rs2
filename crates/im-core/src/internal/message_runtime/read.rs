@@ -4678,7 +4678,7 @@ fn parse_p6_v2_incoming_notification(
 ) -> crate::ImResult<(
     anp::group_e2ee::V2GroupIncomingMetadata,
     anp::group_e2ee::V2GroupIncomingBody,
-    anp::group_e2ee::V2OriginAuth,
+    anp::group_e2ee::V2DeliveredOriginAuth,
 )> {
     let mut message = message.clone();
     let object = message

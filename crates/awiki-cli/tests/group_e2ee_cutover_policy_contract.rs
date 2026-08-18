@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const GROUP_DID: &str = "did:wba:awiki.ai:groups:demo:e1_group";
 const MEMBER_DID: &str = "did:wba:awiki.ai:bob:e1_bob";
+const PROTOCOL_DEVICE_ID: &str = "device-contract-current";
 
 #[test]
 fn high_level_group_secure_aliases_dry_run_to_secure_required_lifecycle() {
@@ -144,11 +145,16 @@ fn group_e2ee_internal_live_commands_enter_supported_im_core_boundary() {
         assert_identity_required(&output, command);
     }
 
-    let output = awiki_internal_cmd(
-        &group_e2ee_args("group.e2ee.pending", false),
-        workspace.path(),
-    );
-    assert_unsupported_capability(&output, "group.e2ee.pending", "group e2ee", "Phase 6");
+    for command in [
+        "group.e2ee.pending",
+        "group.e2ee.update-key",
+        "group.e2ee.rejoin",
+        "group.e2ee.recover-member",
+        "group.e2ee.process-leave-request",
+    ] {
+        let output = awiki_internal_cmd(&group_e2ee_args(command, false), workspace.path());
+        assert_unsupported_capability(&output, command, "group e2ee", "Phase 6");
+    }
 }
 
 #[test]
@@ -204,16 +210,10 @@ fn low_level_group_e2ee_commands(dry_run: bool) -> Vec<(Vec<&'static str>, &'sta
 }
 
 fn supported_live_group_e2ee_commands() -> Vec<(Vec<&'static str>, &'static str)> {
-    [
-        "group.e2ee.publish-key-package",
-        "group.e2ee.update-key",
-        "group.e2ee.rejoin",
-        "group.e2ee.recover-member",
-        "group.e2ee.process-leave-request",
-    ]
-    .into_iter()
-    .map(|command| (group_e2ee_args(command, false), command))
-    .collect()
+    ["group.e2ee.publish-key-package"]
+        .into_iter()
+        .map(|command| (group_e2ee_args(command, false), command))
+        .collect()
 }
 
 fn group_e2ee_args(command: &str, dry_run: bool) -> Vec<&'static str> {
@@ -228,6 +228,8 @@ fn group_e2ee_args(command: &str, dry_run: bool) -> Vec<&'static str> {
             "--purpose",
             "update",
             "--contract-test",
+            "--device",
+            PROTOCOL_DEVICE_ID,
         ],
         "group.e2ee.pending" => vec!["group", "e2ee", "pending", "--group", GROUP_DID],
         "group.e2ee.repair" => vec!["group", "e2ee", "repair", "--group", GROUP_DID],
@@ -239,6 +241,8 @@ fn group_e2ee_args(command: &str, dry_run: bool) -> Vec<&'static str> {
             GROUP_DID,
             "--member",
             MEMBER_DID,
+            "--device",
+            PROTOCOL_DEVICE_ID,
         ],
         "group.e2ee.rejoin" => vec![
             "group", "e2ee", "rejoin", "--group", GROUP_DID, "--member", MEMBER_DID,
@@ -251,6 +255,8 @@ fn group_e2ee_args(command: &str, dry_run: bool) -> Vec<&'static str> {
             GROUP_DID,
             "--member",
             MEMBER_DID,
+            "--device",
+            PROTOCOL_DEVICE_ID,
         ],
         "group.e2ee.process-leave-request" => vec![
             "group",

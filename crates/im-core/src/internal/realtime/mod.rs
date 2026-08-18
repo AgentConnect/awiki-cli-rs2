@@ -15,6 +15,8 @@ pub(crate) mod ws_transport;
 
 pub(crate) const SYNC_EVENT_V3_SUBPROTOCOL: &str = "awiki.sync.event.v3";
 pub(crate) const SYNC_CHANGED_V2_SUBPROTOCOL: &str = "awiki.sync.changed.v2";
+pub(crate) const P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL: &str =
+    "awiki.sync.event.v3.p6-delivery-context.v1";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum SyncNotificationSubprotocol {

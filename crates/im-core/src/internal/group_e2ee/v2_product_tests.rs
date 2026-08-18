@@ -1384,7 +1384,7 @@ fn welcome_notice(
         recipient_device_id: recipient.device_id.clone(),
         meta: notice_meta(&fixture.did, &recipient.device_id, notice_id),
         notice: V2E2eeNotice {
-            notice_id: Some(notice_id.to_owned()),
+            notice_id: notice_id.to_owned(),
             notice_type: "welcome-delivery".to_owned(),
             group_did: GROUP_DID.to_owned(),
             group_state_ref: add.group_state_ref.clone(),
@@ -1418,7 +1418,7 @@ fn commit_notice(
         recipient_device_id: recipient.device_id.clone(),
         meta: notice_meta(&fixture.did, &recipient.device_id, notice_id),
         notice: V2E2eeNotice {
-            notice_id: Some(notice_id.to_owned()),
+            notice_id: notice_id.to_owned(),
             notice_type: "commit-delivery".to_owned(),
             group_did: GROUP_DID.to_owned(),
             group_state_ref: add.group_state_ref.clone(),
@@ -1451,7 +1451,7 @@ fn remove_commit_notice(
         recipient_device_id: recipient.device_id.clone(),
         meta: notice_meta(&fixture.did, &recipient.device_id, notice_id),
         notice: V2E2eeNotice {
-            notice_id: Some(notice_id.to_owned()),
+            notice_id: notice_id.to_owned(),
             notice_type: "commit-delivery".to_owned(),
             group_did: GROUP_DID.to_owned(),
             group_state_ref: remove.group_state_ref.clone(),
@@ -1480,13 +1480,25 @@ fn incoming_input(
     send: &V2PreparedApplicationSend,
     request_id: &str,
 ) -> V2IncomingApplicationInput {
-    let auth = origin_auth(
+    let origin_auth = origin_auth(
         fixture,
         sender,
         METHOD_GROUP_SEND_V2,
         &send.meta,
         &send.cipher,
     );
+    let mut extra_meta = std::collections::BTreeMap::new();
+    if let Some(anp_version) = send.meta.anp_version.as_ref() {
+        extra_meta.insert("anp_version".to_owned(), json!(anp_version));
+    }
+    let auth = anp::group_e2ee::V2DeliveredOriginAuth {
+        scheme: origin_auth.scheme,
+        origin_proof: origin_auth.origin_proof,
+        origin_context: anp::group_e2ee::V2OriginContext {
+            created_at: send.meta.created_at.clone(),
+            extra_meta,
+        },
+    };
     V2IncomingApplicationInput {
         recipient_did: fixture.did.clone(),
         recipient_device_id: recipient.device_id.clone(),

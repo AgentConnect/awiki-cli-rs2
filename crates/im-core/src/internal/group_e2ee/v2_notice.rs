@@ -514,7 +514,7 @@ mod tests {
         let (meta, notice) = parse_notice(&wire).unwrap();
 
         assert_eq!(meta.operation_id, "operation-1");
-        assert_eq!(notice.notice_id.as_deref(), Some("notice-1"));
+        assert_eq!(notice.notice_id, "notice-1");
     }
 
     #[test]
@@ -550,7 +550,7 @@ mod tests {
         let (meta, notice) = parse_notice(&flat).unwrap();
 
         assert_eq!(meta.operation_id, "operation-1");
-        assert_eq!(notice.notice_id.as_deref(), Some("notice-1"));
+        assert_eq!(notice.notice_id, "notice-1");
     }
 
     #[test]
@@ -824,7 +824,7 @@ mod tests {
 
     fn test_notice() -> V2E2eeNotice {
         V2E2eeNotice {
-            notice_id: Some("notice-1".to_owned()),
+            notice_id: "notice-1".to_owned(),
             notice_type: "commit-delivery".to_owned(),
             group_did: "did:example:group".to_owned(),
             group_state_ref: anp::group_e2ee::V2GroupStateRef {

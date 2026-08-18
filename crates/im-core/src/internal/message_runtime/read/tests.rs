@@ -2802,6 +2802,9 @@ fn p6_v2_incoming_wire() -> Value {
                     "contentDigest": "digest",
                     "signatureInput": "signature-input",
                     "signature": "signature"
+                },
+                "origin_context": {
+                    "extra_meta": {"anp_version": "2.0"}
                 }
             }
         }

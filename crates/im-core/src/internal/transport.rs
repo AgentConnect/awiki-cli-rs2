@@ -653,6 +653,7 @@ impl<'a> CoreHttpTransport<'a> {
         params: Value,
     ) -> crate::ImResult<Value> {
         let url = self.rpc_url(endpoint);
+        let params = self.with_p6_delivery_context(method, params)?;
         let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
             method,
             params.clone(),
@@ -673,6 +674,7 @@ impl<'a> CoreHttpTransport<'a> {
         params: Value,
     ) -> crate::ImResult<Value> {
         let url = self.rpc_url(endpoint);
+        let params = self.with_p6_delivery_context(method, params)?;
         let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
             method,
             params.clone(),
@@ -686,6 +688,41 @@ impl<'a> CoreHttpTransport<'a> {
         let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
+    }
+
+    fn with_p6_delivery_context(&self, method: &str, mut params: Value) -> crate::ImResult<Value> {
+        if method != "group.list_messages" || !self.client.realtime_requires_sync_changed_v2()? {
+            return Ok(params);
+        }
+        let connection = crate::internal::local_state::open_writable(
+            &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        let client_instance_id =
+            crate::internal::local_state::sync_v2::load_or_create_sync_client_instance_id(
+                &connection,
+                self.client.current_identity().id.as_str(),
+            )?;
+        let params_object =
+            params
+                .as_object_mut()
+                .ok_or_else(|| crate::ImError::Serialization {
+                    detail: "authenticated group.list_messages params must be an object".to_owned(),
+                })?;
+        let client = params_object
+            .entry("client".to_owned())
+            .or_insert_with(|| Value::Object(Default::default()))
+            .as_object_mut()
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "group.list_messages client context must be an object".to_owned(),
+            })?;
+        client.insert(
+            "p6_delivery".to_owned(),
+            serde_json::json!({
+                "profile": "p6.delivery_context.v1",
+                "client_instance_id": client_instance_id,
+            }),
+        );
+        Ok(params)
     }
 
     fn authenticated_rest(

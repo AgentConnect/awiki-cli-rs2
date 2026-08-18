@@ -7,6 +7,7 @@ use super::common::{self, WireIdentity};
 pub(crate) const SYNC_V2_PROFILE: &str = "anp.sync.local.v2";
 pub(crate) const SYNC_CAPABILITY_P5_DEVICE_V1: &str = "lanes.p5_device.v1";
 pub(crate) const SYNC_CAPABILITY_P6_GROUP_V1: &str = "lanes.p6_group.v1";
+pub(crate) const P6_DELIVERY_CONTEXT_CAPABILITY_V1: &str = "p6.delivery_context.v1";
 pub(crate) const MESSAGE_GET_BATCH_MAX_EVENT_IDS: usize = 100;
 pub(crate) const MESSAGE_GET_BATCH_CLIENT_CHUNK_EVENT_IDS: usize = 8;
 
@@ -60,6 +61,7 @@ pub(crate) struct SyncBootstrapV2 {
     pub(crate) group_state_baseline: Vec<Value>,
     pub(crate) warnings: Vec<String>,
     pub(crate) lane_bootstrap: SyncLaneBootstrapV3,
+    pub(crate) p6_delivery_client_instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +72,7 @@ pub(crate) enum SyncBootstrapResponseV2 {
         device_id: String,
         recovery: SyncRecoveryV2,
         lane_bootstrap: SyncLaneBootstrapV3,
+        p6_delivery_client_instance_id: String,
     },
 }
 
@@ -218,7 +221,8 @@ pub(crate) fn build_bootstrap_params(
             "client_instance_id": client_instance_id,
             "capabilities": {
                 "sync_profile": SYNC_V2_PROFILE,
-                "event_schema_max": 1
+                "event_schema_max": 1,
+                "p6_delivery": P6_DELIVERY_CONTEXT_CAPABILITY_V1
             }
         }
     }))
@@ -229,8 +233,16 @@ pub(crate) fn build_delta_params(
     cursor: &SyncCursorV2,
     limit: u32,
     reason: &str,
+    client_instance_id: &str,
 ) -> crate::ImResult<Value> {
-    build_delta_params_with_lanes(identity, cursor, limit, reason, &BTreeMap::new())
+    build_delta_params_with_lanes(
+        identity,
+        cursor,
+        limit,
+        reason,
+        &BTreeMap::new(),
+        client_instance_id,
+    )
 }
 
 pub(crate) fn build_delta_params_with_lanes(
@@ -239,11 +251,13 @@ pub(crate) fn build_delta_params_with_lanes(
     limit: u32,
     reason: &str,
     lanes: &BTreeMap<SyncLaneV3, SyncLaneCursorV3>,
+    client_instance_id: &str,
 ) -> crate::ImResult<Value> {
     let did = required_string("identity.did", identity.did.as_str())?;
     validate_cursor(cursor)?;
     let limit = validate_limit(limit)?;
     let reason = validate_reason(reason)?;
+    let client_instance_id = required_string("client_instance_id", client_instance_id)?;
     let mut params = json!({
         "meta": common::local_meta(&did, SYNC_V2_PROFILE),
         "body": {
@@ -252,7 +266,11 @@ pub(crate) fn build_delta_params_with_lanes(
                 "scan_seq": cursor.scan_seq
             },
             "limit": limit,
-            "reason": reason
+            "reason": reason,
+            "p6_delivery": {
+                "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": client_instance_id
+            }
         }
     });
     if !lanes.is_empty() {
@@ -401,6 +419,7 @@ pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
 pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBootstrapResponseV2> {
     let object = object(raw, "sync.bootstrap response")?;
     let lane_bootstrap = parse_lane_bootstrap_v3(object)?;
+    let p6_delivery_client_instance_id = parse_p6_delivery_bootstrap(object)?;
     if object.get("mode").and_then(Value::as_str) == Some("compact_recovery_required") {
         let recovery = self::object(
             object
@@ -428,6 +447,7 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
                 snapshot_schema: optional_snapshot_schema(recovery)?,
             },
             lane_bootstrap,
+            p6_delivery_client_instance_id,
         });
     }
     exact_mode(object, "tail_only")?;
@@ -465,7 +485,24 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
         group_state_baseline: groups,
         warnings: warnings(object.get("warnings"))?,
         lane_bootstrap,
+        p6_delivery_client_instance_id,
     }))
+}
+
+fn parse_p6_delivery_bootstrap(response: &Map<String, Value>) -> crate::ImResult<String> {
+    let value = response
+        .get("p6_delivery")
+        .ok_or_else(|| invalid_page("sync.bootstrap did not activate strict P6 delivery"))?;
+    let object = self::object(value, "p6_delivery")?;
+    if object.len() != 3
+        || object.get("profile").and_then(Value::as_str) != Some(P6_DELIVERY_CONTEXT_CAPABILITY_V1)
+        || object.get("activated").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(invalid_page(
+            "p6_delivery must confirm p6.delivery_context.v1 activation",
+        ));
+    }
+    canonical_string_field(object, "client_instance_id")
 }
 
 fn parse_lane_bootstrap_v3(response: &Map<String, Value>) -> crate::ImResult<SyncLaneBootstrapV3> {
@@ -1802,6 +1839,11 @@ mod tests {
                 "state_version": "2"
             }],
             "group_state_baseline": [],
+            "p6_delivery": {
+                "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": "client-installation-1",
+                "activated": true
+            },
             "warnings": []
         }))
         .unwrap();
@@ -2205,6 +2247,11 @@ mod tests {
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
+            "p6_delivery": {
+                "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": "client-installation-1",
+                "activated": true
+            },
             "sync_capabilities": [
                 SYNC_CAPABILITY_P5_DEVICE_V1,
                 SYNC_CAPABILITY_P6_GROUP_V1
@@ -2237,13 +2284,24 @@ mod tests {
             stream_epoch: "3".to_owned(),
             scan_seq: "9".to_owned(),
         };
-        let legacy = build_delta_params(&identity, &ordinary, 100, "app_resume").unwrap();
+        let legacy = build_delta_params(
+            &identity,
+            &ordinary,
+            100,
+            "app_resume",
+            "client-installation-1",
+        )
+        .unwrap();
         assert_eq!(
             legacy["body"],
             json!({
                 "cursor": {"stream_epoch": "3", "scan_seq": "9"},
                 "limit": 100,
-                "reason": "app_resume"
+                "reason": "app_resume",
+                "p6_delivery": {
+                    "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                    "client_instance_id": "client-installation-1"
+                }
             })
         );
         let params = build_delta_params_with_lanes(
@@ -2252,6 +2310,7 @@ mod tests {
             100,
             "app_resume",
             &bootstrap.lane_bootstrap.lanes,
+            "client-installation-1",
         )
         .unwrap();
         assert_eq!(params["body"]["lanes"]["p5_device"]["committed_seq"], "36");

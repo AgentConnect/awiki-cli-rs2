@@ -43,9 +43,16 @@ impl AsyncWsTransport {
         ca_bundle: Option<&str>,
         require_sync_changed_v2: bool,
         client_version: Option<&str>,
+        p6_client_instance_id: Option<&str>,
     ) -> Result<Self, AsyncWsConnectError> {
         let connector = async_ws_rustls_connector(ca_bundle).await?;
-        let request = build_async_ws_request(websocket_url, bearer_token, true, client_version)?;
+        let request = build_async_ws_request(
+            websocket_url,
+            bearer_token,
+            require_sync_changed_v2,
+            client_version,
+            p6_client_instance_id,
+        )?;
         let connected = if let Some(connector) = connector.clone() {
             connect_async_tls_with_config(request, None, false, Some(connector)).await
         } else {
@@ -54,8 +61,13 @@ impl AsyncWsTransport {
         let (stream, response) = match connected {
             Ok(connected) => connected,
             Err(error) if is_missing_async_ws_subprotocol(&error) && !require_sync_changed_v2 => {
-                let request =
-                    build_async_ws_request(websocket_url, bearer_token, false, client_version)?;
+                let request = build_async_ws_request(
+                    websocket_url,
+                    bearer_token,
+                    false,
+                    client_version,
+                    None,
+                )?;
                 if let Some(connector) = connector {
                     connect_async_tls_with_config(request, None, false, Some(connector)).await
                 } else {
@@ -126,6 +138,7 @@ fn build_async_ws_request(
     bearer_token: &str,
     request_sync_changed_v2: bool,
     client_version: Option<&str>,
+    p6_client_instance_id: Option<&str>,
 ) -> Result<Request<()>, AsyncWsConnectError> {
     let mut request = websocket_url
         .into_client_request()
@@ -145,15 +158,24 @@ fn build_async_ws_request(
             .insert(HeaderName::from_static("x-awiki-client-version"), value);
     }
     if request_sync_changed_v2 {
+        let client_instance_id = p6_client_instance_id
+            .filter(|value| !value.is_empty() && value.trim() == *value && value.len() <= 255)
+            .ok_or_else(|| {
+                async_ws_connect_message(
+                    "strict P6 websocket requires a canonical client instance ID",
+                )
+            })?;
         request.headers_mut().insert(
             SEC_WEBSOCKET_PROTOCOL,
-            format!(
-                "{}, {}",
-                crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
-                crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
-            )
-            .parse()
-            .expect("static websocket subprotocol list is a valid header value"),
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+                .parse()
+                .expect("static websocket subprotocol list is a valid header value"),
+        );
+        request.headers_mut().insert(
+            HeaderName::from_static("x-awiki-p6-client-instance-id"),
+            client_instance_id.parse().map_err(|err| {
+                async_ws_connect_message(format!("build P6 client instance header: {err}"))
+            })?,
         );
     }
     Ok(request)
@@ -177,10 +199,7 @@ fn validate_async_ws_subprotocol(
         .and_then(|value| value.to_str().ok());
     let selected = match selected {
         None => super::SyncNotificationSubprotocol::Legacy,
-        Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL) => {
-            super::SyncNotificationSubprotocol::V2
-        }
-        Some(crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL) => {
+        Some(crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL) => {
             super::SyncNotificationSubprotocol::V3
         }
         Some(_) => {
@@ -288,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn async_ws_allows_v1_fallback_and_rejects_wrong_selected_subprotocol() {
+    fn async_ws_requires_the_strict_p6_subprotocol_for_exact_devices() {
         let mut headers = HeaderMap::new();
         assert_eq!(
             validate_async_ws_subprotocol(&headers, false).unwrap(),
@@ -307,13 +326,10 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(
-            validate_async_ws_subprotocol(&headers, false).unwrap(),
-            crate::internal::realtime::SyncNotificationSubprotocol::V2
-        );
+        assert!(validate_async_ws_subprotocol(&headers, false).is_err());
         headers.insert(
             SEC_WEBSOCKET_PROTOCOL,
-            crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
                 .parse()
                 .unwrap(),
         );
@@ -324,12 +340,13 @@ mod tests {
     }
 
     #[test]
-    fn async_ws_requests_v3_with_v2_fallback_subprotocols() {
+    fn async_ws_requests_only_the_strict_p6_subprotocol() {
         let request = build_async_ws_request(
             "wss://example.test/im/ws",
             "token",
             true,
             Some("awiki-me/0714/1.0.31+214"),
+            Some("client-installation-1"),
         )
         .unwrap();
         assert_eq!(
@@ -339,11 +356,14 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            format!(
-                "{}, {}",
-                crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
-                crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
-            )
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-awiki-p6-client-instance-id")
+                .unwrap(),
+            "client-installation-1"
         );
         assert_eq!(
             request
@@ -357,11 +377,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_ws_reconnects_without_subprotocol_for_legacy_server() {
+    async fn async_ws_generic_session_connects_once_without_subprotocol() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for _ in 0..2 {
+            for _ in 0..1 {
                 let (stream, _) = listener.accept().await.unwrap();
                 tokio_tungstenite::accept_async(stream).await.unwrap();
             }
@@ -372,6 +392,7 @@ mod tests {
             "legacy-token",
             None,
             false,
+            None,
             None,
         )
         .await
@@ -407,6 +428,7 @@ mod tests {
             None,
             true,
             None,
+            Some("client-installation-1"),
         )
         .await;
 

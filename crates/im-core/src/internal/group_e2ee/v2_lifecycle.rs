@@ -81,10 +81,19 @@ pub(crate) fn production_context(
         verification_method: Some(device.signing_key_id.clone()),
     };
     let runtime = super::v2_runtime::runtime_for_client(client)?;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let p6_client_instance_id =
+        crate::internal::local_state::sync_v2::load_or_create_sync_client_instance_id(
+            &connection,
+            client.current_identity().id.as_str(),
+        )?;
     let host = RpcGroupE2eeV2Host::new(
         crate::internal::transport::CoreHttpTransport::new(client),
         proof_identity,
-    );
+    )
+    .with_p6_client_instance_id(p6_client_instance_id);
     Ok(ProductionV2Context {
         product: GroupE2eeV2Product::new(runtime, host),
         device,

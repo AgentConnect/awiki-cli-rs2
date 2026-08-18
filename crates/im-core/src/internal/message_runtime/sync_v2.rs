@@ -676,6 +676,9 @@ where
         }
         let mut lane_states =
             lane_state_map(db.load_lane_sync_states(owner_identity_id.clone()).await?);
+        let p6_client_instance_id = db
+            .load_or_create_sync_client_instance_id(owner_identity_id)
+            .await?;
         self.retry_p6_lane_blockers(&db, &binding, &lane_states, &mut result)
             .await;
 
@@ -709,6 +712,7 @@ where
                     &cursor,
                     limit,
                     reason,
+                    &p6_client_instance_id,
                 )?
             } else {
                 crate::internal::wire::sync_v2::build_delta_params_with_lanes(
@@ -717,6 +721,7 @@ where
                     limit,
                     reason,
                     &requested_lanes,
+                    &p6_client_instance_id,
                 )?
             };
             let raw = self
@@ -863,6 +868,7 @@ where
                     events: apply_events,
                 })
                 .await?;
+            apply_p4_terminal_events(self.client, &page.events)?;
             result.events_applied = result
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_event_ids.len()).unwrap_or(u32::MAX));
@@ -1273,6 +1279,13 @@ where
                 result.duplicates_skipped = result.duplicates_skipped.saturating_add(1);
                 continue;
             }
+            if validate_strict_p6_lane_wire(event).is_err() {
+                blocked_lanes.insert(SyncLaneV3::P6Group);
+                result
+                    .warnings
+                    .push(format!("sync.lane.p6_group.nonconformant:{event_id}"));
+                return Ok(false);
+            }
             let projected = match event {
                 SyncLaneEventV3::P6Delivery {
                     group_did,
@@ -1408,9 +1421,10 @@ where
                         .map(Some)
                 }
                 "p6.control.notice" => {
+                    let notice = legacy_p6_notice_storage_adapter(&payload, &blocker.event_id);
                     super::read::consume_group_e2ee_control_notice_from_reliable_sync_async(
                         self.client,
-                        &payload,
+                        &notice,
                     )
                     .await
                     .map(|_| None)
@@ -1923,9 +1937,13 @@ where
             device_id,
             recovery,
             lane_bootstrap,
+            p6_delivery_client_instance_id,
         } = &response
         {
-            if account_id != &binding.account_id || device_id != &binding.protocol_device_id {
+            if account_id != &binding.account_id
+                || device_id != &binding.protocol_device_id
+                || p6_delivery_client_instance_id != &client_instance_id
+            {
                 return Err(sync_error(
                     "SYNC_ACCOUNT_BINDING_MISMATCH",
                     "sync.bootstrap recovery does not match the active account device",
@@ -1979,6 +1997,7 @@ where
         };
         if bootstrap.account_id != binding.account_id
             || bootstrap.device_id != binding.protocol_device_id
+            || bootstrap.p6_delivery_client_instance_id != client_instance_id
         {
             return Err(sync_error(
                 "SYNC_ACCOUNT_BINDING_MISMATCH",
@@ -2042,6 +2061,84 @@ where
     }
 }
 
+fn legacy_p6_notice_storage_adapter(payload: &Value, stable_event_id: &str) -> Value {
+    if payload
+        .pointer("/body/notice_id")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return payload.clone();
+    }
+    let mut adapted = payload.clone();
+    if let Some(body) = adapted.get_mut("body").and_then(Value::as_object_mut) {
+        body.insert(
+            "notice_id".to_owned(),
+            Value::String(stable_event_id.to_owned()),
+        );
+    }
+    if let Some(meta) = adapted.get_mut("meta").and_then(Value::as_object_mut) {
+        meta.entry("operation_id".to_owned())
+            .or_insert_with(|| Value::String(stable_event_id.to_owned()));
+    }
+    adapted
+}
+
+#[cfg(feature = "group-e2ee")]
+fn validate_strict_p6_lane_wire(
+    event: &crate::internal::wire::sync_v2::SyncLaneEventV3,
+) -> crate::ImResult<()> {
+    match event {
+        crate::internal::wire::sync_v2::SyncLaneEventV3::P6Delivery { envelope, .. } => {
+            let wire = json!({
+                "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
+                "params": {
+                    "meta": envelope.get("meta").cloned().ok_or_else(|| {
+                        sync_error("SYNC_P6_NONCONFORMANT", "P6 delivery meta is missing")
+                    })?,
+                    "auth": envelope.get("auth").cloned().ok_or_else(|| {
+                        sync_error("SYNC_P6_NONCONFORMANT", "P6 delivery auth is missing")
+                    })?,
+                    "body": envelope.get("body").cloned().ok_or_else(|| {
+                        sync_error("SYNC_P6_NONCONFORMANT", "P6 delivery body is missing")
+                    })?,
+                }
+            });
+            anp::group_e2ee::parse_group_incoming_notification_v2(&wire)
+                .map(|_| ())
+                .map_err(|_| {
+                    sync_error(
+                        "SYNC_P6_NONCONFORMANT",
+                        "P6 delivery does not satisfy the strict live-wire contract",
+                    )
+                })
+        }
+        crate::internal::wire::sync_v2::SyncLaneEventV3::P6ControlNotice { notice, .. } => {
+            crate::internal::group_e2ee::v2_notice::parse_notice(notice)
+                .map(|_| ())
+                .map_err(|_| {
+                    sync_error(
+                        "SYNC_P6_NONCONFORMANT",
+                        "P6 notice does not satisfy the strict live-wire contract",
+                    )
+                })
+        }
+        crate::internal::wire::sync_v2::SyncLaneEventV3::P5Delivery { .. } => Err(sync_error(
+            "SYNC_P6_NONCONFORMANT",
+            "P6 lane contains a P5 delivery",
+        )),
+    }
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn validate_strict_p6_lane_wire(
+    _event: &crate::internal::wire::sync_v2::SyncLaneEventV3,
+) -> crate::ImResult<()> {
+    Err(sync_error(
+        "SYNC_P6_NONCONFORMANT",
+        "group-e2ee support is not compiled",
+    ))
+}
+
 pub(crate) async fn refresh_lane_bootstrap_with_transport_async<T>(
     client: &crate::core::ImClient,
     transport: &mut T,
@@ -2067,20 +2164,30 @@ where
         .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.bootstrap", params)
         .await?;
     let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
-    let (account_id, device_id, lane_bootstrap) = match &response {
+    let (account_id, device_id, lane_bootstrap, activated_client_instance_id) = match &response {
         crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) => (
             bootstrap.account_id.as_str(),
             bootstrap.device_id.as_str(),
             &bootstrap.lane_bootstrap,
+            bootstrap.p6_delivery_client_instance_id.as_str(),
         ),
         crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
             account_id,
             device_id,
             lane_bootstrap,
+            p6_delivery_client_instance_id,
             ..
-        } => (account_id.as_str(), device_id.as_str(), lane_bootstrap),
+        } => (
+            account_id.as_str(),
+            device_id.as_str(),
+            lane_bootstrap,
+            p6_delivery_client_instance_id.as_str(),
+        ),
     };
-    if account_id != binding.account_id || device_id != binding.protocol_device_id {
+    if account_id != binding.account_id
+        || device_id != binding.protocol_device_id
+        || activated_client_instance_id != client_instance_id
+    {
         return Err(sync_error(
             "SYNC_ACCOUNT_BINDING_MISMATCH",
             "lane bootstrap does not match the active account device",
@@ -3166,6 +3273,58 @@ fn validate_page_binding(
     Ok(())
 }
 
+#[cfg(feature = "group-e2ee")]
+fn apply_p4_terminal_events(
+    client: &crate::core::ImClient,
+    events: &[crate::internal::wire::sync_v2::SyncEventV2],
+) -> crate::ImResult<()> {
+    for event in events {
+        if event.event_type != "group.member_changed" {
+            continue;
+        }
+        let membership = event.payload.get("membership").and_then(Value::as_object);
+        if membership
+            .and_then(|value| value.get("subject_did"))
+            .and_then(Value::as_str)
+            != Some(client.did().as_str())
+        {
+            continue;
+        }
+        let signal = match membership
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+        {
+            Some("removed") => anp::group_e2ee::operations::v2::V2TerminalSignal::MemberRemoved,
+            Some("left") => anp::group_e2ee::operations::v2::V2TerminalSignal::MemberLeft,
+            _ => continue,
+        };
+        let group_did = event
+            .payload
+            .pointer("/group/group_did")
+            .and_then(Value::as_str)
+            .or(event.thread_key.as_deref())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "terminal Group event is missing group_did",
+                )
+            })?;
+        crate::internal::group_e2ee::v2_runtime::mark_terminal_intent_for_client(
+            client, group_did, signal,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn apply_p4_terminal_events(
+    _client: &crate::core::ImClient,
+    _events: &[crate::internal::wire::sync_v2::SyncEventV2],
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
 fn wire_identity(client: &crate::core::ImClient) -> crate::internal::wire::common::WireIdentity {
     crate::internal::wire::common::WireIdentity {
         did: client.did().as_str().to_owned(),
@@ -4016,6 +4175,7 @@ mod tests {
 
     fn sync_snapshot_bootstrap_recovery(
         binding: &crate::identity::ActiveSyncAccountBinding,
+        client_instance_id: &str,
         recovery_id: &str,
         token: &str,
         stream_epoch: &str,
@@ -4025,6 +4185,11 @@ mod tests {
             "mode": "compact_recovery_required",
             "account_id": binding.account_id,
             "device_id": binding.protocol_device_id,
+            "p6_delivery": {
+                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": client_instance_id,
+                "activated": true
+            },
             "recovery": {
                 "recovery_id": recovery_id,
                 "token": token,
@@ -4168,6 +4333,9 @@ mod tests {
                     "contentDigest": "digest",
                     "signatureInput": "signature-input",
                     "signature": "signature"
+                },
+                "origin_context": {
+                    "extra_meta": {"anp_version": "2.0"}
                 }
             },
             "body": {
@@ -4296,6 +4464,82 @@ mod tests {
                 "operation_id": event_id
             }
         })
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    #[test]
+    fn strict_p6_lane_wire_rejects_legacy_delivery_before_checkpoint_advance() {
+        let group_did = "did:wba:example.com:groups:strict:e1";
+        let envelope = json!({
+            "meta": {
+                "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2,
+                "sender_did": "did:wba:example.com:users:alice:e1",
+                "sender_device_id": "dev-a",
+                "target": {"kind": "agent", "did": "did:wba:example.com:users:bob:e1"},
+                "recipient_device_id": "dev-b",
+                "operation_id": "op-1",
+                "message_id": "msg-1",
+                "content_type": anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2
+            },
+            "auth": {
+                "scheme": anp::group_e2ee::RFC9421_ORIGIN_PROOF_SCHEME_V2,
+                "origin_proof": {
+                    "contentDigest": "digest",
+                    "signatureInput": "signature-input",
+                    "signature": "signature"
+                }
+            },
+            "body": {
+                "group_did": group_did,
+                "group_state_version": "1",
+                "group_event_seq": "1",
+                "accepted_at": "2026-08-18T00:00:00Z",
+                "group_receipt": {},
+                "group_cipher_object": {
+                    "group_state_ref": {
+                        "group_did": group_did,
+                        "group_state_version": "1"
+                    },
+                    "crypto_group_id_b64u": "AQ",
+                    "epoch": "1",
+                    "private_message_b64u": "AQ"
+                }
+            }
+        });
+        let legacy = crate::internal::wire::sync_v2::SyncLaneEventV3::P6Delivery {
+            delivery_id: "delivery-1".to_owned(),
+            seq: "1".to_owned(),
+            group_did: group_did.to_owned(),
+            group_event_seq: "1".to_owned(),
+            envelope: envelope.clone(),
+        };
+        assert!(validate_strict_p6_lane_wire(&legacy).is_err());
+
+        let mut strict_envelope = envelope;
+        strict_envelope["auth"]["origin_context"] = json!({});
+        let strict = crate::internal::wire::sync_v2::SyncLaneEventV3::P6Delivery {
+            delivery_id: "delivery-1".to_owned(),
+            seq: "1".to_owned(),
+            group_did: group_did.to_owned(),
+            group_event_seq: "1".to_owned(),
+            envelope: strict_envelope,
+        };
+        validate_strict_p6_lane_wire(&strict).expect("strict P6 wire shape");
+    }
+
+    #[test]
+    fn legacy_notice_storage_adapter_uses_the_immutable_event_id() {
+        let legacy = json!({
+            "meta": {"profile": "anp.group.e2ee.v2"},
+            "body": {"notice_type": "commit-delivery"}
+        });
+        let first = legacy_p6_notice_storage_adapter(&legacy, "notice-row-1");
+        let replay = legacy_p6_notice_storage_adapter(&legacy, "notice-row-1");
+        assert_eq!(first, replay);
+        assert_eq!(first["body"]["notice_id"], "notice-row-1");
+        assert_eq!(first["meta"]["operation_id"], "notice-row-1");
+        assert!(legacy.pointer("/body/notice_id").is_none());
     }
 
     fn sync_group_profile_updated_event(
@@ -4761,6 +5005,14 @@ mod tests {
         let fixture = SyncSnapshotFixture::new("lane-capability-upgrade");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
+        let client_instance_id = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+            .await
+            .unwrap();
         seed_legacy_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
         let bootstrap = json!({
             "mode": "tail_only",
@@ -4771,6 +5023,11 @@ mod tests {
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
+            "p6_delivery": {
+                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": client_instance_id,
+                "activated": true
+            },
             "sync_capabilities": [SYNC_CAPABILITY_P5_DEVICE_V1],
             "lanes": {
                 "p5_device": {
@@ -6702,6 +6959,14 @@ mod tests {
         let fixture = SyncSnapshotFixture::new("bootstrap-recovery");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
+        let client_instance_id = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+            .await
+            .unwrap();
         let calls = Rc::new(RefCell::new(Vec::new()));
         let outcome = MessageSyncRuntimeV2::new(
             &client,
@@ -6711,6 +6976,7 @@ mod tests {
                 vec![
                     Ok(sync_snapshot_bootstrap_recovery(
                         &binding,
+                        &client_instance_id,
                         "recovery-bootstrap",
                         "snapshot-token-bootstrap",
                         "3",
@@ -7578,6 +7844,14 @@ mod tests {
         let fixture = SyncSnapshotFixture::new("device-epoch-p5-lane-refresh");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
+        let client_instance_id = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+            .await
+            .unwrap();
         seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
         seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -7598,6 +7872,11 @@ mod tests {
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
+            "p6_delivery": {
+                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": client_instance_id,
+                "activated": true
+            },
             "sync_capabilities": [SYNC_CAPABILITY_P5_DEVICE_V1],
             "lanes": {
                 "p5_device": {

@@ -1199,7 +1199,10 @@ fn project_realtime_group_updated(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
     crate::internal::local_state::groups::upsert_group(&connection, record)?;
-    if let Some(message) = realtime_group_system_message_record(client, event) {
+    let terminal = p4_terminal_signal(client, event);
+    if let Some(signal) = terminal {
+        apply_p4_terminal_signal(client, event.group.as_str(), signal)?;
+    } else if let Some(message) = realtime_group_system_message_record(client, event) {
         crate::internal::local_state::messages::upsert_message(&connection, &message)?;
     }
     Ok(())
@@ -1215,10 +1218,63 @@ async fn project_realtime_group_updated_async(
     };
     let db = client.core_inner().local_state_db().await?;
     db.upsert_group(record).await?;
-    if let Some(message) = realtime_group_system_message_record(client, event) {
+    let terminal = p4_terminal_signal(client, event);
+    if let Some(signal) = terminal {
+        apply_p4_terminal_signal(client, event.group.as_str(), signal)?;
+    } else if let Some(message) = realtime_group_system_message_record(client, event) {
         db.store_messages(vec![message]).await?;
     }
     Ok(())
+}
+
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn p4_terminal_signal(
+    client: &crate::core::ImClient,
+    event: &super::GroupUpdatedEvent,
+) -> Option<anp::group_e2ee::operations::v2::V2TerminalSignal> {
+    if event.subject_did.as_deref() != Some(client.did().as_str()) {
+        return None;
+    }
+    match (
+        event.event_type.as_deref(),
+        event.membership_status.as_deref(),
+    ) {
+        (Some("member-removed"), _) | (_, Some("removed")) => {
+            Some(anp::group_e2ee::operations::v2::V2TerminalSignal::MemberRemoved)
+        }
+        (Some("member-left"), _) | (_, Some("left")) => {
+            Some(anp::group_e2ee::operations::v2::V2TerminalSignal::MemberLeft)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn apply_p4_terminal_signal(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    signal: anp::group_e2ee::operations::v2::V2TerminalSignal,
+) -> crate::ImResult<()> {
+    crate::internal::group_e2ee::v2_runtime::mark_terminal_intent_for_client(
+        client, group_did, signal,
+    )
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "group-e2ee")))]
+fn apply_p4_terminal_signal(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _signal: anp::group_e2ee::operations::v2::V2TerminalSignal,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "group-e2ee")))]
+fn p4_terminal_signal(
+    _client: &crate::core::ImClient,
+    _event: &super::GroupUpdatedEvent,
+) -> Option<anp::group_e2ee::operations::v2::V2TerminalSignal> {
+    None
 }
 
 #[cfg(feature = "sqlite")]

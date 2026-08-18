@@ -250,6 +250,19 @@ async fn connect_async_websocket_session_with_token(
         .as_ref()
         .map(crate::ClientVersionInfo::header_value);
     let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
+    let p6_client_instance_id = if require_sync_changed_v2 {
+        let owner_identity_id = client.current_identity().id.as_str().to_owned();
+        Some(
+            client
+                .core_inner()
+                .local_state_db()
+                .await?
+                .load_or_create_sync_client_instance_id(owner_identity_id)
+                .await?,
+        )
+    } else {
+        None
+    };
     if !current_jwt.is_empty() {
         match super::async_ws_transport::AsyncWsTransport::connect(
             &endpoints.websocket_url,
@@ -257,6 +270,7 @@ async fn connect_async_websocket_session_with_token(
             ca_bundle,
             require_sync_changed_v2,
             client_version.as_deref(),
+            p6_client_instance_id.as_deref(),
         )
         .await
         {
@@ -297,6 +311,7 @@ async fn connect_async_websocket_session_with_token(
         ca_bundle,
         require_sync_changed_v2,
         client_version.as_deref(),
+        p6_client_instance_id.as_deref(),
     )
     .await
     .map_err(|err| crate::ImError::TransportUnavailable {
@@ -332,6 +347,20 @@ fn connect_native_websocket_session_with_token(
         .as_ref()
         .map(crate::ClientVersionInfo::header_value);
     let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
+    let p6_client_instance_id = if require_sync_changed_v2 {
+        let owner_identity_id = client.current_identity().id.as_str().to_owned();
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        Some(
+            crate::internal::local_state::sync_v2::load_or_create_sync_client_instance_id(
+                &connection,
+                &owner_identity_id,
+            )?,
+        )
+    } else {
+        None
+    };
     if !current_jwt.is_empty() {
         match super::ws_transport::WsTransport::connect_with_ca_bundle(
             &endpoints.websocket_url,
@@ -339,6 +368,7 @@ fn connect_native_websocket_session_with_token(
             ca_bundle,
             require_sync_changed_v2,
             client_version.as_deref(),
+            p6_client_instance_id.as_deref(),
         ) {
             Ok(transport) => return Ok(transport),
             Err(err) if err.status_code == Some(401) => {}
@@ -374,6 +404,7 @@ fn connect_native_websocket_session_with_token(
         ca_bundle,
         require_sync_changed_v2,
         client_version.as_deref(),
+        p6_client_instance_id.as_deref(),
     )
     .map_err(|err| crate::ImError::TransportUnavailable {
         detail: err.message,

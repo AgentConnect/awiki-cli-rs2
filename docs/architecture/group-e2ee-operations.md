@@ -179,7 +179,8 @@ review approves an explicit enablement plan.
 
 1. CLI sends `MessageSecurityMode::E2eeRequired` through `client.messages().send`.
 2. When the P6 v2 rollout gate is enabled, Core binds `group.list_messages` history requests to
-   the unique current protocol device in `meta.sender_device_id`. This lets the Host return the
+   the unique authenticated current protocol device; a caller-supplied `meta.sender_device_id`
+   is only an equality assertion. This lets the Host return the
    exact-device opaque `group.incoming` envelope needed for local validation/decryption after a
    missed realtime notification; callers cannot select a sibling or legacy `default` device.
 3. `im-core` handles group snapshot/state lookup, encryption, transport, incoming decrypt, MLS notice processing, and local projection.
@@ -192,6 +193,10 @@ review approves an explicit enablement plan.
   device desired state with the accepted SDK tree, then reconciles pending SDK
   WAL work and reports secret-free readiness plus device counts.
 - `group remove --secure required` and `group leave --secure required` use secure-aware lifecycle APIs; low-level process-leave/update/rejoin commands are not the supported interface.
+- a self-scoped P4 `member-removed` / `member-left` event immediately records
+  `terminal_pending_remove` and disables new encryption without pretending that the final MLS
+  Remove Commit has been applied. A later fresh Welcome can safely replace that state when the
+  accepted newer tree proves the old exact LeafNode is absent.
 
 ### Handle-backed DID recovery
 

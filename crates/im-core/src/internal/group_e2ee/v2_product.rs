@@ -17,14 +17,15 @@ use anp::group_e2ee::{
     group_incoming_notification_v2, group_remove_request_v2, group_send_request_v2,
     parse_get_key_package_result_v2, parse_group_create_result_v2,
     parse_group_membership_result_v2, parse_group_send_result_v2,
-    parse_publish_key_package_result_v2, publish_key_package_request_v2, V2GetKeyPackageBody,
-    V2GetKeyPackageResult, V2GroupAddBody, V2GroupCipherObject, V2GroupCreateBody,
-    V2GroupCreateResult, V2GroupIncomingBody, V2GroupIncomingMetadata, V2GroupMembershipResult,
-    V2GroupRemoveBody, V2GroupSendMetadata, V2GroupSendResult, V2GroupStateRef, V2OriginAuth,
-    V2PublishKeyPackageBody, V2PublishKeyPackageResult, V2ServiceMetadata, V2Target,
-    GROUP_E2EE_SECURITY_PROFILE_V2, METHOD_GROUP_ADD_V2, METHOD_GROUP_CREATE_V2,
-    METHOD_GROUP_REMOVE_V2, METHOD_GROUP_SEND_V2,
+    parse_publish_key_package_result_v2, publish_key_package_request_v2, V2DeliveredOriginAuth,
+    V2GetKeyPackageBody, V2GetKeyPackageResult, V2GroupAddBody, V2GroupCipherObject,
+    V2GroupCreateBody, V2GroupCreateResult, V2GroupIncomingBody, V2GroupIncomingMetadata,
+    V2GroupMembershipResult, V2GroupRemoveBody, V2GroupSendMetadata, V2GroupSendResult,
+    V2GroupStateRef, V2OriginAuth, V2PublishKeyPackageBody, V2PublishKeyPackageResult,
+    V2ServiceMetadata, V2Target, GROUP_E2EE_SECURITY_PROFILE_V2, METHOD_GROUP_ADD_V2,
+    METHOD_GROUP_CREATE_V2, METHOD_GROUP_REMOVE_V2, METHOD_GROUP_SEND_V2,
 };
+use anp::proof::{ImProofError, Rfc9421OriginProofError, Rfc9421OriginProofVerificationOptions};
 use anp::PrivateKeyMaterial;
 use serde::Serialize;
 use serde_json::Value;
@@ -86,6 +87,7 @@ pub(crate) trait GroupE2eeV2Host {
 pub(crate) struct RpcGroupE2eeV2Host<T> {
     transport: T,
     proof_identity: OriginProofIdentity,
+    p6_client_instance_id: Option<String>,
 }
 
 impl<T> RpcGroupE2eeV2Host<T> {
@@ -93,7 +95,16 @@ impl<T> RpcGroupE2eeV2Host<T> {
         Self {
             transport,
             proof_identity,
+            p6_client_instance_id: None,
         }
+    }
+
+    pub(crate) fn with_p6_client_instance_id(
+        mut self,
+        client_instance_id: impl Into<String>,
+    ) -> Self {
+        self.p6_client_instance_id = Some(client_instance_id.into());
+        self
     }
 }
 
@@ -131,11 +142,26 @@ where
             .and_then(Value::as_str)
             .ok_or_else(|| serialization_error("P6 v2 SDK request is missing method"))?
             .to_owned();
-        let params = request
+        let mut params = request
             .get("params")
             .cloned()
             .filter(Value::is_object)
             .ok_or_else(|| serialization_error("P6 v2 SDK request is missing params"))?;
+        if let Some(client_instance_id) = self.p6_client_instance_id.as_deref() {
+            let params = params.as_object_mut().expect("validated P6 params object");
+            let client = params
+                .entry("client".to_owned())
+                .or_insert_with(|| Value::Object(Default::default()))
+                .as_object_mut()
+                .ok_or_else(|| serialization_error("P6 client context must be an object"))?;
+            client.insert(
+                "p6_delivery".to_owned(),
+                serde_json::json!({
+                    "profile": "p6.delivery_context.v1",
+                    "client_instance_id": client_instance_id,
+                }),
+            );
+        }
         let raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, &method, params)?;
@@ -277,7 +303,7 @@ pub(crate) struct V2IncomingApplicationInput {
     pub(crate) recipient_device_id: String,
     pub(crate) meta: V2GroupIncomingMetadata,
     pub(crate) body: V2GroupIncomingBody,
-    pub(crate) auth: V2OriginAuth,
+    pub(crate) auth: V2DeliveredOriginAuth,
     pub(crate) sender_did_document: Value,
     pub(crate) now: String,
     pub(crate) draft_extension_negotiated: bool,
@@ -659,11 +685,44 @@ where
         &mut self,
         prepared: &V2PreparedApplicationSend,
     ) -> crate::ImResult<V2GroupSendResult> {
-        let result = self.host.send_application(
+        let result = match self.host.send_application(
             prepared.meta.clone(),
             prepared.cipher.clone(),
             prepared.client_context.clone(),
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                let signal = match &error {
+                    crate::ImError::Service {
+                        code: Some(code), ..
+                    } if code == "group.not_member" => {
+                        Some(anp::group_e2ee::operations::v2::V2TerminalSignal::GroupNotMember)
+                    }
+                    crate::ImError::Service {
+                        code: Some(code), ..
+                    } if code == "group.e2ee.leaf_not_current" => {
+                        Some(anp::group_e2ee::operations::v2::V2TerminalSignal::LeafNotCurrent)
+                    }
+                    _ => None,
+                };
+                if let Some(signal) = signal {
+                    let scope = self.runtime.owner_scope()?;
+                    self.runtime.mark_terminal_intent(
+                        anp::group_e2ee::operations::v2::V2MarkTerminalIntentInput {
+                            owner_did: scope.owner_did,
+                            owner_device_id: scope.device_id,
+                            group_did: prepared.cipher.group_state_ref.group_did.clone(),
+                            signal,
+                            request_id: format!(
+                                "p6-v2-send-terminal-{}",
+                                crate::internal::wire::common::generate_operation_id()
+                            ),
+                        },
+                    )?;
+                }
+                return Err(error);
+            }
+        };
         result.validate().map_err(map_v2_wire_error)?;
         if result.group_did != prepared.cipher.group_state_ref.group_did
             || result.message_id != prepared.meta.message_id
@@ -681,7 +740,7 @@ where
         input: V2IncomingApplicationInput,
     ) -> crate::ImResult<V2DecryptOutput> {
         self.ensure_current_device(&input.recipient_did, &input.recipient_device_id)?;
-        group_incoming_notification_v2(input.meta.clone(), input.body.clone(), input.auth)
+        group_incoming_notification_v2(input.meta.clone(), input.body.clone(), input.auth.clone())
             .map_err(map_v2_wire_error)?;
         if input.meta.target.did != input.recipient_did
             || input.meta.recipient_device_id != input.recipient_device_id
@@ -691,8 +750,51 @@ where
                 "P6 v2 group.incoming does not target the current device",
             ));
         }
+        let parsed_signature =
+            anp::proof::parse_im_signature_input(&input.auth.origin_proof.signature_input)
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+        if let Some(device) = anp::authentication::find_eligible_device(
+            &input.sender_did_document,
+            &input.meta.sender_device_id,
+            anp::authentication::PROFILE_GROUP_E2EE_V2,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        {
+            if parsed_signature.keyid != device.signing_key_id {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        match anp::group_e2ee::verify_group_incoming_origin_proof_v2(
+            &input.meta,
+            &input.body,
+            &input.auth,
+            Rfc9421OriginProofVerificationOptions {
+                did_document: Some(input.sender_did_document.clone()),
+                verification_method: None,
+                expected_signer_did: Some(input.meta.sender_did.clone()),
+            },
+        ) {
+            Ok(_) => {}
+            Err(anp::group_e2ee::GroupE2eeV2Error::OriginProof(
+                Rfc9421OriginProofError::ImProof(
+                    ImProofError::VerificationMethodNotFound | ImProofError::VerificationFailed,
+                ),
+            )) => {
+                // P2 is not a historical key log. A missing key or a
+                // signature-only failure can be a legitimate in-place
+                // rotation; MLS authentication below remains mandatory.
+            }
+            Err(error) => return Err(map_v2_wire_error(error)),
+        }
+        let context = input.auth.origin_context;
+        let contextual_anp_version = context
+            .extra_meta
+            .get("anp_version")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or(input.meta.anp_version);
         let originating_meta = V2GroupSendMetadata {
-            anp_version: input.meta.anp_version,
+            anp_version: contextual_anp_version,
             profile: input.meta.profile,
             security_profile: GROUP_E2EE_SECURITY_PROFILE_V2.to_owned(),
             sender_did: input.meta.sender_did,
@@ -704,7 +806,7 @@ where
             operation_id: input.meta.operation_id,
             message_id: input.meta.message_id,
             content_type: input.meta.content_type,
-            created_at: input.meta.created_at,
+            created_at: context.created_at,
         };
         self.runtime.decrypt(V2DecryptInput {
             recipient_did: input.recipient_did,

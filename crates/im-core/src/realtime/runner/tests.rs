@@ -42,6 +42,36 @@ fn realtime_v2_product_recognition_is_profile_and_method_scoped() {
 }
 
 #[test]
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn p4_terminal_signal_is_exact_self_scoped() {
+    let fixture = TestClientFixture::new("p4-terminal-signal");
+    let client = fixture.client();
+    let event = super::super::GroupUpdatedEvent {
+        group: crate::ids::GroupRef::parse("did:example:groups:terminal").unwrap(),
+        update_kind: super::super::GroupUpdateKind::MemberRemoved,
+        event_type: Some("member-removed".to_owned()),
+        group_event_seq: Some(7),
+        group_state_version: Some("7".to_owned()),
+        actor_did: Some("did:example:owner".to_owned()),
+        subject_did: Some(client.did().as_str().to_owned()),
+        subject_handle: None,
+        previous_subject_did: None,
+        handle_binding_generation: None,
+        membership_status: Some("removed".to_owned()),
+        changed_at: Some("2026-08-18T00:00:00Z".to_owned()),
+        sync: None,
+    };
+    assert_eq!(
+        p4_terminal_signal(&client, &event),
+        Some(anp::group_e2ee::operations::v2::V2TerminalSignal::MemberRemoved)
+    );
+
+    let mut sibling = event;
+    sibling.subject_did = Some("did:example:other".to_owned());
+    assert_eq!(p4_terminal_signal(&client, &sibling), None);
+}
+
+#[test]
 #[cfg(all(feature = "blocking", feature = "group-e2ee"))]
 fn realtime_unknown_group_notice_is_hidden_without_leaking_control_material() {
     let fixture = TestClientFixture::new("unknown-p6-control");

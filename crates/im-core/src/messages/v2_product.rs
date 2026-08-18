@@ -413,10 +413,19 @@ pub(super) fn send_group(
             .device_request_signing_private_pem()?,
         verification_method: Some(device.signing_key_id),
     };
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let p6_client_instance_id =
+        crate::internal::local_state::sync_v2::load_or_create_sync_client_instance_id(
+            &connection,
+            client.current_identity().id.as_str(),
+        )?;
     let host = crate::internal::group_e2ee::v2_product::RpcGroupE2eeV2Host::new(
         crate::internal::transport::CoreHttpTransport::new(client),
         proof_identity,
-    );
+    )
+    .with_p6_client_instance_id(p6_client_instance_id);
     let mut product =
         crate::internal::group_e2ee::v2_product::GroupE2eeV2Product::new(runtime, host);
     let meta = anp::group_e2ee::V2GroupSendMetadata {

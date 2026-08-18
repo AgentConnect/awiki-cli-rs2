@@ -10,9 +10,9 @@ use anp::group_e2ee::operations::v2::{
     self, V2AcceptKeyPackagePublishInput, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput,
     V2DecryptOutput, V2FinalizeInput, V2FinalizeOutput, V2GenerateKeyPackageInput,
     V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput,
-    V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate, V2PreparedKeyPackagePublish,
-    V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput,
-    V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
+    V2MarkTerminalIntentInput, V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate,
+    V2PreparedKeyPackagePublish, V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput,
+    V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
     V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
@@ -125,6 +125,13 @@ impl GroupE2eeV2Runtime {
         v2::process_notice_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
+    pub(crate) fn mark_terminal_intent(
+        &self,
+        input: V2MarkTerminalIntentInput,
+    ) -> crate::ImResult<()> {
+        v2::mark_local_group_terminal_intent_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
     pub(crate) fn reconcile_pending(
         &self,
         input: V2ReconcilePendingInput,
@@ -159,6 +166,31 @@ impl GroupE2eeV2Runtime {
 
     pub(crate) fn decrypt(&self, input: V2DecryptInput) -> crate::ImResult<V2DecryptOutput> {
         v2::decrypt_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+}
+
+pub(crate) fn mark_terminal_intent_for_client(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    signal: v2::V2TerminalSignal,
+) -> crate::ImResult<()> {
+    let runtime = runtime_for_client(client)?;
+    let scope = runtime.owner_scope()?;
+    match runtime.mark_terminal_intent(V2MarkTerminalIntentInput {
+        owner_did: scope.owner_did,
+        owner_device_id: scope.device_id,
+        group_did: group_did.to_owned(),
+        signal,
+        request_id: format!(
+            "p6-v2-terminal-{}",
+            crate::internal::wire::common::generate_operation_id()
+        ),
+    }) {
+        Ok(()) => Ok(()),
+        Err(crate::ImError::Service {
+            code: Some(code), ..
+        }) if code == "group.e2ee.state_not_ready" => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
