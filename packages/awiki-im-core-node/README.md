@@ -48,6 +48,10 @@ HTTP Message Signature 之间选择；成功响应只从 `Authentication-Info` �
 `401` 最多产生一个 retry attempt。正文最大 4 MiB；`undefined` 表示无正文，空
 `Uint8Array` 表示需要摘要绑定的显式空正文。
 
+固定 verifier challenge 即使对无正文请求仍列出 `content-digest`，也不会阻止 GET/HEAD
+重签；实际无正文签名仍省略 `Content-Digest`。多个合并的 `WWW-Authenticate` scheme 中，
+Rust 只选择唯一、合法的 DID-WBA challenge。
+
 `headerPatch` 含敏感凭证，禁止日志记录或序列化。生产只允许 HTTPS；可选
 `externalHttpAllowInsecureLoopbackForTesting` 仅为 literal loopback 测试。该 API 不能暴露给
 浏览器、模型工具或远程调用者。DSH 插件应使用其 Host-only `externalHttpAuth.dispatch`，而

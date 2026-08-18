@@ -951,6 +951,15 @@ fingerprint compare-and-clear so it cannot delete a concurrently replaced
 token. The cache is not persisted and disappears when the client lifecycle is
 released or explicitly cleared.
 
+The fixed verifier `Accept-Signature` may advertise `content-digest` for every
+challenge. Core treats that component as compatible even when the original
+request has no body, while the actual GET/HEAD/no-body retry signature still
+omits `Content-Digest`. A combined `WWW-Authenticate` value may contain other
+schemes before or after DID-WBA; Core selects exactly one well-formed DID-WBA
+challenge and ignores unrelated schemes. A recognized non-terminal Bearer
+challenge compare-and-clears the matching stale token before a later
+`Accept-Signature` incompatibility can decline the retry.
+
 Core does not send the request or read its response body. The language/host
 facade must send the canonical `attempt.target_url()` and `attempt.method()`,
 apply the returned patch to the exact original headers and body bytes, keep

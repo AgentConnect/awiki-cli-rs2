@@ -68,6 +68,12 @@ loopback HTTP，不允许 remote HTTP。该低层 API 只能留在可信 Node Ho
 模型工具或远程签名服务。DSH 产品层使用 `externalHttpAuth.dispatch` 封装 transport 和唯一一次
 重试，不把该低层状态机交给插件调用者。
 
+无正文 GET/HEAD 收到 verifier 固定、仍含 `content-digest` 的 `Accept-Signature` 时可以重试，
+但实际 retry patch 不生成 `Content-Digest`。合并后的 `WWW-Authenticate` 可以同时含 Bearer、
+DID-WBA 等多个 scheme；Rust 只选择唯一且格式合法的 DID-WBA challenge。已识别、非 terminal
+的 Bearer `401` 会先按指纹清理本次旧 Token，即使随后因为未知签名组件而拒绝重试，也不会在
+下一次请求中继续复用该 Token。
+
 ## 生命周期和并发
 
 每个 `openImCoreNodeClient` 创建一个环境级 `ImCore`，并在已有默认身份时复用一个

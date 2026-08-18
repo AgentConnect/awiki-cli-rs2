@@ -95,7 +95,6 @@ impl<'a> ExternalHttpAuthService<'a> {
             ChallengeResult::Unsupported => return Ok(ExternalHttpAuthDecision::Complete),
         };
         if !challenge_matches_request(&challenge, &attempt.request)
-            || !accept_signature_compatible(&response.headers, attempt.request.body.is_some())
             || is_terminal_error(challenge.error.as_deref())
         {
             return Ok(ExternalHttpAuthDecision::Complete);
@@ -103,6 +102,9 @@ impl<'a> ExternalHttpAuthService<'a> {
 
         if let AttemptCredential::Bearer { fingerprint } = attempt.credential {
             self.clear_matching_token(&attempt.token_key, fingerprint)?;
+        }
+        if !accept_signature_compatible(&response.headers) {
+            return Ok(ExternalHttpAuthDecision::Complete);
         }
 
         let material = self
@@ -336,12 +338,16 @@ fn response_challenge(headers: &BTreeMap<String, String>) -> ChallengeResult {
     let Some(value) = headers.get("www-authenticate") else {
         return ChallengeResult::Absent;
     };
-    let trimmed = value.trim();
-    let (scheme, parameters) = trimmed
-        .split_once(char::is_whitespace)
-        .map(|(scheme, rest)| (scheme, rest.trim()))
-        .unwrap_or((trimmed, ""));
-    if !scheme.eq_ignore_ascii_case("DIDWba") {
+    let Some(challenges) = parse_authenticate_challenges(value) else {
+        return ChallengeResult::Unsupported;
+    };
+    let mut did_wba = challenges
+        .into_iter()
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("DIDWba"));
+    let Some((_, parameters)) = did_wba.next() else {
+        return ChallengeResult::Unsupported;
+    };
+    if did_wba.next().is_some() {
         return ChallengeResult::Unsupported;
     }
     let Some(parameters) = parse_header_parameters(parameters) else {
@@ -382,7 +388,7 @@ fn is_terminal_error(error: Option<&str>) -> bool {
     )
 }
 
-fn accept_signature_compatible(headers: &BTreeMap<String, String>, body_present: bool) -> bool {
+fn accept_signature_compatible(headers: &BTreeMap<String, String>) -> bool {
     let Some(value) = headers.get("accept-signature") else {
         return true;
     };
@@ -406,7 +412,7 @@ fn accept_signature_compatible(headers: &BTreeMap<String, String>, body_present:
         FIXED_COMPONENTS
             .iter()
             .any(|allowed| component.eq_ignore_ascii_case(allowed))
-            || (body_present && component.eq_ignore_ascii_case("content-digest"))
+            || component.eq_ignore_ascii_case("content-digest")
     })
 }
 
@@ -515,6 +521,99 @@ fn parse_header_parameters(value: &str) -> Option<BTreeMap<String, String>> {
     Some(result)
 }
 
+fn parse_authenticate_challenges(value: &str) -> Option<Vec<(&str, &str)>> {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    let mut challenges = Vec::new();
+    while index < bytes.len() {
+        skip_ows_and_commas(bytes, &mut index);
+        if index == bytes.len() {
+            break;
+        }
+        let scheme_start = index;
+        while index < bytes.len() && is_http_token_byte(bytes[index]) {
+            index += 1;
+        }
+        if scheme_start == index {
+            return None;
+        }
+        let scheme = &value[scheme_start..index];
+        if index == bytes.len() {
+            challenges.push((scheme, ""));
+            break;
+        }
+        if !bytes[index].is_ascii_whitespace() {
+            if bytes[index] != b',' {
+                return None;
+            }
+            challenges.push((scheme, ""));
+            index += 1;
+            continue;
+        }
+        skip_ows(bytes, &mut index);
+        let parameters_start = index;
+        let mut cursor = index;
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut parameters_end = bytes.len();
+        while cursor < bytes.len() {
+            let byte = bytes[cursor];
+            if quoted {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    quoted = false;
+                }
+                cursor += 1;
+                continue;
+            }
+            if byte == b'"' {
+                quoted = true;
+                cursor += 1;
+                continue;
+            }
+            if byte != b',' {
+                cursor += 1;
+                continue;
+            }
+
+            let mut next = cursor + 1;
+            skip_ows(bytes, &mut next);
+            if next == bytes.len() {
+                parameters_end = cursor;
+                index = bytes.len();
+                break;
+            }
+            let token_start = next;
+            while next < bytes.len() && is_http_token_byte(bytes[next]) {
+                next += 1;
+            }
+            if token_start == next {
+                return None;
+            }
+            let mut after_token = next;
+            skip_ows(bytes, &mut after_token);
+            if bytes.get(after_token) == Some(&b'=') {
+                cursor += 1;
+                continue;
+            }
+            parameters_end = cursor;
+            index = token_start;
+            break;
+        }
+        if quoted || escaped {
+            return None;
+        }
+        if cursor == bytes.len() {
+            index = bytes.len();
+        }
+        challenges.push((scheme, value[parameters_start..parameters_end].trim()));
+    }
+    (!challenges.is_empty()).then_some(challenges)
+}
+
 fn parse_quoted(value: &str, bytes: &[u8], index: &mut usize) -> Option<String> {
     *index += 1;
     let mut parsed = String::new();
@@ -608,4 +707,25 @@ fn skip_ows_and_commas(bytes: &[u8], index: &mut usize) {
 
 fn is_parameter_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
