@@ -431,6 +431,26 @@ pub(crate) fn build_group_messages_rpc_params(
     }))
 }
 
+pub(crate) fn build_group_messages_rpc_params_for_client(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+    skip: i64,
+) -> crate::ImResult<Value> {
+    let params =
+        build_group_messages_rpc_params(client.did().as_str(), group_did, limit, cursor, skip)?;
+    #[cfg(feature = "group-e2ee")]
+    if client.core_inner().group_e2ee_v2_enabled() {
+        if let Ok(device) = crate::internal::group_e2ee::v2_lifecycle::current_v2_device(client) {
+            let mut params = params;
+            params["meta"]["sender_device_id"] = Value::String(device.device_id);
+            return Ok(params);
+        }
+    }
+    Ok(params)
+}
+
 fn require_group(group_did: &str) -> crate::ImResult<&str> {
     let group_did = group_did.trim();
     if group_did.is_empty() {

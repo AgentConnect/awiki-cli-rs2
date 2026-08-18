@@ -52,9 +52,16 @@ pub(crate) fn consume_for_client(
     value: &Value,
 ) -> crate::ImResult<V2ProcessNoticeOutput> {
     let (meta, notice) = parse_notice(value)?;
-    let member_documents = resolve_member_documents(client, &notice)?;
+    let runtime = super::v2_runtime::runtime_for_client(client)?;
+    let member_documents = match resolve_member_documents(client, &notice) {
+        Ok(documents) => documents,
+        Err(error) if is_local_not_active_member(&error) => {
+            resolve_self_remove_member_documents(client, &runtime, &notice)?
+        }
+        Err(error) => return Err(error),
+    };
     consume_with_runtime(
-        &super::v2_runtime::runtime_for_client(client)?,
+        &runtime,
         meta,
         notice,
         member_documents,
@@ -71,9 +78,16 @@ pub(crate) async fn consume_for_client_async(
     value: &Value,
 ) -> crate::ImResult<V2ProcessNoticeOutput> {
     let (meta, notice) = parse_notice(value)?;
-    let member_documents = resolve_member_documents_async(client, &notice).await?;
+    let runtime = super::v2_runtime::runtime_for_client(client)?;
+    let member_documents = match resolve_member_documents_async(client, &notice).await {
+        Ok(documents) => documents,
+        Err(error) if is_local_not_active_member(&error) => {
+            resolve_self_remove_member_documents_async(client, &runtime, &notice).await?
+        }
+        Err(error) => return Err(error),
+    };
     consume_with_runtime(
-        &super::v2_runtime::runtime_for_client(client)?,
+        &runtime,
         meta,
         notice,
         member_documents,
@@ -197,6 +211,103 @@ async fn resolve_member_documents_async(
         documents.push(V2DidDocument { did, document });
     }
     Ok(documents)
+}
+
+fn resolve_self_remove_member_documents(
+    client: &crate::core::ImClient,
+    runtime: &GroupE2eeV2Runtime,
+    notice: &V2E2eeNotice,
+) -> crate::ImResult<Vec<V2DidDocument>> {
+    let dids = self_remove_local_member_dids(runtime, notice)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    dids.into_iter()
+        .map(|did| {
+            resolve_did_document(client, &mut transport, &did)
+                .map(|document| V2DidDocument { did, document })
+        })
+        .collect()
+}
+
+async fn resolve_self_remove_member_documents_async(
+    client: &crate::core::ImClient,
+    runtime: &GroupE2eeV2Runtime,
+    notice: &V2E2eeNotice,
+) -> crate::ImResult<Vec<V2DidDocument>> {
+    let dids = self_remove_local_member_dids(runtime, notice)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut documents = Vec::with_capacity(dids.len());
+    for did in dids {
+        let document = resolve_did_document_async(client, &mut transport, &did).await?;
+        documents.push(V2DidDocument { did, document });
+    }
+    Ok(documents)
+}
+
+fn self_remove_local_member_dids(
+    runtime: &GroupE2eeV2Runtime,
+    notice: &V2E2eeNotice,
+) -> crate::ImResult<BTreeSet<String>> {
+    let scope = runtime.owner_scope()?;
+    if !is_exact_self_remove_notice(&scope, notice) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let inventory = runtime.list_local_group_member_endpoints(
+        anp::group_e2ee::operations::v2::V2InspectLocalGroupInput {
+            owner_did: scope.owner_did.clone(),
+            owner_device_id: scope.device_id.clone(),
+            group_did: notice.group_did.clone(),
+            request_id: format!(
+                "p6-v2-self-remove-inventory-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+        },
+    )?;
+    self_remove_inventory_dids(&scope, notice, inventory)
+}
+
+fn is_exact_self_remove_notice(
+    scope: &anp::group_e2ee::storage::GroupMlsOwnerScope,
+    notice: &V2E2eeNotice,
+) -> bool {
+    if notice.notice_type != "commit-delivery"
+        || notice.subject_status != "removed"
+        || notice.subject_did != scope.owner_did
+        || notice.subject_device_id != scope.device_id
+    {
+        return false;
+    }
+    true
+}
+
+fn self_remove_inventory_dids(
+    scope: &anp::group_e2ee::storage::GroupMlsOwnerScope,
+    notice: &V2E2eeNotice,
+    inventory: anp::group_e2ee::operations::v2::V2ListLocalGroupMemberEndpointsOutput,
+) -> crate::ImResult<BTreeSet<String>> {
+    if !is_exact_self_remove_notice(scope, notice) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if inventory.group_did != notice.group_did {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let dids = inventory
+        .member_endpoints
+        .into_iter()
+        .map(|endpoint| endpoint.member_did)
+        .collect::<BTreeSet<_>>();
+    if !dids.contains(&notice.subject_did) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(dids)
+}
+
+fn is_local_not_active_member(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::Service {
+            code: Some(code), ..
+        } if code == "group.local_not_active_member"
+    )
 }
 
 fn member_dids_from_complete_roster(
@@ -485,6 +596,63 @@ mod tests {
             }]
         )
         .is_err());
+    }
+
+    #[test]
+    fn self_remove_fallback_uses_only_the_exact_local_endpoint_inventory() {
+        let scope = anp::group_e2ee::storage::GroupMlsOwnerScope::new(
+            "identity-bob",
+            "did:example:bob",
+            "bob-device",
+        )
+        .unwrap();
+        let mut notice = test_notice();
+        notice.subject_status = "removed".to_owned();
+        let inventory = anp::group_e2ee::operations::v2::V2ListLocalGroupMemberEndpointsOutput {
+            group_did: notice.group_did.clone(),
+            member_endpoints: vec![
+                anp::group_e2ee::operations::v2::V2LocalGroupMemberEndpoint {
+                    member_did: "did:example:alice".to_owned(),
+                    member_device_id: "alice-device".to_owned(),
+                },
+                anp::group_e2ee::operations::v2::V2LocalGroupMemberEndpoint {
+                    member_did: "did:example:bob".to_owned(),
+                    member_device_id: "bob-device".to_owned(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            self_remove_inventory_dids(&scope, &notice, inventory.clone()).unwrap(),
+            BTreeSet::from(["did:example:alice".to_owned(), "did:example:bob".to_owned(),])
+        );
+
+        let mut welcome = notice.clone();
+        welcome.notice_type = "welcome-delivery".to_owned();
+        assert_eq!(
+            self_remove_inventory_dids(&scope, &welcome, inventory.clone()),
+            Err(crate::ImError::PermissionDenied)
+        );
+
+        let mut other_device = notice;
+        other_device.subject_device_id = "bob-device-2".to_owned();
+        assert_eq!(
+            self_remove_inventory_dids(&scope, &other_device, inventory),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn self_remove_fallback_requires_the_stable_nonmember_service_code() {
+        assert!(is_local_not_active_member(&crate::ImError::Service {
+            status_code: Some(200),
+            code: Some("group.local_not_active_member".to_owned()),
+            message: "not active".to_owned(),
+            data: None,
+        }));
+        assert!(!is_local_not_active_member(
+            &crate::ImError::PermissionDenied
+        ));
     }
 
     #[tokio::test]

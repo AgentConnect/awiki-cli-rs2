@@ -4,8 +4,6 @@ use crate::cli_parser::ParsedCommand;
 use crate::workspace_config::Resolved;
 use serde_json::{json, Value};
 
-const DEFAULT_DEVICE: &str = "default";
-
 impl App {
     pub fn run_group_e2ee_publish_key_package(
         &self,
@@ -19,7 +17,12 @@ impl App {
         if purpose.trim().is_empty() {
             purpose = "normal".to_string();
         }
-        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let device = required_string_flag(
+            command,
+            "device",
+            "group e2ee publish-key-package",
+            "Usage: awiki-cli group e2ee publish-key-package --device <PROTOCOL_DEVICE_ID>",
+        )?;
         let group = string_flag(command, "group");
         if !self.globals.dry_run {
             let client = crate::m_core_cli_adapter::build_im_client(
@@ -79,7 +82,12 @@ impl App {
         if purpose.trim().is_empty() {
             purpose = "normal".to_string();
         }
-        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let device = required_string_flag(
+            command,
+            "device",
+            "group e2ee publish-key-package",
+            "Usage: awiki-cli group e2ee publish-key-package --device <PROTOCOL_DEVICE_ID>",
+        )?;
         let group = string_flag(command, "group");
         let client = crate::m_core_cli_adapter::build_im_client_async(
             &resolved,
@@ -179,50 +187,7 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        if self.globals.dry_run {
-            return self.run_group_e2ee_process_leave_request(command);
-        }
-        let resolved = self.resolve_config()?;
-        let group = required_string_flag(
-            command,
-            "group",
-            "group e2ee process-leave-request",
-            "Usage: awiki-cli group e2ee process-leave-request --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let member = required_string_flag(
-            command,
-            "member",
-            "group e2ee process-leave-request",
-            "Usage: awiki-cli group e2ee process-leave-request --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let leave_request_id = string_flag(command, "leave-request-id");
-        let reason_text = string_flag(command, "reason");
-        let client = crate::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )
-        .await?;
-        let result =
-            crate::m_core_cli_adapter::groups::process_group_e2ee_leave_request_via_im_core_async(
-                &resolved,
-                &client,
-                crate::m_core_cli_adapter::groups::GroupE2eeProcessLeaveRequest {
-                    identity_name: self.globals.identity.clone(),
-                    group,
-                    member,
-                    leave_request_id,
-                    reason_text,
-                },
-            )
-            .await
-            .map_err(|err| group_e2ee_exit(err, "group.e2ee.process-leave-request"))?;
-        self.render_success(
-            "awiki-cli group e2ee process-leave-request",
-            &resolved,
-            result.data,
-            &result.summary,
-            result.warnings,
-        )
+        self.run_group_e2ee_process_leave_request(command)
     }
 
     pub fn run_group_e2ee_recover_member(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -239,7 +204,12 @@ impl App {
             "group e2ee recover-member",
             "Usage: awiki-cli group e2ee recover-member --group <GROUP_DID> --member <MEMBER>",
         )?;
-        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let device = required_string_flag(
+            command,
+            "device",
+            "group e2ee recover-member",
+            "Usage: awiki-cli group e2ee recover-member --group <GROUP_DID> --member <MEMBER> --device <PROTOCOL_DEVICE_ID>",
+        )?;
         if !self.globals.dry_run {
             return Err(unsupported_group_e2ee_command("group.e2ee.recover-member"));
         }
@@ -272,48 +242,7 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        if self.globals.dry_run {
-            return self.run_group_e2ee_recover_member(command);
-        }
-        let resolved = self.resolve_config()?;
-        let group = required_string_flag(
-            command,
-            "group",
-            "group e2ee recover-member",
-            "Usage: awiki-cli group e2ee recover-member --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let member = required_string_flag(
-            command,
-            "member",
-            "group e2ee recover-member",
-            "Usage: awiki-cli group e2ee recover-member --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
-        let client = crate::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )
-        .await?;
-        let result =
-            crate::m_core_cli_adapter::groups::recover_group_e2ee_member_via_im_core_async(
-                &resolved,
-                &client,
-                crate::m_core_cli_adapter::groups::GroupE2eeMemberKeyRequest {
-                    identity_name: self.globals.identity.clone(),
-                    group,
-                    member,
-                    device,
-                },
-            )
-            .await
-            .map_err(|err| group_e2ee_exit(err, "group.e2ee.recover-member"))?;
-        self.render_success(
-            "awiki-cli group e2ee recover-member",
-            &resolved,
-            result.data,
-            &result.summary,
-            result.warnings,
-        )
+        self.run_group_e2ee_recover_member(command)
     }
 
     pub fn run_group_e2ee_update_key(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -330,7 +259,12 @@ impl App {
             "group e2ee update-key",
             "Usage: awiki-cli group e2ee update-key --group <GROUP_DID> --member <MEMBER>",
         )?;
-        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let device = required_string_flag(
+            command,
+            "device",
+            "group e2ee update-key",
+            "Usage: awiki-cli group e2ee update-key --group <GROUP_DID> --member <MEMBER> --device <PROTOCOL_DEVICE_ID>",
+        )?;
         if !self.globals.dry_run {
             return Err(unsupported_group_e2ee_command("group.e2ee.update-key"));
         }
@@ -365,47 +299,7 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        if self.globals.dry_run {
-            return self.run_group_e2ee_update_key(command);
-        }
-        let resolved = self.resolve_config()?;
-        let group = required_string_flag(
-            command,
-            "group",
-            "group e2ee update-key",
-            "Usage: awiki-cli group e2ee update-key --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let member = required_string_flag(
-            command,
-            "member",
-            "group e2ee update-key",
-            "Usage: awiki-cli group e2ee update-key --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
-        let client = crate::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )
-        .await?;
-        let result = crate::m_core_cli_adapter::groups::update_group_e2ee_key_via_im_core_async(
-            &resolved,
-            &client,
-            crate::m_core_cli_adapter::groups::GroupE2eeMemberKeyRequest {
-                identity_name: self.globals.identity.clone(),
-                group,
-                member,
-                device,
-            },
-        )
-        .await
-        .map_err(|err| group_e2ee_exit(err, "group.e2ee.update-key"))?;
-        self.render_success(
-            "awiki-cli group e2ee update-key",
-            &resolved,
-            result.data,
-            &result.summary,
-            result.warnings,
-        )
+        self.run_group_e2ee_update_key(command)
     }
 
     pub fn run_group_e2ee_rejoin(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -451,51 +345,7 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        if self.globals.dry_run {
-            return self.run_group_e2ee_rejoin(command);
-        }
-        let resolved = self.resolve_config()?;
-        let group = required_string_flag(
-            command,
-            "group",
-            "group e2ee rejoin",
-            "Usage: awiki-cli group e2ee rejoin --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let member = required_string_flag(
-            command,
-            "member",
-            "group e2ee rejoin",
-            "Usage: awiki-cli group e2ee rejoin --group <GROUP_DID> --member <MEMBER>",
-        )?;
-        let role = string_flag_or(command, "role", "member");
-        let client = crate::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )
-        .await?;
-        let result = crate::m_core_cli_adapter::groups::add_group_member_via_im_core_async(
-            &resolved,
-            &client,
-            crate::m_core_cli_adapter::groups::GroupMemberRequest {
-                identity_name: self.globals.identity.clone(),
-                group,
-                member,
-                role,
-                reason_text: String::new(),
-                secure_required: true,
-                e2ee: true,
-                leave_request_id: String::new(),
-            },
-        )
-        .await
-        .map_err(|err| group_e2ee_exit(err, "group.e2ee.rejoin"))?;
-        self.render_success(
-            "awiki-cli group e2ee rejoin",
-            &resolved,
-            result.data,
-            "Rejoined member through group E2EE add",
-            result.warnings,
-        )
+        self.run_group_e2ee_rejoin(command)
     }
 
     fn render_group_e2ee_plan(

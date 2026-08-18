@@ -112,8 +112,8 @@ where
         request: crate::groups::GroupMessagesRequest,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let params = crate::internal::wire::group::build_group_messages_rpc_params(
-            self.client.did().as_str(),
+        let params = crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+            self.client,
             request.group.as_str(),
             page_limit(request.limit, 50),
             request.cursor.as_ref().map(crate::ids::Cursor::as_str),
@@ -238,8 +238,8 @@ where
         request: crate::groups::GroupMessagesRequest,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let params = crate::internal::wire::group::build_group_messages_rpc_params(
-            self.client.did().as_str(),
+        let params = crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+            self.client,
             request.group.as_str(),
             page_limit(request.limit, 50),
             request.cursor.as_ref().map(crate::ids::Cursor::as_str),

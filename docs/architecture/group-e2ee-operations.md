@@ -151,6 +151,9 @@ Blocked/internal commands:
 
 - `group secure diagnostics` and `group secure repair --explain` are stable unsupported in this version.
 - `group e2ee publish-key-package/pending/process-leave-request/recover-member/update-key/rejoin` are hidden/internal or stable unsupported and must not appear in the default surface.
+- Internal device-scoped invocations obtain the unique current `protocol_device_id` from
+  `id device list` and pass it explicitly as `--device`; the hidden CLI does not synthesize
+  or accept the legacy `default` device authority.
 
 ## Discovery posture
 
@@ -175,8 +178,12 @@ review approves an explicit enablement plan.
 ### Send and receive
 
 1. CLI sends `MessageSecurityMode::E2eeRequired` through `client.messages().send`.
-2. `im-core` handles group snapshot/state lookup, encryption, transport, incoming decrypt, MLS notice processing, and local projection.
-3. CLI does not build MLS payloads or wire RPC params.
+2. When the P6 v2 rollout gate is enabled, Core binds `group.list_messages` history requests to
+   the unique current protocol device in `meta.sender_device_id`. This lets the Host return the
+   exact-device opaque `group.incoming` envelope needed for local validation/decryption after a
+   missed realtime notification; callers cannot select a sibling or legacy `default` device.
+3. `im-core` handles group snapshot/state lookup, encryption, transport, incoming decrypt, MLS notice processing, and local projection.
+4. CLI does not build MLS payloads or wire RPC params.
 
 ### Repair and lifecycle
 

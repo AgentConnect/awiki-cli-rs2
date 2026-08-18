@@ -351,8 +351,8 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
         let cursor = after_server_seq.to_string();
-        let params = crate::internal::wire::group::build_group_messages_rpc_params(
-            self.client.did().as_str(),
+        let params = crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+            self.client,
             group.as_str(),
             i64::from(limit),
             Some(&cursor),
@@ -890,8 +890,8 @@ where
             .ensure_session(crate::auth::AuthScope::GroupMessaging)
             .await?;
         let cursor = after_server_seq.to_string();
-        let params = crate::internal::wire::group::build_group_messages_rpc_params(
-            self.client.did().as_str(),
+        let params = crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+            self.client,
             group.as_str(),
             i64::from(limit),
             Some(&cursor),

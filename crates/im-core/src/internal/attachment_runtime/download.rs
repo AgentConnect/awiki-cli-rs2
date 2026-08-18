@@ -354,13 +354,14 @@ where
                 ))
             }
             DownloadTarget::Group { group } => {
-                let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                    self.client.did().as_str(),
-                    group.as_str(),
-                    ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
-                    None,
-                    skip,
-                )?;
+                let params =
+                    crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+                        self.client,
+                        group.as_str(),
+                        ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
+                        None,
+                        skip,
+                    )?;
                 let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "group.list_messages",
@@ -870,13 +871,14 @@ where
                 ))
             }
             DownloadTarget::Group { group } => {
-                let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                    self.client.did().as_str(),
-                    group.as_str(),
-                    ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
-                    None,
-                    skip,
-                )?;
+                let params =
+                    crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+                        self.client,
+                        group.as_str(),
+                        ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
+                        None,
+                        skip,
+                    )?;
                 let mut raw = self
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)

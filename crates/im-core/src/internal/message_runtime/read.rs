@@ -184,8 +184,8 @@ where
         let mut raw = grouped_inbox_raw("group");
         merge_raw_metadata(&mut raw, &group_list_raw, "group");
         for group in groups {
-            let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                self.client.did().as_str(),
+            let params = crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+                self.client,
                 group.as_str(),
                 limit,
                 None,
@@ -305,13 +305,14 @@ where
                 }
                 self.session_provider
                     .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
-                let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                    self.client.did().as_str(),
-                    group.as_str(),
-                    page_limit(input.query.limit, 50),
-                    input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
-                    0,
-                )?;
+                let params =
+                    crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+                        self.client,
+                        group.as_str(),
+                        page_limit(input.query.limit, 50),
+                        input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
+                        0,
+                    )?;
                 let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "group.list_messages",
@@ -489,8 +490,8 @@ where
         let mut raw = grouped_inbox_raw("group");
         merge_raw_metadata(&mut raw, &group_list_raw, "group");
         for group in groups {
-            let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                self.client.did().as_str(),
+            let params = crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+                self.client,
                 group.as_str(),
                 limit,
                 None,
@@ -619,13 +620,14 @@ where
                 self.session_provider
                     .ensure_session(crate::auth::AuthScope::GroupMessaging)
                     .await?;
-                let params = crate::internal::wire::group::build_group_messages_rpc_params(
-                    self.client.did().as_str(),
-                    group.as_str(),
-                    page_limit(input.query.limit, 50),
-                    input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
-                    0,
-                )?;
+                let params =
+                    crate::internal::wire::group::build_group_messages_rpc_params_for_client(
+                        self.client,
+                        group.as_str(),
+                        page_limit(input.query.limit, 50),
+                        input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
+                        0,
+                    )?;
                 let mut raw = self
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)

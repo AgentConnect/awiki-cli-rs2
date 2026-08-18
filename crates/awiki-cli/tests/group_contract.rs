@@ -1289,6 +1289,8 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
             "publish-key-package",
             "--dry-run",
             "--recovery",
+            "--device",
+            "bob-main",
         ],
         workspace.path(),
     ));
@@ -1566,7 +1568,8 @@ fn group_e2ee_schema_exposes_hidden_and_side_effect_contracts() {
         &["schema", "group", "e2ee", "publish-key-package"],
         workspace.path(),
     ));
-    assert_eq!(publish["data"]["command"]["flags"][0]["default"], "default");
+    assert_eq!(publish["data"]["command"]["flags"][0]["required"], true);
+    assert!(publish["data"]["command"]["flags"][0]["default"].is_null());
     assert_eq!(publish["data"]["command"]["flags"][1]["default"], "normal");
     assert_eq!(publish["data"]["command"]["side_effect"], true);
 }
