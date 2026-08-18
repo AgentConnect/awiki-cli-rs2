@@ -362,7 +362,7 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
         }))),
         TestResponse::bytes("text/plain", downloaded_payload),
     ]);
-    register_ready_identity(
+    let requester_did = register_ready_identity(
         workspace.path(),
         "alice-attachment",
         "alice",
@@ -505,7 +505,7 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
     assert_eq!(ticket_body["params"]["body"].get("sender_did"), None);
     assert_eq!(
         ticket_body["params"]["body"]["requester_did"],
-        "did:wba:awiki.ai:alice:e1_alice"
+        requester_did
     );
     assert_eq!(ticket_body["params"]["body"]["message_id"], raw_message_id);
     assert_eq!(ticket_body["params"]["body"]["group_did"], group_did);
@@ -718,7 +718,7 @@ fn register_ready_identity(
     service_base_url: &str,
     attachment_service_path: &str,
     attachment_service_did: &str,
-) {
+) -> String {
     configure_default_tenant_if_needed(workspace, service_base_url);
     write_msg_config_with_runtime(workspace, service_base_url, "http");
     set_secret_storage_mode(workspace, "file_compat");
@@ -736,11 +736,19 @@ fn register_ready_identity(
     );
     assert_success(&create);
 
-    let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
     let tenant_workspace = tenant_workspace(workspace);
     let index_path = tenant_workspace.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-    index["credentials"][identity_name]["did"] = json!(did);
+    let original_did = index["credentials"][identity_name]["did"]
+        .as_str()
+        .expect("created identity DID")
+        .to_owned();
+    let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
+    rebase_did_references(
+        &mut index["credentials"][identity_name],
+        &original_did,
+        &did,
+    );
     index["credentials"][identity_name]["handle"] = json!(handle);
     index["credentials"][identity_name]["full_handle"] = json!(format!("{handle}.awiki.ai"));
     index["credentials"][identity_name]["user_id"] = json!(format!("user-{handle}"));
@@ -753,7 +761,7 @@ fn register_ready_identity(
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
-    identity["did"] = json!(did);
+    rebase_did_references(&mut identity, &original_did, &did);
     identity["handle"] = json!(handle);
     identity["full_handle"] = json!(format!("{handle}.awiki.ai"));
     identity["user_id"] = json!(format!("user-{handle}"));
@@ -766,7 +774,7 @@ fn register_ready_identity(
     let document_path = identity_dir.join("did_document.json");
     let mut document: Value =
         serde_json::from_slice(&std::fs::read(&document_path).unwrap()).unwrap();
-    document["id"] = json!(did);
+    rebase_did_references(&mut document, &original_did, &did);
     document["service"] = json!([{
         "id": "#message",
         "type": "ANPMessageService",
@@ -795,6 +803,30 @@ fn register_ready_identity(
     set_secret_storage_mode(workspace, "vault_required");
     let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
     assert_success(&migrate);
+    did
+}
+
+fn rebase_did_references(value: &mut Value, previous_did: &str, current_did: &str) {
+    match value {
+        Value::String(text) => {
+            if let Some(suffix) = text.strip_prefix(previous_did) {
+                if suffix.is_empty() || suffix.starts_with('#') {
+                    *text = format!("{current_did}{suffix}");
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rebase_did_references(item, previous_did, current_did);
+            }
+        }
+        Value::Object(object) => {
+            for item in object.values_mut() {
+                rebase_did_references(item, previous_did, current_did);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
