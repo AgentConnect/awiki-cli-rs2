@@ -10,6 +10,7 @@ const options: ImCoreNodeOpenOptions = {
   stateRoot: '/tmp/awiki-im-core-node-types',
   serviceBaseUrl: 'https://awiki.info',
   didDomain: 'awiki.info',
+  mailServiceEndpoint: 'https://mail.awiki.info',
 }
 
 const opened: Promise<ImCoreNodeClient> = openImCoreNodeClient(options)
@@ -58,6 +59,28 @@ void opened.then(async client => {
     messageId: 'message-1',
   })
   download.bytes satisfies Uint8Array
+  const account = await client.getMailAccount()
+  account.mailboxAddress satisfies string | undefined
+  const inbox = await client.listMailInbox({
+    folder: 'inbox',
+    unreadOnly: true,
+    limit: 20,
+    offset: 0,
+  })
+  inbox.nextOffset satisfies number | undefined
+  const mail = await client.readMail(inbox.items[0]?.id ?? 'mail-1')
+  mail.bodyText satisfies string | undefined
+  mail.hasHtmlBody satisfies boolean
+  mail.attachments[0]?.sizeBytes satisfies string | undefined
+  const marked = await client.markMailRead({ messageIds: ['mail-1'] })
+  marked.updated satisfies number
+  const sent = await client.sendMail({
+    to: ['recipient@example.test'],
+    cc: ['copy@example.test'],
+    subject: 'Subject',
+    bodyText: 'Plain-text body',
+  })
+  sent.accepted satisfies boolean
   await client.close()
 })
 

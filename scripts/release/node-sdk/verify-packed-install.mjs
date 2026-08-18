@@ -61,10 +61,16 @@ try {
         throw new Error('expected native API v4 local timeline facade')
       }
       if (typeof client.prepareExternalHttpRequest !== 'function') {
-        throw new Error('expected native API v4 external HTTP auth facade')
+        throw new Error('expected native API v5 external HTTP auth facade')
       }
       if (typeof client.createGroup !== 'function' || typeof client.hydrateDisplayProfiles !== 'function') {
-        throw new Error('expected native API v4 group and display-profile facade')
+        throw new Error('expected native API v5 group and display-profile facade')
+      }
+      if (typeof client.getLocalConversationTimeline !== 'function') {
+        throw new Error('expected native API v5 local timeline facade')
+      }
+      if (typeof client.startRealtime !== 'function' || typeof client.listMailInbox !== 'function') {
+        throw new Error('expected native API v5 realtime and mail facades')
       }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()

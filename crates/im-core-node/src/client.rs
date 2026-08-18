@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
@@ -25,6 +26,10 @@ const DEFAULT_REALTIME_EVENT_BUFFER: u32 = 128;
 const MAX_REALTIME_EVENT_BUFFER: u32 = 4_096;
 const DEFAULT_RECONNECT_BASE_DELAY_MS: u32 = 1_000;
 const DEFAULT_RECONNECT_MAX_DELAY_MS: u32 = 30_000;
+const DEFAULT_MAIL_INBOX_LIMIT: u32 = 20;
+const MAX_MAIL_INBOX_LIMIT: u32 = 100;
+const MAX_MAIL_MESSAGE_IDS: usize = 100;
+const MAX_MAIL_RECIPIENTS: usize = 20;
 
 type BoxImFuture<'a, T> = Pin<Box<dyn Future<Output = im_core::ImResult<T>> + Send + 'a>>;
 
@@ -1058,6 +1063,108 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn get_mail_account(&self) -> napi::Result<NodeMailAccount> {
+        napi_result(self.get_mail_account_inner().await)
+    }
+
+    async fn get_mail_account_inner(&self) -> SafeResult<NodeMailAccount> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(client.email().account_async(), self.inner.operation_timeout)
+            .await?;
+        crate::dto::mail_account(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_mail_inbox(
+        &self,
+        input: Option<NodeMailInboxInput>,
+    ) -> napi::Result<NodeMailInboxPage> {
+        napi_result(self.list_mail_inbox_inner(input).await)
+    }
+
+    async fn list_mail_inbox_inner(
+        &self,
+        input: Option<NodeMailInboxInput>,
+    ) -> SafeResult<NodeMailInboxPage> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let (query, offset, limit) = mail_inbox_query(input)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().inbox_async(query),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::mail_inbox(result, offset, limit)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn read_mail(&self, message_id: String) -> napi::Result<NodeMailMessage> {
+        napi_result(self.read_mail_inner(message_id).await)
+    }
+
+    async fn read_mail_inner(&self, message_id: String) -> SafeResult<NodeMailMessage> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let message_id = mail_message_id(message_id)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().read_async(message_id),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::mail_message(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn mark_mail_read(
+        &self,
+        input: NodeMarkMailReadInput,
+    ) -> napi::Result<NodeMarkMailReadResult> {
+        napi_result(self.mark_mail_read_inner(input).await)
+    }
+
+    async fn mark_mail_read_inner(
+        &self,
+        input: NodeMarkMailReadInput,
+    ) -> SafeResult<NodeMarkMailReadResult> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = mark_mail_read_request(input)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().mark_read_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::mark_mail_read_result(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn send_mail(&self, input: NodeSendMailInput) -> napi::Result<NodeSendMailResult> {
+        napi_result(self.send_mail_inner(input).await)
+    }
+
+    async fn send_mail_inner(&self, input: NodeSendMailInput) -> SafeResult<NodeSendMailResult> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = send_mail_request(input)?;
+        let email = client.email();
+        let send = box_im_future(email.send_async(request));
+        let result = self
+            .inner
+            .wait_im(send, self.inner.operation_timeout)
+            .await?;
+        crate::dto::send_mail_result(result)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close(&self) -> napi::Result<()> {
         napi_result(self.inner.close().await)
     }
@@ -1195,7 +1302,7 @@ fn core_open_options(
         ))
 }
 
-fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
+pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
     let mut config = im_core::ImCoreConfig::new(
         im_core::ServiceEndpoint::parse(&options.service_base_url).map_err(SafeError::from_im)?,
         options.did_domain.clone(),
@@ -1203,6 +1310,7 @@ fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
     .map_err(SafeError::from_im)?;
     config.user_service_endpoint = optional_endpoint(options.user_service_endpoint.clone())?;
     config.message_service_endpoint = optional_endpoint(options.message_service_endpoint.clone())?;
+    config.mail_service_endpoint = optional_endpoint(options.mail_service_endpoint.clone())?;
     config.anp_service_endpoint = optional_endpoint(options.anp_service_endpoint.clone())?;
     config.anp_service_did = options
         .anp_service_did
@@ -1427,6 +1535,128 @@ fn page_limit(value: Option<u32>) -> SafeResult<im_core::ids::PageLimit> {
     im_core::ids::PageLimit::new(value.unwrap_or(50)).map_err(SafeError::from_im)
 }
 
+pub(crate) fn mail_inbox_query(
+    input: Option<NodeMailInboxInput>,
+) -> SafeResult<(im_core::email::EmailInboxQuery, u32, u32)> {
+    let input = input.unwrap_or(NodeMailInboxInput {
+        folder: None,
+        limit: None,
+        offset: None,
+        unread_only: None,
+    });
+    let folder = input.folder.unwrap_or_else(|| "inbox".to_owned());
+    validate_mail_token(&folder, 64)?;
+    let limit = input.limit.unwrap_or(DEFAULT_MAIL_INBOX_LIMIT);
+    if !(1..=MAX_MAIL_INBOX_LIMIT).contains(&limit) {
+        return Err(invalid_input("The mail inbox limit is invalid."));
+    }
+    let offset = input.offset.unwrap_or_default();
+    Ok((
+        im_core::email::EmailInboxQuery {
+            folder: im_core::email::EmailFolder::parse(folder).map_err(SafeError::from_im)?,
+            limit: im_core::ids::PageLimit::new(limit).map_err(SafeError::from_im)?,
+            offset,
+            unread_only: input.unread_only.unwrap_or(false),
+        },
+        offset,
+        limit,
+    ))
+}
+
+pub(crate) fn mail_message_id(value: String) -> SafeResult<im_core::email::EmailMessageId> {
+    validate_mail_token(&value, 2_048)?;
+    im_core::email::EmailMessageId::parse(value).map_err(SafeError::from_im)
+}
+
+pub(crate) fn mark_mail_read_request(
+    input: NodeMarkMailReadInput,
+) -> SafeResult<im_core::email::EmailMarkReadRequest> {
+    if input.message_ids.is_empty() || input.message_ids.len() > MAX_MAIL_MESSAGE_IDS {
+        return Err(invalid_input("The mail message ID collection is invalid."));
+    }
+    Ok(im_core::email::EmailMarkReadRequest {
+        message_ids: input
+            .message_ids
+            .into_iter()
+            .map(mail_message_id)
+            .collect::<SafeResult<Vec<_>>>()?,
+        is_read: true,
+    })
+}
+
+pub(crate) fn send_mail_request(
+    input: NodeSendMailInput,
+) -> SafeResult<im_core::email::SendEmailRequest> {
+    let cc = input.cc.unwrap_or_default();
+    if input.to.is_empty()
+        || input.to.len() > MAX_MAIL_RECIPIENTS
+        || input.to.len().saturating_add(cc.len()) > MAX_MAIL_RECIPIENTS
+    {
+        return Err(invalid_input("The mail recipient collection is invalid."));
+    }
+    let mut recipients = HashSet::with_capacity(input.to.len() + cc.len());
+    for address in input.to.iter().chain(&cc) {
+        validate_mail_address(address)?;
+        if !recipients.insert(address.as_str()) {
+            return Err(invalid_input(
+                "The mail recipient collection has duplicates.",
+            ));
+        }
+    }
+    if input.subject.trim() != input.subject
+        || input.subject.is_empty()
+        || input.subject.len() > 1_024
+    {
+        return Err(invalid_input("The mail subject is invalid."));
+    }
+    if input.body_text.trim().is_empty() || input.body_text.len() > 65_536 {
+        return Err(invalid_input("The mail body is invalid."));
+    }
+    Ok(im_core::email::SendEmailRequest {
+        to: input
+            .to
+            .into_iter()
+            .map(im_core::email::EmailAddress::parse)
+            .collect::<im_core::ImResult<Vec<_>>>()
+            .map_err(SafeError::from_im)?,
+        cc: cc
+            .into_iter()
+            .map(im_core::email::EmailAddress::parse)
+            .collect::<im_core::ImResult<Vec<_>>>()
+            .map_err(SafeError::from_im)?,
+        subject: input.subject,
+        body_text: input.body_text,
+        body_html: None,
+    })
+}
+
+fn validate_mail_token(value: &str, max_chars: usize) -> SafeResult<()> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().count() > max_chars
+        || value.chars().any(char::is_control)
+    {
+        return Err(invalid_input("The mail request identifier is invalid."));
+    }
+    Ok(())
+}
+
+fn validate_mail_address(value: &str) -> SafeResult<()> {
+    if !(3..=320).contains(&value.chars().count())
+        || !value.contains('@')
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(invalid_input("The mail address is invalid."));
+    }
+    Ok(())
+}
+
+fn invalid_input(message: &'static str) -> SafeError {
+    SafeError::new("invalid_input", message, false)
+}
+
 fn optional_message_id(value: Option<String>) -> SafeResult<Option<im_core::ids::MessageId>> {
     value
         .map(im_core::ids::MessageId::parse)
@@ -1498,6 +1728,7 @@ mod tests {
             did_domain: "example.test".to_owned(),
             user_service_endpoint: None,
             message_service_endpoint: None,
+            mail_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
             operation_timeout_ms: Some(1_000),

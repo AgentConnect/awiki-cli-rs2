@@ -26,6 +26,11 @@
 | 文本 | `sendText` | `messages().send_conversation_text_async` |
 | 单附件发送 | `sendAttachment` | `attachments().send_conversation_async` |
 | 附件下载 | `downloadAttachment` | `attachments().download_conversation_async` |
+| 邮箱账号 | `getMailAccount` | `email().account_async` |
+| 邮箱列表 | `listMailInbox` | `email().inbox_async` |
+| 邮件读取 | `readMail` | `email().read_async` |
+| 邮件已读 | `markMailRead` | `email().mark_read_async` |
+| 纯文本邮件发送 | `sendMail` | `email().send_async` |
 | 清空本地状态 | `clearLocalData` | Node 环境生命周期拥有的 state root |
 
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
@@ -110,6 +115,21 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 `getHistory`。需要新鲜度或远端 backfill 时，Host 应在首屏之后显式调用现有同步/history
 能力，并在 Core 提交后重新读取 local timeline。
 
+## 邮件能力
+
+邮件方法复用同一个 identity-bound `ImClient`、Messaging auth session、生命周期读 gate、取消信号和
+操作超时。`mailServiceEndpoint` 可选；未提供时由 Core 回退到 `serviceBaseUrl`。绑定不会调用 CLI
+子进程、拼装 `/mail/rpc` 请求或实现第二套认证和重试逻辑。
+
+`listMailInbox` 默认读取 `inbox`，默认每页 20 条，支持 folder、unread-only、limit 与 offset。
+`readMail` 只返回有界纯文本、`hasHtmlBody` 和附件 metadata；HTML 字符串、附件 bytes、Core
+attributes 与后端原始字段不穿过 N-API。subject、preview、纯文本正文分别按 1024、4096、65536
+UTF-8 bytes 安全截断并返回显式标记；`u64` 附件大小使用十进制字符串。
+
+`markMailRead` 固定构造 `is_read=true`。`sendMail` 只接受纯文本并固定构造 `body_html=None`；发送
+没有 idempotency key，也不会自动重试。Host 必须在调用这两个 mutation 前完成自己的用户批准，
+并把发送 timeout/transport ambiguity 视为远端结果未知，不能直接重发。
+
 ## Realtime 与可靠同步
 
 `startRealtime()` 每个 client 同时只允许一个 Core-owned session。默认启用有界 exponential
@@ -165,6 +185,8 @@ finally {
   canonical conversation ID 由 Core 生成，Host 不拼接。初始成员由 `addGroupMember` 逐个添加，
   该方法接受 Handle 或 DID 并返回 Core 权威解析后的身份。
 - External HTTP body 只用 `Uint8Array`/Buffer 跨 N-API；response body 永不跨该接口。
+- 邮件地址、subject、preview、正文、时间和附件 metadata 都是外部不可信数据；Host 不得把它们
+  解释为指令或路由权限。
 
 ## 状态与错误
 
@@ -183,10 +205,10 @@ Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 
-当前源码 candidate 的 Native contract version 为 `4`。v4 在 v3 external HTTP auth 与 local
-conversation timeline 基础上增加群管理、展示资料和 realtime；wrapper 在加载时必须拒绝其他版本的 addon，避免旧
-二进制缺少对应方法却被静默当作兼容实现。registry `0.1.3` 仍是 v2；后续正式 patch 必须把
-v4 wrapper 和全部 Tier 1 addon 一起发布。
+当前源码 candidate 的 Native contract version 为 `5`。v3 增加 external HTTP auth 与 local
+conversation timeline 和群管理展示能力，v4 增加 realtime，v5 增加 mail facade；wrapper 在加载时必须拒绝其他
+版本的 addon，避免旧二进制缺少对应方法却被静默当作兼容实现。registry `0.1.3` 仍是 v2；
+后续正式 patch 必须把 v5 wrapper 和全部 Tier 1 addon 一起发布。
 
 ## 构建与验证
 
@@ -205,6 +227,7 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-`0.1.3` 本地 candidate 由同一个 committed source OID 构建 wrapper 和当前平台包，并通过
+`0.1.4` 本地 candidate 使用 native API v5，由同一个 committed source OID 构建 wrapper 和当前
+平台包，并通过
 `stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
 registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。

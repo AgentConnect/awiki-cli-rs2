@@ -81,6 +81,36 @@ test('realtime facade requires an identity and returns only the stable redacted 
   )
 })
 
+test('mail facade shares the identity gate and exposes only stable redacted errors', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-mail-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const client = await openImCoreNodeClient({
+    ...options(root),
+    mailServiceEndpoint: 'https://mail.example.test',
+  })
+  t.after(() => client.close())
+  const operations = [
+    () => client.getMailAccount(),
+    () => client.listMailInbox(),
+    () => client.readMail('mail-1'),
+    () => client.markMailRead({ messageIds: ['mail-1'] }),
+    () => client.sendMail({
+      to: ['recipient@example.test'],
+      subject: 'Subject',
+      bodyText: 'Body',
+    }),
+  ]
+  for (const operation of operations) {
+    await assert.rejects(
+      operation(),
+      error => error instanceof ImCoreNodeError
+        && error.code === 'identity_required'
+        && error.safeMessage === 'A registered IM identity is required.'
+        && !error.message.includes('mail.example.test'),
+    )
+  }
+})
+
 test('clears SDK-owned local data and keeps the client usable', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-clear-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -94,7 +124,7 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })
 
-test('routes group management and profile hydration through native v4 with structured identity errors', async t => {
+test('routes group management and profile hydration through native v5 with structured identity errors', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))

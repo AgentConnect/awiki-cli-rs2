@@ -3,6 +3,8 @@
 mod client;
 mod dto;
 mod error;
+#[cfg(test)]
+mod mail_tests;
 mod state;
 
 pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient, NativeRealtimeSession};
@@ -20,14 +22,14 @@ pub async fn open_native_client(options: NodeOpenOptions) -> napi::Result<Native
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    4
+    5
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn group_and_realtime_contracts_use_native_api_v4() {
-        assert_eq!(super::native_api_version(), 4);
+    fn group_realtime_and_mail_contracts_use_native_api_v5() {
+        assert_eq!(super::native_api_version(), 5);
     }
 }
 

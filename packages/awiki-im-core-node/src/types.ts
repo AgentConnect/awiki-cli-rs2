@@ -6,6 +6,7 @@ export interface ImCoreNodeOpenOptions {
   readonly didDomain: string
   readonly userServiceEndpoint?: string
   readonly messageServiceEndpoint?: string
+  readonly mailServiceEndpoint?: string
   readonly anpServiceEndpoint?: string
   readonly anpServiceDid?: string
   /** Default timeout for one operation, from 1 to 600000 milliseconds. */
@@ -322,6 +323,79 @@ export interface NodeDownload {
   readonly bytes: Uint8Array
 }
 
+export interface MailInboxInput {
+  readonly folder?: string
+  readonly limit?: number
+  readonly offset?: number
+  readonly unreadOnly?: boolean
+}
+
+export interface MarkMailReadInput {
+  readonly messageIds: readonly string[]
+}
+
+export interface SendMailInput {
+  readonly to: readonly string[]
+  readonly cc?: readonly string[]
+  readonly subject: string
+  readonly bodyText: string
+}
+
+export interface MailAccount {
+  readonly mailboxAddress?: string
+  readonly displayName?: string
+  readonly status?: string
+}
+
+export interface MailMessageSummary {
+  readonly id: string
+  readonly folder?: string
+  readonly from: readonly string[]
+  readonly to: readonly string[]
+  readonly cc: readonly string[]
+  readonly subject: string
+  readonly subjectTruncated: boolean
+  readonly preview?: string
+  readonly previewTruncated: boolean
+  readonly receivedAt?: string
+  readonly sentAt?: string
+  readonly unread: boolean
+  readonly hasAttachments: boolean
+  readonly attachmentCount?: number
+}
+
+export interface MailAttachmentMetadata {
+  readonly index: number
+  readonly fileName?: string
+  readonly contentType?: string
+  /** Decimal byte count; kept as a string to avoid JS integer truncation. */
+  readonly sizeBytes?: string
+}
+
+export interface MailMessage {
+  readonly summary: MailMessageSummary
+  readonly bodyText?: string
+  readonly bodyTruncated: boolean
+  readonly hasHtmlBody: boolean
+  readonly attachments: readonly MailAttachmentMetadata[]
+}
+
+export interface MailInboxPage {
+  readonly items: readonly MailMessageSummary[]
+  readonly nextOffset?: number
+  readonly hasMore: boolean
+}
+
+export interface MarkMailReadResult {
+  readonly updated: number
+}
+
+export interface SendMailResult {
+  readonly accepted: boolean
+  readonly messageId?: string
+  readonly warnings: readonly string[]
+}
+
 /** Stable, redacted error taxonomy from the Rust bridge. */
 export class ImCoreNodeError extends Error {
   public readonly name = 'ImCoreNodeError'
@@ -357,6 +431,11 @@ export interface ImCoreNodeClient {
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: SendAttachmentInput): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload>
+  getMailAccount(): Promise<MailAccount>
+  listMailInbox(input?: MailInboxInput): Promise<MailInboxPage>
+  readMail(messageId: string): Promise<MailMessage>
+  markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
+  sendMail(input: SendMailInput): Promise<SendMailResult>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */

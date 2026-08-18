@@ -17,6 +17,12 @@ import {
   type HistoryInput,
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
+  type MailAccount,
+  type MailInboxInput,
+  type MailInboxPage,
+  type MailMessage,
+  type MarkMailReadInput,
+  type MarkMailReadResult,
   type MarkReadResult,
   type NodeConversation,
   type NodeDownload,
@@ -32,6 +38,8 @@ import {
   type RegistrationInput,
   type RegistrationWithOtp,
   type SendAttachmentInput,
+  type SendMailInput,
+  type SendMailResult,
   type SendTextInput,
   type SyncOptions,
   type SyncResult,
@@ -161,6 +169,26 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
   public async downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload> {
     const value = await call(() => this.native.downloadAttachment(input))
     return { attachment: value.attachment, bytes: value.bytes }
+  }
+
+  public getMailAccount(): Promise<MailAccount> {
+    return call(() => this.native.getMailAccount())
+  }
+
+  public listMailInbox(input?: MailInboxInput): Promise<MailInboxPage> {
+    return call(() => this.native.listMailInbox(input))
+  }
+
+  public readMail(messageId: string): Promise<MailMessage> {
+    return call(() => this.native.readMail(messageId))
+  }
+
+  public markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult> {
+    return call(() => this.native.markMailRead(input))
+  }
+
+  public sendMail(input: SendMailInput): Promise<SendMailResult> {
+    return call(() => this.native.sendMail(input))
   }
 
   public clearLocalData(): Promise<{ readonly cleared: boolean }> {
