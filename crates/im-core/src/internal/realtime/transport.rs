@@ -229,18 +229,30 @@ pub(crate) async fn connect_async_websocket_session(
 ) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
     let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
     let endpoints = realtime_client_endpoints(service_base_url)?;
+    let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
+    let p6_client_instance_id =
+        prepare_p6_delivery_session_async(client, require_sync_changed_v2).await?;
     let current_jwt = client
         .runtime()
         .key_provider
         .valid_auth_token()?
         .unwrap_or_default();
-    connect_async_websocket_session_with_token(client, &endpoints, current_jwt.trim()).await
+    connect_async_websocket_session_with_token(
+        client,
+        &endpoints,
+        current_jwt.trim(),
+        require_sync_changed_v2,
+        p6_client_instance_id.as_deref(),
+    )
+    .await
 }
 
 async fn connect_async_websocket_session_with_token(
     client: &crate::core::ImClient,
     endpoints: &RealtimeClientEndpoints,
     current_jwt: &str,
+    require_sync_changed_v2: bool,
+    p6_client_instance_id: Option<&str>,
 ) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
     let current_jwt = current_jwt.trim();
     let config = client.core_inner().sdk_config();
@@ -249,20 +261,6 @@ async fn connect_async_websocket_session_with_token(
         .client_version_info
         .as_ref()
         .map(crate::ClientVersionInfo::header_value);
-    let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
-    let p6_client_instance_id = if require_sync_changed_v2 {
-        let owner_identity_id = client.current_identity().id.as_str().to_owned();
-        Some(
-            client
-                .core_inner()
-                .local_state_db()
-                .await?
-                .load_or_create_sync_client_instance_id(owner_identity_id)
-                .await?,
-        )
-    } else {
-        None
-    };
     if !current_jwt.is_empty() {
         match super::async_ws_transport::AsyncWsTransport::connect(
             &endpoints.websocket_url,
@@ -270,7 +268,7 @@ async fn connect_async_websocket_session_with_token(
             ca_bundle,
             require_sync_changed_v2,
             client_version.as_deref(),
-            p6_client_instance_id.as_deref(),
+            p6_client_instance_id,
         )
         .await
         {
@@ -311,7 +309,7 @@ async fn connect_async_websocket_session_with_token(
         ca_bundle,
         require_sync_changed_v2,
         client_version.as_deref(),
-        p6_client_instance_id.as_deref(),
+        p6_client_instance_id,
     )
     .await
     .map_err(|err| crate::ImError::TransportUnavailable {
@@ -325,12 +323,29 @@ pub(crate) fn connect_native_websocket_session(
 ) -> crate::ImResult<super::ws_transport::WsTransport> {
     let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
     let endpoints = realtime_client_endpoints(service_base_url)?;
+    let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| crate::ImError::Internal {
+            message: format!("build realtime capability runtime: {error}"),
+        })?;
+    let p6_client_instance_id = runtime.block_on(prepare_p6_delivery_session_async(
+        client,
+        require_sync_changed_v2,
+    ))?;
     let current_jwt = client
         .runtime()
         .key_provider
         .valid_auth_token()?
         .unwrap_or_default();
-    connect_native_websocket_session_with_token(client, &endpoints, current_jwt.trim())
+    connect_native_websocket_session_with_token(
+        client,
+        &endpoints,
+        current_jwt.trim(),
+        require_sync_changed_v2,
+        p6_client_instance_id.as_deref(),
+    )
 }
 
 #[cfg(feature = "blocking")]
@@ -338,6 +353,8 @@ fn connect_native_websocket_session_with_token(
     client: &crate::core::ImClient,
     endpoints: &RealtimeClientEndpoints,
     current_jwt: &str,
+    require_sync_changed_v2: bool,
+    p6_client_instance_id: Option<&str>,
 ) -> crate::ImResult<super::ws_transport::WsTransport> {
     let current_jwt = current_jwt.trim();
     let config = client.core_inner().sdk_config();
@@ -346,21 +363,6 @@ fn connect_native_websocket_session_with_token(
         .client_version_info
         .as_ref()
         .map(crate::ClientVersionInfo::header_value);
-    let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
-    let p6_client_instance_id = if require_sync_changed_v2 {
-        let owner_identity_id = client.current_identity().id.as_str().to_owned();
-        let connection = crate::internal::local_state::open_writable(
-            &client.core_inner().sdk_paths().local_state.sqlite_path,
-        )?;
-        Some(
-            crate::internal::local_state::sync_v2::load_or_create_sync_client_instance_id(
-                &connection,
-                &owner_identity_id,
-            )?,
-        )
-    } else {
-        None
-    };
     if !current_jwt.is_empty() {
         match super::ws_transport::WsTransport::connect_with_ca_bundle(
             &endpoints.websocket_url,
@@ -368,7 +370,7 @@ fn connect_native_websocket_session_with_token(
             ca_bundle,
             require_sync_changed_v2,
             client_version.as_deref(),
-            p6_client_instance_id.as_deref(),
+            p6_client_instance_id,
         ) {
             Ok(transport) => return Ok(transport),
             Err(err) if err.status_code == Some(401) => {}
@@ -404,11 +406,49 @@ fn connect_native_websocket_session_with_token(
         ca_bundle,
         require_sync_changed_v2,
         client_version.as_deref(),
-        p6_client_instance_id.as_deref(),
+        p6_client_instance_id,
     )
     .map_err(|err| crate::ImError::TransportUnavailable {
         detail: err.message,
     })
+}
+
+async fn prepare_p6_delivery_session_async(
+    client: &crate::core::ImClient,
+    required: bool,
+) -> crate::ImResult<Option<String>> {
+    if !required {
+        return Ok(None);
+    }
+    let binding = client.active_sync_account_binding().await?;
+    let owner_identity_id = client.current_identity().id.as_str();
+    if binding.owner_identity_id != owner_identity_id
+        || binding.current_did != client.did().as_str()
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "realtime P6 capability binding does not match the active identity".to_owned(),
+        });
+    }
+    let db = client.core_inner().local_state_db().await?;
+    if db
+        .lane_capability_negotiation_required(
+            owner_identity_id.to_owned(),
+            binding.device_auth_generation.clone(),
+        )
+        .await?
+    {
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+        crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
+            client,
+            &mut transport,
+            &db,
+            &binding,
+        )
+        .await?;
+    }
+    db.load_or_create_sync_client_instance_id(owner_identity_id.to_owned())
+        .await
+        .map(Some)
 }
 
 pub fn bearer_authorization_header(token: &str) -> String {
