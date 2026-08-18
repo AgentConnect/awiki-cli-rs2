@@ -21,7 +21,7 @@ TypeScript SDK。
 registry wrapper/platform package `0.1.3` 的 native contract version 为 `2`，包含 opaque
 single-use external HTTP auth attempt。当前源码 candidate 增加 local conversation timeline，
 native contract 升为 `3`；下一次正式 patch 必须同时发布 wrapper、全部 Tier 1 addon，并让
-provenance `nativeApiVersion` 与 packed-install 测试统一为 v3，不能混装 v2 addon 与 v3
+provenance `nativeApiVersion` 与 packed-install 测试统一为 v4，不能混装旧 addon 与 v4
 wrapper。
 
 最低边界取 Node 24/26 和 Rust 目标共同支持范围中更严格的一侧，并只承诺仍处于厂商支持期的

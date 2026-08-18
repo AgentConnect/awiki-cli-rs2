@@ -480,4 +480,49 @@ mod tests {
             "internal"
         );
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_namespace_is_hardened_and_preserved_by_sdk_clear() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let host = directory.path().join(".host");
+        fs::create_dir_all(&host).unwrap();
+        let binding = host.join("agent-bindings-v1.json");
+        fs::write(&binding, b"{}\n").unwrap();
+        fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&binding, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let state = StateRoot::open(directory.path().to_path_buf()).unwrap();
+        state.harden_permissions().unwrap();
+        assert_eq!(
+            fs::metadata(&host).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&binding).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::write(directory.path().join("identities/example"), b"sdk-owned").unwrap();
+        assert!(state.clear_owned_data().unwrap());
+        assert!(binding.exists());
+        assert_eq!(fs::read(&binding).unwrap(), b"{}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_namespace_symlink_fails_closed_during_hardening() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let state = StateRoot::open(directory.path().to_path_buf()).unwrap();
+        let host = directory.path().join(".host");
+        fs::create_dir_all(&host).unwrap();
+        symlink(outside.path(), host.join("binding-link")).unwrap();
+
+        assert_eq!(state.harden_permissions().unwrap_err().code, "internal");
+    }
 }

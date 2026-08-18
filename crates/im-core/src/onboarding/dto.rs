@@ -57,6 +57,27 @@ pub struct SkillResumeRequest {
     pub expected_agent_handle: String,
 }
 
+/// Trusted-host request to create one additional Skill Agent identity under
+/// an already registered Human controller. `operation_id` is an opaque local
+/// idempotency key; it never becomes the identity alias or remote Handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillAgentProvisionRequest {
+    pub operation_id: String,
+    pub display_name: String,
+    pub controller_identity: crate::identity::IdentitySelector,
+}
+
+/// Public result of one trusted-host Skill Agent provisioning operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillAgentProvisionResult {
+    pub identity: crate::identity::IdentitySummary,
+    pub agent_handle: crate::ids::Handle,
+    pub controller_handle: crate::ids::Handle,
+    pub greeting_message_id: crate::ids::MessageId,
+    /// False when the same completed operation was replayed locally.
+    pub created: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillClaimPhase {

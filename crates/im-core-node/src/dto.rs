@@ -106,6 +106,7 @@ pub struct NodeIdentity {
     pub did: String,
     pub handle: Option<String>,
     pub display_name: Option<String>,
+    pub is_default: bool,
     /// Unix milliseconds represented as a decimal string.
     pub registered_at_ms: String,
 }
@@ -121,6 +122,14 @@ pub struct NodeRegistrationWithOtp {
     pub handle: String,
     pub phone: String,
     pub otp: String,
+}
+
+#[derive(Debug, Clone)]
+#[napi(object)]
+pub struct NodeSkillAgentProvisionInput {
+    pub operation_id: String,
+    pub display_name: String,
+    pub controller_identity_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +311,7 @@ pub(crate) fn identity(
             .as_ref()
             .map(|handle| handle.as_str().to_owned()),
         display_name: display_name.or_else(|| value.display_name.clone()),
+        is_default: value.is_default,
         registered_at_ms,
     }
 }
@@ -436,7 +446,7 @@ fn conversation(
     value: im_core::messages::Conversation,
     owner_did: &str,
 ) -> SafeResult<NodeConversation> {
-    if value.resolution_state != im_core::messages::ConversationResolutionState::Resolved {
+    if !conversation_is_projectable(&value.conversation_id, value.resolution_state) {
         return Err(SafeError::new(
             "conversation_unresolved",
             "The IM conversation route is unresolved.",
@@ -488,6 +498,14 @@ fn conversation(
         last_message_at: value.last_message_at,
         last_message,
     })
+}
+
+fn conversation_is_projectable(
+    conversation_id: &str,
+    resolution_state: im_core::messages::ConversationResolutionState,
+) -> bool {
+    resolution_state == im_core::messages::ConversationResolutionState::Resolved
+        || conversation_id.starts_with("dm:")
 }
 
 fn message(
@@ -676,6 +694,7 @@ mod tests {
                 did: "did:example:alice".to_owned(),
                 handle: Some("alice.awiki.test".to_owned()),
                 display_name: Some("Alice".to_owned()),
+                is_default: true,
                 registered_at_ms: "1700000000000".to_owned(),
             }
         );
@@ -722,6 +741,18 @@ mod tests {
                 warnings: vec!["safe-warning".to_owned()],
             }
         );
+    }
+
+    #[test]
+    fn unresolved_direct_conversations_remain_browser_projectable() {
+        assert!(conversation_is_projectable(
+            "dm:did:example:alice:did:example:bob",
+            im_core::messages::ConversationResolutionState::LegacyUnresolved,
+        ));
+        assert!(!conversation_is_projectable(
+            "group:did:example:group",
+            im_core::messages::ConversationResolutionState::LegacyUnresolved,
+        ));
     }
 
     #[test]

@@ -13,6 +13,15 @@ const options: ImCoreNodeOpenOptions = {
 
 const opened: Promise<ImCoreNodeClient> = openImCoreNodeClient(options)
 void opened.then(async client => {
+  const identities = await client.listIdentities()
+  identities satisfies readonly import('../src/index.js').NodeIdentity[]
+  const defaultIdentity = await client.getDefaultIdentity()
+  if (defaultIdentity !== null) {
+    defaultIdentity.isDefault satisfies boolean
+    const identityClient = await client.forIdentity(defaultIdentity.identityId)
+    const selected = await identityClient.getIdentity()
+    selected.identityId satisfies string
+  }
   const attempt = await client.prepareExternalHttpRequest({
     url: 'https://api.example.com/orders',
     method: 'POST',
@@ -39,6 +48,13 @@ void opened.then(async client => {
     messageId: 'message-1',
   })
   download.bytes satisfies Uint8Array
+  const provisioned = await client.provisionSkillAgentIdentity({
+    operationId: 'agbind_types_0001',
+    displayName: 'Research Agent',
+    controllerIdentityId: 'controller-identity',
+  })
+  provisioned.did satisfies string
+  await client.acknowledgeSkillAgentProvision('agbind_types_0001')
   await client.close()
 })
 

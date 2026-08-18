@@ -10,6 +10,8 @@
 | --- | --- | --- |
 | 外部 HTTP ANP 认证 | `prepareExternalHttpRequest` + opaque attempt `handleResponse` | `external_http_auth().prepare_async/handle_response_async` |
 | 默认身份 | `getDefaultIdentity` | `identities().default_identity_async` |
+| 本地身份列表/选择 | `listIdentities`、`forIdentity` | `identities().list_async`、`client_async` |
+| Skill Agent provisioning | `provisionSkillAgentIdentity`、`acknowledgeSkillAgentProvision` | `onboarding().provision_agent_async/acknowledge_agent_provision` |
 | OTP 第一阶段 | `requestRegistrationOtp` | `identities().request_registration_otp_async` |
 | 完成注册 | `completeRegistration` | `identities().register_handle_async` |
 | Profile | `updateDisplayName` | `identity().update_profile_async` |
@@ -77,8 +79,10 @@ DID-WBA 等多个 scheme；Rust 只选择唯一且格式合法的 DID-WBA challe
 
 ## 生命周期和并发
 
-每个 `openImCoreNodeClient` 创建一个环境级 `ImCore`，并在已有默认身份时复用一个
-identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不在 Node event loop
+每个 `openImCoreNodeClient` 创建一个环境级 `ImCore`，并为 registry 中每个 ready identity
+持有固定 identity-bound `ImClient`。`forIdentity` 返回共享同一生命周期的轻量 facade，不修改
+全局 default；临时 identity facade 调用或释放不会关闭 parent client，parent client 的 GC
+仍执行整个共享生命周期的取消兜底。I/O 方法全部返回 Promise，Rust async I/O 不在 Node event loop
 上执行阻塞网络或数据库操作。
 
 普通关闭的生命周期固定为 `open → closing → closed`：
@@ -93,6 +97,8 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 
 `listConversations` 先执行一次有界可靠同步，只在 `idle` 或 `changed` 时读取本地投影；超时、
 认证撤销、需要恢复或可重试失败都返回结构化错误，不把陈旧投影伪装为成功。
+已提交消息可使 Direct route 暂处 `legacy_unresolved`；Node 仍投影可判定 peer 的 `dm:` Direct
+会话，Group 或无法判定的 route 继续 fail closed。`sendText` 等待 final acceptance 后再返回。
 
 `getLocalConversationTimeline` 只读取 canonical conversation 的 committed SQLite projection，
 不会触发可靠同步、远端 Direct/Group history 或 Directory RPC。它用于 Host/UI 的 local-first
@@ -119,6 +125,11 @@ identity ID 到注册 Unix 毫秒的映射，使 `registeredAtMs` 重启稳定�
 key；`clearLocalData()` 删除整个 SDK-owned Vault 后重新生成 key。该文件不是 Host 配置，
 不得复制到 DSH API、日志或诊断 DTO。
 
+`stateRoot/.host/` 是可信同进程 Host 的保留扩展命名空间。Node open/harden 会保留真实目录和
+普通文件并收紧为目录 `0700`、文件 `0600`；其中任意 symlink fail closed。Node
+`clearLocalData()` 不拥有也不删除 `.host/`，Host 必须在自己的清空事务中删除 binding、临时
+文件和 session marker。原子写只能使用同目录普通临时文件、fsync 和 rename。
+
 `clearLocalData()` 是不可撤销的本地操作，只清理上述 SDK-owned 路径，不删除远端账号或 Handle，
 不跟随被替换为符号链接的运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。
 
@@ -126,10 +137,10 @@ Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 
-当前源码 candidate 的 Native contract version 为 `3`。v3 在 v2 external HTTP auth 基础上
-增加 local conversation timeline；wrapper 在加载时必须拒绝其他版本的 addon，避免旧
-二进制缺少 local-first 方法却被静默当作兼容实现。registry `0.1.3` 仍是 v2；后续正式
-patch 必须把 v3 wrapper 和全部 Tier 1 addon 一起发布。
+当前源码 candidate 的 Native contract version 为 `4`。v4 在 v3 local conversation timeline
+基础上增加多 identity facade 和 trusted-host Skill Agent provisioning；wrapper 在加载时必须
+拒绝其他版本的 addon。registry `0.1.3` 仍是 v2；后续正式 minor release 必须把 v4 wrapper
+和全部 Tier 1 addon 一起发布。
 
 ## 构建与验证
 

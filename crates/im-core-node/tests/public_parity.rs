@@ -16,6 +16,16 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "ImCore::identities().default_identity_async",
     },
     PublicParity {
+        capability: "identity_list",
+        node_method: "listIdentities/forIdentity",
+        core_facade: "ImCore::identities().list_async/ImCore::client_async",
+    },
+    PublicParity {
+        capability: "skill_agent_provision",
+        node_method: "provisionSkillAgentIdentity/acknowledgeSkillAgentProvision",
+        core_facade: "SkillOnboardingService::provision_agent_async/acknowledge_agent_provision",
+    },
+    PublicParity {
         capability: "registration_otp",
         node_method: "requestRegistrationOtp",
         core_facade: "IdentityRegistry::request_registration_otp_async",
@@ -92,6 +102,8 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
     let expected = [
         "external_http_auth",
         "identity",
+        "identity_list",
+        "skill_agent_provision",
         "registration_otp",
         "registration",
         "profile",
@@ -127,7 +139,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
 fn local_timeline_route_uses_only_the_public_local_read_facade() {
     let source = include_str!("../src/client.rs");
     let start = source
-        .find("async fn get_local_conversation_timeline_inner")
+        .find("async fn get_local_conversation_timeline_for_identity_inner")
         .expect("local timeline inner method");
     let tail = &source[start..];
     let end = tail

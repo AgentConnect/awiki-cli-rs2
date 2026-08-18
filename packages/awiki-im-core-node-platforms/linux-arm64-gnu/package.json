@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node-linux-arm64-gnu",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Linux arm64 glibc native addon for @awiki/im-core-node",
   "type": "commonjs",
   "license": "AGPL-3.0-only",

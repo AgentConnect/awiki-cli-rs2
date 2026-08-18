@@ -95,6 +95,8 @@ impl Fixture {
 
 #[derive(Default)]
 struct FakeRemote {
+    capability_calls: usize,
+    issue_calls: usize,
     verify_calls: usize,
     exchange_calls: usize,
     prekey_calls: usize,
@@ -226,6 +228,65 @@ impl SkillOnboardingRemote for FakeRemote {
     }
 }
 
+impl SkillProvisionRemote for FakeRemote {
+    async fn check_capability(&mut self) -> crate::ImResult<()> {
+        self.capability_calls += 1;
+        Ok(())
+    }
+
+    async fn issue_token(&mut self, display_name: &str) -> crate::ImResult<SkillProvisionIssue> {
+        self.issue_calls += 1;
+        let suffix = self.issue_calls;
+        Ok(SkillProvisionIssue {
+            token: crate::onboarding::SkillOnboardingToken::new(format!(
+                "awsk1_dsh-provision-secret-{suffix}"
+            ))?,
+            metadata: SkillTokenMetadata {
+                token_id: format!("agtok_dsh_{suffix}"),
+                service_origin: "https://awiki.info".to_owned(),
+                controller_did: crate::ids::Did::parse("did:wba:awiki.info:user:alice")?,
+                controller_handle: crate::ids::Handle::parse("alice.awiki.info", "awiki.info")?,
+                agent_handle: crate::ids::Handle::parse(
+                    format!("skill-provision-{suffix}.awiki.info"),
+                    "awiki.info",
+                )?,
+                expires_at: (OffsetDateTime::now_utc() + time::Duration::minutes(30))
+                    .format(&Rfc3339)
+                    .unwrap(),
+                display_name: Some(display_name.to_owned()),
+            },
+        })
+    }
+
+    async fn exchange_token(
+        &mut self,
+        token: &crate::onboarding::SkillOnboardingToken,
+        metadata: &SkillTokenMetadata,
+        pending: &PendingIdentityBundle,
+    ) -> crate::ImResult<SkillExchangeResult> {
+        SkillOnboardingRemote::exchange_token(self, token, metadata, pending).await
+    }
+
+    async fn publish_device_prekey(&mut self, did: &crate::ids::Did) -> crate::ImResult<()> {
+        SkillOnboardingRemote::publish_device_prekey(self, did).await
+    }
+
+    async fn send_controller_greeting(
+        &mut self,
+        local_alias: &str,
+        controller_did: &crate::ids::Did,
+        message_id: &crate::ids::MessageId,
+    ) -> crate::ImResult<()> {
+        SkillOnboardingRemote::send_controller_greeting(
+            self,
+            local_alias,
+            controller_did,
+            message_id,
+        )
+        .await
+    }
+}
+
 #[tokio::test]
 async fn claim_completes_and_persists_no_raw_token_in_workspace() {
     let fixture = Fixture::vault_required();
@@ -293,6 +354,147 @@ async fn claim_completes_and_persists_no_raw_token_in_workspace() {
     assert!(!fixture.journal_text().contains("access_token"));
     assert!(!fixture.journal_text().contains("PRIVATE KEY"));
     assert!(fixture.journal_text().contains("completed"));
+}
+
+#[tokio::test]
+async fn trusted_host_provisions_additional_identity_without_changing_default() {
+    let fixture = Fixture::vault_required();
+    let mut seed_remote = FakeRemote::default();
+    claim_with_remote(&fixture.core, valid_request(), &mut seed_remote)
+        .await
+        .unwrap();
+    let default_before = fixture
+        .core
+        .identities()
+        .default_identity_async()
+        .await
+        .unwrap()
+        .unwrap();
+
+    let request = valid_provision_request("agbind_research_0001", "Research Agent");
+    let mut remote = FakeRemote::default();
+    let result = provision_with_remote(&fixture.core, request.clone(), &mut remote)
+        .await
+        .unwrap();
+
+    assert!(result.created);
+    assert!(!result.identity.is_default);
+    assert_eq!(
+        result.identity.display_name.as_deref(),
+        Some("Research Agent")
+    );
+    assert_eq!(
+        result.identity.local_alias.as_deref(),
+        Some("skill-provision-1")
+    );
+    assert_eq!(remote.capability_calls, 1);
+    assert_eq!(remote.issue_calls, 1);
+    assert_eq!(remote.exchange_calls, 1);
+    assert_eq!(remote.prekey_calls, 1);
+    assert_eq!(remote.greeting_calls, 1);
+    assert_eq!(
+        fixture
+            .core
+            .identities()
+            .default_identity_async()
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        default_before.id
+    );
+    assert_eq!(
+        fixture.core.identities().list_async().await.unwrap().len(),
+        2
+    );
+    assert!(!fixture.all_text().contains("awsk1_dsh-provision-secret-1"));
+
+    acknowledge_provision(&fixture.core, &request.operation_id).unwrap();
+    let repeated = provision_with_remote(&fixture.core, request, &mut remote)
+        .await
+        .unwrap();
+    assert!(!repeated.created);
+    assert_eq!(repeated.identity.id, result.identity.id);
+    assert_eq!(remote.issue_calls, 1);
+    assert_eq!(remote.exchange_calls, 1);
+    acknowledge_provision(&fixture.core, "agbind_research_0001").unwrap();
+}
+
+#[tokio::test]
+async fn trusted_host_provision_scope_conflict_does_not_create_another_identity() {
+    let fixture = Fixture::vault_required();
+    let mut seed_remote = FakeRemote::default();
+    claim_with_remote(&fixture.core, valid_request(), &mut seed_remote)
+        .await
+        .unwrap();
+    let mut remote = FakeRemote::default();
+    provision_with_remote(
+        &fixture.core,
+        valid_provision_request("agbind_scope_0001", "Research Agent"),
+        &mut remote,
+    )
+    .await
+    .unwrap();
+
+    let error = provision_with_remote(
+        &fixture.core,
+        valid_provision_request("agbind_scope_0001", "Different Agent"),
+        &mut remote,
+    )
+    .await
+    .unwrap_err();
+
+    assert_skill_error(&error, "skill_onboarding_provision_state_conflict", false);
+    assert_eq!(remote.issue_calls, 1);
+    assert_eq!(
+        fixture.core.identities().list_async().await.unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn provision_capability_requires_display_name_binding() {
+    let missing = json!({
+        "agents": {"skill_onboarding": {
+            "enabled": true,
+            "protocol_version": 1,
+            "onboarding_path": "/cli/onboarding.md"
+        }}
+    });
+    assert_skill_error(
+        &validate_skill_provision_capability(&missing).unwrap_err(),
+        "skill_onboarding_capability_unavailable",
+        false,
+    );
+    validate_skill_provision_capability(&json!({
+        "agents": {"skill_onboarding": {
+            "enabled": true,
+            "protocol_version": 1,
+            "onboarding_path": "/cli/onboarding.md",
+            "display_name_binding": "token_scope_v1"
+        }}
+    }))
+    .unwrap();
+}
+
+#[test]
+fn provision_rate_limit_reasons_remain_public_and_retryable() {
+    for reason in [
+        "skill_onboarding_rate_limited",
+        "skill_onboarding_active_token_limit",
+    ] {
+        let error = map_remote_error(
+            crate::ImError::Service {
+                status_code: Some(409),
+                code: Some("-32004".to_owned()),
+                message: "private service text".to_owned(),
+                data: Some(json!({"reason": reason, "secret": "private"})),
+            },
+            "provision_issue",
+        );
+        assert_skill_error(&error, reason, true);
+        assert!(!format!("{error:?}").contains("private service text"));
+    }
 }
 
 #[tokio::test]
@@ -979,6 +1181,17 @@ fn valid_request() -> crate::onboarding::SkillClaimRequest {
     }
 }
 
+fn valid_provision_request(
+    operation_id: &str,
+    display_name: &str,
+) -> crate::onboarding::SkillAgentProvisionRequest {
+    crate::onboarding::SkillAgentProvisionRequest {
+        operation_id: operation_id.to_owned(),
+        display_name: display_name.to_owned(),
+        controller_identity: crate::identity::IdentitySelector::Default,
+    }
+}
+
 fn valid_resume_request() -> crate::onboarding::SkillResumeRequest {
     crate::onboarding::SkillResumeRequest {
         service_base_url: "https://awiki.info".to_owned(),
@@ -1035,6 +1248,7 @@ fn valid_metadata() -> SkillTokenMetadata {
         expires_at: (OffsetDateTime::now_utc() + time::Duration::minutes(30))
             .format(&Rfc3339)
             .unwrap(),
+        display_name: None,
     }
 }
 

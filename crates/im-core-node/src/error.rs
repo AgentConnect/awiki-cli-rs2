@@ -142,6 +142,13 @@ impl SafeError {
                 "The IM operation conflicts with the current state.",
                 false,
             ),
+            ImError::SkillOnboarding {
+                code, retryable, ..
+            } => Self::new(
+                code,
+                "The Skill Agent identity operation could not be completed.",
+                retryable,
+            ),
             ImError::IdentityVault { .. }
             | ImError::LocalStateUnavailable { .. }
             | ImError::LocalStateUpgradeRequired { .. }
@@ -155,8 +162,7 @@ impl SafeError {
             | ImError::Internal { .. }
             | ImError::InventoryIncomplete
             | ImError::InventoryTooLarge
-            | ImError::DeviceRevokeOutcome { .. }
-            | ImError::SkillOnboarding { .. } => Self::internal(),
+            | ImError::DeviceRevokeOutcome { .. } => Self::internal(),
         }
     }
 
@@ -284,6 +290,19 @@ mod tests {
         });
         assert_eq!(error.code, "invalid_otp");
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn skill_provisioning_preserves_only_stable_code_and_retryability() {
+        let error = SafeError::from_im(im_core::ImError::SkillOnboarding {
+            code: "skill_onboarding_rate_limited".to_owned(),
+            phase: "private-phase".to_owned(),
+            retryable: true,
+        });
+        let payload = serde_json::to_string(&error).unwrap();
+        assert_eq!(error.code, "skill_onboarding_rate_limited");
+        assert!(error.retryable);
+        assert!(!payload.contains("private-phase"));
     }
 
     #[test]

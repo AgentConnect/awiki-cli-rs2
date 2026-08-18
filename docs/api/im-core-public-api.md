@@ -212,6 +212,42 @@ PreKey 的 Service 错误只向公开结果与 journal 保留经 JSON-RPC 权威
 pending secret/file 缺失或孤立时返回稳定
 `blocked_requires_operator_reconciliation`，不把裸 I/O 错误伪装成可重试注册。
 
+#### Trusted Host Controller provisioning
+
+已有 Human identity 的可信 Host 使用独立 additive API 创建额外 Skill Agent；它不改变上面的
+空 workspace CLI claim 语义：
+
+```rust
+pub struct SkillAgentProvisionRequest {
+    pub operation_id: String,
+    pub display_name: String,
+    pub controller_identity: IdentitySelector,
+}
+
+pub struct SkillAgentProvisionResult {
+    pub identity: IdentitySummary,
+    pub agent_handle: Handle,
+    pub controller_handle: Handle,
+    pub greeting_message_id: MessageId,
+    pub created: bool,
+}
+
+impl SkillOnboardingService<'_> {
+    pub async fn provision_agent_async(
+        &self,
+        request: SkillAgentProvisionRequest,
+    ) -> ImResult<SkillAgentProvisionResult>;
+    pub fn acknowledge_agent_provision(&self, operation_id: &str) -> ImResult<()>;
+}
+```
+
+Core 先完整验证 server-info capability，再用 Controller identity 的 authenticated transport 调用
+`issue_token`；raw token 不离开 Rust。每个 operation 使用独立 Vault pending 和非敏感 journal，
+Agent identity alias 保持服务端 Handle local part，保存固定 `make_default=false`。DSH 路径是
+VNext-only、Direct-only，不声明群 capability，也不进入 CLI 的 Legacy recovery/global journal。
+Host binding 提交后必须 acknowledge，才删除加密 pending token。完整安全契约见
+[DSH Skill Agent Controller Provisioning](../architecture/contracts/dsh-skill-agent-controller-provisioning.md)。
+
 ### 3.2 Core open 前的 local-state 升级与恢复
 
 release/0710 schema 27 必须在 `ImCore` 打开前通过独立入口升级；普通 open

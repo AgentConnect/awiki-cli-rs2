@@ -3,6 +3,10 @@
 ## Unreleased
 
 - Add the native API v3 local conversation timeline read for local-first Host UI.
+- Add the native API v4 multi-identity facade and trusted-host Skill Agent
+  Controller provisioning without exposing registration tokens to JavaScript.
+- Reserve and test `stateRoot/.host` as a Host-owned namespace that SDK clear
+  preserves while permission hardening rejects symlinks.
 
 ## 0.1.3
 

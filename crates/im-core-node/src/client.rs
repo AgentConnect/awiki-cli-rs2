@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -33,7 +34,8 @@ where
 
 struct Environment {
     core: im_core::ImCore,
-    client: Option<im_core::ImClient>,
+    clients: BTreeMap<String, im_core::ImClient>,
+    default_identity_id: Option<String>,
     state: StateRoot,
 }
 
@@ -58,13 +60,38 @@ impl OperationGuard<'_> {
     }
 
     fn client(&self) -> SafeResult<&im_core::ImClient> {
-        self.environment()?.client.as_ref().ok_or_else(|| {
+        let environment = self.environment()?;
+        let identity_id = environment.default_identity_id.as_ref().ok_or_else(|| {
             SafeError::new(
                 "identity_required",
                 "A registered IM identity is required.",
                 false,
             )
+        })?;
+        environment
+            .clients
+            .get(identity_id)
+            .ok_or_else(SafeError::internal)
+    }
+
+    fn client_by_id(&self, identity_id: &str) -> SafeResult<&im_core::ImClient> {
+        self.environment()?.clients.get(identity_id).ok_or_else(|| {
+            SafeError::new(
+                "identity_not_found",
+                "The IM identity was not found.",
+                false,
+            )
         })
+    }
+}
+
+fn selected_client<'a>(
+    operation: &'a OperationGuard<'_>,
+    identity_id: Option<&str>,
+) -> SafeResult<&'a im_core::ImClient> {
+    match identity_id {
+        Some(identity_id) => operation.client_by_id(identity_id),
+        None => operation.client(),
     }
 }
 
@@ -171,6 +198,14 @@ impl ClientInner {
 #[napi(js_name = "NativeImCoreNodeClient")]
 pub struct NativeImCoreNodeClient {
     inner: Arc<ClientInner>,
+    cancel_on_drop: bool,
+}
+
+/// Identity-bound view sharing one environment and lifecycle with its owner.
+#[napi(js_name = "NativeImCoreNodeIdentityClient")]
+pub struct NativeImCoreNodeIdentityClient {
+    inner: Arc<ClientInner>,
+    identity_id: String,
 }
 
 /// Opaque, single-use external HTTP authentication attempt.
@@ -340,7 +375,7 @@ impl NativeImCoreNodeClient {
         let Some(identity) = identity else {
             return Ok(None);
         };
-        let display_name = match environment.client.as_ref() {
+        let display_name = match environment.clients.get(identity.id.as_str()) {
             Some(client) => self
                 .inner
                 .wait_im(
@@ -370,6 +405,207 @@ impl NativeImCoreNodeClient {
             display_name,
             registered_at_ms,
         )))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_identities(&self) -> napi::Result<Vec<NodeIdentity>> {
+        napi_result(self.list_identities_inner().await)
+    }
+
+    async fn list_identities_inner(&self) -> SafeResult<Vec<NodeIdentity>> {
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let identities = self
+            .inner
+            .wait_im(
+                environment.core.identities().list_async(),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        let mut output = Vec::with_capacity(identities.len());
+        for identity in identities {
+            let display_name = match environment.clients.get(identity.id.as_str()) {
+                Some(client) => self
+                    .inner
+                    .wait_im(
+                        client.identity().profile_async(),
+                        self.inner.operation_timeout,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|profile| profile.display_name),
+                None => identity.display_name.clone(),
+            };
+            let metadata = environment.state.metadata();
+            let identity_id = identity.id.as_str().to_owned();
+            let registered_at_ms = self
+                .inner
+                .wait_safe(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            metadata.ensure_registered_at(&identity_id)
+                        })
+                        .await
+                        .map_err(|_| SafeError::internal())?
+                    },
+                    self.inner.operation_timeout,
+                )
+                .await?;
+            output.push(crate::dto::identity(
+                &identity,
+                display_name,
+                registered_at_ms,
+            ));
+        }
+        Ok(output)
+    }
+
+    async fn get_identity_by_id_inner(&self, identity_id: &str) -> SafeResult<NodeIdentity> {
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let client = operation.client_by_id(identity_id)?;
+        let identity = self
+            .inner
+            .wait_im(
+                environment.core.identities().resolve_async(
+                    im_core::identity::IdentitySelector::Id(
+                        im_core::ids::IdentityId::parse(identity_id).map_err(SafeError::from_im)?,
+                    ),
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        let display_name = self
+            .inner
+            .wait_im(
+                client.identity().profile_async(),
+                self.inner.operation_timeout,
+            )
+            .await
+            .ok()
+            .and_then(|profile| profile.display_name);
+        let metadata = environment.state.metadata();
+        let identity_id_for_metadata = identity_id.to_owned();
+        let registered_at_ms = tokio::task::spawn_blocking(move || {
+            metadata.ensure_registered_at(&identity_id_for_metadata)
+        })
+        .await
+        .map_err(|_| SafeError::internal())??;
+        Ok(crate::dto::identity(
+            &identity,
+            display_name,
+            registered_at_ms,
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn identity_client(
+        &self,
+        identity_id: String,
+    ) -> napi::Result<NativeImCoreNodeIdentityClient> {
+        napi_result(self.identity_client_inner(identity_id).await)
+    }
+
+    async fn identity_client_inner(
+        &self,
+        identity_id: String,
+    ) -> SafeResult<NativeImCoreNodeIdentityClient> {
+        let operation = self.inner.operation().await?;
+        operation.client_by_id(&identity_id)?;
+        Ok(NativeImCoreNodeIdentityClient {
+            inner: self.inner.clone(),
+            identity_id,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn provision_skill_agent_identity(
+        &self,
+        input: NodeSkillAgentProvisionInput,
+    ) -> napi::Result<NodeIdentity> {
+        napi_result(self.provision_skill_agent_identity_inner(input).await)
+    }
+
+    async fn provision_skill_agent_identity_inner(
+        &self,
+        input: NodeSkillAgentProvisionInput,
+    ) -> SafeResult<NodeIdentity> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        if !environment
+            .clients
+            .contains_key(&input.controller_identity_id)
+        {
+            return Err(SafeError::new(
+                "identity_not_found",
+                "The IM identity was not found.",
+                false,
+            ));
+        }
+        let controller_identity = im_core::ids::IdentityId::parse(&input.controller_identity_id)
+            .map_err(SafeError::from_im)?;
+        let onboarding = environment.core.onboarding();
+        let provision = box_im_future(onboarding.provision_agent_async(
+            im_core::onboarding::SkillAgentProvisionRequest {
+                operation_id: input.operation_id,
+                display_name: input.display_name,
+                controller_identity: im_core::identity::IdentitySelector::Id(controller_identity),
+            },
+        ));
+        let result = self
+            .inner
+            .wait_im(provision, self.inner.operation_timeout)
+            .await?;
+        let identity_id = result.identity.id.as_str().to_owned();
+        let client = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .client_async(im_core::identity::IdentitySelector::Id(
+                        result.identity.id.clone(),
+                    )),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.clients.insert(identity_id.clone(), client);
+        let metadata = environment.state.metadata();
+        let registered_at_ms =
+            tokio::task::spawn_blocking(move || metadata.ensure_registered_at(&identity_id))
+                .await
+                .map_err(|_| SafeError::internal())??;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::identity(
+            &result.identity,
+            result.identity.display_name.clone(),
+            registered_at_ms,
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn acknowledge_skill_agent_provision(
+        &self,
+        operation_id: String,
+    ) -> napi::Result<()> {
+        napi_result(
+            self.acknowledge_skill_agent_provision_inner(operation_id)
+                .await,
+        )
+    }
+
+    async fn acknowledge_skill_agent_provision_inner(
+        &self,
+        operation_id: String,
+    ) -> SafeResult<()> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        environment
+            .core
+            .onboarding()
+            .acknowledge_agent_provision(&operation_id)
+            .map_err(SafeError::from_im)
     }
 
     #[napi(catch_unwind)]
@@ -457,9 +693,10 @@ impl NativeImCoreNodeClient {
                 self.inner.operation_timeout,
             )
             .await?;
-        environment.client = Some(client);
-        let metadata = environment.state.metadata();
         let identity_id = identity.id.as_str().to_owned();
+        environment.clients.insert(identity_id.clone(), client);
+        environment.default_identity_id = Some(identity_id.clone());
+        let metadata = environment.state.metadata();
         let registered_at_ms =
             tokio::task::spawn_blocking(move || metadata.ensure_registered_at(&identity_id))
                 .await
@@ -474,10 +711,17 @@ impl NativeImCoreNodeClient {
 
     #[napi(catch_unwind)]
     pub async fn update_display_name(&self, display_name: String) -> napi::Result<NodeIdentity> {
-        napi_result(self.update_display_name_inner(display_name).await)
+        napi_result(
+            self.update_display_name_for_identity_inner(None, display_name)
+                .await,
+        )
     }
 
-    async fn update_display_name_inner(&self, display_name: String) -> SafeResult<NodeIdentity> {
+    async fn update_display_name_for_identity_inner(
+        &self,
+        identity_id: Option<&str>,
+        display_name: String,
+    ) -> SafeResult<NodeIdentity> {
         let display_name = display_name.trim().to_owned();
         if display_name.is_empty() {
             return Err(SafeError::new(
@@ -489,7 +733,7 @@ impl NativeImCoreNodeClient {
         let _mutation = self.inner.mutation.lock().await;
         let operation = self.inner.operation().await?;
         let environment = operation.environment()?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let profile = self
             .inner
             .wait_im(
@@ -519,12 +763,16 @@ impl NativeImCoreNodeClient {
 
     #[napi(catch_unwind)]
     pub async fn resolve_peer(&self, peer: String) -> napi::Result<NodePeer> {
-        napi_result(self.resolve_peer_inner(peer).await)
+        napi_result(self.resolve_peer_for_identity_inner(None, peer).await)
     }
 
-    async fn resolve_peer_inner(&self, peer: String) -> SafeResult<NodePeer> {
+    async fn resolve_peer_for_identity_inner(
+        &self,
+        identity_id: Option<&str>,
+        peer: String,
+    ) -> SafeResult<NodePeer> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let peer =
             im_core::ids::PeerRef::parse(peer, client.did_domain()).map_err(SafeError::from_im)?;
         let resolution = self
@@ -548,12 +796,16 @@ impl NativeImCoreNodeClient {
 
     #[napi(catch_unwind)]
     pub async fn sync_now(&self, input: Option<NodeSyncOptions>) -> napi::Result<NodeSyncResult> {
-        napi_result(self.sync_now_inner(input).await)
+        napi_result(self.sync_now_for_identity_inner(None, input).await)
     }
 
-    async fn sync_now_inner(&self, input: Option<NodeSyncOptions>) -> SafeResult<NodeSyncResult> {
+    async fn sync_now_for_identity_inner(
+        &self,
+        identity_id: Option<&str>,
+        input: Option<NodeSyncOptions>,
+    ) -> SafeResult<NodeSyncResult> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let (request, timeout) = sync_request(input, self.inner.sync_timeout)?;
         let outcome = self
             .inner
@@ -567,15 +819,19 @@ impl NativeImCoreNodeClient {
         &self,
         input: Option<NodePageInput>,
     ) -> napi::Result<NodePageOfConversations> {
-        napi_result(self.list_conversations_inner(input).await)
+        napi_result(
+            self.list_conversations_for_identity_inner(None, input)
+                .await,
+        )
     }
 
-    async fn list_conversations_inner(
+    async fn list_conversations_for_identity_inner(
         &self,
+        identity_id: Option<&str>,
         input: Option<NodePageInput>,
     ) -> SafeResult<NodePageOfConversations> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let outcome = self
             .inner
             .wait_im(
@@ -617,12 +873,16 @@ impl NativeImCoreNodeClient {
 
     #[napi(catch_unwind)]
     pub async fn get_history(&self, input: NodeHistoryInput) -> napi::Result<NodePageOfMessages> {
-        napi_result(self.get_history_inner(input).await)
+        napi_result(self.get_history_for_identity_inner(None, input).await)
     }
 
-    async fn get_history_inner(&self, input: NodeHistoryInput) -> SafeResult<NodePageOfMessages> {
+    async fn get_history_for_identity_inner(
+        &self,
+        identity_id: Option<&str>,
+        input: NodeHistoryInput,
+    ) -> SafeResult<NodePageOfMessages> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let conversation = im_core::messages::ConversationReadRef::new(&input.conversation_id)
             .map_err(SafeError::from_im)?;
         let page = self
@@ -651,15 +911,19 @@ impl NativeImCoreNodeClient {
         &self,
         input: NodeHistoryInput,
     ) -> napi::Result<NodePageOfMessages> {
-        napi_result(self.get_local_conversation_timeline_inner(input).await)
+        napi_result(
+            self.get_local_conversation_timeline_for_identity_inner(None, input)
+                .await,
+        )
     }
 
-    async fn get_local_conversation_timeline_inner(
+    async fn get_local_conversation_timeline_for_identity_inner(
         &self,
+        identity_id: Option<&str>,
         input: NodeHistoryInput,
     ) -> SafeResult<NodePageOfMessages> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let conversation = im_core::messages::ConversationReadRef::new(&input.conversation_id)
             .map_err(SafeError::from_im)?;
         let page = self
@@ -687,15 +951,19 @@ impl NativeImCoreNodeClient {
         &self,
         conversation_id: String,
     ) -> napi::Result<NodeMarkReadResult> {
-        napi_result(self.mark_conversation_read_inner(conversation_id).await)
+        napi_result(
+            self.mark_conversation_read_for_identity_inner(None, conversation_id)
+                .await,
+        )
     }
 
-    async fn mark_conversation_read_inner(
+    async fn mark_conversation_read_for_identity_inner(
         &self,
+        identity_id: Option<&str>,
         conversation_id: String,
     ) -> SafeResult<NodeMarkReadResult> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let result = self
             .inner
             .wait_im(
@@ -722,12 +990,16 @@ impl NativeImCoreNodeClient {
 
     #[napi(catch_unwind)]
     pub async fn send_text(&self, input: NodeSendTextInput) -> napi::Result<NodeMessage> {
-        napi_result(self.send_text_inner(input).await)
+        napi_result(self.send_text_for_identity_inner(None, input).await)
     }
 
-    async fn send_text_inner(&self, input: NodeSendTextInput) -> SafeResult<NodeMessage> {
+    async fn send_text_for_identity_inner(
+        &self,
+        identity_id: Option<&str>,
+        input: NodeSendTextInput,
+    ) -> SafeResult<NodeMessage> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let conversation_id = input.conversation_id;
         let messages = client.messages();
         let send = box_im_future(
@@ -739,7 +1011,7 @@ impl NativeImCoreNodeClient {
                 security: im_core::messages::MessageSecurityMode::DefaultPlain,
                 client_message_id: optional_message_id(input.client_message_id)?,
                 idempotency_key: non_empty_optional(input.idempotency_key),
-                wait_for_final_acceptance: false,
+                wait_for_final_acceptance: true,
                 delegated_signing: None,
             }),
         );
@@ -755,15 +1027,16 @@ impl NativeImCoreNodeClient {
         &self,
         input: NodeSendAttachmentInput,
     ) -> napi::Result<NodeMessage> {
-        napi_result(self.send_attachment_inner(input).await)
+        napi_result(self.send_attachment_for_identity_inner(None, input).await)
     }
 
-    async fn send_attachment_inner(
+    async fn send_attachment_for_identity_inner(
         &self,
+        identity_id: Option<&str>,
         input: NodeSendAttachmentInput,
     ) -> SafeResult<NodeMessage> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let conversation_id = input.conversation_id;
         let attachments = client.attachments();
         let send = box_im_future(
@@ -799,15 +1072,19 @@ impl NativeImCoreNodeClient {
         &self,
         input: NodeDownloadAttachmentInput,
     ) -> napi::Result<NodeDownload> {
-        napi_result(self.download_attachment_inner(input).await)
+        napi_result(
+            self.download_attachment_for_identity_inner(None, input)
+                .await,
+        )
     }
 
-    async fn download_attachment_inner(
+    async fn download_attachment_for_identity_inner(
         &self,
+        identity_id: Option<&str>,
         input: NodeDownloadAttachmentInput,
     ) -> SafeResult<NodeDownload> {
         let operation = self.inner.operation().await?;
-        let client = operation.client()?;
+        let client = selected_client(&operation, identity_id)?;
         let timeout = optional_timeout(input.timeout_ms, self.inner.operation_timeout)?;
         let attachments = client.attachments();
         let download = box_im_future(
@@ -845,10 +1122,11 @@ impl NativeImCoreNodeClient {
         let environment = slot.take().ok_or_else(SafeError::closed)?;
         let Environment {
             core,
-            client,
+            clients,
+            default_identity_id: _,
             state,
         } = environment;
-        drop(client);
+        drop(clients);
         core.bootstrap()
             .shutdown_local_state_async()
             .await
@@ -874,9 +1152,137 @@ impl NativeImCoreNodeClient {
     }
 }
 
+impl NativeImCoreNodeIdentityClient {
+    fn owner(&self) -> NativeImCoreNodeClient {
+        NativeImCoreNodeClient {
+            inner: self.inner.clone(),
+            cancel_on_drop: false,
+        }
+    }
+}
+
+#[napi]
+impl NativeImCoreNodeIdentityClient {
+    #[napi(catch_unwind)]
+    pub async fn get_identity(&self) -> napi::Result<NodeIdentity> {
+        napi_result(
+            self.owner()
+                .get_identity_by_id_inner(&self.identity_id)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn update_display_name(&self, display_name: String) -> napi::Result<NodeIdentity> {
+        napi_result(
+            self.owner()
+                .update_display_name_for_identity_inner(Some(&self.identity_id), display_name)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn resolve_peer(&self, peer: String) -> napi::Result<NodePeer> {
+        napi_result(
+            self.owner()
+                .resolve_peer_for_identity_inner(Some(&self.identity_id), peer)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn sync_now(&self, input: Option<NodeSyncOptions>) -> napi::Result<NodeSyncResult> {
+        napi_result(
+            self.owner()
+                .sync_now_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_conversations(
+        &self,
+        input: Option<NodePageInput>,
+    ) -> napi::Result<NodePageOfConversations> {
+        napi_result(
+            self.owner()
+                .list_conversations_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_history(&self, input: NodeHistoryInput) -> napi::Result<NodePageOfMessages> {
+        napi_result(
+            self.owner()
+                .get_history_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_local_conversation_timeline(
+        &self,
+        input: NodeHistoryInput,
+    ) -> napi::Result<NodePageOfMessages> {
+        napi_result(
+            self.owner()
+                .get_local_conversation_timeline_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn mark_conversation_read(
+        &self,
+        conversation_id: String,
+    ) -> napi::Result<NodeMarkReadResult> {
+        napi_result(
+            self.owner()
+                .mark_conversation_read_for_identity_inner(Some(&self.identity_id), conversation_id)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn send_text(&self, input: NodeSendTextInput) -> napi::Result<NodeMessage> {
+        napi_result(
+            self.owner()
+                .send_text_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn send_attachment(
+        &self,
+        input: NodeSendAttachmentInput,
+    ) -> napi::Result<NodeMessage> {
+        napi_result(
+            self.owner()
+                .send_attachment_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn download_attachment(
+        &self,
+        input: NodeDownloadAttachmentInput,
+    ) -> napi::Result<NodeDownload> {
+        napi_result(
+            self.owner()
+                .download_attachment_for_identity_inner(Some(&self.identity_id), input)
+                .await,
+        )
+    }
+}
+
 impl Drop for NativeImCoreNodeClient {
     fn drop(&mut self) {
-        self.inner.cancel_from_drop();
+        if self.cancel_on_drop {
+            self.inner.cancel_from_drop();
+        }
     }
 }
 
@@ -905,6 +1311,7 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
             sync_timeout,
             options,
         }),
+        cancel_on_drop: true,
     })
 }
 
@@ -923,22 +1330,28 @@ async fn initialize_environment(
         .await
         .map_err(SafeError::from_im)?;
     state.harden_permissions()?;
-    let client = match core
+    let identities = core
         .identities()
-        .default_identity_async()
+        .list_async()
         .await
-        .map_err(SafeError::from_im)?
-    {
-        Some(_) => Some(
-            core.client_async(im_core::identity::IdentitySelector::Default)
-                .await
-                .map_err(SafeError::from_im)?,
-        ),
-        None => None,
-    };
+        .map_err(SafeError::from_im)?;
+    let default_identity_id = identities
+        .iter()
+        .find(|identity| identity.is_default)
+        .map(|identity| identity.id.as_str().to_owned());
+    let mut clients = BTreeMap::new();
+    for identity in identities {
+        let identity_id = identity.id.as_str().to_owned();
+        let client = core
+            .client_async(im_core::identity::IdentitySelector::Id(identity.id))
+            .await
+            .map_err(SafeError::from_im)?;
+        clients.insert(identity_id, client);
+    }
     Ok(Environment {
         core,
-        client,
+        clients,
+        default_identity_id,
         state,
     })
 }
@@ -1117,11 +1530,14 @@ mod tests {
         );
         assert_eq!(
             client
-                .get_local_conversation_timeline_inner(NodeHistoryInput {
-                    conversation_id: "dm:did:example:bob".to_owned(),
-                    cursor: None,
-                    limit: None,
-                })
+                .get_local_conversation_timeline_for_identity_inner(
+                    None,
+                    NodeHistoryInput {
+                        conversation_id: "dm:did:example:bob".to_owned(),
+                        cursor: None,
+                        limit: None,
+                    },
+                )
                 .await
                 .unwrap_err()
                 .code,
@@ -1142,6 +1558,60 @@ mod tests {
         drop(operation);
         close.await.unwrap().unwrap();
         open(options(directory.path())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn identity_handles_select_fixed_clients_without_changing_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        let mut ids = Vec::new();
+        {
+            let mut slot = client.inner.write_operation().await.unwrap();
+            let environment = slot.as_mut().unwrap();
+            for suffix in ["first", "second"] {
+                let bundle = anp::authentication::create_did_wba_document(
+                    &format!("{suffix}.example.test"),
+                    anp::authentication::DidDocumentOptions::default(),
+                )
+                .unwrap();
+                let did = bundle.did_document["id"].as_str().unwrap().to_owned();
+                let identity_id = format!("node-{suffix}");
+                let selected = environment
+                    .core
+                    .client_with_identity_material(im_core::identity::HostedIdentityMaterial {
+                        identity_id: identity_id.clone(),
+                        did,
+                        handle: None,
+                        display_name: Some(suffix.to_owned()),
+                        did_document: bundle.did_document,
+                        default_signing_private_key_pem: bundle.keys["key-1"]
+                            .private_key_pem
+                            .clone(),
+                        e2ee_agreement_private_key_pem: None,
+                        auth_token: None,
+                    })
+                    .unwrap();
+                environment.clients.insert(identity_id.clone(), selected);
+                ids.push(identity_id);
+            }
+            environment.default_identity_id = Some(ids[0].clone());
+        }
+
+        let operation = client.inner.operation().await.unwrap();
+        let default_did = operation.client().unwrap().did().to_owned();
+        let second_did = operation.client_by_id(&ids[1]).unwrap().did().to_owned();
+        assert_ne!(default_did, second_did);
+        assert_eq!(
+            selected_client(&operation, Some(&ids[1])).unwrap().did(),
+            &second_did
+        );
+        assert_eq!(operation.client().unwrap().did(), &default_did);
+        drop(operation);
+
+        let second = client.identity_client_inner(ids[1].clone()).await.unwrap();
+        assert_eq!(second.identity_id, ids[1]);
+        drop(second.owner());
+        assert!(client.inner.operation().await.is_ok());
     }
 
     #[tokio::test]
@@ -1361,21 +1831,22 @@ mod tests {
         let did = bundle.did_document["id"].as_str().unwrap().to_owned();
         let mut slot = client.inner.write_operation().await.unwrap();
         let environment = slot.as_mut().unwrap();
-        environment.client = Some(
-            environment
-                .core
-                .client_with_identity_material(im_core::identity::HostedIdentityMaterial {
-                    identity_id: "node-external-http-auth".to_owned(),
-                    did,
-                    handle: None,
-                    display_name: None,
-                    did_document: bundle.did_document.clone(),
-                    default_signing_private_key_pem: bundle.keys["key-1"].private_key_pem.clone(),
-                    e2ee_agreement_private_key_pem: None,
-                    auth_token: None,
-                })
-                .unwrap(),
-        );
+        let identity_id = "node-external-http-auth".to_owned();
+        let identity_client = environment
+            .core
+            .client_with_identity_material(im_core::identity::HostedIdentityMaterial {
+                identity_id: "node-external-http-auth".to_owned(),
+                did,
+                handle: None,
+                display_name: None,
+                did_document: bundle.did_document.clone(),
+                default_signing_private_key_pem: bundle.keys["key-1"].private_key_pem.clone(),
+                e2ee_agreement_private_key_pem: None,
+                auth_token: None,
+            })
+            .unwrap();
+        environment.default_identity_id = Some(identity_id.clone());
+        environment.clients.insert(identity_id, identity_client);
     }
 
     fn external_http_request(url: &str) -> NodeExternalHttpRequest {

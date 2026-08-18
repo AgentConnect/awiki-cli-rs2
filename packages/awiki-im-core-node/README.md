@@ -16,6 +16,10 @@ const client = await openImCoreNodeClient({
 
 try {
   const identity = await client.getDefaultIdentity()
+  const identities = await client.listIdentities()
+  const selected = identities[0]
+    ? await client.forIdentity(identities[0].identityId)
+    : undefined
   const conversations = identity ? await client.listConversations() : undefined
   const localTimeline = conversations?.items[0]
     ? await client.getLocalConversationTimeline({
@@ -69,8 +73,8 @@ Rust 只选择唯一、合法的 DID-WBA challenge。
 
 ## 生命周期与线程
 
-- 一个 client 对应一个环境级 `ImCore` 和一个 default identity-bound `ImClient`，不会为
-  每次请求重开 SQLite 或身份目录。
+- 一个 client 对应一个环境级 `ImCore` 和 registry 中多个固定 identity-bound `ImClient`，
+  不会为每次请求重开 SQLite 或身份目录；`forIdentity` 不改变 default。
 - 所有 I/O 都是 Promise；Rust async 任务不会阻塞 Node event loop。
 - `close()` 开始后拒绝新任务，取消可安全取消的任务，等待已接受任务释放状态，再释放
   state-root 文件锁；重复调用是幂等的。
@@ -86,6 +90,9 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
 以固定 context 打开 `VaultRequired` Core；Host 不接触或传入 root key。普通重启复用该 key，
 `clearLocalData()` 删除 Vault 并在重新初始化时生成新 key。
 
+`stateRoot/.host/` 保留给可信同进程 Host。Node 会保留并收紧其中真实目录/普通文件，任何
+symlink fail closed；`clearLocalData()` 不删除 `.host/`，Host 自己负责清理其 binding 和 marker。
+
 ## DTO 与错误
 
 - ID/cursor 都是不透明字符串；字节数和 `registeredAtMs` 使用十进制字符串。
@@ -93,8 +100,8 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
   JSON 或 base64。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
-- 当前源码 candidate 的 Native contract version 为 `3`；wrapper 拒绝其他版本的 addon。
-  registry `0.1.3` 仍是 v2，后续正式 patch 必须同步发布 v3 wrapper 与平台 addon。
+- 当前源码 candidate 的 Native contract version 为 `4`；wrapper 拒绝其他版本的 addon。
+  registry `0.1.3` 仍是 v2，后续正式 minor release 必须同步发布 v4 wrapper 与平台 addon。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。

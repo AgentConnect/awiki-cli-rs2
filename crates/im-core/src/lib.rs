@@ -71,8 +71,9 @@ pub use crate::messages::{
     IncomingMessageRecoveryQuery,
 };
 pub use crate::onboarding::{
-    SkillClaimPhase, SkillClaimRequest, SkillClaimResult, SkillClaimStatus, SkillOnboardingService,
-    SkillOnboardingToken, SkillResumeRequest,
+    SkillAgentProvisionRequest, SkillAgentProvisionResult, SkillClaimPhase, SkillClaimRequest,
+    SkillClaimResult, SkillClaimStatus, SkillOnboardingService, SkillOnboardingToken,
+    SkillResumeRequest,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;

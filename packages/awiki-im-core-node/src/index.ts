@@ -1,5 +1,9 @@
 import { loadNativeBinding } from './loader.js'
-import type { NativeExternalHttpAuthAttempt, NativeImCoreNodeClient } from './native.js'
+import type {
+  NativeExternalHttpAuthAttempt,
+  NativeImCoreNodeClient,
+  NativeImCoreNodeIdentityClient,
+} from './native.js'
 import {
   ImCoreNodeError,
   type DownloadAttachmentInput,
@@ -9,6 +13,7 @@ import {
   type ExternalHttpResponse,
   type HistoryInput,
   type ImCoreNodeClient,
+  type ImCoreNodeIdentityClient,
   type ImCoreNodeOpenOptions,
   type MarkReadResult,
   type NodeConversation,
@@ -23,6 +28,7 @@ import {
   type RegistrationWithOtp,
   type SendAttachmentInput,
   type SendTextInput,
+  type SkillAgentProvisionInput,
   type SyncOptions,
   type SyncResult,
 } from './types.js'
@@ -82,6 +88,23 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.getDefaultIdentity())
   }
 
+  public listIdentities(): Promise<readonly NodeIdentity[]> {
+    return call(() => this.native.listIdentities())
+  }
+
+  public async forIdentity(identityId: string): Promise<ImCoreNodeIdentityClient> {
+    const native = await call(() => this.native.identityClient(identityId))
+    return new RustImCoreNodeIdentityClient(native)
+  }
+
+  public provisionSkillAgentIdentity(input: SkillAgentProvisionInput): Promise<NodeIdentity> {
+    return call(() => this.native.provisionSkillAgentIdentity(input))
+  }
+
+  public acknowledgeSkillAgentProvision(operationId: string): Promise<void> {
+    return call(() => this.native.acknowledgeSkillAgentProvision(operationId))
+  }
+
   public requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge> {
     return call(() => this.native.requestRegistrationOtp(input))
   }
@@ -138,6 +161,56 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public close(): Promise<void> {
     return call(() => this.native.close())
+  }
+}
+
+class RustImCoreNodeIdentityClient implements ImCoreNodeIdentityClient {
+  public constructor(private readonly native: NativeImCoreNodeIdentityClient) {}
+
+  public getIdentity(): Promise<NodeIdentity> {
+    return call(() => this.native.getIdentity())
+  }
+
+  public updateDisplayName(displayName: string): Promise<NodeIdentity> {
+    return call(() => this.native.updateDisplayName(displayName))
+  }
+
+  public resolvePeer(peer: string): Promise<NodePeer> {
+    return call(() => this.native.resolvePeer(peer))
+  }
+
+  public syncNow(input?: SyncOptions): Promise<SyncResult> {
+    return call(() => this.native.syncNow(input))
+  }
+
+  public listConversations(input?: PageInput): Promise<Page<NodeConversation>> {
+    return call(() => this.native.listConversations(input))
+  }
+
+  public getHistory(input: HistoryInput): Promise<Page<NodeMessage>> {
+    return call(() => this.native.getHistory(input))
+  }
+
+  public getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>> {
+    return call(() => this.native.getLocalConversationTimeline(input))
+  }
+
+  public markConversationRead(conversationId: string): Promise<MarkReadResult> {
+    return call(() => this.native.markConversationRead(conversationId))
+  }
+
+  public sendText(input: SendTextInput): Promise<NodeMessage> {
+    return call(() => this.native.sendText(input))
+  }
+
+  public sendAttachment(input: SendAttachmentInput): Promise<NodeMessage> {
+    const bytes = Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength)
+    return call(() => this.native.sendAttachment({ ...input, bytes }))
+  }
+
+  public async downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload> {
+    const value = await call(() => this.native.downloadAttachment(input))
+    return { attachment: value.attachment, bytes: value.bytes }
   }
 }
 

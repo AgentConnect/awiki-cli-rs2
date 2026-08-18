@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -72,9 +72,13 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   const client = await openImCoreNodeClient(options(root))
   t.after(() => client.close())
   await writeFile(join(root, 'cache', 'owned.bin'), 'private', { mode: 0o600 })
+  await mkdir(join(root, '.host'), { mode: 0o700 })
+  await writeFile(join(root, '.host', 'agent-bindings-v1.json'), '{}\n', { mode: 0o600 })
 
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
   await assert.rejects(readFile(join(root, 'cache', 'owned.bin')), { code: 'ENOENT' })
+  assert.equal(await readFile(join(root, '.host', 'agent-bindings-v1.json'), 'utf8'), '{}\n')
+  assert.deepEqual(await client.listIdentities(), [])
   assert.equal(await client.getDefaultIdentity(), null)
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })

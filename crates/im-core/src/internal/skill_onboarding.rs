@@ -1,13 +1,16 @@
-use crate::internal::transport::AsyncRpcTransport;
+use crate::internal::transport::{
+    AsyncAuthenticatedRpcTransport, AsyncRestTransport, AsyncRpcTransport,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const JOURNAL_SCHEMA_VERSION: u32 = 2;
 const JOURNAL_FILE_NAME: &str = ".skill-onboarding-v2.json";
@@ -20,12 +23,15 @@ const PENDING_SECRET_KEY_PREFIX: &str = "skill-onboarding-pending-v2-";
 const LEGACY_PENDING_SECRET_KEY_PREFIX: &str = "skill-onboarding-pending-v1-";
 const PUBLIC_ONBOARDING_REASON_MAX_LEN: usize = 96;
 const SKILL_GROUP_MEMBERSHIP_CAPABILITY: &str = "group_membership_v1";
+const DSH_PROVISION_SCHEMA_VERSION: u32 = 1;
+const DSH_PROVISION_DIRECTORY: &str = ".dsh-skill-provisioning-v1";
+const DSH_PROVISION_SECRET_KEY_PREFIX: &str = "dsh-skill-provision-v1-";
 
 fn skill_exchange_capabilities() -> [&'static str; 1] {
     [SKILL_GROUP_MEMBERSHIP_CAPABILITY]
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SkillTokenMetadata {
     token_id: String,
     service_origin: String,
@@ -33,6 +39,7 @@ pub(crate) struct SkillTokenMetadata {
     controller_handle: crate::ids::Handle,
     agent_handle: crate::ids::Handle,
     expires_at: String,
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +391,359 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
             }
         }
     }
+}
+
+pub(crate) struct SkillProvisionIssue {
+    token: crate::onboarding::SkillOnboardingToken,
+    metadata: SkillTokenMetadata,
+}
+
+pub(crate) trait SkillProvisionRemote {
+    async fn check_capability(&mut self) -> crate::ImResult<()>;
+
+    async fn issue_token(&mut self, display_name: &str) -> crate::ImResult<SkillProvisionIssue>;
+
+    async fn exchange_token(
+        &mut self,
+        token: &crate::onboarding::SkillOnboardingToken,
+        metadata: &SkillTokenMetadata,
+        pending: &PendingIdentityBundle,
+    ) -> crate::ImResult<SkillExchangeResult>;
+
+    async fn publish_device_prekey(&mut self, did: &crate::ids::Did) -> crate::ImResult<()>;
+
+    async fn send_controller_greeting(
+        &mut self,
+        local_alias: &str,
+        controller_did: &crate::ids::Did,
+        message_id: &crate::ids::MessageId,
+    ) -> crate::ImResult<()>;
+}
+
+/// Production transport for trusted-host provisioning. The Human controller
+/// owns authenticated issuance; anonymous exchange remains isolated behind the
+/// existing no-redirect Skill onboarding transport.
+pub(crate) struct ProductionSkillProvisionRemote<'a> {
+    core: &'a crate::core::ImCore,
+    controller: &'a crate::core::ImClient,
+    controller_transport: crate::internal::transport::CoreHttpTransport<'a>,
+    onboarding: ProductionSkillOnboardingRemote<'a>,
+}
+
+impl<'a> ProductionSkillProvisionRemote<'a> {
+    pub(crate) fn new(
+        core: &'a crate::core::ImCore,
+        controller: &'a crate::core::ImClient,
+    ) -> Self {
+        Self {
+            core,
+            controller,
+            controller_transport: crate::internal::transport::CoreHttpTransport::new(controller),
+            onboarding: ProductionSkillOnboardingRemote::new(core),
+        }
+    }
+}
+
+impl SkillProvisionRemote for ProductionSkillProvisionRemote<'_> {
+    async fn check_capability(&mut self) -> crate::ImResult<()> {
+        let value = self
+            .onboarding
+            .transport
+            .rest_get("/user-service/server-info", "GET", &BTreeMap::new())
+            .await?;
+        validate_skill_provision_capability(&value)
+    }
+
+    async fn issue_token(&mut self, display_name: &str) -> crate::ImResult<SkillProvisionIssue> {
+        let identity = self.controller.current_identity();
+        let handle = identity
+            .handle
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let mut result = self
+            .controller_transport
+            .authenticated_rpc(
+                "/user-service/v1/agent-registration/rpc",
+                "issue_token",
+                json!({
+                    "agent_kind": "skill",
+                    "controller_did": identity.did.as_str(),
+                    "controller_handle": handle.as_str(),
+                    "display_name": display_name,
+                    "one_time": true,
+                    "metadata": {
+                        "client": "dsh-awiki",
+                        "onboarding_version": 1
+                    }
+                }),
+            )
+            .await?;
+        parse_provision_issue(
+            &mut result,
+            self.core.inner().sdk_config().did_domain.as_str(),
+            identity.did.as_str(),
+            handle.as_str(),
+            display_name,
+        )
+    }
+
+    async fn exchange_token(
+        &mut self,
+        token: &crate::onboarding::SkillOnboardingToken,
+        metadata: &SkillTokenMetadata,
+        pending: &PendingIdentityBundle,
+    ) -> crate::ImResult<SkillExchangeResult> {
+        let result = self
+            .onboarding
+            .transport
+            .rpc(
+                "/user-service/v1/agent-registration/rpc",
+                "exchange_token",
+                json!({
+                    "token": token.expose(),
+                    "agent_kind": "skill",
+                    "controller_did": metadata.controller_did.as_str(),
+                    "handle": metadata.agent_handle.as_str(),
+                    "did_document": pending.generated.did_document,
+                    "allow_existing_agent_did": false,
+                    "capabilities": [],
+                }),
+            )
+            .await?;
+        parse_exchange_result(&result, self.core.inner().sdk_config().did_domain.as_str())
+    }
+
+    async fn publish_device_prekey(&mut self, did: &crate::ids::Did) -> crate::ImResult<()> {
+        SkillOnboardingRemote::publish_device_prekey(&mut self.onboarding, did).await
+    }
+
+    async fn send_controller_greeting(
+        &mut self,
+        local_alias: &str,
+        controller_did: &crate::ids::Did,
+        message_id: &crate::ids::MessageId,
+    ) -> crate::ImResult<()> {
+        SkillOnboardingRemote::send_controller_greeting(
+            &mut self.onboarding,
+            local_alias,
+            controller_did,
+            message_id,
+        )
+        .await
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProvisionPhase {
+    IdentityPending,
+    DevicePrekeyPending,
+    ControllerGreetingPending,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ProvisionJournal {
+    schema_version: u32,
+    operation_id: String,
+    display_name: String,
+    metadata: SkillTokenMetadata,
+    agent_did: crate::ids::Did,
+    local_alias: String,
+    did_document_digest: String,
+    phase: ProvisionPhase,
+    greeting_message_id: crate::ids::MessageId,
+    updated_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProvisionSecretBundle {
+    token: String,
+    journal: ProvisionJournal,
+    pending: PendingIdentityBundle,
+}
+
+impl std::fmt::Debug for ProvisionSecretBundle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProvisionSecretBundle")
+            .field("token", &"<redacted-token>")
+            .field("operation_id", &self.journal.operation_id)
+            .field("agent_did", &self.journal.agent_did)
+            .field("pending", &"<redacted-pending-identity>")
+            .finish()
+    }
+}
+
+impl Drop for ProvisionSecretBundle {
+    fn drop(&mut self) {
+        self.token.zeroize();
+    }
+}
+
+pub(crate) async fn provision_with_remote<R: SkillProvisionRemote>(
+    core: &crate::core::ImCore,
+    request: crate::onboarding::SkillAgentProvisionRequest,
+    remote: &mut R,
+) -> crate::ImResult<crate::onboarding::SkillAgentProvisionResult> {
+    let operation_id = validate_provision_operation_id(&request.operation_id)?;
+    let display_name = validate_provision_display_name(&request.display_name)?;
+    let journal_path = provision_journal_path(core, &operation_id);
+    let mut created = false;
+
+    let mut journal = match read_provision_journal(&journal_path)? {
+        Some(journal) => {
+            validate_provision_request(&journal, &operation_id, &display_name)?;
+            journal
+        }
+        None => match load_provision_secret(core, &operation_id)? {
+            Some(secret) => {
+                validate_provision_request(&secret.journal, &operation_id, &display_name)?;
+                validate_provision_secret(&secret)?;
+                write_provision_journal(&journal_path, &secret.journal)?;
+                secret.journal.clone()
+            }
+            None => {
+                remote.check_capability().await?;
+                let issue = remote
+                    .issue_token(&display_name)
+                    .await
+                    .map_err(|error| map_remote_error(error, "provision_issue"))?;
+                if issue.metadata.display_name.as_deref() != Some(display_name.as_str()) {
+                    return Err(response_mismatch("provision_issue_display_name"));
+                }
+                let local_alias = handle_local_part(&issue.metadata.agent_handle, core)?;
+                let generated =
+                    crate::internal::identity_generation::generate_vnext_agent_handle_identity(
+                        core.inner().sdk_config().did_domain.as_str(),
+                        crate::identity::AgentIdentityKind::Skill,
+                        &local_alias,
+                        core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                        core.inner().sdk_config().anp_service_did.as_ref(),
+                    )?;
+                let pending = PendingIdentityBundle::new(generated)?;
+                let journal = ProvisionJournal {
+                    schema_version: DSH_PROVISION_SCHEMA_VERSION,
+                    operation_id: operation_id.clone(),
+                    display_name: display_name.clone(),
+                    metadata: issue.metadata,
+                    agent_did: pending.generated.did.clone(),
+                    local_alias,
+                    did_document_digest: pending.document_hash.clone(),
+                    phase: ProvisionPhase::IdentityPending,
+                    greeting_message_id: greeting_message_id(&format!(
+                        "dsh:{}",
+                        token_id_digest(&operation_id)
+                    ))?,
+                    updated_at: now_rfc3339()?,
+                };
+                let secret = ProvisionSecretBundle {
+                    token: issue.token.expose().to_owned(),
+                    journal: journal.clone(),
+                    pending,
+                };
+                validate_provision_secret(&secret)?;
+                save_provision_secret(core, &operation_id, &secret)?;
+                write_provision_journal(&journal_path, &journal)?;
+                created = true;
+                journal
+            }
+        },
+    };
+
+    if journal.phase == ProvisionPhase::Completed {
+        return provision_result(core, &journal, false).await;
+    }
+
+    let secret = load_provision_secret(core, &operation_id)?.ok_or_else(|| {
+        onboarding_error(
+            "skill_onboarding_provision_state_conflict",
+            "provision_secret_missing",
+            false,
+        )
+    })?;
+    validate_provision_secret(&secret)?;
+    let token = crate::onboarding::SkillOnboardingToken::new(secret.token.clone())?;
+    let claim_journal = provision_claim_journal(&journal);
+
+    let identities = core.identities().list_async().await?;
+    let matching_identity = identities
+        .iter()
+        .find(|identity| identity.did == journal.agent_did);
+    if let Some(identity) = matching_identity {
+        if identity.local_alias.as_deref() != Some(journal.local_alias.as_str()) {
+            return Err(workspace_conflict());
+        }
+        validate_matching_vnext_identity(core, &claim_journal).await?;
+        if journal.phase == ProvisionPhase::IdentityPending {
+            journal.phase = ProvisionPhase::DevicePrekeyPending;
+            journal.updated_at = now_rfc3339()?;
+            write_provision_journal(&journal_path, &journal)?;
+        }
+    } else if journal.phase != ProvisionPhase::IdentityPending {
+        return Err(workspace_conflict());
+    }
+
+    if journal.phase == ProvisionPhase::IdentityPending {
+        let exchange = remote
+            .exchange_token(&token, &journal.metadata, &secret.pending)
+            .await
+            .map_err(|error| map_remote_error(error, "provision_exchange"))?;
+        validate_exchange(&claim_journal, &secret.pending, &exchange)?;
+        persist_provisioned_identity(core, &journal, &exchange, &secret.pending).await?;
+        journal.phase = ProvisionPhase::DevicePrekeyPending;
+        journal.updated_at = now_rfc3339()?;
+        write_provision_journal(&journal_path, &journal)?;
+    }
+
+    if journal.phase == ProvisionPhase::DevicePrekeyPending {
+        remote
+            .publish_device_prekey(&journal.agent_did)
+            .await
+            .map_err(map_prekey_error)?;
+        journal.phase = ProvisionPhase::ControllerGreetingPending;
+        journal.updated_at = now_rfc3339()?;
+        write_provision_journal(&journal_path, &journal)?;
+    }
+
+    if journal.phase == ProvisionPhase::ControllerGreetingPending {
+        remote
+            .send_controller_greeting(
+                &journal.local_alias,
+                &journal.metadata.controller_did,
+                &journal.greeting_message_id,
+            )
+            .await
+            .map_err(|error| map_remote_error(error, "provision_greeting"))?;
+        journal.phase = ProvisionPhase::Completed;
+        journal.updated_at = now_rfc3339()?;
+        write_provision_journal(&journal_path, &journal)?;
+    }
+
+    provision_result(core, &journal, created).await
+}
+
+pub(crate) fn acknowledge_provision(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+) -> crate::ImResult<()> {
+    let operation_id = validate_provision_operation_id(operation_id)?;
+    let journal = read_provision_journal(&provision_journal_path(core, &operation_id))?
+        .ok_or_else(|| {
+            onboarding_error(
+                "skill_onboarding_provision_state_conflict",
+                "provision_ack_missing",
+                false,
+            )
+        })?;
+    if journal.phase != ProvisionPhase::Completed {
+        return Err(onboarding_error(
+            "skill_onboarding_provision_state_conflict",
+            "provision_ack_incomplete",
+            false,
+        ));
+    }
+    delete_provision_secret(core, &operation_id)
 }
 
 pub(crate) async fn claim_with_remote<R: SkillOnboardingRemote>(
@@ -885,6 +1245,14 @@ fn parse_token_metadata(result: &Value, domain: &str) -> crate::ImResult<SkillTo
         )?,
         agent_handle,
         expires_at: string_field(result, "expires_at")?.to_owned(),
+        display_name: scope
+            .get("metadata")
+            .and_then(Value::as_object)
+            .and_then(|metadata| metadata.get("default_display_name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
     })
 }
 
@@ -1031,6 +1399,7 @@ fn metadata_from_journal(journal: &SkillClaimJournal) -> SkillTokenMetadata {
         controller_handle: journal.controller_full_handle.clone(),
         agent_handle: journal.agent_handle.clone(),
         expires_at: String::new(),
+        display_name: None,
     }
 }
 
@@ -1064,6 +1433,7 @@ fn legacy_metadata_from_journal(journal: &LegacySkillClaimJournal) -> SkillToken
         controller_handle: journal.controller_full_handle.clone(),
         agent_handle: journal.agent_handle.clone(),
         expires_at: String::new(),
+        display_name: None,
     }
 }
 
@@ -2150,7 +2520,14 @@ fn map_remote_error(error: crate::ImError, phase: &str) -> crate::ImError {
             .and_then(Value::as_str)
             .filter(|reason| is_public_onboarding_reason(reason))
         {
-            return onboarding_error(reason, phase, false);
+            return onboarding_error(
+                reason,
+                phase,
+                matches!(
+                    reason,
+                    "skill_onboarding_rate_limited" | "skill_onboarding_active_token_limit"
+                ),
+            );
         }
     }
     let retryable = matches!(
@@ -2273,6 +2650,357 @@ fn stable_error_code(error: &crate::ImError) -> &str {
         } => "skill_onboarding_greeting_pending",
         _ => "skill_onboarding_greeting_pending",
     }
+}
+
+fn validate_skill_provision_capability(value: &Value) -> crate::ImResult<()> {
+    let capability = value
+        .get("agents")
+        .and_then(Value::as_object)
+        .and_then(|agents| agents.get("skill_onboarding"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            onboarding_error(
+                "skill_onboarding_capability_unavailable",
+                "server_info",
+                false,
+            )
+        })?;
+    if capability.get("enabled").and_then(Value::as_bool) != Some(true)
+        || capability.get("protocol_version").and_then(Value::as_u64) != Some(1)
+        || capability.get("onboarding_path").and_then(Value::as_str) != Some("/cli/onboarding.md")
+        || capability
+            .get("display_name_binding")
+            .and_then(Value::as_str)
+            != Some("token_scope_v1")
+    {
+        return Err(onboarding_error(
+            "skill_onboarding_capability_unavailable",
+            "server_info",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn parse_provision_issue(
+    result: &mut Value,
+    domain: &str,
+    expected_controller_did: &str,
+    expected_controller_handle: &str,
+    expected_display_name: &str,
+) -> crate::ImResult<SkillProvisionIssue> {
+    let metadata = parse_token_metadata(result, domain)?;
+    if metadata.controller_did.as_str() != expected_controller_did
+        || metadata.controller_handle.as_str() != expected_controller_handle
+        || metadata.display_name.as_deref() != Some(expected_display_name)
+        || metadata.service_origin != format!("https://{domain}")
+    {
+        return Err(response_mismatch("provision_issue_scope"));
+    }
+    let raw_token = match result.get_mut("token").map(Value::take) {
+        Some(Value::String(value)) => value,
+        _ => return Err(response_mismatch("provision_issue_token")),
+    };
+    Ok(SkillProvisionIssue {
+        token: crate::onboarding::SkillOnboardingToken::new(raw_token)?,
+        metadata,
+    })
+}
+
+fn validate_provision_operation_id(value: &str) -> crate::ImResult<String> {
+    let trimmed = value.trim();
+    if !(8..=128).contains(&trimmed.len())
+        || trimmed != value
+        || !trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("operation_id".to_owned()),
+            "Skill Agent provisioning operation id is invalid",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn validate_provision_display_name(value: &str) -> crate::ImResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 40 || trimmed != value {
+        return Err(crate::ImError::invalid_input(
+            Some("display_name".to_owned()),
+            "Skill Agent display name must contain 1 to 40 characters",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn validate_provision_request(
+    journal: &ProvisionJournal,
+    operation_id: &str,
+    display_name: &str,
+) -> crate::ImResult<()> {
+    if journal.schema_version != DSH_PROVISION_SCHEMA_VERSION
+        || journal.operation_id != operation_id
+        || journal.display_name != display_name
+        || journal.metadata.display_name.as_deref() != Some(display_name)
+    {
+        return Err(onboarding_error(
+            "skill_onboarding_provision_state_conflict",
+            "provision_scope",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn provision_claim_journal(journal: &ProvisionJournal) -> SkillClaimJournal {
+    SkillClaimJournal {
+        schema_version: JOURNAL_SCHEMA_VERSION,
+        token_id: journal.metadata.token_id.clone(),
+        service_origin: journal.metadata.service_origin.clone(),
+        controller_did: journal.metadata.controller_did.clone(),
+        controller_full_handle: journal.metadata.controller_handle.clone(),
+        agent_handle: journal.metadata.agent_handle.clone(),
+        agent_did: journal.agent_did.clone(),
+        local_alias: journal.local_alias.clone(),
+        did_document_digest: journal.did_document_digest.clone(),
+        phase: JournalPhase::IdentityPending,
+        greeting_message_id: journal.greeting_message_id.clone(),
+        last_error_code: None,
+        updated_at: journal.updated_at.clone(),
+    }
+}
+
+fn validate_provision_secret(secret: &ProvisionSecretBundle) -> crate::ImResult<()> {
+    validate_provision_request(
+        &secret.journal,
+        &secret.journal.operation_id,
+        &secret.journal.display_name,
+    )?;
+    validate_pending_identity(&provision_claim_journal(&secret.journal), &secret.pending)?;
+    validate_pending_identity_material(&provision_claim_journal(&secret.journal), &secret.pending)
+}
+
+async fn persist_provisioned_identity(
+    core: &crate::core::ImCore,
+    journal: &ProvisionJournal,
+    exchange: &SkillExchangeResult,
+    pending: &PendingIdentityBundle,
+) -> crate::ImResult<()> {
+    let storage = crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+    let input = crate::internal::identity_registration_runtime::vnext_bootstrap_save_input(
+        crate::internal::identity_registration_runtime::VNextBootstrapSaveInput {
+            generated: &pending.generated,
+            document_hash: &pending.document_hash,
+            local_alias: &journal.local_alias,
+            display_name: &journal.display_name,
+            user_id: &exchange.user_id,
+            handle: journal.metadata.agent_handle.as_str(),
+            full_handle: journal.metadata.agent_handle.as_str(),
+            binding_generation: &exchange.binding_generation,
+            access_token: &exchange.access_token,
+            make_default: false,
+        },
+    )?;
+    crate::internal::identity_store::IdentityStore::save_identity_with_secret_storage_async(
+        core.inner().sdk_paths().identities.clone(),
+        input,
+        storage,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn provision_result(
+    core: &crate::core::ImCore,
+    journal: &ProvisionJournal,
+    created: bool,
+) -> crate::ImResult<crate::onboarding::SkillAgentProvisionResult> {
+    let identity = core
+        .identities()
+        .resolve_async(crate::identity::IdentitySelector::LocalAlias(
+            journal.local_alias.clone(),
+        ))
+        .await?;
+    if identity.did != journal.agent_did || identity.is_default {
+        return Err(workspace_conflict());
+    }
+    Ok(crate::onboarding::SkillAgentProvisionResult {
+        identity,
+        agent_handle: journal.metadata.agent_handle.clone(),
+        controller_handle: journal.metadata.controller_handle.clone(),
+        greeting_message_id: journal.greeting_message_id.clone(),
+        created,
+    })
+}
+
+fn provision_directory(core: &crate::core::ImCore) -> PathBuf {
+    core.inner()
+        .sdk_paths()
+        .identities
+        .identity_root_dir
+        .join(DSH_PROVISION_DIRECTORY)
+}
+
+fn provision_journal_path(core: &crate::core::ImCore, operation_id: &str) -> PathBuf {
+    provision_directory(core).join(format!("{}.json", token_id_digest(operation_id)))
+}
+
+fn read_provision_journal(path: &Path) -> crate::ImResult<Option<ProvisionJournal>> {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(workspace_conflict()),
+    };
+    serde_json::from_slice(&raw)
+        .map(Some)
+        .map_err(|_| workspace_conflict())
+}
+
+fn write_provision_journal(path: &Path, journal: &ProvisionJournal) -> crate::ImResult<()> {
+    let parent = path.parent().ok_or_else(workspace_conflict)?;
+    fs::create_dir_all(parent)?;
+    set_private_directory_mode(parent)?;
+    let raw = serde_json::to_vec_pretty(journal).map_err(|_| response_mismatch("journal"))?;
+    write_atomic_secure(path, &raw).map_err(|_| {
+        onboarding_error(
+            "skill_onboarding_local_commit_failed",
+            "provision_journal",
+            true,
+        )
+    })
+}
+
+fn provision_secret_ref(
+    workspace_id: &str,
+    device_id: &str,
+    operation_id: &str,
+) -> crate::internal::secret_vault::SecretRef {
+    crate::internal::secret_vault::SecretRef {
+        workspace_id: workspace_id.to_owned(),
+        device_id: device_id.to_owned(),
+        identity_id: None,
+        did: None,
+        kind: crate::internal::secret_vault::SecretKind::RuntimeSecret,
+        key_id: format!(
+            "{DSH_PROVISION_SECRET_KEY_PREFIX}{}",
+            token_id_digest(operation_id)
+        ),
+        key_version: 1,
+    }
+}
+
+fn save_provision_secret(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+    secret: &ProvisionSecretBundle,
+) -> crate::ImResult<()> {
+    let encoded = Zeroizing::new(serde_json::to_vec(secret).map_err(|_| {
+        onboarding_error(
+            "skill_onboarding_local_commit_failed",
+            "provision_secret",
+            true,
+        )
+    })?);
+    match crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)? {
+        crate::internal::identity_store::SaveIdentitySecretStorage::FileCompat => Err(
+            crate::ImError::unsupported("trusted-host-skill-provisioning-vault"),
+        ),
+        crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } => {
+            let expected = provision_secret_ref(&workspace_id, &device_id, operation_id);
+            let sealed = vault
+                .seal_if_absent(crate::internal::secret_vault::SealSecretRequest {
+                metadata: crate::internal::secret_vault::SecretMetadata {
+                    workspace_id,
+                    device_id,
+                    identity_id: None,
+                    did: None,
+                    kind: crate::internal::secret_vault::SecretKind::RuntimeSecret,
+                    key_id: expected.key_id.clone(),
+                    key_version: 1,
+                    policy:
+                        crate::internal::secret_vault::SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: crate::internal::platform_secret::SecretBytes::from_vec(
+                    encoded.to_vec(),
+                ),
+            })?;
+            let actual = match sealed {
+                crate::internal::secret_vault::SealIfAbsentResult::Sealed(value)
+                | crate::internal::secret_vault::SealIfAbsentResult::AlreadyExists(value) => value,
+            };
+            if actual != expected
+                || vault
+                    .open(&actual)
+                    .map(|opened| opened.expose_secret() != encoded.as_slice())
+                    .unwrap_or(true)
+            {
+                return Err(onboarding_error(
+                    "skill_onboarding_provision_state_conflict",
+                    "provision_secret",
+                    false,
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn load_provision_secret(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+) -> crate::ImResult<Option<ProvisionSecretBundle>> {
+    match crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)? {
+        crate::internal::identity_store::SaveIdentitySecretStorage::FileCompat => Err(
+            crate::ImError::unsupported("trusted-host-skill-provisioning-vault"),
+        ),
+        crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } => {
+            let expected = provision_secret_ref(&workspace_id, &device_id, operation_id);
+            if !vault.list()?.iter().any(|secret| secret == &expected) {
+                return Ok(None);
+            }
+            let encoded = Zeroizing::new(vault.open(&expected)?.expose_secret().to_vec());
+            serde_json::from_slice(&encoded)
+                .map(Some)
+                .map_err(|_| workspace_conflict())
+        }
+    }
+}
+
+fn delete_provision_secret(core: &crate::core::ImCore, operation_id: &str) -> crate::ImResult<()> {
+    match crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)? {
+        crate::internal::identity_store::SaveIdentitySecretStorage::FileCompat => Err(
+            crate::ImError::unsupported("trusted-host-skill-provisioning-vault"),
+        ),
+        crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } => {
+            let expected = provision_secret_ref(&workspace_id, &device_id, operation_id);
+            if vault.list()?.iter().any(|secret| secret == &expected) {
+                vault.delete(&expected)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn set_private_directory_mode(path: &Path) -> crate::ImResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 fn response_mismatch(phase: &str) -> crate::ImError {

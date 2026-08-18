@@ -55,8 +55,16 @@ export interface NodeIdentity {
   readonly did: string
   readonly handle?: string
   readonly displayName?: string
+  readonly isDefault: boolean
   /** Stable Unix milliseconds represented as a decimal string. */
   readonly registeredAtMs: string
+}
+
+/** Trusted-host request for one additional direct-only Skill Agent identity. */
+export interface SkillAgentProvisionInput {
+  readonly operationId: string
+  readonly displayName: string
+  readonly controllerIdentityId: string
 }
 
 /** First stage of phone registration. */
@@ -225,10 +233,29 @@ export class ImCoreNodeError extends Error {
   }
 }
 
-/** Environment-scoped Promise API backed by one Rust ImCore/ImClient pair. */
+/** Fixed-identity Promise API sharing its owner's Rust ImCore lifecycle. */
+export interface ImCoreNodeIdentityClient {
+  getIdentity(): Promise<NodeIdentity>
+  updateDisplayName(displayName: string): Promise<NodeIdentity>
+  resolvePeer(peer: string): Promise<NodePeer>
+  syncNow(input?: SyncOptions): Promise<SyncResult>
+  listConversations(input?: PageInput): Promise<Page<NodeConversation>>
+  getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
+  getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>
+  markConversationRead(conversationId: string): Promise<MarkReadResult>
+  sendText(input: SendTextInput): Promise<NodeMessage>
+  sendAttachment(input: SendAttachmentInput): Promise<NodeMessage>
+  downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload>
+}
+
+/** Environment-scoped Promise API backed by one Rust ImCore and many fixed identity clients. */
 export interface ImCoreNodeClient {
   prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
+  listIdentities(): Promise<readonly NodeIdentity[]>
+  forIdentity(identityId: string): Promise<ImCoreNodeIdentityClient>
+  provisionSkillAgentIdentity(input: SkillAgentProvisionInput): Promise<NodeIdentity>
+  acknowledgeSkillAgentProvision(operationId: string): Promise<void>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
