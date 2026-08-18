@@ -494,9 +494,15 @@ mod tests {
         )
         .unwrap();
         let device_signing_pem = bundle.keys["key-1"].private_key_pem.clone();
+        let mut did_document = bundle.did_document.clone();
+        let device_signing_key_id = did_document["verificationMethod"][0]["id"]
+            .as_str()
+            .expect("device signing verification method")
+            .to_owned();
+        did_document["authentication"] = serde_json::json!([device_signing_key_id.clone()]);
         std::fs::write(
             identity_dir.join("did_document.json"),
-            serde_json::to_vec(&bundle.did_document).unwrap(),
+            serde_json::to_vec(&did_document).unwrap(),
         )
         .unwrap();
         let vault = Arc::new(FileSecretVault::new(
@@ -506,7 +512,7 @@ mod tests {
         let device_signing_ref = seal_test_secret(
             vault.as_ref(),
             SecretKind::IdentityDeviceSigningPrivate,
-            "member-sign",
+            &device_signing_key_id,
             device_signing_pem.as_bytes(),
         );
         let agreement_ref = seal_test_secret(
@@ -564,7 +570,7 @@ mod tests {
             .unwrap();
         assert!(headers.contains_key("Signature-Input"));
         assert!(headers.contains_key("Signature"));
-        assert!(headers["Signature-Input"].contains("keyid=\"member-sign\""));
+        assert!(headers["Signature-Input"].contains(&format!("keyid=\"{device_signing_key_id}\"")));
         let debug = format!("{provider:?}");
         assert!(!debug.contains(&device_signing_pem));
         assert!(!debug.contains("agreement-secret"));
