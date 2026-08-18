@@ -158,10 +158,7 @@ where
             validate_p6_inline_binding(&inline)?;
             match apply_p6_lane_delivery_projection_async(client, &inline.projection).await {
                 Ok(message) => Some(message),
-                Err(error) => {
-                    eprintln!("P6 realtime fast-path deferred after projection: {error}");
-                    return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
-                }
+                Err(_) => return Ok(RealtimeInlineMessageApplyOutcome::Deferred),
             }
         }
         InlineSyncLaneV3::Ordinary => unreachable!("ordinary lane was handled above"),

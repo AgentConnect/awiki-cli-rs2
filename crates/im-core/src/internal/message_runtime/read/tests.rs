@@ -2777,6 +2777,26 @@ fn p6_v2_projection_diagnostics_are_stable_and_redacted() {
     assert!(!p6_projection_error_code(&error).contains("ciphertext"));
 }
 
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_cached_projection_removes_all_live_wire_fields() {
+    let mut message = json!({
+        "meta": {"message_id": "message-1"},
+        "body": {"group_cipher_object": {"private_message_b64u": "secret"}},
+        "auth": {"origin_proof": {"signature": "secret"}},
+        "group_cipher_object": {"private_message_b64u": "secret"},
+        "content": "plaintext",
+        "decryption_state": "decrypted"
+    });
+
+    strip_p6_v2_wire_fields(&mut message);
+
+    assert_eq!(message["content"], "plaintext");
+    for field in ["meta", "body", "auth", "group_cipher_object"] {
+        assert!(message.get(field).is_none());
+    }
+}
+
 #[cfg(feature = "group-e2ee")]
 fn p6_v2_incoming_wire() -> Value {
     json!({

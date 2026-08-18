@@ -4497,7 +4497,9 @@ async fn project_group_e2ee_messages_async_impl(
         return;
     };
     let mut message_values = std::mem::take(messages);
+    apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
     let mut p6_projected = Vec::with_capacity(message_values.len());
+    let mut newly_decrypted = Vec::new();
     let mut p6_warnings = Vec::new();
     for mut message in message_values.drain(..) {
         if !is_p6_v2_projection_candidate(&message) {
@@ -4507,12 +4509,43 @@ async fn project_group_e2ee_messages_async_impl(
         if !client.core_inner().group_e2ee_v2_enabled() {
             continue;
         }
+        if message.get("decryption_state").and_then(Value::as_str) == Some("decrypted") {
+            strip_p6_v2_wire_fields(&mut message);
+            p6_projected.push(message);
+            continue;
+        }
         match project_p6_v2_incoming_message(client, &mut message).await {
-            Ok(()) => p6_projected.push(message),
+            Ok(()) => {
+                if let Ok(Some(projected)) = message_from_value(client, &message, None) {
+                    newly_decrypted.push(projected);
+                }
+                p6_projected.push(message);
+            }
             Err(error) => p6_warnings.push(format!(
                 "P6 v2 group message was rejected before projection ({})",
                 p6_projection_error_code(&error)
             )),
+        }
+    }
+    if !newly_decrypted.is_empty() {
+        match persist_projection_async(
+            client,
+            &newly_decrypted,
+            &DirectP5ProjectionProvenance::default(),
+        )
+        .await
+        {
+            Ok(outcome)
+                if outcome
+                    .stored_messages
+                    .saturating_add(outcome.backlogged_messages)
+                    == newly_decrypted.len() =>
+            {
+                client.emit_committed_local_message_projection("p6_history_decryption");
+            }
+            Ok(_) | Err(_) => {
+                p6_warnings.push("P6 v2 group plaintext cache was not durably committed".to_owned())
+            }
         }
     }
     message_values = p6_projected;
@@ -4531,6 +4564,16 @@ async fn project_group_e2ee_messages_async_impl(
     }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(feature = "group-e2ee")]
+fn strip_p6_v2_wire_fields(message: &mut Value) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    for field in ["meta", "body", "auth", "group_cipher_object"] {
+        object.remove(field);
+    }
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -4625,12 +4668,10 @@ pub(crate) async fn project_p6_v2_incoming_message(
     if wrapper_shape {
         *message = Value::Object(Map::new());
     }
+    strip_p6_v2_wire_fields(message);
     let object = message
         .as_object_mut()
         .ok_or(crate::ImError::PermissionDenied)?;
-    object.remove("meta");
-    object.remove("body");
-    object.remove("auth");
     object.insert(
         "id".to_owned(),
         Value::String(p6_group_message_id(&group_did, &group_event_seq)?),
