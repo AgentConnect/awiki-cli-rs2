@@ -4528,24 +4528,15 @@ async fn project_group_e2ee_messages_async_impl(
         }
     }
     if !newly_decrypted.is_empty() {
-        match persist_projection_async(
+        if persist_newly_decrypted_p6_messages_async(
             client,
             &newly_decrypted,
-            &DirectP5ProjectionProvenance::default(),
+            "p6_history_decryption",
         )
         .await
+        .is_err()
         {
-            Ok(outcome)
-                if outcome
-                    .stored_messages
-                    .saturating_add(outcome.backlogged_messages)
-                    == newly_decrypted.len() =>
-            {
-                client.emit_committed_local_message_projection("p6_history_decryption");
-            }
-            Ok(_) | Err(_) => {
-                p6_warnings.push("P6 v2 group plaintext cache was not durably committed".to_owned())
-            }
+            p6_warnings.push("P6 v2 group plaintext cache was not durably committed".to_owned());
         }
     }
     message_values = p6_projected;
@@ -4564,6 +4555,31 @@ async fn project_group_e2ee_messages_async_impl(
     }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn persist_newly_decrypted_p6_messages_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    source: &str,
+) -> crate::ImResult<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let outcome =
+        persist_projection_async(client, messages, &DirectP5ProjectionProvenance::default())
+            .await?;
+    if outcome
+        .stored_messages
+        .saturating_add(outcome.backlogged_messages)
+        != messages.len()
+    {
+        return Err(crate::ImError::LocalProjectionUnavailable {
+            detail: "P6 plaintext projection was not durably stored".to_owned(),
+        });
+    }
+    client.emit_committed_local_message_projection(source);
+    Ok(())
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -4797,6 +4813,17 @@ pub(crate) async fn normalize_p6_v2_realtime_incoming(
         "auth": params.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
     });
     project_p6_v2_incoming_message(client, &mut message).await?;
+    let cached_message = message_from_value(client, &message, None)?.ok_or_else(|| {
+        crate::ImError::LocalProjectionUnavailable {
+            detail: "P6 realtime plaintext did not produce a local message".to_owned(),
+        }
+    })?;
+    persist_newly_decrypted_p6_messages_async(
+        client,
+        std::slice::from_ref(&cached_message),
+        "p6_realtime_decryption",
+    )
+    .await?;
     cache_attachment_manifests_for_internal_download_async(client, std::slice::from_ref(&message))
         .await;
     let object = message
