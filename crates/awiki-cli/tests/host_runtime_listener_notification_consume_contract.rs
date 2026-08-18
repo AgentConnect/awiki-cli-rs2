@@ -7,7 +7,7 @@ use serde_json::json;
 use std::time::Duration;
 
 #[test]
-fn exported_ping_durations_match_reliable_sync_contract() {
+fn exported_ping_durations_match_go_constants() {
     assert_eq!(SESSION_PING_INTERVAL, Duration::from_secs(20));
     assert_eq!(SESSION_PING_TIMEOUT, Duration::from_secs(15));
 }
