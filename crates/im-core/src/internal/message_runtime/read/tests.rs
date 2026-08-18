@@ -2763,6 +2763,20 @@ fn p6_v2_incoming_uses_canonical_group_timeline_id() {
     );
 }
 
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_projection_diagnostics_are_stable_and_redacted() {
+    let error = crate::ImError::Internal {
+        message: "group MLS operation failed (group.e2ee.private_message_invalid): ciphertext-and-proof-must-not-be-exposed".to_owned(),
+    };
+
+    assert_eq!(
+        p6_projection_error_code(&error),
+        "mls_private_message_invalid"
+    );
+    assert!(!p6_projection_error_code(&error).contains("ciphertext"));
+}
+
 #[cfg(feature = "group-e2ee")]
 fn p6_v2_incoming_wire() -> Value {
     json!({

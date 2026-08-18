@@ -4498,6 +4498,7 @@ async fn project_group_e2ee_messages_async_impl(
     };
     let mut message_values = std::mem::take(messages);
     let mut p6_projected = Vec::with_capacity(message_values.len());
+    let mut p6_warnings = Vec::new();
     for mut message in message_values.drain(..) {
         if !is_p6_v2_projection_candidate(&message) {
             p6_projected.push(message);
@@ -4506,21 +4507,23 @@ async fn project_group_e2ee_messages_async_impl(
         if !client.core_inner().group_e2ee_v2_enabled() {
             continue;
         }
-        if project_p6_v2_incoming_message(client, &mut message)
-            .await
-            .is_ok()
-        {
-            p6_projected.push(message);
+        match project_p6_v2_incoming_message(client, &mut message).await {
+            Ok(()) => p6_projected.push(message),
+            Err(error) => p6_warnings.push(format!(
+                "P6 v2 group message was rejected before projection ({})",
+                p6_projection_error_code(&error)
+            )),
         }
     }
     message_values = p6_projected;
     apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
-    let warnings =
+    let mut warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
             client,
             &mut message_values,
         )
         .await;
+    warnings.extend(p6_warnings);
     cache_attachment_manifests_for_internal_download_async(client, &message_values).await;
     apply_cached_group_attachment_manifests(client, &mut message_values);
     if redact_attachment_secrets {
@@ -4528,6 +4531,38 @@ async fn project_group_e2ee_messages_async_impl(
     }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_projection_error_code(error: &crate::ImError) -> &'static str {
+    match error {
+        crate::ImError::InvalidInput { .. } => "invalid_wire_or_binding",
+        crate::ImError::PermissionDenied => "proof_or_sender_rejected",
+        crate::ImError::IdentityUnresolved { .. } | crate::ImError::PeerNotFound { .. } => {
+            "sender_document_unavailable"
+        }
+        crate::ImError::LocalStateUnavailable { .. } => "local_mls_state_unavailable",
+        crate::ImError::Internal { message } if message.contains("(group.e2ee.epoch_conflict)") => {
+            "mls_epoch_conflict"
+        }
+        crate::ImError::Internal { message }
+            if message.contains("(group.e2ee.private_message_invalid)") =>
+        {
+            "mls_private_message_invalid"
+        }
+        crate::ImError::Internal { message }
+            if message.contains("(group.e2ee.did_binding_invalid)") =>
+        {
+            "mls_sender_binding_invalid"
+        }
+        crate::ImError::Internal { message }
+            if message.contains("(group.e2ee.state_not_ready)") =>
+        {
+            "mls_state_not_ready"
+        }
+        crate::ImError::Internal { .. } => "mls_processing_failed",
+        _ => "projection_dependency_failed",
+    }
 }
 
 #[cfg(feature = "group-e2ee")]
