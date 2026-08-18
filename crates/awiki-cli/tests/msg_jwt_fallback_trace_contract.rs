@@ -604,6 +604,15 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
         ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = device_binding_from_authentication(request);
+            let rpc: Value =
+                serde_json::from_str(request_body(request)).expect("sync.bootstrap request JSON");
+            let client_instance_id = rpc["params"]["body"]["client_instance_id"]
+                .as_str()
+                .expect("sync.bootstrap client_instance_id");
+            assert_eq!(
+                rpc["params"]["body"]["capabilities"]["p6_delivery"],
+                "p6.delivery_context.v1"
+            );
             rpc_result_for_request(
                 request,
                 json!({
@@ -614,7 +623,12 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                     "cursor": {"stream_epoch": "1", "scan_seq": "0"},
                     "read_state_baseline": [],
                     "group_state_baseline": [],
-                    "warnings": []
+                    "warnings": [],
+                    "p6_delivery": {
+                        "profile": "p6.delivery_context.v1",
+                        "client_instance_id": client_instance_id,
+                        "activated": true
+                    }
                 }),
             )
         }
