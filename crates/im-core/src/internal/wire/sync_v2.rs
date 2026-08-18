@@ -5,6 +5,8 @@ use serde_json::{json, Map, Value};
 use super::common::{self, WireIdentity};
 
 pub(crate) const SYNC_V2_PROFILE: &str = "anp.sync.local.v2";
+pub(crate) const SYNC_CAPABILITY_P5_DEVICE_V1: &str = "lanes.p5_device.v1";
+pub(crate) const SYNC_CAPABILITY_P6_GROUP_V1: &str = "lanes.p6_group.v1";
 pub(crate) const MESSAGE_GET_BATCH_MAX_EVENT_IDS: usize = 100;
 pub(crate) const MESSAGE_GET_BATCH_CLIENT_CHUNK_EVENT_IDS: usize = 8;
 
@@ -12,6 +14,40 @@ pub(crate) const MESSAGE_GET_BATCH_CLIENT_CHUNK_EVENT_IDS: usize = 8;
 pub(crate) struct SyncCursorV2 {
     pub(crate) stream_epoch: String,
     pub(crate) scan_seq: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SyncLaneV3 {
+    P5Device,
+    P6Group,
+}
+
+impl SyncLaneV3 {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::P5Device => "p5_device",
+            Self::P6Group => "p6_group",
+        }
+    }
+
+    pub(crate) fn capability(self) -> &'static str {
+        match self {
+            Self::P5Device => SYNC_CAPABILITY_P5_DEVICE_V1,
+            Self::P6Group => SYNC_CAPABILITY_P6_GROUP_V1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneCursorV3 {
+    pub(crate) cursor: SyncCursorV2,
+    pub(crate) committed_seq: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SyncLaneBootstrapV3 {
+    pub(crate) capabilities: BTreeSet<SyncLaneV3>,
+    pub(crate) lanes: BTreeMap<SyncLaneV3, SyncLaneCursorV3>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +59,7 @@ pub(crate) struct SyncBootstrapV2 {
     pub(crate) read_state_baseline: Vec<Value>,
     pub(crate) group_state_baseline: Vec<Value>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) lane_bootstrap: SyncLaneBootstrapV3,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +69,57 @@ pub(crate) enum SyncBootstrapResponseV2 {
         account_id: String,
         device_id: String,
         recovery: SyncRecoveryV2,
+        lane_bootstrap: SyncLaneBootstrapV3,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SyncLaneEventV3 {
+    P5Delivery {
+        delivery_id: String,
+        seq: String,
+        envelope: Value,
+    },
+    P6Delivery {
+        delivery_id: String,
+        seq: String,
+        group_did: String,
+        group_event_seq: String,
+        envelope: Value,
+    },
+    P6ControlNotice {
+        notice_id: String,
+        seq: String,
+        group_did: String,
+        notice: Value,
+    },
+}
+
+impl SyncLaneEventV3 {
+    pub(crate) fn seq(&self) -> &str {
+        match self {
+            Self::P5Delivery { seq, .. }
+            | Self::P6Delivery { seq, .. }
+            | Self::P6ControlNotice { seq, .. } => seq,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneErrorV3 {
+    pub(crate) code: i64,
+    pub(crate) anp_code: String,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SyncLaneDeltaSectionV3 {
+    Page {
+        events: Vec<SyncLaneEventV3>,
+        next_cursor: SyncCursorV2,
+        has_more: bool,
+    },
+    Error(SyncLaneErrorV3),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +129,7 @@ pub(crate) struct SyncDeltaPageV2 {
     pub(crate) next_cursor: SyncCursorV2,
     pub(crate) has_more: bool,
     pub(crate) warnings: Vec<String>,
+    pub(crate) lanes: BTreeMap<SyncLaneV3, SyncLaneDeltaSectionV3>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,11 +230,21 @@ pub(crate) fn build_delta_params(
     limit: u32,
     reason: &str,
 ) -> crate::ImResult<Value> {
+    build_delta_params_with_lanes(identity, cursor, limit, reason, &BTreeMap::new())
+}
+
+pub(crate) fn build_delta_params_with_lanes(
+    identity: &WireIdentity,
+    cursor: &SyncCursorV2,
+    limit: u32,
+    reason: &str,
+    lanes: &BTreeMap<SyncLaneV3, SyncLaneCursorV3>,
+) -> crate::ImResult<Value> {
     let did = required_string("identity.did", identity.did.as_str())?;
     validate_cursor(cursor)?;
     let limit = validate_limit(limit)?;
     let reason = validate_reason(reason)?;
-    Ok(json!({
+    let mut params = json!({
         "meta": common::local_meta(&did, SYNC_V2_PROFILE),
         "body": {
             "cursor": {
@@ -156,7 +254,46 @@ pub(crate) fn build_delta_params(
             "limit": limit,
             "reason": reason
         }
-    }))
+    });
+    if !lanes.is_empty() {
+        let mut lane_sections = Map::new();
+        for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
+            let Some(state) = lanes.get(&lane) else {
+                continue;
+            };
+            validate_cursor(&state.cursor)?;
+            crate::internal::local_state::sync_v2::validate_decimal(
+                "committed_seq",
+                &state.committed_seq,
+            )?;
+            if crate::internal::local_state::sync_v2::compare_decimal(
+                &state.committed_seq,
+                &state.cursor.scan_seq,
+            )? == std::cmp::Ordering::Greater
+            {
+                return Err(crate::ImError::invalid_input(
+                    Some("lanes.committed_seq".to_owned()),
+                    "lane committed_seq must not exceed scan_seq",
+                ));
+            }
+            lane_sections.insert(
+                lane.as_str().to_owned(),
+                json!({
+                    "cursor": {
+                        "stream_epoch": state.cursor.stream_epoch,
+                        "scan_seq": state.cursor.scan_seq,
+                    },
+                    "committed_seq": state.committed_seq,
+                }),
+            );
+        }
+        params
+            .get_mut("body")
+            .and_then(Value::as_object_mut)
+            .expect("sync.delta body is an object")
+            .insert("lanes".to_owned(), Value::Object(lane_sections));
+    }
+    Ok(params)
 }
 
 pub(crate) fn build_message_get_batch_params(
@@ -263,6 +400,7 @@ pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
 
 pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBootstrapResponseV2> {
     let object = object(raw, "sync.bootstrap response")?;
+    let lane_bootstrap = parse_lane_bootstrap_v3(object)?;
     if object.get("mode").and_then(Value::as_str) == Some("compact_recovery_required") {
         let recovery = self::object(
             object
@@ -289,6 +427,7 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
                 expires_at: canonical_string_field(recovery, "expires_at")?,
                 snapshot_schema: optional_snapshot_schema(recovery)?,
             },
+            lane_bootstrap,
         });
     }
     exact_mode(object, "tail_only")?;
@@ -325,7 +464,94 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
         read_state_baseline: read_state_baseline.clone(),
         group_state_baseline: groups,
         warnings: warnings(object.get("warnings"))?,
+        lane_bootstrap,
     }))
+}
+
+fn parse_lane_bootstrap_v3(response: &Map<String, Value>) -> crate::ImResult<SyncLaneBootstrapV3> {
+    let capabilities = match response.get("sync_capabilities") {
+        None => BTreeSet::new(),
+        Some(value) => {
+            let values = value
+                .as_array()
+                .ok_or_else(|| invalid_page("sync_capabilities must be an array"))?;
+            let mut raw = BTreeSet::new();
+            let mut recognized = BTreeSet::new();
+            for value in values {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| invalid_page("sync_capabilities entries must be strings"))?;
+                let value = required_string("sync_capabilities", value)
+                    .map_err(|_| invalid_page("sync_capabilities entries must be canonical"))?;
+                if !raw.insert(value.clone()) {
+                    return Err(invalid_page("sync_capabilities contains a duplicate"));
+                }
+                for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
+                    if value == lane.capability() {
+                        recognized.insert(lane);
+                    }
+                }
+            }
+            recognized
+        }
+    };
+    let lane_values = match response.get("lanes") {
+        None if capabilities.is_empty() => return Ok(SyncLaneBootstrapV3::default()),
+        None => {
+            return Err(invalid_page(
+                "advertised sync lanes require bootstrap cursors",
+            ))
+        }
+        Some(value) => object(value, "bootstrap lanes")?,
+    };
+    if lane_values
+        .keys()
+        .any(|name| !matches!(name.as_str(), "p5_device" | "p6_group"))
+    {
+        return Err(invalid_page("bootstrap lanes contains an unknown lane"));
+    }
+    let mut lanes = BTreeMap::new();
+    for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
+        let Some(value) = lane_values.get(lane.as_str()) else {
+            if capabilities.contains(&lane) {
+                return Err(invalid_page(
+                    "advertised sync lane is missing its bootstrap cursor",
+                ));
+            }
+            continue;
+        };
+        if !capabilities.contains(&lane) {
+            return Err(invalid_page(
+                "bootstrap lane cursor was returned without its capability",
+            ));
+        }
+        let section = object(value, "bootstrap lane")?;
+        exact_fields(section, &["cursor", "committed_seq"], "bootstrap lane")?;
+        let cursor = parse_cursor(
+            section
+                .get("cursor")
+                .ok_or_else(|| invalid_page("bootstrap lane cursor is required"))?,
+        )?;
+        let committed_seq = decimal_field(section, "committed_seq")?;
+        if crate::internal::local_state::sync_v2::compare_decimal(&committed_seq, &cursor.scan_seq)?
+            == std::cmp::Ordering::Greater
+        {
+            return Err(invalid_page(
+                "bootstrap lane committed_seq exceeds its scan cursor",
+            ));
+        }
+        lanes.insert(
+            lane,
+            SyncLaneCursorV3 {
+                cursor,
+                committed_seq,
+            },
+        );
+    }
+    Ok(SyncLaneBootstrapV3 {
+        capabilities,
+        lanes,
+    })
 }
 
 pub(crate) fn parse_delta(raw: &Value) -> crate::ImResult<SyncDeltaPageV2> {
@@ -402,6 +628,7 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
             return Err(invalid_page("sync.delta contains a duplicate event_seq"));
         }
     }
+    let lanes = parse_lane_delta_sections_v3(object.get("lanes"))?;
     Ok(SyncDeltaResponseV2::Delta(SyncDeltaPageV2 {
         server_time: canonical_string_field(object, "server_time")?,
         events,
@@ -415,7 +642,193 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
             .and_then(Value::as_bool)
             .ok_or_else(|| invalid_page("has_more must be a boolean"))?,
         warnings: warnings(object.get("warnings"))?,
+        lanes,
     }))
+}
+
+fn parse_lane_delta_sections_v3(
+    value: Option<&Value>,
+) -> crate::ImResult<BTreeMap<SyncLaneV3, SyncLaneDeltaSectionV3>> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let sections = object(value, "sync.delta lanes")?;
+    if sections.is_empty()
+        || sections
+            .keys()
+            .any(|name| !matches!(name.as_str(), "p5_device" | "p6_group"))
+    {
+        return Err(invalid_page(
+            "sync.delta lanes must contain only p5_device or p6_group",
+        ));
+    }
+    let mut parsed = BTreeMap::new();
+    for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
+        let Some(value) = sections.get(lane.as_str()) else {
+            continue;
+        };
+        let section = object(value, "sync.delta lane section")?;
+        let parsed_section = if let Some(error) = section.get("error") {
+            exact_fields(section, &["error"], "sync.delta lane error section")?;
+            let error = object(error, "sync.delta lane error")?;
+            exact_fields(
+                error,
+                &["code", "anp_code", "message"],
+                "sync.delta lane error",
+            )?;
+            SyncLaneDeltaSectionV3::Error(SyncLaneErrorV3 {
+                code: error
+                    .get("code")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| invalid_page("lane error code must be an integer"))?,
+                anp_code: canonical_string_field(error, "anp_code")?,
+                message: canonical_string_field(error, "message")?,
+            })
+        } else {
+            exact_fields(
+                section,
+                &["events", "next_cursor", "has_more"],
+                "sync.delta lane page",
+            )?;
+            let events = section
+                .get("events")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_page("lane events must be an array"))?
+                .iter()
+                .map(|event| parse_lane_event_v3(lane, event))
+                .collect::<crate::ImResult<Vec<_>>>()?;
+            let next_cursor = parse_cursor(
+                section
+                    .get("next_cursor")
+                    .ok_or_else(|| invalid_page("lane next_cursor is required"))?,
+            )?;
+            let mut previous_seq: Option<&str> = None;
+            for event in &events {
+                if previous_seq.is_some_and(|previous| {
+                    crate::internal::local_state::sync_v2::compare_decimal(previous, event.seq())
+                        .map(|order| order != std::cmp::Ordering::Less)
+                        .unwrap_or(true)
+                }) {
+                    return Err(invalid_page(
+                        "lane events must have unique increasing sequence values",
+                    ));
+                }
+                if crate::internal::local_state::sync_v2::compare_decimal(
+                    event.seq(),
+                    &next_cursor.scan_seq,
+                )? == std::cmp::Ordering::Greater
+                {
+                    return Err(invalid_page("lane event is ahead of its next cursor"));
+                }
+                previous_seq = Some(event.seq());
+            }
+            SyncLaneDeltaSectionV3::Page {
+                events,
+                next_cursor,
+                has_more: section
+                    .get("has_more")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| invalid_page("lane has_more must be a boolean"))?,
+            }
+        };
+        parsed.insert(lane, parsed_section);
+    }
+    Ok(parsed)
+}
+
+fn parse_lane_event_v3(lane: SyncLaneV3, value: &Value) -> crate::ImResult<SyncLaneEventV3> {
+    let event = object(value, "sync.delta lane event")?;
+    let event_type = canonical_string_field(event, "event_type")?;
+    match (lane, event_type.as_str()) {
+        (SyncLaneV3::P5Device, "p5.delivery.created") => {
+            exact_fields(
+                event,
+                &["event_type", "delivery_id", "seq", "envelope"],
+                "p5 delivery event",
+            )?;
+            let envelope = event
+                .get("envelope")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("p5 delivery envelope must be an object"))?;
+            validate_lane_envelope_v3(&envelope, "anp.direct.e2ee.v2", "direct-e2ee")?;
+            Ok(SyncLaneEventV3::P5Delivery {
+                delivery_id: canonical_string_field(event, "delivery_id")?,
+                seq: positive_decimal_field(event, "seq")?,
+                envelope,
+            })
+        }
+        (SyncLaneV3::P6Group, "p6.delivery.created") => {
+            exact_fields(
+                event,
+                &[
+                    "event_type",
+                    "delivery_id",
+                    "seq",
+                    "group_did",
+                    "group_event_seq",
+                    "envelope",
+                ],
+                "p6 delivery event",
+            )?;
+            let envelope = event
+                .get("envelope")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("p6 delivery envelope must be an object"))?;
+            validate_lane_envelope_v3(&envelope, "anp.group.e2ee.v2", "group-e2ee")?;
+            Ok(SyncLaneEventV3::P6Delivery {
+                delivery_id: canonical_string_field(event, "delivery_id")?,
+                seq: positive_decimal_field(event, "seq")?,
+                group_did: canonical_string_field(event, "group_did")?,
+                group_event_seq: positive_decimal_field(event, "group_event_seq")?,
+                envelope,
+            })
+        }
+        (SyncLaneV3::P6Group, "p6.control.notice") => {
+            exact_fields(
+                event,
+                &["event_type", "notice_id", "seq", "group_did", "notice"],
+                "p6 control notice",
+            )?;
+            let notice = event
+                .get("notice")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("p6 control notice must be an object"))?;
+            validate_lane_envelope_v3(&notice, "anp.group.e2ee.v2", "group-e2ee")?;
+            Ok(SyncLaneEventV3::P6ControlNotice {
+                notice_id: canonical_string_field(event, "notice_id")?,
+                seq: positive_decimal_field(event, "seq")?,
+                group_did: canonical_string_field(event, "group_did")?,
+                notice,
+            })
+        }
+        _ => Err(invalid_page(
+            "sync.delta lane event does not match its closed lane shape",
+        )),
+    }
+}
+
+pub(crate) fn validate_lane_envelope_v3(
+    value: &Value,
+    expected_profile: &str,
+    expected_security_profile: &str,
+) -> crate::ImResult<()> {
+    let envelope = object(value, "E2EE lane envelope")?;
+    let meta = envelope
+        .get("meta")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_page("E2EE lane envelope meta must be an object"))?;
+    if meta.get("profile").and_then(Value::as_str) != Some(expected_profile)
+        || meta.get("security_profile").and_then(Value::as_str) != Some(expected_security_profile)
+        || !envelope.get("body").is_some_and(Value::is_object)
+    {
+        return Err(invalid_page(
+            "E2EE lane envelope profile does not match its lane",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
@@ -910,6 +1323,50 @@ fn parse_event(value: &Value) -> crate::ImResult<SyncEventV2> {
         payload,
         source,
     })
+}
+
+pub(crate) fn parse_inline_event(value: &Value) -> crate::ImResult<SyncEventV2> {
+    let object = object(value, "inline sync event")?;
+    exact_fields(
+        object,
+        &[
+            "event_id",
+            "stream_epoch",
+            "event_seq",
+            "event_type",
+            "schema_version",
+            "ignore_safe",
+            "account_id",
+            "recipient_device_id",
+            "origin_did",
+            "origin_device_id",
+            "aggregate_kind",
+            "aggregate_id",
+            "state_version",
+            "thread_key",
+            "occurred_at",
+            "payload",
+            "source",
+        ],
+        "inline sync event",
+    )?;
+    parse_event(value)
+}
+
+pub(crate) fn parse_inline_message(event_id: &str, message: &Value) -> crate::ImResult<Value> {
+    let batch = parse_message_batch(
+        &json!({
+            "items": [{"event_id": event_id, "message": message}],
+            "unavailable": [],
+        }),
+        &[event_id.to_owned()],
+    )?;
+    batch
+        .items
+        .into_iter()
+        .next()
+        .map(|item| item.message)
+        .ok_or_else(|| invalid_page("inline message projection is missing"))
 }
 
 fn parse_cursor(value: &Value) -> crate::ImResult<SyncCursorV2> {
@@ -1735,5 +2192,136 @@ mod tests {
         let mut unknown = base;
         unknown["read_states"][0]["recovery_token"] = json!("forbidden");
         assert!(parse_snapshot(&unknown).is_err());
+    }
+
+    #[test]
+    fn bootstrap_and_delta_request_round_trip_e2ee_lane_cursors() {
+        let bootstrap = parse_bootstrap(&json!({
+            "mode": "tail_only",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-08-15T00:00:00Z",
+            "cursor": {"stream_epoch": "3", "scan_seq": "9"},
+            "read_state_baseline": [],
+            "group_state_baseline": [],
+            "warnings": [],
+            "sync_capabilities": [
+                SYNC_CAPABILITY_P5_DEVICE_V1,
+                SYNC_CAPABILITY_P6_GROUP_V1
+            ],
+            "lanes": {
+                "p5_device": {
+                    "cursor": {"stream_epoch": "41", "scan_seq": "36"},
+                    "committed_seq": "36"
+                },
+                "p6_group": {
+                    "cursor": {"stream_epoch": "42", "scan_seq": "58"},
+                    "committed_seq": "57"
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            bootstrap.lane_bootstrap.capabilities,
+            BTreeSet::from([SyncLaneV3::P5Device, SyncLaneV3::P6Group])
+        );
+        assert_eq!(
+            bootstrap.lane_bootstrap.lanes[&SyncLaneV3::P6Group].committed_seq,
+            "57"
+        );
+
+        let identity = WireIdentity {
+            did: "did:example:alice".to_owned(),
+        };
+        let ordinary = SyncCursorV2 {
+            stream_epoch: "3".to_owned(),
+            scan_seq: "9".to_owned(),
+        };
+        let legacy = build_delta_params(&identity, &ordinary, 100, "app_resume").unwrap();
+        assert_eq!(
+            legacy["body"],
+            json!({
+                "cursor": {"stream_epoch": "3", "scan_seq": "9"},
+                "limit": 100,
+                "reason": "app_resume"
+            })
+        );
+        let params = build_delta_params_with_lanes(
+            &identity,
+            &ordinary,
+            100,
+            "app_resume",
+            &bootstrap.lane_bootstrap.lanes,
+        )
+        .unwrap();
+        assert_eq!(params["body"]["lanes"]["p5_device"]["committed_seq"], "36");
+        assert_eq!(
+            params["body"]["lanes"]["p6_group"]["cursor"]["scan_seq"],
+            "58"
+        );
+    }
+
+    #[test]
+    fn delta_lane_parser_enforces_closed_e2ee_profiles_and_isolates_errors() {
+        let base = json!({
+            "mode": "delta",
+            "server_time": "2026-08-15T00:00:01Z",
+            "events": [],
+            "next_cursor": {"stream_epoch": "3", "scan_seq": "9"},
+            "has_more": false,
+            "recovery": null,
+            "warnings": [],
+            "lanes": {
+                "p5_device": {
+                    "events": [{
+                        "event_type": "p5.delivery.created",
+                        "delivery_id": "p5-37",
+                        "seq": "37",
+                        "envelope": {
+                            "meta": {
+                                "profile": "anp.direct.e2ee.v2",
+                                "security_profile": "direct-e2ee"
+                            },
+                            "body": {},
+                            "server_seq": 7
+                        }
+                    }],
+                    "next_cursor": {"stream_epoch": "41", "scan_seq": "37"},
+                    "has_more": false
+                },
+                "p6_group": {
+                    "error": {
+                        "code": 4602,
+                        "anp_code": "p6_group_recovery_required",
+                        "message": "lane cursor is fenced"
+                    }
+                }
+            }
+        });
+        let page = parse_delta(&base).unwrap();
+        assert!(matches!(
+            page.lanes[&SyncLaneV3::P5Device],
+            SyncLaneDeltaSectionV3::Page { ref events, .. }
+                if matches!(events.as_slice(), [SyncLaneEventV3::P5Delivery { delivery_id, .. }] if delivery_id == "p5-37")
+        ));
+        assert!(matches!(
+            page.lanes[&SyncLaneV3::P6Group],
+            SyncLaneDeltaSectionV3::Error(ref error)
+                if error.anp_code == "p6_group_recovery_required"
+        ));
+
+        let mut cross_lane = base;
+        cross_lane["lanes"]["p5_device"]["events"][0]["envelope"]["meta"]["profile"] =
+            json!("anp.group.e2ee.v2");
+        cross_lane["lanes"]["p5_device"]["events"][0]["envelope"]["meta"]["security_profile"] =
+            json!("group-e2ee");
+        let error = parse_delta(&cross_lane).unwrap_err();
+        assert_eq!(
+            match error {
+                crate::ImError::Service { code, .. } => code,
+                other => panic!("unexpected error: {other:?}"),
+            },
+            Some("SYNC_INVALID_PAGE".to_owned())
+        );
     }
 }

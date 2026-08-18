@@ -124,6 +124,119 @@ CREATE TABLE IF NOT EXISTS message_sync_state (
 CREATE UNIQUE INDEX IF NOT EXISTS message_sync_state_account_device_idx
 ON message_sync_state(account_id, device_id);
 
+CREATE TABLE IF NOT EXISTS lane_sync_state (
+    owner_identity_id  TEXT NOT NULL,
+    lane               TEXT NOT NULL,
+    stream_epoch       TEXT NOT NULL,
+    scan_seq           TEXT NOT NULL,
+    committed_seq      TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, lane),
+    CHECK (lane IN ('p5_device', 'p6_group')),
+    CHECK (
+        stream_epoch <> ''
+        AND stream_epoch NOT GLOB '*[^0-9]*'
+        AND substr(stream_epoch, 1, 1) <> '0'
+    ),
+    CHECK (
+        scan_seq <> ''
+        AND scan_seq NOT GLOB '*[^0-9]*'
+        AND (scan_seq = '0' OR substr(scan_seq, 1, 1) <> '0')
+    ),
+    CHECK (
+        committed_seq <> ''
+        AND committed_seq NOT GLOB '*[^0-9]*'
+        AND (committed_seq = '0' OR substr(committed_seq, 1, 1) <> '0')
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sync_lane_capability_state (
+    owner_identity_id                  TEXT PRIMARY KEY,
+    negotiated_device_auth_generation TEXT NOT NULL,
+    CHECK (
+        negotiated_device_auth_generation <> ''
+        AND negotiated_device_auth_generation NOT GLOB '*[^0-9]*'
+        AND substr(negotiated_device_auth_generation, 1, 1) <> '0'
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sync_lane_applied_events (
+    owner_identity_id  TEXT NOT NULL,
+    lane               TEXT NOT NULL,
+    event_id           TEXT NOT NULL,
+    stream_epoch       TEXT NOT NULL,
+    event_seq          TEXT NOT NULL,
+    group_did          TEXT,
+    group_event_seq    TEXT,
+    applied_at         INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, lane, event_id),
+    UNIQUE (owner_identity_id, lane, stream_epoch, event_seq),
+    CHECK (lane IN ('p5_device', 'p6_group')),
+    CHECK (length(trim(event_id)) > 0),
+    CHECK (
+        stream_epoch <> ''
+        AND stream_epoch NOT GLOB '*[^0-9]*'
+        AND substr(stream_epoch, 1, 1) <> '0'
+    ),
+    CHECK (
+        event_seq <> ''
+        AND event_seq NOT GLOB '*[^0-9]*'
+        AND substr(event_seq, 1, 1) <> '0'
+    ),
+    CHECK (
+        (group_did IS NULL AND group_event_seq IS NULL)
+        OR (
+            lane = 'p6_group'
+            AND length(trim(group_did)) > 0
+            AND (
+                group_event_seq IS NULL
+                OR (
+                    group_event_seq <> ''
+                    AND group_event_seq NOT GLOB '*[^0-9]*'
+                    AND substr(group_event_seq, 1, 1) <> '0'
+                )
+            )
+        )
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_lane_applied_p6_group_position
+ON sync_lane_applied_events(owner_identity_id, lane, group_did, group_event_seq)
+WHERE lane = 'p6_group' AND group_event_seq IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS p6_lane_blockers (
+    owner_identity_id  TEXT NOT NULL,
+    event_id           TEXT NOT NULL,
+    stream_epoch       TEXT NOT NULL,
+    event_seq          TEXT NOT NULL,
+    event_type         TEXT NOT NULL,
+    group_did          TEXT NOT NULL,
+    group_event_seq    TEXT,
+    payload_json       TEXT NOT NULL,
+    attempt_count      INTEGER NOT NULL DEFAULT 1,
+    last_error_code    TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, event_id),
+    UNIQUE (owner_identity_id, stream_epoch, event_seq),
+    CHECK (event_type IN ('p6.delivery.created', 'p6.control.notice')),
+    CHECK (length(trim(event_id)) > 0),
+    CHECK (length(trim(group_did)) > 0),
+    CHECK (length(trim(payload_json)) > 0),
+    CHECK (attempt_count > 0),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS sync_applied_events (
     owner_identity_id  TEXT NOT NULL,
     event_id           TEXT NOT NULL,
@@ -272,6 +385,50 @@ pub(crate) struct MessageSyncState {
     pub(crate) updated_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaneSyncState {
+    pub(crate) owner_identity_id: String,
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) stream_epoch: String,
+    pub(crate) scan_seq: String,
+    pub(crate) committed_seq: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneEventReceipt {
+    pub(crate) owner_identity_id: String,
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) event_id: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) event_seq: String,
+    pub(crate) group_did: Option<String>,
+    pub(crate) group_event_seq: Option<String>,
+    pub(crate) applied_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncLaneEventReceiptMatch {
+    Missing,
+    Exact,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct P6LaneBlocker {
+    pub(crate) owner_identity_id: String,
+    pub(crate) event_id: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) event_seq: String,
+    pub(crate) event_type: String,
+    pub(crate) group_did: String,
+    pub(crate) group_event_seq: Option<String>,
+    pub(crate) payload_json: String,
+    pub(crate) attempt_count: i64,
+    pub(crate) last_error_code: String,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageSyncBootstrapReason {
     MissingState,
@@ -364,6 +521,7 @@ pub(crate) struct BootstrapApplyInputV2 {
     pub(crate) state: MessageSyncState,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
     pub(crate) read_states: Vec<ReadStateApplyV2>,
+    pub(crate) lane_states: Vec<LaneSyncState>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -456,6 +614,31 @@ pub(crate) struct DeltaApplyOutcomeV2 {
     pub(crate) committed_system_notifications:
         Vec<crate::system_notifications::SystemNotificationSnapshot>,
     pub(crate) invalidation: super::sync_state::SyncDeltaInvalidation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RealtimeMessageApplyInputV3 {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) account_id: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) event: DeltaApplyEventV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RealtimeMessageApplyOutcomeV3 {
+    Applied {
+        local_scan_seq: String,
+        invalidation: super::sync_state::SyncDeltaInvalidation,
+    },
+    Duplicate {
+        local_scan_seq: String,
+    },
+    HintOnly {
+        local_scan_seq: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -792,6 +975,11 @@ pub(crate) fn apply_bootstrap_v2(
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
     upsert_identity_account_binding(&transaction, &input.binding)?;
+    replace_lane_sync_states_in_transaction(
+        &transaction,
+        &input.binding.owner_identity_id,
+        &input.lane_states,
+    )?;
     for group in input.groups {
         validate_group_owner(&group, &input.binding.owner_identity_id)?;
         super::groups::upsert_group(&transaction, group)?;
@@ -807,6 +995,788 @@ pub(crate) fn apply_bootstrap_v2(
     upsert_bootstrap_state(&transaction, &input.state)?;
     complete_active_recovery(&transaction, &input.state)?;
     transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn replace_lane_sync_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+    states: &[LaneSyncState],
+) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    replace_lane_sync_states_in_transaction(&transaction, owner_identity_id, states)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn replace_lane_sync_states_in_transaction(
+    connection: &Connection,
+    owner_identity_id: &str,
+    states: &[LaneSyncState],
+) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    let binding =
+        load_identity_account_binding(connection, owner_identity_id)?.ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "lane sync state requires an active account binding".to_owned(),
+            }
+        })?;
+    let mut lanes = BTreeSet::new();
+    for state in states {
+        validate_lane_sync_state(state)?;
+        if state.owner_identity_id != owner_identity_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "lane sync state belongs to another owner".to_owned(),
+            });
+        }
+        if !lanes.insert(state.lane) {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "lane bootstrap contains a duplicate lane",
+            ));
+        }
+    }
+    connection
+        .execute(
+            "DELETE FROM lane_sync_state WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    if let Some(p6_epoch) = states
+        .iter()
+        .find(|state| state.lane == crate::internal::wire::sync_v2::SyncLaneV3::P6Group)
+        .map(|state| state.stream_epoch.as_str())
+    {
+        connection
+            .execute(
+                "DELETE FROM p6_lane_blockers WHERE owner_identity_id = ?1 AND stream_epoch <> ?2",
+                params![owner_identity_id, p6_epoch],
+            )
+            .map_err(super::local_state_unavailable)?;
+    } else {
+        connection
+            .execute(
+                "DELETE FROM p6_lane_blockers WHERE owner_identity_id = ?1",
+                [owner_identity_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    for state in states {
+        connection
+            .execute(
+                r#"
+INSERT INTO lane_sync_state(
+    owner_identity_id, lane, stream_epoch, scan_seq, committed_seq
+) VALUES (?1, ?2, ?3, ?4, ?5)"#,
+                params![
+                    state.owner_identity_id,
+                    state.lane.as_str(),
+                    state.stream_epoch,
+                    state.scan_seq,
+                    state.committed_seq,
+                ],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    connection
+        .execute(
+            r#"
+INSERT INTO sync_lane_capability_state(
+    owner_identity_id, negotiated_device_auth_generation
+) VALUES (?1, ?2)
+ON CONFLICT(owner_identity_id) DO UPDATE SET
+    negotiated_device_auth_generation = excluded.negotiated_device_auth_generation"#,
+            params![owner_identity_id, binding.device_auth_generation],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn lane_capability_negotiation_required(
+    connection: &Connection,
+    owner_identity_id: &str,
+    device_auth_generation: &str,
+) -> crate::ImResult<bool> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_positive_decimal("device_auth_generation", device_auth_generation)?;
+    let binding =
+        load_identity_account_binding(connection, owner_identity_id)?.ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "lane capability negotiation requires an active account binding".to_owned(),
+            }
+        })?;
+    if binding.device_auth_generation != device_auth_generation {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane capability negotiation uses a stale device authorization generation"
+                .to_owned(),
+        });
+    }
+    let negotiated = connection
+        .query_row(
+            "SELECT negotiated_device_auth_generation
+             FROM sync_lane_capability_state
+             WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    Ok(negotiated.as_deref() != Some(device_auth_generation))
+}
+
+pub(crate) fn load_lane_sync_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<LaneSyncState>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if load_identity_account_binding(connection, owner_identity_id)?.is_none() {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane sync state requires an active account binding".to_owned(),
+        });
+    }
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT owner_identity_id, lane, stream_epoch, scan_seq, committed_seq
+FROM lane_sync_state
+WHERE owner_identity_id = ?1
+ORDER BY CASE lane WHEN 'p5_device' THEN 1 ELSE 2 END"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut states = Vec::new();
+    for row in rows {
+        let (owner_identity_id, lane, stream_epoch, scan_seq, committed_seq) =
+            row.map_err(super::local_state_unavailable)?;
+        let state = LaneSyncState {
+            owner_identity_id,
+            lane: parse_lane_name(&lane)?,
+            stream_epoch,
+            scan_seq,
+            committed_seq,
+        };
+        validate_lane_sync_state(&state)?;
+        states.push(state);
+    }
+    Ok(states)
+}
+
+pub(crate) fn advance_lane_sync_state(
+    connection: &Connection,
+    next: &LaneSyncState,
+) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    advance_lane_sync_state_in_transaction(&transaction, next)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn advance_lane_sync_state_in_transaction(
+    connection: &Connection,
+    next: &LaneSyncState,
+) -> crate::ImResult<()> {
+    validate_lane_sync_state(next)?;
+    let current = load_lane_sync_states(connection, &next.owner_identity_id)?
+        .into_iter()
+        .find(|state| state.lane == next.lane)
+        .ok_or_else(|| sync_error("SYNC_LANE_BOOTSTRAP_REQUIRED", "lane state is missing"))?;
+    if current.stream_epoch != next.stream_epoch {
+        return Err(sync_error(
+            "SYNC_LANE_EPOCH_MISMATCH",
+            "lane stream epoch does not match the bootstrapped cursor",
+        ));
+    }
+    if compare_decimal(&next.scan_seq, &current.scan_seq)? == std::cmp::Ordering::Less
+        || compare_decimal(&next.committed_seq, &current.committed_seq)? == std::cmp::Ordering::Less
+    {
+        return Err(sync_error(
+            "SYNC_CURSOR_REGRESSION",
+            "lane cursor and committed watermark cannot move backwards",
+        ));
+    }
+    let updated = connection
+        .execute(
+            r#"
+UPDATE lane_sync_state
+SET scan_seq = ?3, committed_seq = ?4
+WHERE owner_identity_id = ?1 AND lane = ?2 AND stream_epoch = ?5"#,
+            params![
+                next.owner_identity_id,
+                next.lane.as_str(),
+                next.scan_seq,
+                next.committed_seq,
+                next.stream_epoch,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane sync cursor changed while it was being advanced".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_lane_event_receipt_match(
+    connection: &Connection,
+    receipt: &SyncLaneEventReceipt,
+) -> crate::ImResult<SyncLaneEventReceiptMatch> {
+    validate_sync_lane_event_receipt(receipt)?;
+    let stored = connection
+        .query_row(
+            r#"
+SELECT stream_epoch, event_seq, group_did, group_event_seq
+FROM sync_lane_applied_events
+WHERE owner_identity_id = ?1 AND lane = ?2 AND event_id = ?3"#,
+            params![
+                receipt.owner_identity_id,
+                receipt.lane.as_str(),
+                receipt.event_id,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if let Some((stream_epoch, event_seq, group_did, group_event_seq)) = stored {
+        return Ok(
+            if stream_epoch == receipt.stream_epoch
+                && event_seq == receipt.event_seq
+                && group_did == receipt.group_did
+                && group_event_seq == receipt.group_event_seq
+            {
+                SyncLaneEventReceiptMatch::Exact
+            } else {
+                SyncLaneEventReceiptMatch::Conflict
+            },
+        );
+    }
+    if receipt.lane == crate::internal::wire::sync_v2::SyncLaneV3::P6Group {
+        if let (Some(group_did), Some(group_event_seq)) =
+            (&receipt.group_did, &receipt.group_event_seq)
+        {
+            let group_position_exists = connection
+                .query_row(
+                    r#"
+SELECT EXISTS(
+  SELECT 1 FROM sync_lane_applied_events
+  WHERE owner_identity_id = ?1 AND lane = 'p6_group'
+    AND group_did = ?2 AND group_event_seq = ?3
+)"#,
+                    params![receipt.owner_identity_id, group_did, group_event_seq],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(super::local_state_unavailable)?;
+            if group_position_exists {
+                return Ok(SyncLaneEventReceiptMatch::Exact);
+            }
+        }
+    }
+    let position_exists = connection
+        .query_row(
+            r#"
+SELECT EXISTS(
+  SELECT 1 FROM sync_lane_applied_events
+  WHERE owner_identity_id = ?1 AND lane = ?2
+    AND stream_epoch = ?3 AND event_seq = ?4
+)"#,
+            params![
+                receipt.owner_identity_id,
+                receipt.lane.as_str(),
+                receipt.stream_epoch,
+                receipt.event_seq,
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(if position_exists {
+        SyncLaneEventReceiptMatch::Conflict
+    } else {
+        SyncLaneEventReceiptMatch::Missing
+    })
+}
+
+pub(crate) fn commit_sync_lane_event(
+    connection: &Connection,
+    receipt: &SyncLaneEventReceipt,
+    next_state: Option<&LaneSyncState>,
+    resolve_p6_blocker: bool,
+) -> crate::ImResult<()> {
+    validate_sync_lane_event_receipt(receipt)?;
+    if let Some(next) = next_state {
+        if next.owner_identity_id != receipt.owner_identity_id || next.lane != receipt.lane {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "lane receipt and checkpoint belong to different scopes".to_owned(),
+            });
+        }
+        if next.stream_epoch != receipt.stream_epoch
+            || compare_decimal(&next.scan_seq, &receipt.event_seq)? == std::cmp::Ordering::Less
+            || compare_decimal(&next.committed_seq, &receipt.event_seq)? == std::cmp::Ordering::Less
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "lane checkpoint does not cover the committed event",
+            ));
+        }
+    }
+    if resolve_p6_blocker && receipt.lane != crate::internal::wire::sync_v2::SyncLaneV3::P6Group {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "only P6 receipts can resolve P6 blockers",
+        ));
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    match sync_lane_event_receipt_match(&transaction, receipt)? {
+        SyncLaneEventReceiptMatch::Missing => {
+            transaction
+                .execute(
+                    r#"
+INSERT INTO sync_lane_applied_events(
+    owner_identity_id, lane, event_id, stream_epoch, event_seq,
+    group_did, group_event_seq, applied_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
+                    params![
+                        receipt.owner_identity_id,
+                        receipt.lane.as_str(),
+                        receipt.event_id,
+                        receipt.stream_epoch,
+                        receipt.event_seq,
+                        receipt.group_did,
+                        receipt.group_event_seq,
+                        receipt.applied_at,
+                    ],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+        SyncLaneEventReceiptMatch::Exact => {}
+        SyncLaneEventReceiptMatch::Conflict => {
+            return Err(sync_error(
+                "SYNC_LANE_EVENT_CONFLICT",
+                "lane event identity conflicts with a committed receipt",
+            ));
+        }
+    }
+    if resolve_p6_blocker {
+        transaction
+            .execute(
+                "DELETE FROM p6_lane_blockers WHERE owner_identity_id = ?1 AND event_id = ?2",
+                params![receipt.owner_identity_id, receipt.event_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    if let Some(next) = next_state {
+        advance_lane_sync_state_in_transaction(&transaction, next)?;
+    }
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn record_p6_lane_blocker_and_advance(
+    connection: &Connection,
+    blocker: &P6LaneBlocker,
+    next_state: &LaneSyncState,
+) -> crate::ImResult<()> {
+    validate_p6_lane_blocker(blocker)?;
+    if next_state.owner_identity_id != blocker.owner_identity_id
+        || next_state.lane != crate::internal::wire::sync_v2::SyncLaneV3::P6Group
+        || next_state.stream_epoch != blocker.stream_epoch
+        || compare_decimal(&next_state.scan_seq, &blocker.event_seq)? == std::cmp::Ordering::Less
+        || compare_decimal(&next_state.committed_seq, &blocker.event_seq)?
+            == std::cmp::Ordering::Less
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "P6 blocker checkpoint does not cover the deferred event",
+        ));
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let existing = transaction
+        .query_row(
+            r#"
+SELECT stream_epoch, event_seq, event_type, group_did, group_event_seq, payload_json
+FROM p6_lane_blockers
+WHERE owner_identity_id = ?1 AND event_id = ?2"#,
+            params![blocker.owner_identity_id, blocker.event_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if existing.as_ref().is_some_and(
+        |(stream_epoch, event_seq, event_type, group_did, group_event_seq, payload_json)| {
+            stream_epoch != &blocker.stream_epoch
+                || event_seq != &blocker.event_seq
+                || event_type != &blocker.event_type
+                || group_did != &blocker.group_did
+                || group_event_seq != &blocker.group_event_seq
+                || payload_json != &blocker.payload_json
+        },
+    ) {
+        return Err(sync_error(
+            "SYNC_LANE_EVENT_CONFLICT",
+            "P6 blocker identity conflicts with its stored payload",
+        ));
+    }
+    transaction
+        .execute(
+            r#"
+INSERT INTO p6_lane_blockers(
+    owner_identity_id, event_id, stream_epoch, event_seq, event_type,
+    group_did, group_event_seq, payload_json, attempt_count,
+    last_error_code, created_at, updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+ON CONFLICT(owner_identity_id, event_id) DO UPDATE SET
+    attempt_count = p6_lane_blockers.attempt_count + 1,
+    last_error_code = excluded.last_error_code,
+    updated_at = excluded.updated_at"#,
+            params![
+                blocker.owner_identity_id,
+                blocker.event_id,
+                blocker.stream_epoch,
+                blocker.event_seq,
+                blocker.event_type,
+                blocker.group_did,
+                blocker.group_event_seq,
+                blocker.payload_json,
+                blocker.attempt_count,
+                blocker.last_error_code,
+                blocker.created_at,
+                blocker.updated_at,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    advance_lane_sync_state_in_transaction(&transaction, next_state)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn list_p6_lane_blockers(
+    connection: &Connection,
+    owner_identity_id: &str,
+    limit: u32,
+) -> crate::ImResult<Vec<P6LaneBlocker>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if limit == 0 || limit > 1_000 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "P6 blocker limit must be between 1 and 1000",
+        ));
+    }
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT owner_identity_id, event_id, stream_epoch, event_seq, event_type,
+       group_did, group_event_seq, payload_json, attempt_count,
+       last_error_code, created_at, updated_at
+FROM p6_lane_blockers
+WHERE owner_identity_id = ?1
+ORDER BY length(event_seq), event_seq, event_id
+LIMIT ?2"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params![owner_identity_id, i64::from(limit)], |row| {
+            Ok(P6LaneBlocker {
+                owner_identity_id: row.get(0)?,
+                event_id: row.get(1)?,
+                stream_epoch: row.get(2)?,
+                event_seq: row.get(3)?,
+                event_type: row.get(4)?,
+                group_did: row.get(5)?,
+                group_event_seq: row.get(6)?,
+                payload_json: row.get(7)?,
+                attempt_count: row.get(8)?,
+                last_error_code: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut blockers = Vec::new();
+    for row in rows {
+        let blocker = row.map_err(super::local_state_unavailable)?;
+        validate_p6_lane_blocker(&blocker)?;
+        blockers.push(blocker);
+    }
+    Ok(blockers)
+}
+
+fn validate_sync_lane_event_receipt(receipt: &SyncLaneEventReceipt) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &receipt.owner_identity_id)?;
+    validate_required("event_id", &receipt.event_id)?;
+    validate_positive_decimal("stream_epoch", &receipt.stream_epoch)?;
+    validate_positive_decimal("event_seq", &receipt.event_seq)?;
+    match receipt.lane {
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device => {
+            if receipt.group_did.is_some() || receipt.group_event_seq.is_some() {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "P5 receipt cannot carry a group position",
+                ));
+            }
+        }
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group => {
+            if receipt
+                .group_did
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "P6 receipt requires group_did",
+                ));
+            }
+            if let Some(group_event_seq) = &receipt.group_event_seq {
+                validate_positive_decimal("group_event_seq", group_event_seq)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_p6_lane_blocker(blocker: &P6LaneBlocker) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &blocker.owner_identity_id)?;
+    validate_required("event_id", &blocker.event_id)?;
+    validate_positive_decimal("stream_epoch", &blocker.stream_epoch)?;
+    validate_positive_decimal("event_seq", &blocker.event_seq)?;
+    validate_required("group_did", &blocker.group_did)?;
+    if let Some(group_event_seq) = &blocker.group_event_seq {
+        validate_positive_decimal("group_event_seq", group_event_seq)?;
+    }
+    if !matches!(
+        blocker.event_type.as_str(),
+        "p6.delivery.created" | "p6.control.notice"
+    ) || blocker.attempt_count <= 0
+        || blocker.created_at < 0
+        || blocker.updated_at < blocker.created_at
+        || blocker.last_error_code.trim().is_empty()
+        || serde_json::from_str::<serde_json::Value>(&blocker.payload_json)
+            .ok()
+            .is_none_or(|value| !value.is_object())
+    {
+        return Err(sync_error(
+            "SYNC_LOCAL_STATE_CORRUPT",
+            "P6 blocker is not canonical",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lane_sync_state(state: &LaneSyncState) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &state.owner_identity_id)?;
+    validate_positive_decimal("stream_epoch", &state.stream_epoch)?;
+    validate_decimal("scan_seq", &state.scan_seq)?;
+    validate_decimal("committed_seq", &state.committed_seq)?;
+    if compare_decimal(&state.committed_seq, &state.scan_seq)? == std::cmp::Ordering::Greater {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "lane committed watermark cannot exceed its scan cursor",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_lane_name(value: &str) -> crate::ImResult<crate::internal::wire::sync_v2::SyncLaneV3> {
+    match value {
+        "p5_device" => Ok(crate::internal::wire::sync_v2::SyncLaneV3::P5Device),
+        "p6_group" => Ok(crate::internal::wire::sync_v2::SyncLaneV3::P6Group),
+        _ => Err(sync_error(
+            "SYNC_LOCAL_STATE_CORRUPT",
+            "stored lane name is invalid",
+        )),
+    }
+}
+
+pub(crate) fn apply_realtime_message_v3(
+    connection: &Connection,
+    input: RealtimeMessageApplyInputV3,
+) -> crate::ImResult<RealtimeMessageApplyOutcomeV3> {
+    validate_required("owner_identity_id", &input.owner_identity_id)?;
+    validate_required("owner_did", &input.owner_did)?;
+    validate_required("account_id", &input.account_id)?;
+    validate_required("protocol_device_id", &input.protocol_device_id)?;
+    validate_positive_decimal("device_auth_generation", &input.device_auth_generation)?;
+    validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
+    validate_required("event_id", &input.event.event_id)?;
+    validate_positive_decimal("event_seq", &input.event.event_seq)?;
+    if input.event.event_type != "message.created" {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: None,
+        });
+    }
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let Some(binding) = load_identity_account_binding(&transaction, &input.owner_identity_id)?
+    else {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: None,
+        });
+    };
+    if binding.account_id != input.account_id
+        || binding.current_did != input.owner_did
+        || binding.protocol_device_id != input.protocol_device_id
+        || binding.device_auth_generation != input.device_auth_generation
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: None,
+        });
+    }
+    let current = match load_message_sync_state(&transaction, &input.owner_identity_id)? {
+        MessageSyncStateAccess::Ready(state) => state,
+        MessageSyncStateAccess::BootstrapRequired(_) => {
+            return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: None,
+            });
+        }
+    };
+    let local_scan_seq = current.scan_seq.clone();
+    if current.account_id != input.account_id
+        || current.protocol_device_id != input.protocol_device_id
+        || current.device_auth_generation != input.device_auth_generation
+        || current.stream_epoch != input.stream_epoch
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    if let Some((stream_epoch, event_seq)) = applied_event_position(
+        &transaction,
+        &input.owner_identity_id,
+        &input.event.event_id,
+    )? {
+        return if stream_epoch == input.stream_epoch && event_seq == input.event.event_seq {
+            Ok(RealtimeMessageApplyOutcomeV3::Duplicate { local_scan_seq })
+        } else {
+            Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: Some(local_scan_seq),
+            })
+        };
+    }
+
+    let mut event = input.event;
+    let Some(message) = event.messages.first() else {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    };
+    if message_event_thread_binding(&event, &input.owner_identity_id).is_err()
+        || validate_message_owner(message, &input.owner_identity_id).is_err()
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    if message_has_sync_event_id(
+        &transaction,
+        &input.owner_identity_id,
+        &message.msg_id,
+        &event.event_id,
+    )? {
+        return Ok(RealtimeMessageApplyOutcomeV3::Duplicate { local_scan_seq });
+    }
+    if message_exists(&transaction, &input.owner_identity_id, message)? {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    if message.wire_thread_kind == "group"
+        && super::groups::get_group_snapshot_for_owner_identity(
+            &transaction,
+            &input.owner_identity_id,
+            &input.owner_did,
+            message.group_did.trim(),
+        )?
+        .is_none()
+    {
+        return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+            local_scan_seq: Some(local_scan_seq),
+        });
+    }
+    let message = match super::inbound_resolution_backlog::canonicalize_inbound_message(
+        &transaction,
+        message.clone(),
+    ) {
+        Ok(message) => message,
+        Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
+            return Ok(RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: Some(local_scan_seq),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let canonical_conversation_ids = BTreeSet::from([message.conversation_id.clone()]);
+    canonicalize_message_event_thread_bindings(
+        &mut event.thread_bindings,
+        &event.event_type,
+        &input.owner_identity_id,
+        &canonical_conversation_ids,
+    )?;
+    for binding in &event.thread_bindings {
+        upsert_sync_thread_binding(&transaction, binding)?;
+    }
+    let mut invalidation = v2_invalidation(
+        &transaction,
+        &input.owner_identity_id,
+        &input.owner_did,
+        &local_scan_seq,
+        std::slice::from_ref(&message),
+        &[],
+        &[],
+    )?;
+    invalidation.reason = "sync_v2_realtime_fast_path".to_owned();
+    let touched = super::messages::upsert_messages_with_touched(
+        &transaction,
+        std::slice::from_ref(&message),
+    )?;
+    let mut conversation_ids = invalidation
+        .conversation_ids
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut thread_ids = invalidation.thread_ids.into_iter().collect::<BTreeSet<_>>();
+    for (_, conversation_id) in touched {
+        if !conversation_id.trim().is_empty() {
+            conversation_ids.insert(conversation_id.clone());
+            thread_ids.insert(conversation_id);
+        }
+    }
+    invalidation.conversation_ids = conversation_ids.into_iter().collect();
+    invalidation.thread_ids = thread_ids.into_iter().collect();
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(RealtimeMessageApplyOutcomeV3::Applied {
+        local_scan_seq,
+        invalidation,
+    })
 }
 
 pub(crate) fn apply_delta_v2(
@@ -915,6 +1885,23 @@ pub(crate) fn apply_delta_v2(
         if !inserted {
             duplicate_events = duplicate_events.saturating_add(1);
             continue;
+        }
+        if event.event_type == "message.created"
+            && event.messages.len() == 1
+            && event.thread_bindings.len() == 1
+        {
+            validate_message_owner(&event.messages[0], &input.owner_identity_id)?;
+            message_event_thread_binding(&event, &input.owner_identity_id)?;
+            if message_has_sync_event_id(
+                &transaction,
+                &input.owner_identity_id,
+                &event.messages[0].msg_id,
+                &event.event_id,
+            )? {
+                applied_event_ids.push(event_id);
+                duplicate_events = duplicate_events.saturating_add(1);
+                continue;
+            }
         }
         if let Some(notification) = event.system_notification.take() {
             if notification.owner_identity_id != input.owner_identity_id
@@ -1526,6 +2513,91 @@ pub(crate) fn record_applied_event(
         )
         .map_err(super::local_state_unavailable)?;
     Ok(true)
+}
+
+fn applied_event_position(
+    connection: &Connection,
+    owner_identity_id: &str,
+    event_id: &str,
+) -> crate::ImResult<Option<(String, String)>> {
+    connection
+        .query_row(
+            "SELECT stream_epoch, event_seq
+             FROM sync_applied_events
+             WHERE owner_identity_id = ?1 AND event_id = ?2",
+            params![owner_identity_id, event_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
+fn message_exists(
+    connection: &Connection,
+    owner_identity_id: &str,
+    message: &super::messages::MessageRecord,
+) -> crate::ImResult<bool> {
+    let group_ref = if message.group_did.trim().is_empty() {
+        message.group_id.trim()
+    } else {
+        message.group_did.trim()
+    };
+    connection
+        .query_row(
+            "SELECT 1 FROM messages
+             WHERE owner_identity_id = ?1
+               AND (
+                   msg_id = ?2
+                   OR (
+                       ?3 = 'group'
+                       AND server_seq = ?4
+                       AND COALESCE(NULLIF(TRIM(group_did), ''), TRIM(group_id)) = ?5
+                   )
+               )
+             LIMIT 1",
+            params![
+                owner_identity_id,
+                message.msg_id,
+                message.wire_thread_kind,
+                message.server_seq,
+                group_ref,
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(super::local_state_unavailable)
+}
+
+fn message_has_sync_event_id(
+    connection: &Connection,
+    owner_identity_id: &str,
+    message_id: &str,
+    event_id: &str,
+) -> crate::ImResult<bool> {
+    connection
+        .query_row(
+            "SELECT CASE
+                        WHEN json_valid(COALESCE(metadata, ''))
+                        THEN json_extract(metadata, '$.sync_event_id')
+                        ELSE NULL
+                    END
+             FROM messages
+             WHERE owner_identity_id = ?1
+               AND (
+                   msg_id = ?2
+                   OR (
+                       json_valid(COALESCE(metadata, ''))
+                       AND json_extract(metadata, '$.sync_event_id') = ?3
+                   )
+               )
+             LIMIT 1",
+            params![owner_identity_id, message_id, event_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten().as_deref() == Some(event_id))
+        .map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn prune_applied_events(
@@ -2989,11 +4061,13 @@ pub(crate) fn permanently_fail_local_mutation(
                    SELECT json_extract(payload_json, '$.thread_id')
                    FROM local_mutation_outbox
                    WHERE owner_identity_id = ?1 AND mutation_id = ?2
+                     AND json_valid(payload_json)
                )
                AND read_watermark_seq = (
                    SELECT json_extract(payload_json, '$.read_watermark_seq')
                    FROM local_mutation_outbox
                    WHERE owner_identity_id = ?1 AND mutation_id = ?2
+                     AND json_valid(payload_json)
                )
                AND NOT EXISTS (
                    SELECT 1 FROM local_mutation_outbox
@@ -3672,6 +4746,400 @@ mod tests {
             device_auth_generation: "2".to_owned(),
             created_at: 1,
             updated_at: 1,
+        }
+    }
+
+    fn realtime_ready_db(with_group: bool) -> (Connection, IdentityAccountBinding, String) {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                scan_seq: "20501".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let group_did = "did:wba:awiki.info:group:e1_realtime".to_owned();
+        if with_group {
+            super::super::groups::upsert_group(
+                &db,
+                super::super::groups::GroupRecord {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    group_id: group_did.clone(),
+                    group_did: group_did.clone(),
+                    membership_status: "active".to_owned(),
+                    stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                    credential_name: binding.owner_identity_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        (db, binding, group_did)
+    }
+
+    fn realtime_group_event(
+        binding: &IdentityAccountBinding,
+        group_did: &str,
+    ) -> DeltaApplyEventV2 {
+        let conversation_id = super::super::owner_scope::group_conversation_id(group_did);
+        DeltaApplyEventV2 {
+            event_id: "sev2g_20502".to_owned(),
+            event_seq: "20502".to_owned(),
+            event_type: "message.created".to_owned(),
+            messages: vec![super::super::messages::MessageRecord {
+                msg_id: "msg_20502".to_owned(),
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id.clone(),
+                direction: 0,
+                sender_did: "did:wba:awiki.info:user:bob".to_owned(),
+                receiver_did: binding.current_did.clone(),
+                group_id: group_did.to_owned(),
+                group_did: group_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "inline hello".to_owned(),
+                server_seq: Some(901),
+                sent_at: "2026-08-15T00:00:00Z".to_owned(),
+                stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                metadata: serde_json::json!({
+                    "sync_event_id": "sev2g_20502",
+                    "sync_event_seq": "20502",
+                    "sync_event_type": "message.created"
+                })
+                .to_string(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            }
+            .with_resolved_wire_thread("group", group_did)],
+            thread_bindings: vec![SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: group_did.to_owned(),
+                thread_kind: "group".to_owned(),
+                conversation_id,
+                updated_at: 1,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn realtime_direct_event(binding: &IdentityAccountBinding) -> DeltaApplyEventV2 {
+        let peer_did = "did:wba:awiki.info:user:unresolved";
+        let conversation_id = super::super::owner_scope::direct_conversation_id(peer_did);
+        DeltaApplyEventV2 {
+            event_id: "sev2d_20502".to_owned(),
+            event_seq: "20502".to_owned(),
+            event_type: "message.created".to_owned(),
+            messages: vec![super::super::messages::MessageRecord {
+                msg_id: "msg_direct_20502".to_owned(),
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id.clone(),
+                direction: 0,
+                sender_did: peer_did.to_owned(),
+                receiver_did: binding.current_did.clone(),
+                content_type: "text/plain".to_owned(),
+                content: "inline direct".to_owned(),
+                server_seq: Some(901),
+                sent_at: "2026-08-15T00:00:00Z".to_owned(),
+                stored_at: "2026-08-15T00:00:00Z".to_owned(),
+                metadata: serde_json::json!({
+                    "sync_event_id": "sev2d_20502",
+                    "sync_event_seq": "20502",
+                    "sync_event_type": "message.created"
+                })
+                .to_string(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            }
+            .with_resolved_wire_thread("direct", peer_did)],
+            thread_bindings: vec![SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: "dconv_unresolved".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id,
+                updated_at: 1,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn realtime_input(
+        binding: &IdentityAccountBinding,
+        stream_epoch: &str,
+        event: DeltaApplyEventV2,
+    ) -> RealtimeMessageApplyInputV3 {
+        RealtimeMessageApplyInputV3 {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            owner_did: binding.current_did.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: stream_epoch.to_owned(),
+            event,
+        }
+    }
+
+    #[test]
+    fn realtime_message_then_delta_is_idempotent_and_only_delta_advances_reliable_state() {
+        let (db, binding, group_did) = realtime_ready_db(true);
+        let event = realtime_group_event(&binding, &group_did);
+
+        let realtime =
+            apply_realtime_message_v3(&db, realtime_input(&binding, "3", event.clone())).unwrap();
+        assert!(matches!(
+            realtime,
+            RealtimeMessageApplyOutcomeV3::Applied {
+                local_scan_seq,
+                ..
+            } if local_scan_seq == "20501"
+        ));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready sync state");
+        };
+        assert_eq!(state.scan_seq, "20501");
+
+        let delta = apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                next_scan_seq: "20502".to_owned(),
+                server_time: "2026-08-15T00:00:01Z".to_owned(),
+                events: vec![event],
+            },
+        )
+        .unwrap();
+        assert_eq!(delta.applied_event_ids, ["sev2g_20502"]);
+        assert!(delta.projected_message_event_ids.is_empty());
+        assert_eq!(delta.duplicate_events, 1);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready sync state");
+        };
+        assert_eq!(state.scan_seq, "20502");
+
+        let (delta_only_db, delta_only_binding, delta_only_group_did) = realtime_ready_db(true);
+        apply_delta_v2(
+            &delta_only_db,
+            DeltaApplyInputV2 {
+                owner_identity_id: delta_only_binding.owner_identity_id.clone(),
+                owner_did: delta_only_binding.current_did.clone(),
+                account_id: delta_only_binding.account_id.clone(),
+                protocol_device_id: delta_only_binding.protocol_device_id.clone(),
+                device_auth_generation: delta_only_binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                next_scan_seq: "20502".to_owned(),
+                server_time: "2026-08-15T00:00:01Z".to_owned(),
+                events: vec![realtime_group_event(
+                    &delta_only_binding,
+                    &delta_only_group_did,
+                )],
+            },
+        )
+        .unwrap();
+        let projected_row = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT conversation_id, thread_id, content, server_seq, metadata
+                     FROM messages LIMIT 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(projected_row(&db), projected_row(&delta_only_db));
+    }
+
+    #[test]
+    fn delta_then_realtime_message_is_a_noop() {
+        let (db, binding, group_did) = realtime_ready_db(true);
+        let event = realtime_group_event(&binding, &group_did);
+        apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "3".to_owned(),
+                next_scan_seq: "20502".to_owned(),
+                server_time: "2026-08-15T00:00:01Z".to_owned(),
+                events: vec![event.clone()],
+            },
+        )
+        .unwrap();
+
+        let realtime =
+            apply_realtime_message_v3(&db, realtime_input(&binding, "3", event)).unwrap();
+        assert!(matches!(
+            realtime,
+            RealtimeMessageApplyOutcomeV3::Duplicate { local_scan_seq }
+                if local_scan_seq == "20502"
+        ));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn realtime_message_cross_epoch_is_hint_only_without_reliable_or_projection_writes() {
+        let (db, binding, group_did) = realtime_ready_db(true);
+        let outcome = apply_realtime_message_v3(
+            &db,
+            realtime_input(&binding, "4", realtime_group_event(&binding, &group_did)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RealtimeMessageApplyOutcomeV3::HintOnly {
+                local_scan_seq: Some(local_scan_seq)
+            } if local_scan_seq == "20501"
+        ));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready sync state");
+        };
+        assert_eq!(state.scan_seq, "20501");
+    }
+
+    #[test]
+    fn realtime_message_missing_group_prerequisite_degrades_without_backlog() {
+        let (db, binding, group_did) = realtime_ready_db(false);
+        let outcome = apply_realtime_message_v3(
+            &db,
+            realtime_input(&binding, "3", realtime_group_event(&binding, &group_did)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RealtimeMessageApplyOutcomeV3::HintOnly { .. }
+        ));
+        for table in [
+            "messages",
+            "sync_applied_events",
+            "sync_thread_bindings",
+            "inbound_resolution_backlog",
+        ] {
+            let count = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must remain unchanged");
+        }
+    }
+
+    #[test]
+    fn realtime_message_missing_direct_persona_degrades_without_backlog() {
+        let (db, binding, _) = realtime_ready_db(false);
+        let outcome = apply_realtime_message_v3(
+            &db,
+            realtime_input(&binding, "3", realtime_direct_event(&binding)),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RealtimeMessageApplyOutcomeV3::HintOnly { .. }
+        ));
+        for table in [
+            "messages",
+            "sync_applied_events",
+            "sync_thread_bindings",
+            "inbound_resolution_backlog",
+        ] {
+            let count = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must remain unchanged");
         }
     }
 
@@ -4512,6 +5980,7 @@ mod tests {
                 state,
                 groups: vec![invalid_group],
                 read_states: Vec::new(),
+                lane_states: Vec::new(),
             }
         )
         .is_err());
@@ -6555,6 +8024,296 @@ mod tests {
                 .unwrap()
                 .status,
             "completed"
+        );
+    }
+
+    #[test]
+    fn lane_sync_state_is_owner_scoped_canonical_and_monotonic() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        assert!(lane_capability_negotiation_required(
+            &db,
+            &binding.owner_identity_id,
+            &binding.device_auth_generation,
+        )
+        .unwrap());
+        let states = vec![
+            LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "36".to_owned(),
+                committed_seq: "36".to_owned(),
+            },
+            LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                stream_epoch: "42".to_owned(),
+                scan_seq: "58".to_owned(),
+                committed_seq: "57".to_owned(),
+            },
+        ];
+        replace_lane_sync_states(&db, &binding.owner_identity_id, &states).unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            states
+        );
+        assert!(!lane_capability_negotiation_required(
+            &db,
+            &binding.owner_identity_id,
+            &binding.device_auth_generation,
+        )
+        .unwrap());
+
+        let mut next = states[0].clone();
+        next.scan_seq = "37".to_owned();
+        next.committed_seq = "37".to_owned();
+        advance_lane_sync_state(&db, &next).unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0],
+            next
+        );
+
+        let mut regression = next.clone();
+        regression.scan_seq = "36".to_owned();
+        regression.committed_seq = "36".to_owned();
+        assert!(advance_lane_sync_state(&db, &regression).is_err());
+        let mut invalid = next;
+        invalid.scan_seq = "038".to_owned();
+        assert!(advance_lane_sync_state(&db, &invalid).is_err());
+
+        let mut next_binding = binding.clone();
+        next_binding.device_auth_generation = "3".to_owned();
+        upsert_identity_account_binding(&db, &next_binding).unwrap();
+        assert!(lane_capability_negotiation_required(
+            &db,
+            &next_binding.owner_identity_id,
+            &next_binding.device_auth_generation,
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn lane_bootstrap_replaces_capability_set_and_cascades_with_owner() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+        )
+        .unwrap();
+        replace_lane_sync_states(&db, &binding.owner_identity_id, &[]).unwrap();
+        assert!(load_lane_sync_states(&db, &binding.owner_identity_id)
+            .unwrap()
+            .is_empty());
+
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                stream_epoch: "42".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM identity_account_bindings WHERE owner_identity_id = ?1",
+            [&binding.owner_identity_id],
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM lane_sync_state", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_lane_capability_state",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn lane_receipt_is_idempotent_and_never_advances_without_delta_checkpoint() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let initial = LaneSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            stream_epoch: "41".to_owned(),
+            scan_seq: "0".to_owned(),
+            committed_seq: "0".to_owned(),
+        };
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            std::slice::from_ref(&initial),
+        )
+        .unwrap();
+        let receipt = SyncLaneEventReceipt {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            event_id: "p5-delivery-1".to_owned(),
+            stream_epoch: "41".to_owned(),
+            event_seq: "1".to_owned(),
+            group_did: None,
+            group_event_seq: None,
+            applied_at: 1,
+        };
+
+        commit_sync_lane_event(&db, &receipt, None, false).unwrap();
+        assert_eq!(
+            sync_lane_event_receipt_match(&db, &receipt).unwrap(),
+            SyncLaneEventReceiptMatch::Exact
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [initial.clone()]
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+
+        let mut next = initial;
+        next.scan_seq = "1".to_owned();
+        next.committed_seq = "1".to_owned();
+        commit_sync_lane_event(&db, &receipt, Some(&next), false).unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [next.clone()]
+        );
+        let mut conflict = receipt;
+        conflict.event_seq = "2".to_owned();
+        assert_eq!(
+            sync_lane_event_receipt_match(&db, &conflict).unwrap(),
+            SyncLaneEventReceiptMatch::Conflict
+        );
+        assert!(commit_sync_lane_event(&db, &conflict, None, false).is_err());
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [next]
+        );
+    }
+
+    #[test]
+    fn p6_blocker_advances_aggregate_lane_and_resolves_without_rewinding() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let initial = LaneSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            stream_epoch: "42".to_owned(),
+            scan_seq: "0".to_owned(),
+            committed_seq: "0".to_owned(),
+        };
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            std::slice::from_ref(&initial),
+        )
+        .unwrap();
+        let mut next = initial;
+        next.scan_seq = "1".to_owned();
+        next.committed_seq = "1".to_owned();
+        let blocker = P6LaneBlocker {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            event_id: "p6-delivery-1".to_owned(),
+            stream_epoch: "42".to_owned(),
+            event_seq: "1".to_owned(),
+            event_type: "p6.delivery.created".to_owned(),
+            group_did: "did:wba:example.com:groups:e1_team".to_owned(),
+            group_event_seq: Some("7".to_owned()),
+            payload_json: serde_json::json!({"meta": {}, "body": {}}).to_string(),
+            attempt_count: 1,
+            last_error_code: "group.e2ee.epoch_conflict".to_owned(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        record_p6_lane_blocker_and_advance(&db, &blocker, &next).unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [next.clone()]
+        );
+        assert_eq!(
+            list_p6_lane_blockers(&db, &binding.owner_identity_id, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let receipt = SyncLaneEventReceipt {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            event_id: blocker.event_id,
+            stream_epoch: blocker.stream_epoch,
+            event_seq: blocker.event_seq,
+            group_did: Some(blocker.group_did),
+            group_event_seq: blocker.group_event_seq,
+            applied_at: 2,
+        };
+        commit_sync_lane_event(&db, &receipt, None, true).unwrap();
+        assert!(list_p6_lane_blockers(&db, &binding.owner_identity_id, 10)
+            .unwrap()
+            .is_empty());
+        let duplicate_group_position = SyncLaneEventReceipt {
+            event_id: "p6-delivery-reprojected".to_owned(),
+            event_seq: "2".to_owned(),
+            applied_at: 3,
+            ..receipt.clone()
+        };
+        assert_eq!(
+            sync_lane_event_receipt_match(&db, &duplicate_group_position).unwrap(),
+            SyncLaneEventReceiptMatch::Exact
+        );
+        let mut after_duplicate = next.clone();
+        after_duplicate.scan_seq = "2".to_owned();
+        after_duplicate.committed_seq = "2".to_owned();
+        commit_sync_lane_event(&db, &duplicate_group_position, Some(&after_duplicate), true)
+            .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_lane_applied_events WHERE lane = 'p6_group'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [after_duplicate]
         );
     }
 }

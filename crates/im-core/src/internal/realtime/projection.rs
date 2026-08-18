@@ -8,7 +8,7 @@ use crate::messages::{
 };
 use crate::realtime::{
     GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
-    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, SyncDomain,
+    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, SyncDomain, SyncLane,
     UnknownNotificationEvent,
 };
 
@@ -382,8 +382,12 @@ fn message_received_event(
 
 pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
     let sync = map_value(notification.get("sync"))?;
-    if sync.contains_key("schema_version") {
-        return Some(sync_hint_v2(notification, sync));
+    if let Some(schema_version) = sync.get("schema_version").and_then(Value::as_u64) {
+        return Some(match schema_version {
+            2 => sync_hint_v2(notification, sync),
+            3 => sync_hint_v3(notification),
+            _ => fail_safe_sync_hint(),
+        });
     }
 
     let event_id = string_from_object(Some(sync), "event_id");
@@ -398,6 +402,7 @@ pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
         event_type: none_if_empty(event_type.clone()),
         domains: BTreeSet::from([SyncDomain::Message]),
         reason: none_if_empty(event_type),
+        dirty_lanes: BTreeSet::new(),
         sync_dirty: true,
         gap_detected: false,
         has_unknown_domain: false,
@@ -405,55 +410,50 @@ pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
 }
 
 fn sync_hint_v2(notification: &Value, sync: &Map<String, Value>) -> RealtimeSyncHint {
-    let fail_safe = || RealtimeSyncHint {
-        event_id: None,
-        event_seq: None,
-        event_type: None,
-        domains: BTreeSet::new(),
-        reason: None,
-        sync_dirty: true,
-        gap_detected: true,
-        has_unknown_domain: true,
-    };
     if notification.get("method").and_then(Value::as_str) != Some("sync.changed")
         || sync.get("schema_version").and_then(Value::as_u64) != Some(2)
         || !has_only_keys(
             sync,
-            &["schema_version", "account_scan_seq_hint", "domain_versions"],
+            &[
+                "schema_version",
+                "account_scan_seq_hint",
+                "domain_versions",
+                "dirty_lanes",
+            ],
         )
     {
-        return fail_safe();
+        return fail_safe_sync_hint();
     }
     let Some(params) = notification.get("params").and_then(Value::as_object) else {
-        return fail_safe();
+        return fail_safe_sync_hint();
     };
     if !has_exact_keys(params, &["domains", "reason"]) {
-        return fail_safe();
+        return fail_safe_sync_hint();
     }
     let Some(raw_domains) = params.get("domains").and_then(Value::as_array) else {
-        return fail_safe();
+        return fail_safe_sync_hint();
     };
     let Some(reason) = params
         .get("reason")
         .and_then(Value::as_str)
         .filter(|reason| valid_hint_reason(reason))
     else {
-        return fail_safe();
+        return fail_safe_sync_hint();
     };
     let Some(domain_versions) = sync.get("domain_versions").and_then(Value::as_object) else {
-        return fail_safe();
+        return fail_safe_sync_hint();
     };
     if !domain_versions
         .values()
         .all(|value| canonical_decimal_string(value).is_some())
     {
-        return fail_safe();
+        return fail_safe_sync_hint();
     }
     let account_scan_seq_hint = match sync.get("account_scan_seq_hint") {
         Some(Value::Null) | None => None,
         Some(value) => {
             let Some(value) = canonical_decimal_string(value) else {
-                return fail_safe();
+                return fail_safe_sync_hint();
             };
             Some(value.to_owned())
         }
@@ -463,10 +463,10 @@ fn sync_hint_v2(notification: &Value, sync: &Map<String, Value>) -> RealtimeSync
     let mut has_unknown_domain = false;
     for raw_domain in raw_domains {
         let Some(raw_domain) = raw_domain.as_str() else {
-            return fail_safe();
+            return fail_safe_sync_hint();
         };
         if !raw_domain_names.insert(raw_domain) {
-            return fail_safe();
+            return fail_safe_sync_hint();
         }
         match sync_domain(raw_domain) {
             Some(domain) => {
@@ -476,11 +476,16 @@ fn sync_hint_v2(notification: &Value, sync: &Map<String, Value>) -> RealtimeSync
         }
     }
     if raw_domains.is_empty() {
-        return fail_safe();
+        return fail_safe_sync_hint();
     }
     has_unknown_domain |= domain_versions
         .keys()
         .any(|domain| sync_domain(domain).is_none());
+    let dirty_lanes = match parse_dirty_lanes(sync.get("dirty_lanes")) {
+        Some(lanes) => lanes,
+        None if sync.contains_key("dirty_lanes") => return fail_safe_sync_hint(),
+        None => BTreeSet::new(),
+    };
 
     RealtimeSyncHint {
         event_id: None,
@@ -488,10 +493,78 @@ fn sync_hint_v2(notification: &Value, sync: &Map<String, Value>) -> RealtimeSync
         event_type: None,
         domains,
         reason: Some(reason.to_owned()),
+        dirty_lanes,
         sync_dirty: true,
         gap_detected: false,
         has_unknown_domain,
     }
+}
+
+fn sync_hint_v3(notification: &Value) -> RealtimeSyncHint {
+    let Ok(Some(inline)) = super::notification::parse_inline_sync_event_v3(notification) else {
+        return fail_safe_sync_hint();
+    };
+    let reason = notification
+        .get("params")
+        .and_then(Value::as_object)
+        .and_then(|params| params.get("reason"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    RealtimeSyncHint {
+        event_id: Some(inline.event_id),
+        event_seq: inline.account_scan_seq_hint,
+        event_type: Some(inline.event_type),
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason,
+        dirty_lanes: BTreeSet::from([match inline.lane {
+            super::notification::InlineSyncLaneV3::Ordinary => SyncLane::Ordinary,
+            super::notification::InlineSyncLaneV3::P5Device => SyncLane::P5Device,
+            super::notification::InlineSyncLaneV3::P6Group => SyncLane::P6Group,
+        }]),
+        sync_dirty: true,
+        gap_detected: false,
+        has_unknown_domain: false,
+    }
+}
+
+fn fail_safe_sync_hint() -> RealtimeSyncHint {
+    RealtimeSyncHint {
+        event_id: None,
+        event_seq: None,
+        event_type: None,
+        domains: BTreeSet::new(),
+        reason: None,
+        dirty_lanes: BTreeSet::new(),
+        sync_dirty: true,
+        gap_detected: true,
+        has_unknown_domain: true,
+    }
+}
+
+fn parse_dirty_lanes(value: Option<&Value>) -> Option<BTreeSet<SyncLane>> {
+    let values = value?.as_array()?;
+    if values.is_empty() {
+        return None;
+    }
+    let mut lanes = BTreeSet::new();
+    let mut previous = None;
+    for value in values {
+        let raw = value.as_str()?;
+        if previous.is_some_and(|previous: &str| previous >= raw) {
+            return None;
+        }
+        let lane = match raw {
+            "ordinary" => SyncLane::Ordinary,
+            "p5_device" => SyncLane::P5Device,
+            "p6_group" => SyncLane::P6Group,
+            _ => return None,
+        };
+        if !lanes.insert(lane) {
+            return None;
+        }
+        previous = Some(raw);
+    }
+    Some(lanes)
 }
 
 fn sync_domain(value: &str) -> Option<SyncDomain> {
@@ -765,6 +838,35 @@ fn none_if_empty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downgraded_v3_hint_parses_closed_sorted_dirty_lanes() {
+        let mut notification = serde_json::json!({
+            "method": "sync.changed",
+            "params": {
+                "domains": ["message"],
+                "reason": "direct_message_available"
+            },
+            "sync": {
+                "schema_version": 2,
+                "account_scan_seq_hint": null,
+                "domain_versions": {},
+                "dirty_lanes": ["ordinary", "p5_device", "p6_group"]
+            }
+        });
+        let hint = sync_hint(&notification).unwrap();
+        assert_eq!(
+            hint.dirty_lanes,
+            BTreeSet::from([SyncLane::Ordinary, SyncLane::P5Device, SyncLane::P6Group])
+        );
+        assert!(!hint.gap_detected);
+
+        notification["sync"]["dirty_lanes"] = serde_json::json!(["p6_group", "p5_device"]);
+        let hint = sync_hint(&notification).unwrap();
+        assert!(hint.dirty_lanes.is_empty());
+        assert!(hint.gap_detected);
+        assert!(hint.has_unknown_domain);
+    }
 
     #[test]
     fn direct_projection_keeps_trusted_realtime_server_sequence_sidecar() {

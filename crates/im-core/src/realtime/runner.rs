@@ -639,6 +639,32 @@ where
     P: RealtimeNotificationProjector,
 {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3(
+            self.client,
+            &notification,
+        ) {
+            Ok(crate::internal::message_runtime::sync_v2::RealtimeInlineMessageApplyOutcome::Applied {
+                message,
+                local_scan_seq,
+            }) => {
+                return realtime_inline_message_projection(
+                    &notification,
+                    message,
+                    local_scan_seq.as_deref(),
+                );
+            }
+            Ok(
+                crate::internal::message_runtime::sync_v2::RealtimeInlineMessageApplyOutcome::NotApplicable
+                | crate::internal::message_runtime::sync_v2::RealtimeInlineMessageApplyOutcome::Deferred,
+            ) => {}
+            Err(_) => {
+                let mut outcome = self.inner.project(notification);
+                outcome
+                    .warnings
+                    .push("sync.realtime_inline_deferred".to_owned());
+                return outcome;
+            }
+        }
         let outcome = self.inner.project(notification);
         for event in &outcome.additional_events {
             if let Err(error) = project_realtime_event_to_local_state(self.client, event) {
@@ -729,6 +755,34 @@ where
     P: AsyncRealtimeNotificationProjector + Send,
 {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3_async(
+            &self.client,
+            &notification,
+        )
+        .await
+        {
+            Ok(crate::internal::message_runtime::sync_v2::RealtimeInlineMessageApplyOutcome::Applied {
+                message,
+                local_scan_seq,
+            }) => {
+                return realtime_inline_message_projection(
+                    &notification,
+                    message,
+                    local_scan_seq.as_deref(),
+                );
+            }
+            Ok(
+                crate::internal::message_runtime::sync_v2::RealtimeInlineMessageApplyOutcome::NotApplicable
+                | crate::internal::message_runtime::sync_v2::RealtimeInlineMessageApplyOutcome::Deferred,
+            ) => {}
+            Err(_) => {
+                let mut outcome = self.inner.project_async(notification).await;
+                outcome
+                    .warnings
+                    .push("sync.realtime_inline_deferred".to_owned());
+                return outcome;
+            }
+        }
         let outcome = self.inner.project_async(notification).await;
         let mut warnings = outcome.warnings;
         for event in &outcome.additional_events {
@@ -750,6 +804,30 @@ where
             additional_events: outcome.additional_events,
             warnings,
         }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn realtime_inline_message_projection(
+    notification: &Value,
+    message: crate::messages::Message,
+    local_scan_seq: Option<&str>,
+) -> RealtimeProjectionOutcome {
+    RealtimeProjectionOutcome {
+        event: Some(super::ImEvent::MessageReceived(
+            super::MessageReceivedEvent {
+                message,
+                attachment_summary: None,
+                download_action: None,
+                sync: crate::internal::realtime::projection::sync_hint_with_gap(
+                    notification,
+                    local_scan_seq,
+                ),
+                warnings: Vec::new(),
+            },
+        )),
+        additional_events: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 

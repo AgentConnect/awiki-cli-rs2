@@ -176,6 +176,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
         TestResponse::empty_secure_inbox(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
@@ -271,6 +272,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert!(methods.starts_with(&[
         "register".to_owned(),
         "direct.e2ee.publish_prekey_bundle".to_owned(),
+        "sync.bootstrap".to_owned(),
         "inbox.get".to_owned(),
         "sync.bootstrap".to_owned(),
         "sync.delta".to_owned(),
@@ -285,15 +287,11 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     );
     let secure_inbox = requests
         .iter()
-        .find(|request| {
-            serde_json::from_str::<Value>(request_body(request))
-                .ok()
-                .is_some_and(|body| body["method"] == "inbox.get")
-        })
-        .expect("secure inbox hydration request");
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .find(|body| body["method"] == "inbox.get")
+        .expect("downgraded exact-device Inbox request");
     assert_eq!(
-        serde_json::from_str::<Value>(request_body(secure_inbox)).unwrap()["params"]["body"]
-            ["security_profile"],
+        secure_inbox["params"]["body"]["security_profile"],
         "direct-e2ee"
     );
     let sync_delta = requests
@@ -928,7 +926,8 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Parallel workspace tests can delay the debug CLI process startup on macOS.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

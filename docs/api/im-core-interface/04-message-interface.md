@@ -624,22 +624,29 @@ pub struct LocalHistoryQuery {
 4. direct、group 和 raw thread ref 使用与 conversation mark-read 一致的 owner-scoped conversation-id 归一化。
 5. App 首屏应先显示 `local_conversation_timeline`，再后台调用 `sync_conversation_after` 或 repair/load core projection；远端 history/backfill 返回的 messages 只有持久化后才能成为 UI 事实。
 
-独立 P5 gate 开启且 scope 包含 Direct 时，普通 CLI 前台 `msg inbox` 先调用
-`hydrate_exact_device_secure_inbox_async(limit)`，让 Root 等 exact-device 控制消息能在设备权限
-代际变化后先完成本地凭据晋升；CLI 随后按同一个 DID 重新打开 `ImClient`，再用
-`sync_now_async(reason = "foreground_reconcile")` 完成普通消息 v2 bootstrap/delta/hydration，
-避免同一条命令继续携带晋升前的 device authorization generation。该 Rust-only secure hydration 边界要求 exact active vNext
-account/device binding，只发送带闭合 `body.security_profile=direct-e2ee` 的本域
-`inbox.get`，并在客户端再次丢弃所有非 P5 v2 row，只把成功认证解密的业务消息写入本地
-projection。每页本地提交后，Core 只 ACK 已成功消费的 P5 raw message ID，通过
-`inbox.mark_read` 移除该设备 unread 行；ACK 前会重新加载 bearer，避免 Root 晋升后继续使用
-旧 device authorization generation，再按 `has_more` 拉取下一页；循环最多 100 页。
-ACK 失败、部分 ACK、页面无进展或达到硬上限时保留已提交数据但前台调用失败，不能反复读取
-第一页后伪装收敛。最后调用 `local_inbox_projection_with_metadata_async(query)` 读取 exact-owner
-committed projection。本地读取 API 自身仍不发 `inbox.get`，不接受 remote cursor 或
-delegated options，按 scope/unread 在 SQLite 中过滤后再 limit，并以 newest-first 返回。
-普通消息不得通过 secure hydration 回退到 `inbox.get`；任一必需同步为 recovery、retryable、
-auth-revoked 或 secure hydration 失败时 CLI fail closed，不读取旧投影。
+P5/P6 gate 开启时，Core 先通过 `sync.bootstrap` 协商
+`lanes.p5_device.v1` / `lanes.p6_group.v1`，并按 device authorization generation 持久化一次
+协商结果。已有 V2 本地状态在升级后先补一次 capability bootstrap；完成后每次
+`sync_now_async` 仍只发送一条 `sync.delta`，在原有 ordinary cursor 旁携带已协商 lane 的独立
+cursor/`committed_seq`。同一前台运行在 capability 尚未确定时不会同时拉 legacy Inbox 和
+lane；协商到 P5 lane 后，`hydrate_exact_device_secure_inbox_async`、realtime 的 legacy P5
+hydration 以及 P5 Inbox projector 都不再调用 `inbox.get` / `inbox.mark_read`。
+
+P5 lane 复用既有认证解密与 ratchet/replay 持久化管道；只有解密/ratchet 与消息或 durable
+backlog 均成功后，delta 才原子写 lane receipt 并推进 P5 `scan_seq/committed_seq`。内联只写
+幂等 receipt，不推进 checkpoint；失败或 replay-without-receipt 保持 P5 cursor 原位并由下一次
+delta 重投，不阻塞 ordinary/P6，也不得升级为 `AuthRevoked`。P6 lane 按
+`group_did + group_event_seq` 幂等；单群前置状态不足时写入 per-group blocker，但聚合 cursor
+继续推进，其它群与 ordinary/P5 不受阻塞，后续同步再有界重放 blocker。
+
+服务端未广播 P5 capability 时，Rust-only
+`hydrate_exact_device_secure_inbox_async(limit)` 保留为迁移期降级路径：只发送闭合
+`body.security_profile=direct-e2ee` 的本域 `inbox.get`，客户端再次过滤非 P5 v2 row，并仅对
+已完成认证解密和 committed projection 的 raw message ID 调用 `inbox.mark_read`。ACK 失败、
+部分 ACK、页面无进展或达到 100 页硬上限时失败且不伪装收敛。服务端旧 Inbox RPC 与客户端
+函数均未删除；capability 关闭时行为保持不变。最后仍由
+`local_inbox_projection_with_metadata_async(query)` 读取 exact-owner committed projection；
+本地读取 API 自身不访问网络。
 
 P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 `MessageService` 的显式方法，避免 inbox/history 查询和 read ack 语义耦合。
@@ -682,6 +689,14 @@ timeline、read ack 的唯一 routing key。
    或在 `warnings` 中带失败原因；空 unread 会返回 `updated_count = 0`。
 11. `legacy_message_ids` 只作为 fallback diagnostics；App 不应依赖它作为 thread
     mark-read 的核心结果。
+
+普通消息 v2 `syncNow` 只在最后一页 `sync.delta` 已原子提交后 drain durable read outbox。
+read writeback 的 transport、decode、响应校验或本地 ACK 失败只把 mutation 记为
+`retryable`，不会覆盖已提交 delta 的 `changed` / `idle` 结果；损坏的本地 outbox payload
+记为 `permanent_failure`。`anp.device_not_eligible` / `anp.device_state_changed` 会触发一次有界
+session 刷新、transport auth reload 和 active binding 重取，并立即重发 mutation；刷新失败或
+刷新后再次收到同一类 fence 才按 `authRevoked` 终止。该调整不改变
+`anp.read_state.local.v1` wire schema 或 public DTO，因此无需协议版本升级。
 
 `conversation_summaries` 是 rebuildable projection；当前热路径对普通 message upsert、
 bounded mark-read、`mark_conversation_read` 和 legacy `mark_thread_read` 使用增量维护，只有无法安全增量判断的场景才回退 rebuild。conversation mark-read 同步维护 summary unread 字段；public 契约不因此变化。
@@ -740,17 +755,42 @@ pub struct SyncThreadAfterResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RealtimeSyncHint {
-    pub event_id: String,
-    pub event_seq: String,
-    pub event_type: String,
+    pub event_id: Option<String>,
+    pub event_seq: Option<String>,
+    pub event_type: Option<String>,
+    pub domains: BTreeSet<SyncDomain>,
+    pub reason: Option<String>,
+    pub dirty_lanes: BTreeSet<SyncLane>,
+    pub sync_dirty: bool,
+    pub gap_detected: bool,
+    pub has_unknown_domain: bool,
 }
+
+pub enum SyncLane { Ordinary, P5Device, P6Group }
 ```
+
+Realtime wire capability 是 Core 私有实现细节。exact vNext WebSocket 同时 offer
+`awiki.sync.event.v3` 与 `awiki.sync.changed.v2`；v3 的 schema 3 仅接受 closed
+`message.created`（`lane` 缺省或 `ordinary`）、`p5.delivery.created`（`p5_device`）和
+`p6.delivery.created`（`p6_group`）。ordinary 复用 `sync.delta` / `message.get_batch` decoder；
+P5/P6 projection 必须分别是闭合的 Direct E2EE v2 / Group E2EE v2 密文 envelope。成功时 Core
+复用与 delta 相同的应用管道，再发射既有 committed projection；没有新增 v4 子协议。
+
+V3 快路径没有 cursor authority：ordinary 不修改 `message_sync_state` 或
+`sync_applied_events`；P5/P6 内联也不修改 `lane_sync_state`，只写专用幂等 receipt。可靠 delta
+随后写正式记账并推进对应 cursor，先 delta 后 WS 同样 no-op。epoch/binding 不一致、未知
+Group、Direct Persona 未验证、P6 顺序不足、schema/投影不闭合或本地 apply 失败时，只保留
+dirty/gap hint 并触发 delta。schema-3 超过 32 KiB 时降级为 schema-2 hint；仅已协商 v3 的
+会话可收到可选 `dirty_lanes`，纯 v2 会话仍严格保持既有三字段。该能力直接扩展未发布的 v3，
+不新增 v4，ordinary 的 E2EE discriminator 拒绝保持不变。
 
 `sync_delta(request)` 行为：
 
 1. 从本地 SQLite `sync_state` 读取当前 `owner_identity_id + sync_subject_id` 的 checkpoint。`owner_identity_id` 是稳定的本地业务 owner，`sync_subject_id` 是服务端事件流主体；当前 message service 使用 canonical DID 作为 subject，因此 DID recovery 后新 DID 从 `0` 开始，不能继承旧 DID sequence。
 2. 调用服务端 `sync.delta`，wire request 中的 `since_event_seq` 只能由 Rust runtime
    注入，public API 调用方不能传入。
+   当前 V2/V3 扩展在同一请求中可附带 `p5_device` / `p6_group` lane cursor；未协商 lane 时
+   request body 与旧 V2 完全一致，响应也不得出现 `lanes`。
 3. `limit`、`device_id`、`reason` 只作为分页和诊断输入；`reason` 是字符串，不是封闭
    enum，便于 App 记录 `startup`、`app_resumed`、`reconnect`、`realtime_gap` 等来源。
 4. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
@@ -800,10 +840,12 @@ checkpoint 边界：
   `storeGlobalCheckpoint`、手动 `since_event_seq` 或手动 checkpoint advance。
 - Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
   realtime projection 成功，也不得推进 checkpoint。
-- 在线收到首条 Direct realtime 消息时，Core 必须先按 wire peer DID 调用权威 Handle
-  lookup，校验返回 DID 与 wire snapshot 一致，并先提交 verified Persona/route，再提交消息。
-  lookup 不可用、响应不合法、发生冲突或 DID 不一致时继续写入
-  `inbound_resolution_backlog`，不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送
+- ordinary checkpoint 仍只在 `message_sync_state`；P5/P6 分别使用 `lane_sync_state`，且只有
+  `sync.delta` 能推进。`sync_lane_applied_events` 只证明内联/Delta 已幂等应用，不授予 cursor
+  authority。
+- schema-3 快路径不增加网络 RTT：在线收到首条 Direct 时只复用已提交的 verified Persona；
+  缺失时静默降级到 delta。Legacy realtime ingress 仍可走既有权威 Handle lookup 与 durable
+  backlog，但任何路径都不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送未提交的
   authoritative patch。
 
 ### 5.3 Conversation / Thread Snapshot And Patch API

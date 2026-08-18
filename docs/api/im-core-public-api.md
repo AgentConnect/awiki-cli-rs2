@@ -531,8 +531,16 @@ SecretVault Token，不得记录 Token，也不得顺带改写密钥、身份或
 不得把本地构造成功表述为 JWT cryptographic verification。
 
 Realtime 子协议严格性也从该 exact binding 自动派生。exact vNext 必须收到
-`awiki.sync.changed.v2` 回显，`NoSubProtocol` 或缺失回显直接返回 transport error，
-不能无子协议重连；只有无 exact binding 的 Legacy/Hosted client 可走兼容 fallback。
+`awiki.sync.event.v3` 或 `awiki.sync.changed.v2` 回显：Core 按该顺序同时 offer，服务端选择
+v3 时可发送内联 `message.created`，也可对超限/不可内联事件发送 schema 2 hint；选择 v2 时
+只能接收 schema 2。`NoSubProtocol` 或缺失回显直接返回 transport error，不能无子协议重连；
+只有无 exact binding 的 Legacy/Hosted client 可走兼容 fallback。
+
+V3 是可协商的兼容新增，不替换 v2，也不改变任何 public DTO。内联正文只提前提交既有
+message/thread projection：WS 不写消费回执、不推进 Sync V2 cursor；跨 epoch、未知 Group 或
+Direct Persona 未验证时只保留 dirty/gap hint 并调度 delta。可靠 delta 随后按 `event_id`
+提交回执和 cursor，并跳过已由 WS 提交的正文。因此本次无需 public API、协议替换或本地数据
+schema 版本提升。
 
 普通消息 v2 同步对每个合法 binding 默认生效，不存在 public API 级账号/设备 allowlist 或
 百分比灰度。host 只可通过全局配置做应急回滚；该配置不改变 cursor、replica 或 Event
@@ -1024,24 +1032,22 @@ Reliable sync 补充：
   必须设置每轮总扫描 hard cap，并在 `has_more` 时逐页推进；固定反复读取第一页会造成
   ledger 前缀饥饿。
 
-- `hydrate_exact_device_secure_inbox_async` 是 Rust host 的窄化 P5 Inbox 补偿边界。
-  host-local Direct E2EE gate 关闭时不发网络请求；开启时必须先取得 exact active vNext
-  account/device binding，并只发送带闭合
-  `body.security_profile=direct-e2ee` 的本域 `inbox.get`。Core 对响应再次只接纳 P5 v2
-  candidate；每页完成认证解密与 committed local projection 后，只用已成功消费的 P5 raw
-  message ID 调用 exact-device `inbox.mark_read`，再继续读取下一页，直到
-  `has_more=false` 或命中 100 页硬上限。ACK 缺失、部分成功、无进展或达到上限均返回错误，
-  但不回滚已提交的本地消息；成功结果仅返回安全 warning 文本。
-  该接口不返回远端消息页，不接纳 delegated/Legacy 身份，也绝不能用于补齐普通消息；
-  普通 Direct/Group 的唯一前台补偿仍是 `sync_now`。Native Dart
-  `MessageApi.syncNow` 只把该边界作为 Core-owned 前置阶段，水合后在 bridge
-  内重新加载同一 stable local identity 的 client，然后才执行 ordinary
-  `sync_now`；它不暴露独立 Dart public 水合 API，也不把 P5 control 返回 host。
+- `hydrate_exact_device_secure_inbox_async` 是 Rust host 的迁移期 P5 Inbox 降级边界。
+  Core 先按 active device authorization generation 完成 lane capability bootstrap；若服务端
+  广播 `lanes.p5_device.v1`，该调用直接返回且不发送 `inbox.get` / `inbox.mark_read`，P5 改由
+  `sync_now` 的同一条 `sync.delta` 处理。只有 capability 未广播时，才发送闭合
+  `body.security_profile=direct-e2ee` 的本域 `inbox.get`，再次过滤非 P5 v2 candidate，并只 ACK
+  已完成认证解密和 committed local projection 的 raw message ID。ACK 缺失、部分成功、无进展
+  或达到 100 页上限均失败但不回滚已提交消息。该接口与服务端旧 Inbox RPC 均保留，不返回
+  远端消息页、不接纳 delegated/Legacy 身份，也绝不能补齐普通消息。
 
-- `sync_now(MessageSyncRequest { reason, limit })` 是 v2 普通 Direct/Group 主链路。
+- `sync_now(MessageSyncRequest { reason, limit })` 是 V2/V3 ordinary、P5 与 P6 的统一可靠主链路。
   account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome
   只暴露高层状态、计数、changed conversation IDs、已提交 incoming message 和诊断。
-  `sync.bootstrap` 的 binding/Group baseline/cursor，以及每页 `sync.delta` 的 receipt、
+  `sync.bootstrap` 除 ordinary binding/Group baseline/cursor 外，还可协商
+  `lanes.p5_device.v1` / `lanes.p6_group.v1` 及其独立 cursor。已有 V2 本地状态只在升级或 device
+  auth generation 改变后补一次 capability bootstrap；随后 ordinary/P5/P6 由同一条
+  `sync.delta` 拉取，未协商 lane 时 request/response 保持旧 V2 形状。每页 ordinary receipt、
   exact-hydrated projection/cursor 均在单个 SQLite 事务提交；必需 hydration、schema、
   canonical identity 或 route 解析失败时整页回滚，cursor 与 receipt 不变。
   `message.get_batch` 服务端使用 16 MiB hard response budget；Core 固定按请求顺序每 8 个
@@ -1049,6 +1055,11 @@ Reliable sync 补充：
   bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
   的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
   device 稳定标识派生。
+  P5 `committed_seq` 只有在既有 Direct E2EE 解密/ratchet/replay 状态与消息或 durable backlog
+  均成功持久化后才推进；毒密文只停住 P5 lane，ordinary/P6 继续。P6 按
+  `group_did + group_event_seq` 幂等，单群失败进入 per-group blocker 而聚合 cursor 继续推进。
+  lane error 仅产生 lane warning/retry，不得升级为 `AuthRevoked`；ordinary lane 对 E2EE/MLS
+  discriminator 的既有拒绝不变。
   `group.member_changed` / `group.profile_updated` 在同一事务中同时提交 Group 状态和一条已读的
   群系统时间线记录；记录 ID 固定为 `<group_did>:<group_event_seq>`，因此本地 mutation、
   realtime、v1 delta 和 v2 delta 乱序或重复到达都收敛为同一条记录。群系统记录不进入
@@ -1067,9 +1078,11 @@ Reliable sync 补充：
   snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；
   snapshot 或 post-anchor delta 失败返回 `retryable_failure`，授权或 generation fence 返回
   `auth_revoked`；同步链路在认证刷新或服务调用中收到 HTTP 401/403，或 Core transport
-  完成有界认证重试后仍收到 JSON-RPC `1401`，或在线 Registry 校验返回
-  `anp.device_not_eligible` / `anp.device_state_changed`，也属于终止性
-  `auth_revoked`，不得进入网络重试循环。没有第二个 public recover API，raw token、
+  完成有界认证重试后仍收到 JSON-RPC `1401`，属于终止性 `auth_revoked`。在线 Registry
+  校验返回 `anp.device_not_eligible` / `anp.device_state_changed` 时，Core 会先执行一次有界
+  session 刷新、transport auth reload 和 active binding 重取，然后重试被拒的 delta 或
+  read outbox；刷新失败或再次收到 Registry fence 才终止为 `auth_revoked`。没有第二个
+  public recover API，raw token、
   cursor/anchor、cutoff、policy
   limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
@@ -1091,7 +1104,10 @@ Reliable sync 补充：
   `remote_acknowledged=true`、`pending_remote_ack=false`、`partial=false`、
   且 server watermark 不低于发送值，才可提交本地 ACK。`fallback_used` 只描述服务端
   采用的兼容路径，不削弱上述最终 ACK 条件。transport、
-  parse、协议验证或本地 ACK transaction 失败都必须把 claim 退回 `retryable`。
+  parse、协议验证或本地 ACK transaction 失败都必须把 claim 退回 `retryable`，且 drain
+  发生在最终 delta commit 之后，不能覆盖已提交的同步结果；损坏的本地 payload 进入
+  `permanent_failure`。Registry fence 的 mutation 在上述单次 session/binding 刷新后立即
+  重发。本行为调整不修改 `anp.read_state.local.v1` wire schema 或 public DTO，不升级协议版本。
 - Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
   snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
   durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，
@@ -1204,9 +1220,10 @@ Reliable sync 补充：
   v2 candidate。只有成功认证并解密的业务 plaintext 可以转成普通 `Message`/`ImEvent`；
   own-sync 只投影为 outgoing 业务消息，握手、notice、其他 control、replay、畸形或 gate-disabled
   candidate 均不得原样暴露 wire/cipher/control JSON，也不得回退到 legacy 明文渲染。
-- gate 开启时，blocking/async read 与 realtime 收到的标准 P6 `group.e2ee.notice` 会在 Core 内部
-  进入 device-scoped SDK MLS 状态机；成功、幂等 replay 或拒绝都不会产生 public `Message` /
-  `ImEvent`，也不新增 public DTO 或跨域字段。
+- gate 开启且未协商 P6 lane 时，blocking/async legacy read 与 realtime 收到的标准 P6
+  `group.e2ee.notice` 会在 Core 内部进入 device-scoped SDK MLS 状态机；协商
+  `lanes.p6_group.v1` 后，legacy Inbox 捎带消费停用，notice 只由 P6 lane 可靠消费。成功、幂等
+  replay 或拒绝都不会产生 public `Message` / `ImEvent`，也不暴露 wire control JSON。
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 
@@ -1614,6 +1631,18 @@ impl RealtimeService<'_> {
     pub fn run_until_shutdown(&self, options: RealtimeOptions, shutdown: ShutdownSignal) -> ImResult<RealtimeExit>;
 }
 ```
+
+`RealtimeSyncHint` 新增只读 `dirty_lanes: BTreeSet<SyncLane>`，其中 `SyncLane` 是
+`Ordinary | P5Device | P6Group`。它只描述需要可靠 reconciliation 的逻辑 lane；与
+`event_seq`、`sync_dirty`、`gap_detected` 一样不授予 checkpoint authority。Rust Core 暴露该
+字段；现有 Dart hint 仍只投影 domain/reason/dirty/gap，不把 cursor 或 lane checkpoint 暴露给
+App。
+
+协商 `awiki.sync.event.v3` 后，schema 3 可闭合内联 ordinary `message.created`、
+`p5.delivery.created` 和 `p6.delivery.created`。三类事件均幂等应用，且**内联永不推进 ordinary、
+P5 或 P6 checkpoint**；`sync.delta` 是唯一 SoT。超过 32 KiB 或无法内联时降级为 schema-2
+hint；可选 `dirty_lanes` 仅用于已经协商 v3 的连接，纯 v2 连接继续收到原三字段 hint。该改动
+直接扩展未发布的 v3，不新增 `awiki.sync.event.v4`。
 
 CLI daemon/service 仍在 `awiki-cli`。SDK 只提供 runner，不安装服务、不写 pid、不管理 systemd/launchd/Windows service。
 

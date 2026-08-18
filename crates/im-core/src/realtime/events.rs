@@ -155,8 +155,8 @@ pub struct RealtimeSyncHint {
     /// through the application SDK boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// Legacy v1 sequence, or the v2 account scan high-water hint. A hint never
-    /// advances a durable sync cursor.
+    /// Legacy v1 sequence, or the v2/v3 account scan high-water hint. A hint
+    /// never advances a durable sync cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_seq: Option<String>,
     /// Legacy v1 transport metadata.
@@ -166,9 +166,19 @@ pub struct RealtimeSyncHint {
     pub domains: BTreeSet<SyncDomain>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub dirty_lanes: BTreeSet<SyncLane>,
     pub sync_dirty: bool,
     pub gap_detected: bool,
     pub has_unknown_domain: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncLane {
+    Ordinary,
+    P5Device,
+    P6Group,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

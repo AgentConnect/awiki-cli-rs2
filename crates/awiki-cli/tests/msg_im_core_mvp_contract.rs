@@ -159,9 +159,13 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::sync_bootstrap(),
+        TestResponse::inbox_empty(),
+        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
+        TestResponse::inbox_empty(),
         TestResponse::sync_delta_empty(),
+        TestResponse::inbox_empty(),
         TestResponse::error(503, r#"{"error":"temporarily unavailable"}"#),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -274,19 +278,22 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
             "register",
             "direct.e2ee.publish_prekey_bundle",
             "sync.bootstrap",
+            "inbox.get",
+            "sync.bootstrap",
             "sync.delta",
             "message.get_batch",
+            "inbox.get",
             "sync.delta",
+            "inbox.get",
             "sync.delta",
         ]
     );
-    assert_eq!(
-        methods
-            .iter()
-            .filter(|method| **method == "inbox.get")
-            .count(),
-        0
-    );
+    for body in rpc_bodies
+        .iter()
+        .filter(|body| body["method"] == "inbox.get")
+    {
+        assert_eq!(body["params"]["body"]["security_profile"], "direct-e2ee");
+    }
     for body in rpc_bodies
         .iter()
         .filter(|body| body["method"] == "sync.delta")
@@ -300,6 +307,7 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [{
                 "id": "msg-ordinary-injected-by-secure-inbox",
@@ -361,6 +369,7 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
             "inbox.get",
             "sync.bootstrap",
             "sync.delta"
@@ -394,10 +403,14 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::sync_bootstrap(),
+        TestResponse::inbox_empty(),
+        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
         TestResponse::mark_read_state(),
+        TestResponse::inbox_empty(),
         TestResponse::sync_delta_empty(),
+        TestResponse::inbox_empty(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -1000,6 +1013,14 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
 
+    fn inbox_empty() -> Self {
+        Self::ok(&json_rpc_result(json!({
+            "messages": [],
+            "has_more": false,
+            "warnings": []
+        })))
+    }
+
     fn sync_delta_message() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_MESSAGE_RESPONSE__")
     }
@@ -1072,7 +1093,8 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Parallel workspace tests can delay the debug CLI process startup on macOS.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

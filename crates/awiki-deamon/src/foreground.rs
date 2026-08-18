@@ -467,9 +467,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut realtime_supervisor =
         RuntimeRealtimeSupervisor::start(config.clone(), state.clone(), im_core.clone()).await?;
     let mut realtime_sync = RuntimeRealtimeSyncCoordinator::new();
-    let mut runtime_inbox_reconciliation =
-        tokio::time::interval(runtime_inbox_reconciliation_interval(&options));
-    runtime_inbox_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_runtime_inbox_reconciliation = None;
     let mut heartbeat_interval =
         tokio::time::interval(Duration::from_millis(LATEST_STATUS_CHECK_MS as u64));
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -512,7 +510,11 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     }
                 }
             }
-            _ = runtime_inbox_reconciliation.tick() => {
+            _ = tokio::time::sleep(runtime_inbox_reconciliation_delay(
+                &options,
+                realtime_sync.reconciliation_interval(),
+                last_runtime_inbox_reconciliation,
+            )) => {
                 realtime_supervisor.reconcile_active_agents().await?;
                 let newly_processed =
                     process_inbox_once(
@@ -532,6 +534,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 if newly_processed + delegated_processed > 0 {
                     queue_notifier.notify_all();
                 }
+                last_runtime_inbox_reconciliation = Some(Instant::now());
             }
             _ = tokio::time::sleep(realtime_sync.next_due_delay()) => {
                 let newly_processed = process_due_realtime_sync_work(
@@ -625,8 +628,26 @@ fn reconcile_controller_scopes_before_periodic_sync(
         .collect())
 }
 
-fn runtime_inbox_reconciliation_interval(options: &ForegroundOptions) -> Duration {
-    Duration::from_millis(options.poll_interval_ms).max(RUNTIME_INBOX_RECONCILIATION_INTERVAL)
+fn runtime_inbox_reconciliation_interval(
+    options: &ForegroundOptions,
+    realtime_interval: Duration,
+) -> Duration {
+    Duration::from_millis(options.poll_interval_ms)
+        .max(RUNTIME_INBOX_RECONCILIATION_INTERVAL)
+        .max(realtime_interval)
+}
+
+fn runtime_inbox_reconciliation_delay(
+    options: &ForegroundOptions,
+    realtime_interval: Duration,
+    last_reconciliation_at: Option<Instant>,
+) -> Duration {
+    let Some(last_reconciliation_at) = last_reconciliation_at else {
+        return Duration::ZERO;
+    };
+    let next_reconciliation_at =
+        last_reconciliation_at + runtime_inbox_reconciliation_interval(options, realtime_interval);
+    next_reconciliation_at.saturating_duration_since(Instant::now())
 }
 
 fn foreground_control_tick_duration(started_at: Instant, max_runtime_ms: Option<u64>) -> Duration {
@@ -973,6 +994,7 @@ async fn process_realtime_sync_work(
             Ok(0)
         }
         Ok(result) => {
+            realtime_sync.mark_work_completed(&work);
             if state.load_agent_device_identity(&work.agent_did)?.is_some() {
                 state.mark_sync_v2_reconcile_completed(&work.agent_did)?;
             }

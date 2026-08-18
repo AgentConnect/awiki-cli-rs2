@@ -1,8 +1,12 @@
 use serde_json::Value;
 use std::time::Duration;
 
-pub const SESSION_PING_INTERVAL: Duration = Duration::from_secs(60);
+pub const SESSION_PING_INTERVAL: Duration = Duration::from_secs(20);
 pub const SESSION_PING_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[cfg(test)]
+#[path = "heartbeat_tests.rs"]
+mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationPingOutcome {

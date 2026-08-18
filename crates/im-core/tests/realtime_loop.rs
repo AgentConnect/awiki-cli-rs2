@@ -191,10 +191,10 @@ fn realtime_loop_secure_prekey_retry_logs_joined_warnings_and_sleeps_one_second(
 }
 
 #[test]
-fn realtime_loop_exported_delays_match_legacy_constants() {
+fn realtime_loop_exported_delays_match_current_constants() {
     assert_eq!(SESSION_RECONNECT_BASE_DELAY, Duration::from_secs(1));
     assert_eq!(SESSION_RECONNECT_MAX_DELAY, Duration::from_secs(30));
-    assert_eq!(SESSION_PING_INTERVAL, Duration::from_secs(60));
+    assert_eq!(SESSION_PING_INTERVAL, Duration::from_secs(20));
     assert_eq!(SESSION_PING_TIMEOUT, Duration::from_secs(15));
 }
 

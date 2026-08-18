@@ -1546,7 +1546,7 @@ fn foreground_cli_route_message_queue_retry_keeps_original_run_binding() {
         .load_cli_route_session(&item.route_key)
         .unwrap()
         .unwrap();
-    state
+    let acquired = state
         .try_acquire_cli_route_session_lease(
             &route.route_key,
             "run_external_busy_holder",
@@ -1554,6 +1554,7 @@ fn foreground_cli_route_message_queue_retry_keeps_original_run_binding() {
             now + 60_000,
         )
         .unwrap();
+    assert!(acquired);
 
     let first_processed = drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
     assert_eq!(first_processed, 1);
@@ -1573,7 +1574,8 @@ fn foreground_cli_route_message_queue_retry_keeps_original_run_binding() {
         .starts_with("run_replay_"));
     assert_eq!(
         queued_after_busy.last_error_code.as_deref(),
-        Some("route_busy")
+        Some("route_busy"),
+        "{queued_after_busy:?}"
     );
 
     state
@@ -2537,7 +2539,7 @@ fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebou
 }
 
 #[test]
-fn foreground_controller_identity_change_blocks_new_and_old_sender_without_rebinding() {
+fn foreground_authoritative_controller_identity_change_rebinds_agent_family() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
     let registration = MockRegistrationClient;
@@ -2551,42 +2553,59 @@ fn foreground_controller_identity_change_blocks_new_and_old_sender_without_rebin
     let runtime_before = state.load_agent_definition(&created.agent_did).unwrap();
     let binding_before = daemon_binding.clone();
 
-    let changed = verify_runtime_controller_sender(
+    let verified = verify_runtime_controller_sender(
         &config,
         &state,
         &registration,
         &created.agent_did,
         "did:human:alice-new",
     )
-    .unwrap_err();
-    assert_eq!(changed.to_string(), "controller_identity_changed");
+    .unwrap();
+    assert_eq!(verified.controller_did, "did:human:alice-new");
+    assert_eq!(verified.sender_did, "did:human:alice-new");
     assert_eq!(
-        state
-            .load_agent_definition(&daemon_binding.daemon_agent_did)
-            .unwrap(),
-        daemon_before
+        verified.controller_user_id,
+        daemon_before.controller_user_id
     );
     assert_eq!(
-        state.load_agent_definition(&created.agent_did).unwrap(),
-        runtime_before
+        verified.controller_full_handle,
+        daemon_before.controller_full_handle
     );
     assert_eq!(
-        state
-            .load_runtime_daemon_binding(&created.agent_did)
-            .unwrap()
-            .unwrap(),
-        binding_before
+        verified.controller_scope_key,
+        daemon_before.controller_scope_key
     );
 
-    let old_principal = verify_runtime_controller_sender(
-        &config,
-        &state,
-        &registration,
-        &created.agent_did,
-        "did:human:alice",
-    )
-    .unwrap_err();
-    assert_eq!(old_principal.to_string(), "controller_identity_changed");
+    let daemon_after = state
+        .load_agent_definition(&daemon_binding.daemon_agent_did)
+        .unwrap();
+    let runtime_after = state.load_agent_definition(&created.agent_did).unwrap();
+    let binding_after = state
+        .load_runtime_daemon_binding(&created.agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(daemon_after.controller_did, "did:human:alice-new");
+    assert_eq!(runtime_after.controller_did, "did:human:alice-new");
+    assert_eq!(binding_after.controller_did, "did:human:alice-new");
+    assert_eq!(
+        daemon_after.controller_scope_key,
+        daemon_before.controller_scope_key
+    );
+    assert_eq!(
+        runtime_after.controller_scope_key,
+        runtime_before.controller_scope_key
+    );
+    assert_eq!(
+        binding_after.controller_scope_key,
+        binding_before.controller_scope_key
+    );
+    assert!(state
+        .audit_event_exists(
+            "daemon.controller_rebound",
+            Some(&daemon_binding.daemon_agent_did),
+            Some("verified_controller_sender"),
+        )
+        .unwrap());
 }
 
 #[test]
@@ -3214,18 +3233,31 @@ fn daemon_im_core_config_allows_realtime_sessions_without_changing_shared_defaul
 }
 
 #[test]
-fn runtime_inbox_reconciliation_interval_is_low_frequency_floor() {
+fn runtime_inbox_reconciliation_interval_adapts_to_realtime_health() {
     let mut options = ForegroundOptions::new(PathBuf::from("/tmp/awiki-test"));
     options.poll_interval_ms = 250;
 
     assert_eq!(
-        runtime_inbox_reconciliation_interval(&options),
-        RUNTIME_INBOX_RECONCILIATION_INTERVAL
+        runtime_inbox_reconciliation_interval(
+            &options,
+            runtime_realtime::DEGRADED_POLL_FALLBACK_INTERVAL,
+        ),
+        runtime_realtime::DEGRADED_POLL_FALLBACK_INTERVAL
+    );
+    assert_eq!(
+        runtime_inbox_reconciliation_interval(
+            &options,
+            runtime_realtime::HEALTHY_POLL_RECONCILIATION_INTERVAL,
+        ),
+        runtime_realtime::HEALTHY_POLL_RECONCILIATION_INTERVAL
     );
 
     options.poll_interval_ms = 45_000;
     assert_eq!(
-        runtime_inbox_reconciliation_interval(&options),
+        runtime_inbox_reconciliation_interval(
+            &options,
+            runtime_realtime::DEGRADED_POLL_FALLBACK_INTERVAL,
+        ),
         Duration::from_millis(45_000)
     );
 }
@@ -3691,7 +3723,7 @@ fn app_control_controller_rebind_uses_authoritative_sender_and_ignores_legacy_gu
 }
 
 #[test]
-fn app_action_result_from_non_controller_is_rejected_without_audit() {
+fn app_action_result_from_non_controller_is_rejected_by_authoritative_scope_without_audit() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient;
     let daemon = setup_daemon_agent(
@@ -3726,9 +3758,7 @@ fn app_action_result_from_non_controller_is_rejected_without_audit() {
     )
     .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("message sender is not the configured controller_did"));
+    assert_eq!(error.to_string(), "controller_scope_mismatch");
     assert!(!state
         .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
         .unwrap());

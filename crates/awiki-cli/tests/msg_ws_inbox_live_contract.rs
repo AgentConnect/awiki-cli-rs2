@@ -98,6 +98,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
         TestResponse::empty_secure_inbox(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_group(),
@@ -136,7 +137,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert_no_legacy_websocket_fallback_warning(&envelope);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 7);
     let bodies = requests
         .iter()
         .map(|request| {
@@ -150,16 +151,15 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert!(methods.contains(&"sync.bootstrap"));
     assert!(methods.contains(&"sync.delta"));
     assert!(methods.contains(&"message.get_batch"));
-    assert!(methods.contains(&"inbox.get"));
-    assert!(!methods.contains(&"group.list"));
     let secure_inbox = bodies
         .iter()
         .find(|body| body["method"] == "inbox.get")
-        .expect("secure inbox hydration request");
+        .expect("downgraded exact-device Inbox request");
     assert_eq!(
         secure_inbox["params"]["body"]["security_profile"],
         "direct-e2ee"
     );
+    assert!(!methods.contains(&"group.list"));
     let delta = bodies
         .iter()
         .find(|body| body["method"] == "sync.delta")
@@ -176,6 +176,7 @@ fn msg_inbox_hydrates_exact_device_controls_before_reopened_foreground_sync() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
         TestResponse::empty_secure_inbox(),
         TestResponse::sync_bootstrap(),
         TestResponse::empty_sync_delta(),
@@ -215,7 +216,15 @@ fn msg_inbox_hydrates_exact_device_controls_before_reopened_foreground_sync() {
         })
         .filter_map(|body| body["method"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
-    assert_eq!(methods, vec!["inbox.get", "sync.bootstrap", "sync.delta"]);
+    assert_eq!(
+        methods,
+        vec![
+            "sync.bootstrap",
+            "inbox.get",
+            "sync.bootstrap",
+            "sync.delta"
+        ]
+    );
 }
 
 #[test]
@@ -628,7 +637,8 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Parallel workspace tests can delay the debug CLI process startup on macOS.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

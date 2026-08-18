@@ -3583,6 +3583,72 @@ async fn exact_device_secure_hydration_selects_p5_only_and_never_persists_ordina
 }
 
 #[tokio::test]
+async fn exact_device_secure_hydration_skips_legacy_inbox_until_and_after_p5_lane_negotiation() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    let db = client.core_inner().local_state_db().await.unwrap();
+    db.upsert_identity_account_binding(
+        crate::internal::local_state::sync_v2::IdentityAccountBinding {
+            owner_identity_id: owner_identity_id.clone(),
+            account_id: "read-cache-user".to_owned(),
+            handle_scope: client.handle().map(|handle| handle.as_str().to_owned()),
+            current_did: client.did().as_str().to_owned(),
+            protocol_device_id: fixture.device_id.clone(),
+            identity_generation: "1".to_owned(),
+            device_auth_generation: "1".to_owned(),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let authentication_reloads = Rc::new(RefCell::new(0_usize));
+    let mut transport = ScriptedAuthenticatedTransport {
+        calls: Rc::clone(&calls),
+        authentication_reloads: Rc::clone(&authentication_reloads),
+        responses: VecDeque::new(),
+    };
+    assert!(hydrate_exact_device_secure_inbox_async(
+        &client,
+        &mut transport,
+        &mut StaticHandleDirectoryTransport,
+        20,
+    )
+    .await
+    .unwrap()
+    .is_empty());
+    assert!(calls.borrow().is_empty());
+
+    db.replace_lane_sync_states(
+        &owner_identity_id,
+        vec![crate::internal::local_state::sync_v2::LaneSyncState {
+            owner_identity_id: owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            stream_epoch: "41".to_owned(),
+            scan_seq: "0".to_owned(),
+            committed_seq: "0".to_owned(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    let warnings = hydrate_exact_device_secure_inbox_async(
+        &client,
+        &mut transport,
+        &mut StaticHandleDirectoryTransport,
+        20,
+    )
+    .await
+    .unwrap();
+
+    assert!(warnings.is_empty());
+    assert!(calls.borrow().is_empty());
+    assert_eq!(*authentication_reloads.borrow(), 0);
+}
+
+#[tokio::test]
 async fn exact_device_secure_hydration_keeps_committed_projection_when_ack_is_incomplete() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);

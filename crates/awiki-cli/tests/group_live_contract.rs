@@ -246,7 +246,7 @@ fn group_add_live_error_preserves_go_owner_hint() {
         TestResponse::ok(&json_rpc_result(json!({
             "group_did": group_did,
             "group_profile": {"display_name": "Demo Group"},
-            "member_role": "owner",
+            "member_role": "member",
             "member_status": "active",
             "source": "remote_http"
         }))),
@@ -256,7 +256,8 @@ fn group_add_live_error_preserves_go_owner_hint() {
             "group_profile": {"display_name": "Demo Group"},
             "group_policy": {
                 "message_security_profile": "transport-protected"
-            }
+            },
+            "source": "remote_http"
         }))),
         TestResponse::ok(&json_rpc_error(2403, "actor cannot add members")),
     ]);
@@ -686,7 +687,9 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The real debug CLI performs identity/vault bootstrap before connecting.
+    // Parallel contract cases can exceed five seconds on a contended builder.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

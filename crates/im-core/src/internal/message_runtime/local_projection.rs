@@ -2338,6 +2338,9 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
             "raw_message_id"
+            | "sync_event_id"
+            | "sync_event_seq"
+            | "sync_event_type"
             | "group_event_seq"
             | "is_read"
             | "senderName"
@@ -2456,7 +2459,7 @@ mod tests {
     }
 
     #[test]
-    fn read_metadata_keeps_secure_projection_marker() {
+    fn read_metadata_keeps_secure_and_sync_idempotency_markers() {
         let metadata = crate::messages::MessageMetadata {
             attributes: vec![
                 crate::messages::MessageMetadataAttribute {
@@ -2467,12 +2470,27 @@ mod tests {
                     key: "ignored".to_owned(),
                     value: "value".to_owned(),
                 },
+                crate::messages::MessageMetadataAttribute {
+                    key: "sync_event_id".to_owned(),
+                    value: "sev2d_11".to_owned(),
+                },
+                crate::messages::MessageMetadataAttribute {
+                    key: "sync_event_seq".to_owned(),
+                    value: "11".to_owned(),
+                },
+                crate::messages::MessageMetadataAttribute {
+                    key: "sync_event_type".to_owned(),
+                    value: "message.created".to_owned(),
+                },
             ],
             ..Default::default()
         };
 
         let value: Value = serde_json::from_str(&read_metadata_json(&metadata)).unwrap();
         assert_eq!(value["security"], "direct-e2ee");
+        assert_eq!(value["sync_event_id"], "sev2d_11");
+        assert_eq!(value["sync_event_seq"], "11");
+        assert_eq!(value["sync_event_type"], "message.created");
         assert!(value.get("ignored").is_none());
     }
 

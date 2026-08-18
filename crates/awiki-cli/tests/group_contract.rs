@@ -569,13 +569,14 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "group_did": group_did,
-            "group_state_version": "2",
+            "group_state_version": "3",
             "group_profile": {
                 "display_name": "Lifecycle Group"
             },
             "group_policy": {
                 "message_security_profile": "transport-protected"
-            }
+            },
+            "source": "remote_http"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "left": true,
@@ -750,7 +751,9 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "group_did": group_did,
-            "group_profile": {"display_name": "Owner Guard"},
+            "group_profile": {
+                "display_name": "Guard Group"
+            },
             "member_role": "owner",
             "member_status": "active",
             "source": "remote_http"
@@ -758,10 +761,13 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
         TestResponse::ok(&json_rpc_result(json!({
             "group_did": group_did,
             "group_state_version": "1",
-            "group_profile": {"display_name": "Owner Guard"},
+            "group_profile": {
+                "display_name": "Guard Group"
+            },
             "group_policy": {
                 "message_security_profile": "transport-protected"
-            }
+            },
+            "source": "remote_http"
         }))),
     ]);
     write_group_config(workspace.path(), &server.base_url());
@@ -870,6 +876,31 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     let workspace = TempDir::new().expect("workspace");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group_mutation";
     let bob_did = "did:wba:awiki.ai:user:bob:e1_bob";
+    let local_group = |display_name: &str, member_count: u64| {
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": display_name
+            },
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": member_count,
+            "source": "remote_http"
+        })))
+    };
+    let authoritative_group = |group_state_version: &str, display_name: &str| {
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_state_version": group_state_version,
+            "group_profile": {
+                "display_name": display_name
+            },
+            "group_policy": {
+                "message_security_profile": "transport-protected"
+            },
+            "source": "remote_http"
+        })))
+    };
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "did": bob_did,
@@ -878,37 +909,14 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
             "domain": "awiki.ai",
             "status": "active"
         }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_profile": {"display_name": "Mutation Group"},
-            "member_role": "owner",
-            "member_status": "active",
-            "member_count": 1,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_state_version": "1",
-            "group_profile": {"display_name": "Mutation Group"},
-            "group_policy": {
-                "message_security_profile": "transport-protected"
-            }
-        }))),
+        local_group("Mutation Group", 1),
+        authoritative_group("1", "Mutation Group"),
         TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
             "operation_id": "op-add",
             "source": "remote_http"
         }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_profile": {
-                "display_name": "Mutation Group"
-            },
-            "member_role": "owner",
-            "member_status": "active",
-            "member_count": 2,
-            "source": "remote_http"
-        }))),
+        local_group("Mutation Group", 2),
         TestResponse::ok(&json_rpc_result(json!({
             "members": [{
                 "member_did": bob_did,
@@ -919,37 +927,14 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
             "total": 1,
             "source": "remote_http"
         }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_profile": {"display_name": "Mutation Group"},
-            "member_role": "owner",
-            "member_status": "active",
-            "member_count": 2,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_state_version": "2",
-            "group_profile": {"display_name": "Mutation Group"},
-            "group_policy": {
-                "message_security_profile": "transport-protected"
-            }
-        }))),
+        local_group("Mutation Group", 2),
+        authoritative_group("2", "Mutation Group"),
         TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
             "operation_id": "op-remove",
             "source": "remote_http"
         }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_profile": {
-                "display_name": "Mutation Group"
-            },
-            "member_role": "owner",
-            "member_status": "active",
-            "member_count": 1,
-            "source": "remote_http"
-        }))),
+        local_group("Mutation Group", 1),
         TestResponse::ok(&json_rpc_result(json!({
             "members": [],
             "total": 0,

@@ -33,7 +33,7 @@ pub(crate) struct AsyncWsTransport {
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     ping_counter: i32,
-    sync_changed_v2: bool,
+    sync_subprotocol: super::SyncNotificationSubprotocol,
 }
 
 impl AsyncWsTransport {
@@ -65,12 +65,12 @@ impl AsyncWsTransport {
             }
             Err(error) => return Err(async_ws_connect_error(error)),
         };
-        let sync_changed_v2 =
+        let sync_subprotocol =
             validate_async_ws_subprotocol(response.headers(), require_sync_changed_v2)?;
         Ok(Self {
             stream,
             ping_counter: 0,
-            sync_changed_v2,
+            sync_subprotocol,
         })
     }
 
@@ -85,7 +85,7 @@ impl AsyncWsTransport {
                 Message::Text(raw) => {
                     let message = decode_json_object(raw.as_str())?;
                     if crate::internal::realtime::accepts_negotiated_notification(
-                        self.sync_changed_v2,
+                        self.sync_subprotocol,
                         &message,
                     ) {
                         return Ok(Some(message));
@@ -94,7 +94,7 @@ impl AsyncWsTransport {
                 Message::Binary(raw) => {
                     let message = decode_json_object(&raw)?;
                     if crate::internal::realtime::accepts_negotiated_notification(
-                        self.sync_changed_v2,
+                        self.sync_subprotocol,
                         &message,
                     ) {
                         return Ok(Some(message));
@@ -147,9 +147,13 @@ fn build_async_ws_request(
     if request_sync_changed_v2 {
         request.headers_mut().insert(
             SEC_WEBSOCKET_PROTOCOL,
-            crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
-                .parse()
-                .expect("static websocket subprotocol is a valid header value"),
+            format!(
+                "{}, {}",
+                crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
+                crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+            )
+            .parse()
+            .expect("static websocket subprotocol list is a valid header value"),
         );
     }
     Ok(request)
@@ -167,23 +171,30 @@ fn is_missing_async_ws_subprotocol(error: &TungsteniteError) -> bool {
 fn validate_async_ws_subprotocol(
     headers: &HeaderMap,
     require_sync_changed_v2: bool,
-) -> Result<bool, AsyncWsConnectError> {
+) -> Result<super::SyncNotificationSubprotocol, AsyncWsConnectError> {
     let selected = headers
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|value| value.to_str().ok());
-    if selected.is_some()
-        && selected != Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL)
-    {
+    let selected = match selected {
+        None => super::SyncNotificationSubprotocol::Legacy,
+        Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL) => {
+            super::SyncNotificationSubprotocol::V2
+        }
+        Some(crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL) => {
+            super::SyncNotificationSubprotocol::V3
+        }
+        Some(_) => {
+            return Err(async_ws_connect_message(
+                "websocket server selected an unsupported sync subprotocol",
+            ));
+        }
+    };
+    if require_sync_changed_v2 && selected == super::SyncNotificationSubprotocol::Legacy {
         return Err(async_ws_connect_message(
-            "websocket server selected an unsupported sync subprotocol",
+            "exact-device websocket requires a versioned AWiki sync subprotocol",
         ));
     }
-    if require_sync_changed_v2 && selected.is_none() {
-        return Err(async_ws_connect_message(
-            "exact-device websocket requires awiki.sync.changed.v2",
-        ));
-    }
-    Ok(selected.is_some())
+    Ok(selected)
 }
 
 fn decode_json_object(raw: impl AsRef<[u8]>) -> crate::ImResult<Map<String, Value>> {
@@ -279,7 +290,10 @@ mod tests {
     #[test]
     fn async_ws_allows_v1_fallback_and_rejects_wrong_selected_subprotocol() {
         let mut headers = HeaderMap::new();
-        assert!(!validate_async_ws_subprotocol(&headers, false).unwrap());
+        assert_eq!(
+            validate_async_ws_subprotocol(&headers, false).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::Legacy
+        );
 
         headers.insert(
             SEC_WEBSOCKET_PROTOCOL,
@@ -293,11 +307,24 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert!(validate_async_ws_subprotocol(&headers, false).unwrap());
+        assert_eq!(
+            validate_async_ws_subprotocol(&headers, false).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::V2
+        );
+        headers.insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            validate_async_ws_subprotocol(&headers, true).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::V3
+        );
     }
 
     #[test]
-    fn async_ws_requests_sync_changed_v2_subprotocol() {
+    fn async_ws_requests_v3_with_v2_fallback_subprotocols() {
         let request = build_async_ws_request(
             "wss://example.test/im/ws",
             "token",
@@ -312,7 +339,11 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+            format!(
+                "{}, {}",
+                crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
+                crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+            )
         );
         assert_eq!(
             request
@@ -346,7 +377,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!transport.sync_changed_v2);
+        assert_eq!(
+            transport.sync_subprotocol,
+            crate::internal::realtime::SyncNotificationSubprotocol::Legacy
+        );
         server.await.unwrap();
     }
 

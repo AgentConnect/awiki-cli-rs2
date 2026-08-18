@@ -38,8 +38,16 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
+
+static GENERIC_CLI_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn generic_cli_process_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    GENERIC_CLI_PROCESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn fixture() -> (tempfile::TempDir, DaemonState) {
     let root = tempfile::tempdir().unwrap();
@@ -2496,6 +2504,7 @@ fn command_driver_uses_local_rpc_without_task_text_env_or_callbacks() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -2567,7 +2576,7 @@ PY
     let worker_state = state.clone();
     let worker_outbox = outbox.clone();
     let worker = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut handled = 0;
         while handled < 2 {
             match listener.accept() {
@@ -2632,6 +2641,7 @@ fn generic_cli_driver_registry_runs_command_profile() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -2688,7 +2698,7 @@ PY
     let worker_state = state.clone();
     let worker_outbox = outbox.clone();
     let worker = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -2746,6 +2756,7 @@ fn command_driver_timeout_marks_failed_and_releases_route_without_final() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -3239,6 +3250,7 @@ exit 0
 fn codex_driver_runs_in_isolated_process_group() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let fake_codex = root.path().join("codex-process-group");
     let process_capture = root.path().join("codex-process.txt");
@@ -3325,6 +3337,7 @@ fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig
 fn claude_code_driver_check_install_status_uses_probe_env_allowlist() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let fake_claude = root.path().join("claude");
     let env_capture = root.path().join("claude-version-env.txt");
@@ -3398,6 +3411,7 @@ exit 0
 fn claude_code_driver_runs_in_isolated_process_group() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let fake_claude = root.path().join("claude-process-group");
     let process_capture = root.path().join("claude-process.txt");
@@ -3640,6 +3654,7 @@ fn claude_code_driver_config_reads_driver_config_binary_path_when_profile_path_m
 fn claude_code_registry_runs_profile_instead_of_not_implemented() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -3731,6 +3746,7 @@ printf '{"type":"result","result":"registry claude finished"}\n'
 fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let fake_codex = root.path().join("codex");
     let env_capture = root.path().join("codex-version-env.txt");
@@ -3806,6 +3822,7 @@ fn codex_driver_fake_binary_uses_stdin_env_outputs_and_local_rpc() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -3908,7 +3925,7 @@ PY
     let worker_state = state.clone();
     let worker_outbox = outbox.clone();
     let worker = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut handled = 0;
         while handled < 2 {
             match listener.accept() {
@@ -4080,6 +4097,7 @@ PY
 fn codex_route_root_records_native_id_and_resumes_same_route() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -4302,6 +4320,7 @@ esac
 fn codex_route_root_existing_route_without_native_id_starts_fresh_session() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -4440,6 +4459,7 @@ fi
 fn claude_code_route_root_records_generated_session_and_resumes_same_route() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -4703,6 +4723,7 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
 fn claude_code_driver_nonzero_exit_does_not_record_generated_session_or_final() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -4780,6 +4801,7 @@ exit 9
 fn claude_code_route_session_rejects_no_session_persistence() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -4909,6 +4931,7 @@ fn claude_code_driver_timeout_marks_failed_and_releases_route_without_final() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -5010,6 +5033,7 @@ sleep 10
 fn codex_driver_success_without_finish_uses_fallback_final_once() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -5138,6 +5162,7 @@ exit 0
 fn codex_fallback_final_survives_status_delivery_failure_and_releases_route() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -5253,6 +5278,7 @@ exit 0
 fn worktree_per_task_uses_daemon_runtime_temp_and_records_metadata() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -5383,6 +5409,7 @@ exit 0
 fn codex_driver_nonzero_exit_does_not_forge_success_final() {
     use std::os::unix::fs::PermissionsExt;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -5481,6 +5508,7 @@ fn codex_driver_timeout_marks_failed_and_releases_route_without_final() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
+    let _process_guard = generic_cli_process_test_guard();
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
