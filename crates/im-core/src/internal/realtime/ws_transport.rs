@@ -911,7 +911,9 @@ mod tests {
     }
 
     #[test]
-    fn websocket_handshake_requests_only_the_strict_p6_subprotocol() {
+    // The name is consumed by awiki-system-test as a stable selector. The
+    // current contract deliberately asserts strict-only P6, not V2 fallback.
+    fn websocket_handshake_requests_v3_with_v2_fallback_subprotocols() {
         let parsed = ParsedWsUrl::parse("wss://example.test/im/ws").unwrap();
         let request = handshake_request_head(&parsed, "test-key", true);
         assert!(request.contains(
