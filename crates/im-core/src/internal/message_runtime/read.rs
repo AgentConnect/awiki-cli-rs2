@@ -4499,7 +4499,7 @@ async fn project_group_e2ee_messages_async_impl(
     let mut message_values = std::mem::take(messages);
     apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
     let mut p6_projected = Vec::with_capacity(message_values.len());
-    let mut newly_decrypted = Vec::new();
+    let mut newly_decrypted_values = Vec::new();
     let mut p6_warnings = Vec::new();
     for mut message in message_values.drain(..) {
         if !is_p6_v2_projection_candidate(&message) {
@@ -4516,9 +4516,7 @@ async fn project_group_e2ee_messages_async_impl(
         }
         match project_p6_v2_incoming_message(client, &mut message).await {
             Ok(()) => {
-                if let Ok(Some(projected)) = message_from_value(client, &message, None) {
-                    newly_decrypted.push(projected);
-                }
+                newly_decrypted_values.push(message.clone());
                 p6_projected.push(message);
             }
             Err(error) => p6_warnings.push(format!(
@@ -4527,6 +4525,14 @@ async fn project_group_e2ee_messages_async_impl(
             )),
         }
     }
+    cache_attachment_manifests_for_internal_download_async(client, &newly_decrypted_values).await;
+    let newly_decrypted = newly_decrypted_values
+        .into_iter()
+        .filter_map(|mut message| {
+            redact_attachment_manifests_for_public_projection(std::slice::from_mut(&mut message));
+            message_from_value(client, &message, None).ok().flatten()
+        })
+        .collect::<Vec<_>>();
     if !newly_decrypted.is_empty() {
         if persist_newly_decrypted_p6_messages_async(
             client,
@@ -4813,6 +4819,9 @@ pub(crate) async fn normalize_p6_v2_realtime_incoming(
         "auth": params.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
     });
     project_p6_v2_incoming_message(client, &mut message).await?;
+    cache_attachment_manifests_for_internal_download_async(client, std::slice::from_ref(&message))
+        .await;
+    redact_attachment_manifests_for_public_projection(std::slice::from_mut(&mut message));
     let cached_message = message_from_value(client, &message, None)?.ok_or_else(|| {
         crate::ImError::LocalProjectionUnavailable {
             detail: "P6 realtime plaintext did not produce a local message".to_owned(),
@@ -4824,8 +4833,6 @@ pub(crate) async fn normalize_p6_v2_realtime_incoming(
         "p6_realtime_decryption",
     )
     .await?;
-    cache_attachment_manifests_for_internal_download_async(client, std::slice::from_ref(&message))
-        .await;
     let object = message
         .as_object()
         .ok_or(crate::ImError::PermissionDenied)?;
