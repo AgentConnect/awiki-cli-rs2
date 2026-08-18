@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn p6_remove_trigger_retry_is_bounded_to_host_forbidden() {
+    assert!(p6_remove_trigger_convergence_pending(
+        &crate::ImError::Service {
+            status_code: Some(403),
+            code: None,
+            message: "forbidden".to_owned(),
+            data: None,
+        }
+    ));
+    assert!(p6_remove_trigger_convergence_pending(
+        &crate::ImError::Service {
+            status_code: None,
+            code: Some("anp.forbidden".to_owned()),
+            message: "forbidden".to_owned(),
+            data: None,
+        }
+    ));
+    assert!(!p6_remove_trigger_convergence_pending(
+        &crate::ImError::Service {
+            status_code: Some(409),
+            code: Some("group.e2ee.epoch_conflict".to_owned()),
+            message: "conflict".to_owned(),
+            data: None,
+        }
+    ));
+    assert!(!p6_remove_trigger_convergence_pending(
+        &crate::ImError::PermissionDenied
+    ));
+}
+
+#[test]
 fn key_package_device_selector_never_accepts_sibling_or_legacy_default() {
     assert!(require_current_device_selection(None, "device-a").is_ok());
     assert!(require_current_device_selection(Some("device-a"), "device-a").is_ok());

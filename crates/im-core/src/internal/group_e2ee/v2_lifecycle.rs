@@ -1012,7 +1012,16 @@ fn submit_exact_remove(
         pending_commit_id: format!("pending-{remove_operation}"),
         request_id: format!("{remove_operation}-prepare"),
     })?;
-    submit_prepared_remove(context, &submission, format!("{remove_operation}-finalize"))
+    let finalize_request_id = format!("{remove_operation}-finalize");
+    for retry in 0_u64..=5 {
+        match submit_prepared_remove(context, &submission, finalize_request_id.clone()) {
+            Err(error) if retry < 5 && p6_remove_trigger_convergence_pending(&error) => {
+                std::thread::sleep(std::time::Duration::from_millis((retry + 1) * 200));
+            }
+            outcome => return outcome,
+        }
+    }
+    unreachable!("bounded P6 Remove retry loop always returns")
 }
 
 fn submit_prepared_add(
@@ -1071,6 +1080,22 @@ fn p6_host_rejection_is_deterministic(error: &crate::ImError) -> bool {
                     | "group.not_member"
                     | "group.policy_violation"
             )
+    )
+}
+
+fn p6_remove_trigger_convergence_pending(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::Service {
+            status_code: Some(403),
+            ..
+        }
+    ) || matches!(
+        error,
+        crate::ImError::Service {
+            code: Some(code),
+            ..
+        } if code == "anp.forbidden"
     )
 }
 
