@@ -4573,13 +4573,26 @@ async fn persist_newly_decrypted_p6_messages_async(
         return Ok(());
     }
     let outcome =
-        persist_projection_async(client, messages, &DirectP5ProjectionProvenance::default())
-            .await?;
+        match persist_projection_async(client, messages, &DirectP5ProjectionProvenance::default())
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("P6 plaintext cache commit failed: {error}");
+                return Err(error);
+            }
+        };
     if outcome
         .stored_messages
         .saturating_add(outcome.backlogged_messages)
         != messages.len()
     {
+        eprintln!(
+            "P6 plaintext cache commit was incomplete: expected={}, stored={}, backlogged={}",
+            messages.len(),
+            outcome.stored_messages,
+            outcome.backlogged_messages
+        );
         return Err(crate::ImError::LocalProjectionUnavailable {
             detail: "P6 plaintext projection was not durably stored".to_owned(),
         });
