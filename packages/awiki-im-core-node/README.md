@@ -23,6 +23,11 @@ try {
         limit: 50,
       })
     : undefined
+  const group = identity ? await client.createGroup({ name: 'Release Crew' }) : undefined
+  if (group) await client.addGroupMember({ groupDid: group.did, member: 'alice.awiki.info' })
+  const profiles = identity
+    ? await client.hydrateDisplayProfiles({ peers: ['alice.awiki.info'] })
+    : []
   // 经产品层显式二次确认后，可调用 await client.clearLocalData()
 }
 finally {
@@ -93,8 +98,9 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
   JSON 或 base64。
 - 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
   OTP、路径、私钥和附件内容不会进入 JS 错误。
-- 当前源码 candidate 的 Native contract version 为 `3`；wrapper 拒绝其他版本的 addon。
-  registry `0.1.3` 仍是 v2，后续正式 patch 必须同步发布 v3 wrapper 与平台 addon。
+- `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
+  `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
+- Native contract version 固定为 `4`；wrapper 拒绝缺少群管理、本地时间线或展示资料接口的旧 addon。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。

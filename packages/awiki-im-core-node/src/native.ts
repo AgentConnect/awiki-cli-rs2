@@ -1,4 +1,7 @@
 import type {
+  AddGroupMemberInput,
+  CreateGroupInput,
+  DisplayProfileBatchInput,
   DownloadAttachmentInput,
   ExternalHttpHeader,
   ExternalHttpRequest,
@@ -8,6 +11,9 @@ import type {
   MarkReadResult,
   NodeConversation,
   NodeDownload,
+  NodeDisplayProfile,
+  NodeGroup,
+  NodeGroupMember,
   NodeIdentity,
   NodeMessage,
   NodePeer,
@@ -42,6 +48,9 @@ export interface NativeImCoreNodeClient {
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   resolvePeer(peer: string): Promise<NodePeer>
+  hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<NodeDisplayProfile[]>
+  createGroup(input: CreateGroupInput): Promise<NodeGroup>
+  addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>

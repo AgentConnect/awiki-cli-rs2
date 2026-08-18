@@ -20,13 +20,16 @@ pub async fn open_native_client(options: NodeOpenOptions) -> napi::Result<Native
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    3
+    4
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn local_timeline_contract_uses_native_api_v3() {
-        assert_eq!(super::native_api_version(), 3);
+    fn display_profile_hydration_contract_uses_native_api_v4() {
+        assert_eq!(super::native_api_version(), 4);
     }
 }
+
+#[cfg(test)]
+mod group_tests;

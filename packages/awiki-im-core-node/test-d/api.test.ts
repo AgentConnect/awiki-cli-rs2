@@ -23,11 +23,14 @@ void opened.then(async client => {
   attempt.headerPatch satisfies readonly { readonly name: string, readonly value: string }[]
   const retry = await attempt.handleResponse({ statusCode: 200, headers: [] })
   retry satisfies import('../src/index.js').ExternalHttpAuthAttempt | null
-  const localTimeline = await client.getLocalConversationTimeline({
-    conversationId: 'group:did:example:group',
-    limit: 50,
-  })
+  const group = await client.createGroup({ name: 'Release Crew', description: 'ships together' })
+  group.conversationId satisfies string
+  const member = await client.addGroupMember({ groupDid: group.did, member: 'alice' })
+  member.did satisfies string
+  const localTimeline = await client.getLocalConversationTimeline({ conversationId: group.conversationId })
   localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
+  const profiles = await client.hydrateDisplayProfiles({ peers: ['did:wba:awiki.info:user:alice'] })
+  profiles satisfies readonly import('../src/index.js').NodeDisplayProfile[]
   await client.sendAttachment({
     conversationId: 'group:did:example:group',
     fileName: 'bytes.bin',

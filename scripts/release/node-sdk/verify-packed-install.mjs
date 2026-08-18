@@ -58,7 +58,13 @@ try {
     : `
       const client = await openImCoreNodeClient(options)
       if (typeof client.getLocalConversationTimeline !== 'function') {
-        throw new Error('expected native API v3 local timeline facade')
+        throw new Error('expected native API v4 local timeline facade')
+      }
+      if (typeof client.prepareExternalHttpRequest !== 'function') {
+        throw new Error('expected native API v4 external HTTP auth facade')
+      }
+      if (typeof client.createGroup !== 'function' || typeof client.hydrateDisplayProfiles !== 'function') {
+        throw new Error('expected native API v4 group and display-profile facade')
       }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()

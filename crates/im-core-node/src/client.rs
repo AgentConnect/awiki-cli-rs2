@@ -547,6 +547,78 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn hydrate_display_profiles(
+        &self,
+        input: NodeDisplayProfileBatchInput,
+    ) -> napi::Result<Vec<NodeDisplayProfile>> {
+        napi_result(self.hydrate_display_profiles_inner(input).await)
+    }
+
+    async fn hydrate_display_profiles_inner(
+        &self,
+        input: NodeDisplayProfileBatchInput,
+    ) -> SafeResult<Vec<NodeDisplayProfile>> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = crate::dto::display_profile_batch_request(input, client.did_domain())?;
+        let profiles = self
+            .inner
+            .wait_im(
+                client.directory().hydrate_display_profiles_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::display_profiles(profiles))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn create_group(&self, input: NodeCreateGroupInput) -> napi::Result<NodeGroup> {
+        napi_result(self.create_group_inner(input).await)
+    }
+
+    async fn create_group_inner(&self, input: NodeCreateGroupInput) -> SafeResult<NodeGroup> {
+        let request = crate::dto::group_create_request(input)?;
+        let fallback_title = request.name.clone();
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(
+                client.groups().create_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::created_group(result, &fallback_title)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_group_member(
+        &self,
+        input: NodeAddGroupMemberInput,
+    ) -> napi::Result<NodeGroupMember> {
+        napi_result(self.add_group_member_inner(input).await)
+    }
+
+    async fn add_group_member_inner(
+        &self,
+        input: NodeAddGroupMemberInput,
+    ) -> SafeResult<NodeGroupMember> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = crate::dto::group_member_mutation_request(input, client.did_domain())?;
+        let result = self
+            .inner
+            .wait_im(
+                client.groups().add_member_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::added_group_member(result)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn sync_now(&self, input: Option<NodeSyncOptions>) -> napi::Result<NodeSyncResult> {
         napi_result(self.sync_now_inner(input).await)
     }

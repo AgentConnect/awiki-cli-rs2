@@ -36,6 +36,21 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "DirectoryService::resolve_peer_async",
     },
     PublicParity {
+        capability: "display_profiles",
+        node_method: "hydrateDisplayProfiles",
+        core_facade: "DirectoryService::hydrate_display_profiles_async",
+    },
+    PublicParity {
+        capability: "group_create",
+        node_method: "createGroup",
+        core_facade: "GroupService::create_async",
+    },
+    PublicParity {
+        capability: "group_member_add",
+        node_method: "addGroupMember",
+        core_facade: "GroupService::add_member_async",
+    },
+    PublicParity {
         capability: "sync",
         node_method: "syncNow",
         core_facade: "MessageService::sync_now_async",
@@ -96,6 +111,9 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "registration",
         "profile",
         "directory",
+        "display_profiles",
+        "group_create",
+        "group_member_add",
         "sync",
         "conversation",
         "history",

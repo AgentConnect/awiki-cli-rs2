@@ -85,6 +85,47 @@ export interface NodePeer {
   readonly conversationId: string
 }
 
+/** Minimal private transport-protected group creation input. */
+export interface CreateGroupInput {
+  readonly name: string
+  readonly description?: string
+}
+
+/** Created group with its canonical conversation route. */
+export interface NodeGroup {
+  readonly did: string
+  readonly conversationId: string
+  readonly title: string
+  readonly description?: string
+  readonly memberCount?: number
+}
+
+/** One member reference accepted as a DID, full Handle, or local Handle name. */
+export interface AddGroupMemberInput {
+  readonly groupDid: string
+  readonly member: string
+}
+
+/** Authoritative member identity returned after group membership mutation. */
+export interface NodeGroupMember {
+  readonly did: string
+  readonly handle?: string
+}
+
+/** Local-only batch lookup used to hydrate message sender labels without network I/O. */
+export interface DisplayProfileBatchInput {
+  readonly peers: readonly string[]
+}
+
+/** One locally cached display profile. */
+export interface NodeDisplayProfile {
+  readonly did?: string
+  readonly handle?: string
+  readonly displayName?: string
+  readonly cacheHit: boolean
+  readonly isStale: boolean
+}
+
 /** Opaque cursor page input. */
 export interface PageInput {
   readonly cursor?: string
@@ -233,6 +274,9 @@ export interface ImCoreNodeClient {
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   resolvePeer(peer: string): Promise<NodePeer>
+  hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]>
+  createGroup(input: CreateGroupInput): Promise<NodeGroup>
+  addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
