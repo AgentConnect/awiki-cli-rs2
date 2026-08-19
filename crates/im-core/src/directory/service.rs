@@ -1225,7 +1225,8 @@ mod direct_peer_route_projection_tests {
         super::project_handle_lookup_async(&client, &old)
             .await
             .unwrap();
-        let current = lookup("did:example:bob-current");
+        let mut current = lookup("did:example:bob-current");
+        current.binding_generation = Some("3".to_owned());
 
         super::project_handle_lookup_async(&client, &current)
             .await

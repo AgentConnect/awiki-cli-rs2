@@ -29,6 +29,15 @@ pub(crate) struct AttachmentPrepareObjectInput {
     pub message_security_profile: &'static str,
 }
 
+pub(crate) struct AttachmentManifestSendInput {
+    pub target: crate::messages::MessageTarget,
+    pub resolved_target_did: Option<String>,
+    pub prepared: PreparedCommittedAttachment,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub operation_id: Option<String>,
+    pub credentials: Option<AttachmentUploadCredentials>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AttachmentUploadCredentials {
     pub identity_name: String,
@@ -233,6 +242,89 @@ where
             redacted_manifest,
             full_manifest,
             grant_ref,
+        })
+    }
+
+    pub(crate) fn prepare_and_commit_plain_object(
+        mut self,
+        input: AttachmentPrepareObjectInput,
+    ) -> crate::ImResult<PreparedCommittedAttachment> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        let control = local_attachment_control_context(self.client)?;
+        self.session_provider.ensure_session(auth_scope(&target))?;
+
+        let upload = prepare_request(input.request)?;
+        let prepared = upload.prepared;
+        let slot = self.create_slot_with_security_profile(
+            &target,
+            control,
+            input.message_security_profile,
+            &prepared,
+        )?;
+        self.transport.put_attachment_object(
+            slot.result.upload_uri.as_str(),
+            upload_headers(&slot.result.upload_headers),
+            upload.body.clone_for_sync(),
+        )?;
+        self.commit_object(&prepared, &slot)?;
+
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared,
+            slot.result.attachment_id.clone(),
+            slot.result.object_uri.clone(),
+        );
+        let manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
+        let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)?;
+        Ok(PreparedCommittedAttachment {
+            target_kind: target.kind(),
+            target_did: target.did().to_owned(),
+            prepared,
+            slot: slot.result,
+            descriptor,
+            redacted_manifest: manifest.clone(),
+            full_manifest: manifest,
+            grant_ref,
+        })
+    }
+
+    pub(crate) fn send_prepared_manifest(
+        mut self,
+        input: AttachmentManifestSendInput,
+    ) -> crate::ImResult<AttachmentUploadResult> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        self.session_provider.ensure_session(auth_scope(&target))?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials(self.client)?,
+        };
+        let manifest = input.prepared.redacted_manifest.clone();
+        let send_result = self.send_manifest(
+            &target,
+            manifest.clone(),
+            input.client_message_id.as_ref(),
+            input.operation_id.as_deref(),
+            credentials,
+        )?;
+        let sdk_result = sdk_result_from_raw(
+            send_result.raw.clone(),
+            &send_result.meta,
+            self.client.did().clone(),
+            &target,
+            &manifest,
+        )?;
+        Ok(AttachmentUploadResult {
+            sdk_result,
+            target_kind: target.kind(),
+            target_did: target.did().to_owned(),
+            prepared: input.prepared.prepared,
+            slot: input.prepared.slot,
+            manifest,
+            raw: send_result.raw,
         })
     }
 
@@ -484,6 +576,100 @@ where
             redacted_manifest,
             full_manifest,
             grant_ref,
+        })
+    }
+
+    pub(crate) async fn prepare_and_commit_plain_object_async(
+        mut self,
+        input: AttachmentPrepareObjectInput,
+    ) -> crate::ImResult<PreparedCommittedAttachment> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        let control = local_attachment_control_context(self.client)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+
+        let upload = prepare_request_async(input.request).await?;
+        let prepared = upload.prepared;
+        let slot = self
+            .create_slot_with_security_profile_async(
+                &target,
+                control,
+                input.message_security_profile,
+                &prepared,
+            )
+            .await?;
+        let body = async_object_body(&prepared, upload.body)?;
+        self.transport
+            .put_attachment_object_stream(
+                slot.result.upload_uri.as_str(),
+                upload_headers(&slot.result.upload_headers),
+                body,
+            )
+            .await?;
+        self.commit_object_async(&prepared, &slot).await?;
+
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared,
+            slot.result.attachment_id.clone(),
+            slot.result.object_uri.clone(),
+        );
+        let manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
+        let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)?;
+        Ok(PreparedCommittedAttachment {
+            target_kind: target.kind(),
+            target_did: target.did().to_owned(),
+            prepared,
+            slot: slot.result,
+            descriptor,
+            redacted_manifest: manifest.clone(),
+            full_manifest: manifest,
+            grant_ref,
+        })
+    }
+
+    pub(crate) async fn send_prepared_manifest_async(
+        mut self,
+        input: AttachmentManifestSendInput,
+    ) -> crate::ImResult<AttachmentUploadResult> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let manifest = input.prepared.redacted_manifest.clone();
+        let send_result = self
+            .send_manifest_async(
+                &target,
+                manifest.clone(),
+                input.client_message_id.as_ref(),
+                input.operation_id.as_deref(),
+                credentials,
+            )
+            .await?;
+        let sdk_result = sdk_result_from_raw(
+            send_result.raw.clone(),
+            &send_result.meta,
+            self.client.did().clone(),
+            &target,
+            &manifest,
+        )?;
+        Ok(AttachmentUploadResult {
+            sdk_result,
+            target_kind: target.kind(),
+            target_did: target.did().to_owned(),
+            prepared: input.prepared.prepared,
+            slot: input.prepared.slot,
+            manifest,
+            raw: send_result.raw,
         })
     }
 

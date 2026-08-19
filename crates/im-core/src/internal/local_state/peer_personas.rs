@@ -207,12 +207,19 @@ pub(crate) fn project_verified_handle(
     let transaction = connection
         .transaction()
         .map_err(super::local_state_unavailable)?;
+    let binding_generation = validate_projection_generation(
+        &transaction,
+        owner_identity_id,
+        &persona.peer_persona_id,
+        lookup.did.as_str(),
+        lookup.binding_generation.as_deref(),
+    )?;
     upsert(
         &transaction,
         &PeerPersonaRecord {
             owner_identity_id: owner_identity_id.trim().to_owned(),
             persona: persona.clone(),
-            binding_generation: lookup.binding_generation.clone(),
+            binding_generation: binding_generation.clone(),
             subject_type: "human".to_owned(),
             source: "handle_authority".to_owned(),
             authority_revision: None,
@@ -245,7 +252,7 @@ WHERE owner_identity_id = ?1 AND peer_persona_id = ?2
                 identifier_kind: kind.to_owned(),
                 identifier_value: value.to_owned(),
                 is_current: true,
-                binding_generation: lookup.binding_generation.clone(),
+                binding_generation: binding_generation.clone(),
                 source: "handle_authority".to_owned(),
                 verified_at: verified_at.clone(),
             },
@@ -345,6 +352,91 @@ WHERE owner_identity_id = ?2
     Ok(route.conversation_id)
 }
 
+fn validate_projection_generation(
+    connection: &Connection,
+    owner_identity_id: &str,
+    peer_persona_id: &str,
+    next_did: &str,
+    next_generation: Option<&str>,
+) -> crate::ImResult<Option<String>> {
+    if let Some(generation) = next_generation {
+        super::sync_v2::validate_positive_decimal("binding_generation", generation)?;
+    }
+    let stored_generation = connection
+        .query_row(
+            r#"SELECT binding_generation FROM peer_personas
+WHERE owner_identity_id = ?1 AND peer_persona_id = ?2"#,
+            (owner_identity_id.trim(), peer_persona_id.trim()),
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .flatten();
+    if let Some(generation) = stored_generation.as_deref() {
+        super::sync_v2::validate_positive_decimal("stored_binding_generation", generation)
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "stored peer Persona has an invalid binding generation".to_owned(),
+            })?;
+    }
+    let current_did = connection
+        .query_row(
+            r#"SELECT identifier_value FROM peer_identifiers
+WHERE owner_identity_id = ?1 AND peer_persona_id = ?2
+  AND identifier_kind = 'did' AND is_current = 1
+ORDER BY last_seen_at DESC LIMIT 1"#,
+            (owner_identity_id.trim(), peer_persona_id.trim()),
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+
+    match (stored_generation.as_deref(), next_generation) {
+        (Some(stored), Some(next)) => {
+            let ordering = super::sync_v2::compare_decimal(next, stored)?;
+            if ordering == std::cmp::Ordering::Less {
+                return Err(binding_conflict(
+                    "Handle binding generation cannot move backwards",
+                ));
+            }
+            if ordering == std::cmp::Ordering::Equal
+                && current_did
+                    .as_deref()
+                    .is_some_and(|current| current != next_did)
+            {
+                return Err(binding_conflict(
+                    "Handle DID cannot change at the same binding generation",
+                ));
+            }
+        }
+        (Some(_), None)
+            if current_did
+                .as_deref()
+                .is_some_and(|current| current != next_did) =>
+        {
+            return Err(binding_conflict(
+                "Handle DID rotation requires a newer binding generation",
+            ));
+        }
+        (None, None)
+            if current_did
+                .as_deref()
+                .is_some_and(|current| current != next_did) =>
+        {
+            return Err(binding_conflict(
+                "Handle DID rotation requires a binding generation",
+            ));
+        }
+        _ => {}
+    }
+    Ok(next_generation.map(ToOwned::to_owned).or(stored_generation))
+}
+
+fn binding_conflict(detail: &str) -> crate::ImError {
+    crate::ImError::IdentityBindingConflict {
+        detail: detail.to_owned(),
+    }
+}
+
 fn validate(record: &PeerPersonaRecord) -> crate::ImResult<()> {
     for (field, value) in [
         ("owner_identity_id", record.owner_identity_id.as_str()),
@@ -425,6 +517,107 @@ mod tests {
             )
             .unwrap(),
             2
+        );
+        let projection: (String, String, i64, i64) = db
+            .query_row(
+                r#"SELECT p.binding_generation, r.current_did,
+    (SELECT COUNT(*) FROM peer_identifiers i
+     WHERE i.owner_identity_id = p.owner_identity_id
+       AND i.peer_persona_id = p.peer_persona_id
+       AND i.identifier_kind = 'did' AND i.is_current = 1),
+    (SELECT COUNT(*) FROM peer_identifiers i
+     WHERE i.owner_identity_id = p.owner_identity_id
+       AND i.peer_persona_id = p.peer_persona_id
+       AND i.identifier_kind = 'did' AND i.is_current = 0)
+FROM peer_personas p
+JOIN direct_peer_routes r
+  ON r.owner_identity_id = p.owner_identity_id
+ AND r.peer_persona_id = p.peer_persona_id
+WHERE p.owner_identity_id = 'owner-a'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            projection,
+            ("2".to_owned(), "did:example:alice-new".to_owned(), 1, 1)
+        );
+    }
+
+    #[test]
+    fn verified_handle_projection_rejects_generation_regression_and_equal_generation_rotation() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let lookup = |did: &str, generation: Option<&str>| crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("alice.awiki.info", "").unwrap(),
+            did: crate::ids::Did::parse(did).unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("awiki.info".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: generation.map(ToOwned::to_owned),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        let canonical = project_verified_handle(
+            &mut db,
+            "owner-a",
+            "did:example:owner",
+            &lookup("did:example:alice-current", Some("10")),
+        )
+        .unwrap();
+
+        for rejected in [
+            lookup("did:example:alice-old", Some("9")),
+            lookup("did:example:alice-other", Some("10")),
+            lookup("did:example:alice-other", None),
+        ] {
+            assert!(matches!(
+                project_verified_handle(&mut db, "owner-a", "did:example:owner", &rejected),
+                Err(crate::ImError::IdentityBindingConflict { .. })
+            ));
+        }
+        let stored: (String, String) = db
+            .query_row(
+                r#"SELECT p.binding_generation, r.current_did
+FROM peer_personas p JOIN direct_peer_routes r
+  ON r.owner_identity_id = p.owner_identity_id
+ AND r.peer_persona_id = p.peer_persona_id
+WHERE p.owner_identity_id = 'owner-a' AND r.conversation_id = ?1"#,
+                [canonical],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            ("10".to_owned(), "did:example:alice-current".to_owned())
+        );
+    }
+
+    #[test]
+    fn verified_handle_projection_preserves_known_generation_when_lookup_omits_it() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let mut lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("alice.awiki.info", "").unwrap(),
+            did: crate::ids::Did::parse("did:example:alice").unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("awiki.info".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("7".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        project_verified_handle(&mut db, "owner-a", "did:example:owner", &lookup).unwrap();
+        lookup.binding_generation = None;
+        project_verified_handle(&mut db, "owner-a", "did:example:owner", &lookup).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT binding_generation FROM peer_personas WHERE owner_identity_id = 'owner-a'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "7"
         );
     }
 

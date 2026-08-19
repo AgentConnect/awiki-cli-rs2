@@ -1167,11 +1167,27 @@ Reliable sync 补充：
   echo 前 fail closed。target-first `send` 继续作为 CLI/daemon/legacy compatibility API。
   `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
   retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
+- conversation-surface Direct 正常发送只读取 owner-scoped 本地 route，不预先请求 Directory
+  或公开 WNS。只有远端明确返回 `anp.invalid_target_binding`（兼容旧 `1406` 或
+  `data.json_rpc_code = 1406`）且 `reason = stale_did` 时，Core 才执行一次 Direct route
+  恢复并最多重发一次；其他 service/application error、Group 发送和第二次失败均不恢复。
+  同域 Handle 必须由本地域 Directory 与公开 WNS 对 Handle、域名、current DID 和
+  `binding_generation` 双重校验，跨域 Handle 只使用公开 WNS。并发恢复按
+  `owner_identity_id + conversation_id` 合并，且新绑定必须保持 Persona / canonical
+  conversation 不变、generation 单调前进并拒绝旧 DID。
+- Direct stale-route 重发保持同一 message ID、operation/idempotency ID、正文、security mode
+  和 canonical conversation。`direct_peer_routes.current_did` 是可替换路由；任何已经落盘的
+  wire receiver DID 都是不可变消息事实。text/payload 在首次网络发送前写入 local echo，因此
+  保留失败 route；attachment 若在远端接受后才首次建立消息行，则记录 accepted route。后续同一
+  logical message 调用复用已有 wire snapshot 做本地冲突校验，但网络发送使用当前 route，不能把
+  DID rotation 误判为 `message_wire_identity_conflict`。
 - `attachments().send_conversation` / Dart `client.attachments.sendConversation(...)` 是
   conversation-surface attachment send 主路径。AWiki Me 已选中会话的附件发送和重试必须传
   `ConversationReadRef.conversation_id`，不能用 target DID、handle、display thread id 或
   memory pending 决定发送归属。旧 `attachments().send(target, ...)` 只保留给 CLI、daemon、
-  legacy caller 和尚未持有 canonical conversation 的兼容入口。
+  legacy caller 和尚未持有 canonical conversation 的兼容入口。Direct stale-route 恢复覆盖
+  plain / secure、blocking / async conversation attachment；object create/upload/commit 不重复，
+  只使用同一 message/operation ID 向新 route 重发已经准备好的 Manifest。
 - `mark_conversation_read` 是 conversationId-first read watermark API。local read-state 使用
   canonical `conversation_id` storage key，远端 `read_state.mark_read` 由 core resolver 转成
   direct / group service thread；旧服务端 fallback 到本地 unread ids +

@@ -575,51 +575,6 @@ mod incoming_recovery_tests {
 #[cfg(test)]
 mod conversation_send_tests;
 
-#[cfg(test)]
-mod stale_delivery_target_tests {
-    use serde_json::json;
-
-    #[test]
-    fn stale_delivery_target_from_error_extracts_binding_but_ignores_private_subject() {
-        let err = crate::ImError::Service {
-            status_code: None,
-            code: Some("1406".to_owned()),
-            message: "stale did".to_owned(),
-            data: Some(json!({
-                "reason": "stale_did",
-                "target_did": "did:example:bob-old",
-                "current_did": "did:example:bob-current",
-                "full_handle": "bob.awiki.test",
-                "user_id": "user-bob"
-            })),
-        };
-
-        let stale = super::stale_delivery_target_from_error(&err, "did:example:alice")
-            .expect("stale target");
-
-        assert_eq!(
-            stale.current_did.as_deref(),
-            Some("did:example:bob-current")
-        );
-        assert_eq!(stale.full_handle.as_deref(), Some("bob.awiki.test"));
-    }
-
-    #[test]
-    fn stale_delivery_target_from_error_ignores_plain_invalid_binding() {
-        let err = crate::ImError::Service {
-            status_code: None,
-            code: Some("1406".to_owned()),
-            message: "invalid target".to_owned(),
-            data: Some(json!({
-                "reason": "proof_mismatch",
-                "current_did": "did:example:bob-current"
-            })),
-        };
-
-        assert!(super::stale_delivery_target_from_error(&err, "did:example:alice").is_none());
-    }
-}
-
 #[cfg(all(test, feature = "sqlite"))]
 mod conversation_mark_read_request_tests {
     use serde_json::json;
@@ -2559,37 +2514,34 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedConversationSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
-        if conversation_send_uses_security_runtime(&resolved.request.security) {
-            return self.send_async(resolved.request).await;
+        let secure = conversation_send_uses_security_runtime(&resolved.request.security);
+        if secure {
+            validate_secure_conversation_send(&resolved.request)?;
+        } else {
+            validate_plain_conversation_send(&resolved.request)?;
+            let message_id = resolved
+                .request
+                .client_message_id
+                .as_ref()
+                .expect("conversation send request should always have a client message id")
+                .clone();
+            crate::internal::message_runtime::local_projection::persist_send_projection_async(
+                self.client,
+                &resolved.request.target,
+                &resolved.request.body,
+                &message_id,
+                resolved.request.delivery.idempotency_key.as_deref(),
+                super::DeliveryState::StoredLocally,
+                resolved.wire_target_did.as_deref(),
+                resolved.target_handle.as_deref(),
+                resolved.peer_scope.as_ref(),
+            )
+            .await?;
+            self.client
+                .emit_committed_local_message_projection("local_send_pending");
         }
-        validate_plain_conversation_send(&resolved.request)?;
-        let message_id = resolved
-            .request
-            .client_message_id
-            .as_ref()
-            .expect("conversation send request should always have a client message id")
-            .clone();
-        let operation_id = resolved.request.delivery.idempotency_key.as_deref();
-        let target_did = resolved.target_did.as_deref();
-        let target_handle = resolved.target_handle.as_deref();
-        let peer_scope = resolved.peer_scope.as_ref();
 
-        crate::internal::message_runtime::local_projection::persist_send_projection_async(
-            self.client,
-            &resolved.request.target,
-            &resolved.request.body,
-            &message_id,
-            operation_id,
-            super::DeliveryState::StoredLocally,
-            target_did,
-            target_handle,
-            peer_scope,
-        )
-        .await?;
-        self.client
-            .emit_committed_local_message_projection("local_send_pending");
-
-        match self.send_plain_conversation_network_async(&resolved).await {
+        match self.send_conversation_network_async(&resolved).await {
             Ok(result) => Ok(result),
             Err(err) => {
                 let mut failed_resolved = resolved.clone();
@@ -2598,10 +2550,7 @@ impl<'a> MessageService<'a> {
                     .await
                 {
                     Ok(Some(retry_resolved)) => {
-                        match self
-                            .send_plain_conversation_network_async(&retry_resolved)
-                            .await
-                        {
+                        match self.send_conversation_network_async(&retry_resolved).await {
                             Ok(result) => return Ok(result),
                             Err(retry_err) => {
                                 failed_resolved = retry_resolved;
@@ -2612,8 +2561,10 @@ impl<'a> MessageService<'a> {
                     Ok(None) => err,
                     Err(resolve_err) => resolve_err,
                 };
-                self.persist_failed_conversation_send_projection_async(&failed_resolved, &err)
-                    .await;
+                if !secure {
+                    self.persist_failed_conversation_send_projection_async(&failed_resolved, &err)
+                        .await;
+                }
                 Err(err)
             }
         }
@@ -2624,95 +2575,53 @@ impl<'a> MessageService<'a> {
         resolved: &ResolvedConversationSendRequest,
         err: &crate::ImError,
     ) -> crate::ImResult<Option<ResolvedConversationSendRequest>> {
-        let Some(stale) = stale_delivery_target_from_error(err, self.client.did().as_str()) else {
-            return Ok(None);
-        };
         let super::MessageTarget::Direct(_) = &resolved.request.target else {
             return Ok(None);
         };
-
-        let mut current_did = stale.current_did;
-        let mut full_handle = stale
-            .full_handle
-            .or_else(|| resolved.target_handle.clone())
-            .or_else(|| {
-                resolved
-                    .peer_scope
-                    .as_ref()
-                    .map(|scope| scope.full_handle.clone())
-            });
-        let mut authority_subject_id = None;
-
-        if let Some(handle) = full_handle.clone() {
-            // The retry scope must come from the same authoritative Handle
-            // route as a normal send. Never trust deployment-private IDs from
-            // an error payload, especially for a cross-domain peer.
-            let lookup = crate::internal::handle_discovery::resolve_direct_handle_async(
-                self.client,
-                &handle,
-            )
-            .await?;
-            current_did = Some(lookup.target_did);
-            full_handle = Some(lookup.full_handle);
-            authority_subject_id = Some(lookup.authority_subject_id);
-        }
-
-        let Some(current_did) = current_did
-            .as_deref()
-            .and_then(|did| canonical_peer_did_value(did, self.client.did().as_str()))
+        let Some(rebound) = crate::internal::direct_rebind::rebind_for_stale_error(
+            self.client,
+            crate::internal::direct_rebind::DirectRebindRequest {
+                conversation_id: resolved.conversation_id.clone(),
+                stale_did: resolved.target_did.clone(),
+                known_handle: resolved.target_handle.clone(),
+                peer_scope: resolved.peer_scope.clone(),
+            },
+            err,
+        )
+        .await?
         else {
             return Ok(None);
         };
-        if resolved
-            .target_did
-            .as_deref()
-            .is_some_and(|did| did.trim() == current_did)
-        {
-            return Ok(None);
-        }
-
-        let full_handle = full_handle
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-        let peer_scope = match (authority_subject_id, full_handle.as_ref()) {
-            (Some(authority_subject_id), Some(handle)) => Some(
-                crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                    authority_subject_id,
-                    handle.clone(),
-                )?,
-            ),
-            _ => None,
-        };
-        let target_peer = match full_handle.as_deref() {
-            Some(handle) => crate::ids::PeerRef::parse(handle, "")?,
-            None => crate::ids::PeerRef::parse(&current_did, "")?,
-        };
 
         let mut retry = resolved.clone();
-        retry.request.target = super::MessageTarget::Direct(target_peer);
-        retry.target_did = Some(current_did.clone());
-        retry.target_handle = full_handle;
-        retry.peer_scope = peer_scope;
-        #[cfg(feature = "sqlite")]
-        if retry.conversation_id.starts_with("dm:peer-scope:") {
-            let Some(peer_scope) = retry.peer_scope.as_ref() else {
-                return Err(unresolvable_service_conversation(&retry.conversation_id));
-            };
-            let route =
-                crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::for_client(
-                    self.client,
-                    &retry.conversation_id,
-                    peer_scope,
-                    &current_did,
-                )?;
-            self.client
-                .core_inner()
-                .local_state_db()
-                .await?
-                .upsert_direct_peer_route(route)
-                .await?;
-        }
+        retry.request.target =
+            super::MessageTarget::Direct(crate::ids::PeerRef::parse(&rebound.full_handle, "")?);
+        retry.target_did = Some(rebound.target_did);
+        retry.target_handle = Some(rebound.full_handle);
+        retry.peer_scope = Some(rebound.peer_scope);
         Ok(Some(retry))
+    }
+
+    async fn send_conversation_network_async(
+        &self,
+        resolved: &ResolvedConversationSendRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        if !conversation_send_uses_security_runtime(&resolved.request.security) {
+            return self.send_plain_conversation_network_async(resolved).await;
+        }
+        match &resolved.request.target {
+            super::MessageTarget::Direct(_) => {
+                self.send_direct_e2ee_async(ResolvedSendRequest {
+                    request: resolved.request.clone(),
+                    target_did: resolved.target_did.clone(),
+                    peer_scope: resolved.peer_scope.clone(),
+                })
+                .await
+            }
+            super::MessageTarget::Group(_) => {
+                self.send_group_e2ee_async(resolved.request.clone()).await
+            }
+        }
     }
 
     async fn persist_failed_conversation_send_projection_async(
@@ -2733,7 +2642,7 @@ impl<'a> MessageService<'a> {
                 super::DeliveryState::Failed {
                     reason: err.to_string(),
                 },
-                resolved.target_did.as_deref(),
+                resolved.wire_target_did.as_deref(),
                 resolved.target_handle.as_deref(),
                 resolved.peer_scope.as_ref(),
             )
@@ -2770,8 +2679,12 @@ impl<'a> MessageService<'a> {
                     Some(result.target_did.as_str()),
                 )?;
                 #[cfg(feature = "sqlite")]
-                match crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
+                match crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_with_wire_target_async(
                     self.client,
+                    resolved
+                        .wire_target_did
+                        .as_deref()
+                        .unwrap_or(result.target_did.as_str()),
                     &result.target_did,
                     resolved.target_handle.as_deref(),
                     resolved.peer_scope.as_ref(),
@@ -4704,6 +4617,7 @@ pub(super) struct ResolvedSendRequest {
 struct ResolvedConversationSendRequest {
     conversation_id: String,
     request: super::SendMessageRequest,
+    wire_target_did: Option<String>,
     target_did: Option<String>,
     target_handle: Option<String>,
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
@@ -4804,6 +4718,9 @@ fn conversation_send_request(
         .filter(|value| !value.is_empty())
         .or_else(|| Some(format!("op-{}", client_message_id.as_str())));
     let resolved_target = conversation_send_target(resolved)?;
+    let wire_target_did =
+        existing_conversation_wire_target_did(client, &conversation_id, &client_message_id)?
+            .or_else(|| resolved_target.target_did.clone());
     let request = super::SendMessageRequest {
         target: resolved_target.target,
         body,
@@ -4818,10 +4735,38 @@ fn conversation_send_request(
     Ok(ResolvedConversationSendRequest {
         conversation_id,
         request,
+        wire_target_did,
         target_did: resolved_target.target_did,
         target_handle: resolved_target.target_handle,
         peer_scope: resolved_target.peer_scope,
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn existing_conversation_wire_target_did(
+    client: &crate::core::ImClient,
+    conversation_id: &str,
+    message_id: &crate::ids::MessageId,
+) -> crate::ImResult<Option<String>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::messages::existing_outgoing_direct_wire_target(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        conversation_id,
+        message_id.as_str(),
+    )
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn existing_conversation_wire_target_did(
+    _client: &crate::core::ImClient,
+    _conversation_id: &str,
+    _message_id: &crate::ids::MessageId,
+) -> crate::ImResult<Option<String>> {
+    Ok(None)
 }
 
 fn conversation_send_target(
@@ -4885,6 +4830,15 @@ fn validate_plain_conversation_send(request: &super::SendMessageRequest) -> crat
                 "secure-conversation-send-local-echo",
             ));
         }
+    }
+    validate_send_mode(&request.target, &request.security)?;
+    validate_delegated_send_scope(request)
+}
+
+fn validate_secure_conversation_send(request: &super::SendMessageRequest) -> crate::ImResult<()> {
+    validate_body(&request.body)?;
+    if matches!(request.body, super::MessageBody::Attachment { .. }) {
+        return Err(crate::ImError::unsupported("conversation-attachment-send"));
     }
     validate_send_mode(&request.target, &request.security)?;
     validate_delegated_send_scope(request)
@@ -5157,45 +5111,6 @@ fn direct_handle_from_target(target: &super::MessageTarget) -> Option<&str> {
         }
         _ => None,
     }
-}
-
-struct StaleDeliveryTarget {
-    current_did: Option<String>,
-    full_handle: Option<String>,
-}
-
-fn stale_delivery_target_from_error(
-    err: &crate::ImError,
-    owner_did: &str,
-) -> Option<StaleDeliveryTarget> {
-    let crate::ImError::Service {
-        code: Some(code),
-        data: Some(data),
-        ..
-    } = err
-    else {
-        return None;
-    };
-    if code != "1406" {
-        return None;
-    }
-    if data.get("reason").and_then(serde_json::Value::as_str) != Some("stale_did") {
-        return None;
-    }
-    let current_did = data
-        .get("current_did")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|did| canonical_peer_did_value(did, owner_did));
-    let full_handle = data
-        .get("full_handle")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    (current_did.is_some() || full_handle.is_some()).then_some(StaleDeliveryTarget {
-        current_did,
-        full_handle,
-    })
 }
 
 struct ResolvedHistoryThread {
