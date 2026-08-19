@@ -45,7 +45,7 @@ export function loadNativeBinding(): NativeBinding {
       false,
     )
   }
-  if (binding.nativeApiVersion() !== 4) {
+  if (binding.nativeApiVersion() !== 5) {
     throw new ImCoreNodeError('native_api_mismatch', 'The native addon API version is incompatible.', false)
   }
   return binding

@@ -11,6 +11,7 @@ pub struct NodeOpenOptions {
     pub did_domain: String,
     pub user_service_endpoint: Option<String>,
     pub message_service_endpoint: Option<String>,
+    pub mail_service_endpoint: Option<String>,
     pub anp_service_endpoint: Option<String>,
     pub anp_service_did: Option<String>,
     pub operation_timeout_ms: Option<u32>,
@@ -26,6 +27,7 @@ impl Clone for NodeOpenOptions {
             did_domain: self.did_domain.clone(),
             user_service_endpoint: self.user_service_endpoint.clone(),
             message_service_endpoint: self.message_service_endpoint.clone(),
+            mail_service_endpoint: self.mail_service_endpoint.clone(),
             anp_service_endpoint: self.anp_service_endpoint.clone(),
             anp_service_did: self.anp_service_did.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
@@ -221,6 +223,39 @@ pub struct NodeSyncResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
+pub struct NodeRealtimeOptions {
+    /// Bounded native event buffer. Defaults to 128.
+    pub event_buffer: Option<u32>,
+    /// Initial exponential reconnect delay. Defaults to 1 second.
+    pub reconnect_base_delay_ms: Option<u32>,
+    /// Maximum exponential reconnect delay. Defaults to 30 seconds.
+    pub reconnect_max_delay_ms: Option<u32>,
+    /// When absent, reconnect attempts are not artificially capped.
+    pub reconnect_max_attempts: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRealtimeStatus {
+    pub connected: bool,
+    /// `disconnected`, `connecting`, `connected`, `reconnecting`, or `closed`.
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRealtimeEvent {
+    /// `connection_state_changed` or `sync_required`.
+    pub kind: String,
+    pub state: Option<String>,
+    /// High-level scheduling cause. Never a wire event type or checkpoint.
+    pub cause: Option<String>,
+    pub dirty: Option<bool>,
+    pub gap_detected: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
 pub struct NodePageOfConversations {
     pub items: Vec<NodeConversation>,
     pub next_cursor: Option<String>,
@@ -334,6 +369,334 @@ pub struct NodeDownloadAttachmentInput {
 pub struct NodeDownload {
     pub attachment: NodeAttachment,
     pub bytes: Buffer,
+}
+
+#[napi(object)]
+pub struct NodeMailInboxInput {
+    pub folder: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub unread_only: Option<bool>,
+}
+
+#[napi(object)]
+pub struct NodeMarkMailReadInput {
+    pub message_ids: Vec<String>,
+}
+
+#[napi(object)]
+pub struct NodeSendMailInput {
+    pub to: Vec<String>,
+    pub cc: Option<Vec<String>>,
+    pub subject: String,
+    pub body_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeMailAccount {
+    pub mailbox_address: Option<String>,
+    pub display_name: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeMailMessageSummary {
+    pub id: String,
+    pub folder: Option<String>,
+    pub from: Vec<String>,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub subject: String,
+    pub subject_truncated: bool,
+    pub preview: Option<String>,
+    pub preview_truncated: bool,
+    pub received_at: Option<String>,
+    pub sent_at: Option<String>,
+    pub unread: bool,
+    pub has_attachments: bool,
+    pub attachment_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeMailAttachmentMetadata {
+    pub index: u32,
+    pub file_name: Option<String>,
+    pub content_type: Option<String>,
+    pub size_bytes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeMailMessage {
+    pub summary: NodeMailMessageSummary,
+    pub body_text: Option<String>,
+    pub body_truncated: bool,
+    pub has_html_body: bool,
+    pub attachments: Vec<NodeMailAttachmentMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeMailInboxPage {
+    pub items: Vec<NodeMailMessageSummary>,
+    pub next_offset: Option<u32>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeMarkMailReadResult {
+    pub updated: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeSendMailResult {
+    pub accepted: bool,
+    pub message_id: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+const MAIL_SUBJECT_MAX_BYTES: usize = 1_024;
+const MAIL_PREVIEW_MAX_BYTES: usize = 4_096;
+const MAIL_BODY_MAX_BYTES: usize = 65_536;
+const MAIL_ADDRESS_COLLECTION_MAX_ITEMS: usize = 100;
+const MAIL_ATTACHMENT_MAX_ITEMS: usize = 100;
+const MAIL_ATTACHMENT_FILENAME_MAX_BYTES: usize = 512;
+const MAIL_ATTACHMENT_CONTENT_TYPE_MAX_BYTES: usize = 255;
+const MAIL_ACCOUNT_DISPLAY_NAME_MAX_BYTES: usize = 512;
+const MAIL_ACCOUNT_STATUS_MAX_BYTES: usize = 128;
+const MAIL_WARNING_MAX_ITEMS: usize = 100;
+const MAIL_WARNING_MAX_BYTES: usize = 1_024;
+
+pub(crate) fn mail_account(value: im_core::email::EmailAccount) -> SafeResult<NodeMailAccount> {
+    Ok(NodeMailAccount {
+        mailbox_address: value
+            .mailbox_address
+            .as_ref()
+            .map(mail_address)
+            .transpose()?,
+        display_name: checked_optional_remote_text(
+            value.display_name,
+            MAIL_ACCOUNT_DISPLAY_NAME_MAX_BYTES,
+        )?,
+        status: checked_optional_remote_text(value.status, MAIL_ACCOUNT_STATUS_MAX_BYTES)?,
+    })
+}
+
+pub(crate) fn mail_inbox(
+    value: im_core::ids::Page<im_core::email::EmailMessageSummary>,
+    offset: u32,
+    requested_limit: u32,
+) -> SafeResult<NodeMailInboxPage> {
+    if value.items.len() > requested_limit as usize || (value.has_more && value.items.is_empty()) {
+        return Err(invalid_mail_response());
+    }
+    let item_count = u32::try_from(value.items.len()).map_err(|_| invalid_mail_response())?;
+    let next_offset = if value.has_more {
+        Some(
+            offset
+                .checked_add(item_count)
+                .ok_or_else(invalid_mail_response)?,
+        )
+    } else {
+        None
+    };
+    Ok(NodeMailInboxPage {
+        items: value
+            .items
+            .into_iter()
+            .map(mail_summary)
+            .collect::<SafeResult<Vec<_>>>()?,
+        next_offset,
+        has_more: value.has_more,
+    })
+}
+
+pub(crate) fn mail_message(value: im_core::email::EmailMessage) -> SafeResult<NodeMailMessage> {
+    if value.attachments.len() > MAIL_ATTACHMENT_MAX_ITEMS {
+        return Err(invalid_mail_response());
+    }
+    let has_html_body = value.body_html.is_some();
+    let (body_text, body_truncated) = truncate_optional_utf8(value.body_text, MAIL_BODY_MAX_BYTES);
+    Ok(NodeMailMessage {
+        summary: mail_summary(value.summary)?,
+        body_text,
+        body_truncated,
+        has_html_body,
+        attachments: value
+            .attachments
+            .into_iter()
+            .map(mail_attachment)
+            .collect::<SafeResult<Vec<_>>>()?,
+    })
+}
+
+pub(crate) fn mark_mail_read_result(
+    value: im_core::email::EmailMarkReadResult,
+) -> NodeMarkMailReadResult {
+    NodeMarkMailReadResult {
+        updated: value.updated,
+    }
+}
+
+pub(crate) fn send_mail_result(
+    value: im_core::email::SendEmailResult,
+) -> SafeResult<NodeSendMailResult> {
+    if value.warnings.len() > MAIL_WARNING_MAX_ITEMS {
+        return Err(invalid_mail_response());
+    }
+    Ok(NodeSendMailResult {
+        accepted: value.accepted,
+        message_id: value
+            .message_id
+            .as_ref()
+            .map(|id| checked_mail_token(id.as_str(), 2_048))
+            .transpose()?,
+        warnings: value
+            .warnings
+            .into_iter()
+            .map(|warning| checked_remote_text(warning, MAIL_WARNING_MAX_BYTES))
+            .collect::<SafeResult<Vec<_>>>()?,
+    })
+}
+
+fn mail_summary(value: im_core::email::EmailMessageSummary) -> SafeResult<NodeMailMessageSummary> {
+    let (subject, subject_truncated) = truncate_utf8(value.subject, MAIL_SUBJECT_MAX_BYTES);
+    let (preview, preview_truncated) =
+        truncate_optional_utf8(value.preview, MAIL_PREVIEW_MAX_BYTES);
+    Ok(NodeMailMessageSummary {
+        id: checked_mail_token(value.id.as_str(), 2_048)?,
+        folder: value
+            .folder
+            .as_ref()
+            .map(|folder| checked_mail_token(folder.as_str(), 64))
+            .transpose()?,
+        from: mail_addresses(value.from)?,
+        to: mail_addresses(value.to)?,
+        cc: mail_addresses(value.cc)?,
+        subject,
+        subject_truncated,
+        preview,
+        preview_truncated,
+        received_at: checked_timestamp(value.received_at)?,
+        sent_at: checked_timestamp(value.sent_at)?,
+        unread: value.unread,
+        has_attachments: value.has_attachments,
+        attachment_count: value.attachment_count,
+    })
+}
+
+fn mail_attachment(
+    value: im_core::email::EmailAttachmentMetadata,
+) -> SafeResult<NodeMailAttachmentMetadata> {
+    Ok(NodeMailAttachmentMetadata {
+        index: value.index,
+        file_name: checked_optional_remote_text(
+            value.filename,
+            MAIL_ATTACHMENT_FILENAME_MAX_BYTES,
+        )?,
+        content_type: checked_optional_remote_text(
+            value.content_type,
+            MAIL_ATTACHMENT_CONTENT_TYPE_MAX_BYTES,
+        )?,
+        size_bytes: value.size.map(|size| size.to_string()),
+    })
+}
+
+fn mail_addresses(values: Vec<im_core::email::EmailAddress>) -> SafeResult<Vec<String>> {
+    if values.len() > MAIL_ADDRESS_COLLECTION_MAX_ITEMS {
+        return Err(invalid_mail_response());
+    }
+    values.iter().map(mail_address).collect()
+}
+
+fn mail_address(value: &im_core::email::EmailAddress) -> SafeResult<String> {
+    let value = value.as_str();
+    if !(3..=320).contains(&value.chars().count())
+        || !value.contains('@')
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(invalid_mail_response());
+    }
+    Ok(value.to_owned())
+}
+
+fn checked_mail_token(value: &str, max_chars: usize) -> SafeResult<String> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().count() > max_chars
+        || value.chars().any(char::is_control)
+    {
+        return Err(invalid_mail_response());
+    }
+    Ok(value.to_owned())
+}
+
+fn checked_timestamp(value: Option<String>) -> SafeResult<Option<String>> {
+    value
+        .map(|value| {
+            if chrono::DateTime::parse_from_rfc3339(&value).is_ok() {
+                return Ok(value);
+            }
+            let naive = chrono::NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S%.f")
+                .map_err(|_| invalid_mail_response())?;
+            Ok(naive
+                .and_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+        })
+        .transpose()
+}
+
+fn checked_optional_remote_text(
+    value: Option<String>,
+    max_bytes: usize,
+) -> SafeResult<Option<String>> {
+    value
+        .map(|value| checked_remote_text(value, max_bytes))
+        .transpose()
+}
+
+fn checked_remote_text(value: String, max_bytes: usize) -> SafeResult<String> {
+    if value.len() > max_bytes || value.contains('\0') {
+        return Err(invalid_mail_response());
+    }
+    Ok(value)
+}
+
+fn truncate_optional_utf8(value: Option<String>, max_bytes: usize) -> (Option<String>, bool) {
+    match value {
+        Some(value) => {
+            let (value, truncated) = truncate_utf8(value, max_bytes);
+            (Some(value), truncated)
+        }
+        None => (None, false),
+    }
+}
+
+fn truncate_utf8(mut value: String, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value, false);
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    (value, true)
+}
+
+fn invalid_mail_response() -> SafeError {
+    SafeError::new(
+        "remote_response_invalid",
+        "The mail service returned an invalid response.",
+        false,
+    )
 }
 
 pub(crate) fn identity(

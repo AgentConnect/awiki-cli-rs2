@@ -18,11 +18,11 @@ checksum 和 provenance。
 `linux-<arch>-musl` 并返回 `unsupported_platform`，绝不会错误加载 glibc 包、运行期下载或回退
 TypeScript SDK。
 
-当前群管理与本地展示资料 facade 对应 wrapper/platform package `0.1.4`，native contract
-version 为 `4`。v4 在 v2 opaque single-use external HTTP auth attempt 之上增加
-`createGroup`、`addGroupMember`、`hydrateDisplayProfiles` 和本地会话时间线；wrapper、所有
-Tier 1 addon、provenance 中的 `nativeApiVersion` 和 packed-install 测试必须同时升级，不能把
-旧 addon 与 v4 wrapper 混装。
+registry wrapper/platform package `0.1.3` 的 native contract version 为 `2`，包含 opaque
+single-use external HTTP auth attempt。当前 wrapper/platform package `0.1.4` 源码 candidate 增加
+群管理、展示资料、local conversation timeline、realtime 与 mail facade，native contract 升为 `5`；下一次正式 patch 必须同时发布 wrapper、
+全部 Tier 1 addon，并让 provenance `nativeApiVersion` 与 packed-install 测试统一为 v5，不能
+混装旧 addon 与 v5 wrapper。
 
 最低边界取 Node 24/26 和 Rust 目标共同支持范围中更严格的一侧，并只承诺仍处于厂商支持期的
 系统。Node 24/26 的官方平台表把 Linux x64/arm64 基线定为 kernel 4.18、glibc 2.28，把 macOS
@@ -53,6 +53,9 @@ root wrapper 是纯 ESM 包，只包含编译后的 JS、类型声明和合规�
 
 所有包都没有 `preinstall`、`install` 或 `postinstall`。安装和运行阶段不会调用 Cargo、Rust、
 编译器、下载脚本或 sibling checkout。
+
+`0.1.4` wrapper 与五个平台包共同实现 native API v5；provenance 中的
+`nativeApiVersion` 必须为 `5`，旧 addon 必须由 loader 明确拒绝。
 
 ## AGPL artifact 构建
 

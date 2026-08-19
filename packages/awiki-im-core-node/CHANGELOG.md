@@ -8,8 +8,9 @@
 - Add `addGroupMember` with Core-owned Handle/DID resolution.
 - Add local-only `hydrateDisplayProfiles` batch lookup for cached sender Handle
   and display-name projection without a Directory network request.
-- Raise the native addon contract to v4 so wrappers reject binaries that do not
-  contain the group-management and display-profile hydration methods.
+- Add realtime sync signals and the on-demand mail facade.
+- Raise the source candidate native API contract to v5 so wrappers reject binaries missing any
+  group-management, display-profile, realtime, or mail method.
 
 ## 0.1.3
 

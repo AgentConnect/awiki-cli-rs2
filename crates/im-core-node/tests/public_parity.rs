@@ -56,6 +56,11 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "MessageService::sync_now_async",
     },
     PublicParity {
+        capability: "realtime",
+        node_method: "startRealtime",
+        core_facade: "RealtimeService::start_async / RealtimeSession::subscribe",
+    },
+    PublicParity {
         capability: "conversation",
         node_method: "listConversations",
         core_facade: "MessageService::conversations_async",
@@ -91,6 +96,31 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "AttachmentService::download_conversation_async",
     },
     PublicParity {
+        capability: "mail_account",
+        node_method: "getMailAccount",
+        core_facade: "EmailService::account_async",
+    },
+    PublicParity {
+        capability: "mail_inbox",
+        node_method: "listMailInbox",
+        core_facade: "EmailService::inbox_async",
+    },
+    PublicParity {
+        capability: "mail_read",
+        node_method: "readMail",
+        core_facade: "EmailService::read_async",
+    },
+    PublicParity {
+        capability: "mail_mark_read",
+        node_method: "markMailRead",
+        core_facade: "EmailService::mark_read_async",
+    },
+    PublicParity {
+        capability: "mail_send",
+        node_method: "sendMail",
+        core_facade: "EmailService::send_async",
+    },
+    PublicParity {
         capability: "local_reset",
         node_method: "clearLocalData",
         core_facade: "environment lifecycle-owned state root",
@@ -115,6 +145,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "group_create",
         "group_member_add",
         "sync",
+        "realtime",
         "conversation",
         "history",
         "local_timeline",
@@ -122,6 +153,11 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "text",
         "attachment_send",
         "attachment_download",
+        "mail_account",
+        "mail_inbox",
+        "mail_read",
+        "mail_mark_read",
+        "mail_send",
         "local_reset",
         "lifecycle",
     ];

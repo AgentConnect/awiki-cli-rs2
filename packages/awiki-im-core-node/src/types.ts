@@ -6,6 +6,7 @@ export interface ImCoreNodeOpenOptions {
   readonly didDomain: string
   readonly userServiceEndpoint?: string
   readonly messageServiceEndpoint?: string
+  readonly mailServiceEndpoint?: string
   readonly anpServiceEndpoint?: string
   readonly anpServiceDid?: string
   /** Default timeout for one operation, from 1 to 600000 milliseconds. */
@@ -139,9 +140,19 @@ export interface Page<T> {
   readonly hasMore: boolean
 }
 
-/** Explicit reliable-sync input. */
+/** Core-supported canonical reliable-sync reasons retained from 0.1.2. */
+export type SyncReason =
+  | 'session_start'
+  | 'app_resume'
+  | 'websocket_hint'
+  | 'websocket_reconnect'
+  | 'foreground_reconcile'
+  | 'manual_refresh'
+  | 'after_mutation'
+
+/** Explicit reliable-sync input. Omitted `reason` defaults to `manual_refresh`. */
 export interface SyncOptions {
-  readonly reason?: string
+  readonly reason?: SyncReason
   readonly limit?: number
   readonly timeoutMs?: number
 }
@@ -157,6 +168,65 @@ export interface SyncResult {
   readonly duplicatesSkipped: number
   readonly changedConversationIds: readonly string[]
   readonly warnings: readonly string[]
+}
+
+export type RealtimeConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'closed'
+
+/** Bounded reconnect policy. The native facade defaults to exponential reconnect without an attempt cap. */
+export interface RealtimeOptions {
+  readonly eventBuffer?: number
+  readonly reconnectBaseDelayMs?: number
+  readonly reconnectMaxDelayMs?: number
+  readonly reconnectMaxAttempts?: number
+}
+
+export interface RealtimeStatus {
+  readonly connected: boolean
+  readonly state: RealtimeConnectionState
+}
+
+export interface RealtimeConnectionStateChangedEvent {
+  readonly kind: 'connection_state_changed'
+  readonly state: RealtimeConnectionState
+}
+
+export type RealtimeSyncCause =
+  | 'connection_ready'
+  | 'reconnected'
+  | 'message'
+  | 'message_update'
+  | 'group'
+  | 'system_notification'
+  | 'stream_recovery'
+
+/**
+ * A scheduling signal to run `syncNow()`. It is never a reliable cursor or checkpoint.
+ * Message bodies, wire event sequence values, raw frames, URLs, and credentials are excluded.
+ */
+export interface RealtimeSyncRequiredEvent {
+  readonly kind: 'sync_required'
+  readonly cause: RealtimeSyncCause
+  readonly dirty: boolean
+  readonly gapDetected: boolean
+}
+
+export type RealtimeEvent = RealtimeConnectionStateChangedEvent | RealtimeSyncRequiredEvent
+
+export interface RealtimeSession {
+  /**
+   * Returns null after the native stream has closed, including event-buffer exhaustion.
+   * Treat null as stream recovery: stop this session, run canonical `syncNow()` with
+   * `websocket_reconnect`, then start a replacement session. Only one consumer should call this.
+   */
+  nextEvent(): Promise<RealtimeEvent | null>
+  getStatus(): Promise<RealtimeStatus>
+  /** Idempotently stops and joins the native realtime worker. */
+  stop(): Promise<void>
 }
 
 /** One canonical Direct or Group conversation. */
@@ -253,6 +323,79 @@ export interface NodeDownload {
   readonly bytes: Uint8Array
 }
 
+export interface MailInboxInput {
+  readonly folder?: string
+  readonly limit?: number
+  readonly offset?: number
+  readonly unreadOnly?: boolean
+}
+
+export interface MarkMailReadInput {
+  readonly messageIds: readonly string[]
+}
+
+export interface SendMailInput {
+  readonly to: readonly string[]
+  readonly cc?: readonly string[]
+  readonly subject: string
+  readonly bodyText: string
+}
+
+export interface MailAccount {
+  readonly mailboxAddress?: string
+  readonly displayName?: string
+  readonly status?: string
+}
+
+export interface MailMessageSummary {
+  readonly id: string
+  readonly folder?: string
+  readonly from: readonly string[]
+  readonly to: readonly string[]
+  readonly cc: readonly string[]
+  readonly subject: string
+  readonly subjectTruncated: boolean
+  readonly preview?: string
+  readonly previewTruncated: boolean
+  readonly receivedAt?: string
+  readonly sentAt?: string
+  readonly unread: boolean
+  readonly hasAttachments: boolean
+  readonly attachmentCount?: number
+}
+
+export interface MailAttachmentMetadata {
+  readonly index: number
+  readonly fileName?: string
+  readonly contentType?: string
+  /** Decimal byte count; kept as a string to avoid JS integer truncation. */
+  readonly sizeBytes?: string
+}
+
+export interface MailMessage {
+  readonly summary: MailMessageSummary
+  readonly bodyText?: string
+  readonly bodyTruncated: boolean
+  readonly hasHtmlBody: boolean
+  readonly attachments: readonly MailAttachmentMetadata[]
+}
+
+export interface MailInboxPage {
+  readonly items: readonly MailMessageSummary[]
+  readonly nextOffset?: number
+  readonly hasMore: boolean
+}
+
+export interface MarkMailReadResult {
+  readonly updated: number
+}
+
+export interface SendMailResult {
+  readonly accepted: boolean
+  readonly messageId?: string
+  readonly warnings: readonly string[]
+}
+
 /** Stable, redacted error taxonomy from the Rust bridge. */
 export class ImCoreNodeError extends Error {
   public readonly name = 'ImCoreNodeError'
@@ -278,6 +421,8 @@ export interface ImCoreNodeClient {
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
+  /** Starts the single Core-owned realtime session for this client. */
+  startRealtime(input?: RealtimeOptions): Promise<RealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
   /** Read only the committed local timeline; never starts sync, history, or Directory RPC. */
@@ -286,6 +431,11 @@ export interface ImCoreNodeClient {
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: SendAttachmentInput): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload>
+  getMailAccount(): Promise<MailAccount>
+  listMailInbox(input?: MailInboxInput): Promise<MailInboxPage>
+  readMail(messageId: string): Promise<MailMessage>
+  markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
+  sendMail(input: SendMailInput): Promise<SendMailResult>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */

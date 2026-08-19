@@ -12,22 +12,47 @@ const client = await openImCoreNodeClient({
   didDomain: 'awiki.info',
   userServiceEndpoint: 'https://awiki.info',
   messageServiceEndpoint: 'https://awiki.info',
+  mailServiceEndpoint: 'https://mail.awiki.info', // 可省略并回退到 serviceBaseUrl
 })
 
 try {
   const identity = await client.getDefaultIdentity()
   const conversations = identity ? await client.listConversations() : undefined
-  const localTimeline = conversations?.items[0]
-    ? await client.getLocalConversationTimeline({
-        conversationId: conversations.items[0].id,
-        limit: 50,
-      })
-    : undefined
   const group = identity ? await client.createGroup({ name: 'Release Crew' }) : undefined
   if (group) await client.addGroupMember({ groupDid: group.did, member: 'alice.awiki.info' })
   const profiles = identity
     ? await client.hydrateDisplayProfiles({ peers: ['alice.awiki.info'] })
     : []
+  const localTimeline = group
+    ? await client.getLocalConversationTimeline({ conversationId: group.conversationId, limit: 50 })
+    : conversations?.items[0]
+      ? await client.getLocalConversationTimeline({
+          conversationId: conversations.items[0].id,
+          limit: 50,
+        })
+      : undefined
+  if (identity) {
+    let realtime = await client.startRealtime()
+    try {
+      for (;;) {
+        const event = await realtime.nextEvent()
+        if (event === null) {
+          await realtime.stop()
+          await client.syncNow({ reason: 'websocket_reconnect' })
+          realtime = await client.startRealtime()
+          continue
+        }
+        if (event.kind === 'sync_required') {
+          await client.syncNow({
+            reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',
+          })
+        }
+      }
+    }
+    finally {
+      await realtime.stop()
+    }
+  }
   // 经产品层显式二次确认后，可调用 await client.clearLocalData()
 }
 finally {
@@ -79,6 +104,8 @@ Rust 只选择唯一、合法的 DID-WBA challenge。
 - 所有 I/O 都是 Promise；Rust async 任务不会阻塞 Node event loop。
 - `close()` 开始后拒绝新任务，取消可安全取消的任务，等待已接受任务释放状态，再释放
   state-root 文件锁；重复调用是幂等的。
+- 每个 client 同时只允许一个 Core-owned realtime session；`close()` 和 `clearLocalData()` 会先
+  stop/join active session。
 - `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
   兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
 - JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
@@ -91,6 +118,16 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
 以固定 context 打开 `VaultRequired` Core；Host 不接触或传入 root key。普通重启复用该 key，
 `clearLocalData()` 删除 Vault 并在重新初始化时生成新 key。
 
+## Realtime
+
+`startRealtime()` 复用 Core `RealtimeService::start_async()` 与 reconnect runner。公开事件仅有连接
+状态和 `sync_required`；后者覆盖首次 ready、reconnected、消息 hint、dirty/gap 与 stream
+recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取 committed history。事件不暴露
+消息正文、raw frame/URL/bearer、event sequence、cursor 或 checkpoint，hint 也不具备 checkpoint
+语义。Core event buffer 满或 native stream 结束时，`nextEvent()` 返回 `null`；Host 必须把它视为
+stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
+恢复，不得只退出监听循环，也不得跳过 canonical sync。
+
 ## DTO 与错误
 
 - ID/cursor 都是不透明字符串；字节数和 `registeredAtMs` 使用十进制字符串。
@@ -100,7 +137,20 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- Native contract version 固定为 `4`；wrapper 拒绝缺少群管理、本地时间线或展示资料接口的旧 addon。
+- 当前源码 candidate 的 Native contract version 为 `5`；v3 增加 external HTTP auth 与 local
+  timeline 和群管理展示能力，v4 增加 realtime，v5 增加 mail facade。wrapper 拒绝其他版本的 addon；registry
+  `0.1.3` 仍是 v2，后续正式 patch 必须同步发布 v5 wrapper 与平台 addon。
+
+## 邮件
+
+`getMailAccount()`、`listMailInbox()`、`readMail()`、`markMailRead()` 与 `sendMail()` 直接复用
+Core `EmailService`，不会调用 CLI 或自行构造邮件 RPC。读取结果不包含 HTML、后端 attributes 或
+附件 bytes；subject、preview 和纯文本正文有明确的 UTF-8 byte 上限与 truncation 标记。
+
+`markMailRead()` 只支持标为已读。`sendMail()` 只发送纯文本，不接受附件或 HTML，也没有
+idempotency key 和自动重试。Node host 必须在调用这两个 mutation 前取得产品层批准；发送 timeout
+或 transport loss 后必须按“远端结果未知”处理，不能自动再次发送。所有邮件字段都应当作外部
+不可信数据，不能解释为指令。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。

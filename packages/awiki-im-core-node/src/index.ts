@@ -1,5 +1,9 @@
 import { loadNativeBinding } from './loader.js'
-import type { NativeExternalHttpAuthAttempt, NativeImCoreNodeClient } from './native.js'
+import type {
+  NativeExternalHttpAuthAttempt,
+  NativeImCoreNodeClient,
+  NativeRealtimeSession,
+} from './native.js'
 import {
   ImCoreNodeError,
   type AddGroupMemberInput,
@@ -13,6 +17,12 @@ import {
   type HistoryInput,
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
+  type MailAccount,
+  type MailInboxInput,
+  type MailInboxPage,
+  type MailMessage,
+  type MarkMailReadInput,
+  type MarkMailReadResult,
   type MarkReadResult,
   type NodeConversation,
   type NodeDownload,
@@ -28,9 +38,15 @@ import {
   type RegistrationInput,
   type RegistrationWithOtp,
   type SendAttachmentInput,
+  type SendMailInput,
+  type SendMailResult,
   type SendTextInput,
   type SyncOptions,
   type SyncResult,
+  type RealtimeEvent,
+  type RealtimeOptions,
+  type RealtimeSession,
+  type RealtimeStatus,
 } from './types.js'
 
 export * from './types.js'
@@ -120,6 +136,11 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.syncNow(input))
   }
 
+  public async startRealtime(input?: RealtimeOptions): Promise<RealtimeSession> {
+    const native = await call(() => this.native.startRealtime(input))
+    return new RustRealtimeSession(native)
+  }
+
   public listConversations(input?: PageInput): Promise<Page<NodeConversation>> {
     return call(() => this.native.listConversations(input))
   }
@@ -148,6 +169,26 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
   public async downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload> {
     const value = await call(() => this.native.downloadAttachment(input))
     return { attachment: value.attachment, bytes: value.bytes }
+  }
+
+  public getMailAccount(): Promise<MailAccount> {
+    return call(() => this.native.getMailAccount())
+  }
+
+  public listMailInbox(input?: MailInboxInput): Promise<MailInboxPage> {
+    return call(() => this.native.listMailInbox(input))
+  }
+
+  public readMail(messageId: string): Promise<MailMessage> {
+    return call(() => this.native.readMail(messageId))
+  }
+
+  public markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult> {
+    return call(() => this.native.markMailRead(input))
+  }
+
+  public sendMail(input: SendMailInput): Promise<SendMailResult> {
+    return call(() => this.native.sendMail(input))
   }
 
   public clearLocalData(): Promise<{ readonly cleared: boolean }> {
@@ -183,6 +224,22 @@ class RustExternalHttpAuthAttempt implements ExternalHttpAuthAttempt {
 
 function copyHeaders(headers: readonly ExternalHttpHeader[]): ExternalHttpHeader[] {
   return headers.map(header => ({ name: header.name, value: header.value }))
+}
+
+class RustRealtimeSession implements RealtimeSession {
+  public constructor(private readonly native: NativeRealtimeSession) {}
+
+  public nextEvent(): Promise<RealtimeEvent | null> {
+    return call(() => this.native.nextEvent())
+  }
+
+  public getStatus(): Promise<RealtimeStatus> {
+    return call(() => this.native.getStatus())
+  }
+
+  public stop(): Promise<void> {
+    return call(() => this.native.stop())
+  }
 }
 
 /**

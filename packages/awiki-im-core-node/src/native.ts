@@ -8,6 +8,12 @@ import type {
   ExternalHttpResponse,
   HistoryInput,
   ImCoreNodeOpenOptions,
+  MailAccount,
+  MailInboxInput,
+  MailInboxPage,
+  MailMessage,
+  MarkMailReadInput,
+  MarkMailReadResult,
   MarkReadResult,
   NodeConversation,
   NodeDownload,
@@ -23,9 +29,14 @@ import type {
   RegistrationInput,
   RegistrationWithOtp,
   SendAttachmentInput,
+  SendMailInput,
+  SendMailResult,
   SendTextInput,
   SyncOptions,
   SyncResult,
+  RealtimeEvent,
+  RealtimeOptions,
+  RealtimeStatus,
 } from './types.js'
 
 export interface NativeExternalHttpAuthAttempt {
@@ -34,6 +45,12 @@ export interface NativeExternalHttpAuthAttempt {
   getHeaderPatch(): ExternalHttpHeader[]
   getRetryCount(): number
   handleResponse(response: ExternalHttpResponse): Promise<NativeExternalHttpAuthAttempt | null>
+}
+
+export interface NativeRealtimeSession {
+  nextEvent(): Promise<RealtimeEvent | null>
+  getStatus(): Promise<RealtimeStatus>
+  stop(): Promise<void>
 }
 
 export interface NativeImCoreNodeClient {
@@ -52,6 +69,7 @@ export interface NativeImCoreNodeClient {
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
+  startRealtime(input?: RealtimeOptions): Promise<NativeRealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>
   getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>
@@ -59,6 +77,11 @@ export interface NativeImCoreNodeClient {
   sendText(input: SendTextInput): Promise<NodeMessage>
   sendAttachment(input: Omit<SendAttachmentInput, 'bytes'> & { readonly bytes: Buffer }): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<Omit<NodeDownload, 'bytes'> & { readonly bytes: Buffer }>
+  getMailAccount(): Promise<MailAccount>
+  listMailInbox(input?: MailInboxInput): Promise<MailInboxPage>
+  readMail(messageId: string): Promise<MailMessage>
+  markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
+  sendMail(input: SendMailInput): Promise<SendMailResult>
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   close(): Promise<void>
 }

@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +22,14 @@ const DEFAULT_OPERATION_TIMEOUT_MS: u32 = 120_000;
 const DEFAULT_SYNC_TIMEOUT_MS: u32 = 15_000;
 const MAX_TIMEOUT_MS: u32 = 600_000;
 const LIST_CONVERSATIONS_SYNC_REASON: &str = "foreground_reconcile";
+const DEFAULT_REALTIME_EVENT_BUFFER: u32 = 128;
+const MAX_REALTIME_EVENT_BUFFER: u32 = 4_096;
+const DEFAULT_RECONNECT_BASE_DELAY_MS: u32 = 1_000;
+const DEFAULT_RECONNECT_MAX_DELAY_MS: u32 = 30_000;
+const DEFAULT_MAIL_INBOX_LIMIT: u32 = 20;
+const MAX_MAIL_INBOX_LIMIT: u32 = 100;
+const MAX_MAIL_MESSAGE_IDS: usize = 100;
+const MAX_MAIL_RECIPIENTS: usize = 20;
 
 type BoxImFuture<'a, T> = Pin<Box<dyn Future<Output = im_core::ImResult<T>> + Send + 'a>>;
 
@@ -46,6 +56,21 @@ struct ClientInner {
     operation_timeout: Duration,
     sync_timeout: Duration,
     options: NodeOpenOptions,
+    realtime: tokio::sync::Mutex<Option<RealtimeSlot>>,
+    next_realtime_id: AtomicU64,
+    #[cfg(test)]
+    realtime_close_error: std::sync::Mutex<Option<SafeError>>,
+}
+
+struct RealtimeSlot {
+    id: u64,
+    session: im_core::realtime::RealtimeSession,
+}
+
+struct RealtimeEventReader {
+    events: im_core::realtime::RealtimeEventStream,
+    pending: VecDeque<NodeRealtimeEvent>,
+    connected_once: bool,
 }
 
 struct OperationGuard<'a> {
@@ -129,11 +154,8 @@ impl ClientInner {
         ) {
             Ok(_) => {
                 self.cancellation.cancel();
-                let mut environment = self.environment.write().await;
-                environment.take();
-                self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
-                self.closed.notify_waiters();
-                Ok(())
+                let realtime_result = self.teardown_realtime_for_close().await;
+                self.complete_close(realtime_result).await
             }
             Err(LIFECYCLE_CLOSED) => Ok(()),
             Err(LIFECYCLE_CLOSING) => loop {
@@ -159,12 +181,103 @@ impl ClientInner {
             .is_ok()
         {
             self.cancellation.cancel();
+            if let Ok(mut realtime) = self.realtime.try_lock() {
+                realtime.take();
+            }
             if let Ok(mut environment) = self.environment.try_write() {
                 environment.take();
                 self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
                 self.closed.notify_waiters();
             }
         }
+    }
+
+    async fn complete_close(&self, realtime_result: SafeResult<()>) -> SafeResult<()> {
+        let mut environment = self.environment.write().await;
+        environment.take();
+        self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
+        self.closed.notify_waiters();
+        realtime_result
+    }
+
+    async fn teardown_realtime_for_close(&self) -> SafeResult<()> {
+        let result = self.stop_realtime(None).await;
+        #[cfg(test)]
+        if let Some(error) = self
+            .realtime_close_error
+            .lock()
+            .expect("realtime close error lock")
+            .take()
+        {
+            return Err(error);
+        }
+        result
+    }
+
+    async fn stop_realtime(&self, expected_id: Option<u64>) -> SafeResult<()> {
+        let slot = {
+            let mut realtime = self.realtime.lock().await;
+            if expected_id.is_some_and(|id| realtime.as_ref().is_some_and(|slot| slot.id != id)) {
+                return Ok(());
+            }
+            realtime.take()
+        };
+        let Some(mut slot) = slot else {
+            return Ok(());
+        };
+        slot.session.stop().await.map_err(SafeError::from_im)?;
+        slot.session.join().await.map_err(SafeError::from_im)?;
+        Ok(())
+    }
+}
+
+#[napi(js_name = "NativeRealtimeSession")]
+pub struct NativeRealtimeSession {
+    id: u64,
+    client: Arc<ClientInner>,
+    events: Arc<tokio::sync::Mutex<RealtimeEventReader>>,
+    status: tokio::sync::watch::Receiver<im_core::realtime::RealtimeStatus>,
+}
+
+#[napi]
+impl NativeRealtimeSession {
+    #[napi(catch_unwind)]
+    pub async fn next_event(&self) -> napi::Result<Option<NodeRealtimeEvent>> {
+        napi_result(self.next_event_inner().await)
+    }
+
+    async fn next_event_inner(&self) -> SafeResult<Option<NodeRealtimeEvent>> {
+        let mut reader = self.events.lock().await;
+        if let Some(event) = reader.pending.pop_front() {
+            return Ok(Some(event));
+        }
+        let event = tokio::select! {
+            _ = self.client.cancellation.cancelled() => return Ok(None),
+            event = reader.events.recv() => event,
+        };
+        let Some(event) = event else {
+            return Ok(None);
+        };
+        let connected_once = reader.connected_once;
+        let mapped = map_realtime_event(event, connected_once);
+        if mapped.iter().any(|event| {
+            event.kind == "connection_state_changed" && event.state.as_deref() == Some("connected")
+        }) {
+            reader.connected_once = true;
+        }
+        reader.pending.extend(mapped);
+        Ok(reader.pending.pop_front())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_status(&self) -> napi::Result<NodeRealtimeStatus> {
+        let status = self.status.borrow().clone();
+        Ok(node_realtime_status(status))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn stop(&self) -> napi::Result<()> {
+        napi_result(self.client.stop_realtime(Some(self.id)).await)
     }
 }
 
@@ -635,6 +748,54 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn start_realtime(
+        &self,
+        input: Option<NodeRealtimeOptions>,
+    ) -> napi::Result<NativeRealtimeSession> {
+        napi_result(self.start_realtime_inner(input).await)
+    }
+
+    async fn start_realtime_inner(
+        &self,
+        input: Option<NodeRealtimeOptions>,
+    ) -> SafeResult<NativeRealtimeSession> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut realtime = self.inner.realtime.lock().await;
+        if realtime.is_some() {
+            return Err(SafeError::new(
+                "realtime_already_started",
+                "A realtime session is already active for this client.",
+                false,
+            ));
+        }
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let options = realtime_options(input)?;
+        let mut session = self
+            .inner
+            .wait_im(
+                client.realtime().start_async(options),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        let events = session.subscribe().map_err(SafeError::from_im)?;
+        let status = session.status_updates();
+        let id = self.inner.next_realtime_id.fetch_add(1, Ordering::Relaxed);
+        let reader = Arc::new(tokio::sync::Mutex::new(RealtimeEventReader {
+            events,
+            pending: VecDeque::new(),
+            connected_once: false,
+        }));
+        *realtime = Some(RealtimeSlot { id, session });
+        Ok(NativeRealtimeSession {
+            id,
+            client: self.inner.clone(),
+            events: reader,
+            status,
+        })
+    }
+
+    #[napi(catch_unwind)]
     pub async fn list_conversations(
         &self,
         input: Option<NodePageInput>,
@@ -902,6 +1063,108 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn get_mail_account(&self) -> napi::Result<NodeMailAccount> {
+        napi_result(self.get_mail_account_inner().await)
+    }
+
+    async fn get_mail_account_inner(&self) -> SafeResult<NodeMailAccount> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(client.email().account_async(), self.inner.operation_timeout)
+            .await?;
+        crate::dto::mail_account(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_mail_inbox(
+        &self,
+        input: Option<NodeMailInboxInput>,
+    ) -> napi::Result<NodeMailInboxPage> {
+        napi_result(self.list_mail_inbox_inner(input).await)
+    }
+
+    async fn list_mail_inbox_inner(
+        &self,
+        input: Option<NodeMailInboxInput>,
+    ) -> SafeResult<NodeMailInboxPage> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let (query, offset, limit) = mail_inbox_query(input)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().inbox_async(query),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::mail_inbox(result, offset, limit)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn read_mail(&self, message_id: String) -> napi::Result<NodeMailMessage> {
+        napi_result(self.read_mail_inner(message_id).await)
+    }
+
+    async fn read_mail_inner(&self, message_id: String) -> SafeResult<NodeMailMessage> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let message_id = mail_message_id(message_id)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().read_async(message_id),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::mail_message(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn mark_mail_read(
+        &self,
+        input: NodeMarkMailReadInput,
+    ) -> napi::Result<NodeMarkMailReadResult> {
+        napi_result(self.mark_mail_read_inner(input).await)
+    }
+
+    async fn mark_mail_read_inner(
+        &self,
+        input: NodeMarkMailReadInput,
+    ) -> SafeResult<NodeMarkMailReadResult> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = mark_mail_read_request(input)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().mark_read_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::mark_mail_read_result(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn send_mail(&self, input: NodeSendMailInput) -> napi::Result<NodeSendMailResult> {
+        napi_result(self.send_mail_inner(input).await)
+    }
+
+    async fn send_mail_inner(&self, input: NodeSendMailInput) -> SafeResult<NodeSendMailResult> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = send_mail_request(input)?;
+        let email = client.email();
+        let send = box_im_future(email.send_async(request));
+        let result = self
+            .inner
+            .wait_im(send, self.inner.operation_timeout)
+            .await?;
+        crate::dto::send_mail_result(result)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close(&self) -> napi::Result<()> {
         napi_result(self.inner.close().await)
     }
@@ -913,6 +1176,7 @@ impl NativeImCoreNodeClient {
 
     async fn clear_local_data_inner(&self) -> SafeResult<NodeClearLocalDataResult> {
         let _mutation = self.inner.mutation.lock().await;
+        self.inner.stop_realtime(None).await?;
         let mut slot = self.inner.write_operation().await?;
         let environment = slot.take().ok_or_else(SafeError::closed)?;
         let Environment {
@@ -976,6 +1240,10 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
             operation_timeout,
             sync_timeout,
             options,
+            realtime: tokio::sync::Mutex::new(None),
+            next_realtime_id: AtomicU64::new(1),
+            #[cfg(test)]
+            realtime_close_error: std::sync::Mutex::new(None),
         }),
     })
 }
@@ -995,12 +1263,15 @@ async fn initialize_environment(
         .await
         .map_err(SafeError::from_im)?;
     state.harden_permissions()?;
-    let client = match core
+    let default_identity = core
         .identities()
         .default_identity_async()
         .await
-        .map_err(SafeError::from_im)?
-    {
+        .map_err(SafeError::from_im)?;
+    if let Some(identity) = default_identity.as_ref() {
+        migrate_file_identity_to_vault(&core, identity).await?;
+    }
+    let client = match default_identity {
         Some(_) => Some(
             core.client_async(im_core::identity::IdentitySelector::Default)
                 .await
@@ -1031,7 +1302,7 @@ fn core_open_options(
         ))
 }
 
-fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
+pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
     let mut config = im_core::ImCoreConfig::new(
         im_core::ServiceEndpoint::parse(&options.service_base_url).map_err(SafeError::from_im)?,
         options.did_domain.clone(),
@@ -1039,6 +1310,7 @@ fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
     .map_err(SafeError::from_im)?;
     config.user_service_endpoint = optional_endpoint(options.user_service_endpoint.clone())?;
     config.message_service_endpoint = optional_endpoint(options.message_service_endpoint.clone())?;
+    config.mail_service_endpoint = optional_endpoint(options.mail_service_endpoint.clone())?;
     config.anp_service_endpoint = optional_endpoint(options.anp_service_endpoint.clone())?;
     config.anp_service_did = options
         .anp_service_did
@@ -1046,8 +1318,173 @@ fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
         .map(im_core::ids::Did::parse)
         .transpose()
         .map_err(SafeError::from_im)?;
-    config.transport_policy = im_core::MessageTransportPolicy::HttpOnly;
+    config.transport_policy = im_core::MessageTransportPolicy::RealtimePreferred;
     Ok(config)
+}
+
+async fn migrate_file_identity_to_vault(
+    core: &im_core::ImCore,
+    identity: &im_core::identity::IdentitySummary,
+) -> SafeResult<()> {
+    let registry = core.identities();
+    let selector = im_core::identity::IdentitySelector::Default;
+    let status = registry
+        .vault_status_async(selector.clone())
+        .await
+        .map_err(SafeError::from_im)?;
+    if status.selected_backend == im_core::identity::IdentitySecretStorageBackend::Vault {
+        return Ok(());
+    }
+    let report = registry
+        .migrate_identity_vault_async(selector)
+        .await
+        .map_err(SafeError::from_im)?;
+    ensure_identity_preserved(identity, &report.identity, report.verified)
+}
+
+fn ensure_identity_preserved(
+    before: &im_core::identity::IdentitySummary,
+    after: &im_core::identity::IdentitySummary,
+    verified: bool,
+) -> SafeResult<()> {
+    if !verified
+        || after.id != before.id
+        || after.did != before.did
+        || after.handle != before.handle
+    {
+        return Err(SafeError::new(
+            "identity_migration_failed",
+            "The existing IM identity could not be preserved during secure storage migration.",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn realtime_options(
+    input: Option<NodeRealtimeOptions>,
+) -> SafeResult<im_core::realtime::RealtimeOptions> {
+    let input = input.unwrap_or(NodeRealtimeOptions {
+        event_buffer: None,
+        reconnect_base_delay_ms: None,
+        reconnect_max_delay_ms: None,
+        reconnect_max_attempts: None,
+    });
+    let event_buffer = input.event_buffer.unwrap_or(DEFAULT_REALTIME_EVENT_BUFFER);
+    let base_delay_ms = input
+        .reconnect_base_delay_ms
+        .unwrap_or(DEFAULT_RECONNECT_BASE_DELAY_MS);
+    let max_delay_ms = input
+        .reconnect_max_delay_ms
+        .unwrap_or(DEFAULT_RECONNECT_MAX_DELAY_MS);
+    if event_buffer == 0
+        || event_buffer > MAX_REALTIME_EVENT_BUFFER
+        || base_delay_ms == 0
+        || max_delay_ms == 0
+        || base_delay_ms > max_delay_ms
+        || max_delay_ms > MAX_TIMEOUT_MS
+    {
+        return Err(SafeError::new(
+            "invalid_input",
+            "The realtime options are invalid.",
+            false,
+        ));
+    }
+    Ok(im_core::realtime::RealtimeOptions {
+        reconnect: im_core::realtime::ReconnectPolicy::Exponential {
+            base_delay_ms: u64::from(base_delay_ms),
+            max_delay_ms: u64::from(max_delay_ms),
+            max_attempts: input.reconnect_max_attempts,
+        },
+        event_buffer: usize::try_from(event_buffer).map_err(|_| SafeError::internal())?,
+        subscriptions: vec![im_core::realtime::RealtimeSubscription::Messages],
+    })
+}
+
+fn node_realtime_status(status: im_core::realtime::RealtimeStatus) -> NodeRealtimeStatus {
+    NodeRealtimeStatus {
+        connected: status.connected,
+        state: realtime_state(status.state).to_owned(),
+    }
+}
+
+fn realtime_state(state: im_core::realtime::RealtimeConnectionState) -> &'static str {
+    match state {
+        im_core::realtime::RealtimeConnectionState::Disconnected => "disconnected",
+        im_core::realtime::RealtimeConnectionState::Connecting => "connecting",
+        im_core::realtime::RealtimeConnectionState::Connected => "connected",
+        im_core::realtime::RealtimeConnectionState::Reconnecting => "reconnecting",
+        im_core::realtime::RealtimeConnectionState::Closed => "closed",
+    }
+}
+
+fn map_realtime_event(
+    event: im_core::realtime::ImEvent,
+    connected_once: bool,
+) -> Vec<NodeRealtimeEvent> {
+    use im_core::realtime::ImEvent;
+
+    match event {
+        ImEvent::ConnectionStateChanged(change) => {
+            let state = realtime_state(change.state).to_owned();
+            let mut mapped = vec![NodeRealtimeEvent {
+                kind: "connection_state_changed".to_owned(),
+                state: Some(state.clone()),
+                cause: None,
+                dirty: None,
+                gap_detected: None,
+            }];
+            if state == "connected" {
+                mapped.push(sync_required_event(
+                    if connected_once {
+                        "reconnected"
+                    } else {
+                        "connection_ready"
+                    },
+                    false,
+                    false,
+                ));
+            }
+            mapped
+        }
+        ImEvent::MessageReceived(event) => vec![sync_required_from_hint("message", event.sync)],
+        ImEvent::MessageUpdated(event) => {
+            vec![sync_required_from_hint("message_update", event.sync)]
+        }
+        ImEvent::GroupUpdated(event) => vec![sync_required_from_hint("group", event.sync)],
+        ImEvent::SystemNotificationChanged(event) => {
+            vec![sync_required_from_hint("system_notification", event.sync)]
+        }
+        ImEvent::UnknownNotification(event) => {
+            vec![sync_required_from_hint("stream_recovery", event.sync)]
+        }
+        ImEvent::LocalNotification(_) | ImEvent::HostNotification(_) => Vec::new(),
+    }
+}
+
+fn sync_required_from_hint(
+    cause: &str,
+    hint: Option<im_core::realtime::RealtimeSyncHint>,
+) -> NodeRealtimeEvent {
+    let (dirty, gap_detected) = hint
+        .map(|hint| {
+            (
+                hint.sync_dirty || hint.has_unknown_domain,
+                hint.gap_detected,
+            )
+        })
+        .unwrap_or((false, false));
+    sync_required_event(cause, dirty, gap_detected)
+}
+
+fn sync_required_event(cause: &str, dirty: bool, gap_detected: bool) -> NodeRealtimeEvent {
+    NodeRealtimeEvent {
+        kind: "sync_required".to_owned(),
+        state: None,
+        cause: Some(cause.to_owned()),
+        dirty: Some(dirty),
+        gap_detected: Some(gap_detected),
+    }
 }
 
 fn optional_endpoint(value: Option<String>) -> SafeResult<Option<im_core::ServiceEndpoint>> {
@@ -1096,6 +1533,128 @@ async fn ensure_unregistered(core: &im_core::ImCore, inner: &ClientInner) -> Saf
 
 fn page_limit(value: Option<u32>) -> SafeResult<im_core::ids::PageLimit> {
     im_core::ids::PageLimit::new(value.unwrap_or(50)).map_err(SafeError::from_im)
+}
+
+pub(crate) fn mail_inbox_query(
+    input: Option<NodeMailInboxInput>,
+) -> SafeResult<(im_core::email::EmailInboxQuery, u32, u32)> {
+    let input = input.unwrap_or(NodeMailInboxInput {
+        folder: None,
+        limit: None,
+        offset: None,
+        unread_only: None,
+    });
+    let folder = input.folder.unwrap_or_else(|| "inbox".to_owned());
+    validate_mail_token(&folder, 64)?;
+    let limit = input.limit.unwrap_or(DEFAULT_MAIL_INBOX_LIMIT);
+    if !(1..=MAX_MAIL_INBOX_LIMIT).contains(&limit) {
+        return Err(invalid_input("The mail inbox limit is invalid."));
+    }
+    let offset = input.offset.unwrap_or_default();
+    Ok((
+        im_core::email::EmailInboxQuery {
+            folder: im_core::email::EmailFolder::parse(folder).map_err(SafeError::from_im)?,
+            limit: im_core::ids::PageLimit::new(limit).map_err(SafeError::from_im)?,
+            offset,
+            unread_only: input.unread_only.unwrap_or(false),
+        },
+        offset,
+        limit,
+    ))
+}
+
+pub(crate) fn mail_message_id(value: String) -> SafeResult<im_core::email::EmailMessageId> {
+    validate_mail_token(&value, 2_048)?;
+    im_core::email::EmailMessageId::parse(value).map_err(SafeError::from_im)
+}
+
+pub(crate) fn mark_mail_read_request(
+    input: NodeMarkMailReadInput,
+) -> SafeResult<im_core::email::EmailMarkReadRequest> {
+    if input.message_ids.is_empty() || input.message_ids.len() > MAX_MAIL_MESSAGE_IDS {
+        return Err(invalid_input("The mail message ID collection is invalid."));
+    }
+    Ok(im_core::email::EmailMarkReadRequest {
+        message_ids: input
+            .message_ids
+            .into_iter()
+            .map(mail_message_id)
+            .collect::<SafeResult<Vec<_>>>()?,
+        is_read: true,
+    })
+}
+
+pub(crate) fn send_mail_request(
+    input: NodeSendMailInput,
+) -> SafeResult<im_core::email::SendEmailRequest> {
+    let cc = input.cc.unwrap_or_default();
+    if input.to.is_empty()
+        || input.to.len() > MAX_MAIL_RECIPIENTS
+        || input.to.len().saturating_add(cc.len()) > MAX_MAIL_RECIPIENTS
+    {
+        return Err(invalid_input("The mail recipient collection is invalid."));
+    }
+    let mut recipients = HashSet::with_capacity(input.to.len() + cc.len());
+    for address in input.to.iter().chain(&cc) {
+        validate_mail_address(address)?;
+        if !recipients.insert(address.as_str()) {
+            return Err(invalid_input(
+                "The mail recipient collection has duplicates.",
+            ));
+        }
+    }
+    if input.subject.trim() != input.subject
+        || input.subject.is_empty()
+        || input.subject.len() > 1_024
+    {
+        return Err(invalid_input("The mail subject is invalid."));
+    }
+    if input.body_text.trim().is_empty() || input.body_text.len() > 65_536 {
+        return Err(invalid_input("The mail body is invalid."));
+    }
+    Ok(im_core::email::SendEmailRequest {
+        to: input
+            .to
+            .into_iter()
+            .map(im_core::email::EmailAddress::parse)
+            .collect::<im_core::ImResult<Vec<_>>>()
+            .map_err(SafeError::from_im)?,
+        cc: cc
+            .into_iter()
+            .map(im_core::email::EmailAddress::parse)
+            .collect::<im_core::ImResult<Vec<_>>>()
+            .map_err(SafeError::from_im)?,
+        subject: input.subject,
+        body_text: input.body_text,
+        body_html: None,
+    })
+}
+
+fn validate_mail_token(value: &str, max_chars: usize) -> SafeResult<()> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().count() > max_chars
+        || value.chars().any(char::is_control)
+    {
+        return Err(invalid_input("The mail request identifier is invalid."));
+    }
+    Ok(())
+}
+
+fn validate_mail_address(value: &str) -> SafeResult<()> {
+    if !(3..=320).contains(&value.chars().count())
+        || !value.contains('@')
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(invalid_input("The mail address is invalid."));
+    }
+    Ok(())
+}
+
+fn invalid_input(message: &'static str) -> SafeError {
+    SafeError::new("invalid_input", message, false)
 }
 
 fn optional_message_id(value: Option<String>) -> SafeResult<Option<im_core::ids::MessageId>> {
@@ -1169,6 +1728,7 @@ mod tests {
             did_domain: "example.test".to_owned(),
             user_service_endpoint: None,
             message_service_endpoint: None,
+            mail_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
             operation_timeout_ms: Some(1_000),
@@ -1217,6 +1777,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_error_still_reaches_closed_notifies_waiters_and_releases_state_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path())).await.unwrap();
+        let expected = SafeError::new(
+            "realtime_join_failed",
+            "The realtime session failed while closing.",
+            false,
+        );
+        *client
+            .inner
+            .realtime_close_error
+            .lock()
+            .expect("realtime close error lock") = Some(expected.clone());
+
+        let error = client.inner.close().await.unwrap_err();
+
+        assert_eq!(error, expected);
+        tokio::time::timeout(Duration::from_millis(250), client.inner.close())
+            .await
+            .expect("a second close must not wait in closing")
+            .unwrap();
+        open(options(directory.path())).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn clear_local_data_removes_owned_state_and_keeps_the_client_open() {
         let directory = tempfile::tempdir().unwrap();
         let client = open(options(directory.path())).await.unwrap();
@@ -1251,6 +1836,108 @@ mod tests {
         let (request, _) = sync_request(None, Duration::from_secs(1)).unwrap();
         assert_eq!(request.reason, "manual_refresh");
         assert_eq!(LIST_CONVERSATIONS_SYNC_REASON, "foreground_reconcile");
+    }
+
+    #[test]
+    fn node_transport_enables_core_owned_realtime_without_exposing_transport_details() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = core_config(&options(directory.path())).unwrap();
+        assert_eq!(
+            config.transport_policy,
+            im_core::MessageTransportPolicy::RealtimePreferred
+        );
+    }
+
+    #[test]
+    fn realtime_adapter_emits_sync_for_ready_reconnect_and_dirty_gap_hints() {
+        let connected = im_core::realtime::ImEvent::ConnectionStateChanged(
+            im_core::realtime::ConnectionStateChanged {
+                state: im_core::realtime::RealtimeConnectionState::Connected,
+                reason: Some("must-not-cross-the-node-boundary".to_owned()),
+            },
+        );
+        let first = map_realtime_event(connected.clone(), false);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].kind, "connection_state_changed");
+        assert_eq!(first[0].state.as_deref(), Some("connected"));
+        assert_eq!(first[1].cause.as_deref(), Some("connection_ready"));
+        assert!(format!("{first:?}").contains("connection_ready"));
+        assert!(!format!("{first:?}").contains("must-not-cross"));
+
+        let reconnect = map_realtime_event(connected, true);
+        assert_eq!(reconnect[1].cause.as_deref(), Some("reconnected"));
+
+        let hint = im_core::realtime::RealtimeSyncHint {
+            event_id: Some("raw-event-id".to_owned()),
+            event_seq: Some("18446744073709551615".to_owned()),
+            event_type: Some("raw.event.type".to_owned()),
+            domains: Default::default(),
+            reason: Some("raw recovery reason".to_owned()),
+            sync_dirty: true,
+            gap_detected: true,
+            has_unknown_domain: false,
+        };
+        let required = sync_required_from_hint("message", Some(hint));
+        assert_eq!(required.kind, "sync_required");
+        assert_eq!(required.dirty, Some(true));
+        assert_eq!(required.gap_detected, Some(true));
+        let debug = format!("{required:?}");
+        assert!(!debug.contains("raw-event-id"));
+        assert!(!debug.contains("18446744073709551615"));
+        assert!(!debug.contains("raw.event.type"));
+        assert!(!debug.contains("raw recovery reason"));
+    }
+
+    #[test]
+    fn realtime_options_default_to_bounded_exponential_reconnect() {
+        let options = realtime_options(None).unwrap();
+        assert_eq!(options.event_buffer, 128);
+        assert_eq!(
+            options.subscriptions,
+            vec![im_core::realtime::RealtimeSubscription::Messages]
+        );
+        assert_eq!(
+            options.reconnect,
+            im_core::realtime::ReconnectPolicy::Exponential {
+                base_delay_ms: 1_000,
+                max_delay_ms: 30_000,
+                max_attempts: None,
+            }
+        );
+        assert!(realtime_options(Some(NodeRealtimeOptions {
+            event_buffer: Some(MAX_REALTIME_EVENT_BUFFER + 1),
+            reconnect_base_delay_ms: None,
+            reconnect_max_delay_ms: None,
+            reconnect_max_attempts: None,
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn vault_migration_must_preserve_identity_id_did_and_handle() {
+        let before = im_core::identity::IdentitySummary {
+            id: im_core::ids::IdentityId::parse("alice").unwrap(),
+            did: im_core::ids::Did::parse("did:example:alice").unwrap(),
+            handle: Some(im_core::ids::Handle::parse("alice@example.test", "").unwrap()),
+            display_name: Some("Before".to_owned()),
+            local_alias: Some("default".to_owned()),
+            device_id: None,
+            is_default: true,
+            readiness: im_core::identity::IdentityReadiness {
+                ready_for_auth: true,
+                ready_for_messaging: true,
+                missing: Vec::new(),
+            },
+        };
+        let mut after = before.clone();
+        after.display_name = Some("After".to_owned());
+        assert!(ensure_identity_preserved(&before, &after, true).is_ok());
+
+        after.did = im_core::ids::Did::parse("did:example:replacement").unwrap();
+        let error = ensure_identity_preserved(&before, &after, true).unwrap_err();
+        assert_eq!(error.code, "identity_migration_failed");
+        assert!(!error.safe_message.contains("did:example"));
+        assert!(ensure_identity_preserved(&before, &before, false).is_err());
     }
 
     #[test]
