@@ -2,11 +2,11 @@ use super::*;
 
 #[test]
 fn p6_remove_trigger_retry_is_bounded_to_host_forbidden() {
-    assert!(p6_remove_trigger_convergence_pending(
+    assert!(!p6_remove_trigger_convergence_pending(
         &crate::ImError::Service {
             status_code: Some(403),
             code: None,
-            message: "forbidden".to_owned(),
+            message: "unclassified authorization failure".to_owned(),
             data: None,
         }
     ));
@@ -15,6 +15,14 @@ fn p6_remove_trigger_retry_is_bounded_to_host_forbidden() {
             status_code: None,
             code: Some("anp.forbidden".to_owned()),
             message: "forbidden".to_owned(),
+            data: None,
+        }
+    ));
+    assert!(!p6_remove_trigger_convergence_pending(
+        &crate::ImError::Service {
+            status_code: Some(403),
+            code: Some("anp.device_not_eligible".to_owned()),
+            message: "different deterministic rejection".to_owned(),
             data: None,
         }
     ));

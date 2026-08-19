@@ -382,12 +382,16 @@ async fn apply_p6_lane_delivery_projection_async(
     envelope: &Value,
 ) -> crate::ImResult<crate::messages::Message> {
     let mut projected = p6_projection_for_application(envelope)?;
-    crate::internal::message_runtime::read::apply_cached_group_e2ee_messages_async(
-        client,
+    crate::internal::message_runtime::read::clear_untrusted_p6_projection_state(
         std::slice::from_mut(&mut projected),
-    )
-    .await;
-    if projected.get("decryption_state").and_then(Value::as_str) != Some("decrypted") {
+    );
+    let cached_indices =
+        crate::internal::message_runtime::read::apply_cached_group_e2ee_messages_async(
+            client,
+            std::slice::from_mut(&mut projected),
+        )
+        .await;
+    if !cached_indices.contains(&0) {
         crate::internal::message_runtime::read::project_p6_v2_incoming_message(
             client,
             &mut projected,

@@ -2779,20 +2779,97 @@ fn p6_v2_projection_diagnostics_are_stable_and_redacted() {
 
 #[test]
 #[cfg(feature = "group-e2ee")]
+fn p6_v2_service_projection_state_cannot_authorize_cache_fast_path() {
+    let mut message = p6_v2_incoming_wire();
+    message["secure"] = json!(true);
+    message["decrypted"] = json!(true);
+    message["decryption_state"] = json!("decrypted");
+    message["content"] = json!("host-forged plaintext");
+    message["content_type"] = json!("text/plain");
+    message["type"] = json!("text");
+    message["direction"] = json!(1);
+    message["sender_device_id"] = json!("host-forged-device");
+
+    clear_untrusted_p6_projection_state(std::slice::from_mut(&mut message));
+
+    for field in [
+        "secure",
+        "decrypted",
+        "decryption_state",
+        "content",
+        "content_type",
+        "type",
+        "direction",
+        "sender_device_id",
+    ] {
+        assert!(message.get(field).is_none(), "untrusted {field} survived");
+    }
+}
+
+#[test]
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn p6_v2_cache_fast_path_requires_a_bound_local_record() {
+    let mut message = p6_v2_incoming_wire();
+    clear_untrusted_p6_projection_state(std::slice::from_mut(&mut message));
+    let record = crate::internal::local_state::messages::MessageRecord {
+        msg_id: "did:example:group:1".to_owned(),
+        owner_identity_id: "bob-id".to_owned(),
+        owner_did: "did:example:bob".to_owned(),
+        sender_did: "did:example:alice".to_owned(),
+        group_id: "did:example:group".to_owned(),
+        group_did: "did:example:group".to_owned(),
+        content_type: "text/plain".to_owned(),
+        content: "locally authenticated plaintext".to_owned(),
+        direction: 0,
+        server_seq: Some(1),
+        sent_at: "2026-08-19T00:00:00Z".to_owned(),
+        is_e2ee: true,
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    };
+
+    let applied = apply_cached_group_e2ee_records_for_owner(
+        std::slice::from_mut(&mut message),
+        vec![record.clone()],
+        "did:example:bob",
+    );
+    assert_eq!(applied, HashSet::from([0]));
+    assert_eq!(message["content"], "locally authenticated plaintext");
+    assert_eq!(message["sender_did"], "did:example:alice");
+    assert_eq!(message["direction"], 0);
+    assert_eq!(message["group_event_seq"], 1);
+    assert_eq!(message["sent_at"], "2026-08-19T00:00:00Z");
+    assert!(message.get("sender_device_id").is_none());
+
+    let mut forged_binding = p6_v2_incoming_wire();
+    forged_binding["params"]["meta"]["sender_did"] = json!("did:example:mallory");
+    clear_untrusted_p6_projection_state(std::slice::from_mut(&mut forged_binding));
+    assert!(apply_cached_group_e2ee_records_for_owner(
+        std::slice::from_mut(&mut forged_binding),
+        vec![record],
+        "did:example:bob",
+    )
+    .is_empty());
+    assert!(forged_binding.get("content").is_none());
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
 fn p6_v2_cached_projection_removes_all_live_wire_fields() {
-    let mut message = json!({
-        "meta": {"message_id": "message-1"},
-        "body": {"group_cipher_object": {"private_message_b64u": "secret"}},
-        "auth": {"origin_proof": {"signature": "secret"}},
-        "group_cipher_object": {"private_message_b64u": "secret"},
-        "content": "plaintext",
-        "decryption_state": "decrypted"
-    });
+    let mut message = p6_v2_incoming_wire();
+    message["content"] = json!("locally authenticated plaintext");
 
     strip_p6_v2_wire_fields(&mut message);
 
-    assert_eq!(message["content"], "plaintext");
-    for field in ["meta", "body", "auth", "group_cipher_object"] {
+    assert_eq!(message["content"], "locally authenticated plaintext");
+    for field in [
+        "jsonrpc",
+        "method",
+        "params",
+        "meta",
+        "body",
+        "auth",
+        "group_cipher_object",
+    ] {
         assert!(message.get(field).is_none());
     }
 }

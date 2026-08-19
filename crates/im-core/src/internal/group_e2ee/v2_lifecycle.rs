@@ -1087,15 +1087,9 @@ fn p6_remove_trigger_convergence_pending(error: &crate::ImError) -> bool {
     matches!(
         error,
         crate::ImError::Service {
-            status_code: Some(403),
-            ..
-        }
-    ) || matches!(
-        error,
-        crate::ImError::Service {
             code: Some(code),
             ..
-        } if code == "anp.forbidden"
+        } if code.trim().eq_ignore_ascii_case("anp.forbidden")
     )
 }
 

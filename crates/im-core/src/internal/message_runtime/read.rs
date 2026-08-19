@@ -4450,7 +4450,7 @@ fn project_group_e2ee_messages_impl(
     // P6 v2 notices were consumed above. Application decryption remains on the
     // async device-scoped path, so blocking reads must never hand a v2
     // ciphertext to the legacy decoder or ordinary message projection.
-    apply_cached_group_e2ee_messages(client, &mut message_values);
+    let _ = apply_cached_group_e2ee_messages(client, &mut message_values);
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
             client,
@@ -4497,11 +4497,13 @@ async fn project_group_e2ee_messages_async_impl(
         return;
     };
     let mut message_values = std::mem::take(messages);
-    apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
+    clear_untrusted_p6_projection_state(&mut message_values);
+    let cached_p6_indices =
+        apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
     let mut p6_projected = Vec::with_capacity(message_values.len());
     let mut newly_decrypted_values = Vec::new();
     let mut p6_warnings = Vec::new();
-    for mut message in message_values.drain(..) {
+    for (index, mut message) in message_values.drain(..).enumerate() {
         if !is_p6_v2_projection_candidate(&message) {
             p6_projected.push(message);
             continue;
@@ -4509,7 +4511,7 @@ async fn project_group_e2ee_messages_async_impl(
         if !client.core_inner().group_e2ee_v2_enabled() {
             continue;
         }
-        if message.get("decryption_state").and_then(Value::as_str) == Some("decrypted") {
+        if cached_p6_indices.contains(&index) {
             strip_p6_v2_wire_fields(&mut message);
             p6_projected.push(message);
             continue;
@@ -4546,7 +4548,7 @@ async fn project_group_e2ee_messages_async_impl(
         }
     }
     message_values = p6_projected;
-    apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
+    let _ = apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
     let mut warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
             client,
@@ -4612,8 +4614,55 @@ fn strip_p6_v2_wire_fields(message: &mut Value) {
     let Some(object) = message.as_object_mut() else {
         return;
     };
-    for field in ["meta", "body", "auth", "group_cipher_object"] {
+    for field in [
+        "jsonrpc",
+        "method",
+        "params",
+        "meta",
+        "body",
+        "auth",
+        "group_cipher_object",
+    ] {
         object.remove(field);
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn clear_untrusted_p6_projection_state(messages: &mut [Value]) {
+    for message in messages {
+        if !is_p6_v2_projection_candidate(message) {
+            continue;
+        }
+        if let Some(object) = message.as_object_mut() {
+            // These fields are local authenticated projection output. A Group
+            // Host must not be able to supply them to bypass origin proof,
+            // exact-device, or MLS verification.
+            for field in [
+                "id",
+                "message_id",
+                "raw_message_id",
+                "sender_did",
+                "sender_device_id",
+                "receiver_did",
+                "recipient_did",
+                "group_did",
+                "group_state_version",
+                "group_event_seq",
+                "accepted_at",
+                "sent_at",
+                "direction",
+                "secure",
+                "decrypted",
+                "decryption_state",
+                "content",
+                "content_type",
+                "type",
+                "message_security_profile",
+                "security",
+            ] {
+                object.remove(field);
+            }
+        }
     }
 }
 
@@ -4937,6 +4986,14 @@ fn group_e2ee_wire_message_ids(messages: &[Value]) -> Vec<String> {
 
 #[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
 fn group_e2ee_message_cache_id(message: &Value) -> String {
+    if is_p6_v2_projection_candidate(message) {
+        return parse_p6_v2_incoming_notification(message)
+            .ok()
+            .and_then(|(_, body, _)| {
+                p6_group_message_id(&body.group_did, &body.group_event_seq).ok()
+            })
+            .unwrap_or_default();
+    }
     let group_did = first_non_empty_owned([
         string_value(message.get("group_did")),
         string_value(message.get("group")),
@@ -4952,15 +5009,15 @@ fn group_e2ee_message_cache_id(message: &Value) -> String {
 pub(crate) fn apply_cached_group_e2ee_messages(
     client: &crate::core::ImClient,
     messages: &mut [Value],
-) {
+) -> HashSet<usize> {
     let message_ids = group_e2ee_wire_message_ids(messages);
     if message_ids.is_empty() {
-        return;
+        return HashSet::new();
     }
     let Ok(connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     ) else {
-        return;
+        return HashSet::new();
     };
     let Ok(records) =
         crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
@@ -4969,9 +5026,9 @@ pub(crate) fn apply_cached_group_e2ee_messages(
             &message_ids,
         )
     else {
-        return;
+        return HashSet::new();
     };
-    apply_cached_group_e2ee_records(messages, records);
+    apply_cached_group_e2ee_records_for_owner(messages, records, client.did().as_str())
 }
 
 #[cfg(all(
@@ -4982,20 +5039,21 @@ pub(crate) fn apply_cached_group_e2ee_messages(
 pub(crate) fn apply_cached_group_e2ee_messages(
     _client: &crate::core::ImClient,
     _messages: &mut [Value],
-) {
+) -> HashSet<usize> {
+    HashSet::new()
 }
 
 #[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
 pub(crate) async fn apply_cached_group_e2ee_messages_async(
     client: &crate::core::ImClient,
     messages: &mut [Value],
-) {
+) -> HashSet<usize> {
     let message_ids = group_e2ee_wire_message_ids(messages);
     if message_ids.is_empty() {
-        return;
+        return HashSet::new();
     }
     let Ok(db) = client.core_inner().local_state_db().await else {
-        return;
+        return HashSet::new();
     };
     let Ok(records) = db
         .list_decrypted_secure_messages(
@@ -5004,38 +5062,93 @@ pub(crate) async fn apply_cached_group_e2ee_messages_async(
         )
         .await
     else {
-        return;
+        return HashSet::new();
     };
-    apply_cached_group_e2ee_records(messages, records);
+    apply_cached_group_e2ee_records_for_owner(messages, records, client.did().as_str())
 }
 
 #[cfg(all(feature = "group-e2ee", not(feature = "sqlite")))]
 pub(crate) async fn apply_cached_group_e2ee_messages_async(
     _client: &crate::core::ImClient,
     _messages: &mut [Value],
-) {
+) -> HashSet<usize> {
+    HashSet::new()
 }
 
 #[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
-fn apply_cached_group_e2ee_records(
+fn apply_cached_group_e2ee_records_for_owner(
     messages: &mut [Value],
     records: Vec<crate::internal::local_state::messages::MessageRecord>,
-) {
+    expected_owner_did: &str,
+) -> HashSet<usize> {
     let records = records
         .into_iter()
         .map(|record| (record.msg_id.clone(), record))
         .collect::<HashMap<_, _>>();
-    for message in messages {
+    let mut applied = HashSet::new();
+    for (index, message) in messages.iter_mut().enumerate() {
         let message_id = group_e2ee_message_cache_id(message);
         let Some(record) = records.get(&message_id) else {
             continue;
         };
-        let _ = crate::internal::group_e2ee::incoming::apply_cached_group_plaintext(
+        if is_p6_v2_projection_candidate(message)
+            && !p6_cached_record_matches_wire(message, record, expected_owner_did)
+        {
+            continue;
+        }
+        if crate::internal::group_e2ee::incoming::apply_cached_group_plaintext(
             message,
             &record.content_type,
             &record.content,
-        );
+        ) {
+            if let Some(object) = message.as_object_mut() {
+                object.insert("id".to_owned(), Value::String(record.msg_id.clone()));
+                object.insert(
+                    "sender_did".to_owned(),
+                    Value::String(record.sender_did.clone()),
+                );
+                object.insert(
+                    "group_did".to_owned(),
+                    Value::String(record.group_did.clone()),
+                );
+                object.insert(
+                    "receiver_did".to_owned(),
+                    Value::String(record.owner_did.clone()),
+                );
+                object.insert("direction".to_owned(), Value::from(record.direction));
+                if let Some(server_seq) = record.server_seq {
+                    object.insert("group_event_seq".to_owned(), Value::from(server_seq));
+                }
+                if !record.sent_at.trim().is_empty() {
+                    object.insert("sent_at".to_owned(), Value::String(record.sent_at.clone()));
+                }
+                object.insert("is_read".to_owned(), Value::Bool(record.is_read));
+            }
+            applied.insert(index);
+        }
     }
+    applied
+}
+
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn p6_cached_record_matches_wire(
+    message: &Value,
+    record: &crate::internal::local_state::messages::MessageRecord,
+    expected_owner_did: &str,
+) -> bool {
+    let Ok((meta, body, _)) = parse_p6_v2_incoming_notification(message) else {
+        return false;
+    };
+    let Ok(message_id) = p6_group_message_id(&body.group_did, &body.group_event_seq) else {
+        return false;
+    };
+    record.is_e2ee
+        && record.msg_id == message_id
+        && record.group_did == body.group_did
+        && (record.group_id.is_empty() || record.group_id == body.group_did)
+        && record.sender_did == meta.sender_did
+        && record.owner_did == meta.target.did
+        && (expected_owner_did.is_empty() || record.owner_did == expected_owner_did)
 }
 
 pub(crate) fn cache_attachment_manifests_for_internal_download(
