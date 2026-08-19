@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Add bounded realtime synchronization signals with explicit stream-close reconciliation.
+- Add the identity-bound on-demand mail account, inbox, read, mark-read, and send facade.
+- Interpret timezone-less mail service timestamps as UTC before exposing canonical RFC 3339 values.
+- Raise the native API contract to v5 so wrappers reject binaries missing realtime or mail methods.
+
 ## 0.1.4
 
 - Add the local conversation timeline read for local-first Host UI.
@@ -8,9 +15,7 @@
 - Add `addGroupMember` with Core-owned Handle/DID resolution.
 - Add local-only `hydrateDisplayProfiles` batch lookup for cached sender Handle
   and display-name projection without a Directory network request.
-- Add realtime sync signals and the on-demand mail facade.
-- Raise the source candidate native API contract to v5 so wrappers reject binaries missing any
-  group-management, display-profile, realtime, or mail method.
+- Raise the native API contract to v4 for group-management, display-profile, and local timeline methods.
 
 ## 0.1.3
 
