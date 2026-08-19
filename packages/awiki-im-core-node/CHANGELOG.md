@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Add the native API v3 local conversation timeline read for local-first Host UI.
 - Add the native API v4 multi-identity facade and trusted-host Skill Agent

@@ -25,7 +25,12 @@
 8. exchange 已提交但本地保存中断时，必须复用同一 token、DID 和 Document exact replay。
    Host binding 原子提交后调用 acknowledge，Core 才删除 pending token；非敏感完成 journal
    保留以支持幂等结果。
-9. 限流、capability 和 scope 失败只输出稳定 code；服务端 message/data 不得越过 Node safe
+9. `issue_token` 成功后、SecretVault pending 尚未持久化前的可捕获本地失败，必须由同一个
+   authenticated Controller transport 调用 `revoke_token` 补偿；revoke 响应必须严格绑定
+   token id/status。补偿失败只输出稳定、可重试的 cleanup code。进程在 issue 响应与首次 Vault
+   写入之间被强杀是协议无法完全消除的极小窗口，只能由服务端 30 分钟 TTL 最终回收，不能将其
+   描述为已被 revoke 彻底解决。
+10. 限流、capability 和 scope 失败只输出稳定 code；服务端 message/data 不得越过 Node safe
    error 边界。
 
 ## 审批事实
@@ -40,4 +45,5 @@ Core 不自行推断用户授权。调用 Host 必须在执行 `provisionSkillAg
 - 两个 operation 的 journal/Vault key 不冲突；
 - default identity 在创建前后不变；
 - capability 缺失、Agent Controller、scope 回显不一致、限流和响应丢失均 fail closed；
+- issue 后的 unstaged 本地失败会 revoke；revoke 失败返回闭合 cleanup code 且不泄漏服务正文；
 - Node addon、TypeScript wrapper 和所有平台包使用同一 Native API 版本。

@@ -97,6 +97,7 @@ impl Fixture {
 struct FakeRemote {
     capability_calls: usize,
     issue_calls: usize,
+    revoke_calls: usize,
     verify_calls: usize,
     exchange_calls: usize,
     prekey_calls: usize,
@@ -106,14 +107,17 @@ struct FakeRemote {
     exchanged_document_hashes: Vec<String>,
     exchanged_key_ids: Vec<(String, String, String)>,
     greeting_ids: Vec<crate::ids::MessageId>,
+    revoked_token_ids: Vec<String>,
     failures: VecDeque<FailurePoint>,
     response_did_override: Option<crate::ids::Did>,
     controller_user_id_override: Option<String>,
     token_device_id_override: Option<String>,
+    issue_display_name_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailurePoint {
+    Revoke,
     Exchange,
     Prekey,
     PrekeyService,
@@ -253,9 +257,24 @@ impl SkillProvisionRemote for FakeRemote {
                 expires_at: (OffsetDateTime::now_utc() + time::Duration::minutes(30))
                     .format(&Rfc3339)
                     .unwrap(),
-                display_name: Some(display_name.to_owned()),
+                display_name: Some(
+                    self.issue_display_name_override
+                        .clone()
+                        .unwrap_or_else(|| display_name.to_owned()),
+                ),
             },
         })
+    }
+
+    async fn revoke_token(&mut self, token_id: &str) -> crate::ImResult<()> {
+        self.revoke_calls += 1;
+        self.revoked_token_ids.push(token_id.to_owned());
+        if self.should_fail(FailurePoint::Revoke) {
+            return Err(crate::ImError::TransportUnavailable {
+                detail: "revoke unavailable".to_owned(),
+            });
+        }
+        Ok(())
     }
 
     async fn exchange_token(
@@ -389,6 +408,7 @@ async fn trusted_host_provisions_additional_identity_without_changing_default() 
     );
     assert_eq!(remote.capability_calls, 1);
     assert_eq!(remote.issue_calls, 1);
+    assert_eq!(remote.revoke_calls, 0);
     assert_eq!(remote.exchange_calls, 1);
     assert_eq!(remote.prekey_calls, 1);
     assert_eq!(remote.greeting_calls, 1);
@@ -418,6 +438,54 @@ async fn trusted_host_provisions_additional_identity_without_changing_default() 
     assert_eq!(remote.issue_calls, 1);
     assert_eq!(remote.exchange_calls, 1);
     acknowledge_provision(&fixture.core, "agbind_research_0001").unwrap();
+}
+
+#[tokio::test]
+async fn unstaged_provision_failure_revokes_the_issued_token() {
+    let fixture = Fixture::vault_required();
+    let mut remote = FakeRemote {
+        issue_display_name_override: Some("Wrong Agent".to_owned()),
+        ..FakeRemote::default()
+    };
+
+    let error = provision_with_remote(
+        &fixture.core,
+        valid_provision_request("agbind_revoke_0001", "Research Agent"),
+        &mut remote,
+    )
+    .await
+    .unwrap_err();
+
+    assert_skill_error(&error, "skill_onboarding_response_mismatch", false);
+    assert_eq!(remote.issue_calls, 1);
+    assert_eq!(remote.revoke_calls, 1);
+    assert_eq!(remote.revoked_token_ids, ["agtok_dsh_1"]);
+    assert!(!provision_journal_path(&fixture.core, "agbind_revoke_0001").exists());
+    assert!(load_provision_secret(&fixture.core, "agbind_revoke_0001")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn failed_unstaged_revoke_returns_one_stable_cleanup_error() {
+    let fixture = Fixture::vault_required();
+    let mut remote = FakeRemote {
+        issue_display_name_override: Some("Wrong Agent".to_owned()),
+        failures: VecDeque::from([FailurePoint::Revoke]),
+        ..FakeRemote::default()
+    };
+
+    let error = provision_with_remote(
+        &fixture.core,
+        valid_provision_request("agbind_revoke_0002", "Research Agent"),
+        &mut remote,
+    )
+    .await
+    .unwrap_err();
+
+    assert_skill_error(&error, "skill_onboarding_provision_cleanup_failed", true);
+    assert_eq!(remote.revoke_calls, 1);
+    assert!(!format!("{error:?}").contains("revoke unavailable"));
 }
 
 #[tokio::test]
@@ -475,6 +543,31 @@ fn provision_capability_requires_display_name_binding() {
         }}
     }))
     .unwrap();
+}
+
+#[test]
+fn provision_revoke_response_is_closed_and_token_bound() {
+    validate_provision_revoke(
+        &json!({
+            "token_id": "agtok_expected",
+            "revoked": true,
+            "status": "revoked",
+            "future_field": 1
+        }),
+        "agtok_expected",
+    )
+    .unwrap();
+    for invalid in [
+        json!({"token_id": "agtok_other", "revoked": true, "status": "revoked"}),
+        json!({"token_id": "agtok_expected", "revoked": false, "status": "revoked"}),
+        json!({"token_id": "agtok_expected", "revoked": true, "status": "active"}),
+    ] {
+        assert_skill_error(
+            &validate_provision_revoke(&invalid, "agtok_expected").unwrap_err(),
+            "skill_onboarding_response_mismatch",
+            false,
+        );
+    }
 }
 
 #[test]

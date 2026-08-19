@@ -100,6 +100,10 @@ DID-WBA 等多个 scheme；Rust 只选择唯一且格式合法的 DID-WBA challe
 已提交消息可使 Direct route 暂处 `legacy_unresolved`；Node 仍投影可判定 peer 的 `dm:` Direct
 会话，Group 或无法判定的 route 继续 fail closed。`sendText` 等待 final acceptance 后再返回。
 
+`provisionSkillAgentIdentity` 以 mutation gate 串行化身份创建，但 server-info、issue、exchange、
+PreKey 和 greeting 网络阶段不持有环境 write guard；只有把新 identity-bound client 加入共享表时
+短暂取得 write guard，因此既有身份的轮询和发送不会被整条 provisioning 网络链路阻塞。
+
 `getLocalConversationTimeline` 只读取 canonical conversation 的 committed SQLite projection，
 不会触发可靠同步、远端 Direct/Group history 或 Directory RPC。它用于 Host/UI 的 local-first
 首屏；返回的 opaque local cursor 只能继续传给同一 local timeline 方法，不能传给

@@ -136,6 +136,29 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
 }
 
 #[test]
+fn skill_provision_network_runs_outside_the_environment_write_guard() {
+    let source = include_str!("../src/client.rs");
+    let body = source
+        .split("async fn provision_skill_agent_identity_inner")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub async fn acknowledge_skill_agent_provision")
+                .next()
+        })
+        .expect("provisioning method source");
+    let provision = body
+        .find("provision_agent_async")
+        .expect("Core provisioning call");
+    let write_guard = body
+        .find("write_operation().await")
+        .expect("short registry commit guard");
+    assert!(
+        provision < write_guard,
+        "network provisioning must finish before the environment write guard is acquired"
+    );
+}
+
+#[test]
 fn local_timeline_route_uses_only_the_public_local_read_facade() {
     let source = include_str!("../src/client.rs");
     let start = source

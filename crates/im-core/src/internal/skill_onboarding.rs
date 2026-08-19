@@ -403,6 +403,8 @@ pub(crate) trait SkillProvisionRemote {
 
     async fn issue_token(&mut self, display_name: &str) -> crate::ImResult<SkillProvisionIssue>;
 
+    async fn revoke_token(&mut self, token_id: &str) -> crate::ImResult<()>;
+
     async fn exchange_token(
         &mut self,
         token: &crate::onboarding::SkillOnboardingToken,
@@ -442,6 +444,18 @@ impl<'a> ProductionSkillProvisionRemote<'a> {
             onboarding: ProductionSkillOnboardingRemote::new(core),
         }
     }
+
+    async fn revoke_issued_token(&mut self, token_id: &str) -> crate::ImResult<()> {
+        let result = self
+            .controller_transport
+            .authenticated_rpc(
+                "/user-service/v1/agent-registration/rpc",
+                "revoke_token",
+                json!({"token_id": token_id}),
+            )
+            .await?;
+        validate_provision_revoke(&result, token_id)
+    }
 }
 
 impl SkillProvisionRemote for ProductionSkillProvisionRemote<'_> {
@@ -478,13 +492,37 @@ impl SkillProvisionRemote for ProductionSkillProvisionRemote<'_> {
                 }),
             )
             .await?;
-        parse_provision_issue(
+        let token_id = result
+            .get("token_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let parsed = parse_provision_issue(
             &mut result,
             self.core.inner().sdk_config().did_domain.as_str(),
             identity.did.as_str(),
             handle.as_str(),
             display_name,
-        )
+        );
+        match parsed {
+            Ok(issue) => Ok(issue),
+            Err(error) => match token_id {
+                Some(token_id) => match self.revoke_issued_token(&token_id).await {
+                    Ok(()) => Err(error),
+                    Err(_) => Err(onboarding_error(
+                        "skill_onboarding_provision_cleanup_failed",
+                        "provision_revoke",
+                        true,
+                    )),
+                },
+                None => Err(error),
+            },
+        }
+    }
+
+    async fn revoke_token(&mut self, token_id: &str) -> crate::ImResult<()> {
+        self.revoke_issued_token(token_id).await
     }
 
     async fn exchange_token(
@@ -609,41 +647,53 @@ pub(crate) async fn provision_with_remote<R: SkillProvisionRemote>(
                     .issue_token(&display_name)
                     .await
                     .map_err(|error| map_remote_error(error, "provision_issue"))?;
-                if issue.metadata.display_name.as_deref() != Some(display_name.as_str()) {
-                    return Err(response_mismatch("provision_issue_display_name"));
+                let token_id = issue.metadata.token_id.clone();
+                let prepared = (|| {
+                    if issue.metadata.display_name.as_deref() != Some(display_name.as_str()) {
+                        return Err(response_mismatch("provision_issue_display_name"));
+                    }
+                    let local_alias = handle_local_part(&issue.metadata.agent_handle, core)?;
+                    let generated =
+                        crate::internal::identity_generation::generate_vnext_agent_handle_identity(
+                            core.inner().sdk_config().did_domain.as_str(),
+                            crate::identity::AgentIdentityKind::Skill,
+                            &local_alias,
+                            core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                            core.inner().sdk_config().anp_service_did.as_ref(),
+                        )?;
+                    let pending = PendingIdentityBundle::new(generated)?;
+                    let journal = ProvisionJournal {
+                        schema_version: DSH_PROVISION_SCHEMA_VERSION,
+                        operation_id: operation_id.clone(),
+                        display_name: display_name.clone(),
+                        metadata: issue.metadata.clone(),
+                        agent_did: pending.generated.did.clone(),
+                        local_alias,
+                        did_document_digest: pending.document_hash.clone(),
+                        phase: ProvisionPhase::IdentityPending,
+                        greeting_message_id: greeting_message_id(&format!(
+                            "dsh:{}",
+                            token_id_digest(&operation_id)
+                        ))?,
+                        updated_at: now_rfc3339()?,
+                    };
+                    let secret = ProvisionSecretBundle {
+                        token: issue.token.expose().to_owned(),
+                        journal: journal.clone(),
+                        pending,
+                    };
+                    validate_provision_secret(&secret)?;
+                    Ok((journal, secret))
+                })();
+                let (journal, secret) = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        return Err(revoke_unstaged_provision(remote, &token_id, error).await);
+                    }
+                };
+                if let Err(error) = save_provision_secret(core, &operation_id, &secret) {
+                    return Err(revoke_unstaged_provision(remote, &token_id, error).await);
                 }
-                let local_alias = handle_local_part(&issue.metadata.agent_handle, core)?;
-                let generated =
-                    crate::internal::identity_generation::generate_vnext_agent_handle_identity(
-                        core.inner().sdk_config().did_domain.as_str(),
-                        crate::identity::AgentIdentityKind::Skill,
-                        &local_alias,
-                        core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                        core.inner().sdk_config().anp_service_did.as_ref(),
-                    )?;
-                let pending = PendingIdentityBundle::new(generated)?;
-                let journal = ProvisionJournal {
-                    schema_version: DSH_PROVISION_SCHEMA_VERSION,
-                    operation_id: operation_id.clone(),
-                    display_name: display_name.clone(),
-                    metadata: issue.metadata,
-                    agent_did: pending.generated.did.clone(),
-                    local_alias,
-                    did_document_digest: pending.document_hash.clone(),
-                    phase: ProvisionPhase::IdentityPending,
-                    greeting_message_id: greeting_message_id(&format!(
-                        "dsh:{}",
-                        token_id_digest(&operation_id)
-                    ))?,
-                    updated_at: now_rfc3339()?,
-                };
-                let secret = ProvisionSecretBundle {
-                    token: issue.token.expose().to_owned(),
-                    journal: journal.clone(),
-                    pending,
-                };
-                validate_provision_secret(&secret)?;
-                save_provision_secret(core, &operation_id, &secret)?;
                 write_provision_journal(&journal_path, &journal)?;
                 created = true;
                 journal
@@ -721,6 +771,21 @@ pub(crate) async fn provision_with_remote<R: SkillProvisionRemote>(
     }
 
     provision_result(core, &journal, created).await
+}
+
+async fn revoke_unstaged_provision<R: SkillProvisionRemote>(
+    remote: &mut R,
+    token_id: &str,
+    original_error: crate::ImError,
+) -> crate::ImError {
+    match remote.revoke_token(token_id).await {
+        Ok(()) => original_error,
+        Err(_) => onboarding_error(
+            "skill_onboarding_provision_cleanup_failed",
+            "provision_revoke",
+            true,
+        ),
+    }
 }
 
 pub(crate) fn acknowledge_provision(
@@ -2513,6 +2578,9 @@ fn now_rfc3339() -> crate::ImResult<String> {
 }
 
 fn map_remote_error(error: crate::ImError, phase: &str) -> crate::ImError {
+    if matches!(&error, crate::ImError::SkillOnboarding { .. }) {
+        return error;
+    }
     if let crate::ImError::Service { data, .. } = &error {
         if let Some(reason) = data
             .as_ref()
@@ -2705,6 +2773,16 @@ fn parse_provision_issue(
         token: crate::onboarding::SkillOnboardingToken::new(raw_token)?,
         metadata,
     })
+}
+
+fn validate_provision_revoke(result: &Value, expected_token_id: &str) -> crate::ImResult<()> {
+    if result.get("token_id").and_then(Value::as_str) != Some(expected_token_id)
+        || result.get("revoked").and_then(Value::as_bool) != Some(true)
+        || result.get("status").and_then(Value::as_str) != Some("revoked")
+    {
+        return Err(response_mismatch("provision_revoke"));
+    }
+    Ok(())
 }
 
 fn validate_provision_operation_id(value: &str) -> crate::ImResult<String> {

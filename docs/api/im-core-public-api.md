@@ -247,6 +247,8 @@ Agent identity alias 保持服务端 Handle local part，保存固定 `make_defa
 VNext-only、Direct-only，不声明群 capability，也不进入 CLI 的 Legacy recovery/global journal。
 Host binding 提交后必须 acknowledge，才删除加密 pending token。完整安全契约见
 [DSH Skill Agent Controller Provisioning](../architecture/contracts/dsh-skill-agent-controller-provisioning.md)。
+issue 成功但 Vault pending 尚未落盘时发生的可捕获本地失败会通过 Controller-authenticated
+`revoke_token` 补偿；补偿失败返回稳定 `skill_onboarding_provision_cleanup_failed`。
 
 ### 3.2 Core open 前的 local-state 升级与恢复
 

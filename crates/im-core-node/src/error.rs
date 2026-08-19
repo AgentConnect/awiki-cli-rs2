@@ -294,15 +294,20 @@ mod tests {
 
     #[test]
     fn skill_provisioning_preserves_only_stable_code_and_retryability() {
-        let error = SafeError::from_im(im_core::ImError::SkillOnboarding {
-            code: "skill_onboarding_rate_limited".to_owned(),
-            phase: "private-phase".to_owned(),
-            retryable: true,
-        });
-        let payload = serde_json::to_string(&error).unwrap();
-        assert_eq!(error.code, "skill_onboarding_rate_limited");
-        assert!(error.retryable);
-        assert!(!payload.contains("private-phase"));
+        for (code, retryable) in [
+            ("skill_onboarding_rate_limited", true),
+            ("skill_onboarding_provision_cleanup_failed", true),
+        ] {
+            let error = SafeError::from_im(im_core::ImError::SkillOnboarding {
+                code: code.to_owned(),
+                phase: "private-phase".to_owned(),
+                retryable,
+            });
+            let payload = serde_json::to_string(&error).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.retryable, retryable);
+            assert!(!payload.contains("private-phase"));
+        }
     }
 
     #[test]

@@ -531,21 +531,24 @@ impl NativeImCoreNodeClient {
         input: NodeSkillAgentProvisionInput,
     ) -> SafeResult<NodeIdentity> {
         let _mutation = self.inner.mutation.lock().await;
-        let mut operation = self.inner.write_operation().await?;
-        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
-        if !environment
-            .clients
-            .contains_key(&input.controller_identity_id)
-        {
-            return Err(SafeError::new(
-                "identity_not_found",
-                "The IM identity was not found.",
-                false,
-            ));
-        }
         let controller_identity = im_core::ids::IdentityId::parse(&input.controller_identity_id)
             .map_err(SafeError::from_im)?;
-        let onboarding = environment.core.onboarding();
+        let core = {
+            let operation = self.inner.operation().await?;
+            let environment = operation.environment()?;
+            if !environment
+                .clients
+                .contains_key(&input.controller_identity_id)
+            {
+                return Err(SafeError::new(
+                    "identity_not_found",
+                    "The IM identity was not found.",
+                    false,
+                ));
+            }
+            environment.core.clone()
+        };
+        let onboarding = core.onboarding();
         let provision = box_im_future(onboarding.provision_agent_async(
             im_core::onboarding::SkillAgentProvisionRequest {
                 operation_id: input.operation_id,
@@ -561,14 +564,14 @@ impl NativeImCoreNodeClient {
         let client = self
             .inner
             .wait_im(
-                environment
-                    .core
-                    .client_async(im_core::identity::IdentitySelector::Id(
-                        result.identity.id.clone(),
-                    )),
+                core.client_async(im_core::identity::IdentitySelector::Id(
+                    result.identity.id.clone(),
+                )),
                 self.inner.operation_timeout,
             )
             .await?;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
         environment.clients.insert(identity_id.clone(), client);
         let metadata = environment.state.metadata();
         let registered_at_ms =
