@@ -641,8 +641,14 @@ fn checked_mail_token(value: &str, max_chars: usize) -> SafeResult<String> {
 fn checked_timestamp(value: Option<String>) -> SafeResult<Option<String>> {
     value
         .map(|value| {
-            chrono::DateTime::parse_from_rfc3339(&value).map_err(|_| invalid_mail_response())?;
-            Ok(value)
+            if chrono::DateTime::parse_from_rfc3339(&value).is_ok() {
+                return Ok(value);
+            }
+            let naive = chrono::NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S%.f")
+                .map_err(|_| invalid_mail_response())?;
+            Ok(naive
+                .and_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
         })
         .transpose()
 }

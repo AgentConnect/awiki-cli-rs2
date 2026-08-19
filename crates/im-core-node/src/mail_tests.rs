@@ -276,3 +276,24 @@ fn malformed_remote_mail_fields_fail_closed() {
     assert_eq!(error.code, "remote_response_invalid");
     assert!(!error.safe_message.contains("sender"));
 }
+
+#[test]
+fn python_naive_mail_timestamp_is_canonicalized_as_utc() {
+    let mut value = summary("subject".to_owned());
+    value.received_at = None;
+    value.sent_at = Some("2026-08-19T09:30:34.123456".to_owned());
+    let page = dto::mail_inbox(
+        im_core::ids::Page {
+            items: vec![value],
+            next_cursor: None,
+            has_more: false,
+        },
+        0,
+        20,
+    )
+    .unwrap();
+    assert_eq!(
+        page.items[0].sent_at.as_deref(),
+        Some("2026-08-19T09:30:34.123456Z")
+    );
+}
