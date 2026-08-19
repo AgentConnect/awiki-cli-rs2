@@ -28,6 +28,9 @@ pub(crate) struct ImCoreInner {
     pub(crate) handle_recovery_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
+    pub(crate) direct_rebind_locks: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
     pub(crate) registration_join_preparations:
@@ -114,6 +117,7 @@ impl ImCore {
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
                 multi_device_audience,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                direct_rebind_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 device_join_approvals: Default::default(),
                 registration_join_preparations: Default::default(),
                 root_key_transfer_authorizations: Default::default(),
@@ -892,6 +896,32 @@ impl ImCoreInner {
         lock
     }
 
+    pub(crate) fn direct_rebind_lock(
+        &self,
+        owner_identity_id: &str,
+        conversation_id: &str,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let scope = format!(
+            "{}\0{}\0{}",
+            crate::internal::identity_transition_pending::state_root_fingerprint(
+                &self.sdk_paths.local_state.sqlite_path,
+            ),
+            owner_identity_id,
+            conversation_id,
+        );
+        let mut locks = self
+            .direct_rebind_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&scope).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(scope, Arc::downgrade(&lock));
+        lock
+    }
+
     #[cfg(feature = "sqlite")]
     pub(crate) async fn local_state_db(
         &self,
@@ -983,6 +1013,31 @@ mod tests {
         assert!(!Arc::ptr_eq(&alice, &bob));
         let _alice_guard = alice.try_lock().unwrap();
         assert!(bob.try_lock().is_ok());
+    }
+
+    #[test]
+    fn direct_rebind_locks_are_owner_and_conversation_scoped() {
+        let root = tempfile::tempdir().unwrap();
+        let core = test_core(root.path());
+        let first = core
+            .inner()
+            .direct_rebind_lock("owner-alice", "conversation-a");
+        let same = core
+            .inner()
+            .direct_rebind_lock("owner-alice", "conversation-a");
+        let other_conversation = core
+            .inner()
+            .direct_rebind_lock("owner-alice", "conversation-b");
+        let other_owner = core
+            .inner()
+            .direct_rebind_lock("owner-bob", "conversation-a");
+
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other_conversation));
+        assert!(!Arc::ptr_eq(&first, &other_owner));
+        let _first_guard = first.try_lock().unwrap();
+        assert!(other_conversation.try_lock().is_ok());
+        assert!(other_owner.try_lock().is_ok());
     }
 
     #[test]

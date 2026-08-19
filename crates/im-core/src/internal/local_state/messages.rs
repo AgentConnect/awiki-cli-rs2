@@ -444,6 +444,69 @@ pub(crate) fn upsert_message(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn existing_outgoing_direct_wire_target(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    conversation_id: &str,
+    message_id: &str,
+) -> crate::ImResult<Option<String>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let owner_did = required("owner_did", owner_did)?;
+    let conversation_id = required("conversation_id", conversation_id)?;
+    let message_id = required("message_id", message_id)?;
+    let existing = connection
+        .query_row(
+            r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref, direction,
+                      sender_did, receiver_did, group_id, group_did
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
+            (&owner_identity_id, &message_id),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((
+        existing_conversation_id,
+        wire_kind,
+        wire_reference,
+        direction,
+        sender_did,
+        receiver_did,
+        group_id,
+        group_did,
+    )) = existing
+    else {
+        return Ok(None);
+    };
+    if existing_conversation_id.trim() != conversation_id
+        || wire_kind.trim() != "direct"
+        || direction != 1
+        || sender_did.trim() != owner_did
+        || receiver_did.trim().is_empty()
+        || wire_reference.trim() != receiver_did.trim()
+        || !group_id.trim().is_empty()
+        || !group_did.trim().is_empty()
+    {
+        return Err(crate::ImError::MessageWireIdentityConflict {
+            message_id: message_id.to_owned(),
+        });
+    }
+    Ok(Some(receiver_did.trim().to_owned()))
+}
+
+#[cfg(feature = "sqlite")]
 fn upsert_message_record(
     connection: &rusqlite::Connection,
     record: &MessageRecord,

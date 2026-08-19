@@ -2,6 +2,7 @@ pub struct AttachmentService<'a> {
     client: &'a crate::core::ImClient,
 }
 
+#[derive(Clone)]
 struct ResolvedConversationAttachmentRequest {
     target: crate::messages::MessageTarget,
     request: super::AttachmentSendRequest,
@@ -112,31 +113,240 @@ impl<'a> AttachmentService<'a> {
         &self,
         request: super::SendConversationAttachmentRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
-        let resolved = self.resolve_conversation_attachment_request(request)?;
+        let mut resolved = self.resolve_conversation_attachment_request(request)?;
         if attachment_security_is_secure(&resolved.request.security) {
-            let mut result = attachment_send_result_from_secure_message(
-                self.client.messages().send_secure_attachment(
-                    message_request_from_resolved_conversation_attachment(&resolved)?,
-                )?,
-            )?;
+            let first = self.client.messages().send_secure_attachment(
+                message_request_from_resolved_conversation_attachment(&resolved)?,
+            );
+            let message = match first {
+                Ok(message) => message,
+                Err(error) => {
+                    let Some(rebound) = rebind_direct_attachment_for_stale_error_blocking(
+                        self.client,
+                        &resolved,
+                        &error,
+                    )?
+                    else {
+                        return Err(error);
+                    };
+                    apply_attachment_rebind(&mut resolved, rebound)?;
+                    self.client.messages().send_secure_attachment(
+                        message_request_from_resolved_conversation_attachment(&resolved)?,
+                    )?
+                }
+            };
+            let mut result = attachment_send_result_from_secure_message(message)?;
             result.message.message.metadata.conversation_identity =
-                Some(resolved.conversation_identity);
+                Some(resolved.conversation_identity.clone());
             return Ok(result);
         }
-        let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+        let mut rebound_once = false;
+        let prepared = match self.prepare_plain_conversation_attachment(&resolved) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let Some(rebound) = rebind_direct_attachment_for_stale_error_blocking(
+                    self.client,
+                    &resolved,
+                    &error,
+                )?
+                else {
+                    return Err(error);
+                };
+                apply_attachment_rebind(&mut resolved, rebound)?;
+                rebound_once = true;
+                self.prepare_plain_conversation_attachment(&resolved)?
+            }
+        };
+        let mut result =
+            match self.send_prepared_plain_conversation_attachment(&resolved, prepared.clone()) {
+                Ok(result) => result,
+                Err(error) if !rebound_once => {
+                    let Some(rebound) = rebind_direct_attachment_for_stale_error_blocking(
+                        self.client,
+                        &resolved,
+                        &error,
+                    )?
+                    else {
+                        return Err(error);
+                    };
+                    apply_attachment_rebind(&mut resolved, rebound)?;
+                    self.send_prepared_plain_conversation_attachment(&resolved, prepared)?
+                }
+                Err(error) => return Err(error),
+            };
+        self.finish_plain_conversation_attachment(&resolved, &mut result)?;
+        Ok(super::AttachmentSendResult::from_upload_result(result))
+    }
+
+    pub async fn send_conversation_async(
+        &self,
+        request: super::SendConversationAttachmentRequest,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
+        let mut resolved = self.resolve_conversation_attachment_request(request)?;
+        if attachment_security_is_secure(&resolved.request.security) {
+            let first = self
+                .client
+                .messages()
+                .send_secure_attachment_async(
+                    message_request_from_resolved_conversation_attachment(&resolved)?,
+                )
+                .await;
+            let message = match first {
+                Ok(message) => message,
+                Err(error) => {
+                    let Some(rebound) =
+                        rebind_direct_attachment_for_stale_error(self.client, &resolved, &error)
+                            .await?
+                    else {
+                        return Err(error);
+                    };
+                    apply_attachment_rebind(&mut resolved, rebound)?;
+                    self.client
+                        .messages()
+                        .send_secure_attachment_async(
+                            message_request_from_resolved_conversation_attachment(&resolved)?,
+                        )
+                        .await?
+                }
+            };
+            let mut result = attachment_send_result_from_secure_message(message)?;
+            result.message.message.metadata.conversation_identity =
+                Some(resolved.conversation_identity.clone());
+            return Ok(result);
+        }
+        let mut rebound_once = false;
+        let prepared = match self
+            .prepare_plain_conversation_attachment_async(&resolved)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let Some(rebound) =
+                    rebind_direct_attachment_for_stale_error(self.client, &resolved, &error)
+                        .await?
+                else {
+                    return Err(error);
+                };
+                apply_attachment_rebind(&mut resolved, rebound)?;
+                rebound_once = true;
+                self.prepare_plain_conversation_attachment_async(&resolved)
+                    .await?
+            }
+        };
+        let mut result = match self
+            .send_prepared_plain_conversation_attachment_async(&resolved, prepared.clone())
+            .await
+        {
+            Ok(result) => result,
+            Err(error) if !rebound_once => {
+                let Some(rebound) =
+                    rebind_direct_attachment_for_stale_error(self.client, &resolved, &error)
+                        .await?
+                else {
+                    return Err(error);
+                };
+                apply_attachment_rebind(&mut resolved, rebound)?;
+                self.send_prepared_plain_conversation_attachment_async(&resolved, prepared)
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        self.finish_plain_conversation_attachment_async(&resolved, &mut result)
+            .await?;
+        Ok(super::AttachmentSendResult::from_upload_result(result))
+    }
+
+    fn prepare_plain_conversation_attachment(
+        &self,
+        resolved: &ResolvedConversationAttachmentRequest,
+    ) -> crate::ImResult<crate::internal::attachment_runtime::upload::PreparedCommittedAttachment>
+    {
+        crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .send(
-            crate::internal::attachment_runtime::upload::AttachmentSendInput {
-                target: resolved.target,
-                request: resolved.request,
+        .prepare_and_commit_plain_object(
+            crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                target: resolved.target.clone(),
+                request: resolved.request.clone(),
                 resolved_target_did: resolved.target_did.clone(),
-                client_message_id: Some(resolved.client_message_id),
+                message_security_profile: "transport-protected",
+            },
+        )
+    }
+
+    async fn prepare_plain_conversation_attachment_async(
+        &self,
+        resolved: &ResolvedConversationAttachmentRequest,
+    ) -> crate::ImResult<crate::internal::attachment_runtime::upload::PreparedCommittedAttachment>
+    {
+        crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .prepare_and_commit_plain_object_async(
+            crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                target: resolved.target.clone(),
+                request: resolved.request.clone(),
+                resolved_target_did: resolved.target_did.clone(),
+                message_security_profile: "transport-protected",
+            },
+        )
+        .await
+    }
+
+    fn send_prepared_plain_conversation_attachment(
+        &self,
+        resolved: &ResolvedConversationAttachmentRequest,
+        prepared: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
+    ) -> crate::ImResult<crate::internal::attachment_runtime::upload::AttachmentUploadResult> {
+        crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send_prepared_manifest(
+            crate::internal::attachment_runtime::upload::AttachmentManifestSendInput {
+                target: resolved.target.clone(),
+                resolved_target_did: resolved.target_did.clone(),
+                prepared,
+                client_message_id: Some(resolved.client_message_id.clone()),
+                operation_id: resolved.request.delivery.idempotency_key.clone(),
                 credentials: None,
             },
-        )?;
+        )
+    }
+
+    async fn send_prepared_plain_conversation_attachment_async(
+        &self,
+        resolved: &ResolvedConversationAttachmentRequest,
+        prepared: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
+    ) -> crate::ImResult<crate::internal::attachment_runtime::upload::AttachmentUploadResult> {
+        crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send_prepared_manifest_async(
+            crate::internal::attachment_runtime::upload::AttachmentManifestSendInput {
+                target: resolved.target.clone(),
+                resolved_target_did: resolved.target_did.clone(),
+                prepared,
+                client_message_id: Some(resolved.client_message_id.clone()),
+                operation_id: resolved.request.delivery.idempotency_key.clone(),
+                credentials: None,
+            },
+        )
+        .await
+    }
+
+    fn finish_plain_conversation_attachment(
+        &self,
+        resolved: &ResolvedConversationAttachmentRequest,
+        result: &mut crate::internal::attachment_runtime::upload::AttachmentUploadResult,
+    ) -> crate::ImResult<()> {
         apply_conversation_identity(
             &mut result.sdk_result,
             resolved.conversation_identity.clone(),
@@ -161,43 +371,14 @@ impl<'a> AttachmentService<'a> {
             resolved.peer_scope.as_ref(),
             &result.manifest,
             &result.sdk_result,
-        )?;
-        Ok(super::AttachmentSendResult::from_upload_result(result))
+        )
     }
 
-    pub async fn send_conversation_async(
+    async fn finish_plain_conversation_attachment_async(
         &self,
-        request: super::SendConversationAttachmentRequest,
-    ) -> crate::ImResult<super::AttachmentSendResult> {
-        let resolved = self.resolve_conversation_attachment_request(request)?;
-        if attachment_security_is_secure(&resolved.request.security) {
-            let mut result = attachment_send_result_from_secure_message(
-                self.client
-                    .messages()
-                    .send_secure_attachment_async(
-                        message_request_from_resolved_conversation_attachment(&resolved)?,
-                    )
-                    .await?,
-            )?;
-            result.message.message.metadata.conversation_identity =
-                Some(resolved.conversation_identity);
-            return Ok(result);
-        }
-        let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
-            self.client,
-            crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .send_async(
-            crate::internal::attachment_runtime::upload::AttachmentSendInput {
-                target: resolved.target,
-                request: resolved.request,
-                resolved_target_did: resolved.target_did.clone(),
-                client_message_id: Some(resolved.client_message_id),
-                credentials: None,
-            },
-        )
-        .await?;
+        resolved: &ResolvedConversationAttachmentRequest,
+        result: &mut crate::internal::attachment_runtime::upload::AttachmentUploadResult,
+    ) -> crate::ImResult<()> {
         apply_conversation_identity(
             &mut result.sdk_result,
             resolved.conversation_identity.clone(),
@@ -223,8 +404,7 @@ impl<'a> AttachmentService<'a> {
             &result.manifest,
             &result.sdk_result,
         )
-        .await?;
-        Ok(super::AttachmentSendResult::from_upload_result(result))
+        .await
     }
 
     pub async fn send_async(
@@ -392,6 +572,67 @@ impl<'a> AttachmentService<'a> {
             ),
         })
     }
+}
+
+fn direct_rebind_request(
+    resolved: &ResolvedConversationAttachmentRequest,
+) -> crate::internal::direct_rebind::DirectRebindRequest {
+    crate::internal::direct_rebind::DirectRebindRequest {
+        conversation_id: resolved.conversation_identity.conversation_id.clone(),
+        stale_did: resolved.target_did.clone(),
+        known_handle: resolved.target_handle.clone(),
+        peer_scope: resolved.peer_scope.clone(),
+    }
+}
+
+fn rebind_direct_attachment_for_stale_error_blocking(
+    client: &crate::core::ImClient,
+    resolved: &ResolvedConversationAttachmentRequest,
+    error: &crate::ImError,
+) -> crate::ImResult<Option<crate::internal::direct_rebind::DirectRebindResult>> {
+    if !matches!(resolved.target, crate::messages::MessageTarget::Direct(_)) {
+        return Ok(None);
+    }
+    crate::internal::direct_rebind::rebind_for_stale_error_blocking(
+        client,
+        direct_rebind_request(resolved),
+        error,
+    )
+}
+
+async fn rebind_direct_attachment_for_stale_error(
+    client: &crate::core::ImClient,
+    resolved: &ResolvedConversationAttachmentRequest,
+    error: &crate::ImError,
+) -> crate::ImResult<Option<crate::internal::direct_rebind::DirectRebindResult>> {
+    if !matches!(resolved.target, crate::messages::MessageTarget::Direct(_)) {
+        return Ok(None);
+    }
+    crate::internal::direct_rebind::rebind_for_stale_error(
+        client,
+        direct_rebind_request(resolved),
+        error,
+    )
+    .await
+}
+
+fn apply_attachment_rebind(
+    resolved: &mut ResolvedConversationAttachmentRequest,
+    rebound: crate::internal::direct_rebind::DirectRebindResult,
+) -> crate::ImResult<()> {
+    let crate::messages::MessageTarget::Direct(_) = &resolved.target else {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "stale Direct recovery cannot replace a Group attachment route".to_owned(),
+        });
+    };
+    resolved.target = crate::messages::MessageTarget::Direct(crate::ids::PeerRef::parse(
+        &rebound.full_handle,
+        "",
+    )?);
+    resolved.target_did = Some(rebound.target_did);
+    resolved.target_handle = Some(rebound.full_handle);
+    resolved.peer_scope = Some(rebound.peer_scope);
+    Ok(())
 }
 
 fn attachment_security_is_secure(security: &crate::messages::MessageSecurityMode) -> bool {

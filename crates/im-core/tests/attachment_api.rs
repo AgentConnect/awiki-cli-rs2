@@ -225,6 +225,221 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
 }
 
 #[tokio::test]
+async fn conversation_attachment_rebind_reuses_one_committed_object_and_logical_message() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(rebind_directory_lookup(REBIND_OLD_DID)),
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-rebind",
+            "slot_id": "slot-rebind",
+            "upload_uri": "__BASE__/objects/slot-rebind",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-rebind",
+            "commit_token": "commit-token-rebind",
+            "expires_at": "2026-08-19T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-rebind",
+            "object_uri": "__BASE__/objects/att-rebind",
+            "committed_at": "2026-08-19T00:00:01Z"
+        })),
+        ExpectedHttp::stale_binding_error(),
+        ExpectedHttp::rpc_result(rebind_directory_lookup(REBIND_NEW_DID)),
+        ExpectedHttp::json(rebind_public_binding(REBIND_NEW_DID, "2")),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-conv-attachment-rebind",
+            "operation_id": "op-conv-attachment-rebind",
+            "target_did": REBIND_NEW_DID,
+            "accepted_at": "2026-08-19T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+    let lookup = client
+        .directory()
+        .lookup_handle_async(Handle::parse(REBIND_HANDLE, "").unwrap())
+        .await
+        .unwrap();
+    let conversation_id = lookup.direct_conversation_id();
+    let before = direct_binding_snapshot(&paths, &conversation_id);
+
+    let result = client
+        .attachments()
+        .send_conversation_async(SendConversationAttachmentRequest {
+            conversation: ConversationReadRef::new(&conversation_id).unwrap(),
+            input: AttachmentInput::Bytes {
+                filename: Some("rebind.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                bytes: b"one uploaded attachment".to_vec(),
+            },
+            caption: Some("one logical attachment".to_string()),
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(MessageId::parse("msg-conv-attachment-rebind").unwrap()),
+            idempotency_key: Some("op-conv-attachment-rebind".to_string()),
+            wait_for_final_acceptance: true,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-conv-attachment-rebind"
+    );
+    assert_eq!(result.target_did, REBIND_NEW_DID);
+    assert_eq!(
+        result
+            .message
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.as_str()),
+        Some(conversation_id.as_str())
+    );
+    let after = direct_binding_snapshot(&paths, &conversation_id);
+    assert_eq!(after.peer_persona_id, before.peer_persona_id);
+    assert_eq!(after.conversation_id, before.conversation_id);
+    assert_eq!(after.full_handle, before.full_handle);
+    assert_eq!(after.current_did, REBIND_NEW_DID);
+    assert_eq!(after.binding_generation.as_deref(), Some("2"));
+
+    let rows = local_message_rows(
+        &paths,
+        "SELECT msg_id, conversation_id, receiver_did, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-rebind'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["conversation_id"], conversation_id);
+    assert_eq!(rows[0]["receiver_did"], REBIND_NEW_DID);
+    let stored_manifest: Value =
+        serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_manifest, result.manifest);
+    let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
+    assert_eq!(metadata["operation_id"], "op-conv-attachment-rebind");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 8);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.rpc_method().as_deref() == Some("attachment.create_slot"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "PUT")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.rpc_method().as_deref() == Some("attachment.commit_object"))
+            .count(),
+        1
+    );
+    assert_eq!(requests[6].method, "GET");
+    assert_eq!(requests[6].path, "/.well-known/handle/bob");
+    assert_eq!(requests[4].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(requests[7].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(
+        requests[4].params()["meta"]["target"]["did"],
+        REBIND_OLD_DID
+    );
+    assert_eq!(
+        requests[7].params()["meta"]["target"]["did"],
+        REBIND_NEW_DID
+    );
+    for request in [&requests[4], &requests[7]] {
+        assert_eq!(
+            request.params()["meta"]["message_id"],
+            "msg-conv-attachment-rebind"
+        );
+        assert_eq!(
+            request.params()["meta"]["operation_id"],
+            "op-conv-attachment-rebind"
+        );
+    }
+    assert_eq!(requests[4].params()["body"], requests[7].params()["body"]);
+}
+
+#[tokio::test]
+async fn group_attachment_stale_shaped_error_never_enters_direct_rebind() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-group-stale",
+            "slot_id": "slot-group-stale",
+            "upload_uri": "__BASE__/objects/slot-group-stale",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-group-stale",
+            "commit_token": "commit-token-group-stale",
+            "expires_at": "2026-08-19T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-group-stale",
+            "object_uri": "__BASE__/objects/att-group-stale",
+            "committed_at": "2026-08-19T00:00:01Z"
+        })),
+        ExpectedHttp::stale_binding_error(),
+    ]);
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+    seed_active_group_conversation(&paths, "did:example:group-stale");
+
+    let error = client
+        .attachments()
+        .send_conversation_async(SendConversationAttachmentRequest {
+            conversation: ConversationReadRef::new("group:did:example:group-stale").unwrap(),
+            input: AttachmentInput::Bytes {
+                filename: Some("group-stale.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                bytes: b"group".to_vec(),
+            },
+            caption: None,
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(MessageId::parse("msg-group-stale").unwrap()),
+            idempotency_key: Some("op-group-stale".to_string()),
+            wait_for_final_acceptance: true,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ImError::Service { code: Some(code), .. } if code == "anp.invalid_target_binding"
+    ));
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("group.send"));
+    assert!(requests.iter().all(|request| request.method != "GET"));
+    assert!(requests
+        .iter()
+        .all(|request| request.rpc_method().as_deref() != Some("lookup")));
+}
+
+#[tokio::test]
 async fn attachments_service_send_conversation_group_uses_group_route() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(json!({
@@ -1615,6 +1830,39 @@ fn local_message_rows(paths: &ImCorePaths, statement: &str) -> Vec<Value> {
         .collect()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DirectBindingSnapshot {
+    peer_persona_id: String,
+    conversation_id: String,
+    full_handle: String,
+    current_did: String,
+    binding_generation: Option<String>,
+}
+
+fn direct_binding_snapshot(paths: &ImCorePaths, conversation_id: &str) -> DirectBindingSnapshot {
+    let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
+    db.query_row(
+        r#"SELECT p.peer_persona_id, r.conversation_id, p.full_handle,
+                  r.current_did, p.binding_generation
+FROM peer_personas p
+JOIN direct_peer_routes r
+  ON r.owner_identity_id = p.owner_identity_id
+ AND r.peer_persona_id = p.peer_persona_id
+WHERE p.owner_identity_id = 'alice-id' AND r.conversation_id = ?1"#,
+        [conversation_id],
+        |row| {
+            Ok(DirectBindingSnapshot {
+                peer_persona_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                full_handle: row.get(2)?,
+                current_did: row.get(3)?,
+                binding_generation: row.get(4)?,
+            })
+        },
+    )
+    .unwrap()
+}
+
 fn seed_active_group_conversation(paths: &ImCorePaths, group_did: &str) {
     fs::create_dir_all(
         paths
@@ -1762,6 +2010,30 @@ fn handle_lookup_result() -> Value {
     })
 }
 
+const REBIND_HANDLE: &str = "bob.awiki.info";
+const REBIND_OLD_DID: &str = "did:wba:awiki.info:user:bob:e1-old";
+const REBIND_NEW_DID: &str = "did:wba:awiki.info:user:bob:e1-new";
+
+fn rebind_directory_lookup(did: &str) -> Value {
+    json!({
+        "handle": "bob",
+        "full_handle": REBIND_HANDLE,
+        "did": did,
+        "user_id": "user-bob",
+        "domain": "awiki.info",
+        "status": "active"
+    })
+}
+
+fn rebind_public_binding(did: &str, generation: &str) -> Value {
+    json!({
+        "status": "active",
+        "handle": REBIND_HANDLE,
+        "did": did,
+        "binding_generation": generation
+    })
+}
+
 struct AttachmentServiceTestServer {
     base_url: String,
     handle: thread::JoinHandle<Vec<CapturedHttp>>,
@@ -1821,6 +2093,23 @@ impl ExpectedHttp {
             "jsonrpc": "2.0",
             "id": "req-1",
             "result": result,
+        }))
+    }
+
+    fn stale_binding_error() -> Self {
+        Self::json(json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "error": {
+                "code": 1406,
+                "message": "target binding is stale",
+                "data": {
+                    "anp_code": "anp.invalid_target_binding",
+                    "reason": "stale_did",
+                    "current_did": REBIND_NEW_DID,
+                    "full_handle": REBIND_HANDLE
+                }
+            }
         }))
     }
 

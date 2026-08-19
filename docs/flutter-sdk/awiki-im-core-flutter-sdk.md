@@ -537,6 +537,13 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 `retryMessage` is explicitly unsupported in v0.1 and returns `unsupported_capability("message-retry")`. The SDK must not rebuild a send request from display message DTOs because those DTOs can lose target, body, security, idempotency, and retry-plan information.
 
+An App-owned manual retry must instead call the matching conversation API with
+the original stable `clientMessageId` and idempotency key. For AWiki Me's
+`op-<clientMessageId>` convention, the initial attempt and every manual replay
+use the same value; changing it to a retry-specific key would create a second
+logical send intent. Automatic stale-route recovery remains entirely inside
+Core and does not require the App to call a second send API.
+
 ## Local-first message reads
 
 `client.messages.conversations(...)` returns durable local conversations from `im-core`. Current schema version 34 reads conversation existence from the schema-28 `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
@@ -691,6 +698,25 @@ the same durable row to accepted/sent/failed after network send. Apps render
 `Message.metadata.sendState` / retry data from the SDK message DTO. They must not
 create a second durable optimistic message store for text or payload sends.
 
+The normal Direct path reads the cached owner-scoped route and adds no Directory,
+public WNS, or UI wait. If and only if the service returns an explicit stale-DID
+target-binding error, Core performs one authoritative refresh and one bounded
+retry. Same-domain recovery requires local Directory and public WNS agreement;
+cross-domain recovery uses public WNS only. Concurrent sends for one owner and
+conversation share the refresh. Persona, canonical conversation ID, message ID,
+operation/idempotency ID, body, and security mode stay unchanged; only the
+replaceable current DID route advances. Any already-persisted message wire
+receiver DID remains immutable and is reused for local replay conflict
+validation; a text/payload pending row therefore retains the failed route,
+whereas an attachment row first committed after acceptance records the accepted
+route. Group sends and unrelated service failures are never handled as Direct
+route recovery.
+
+Flutter must treat this as one in-flight send. It keeps one bubble in `sending`
+until Core returns the committed terminal state and must not perform its own
+Handle lookup, create a second bubble, start a second recovery state machine, or
+trigger full conversation refresh/history backfill to observe completion.
+
 Conversation UI attachment sends use the attachment namespace with the same
 conversation identity rule:
 
@@ -719,6 +745,12 @@ target API. AWiki Me conversation UI should use this API for initial attachment
 sends and retries. Local file previews may be rendered as transient UI state
 while upload is in progress, but list/detail/send correctness must come from the
 SDK projection and patch stream.
+
+For a Direct stale-route response after the attachment object is committed,
+Core reuses the prepared Manifest and the same message/operation identity when
+retrying against the refreshed DID. It does not repeat attachment create,
+object upload, or commit. This contract applies to plain and secure conversation
+attachments and to both blocking and async Core entry points.
 
 ## Conversation read watermark
 

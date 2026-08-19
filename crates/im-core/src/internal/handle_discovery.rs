@@ -99,6 +99,42 @@ pub(crate) async fn resolve_authoritative_handle_binding_async(
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
 }
 
+pub(crate) async fn resolve_authoritative_direct_rebind_async(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    match resolution_route_for_client(client, raw_handle)? {
+        HandleResolutionRoute::Local { full_handle } => {
+            let lookup = crate::internal::directory_runtime::DirectoryRuntime::new(
+                client,
+                crate::internal::transport::CoreHttpTransport::new(client),
+            )
+            .lookup_handle_async(crate::ids::Handle::parse(&full_handle, "")?)
+            .await?;
+            let normalized = normalize_handle(&full_handle)?;
+            let url = authoritative_discovery_url_for_client(client, &normalized);
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+            let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
+                &mut transport,
+                &url,
+                BTreeMap::new(),
+            )
+            .await?;
+            merge_local_directory_with_public_binding(&full_handle, lookup, &raw)
+        }
+        HandleResolutionRoute::Public { full_handle, url } => {
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+            let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
+                &mut transport,
+                &url,
+                BTreeMap::new(),
+            )
+            .await?;
+            authoritative_lookup_from_public_document(&full_handle, &raw)
+        }
+    }
+}
+
 pub(crate) fn resolve_authoritative_handle_binding(
     client: &crate::core::ImClient,
     raw_handle: &str,
@@ -112,6 +148,84 @@ pub(crate) fn resolve_authoritative_handle_binding(
         BTreeMap::new(),
     )?;
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
+}
+
+pub(crate) fn resolve_authoritative_direct_rebind(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    match resolution_route_for_client(client, raw_handle)? {
+        HandleResolutionRoute::Local { full_handle } => {
+            let lookup = crate::internal::directory_runtime::DirectoryRuntime::new(
+                client,
+                crate::internal::transport::CoreHttpTransport::new(client),
+            )
+            .lookup_handle(crate::ids::Handle::parse(&full_handle, "")?)?;
+            let normalized = normalize_handle(&full_handle)?;
+            let url = authoritative_discovery_url_for_client(client, &normalized);
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+            let raw = crate::internal::transport::RawJsonTransport::get_json_url(
+                &mut transport,
+                &url,
+                BTreeMap::new(),
+            )?;
+            merge_local_directory_with_public_binding(&full_handle, lookup, &raw)
+        }
+        HandleResolutionRoute::Public { full_handle, url } => {
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+            let raw = crate::internal::transport::RawJsonTransport::get_json_url(
+                &mut transport,
+                &url,
+                BTreeMap::new(),
+            )?;
+            authoritative_lookup_from_public_document(&full_handle, &raw)
+        }
+    }
+}
+
+fn merge_local_directory_with_public_binding(
+    expected_handle: &str,
+    mut lookup: crate::directory::HandleLookupResult,
+    public_document: &Value,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    validate_handle_match(expected_handle, lookup.handle.as_str())?;
+    let persona = lookup.peer_persona()?;
+    let public = public_handle_binding_from_value(expected_handle, public_document)?;
+
+    if persona.full_handle != public.handle.as_str() {
+        return Err(authority_conflict(
+            "local Directory and public WNS returned different Handles",
+        ));
+    }
+    if persona.authority_namespace != public.domain {
+        return Err(authority_conflict(
+            "local Directory and public WNS returned different provider domains",
+        ));
+    }
+    if lookup.did != public.did {
+        return Err(authority_conflict(
+            "local Directory and public WNS returned different current DIDs",
+        ));
+    }
+    if let Some(directory_generation) = lookup.binding_generation.as_deref() {
+        crate::internal::local_state::sync_v2::validate_positive_decimal(
+            "binding_generation",
+            directory_generation,
+        )?;
+        if directory_generation != public.binding_generation {
+            return Err(authority_conflict(
+                "local Directory and public WNS returned different binding generations",
+            ));
+        }
+    }
+    lookup.binding_generation = Some(public.binding_generation);
+    Ok(lookup)
+}
+
+fn authority_conflict(detail: &str) -> crate::ImError {
+    crate::ImError::IdentityBindingConflict {
+        detail: detail.to_owned(),
+    }
 }
 
 fn resolution_from_lookup(
@@ -636,6 +750,81 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.authority_subject_id, "internal-user-peer");
+    }
+
+    #[test]
+    fn same_domain_authoritative_binding_merges_stable_subject_with_public_generation() {
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("peer.awiki.test", "").unwrap(),
+            did: crate::ids::Did::parse("did:wba:awiki.test:user:peer:e1-new").unwrap(),
+            user_id: "internal-user-peer".to_owned(),
+            domain: Some("awiki.test".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: None,
+            profile: None,
+            warnings: vec!["directory-warning".to_owned()],
+        };
+
+        let merged = super::merge_local_directory_with_public_binding(
+            "peer.awiki.test",
+            lookup,
+            &json!({
+                "status": "active",
+                "handle": "peer.awiki.test",
+                "did": "did:wba:awiki.test:user:peer:e1-new",
+                "binding_generation": "12"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(merged.user_id, "internal-user-peer");
+        assert_eq!(merged.binding_generation.as_deref(), Some("12"));
+        assert_eq!(merged.warnings, vec!["directory-warning"]);
+        assert_eq!(
+            merged.peer_persona().unwrap().authority_subject_id,
+            "internal-user-peer"
+        );
+    }
+
+    #[test]
+    fn same_domain_authoritative_binding_rejects_cross_source_mismatch() {
+        let lookup = |did: &str, domain: &str, generation: Option<&str>| {
+            crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("peer.awiki.test", "").unwrap(),
+                did: crate::ids::Did::parse(did).unwrap(),
+                user_id: "internal-user-peer".to_owned(),
+                domain: Some(domain.to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: generation.map(ToOwned::to_owned),
+                profile: None,
+                warnings: Vec::new(),
+            }
+        };
+        let public = json!({
+            "status": "active",
+            "handle": "peer.awiki.test",
+            "did": "did:wba:awiki.test:user:peer:e1-new",
+            "binding_generation": "12"
+        });
+
+        for directory in [
+            lookup("did:wba:awiki.test:user:peer:e1-old", "awiki.test", None),
+            lookup("did:wba:awiki.test:user:peer:e1-new", "other.test", None),
+            lookup(
+                "did:wba:awiki.test:user:peer:e1-new",
+                "awiki.test",
+                Some("11"),
+            ),
+        ] {
+            assert!(matches!(
+                super::merge_local_directory_with_public_binding(
+                    "peer.awiki.test",
+                    directory,
+                    &public,
+                ),
+                Err(crate::ImError::IdentityBindingConflict { .. })
+            ));
+        }
     }
 
     #[test]
