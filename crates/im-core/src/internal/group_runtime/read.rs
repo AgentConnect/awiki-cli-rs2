@@ -124,7 +124,7 @@ where
             "group.list_messages",
             params,
         )?;
-        project_group_e2ee_messages(self.client, &mut raw);
+        project_group_e2ee_messages(self.client, &mut raw, request.group.as_str());
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
@@ -249,7 +249,7 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
             .await?;
-        project_group_e2ee_messages_async(self.client, &mut raw).await;
+        project_group_e2ee_messages_async(self.client, &mut raw, request.group.as_str()).await;
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
@@ -278,21 +278,22 @@ where
     }
 }
 
-#[cfg(feature = "group-e2ee")]
-fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
-    crate::internal::message_runtime::read::project_group_e2ee_messages(client, raw);
+fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value, group_did: &str) {
+    crate::internal::message_runtime::read::project_group_e2ee_messages_for_group(
+        client, raw, group_did,
+    );
 }
 
-#[cfg(not(feature = "group-e2ee"))]
-fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
-
-#[cfg(feature = "group-e2ee")]
-async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: &mut Value) {
-    crate::internal::message_runtime::read::project_group_e2ee_messages_async(client, raw).await;
+async fn project_group_e2ee_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    group_did: &str,
+) {
+    crate::internal::message_runtime::read::project_group_e2ee_messages_for_group_async(
+        client, raw, group_did,
+    )
+    .await;
 }
-
-#[cfg(not(feature = "group-e2ee"))]
-async fn project_group_e2ee_messages_async(_client: &crate::core::ImClient, _raw: &mut Value) {}
 
 fn merge_authoritative_group_policy(
     expected_group_did: &str,

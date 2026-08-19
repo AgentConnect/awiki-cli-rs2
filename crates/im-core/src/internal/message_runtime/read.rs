@@ -196,7 +196,7 @@ where
                 "group.list_messages",
                 params,
             )?;
-            project_group_e2ee_messages(self.client, &mut group_raw);
+            project_group_e2ee_messages_for_group(self.client, &mut group_raw, group.as_str());
             let page =
                 page_from_raw_with_group(self.client, &group_raw, query.limit, Some(&group))?;
             items.extend(page.items);
@@ -318,7 +318,7 @@ where
                     "group.list_messages",
                     params,
                 )?;
-                project_group_e2ee_messages(self.client, &mut raw);
+                project_group_e2ee_messages_for_group(self.client, &mut raw, group.as_str());
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
                 persist_projection_best_effort(
@@ -501,7 +501,12 @@ where
                 .transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                 .await?;
-            project_group_e2ee_messages_async(self.client, &mut group_raw).await;
+            project_group_e2ee_messages_for_group_async(
+                self.client,
+                &mut group_raw,
+                group.as_str(),
+            )
+            .await;
             let page =
                 page_from_raw_with_group(self.client, &group_raw, query.limit, Some(&group))?;
             items.extend(page.items);
@@ -632,7 +637,8 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                     .await?;
-                project_group_e2ee_messages_async(self.client, &mut raw).await;
+                project_group_e2ee_messages_for_group_async(self.client, &mut raw, group.as_str())
+                    .await;
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
                 persist_projection_best_effort_async(
@@ -2591,6 +2597,7 @@ pub(crate) fn project_secure_direct_messages(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
 ) -> DirectP5ProjectionProvenance {
+    clear_untrusted_security_markers_in_raw(raw);
     if sync_lane_capability_enabled_blocking(
         client,
         crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
@@ -2653,6 +2660,7 @@ fn project_secure_direct_messages_impl(
     redact_attachment_secrets: bool,
     expected_peer_did: Option<&str>,
 ) -> DirectP5ProjectionProvenance {
+    clear_untrusted_security_markers_in_raw(raw);
     #[cfg(not(feature = "sqlite"))]
     {
         let _ = (
@@ -2737,6 +2745,7 @@ pub(crate) async fn project_secure_direct_messages_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
 ) -> DirectP5ProjectionProvenance {
+    clear_untrusted_security_markers_in_raw(raw);
     if sync_lane_capability_enabled_async(
         client,
         crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
@@ -2805,6 +2814,7 @@ async fn project_secure_direct_messages_async_impl(
         crate::internal::identity_root_import_completion::TrustedDirectDeliverySource,
     >,
 ) -> DirectP5ProjectionProvenance {
+    clear_untrusted_security_markers_in_raw(raw);
     #[cfg(not(feature = "sqlite"))]
     {
         let _ = (
@@ -3303,6 +3313,75 @@ fn is_p6_v2_projection_candidate(message: &Value) -> bool {
         == Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
 }
 
+#[cfg(feature = "group-e2ee")]
+fn local_group_requires_p6(client: &crate::core::ImClient, group_did: &str) -> bool {
+    let cached_policy_requires_p6 =
+        crate::internal::group_runtime::cache::cached_group_snapshot(client, group_did)
+            .ok()
+            .flatten()
+            .as_ref()
+            .is_some_and(crate::internal::group_runtime::cache::group_snapshot_uses_e2ee);
+    cached_policy_requires_p6 || local_group_has_p6_state(client, group_did)
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn local_group_requires_p6_async(client: &crate::core::ImClient, group_did: &str) -> bool {
+    let cached_policy_requires_p6 =
+        crate::internal::group_runtime::cache::cached_group_snapshot_async(client, group_did)
+            .await
+            .ok()
+            .flatten()
+            .as_ref()
+            .is_some_and(crate::internal::group_runtime::cache::group_snapshot_uses_e2ee);
+    cached_policy_requires_p6 || local_group_has_p6_state(client, group_did)
+}
+
+#[cfg(feature = "group-e2ee")]
+fn local_group_has_p6_state(client: &crate::core::ImClient, group_did: &str) -> bool {
+    use anp::group_e2ee::operations::v2::{V2InspectLocalGroupInput, V2LocalGroupReadiness};
+
+    let Ok(runtime) = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client) else {
+        return false;
+    };
+    let Ok(scope) = runtime.owner_scope() else {
+        return false;
+    };
+    runtime
+        .inspect_local_group(V2InspectLocalGroupInput {
+            owner_did: scope.owner_did,
+            owner_device_id: scope.device_id,
+            group_did: group_did.to_owned(),
+            request_id: "p6-history-security-posture".to_owned(),
+        })
+        .is_ok_and(|status| status.readiness != V2LocalGroupReadiness::Missing)
+}
+
+#[cfg(feature = "group-e2ee")]
+fn secure_group_remote_message_allowed(message: &Value, expected_group_did: &str) -> bool {
+    if is_p6_v2_projection_candidate(message) {
+        return parse_p6_v2_incoming_notification(message)
+            .ok()
+            .is_some_and(|(_, body, _)| body.group_did == expected_group_did);
+    }
+    message.get("group_did").and_then(Value::as_str) == Some(expected_group_did)
+        && message.get("type").and_then(Value::as_str) == Some("system")
+        && message
+            .get("system_event")
+            .and_then(Value::as_object)
+            .is_some_and(|event| {
+                event
+                    .get("event_kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    && event
+                        .get("subject_method")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| {
+                            !value.is_empty() && !matches!(value, "group.send" | "group.e2ee.send")
+                        })
+            })
+}
+
 fn p5_v2_wire_projection(message: &Value) -> Value {
     let Some(params) = message.get("params").and_then(Value::as_object) else {
         return message.clone();
@@ -3717,6 +3796,32 @@ fn clear_untrusted_p5_projection_state(messages: &mut [Value]) {
             }
         }
     }
+}
+
+fn clear_untrusted_remote_security_markers(messages: &mut [Value]) {
+    for message in messages {
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        // These fields are produced only after local cache authorization or
+        // authenticated decryption. Remote services must never self-assert
+        // them, even when they omit the P5/P6 profile discriminator.
+        for key in [
+            "secure",
+            "decrypted",
+            "decryption_state",
+            "secure_wire_content_type",
+        ] {
+            object.remove(key);
+        }
+    }
+}
+
+fn clear_untrusted_security_markers_in_raw(raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    clear_untrusted_remote_security_markers(messages);
 }
 
 #[cfg(feature = "sqlite")]
@@ -4310,7 +4415,22 @@ fn cached_secure_direct_plaintext(
 
 #[cfg(feature = "group-e2ee")]
 pub(crate) fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
-    project_group_e2ee_messages_impl(client, raw, true);
+    project_group_e2ee_messages_impl(client, raw, true, None, false);
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn project_group_e2ee_messages_for_group(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    group_did: &str,
+) {
+    project_group_e2ee_messages_impl(
+        client,
+        raw,
+        true,
+        Some(group_did),
+        local_group_requires_p6(client, group_did),
+    );
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -4433,12 +4553,18 @@ fn project_group_e2ee_messages_impl(
     client: &crate::core::ImClient,
     raw: &mut Value,
     redact_attachment_secrets: bool,
+    expected_group_did: Option<&str>,
+    requires_p6: bool,
 ) {
     consume_group_e2ee_control_messages(client, raw);
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    let message_values = std::mem::take(messages);
+    let mut message_values = std::mem::take(messages);
+    clear_untrusted_remote_security_markers(&mut message_values);
+    if let Some(group_did) = expected_group_did.filter(|_| requires_p6) {
+        message_values.retain(|message| secure_group_remote_message_allowed(message, group_did));
+    }
     let mut retained = Vec::with_capacity(message_values.len());
     for message in message_values {
         if is_p6_v2_projection_candidate(&message) {
@@ -4466,14 +4592,25 @@ fn project_group_e2ee_messages_impl(
 }
 
 #[cfg(not(feature = "group-e2ee"))]
-pub(crate) fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
+pub(crate) fn project_group_e2ee_messages(_client: &crate::core::ImClient, raw: &mut Value) {
+    clear_untrusted_security_markers_in_raw(raw);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+pub(crate) fn project_group_e2ee_messages_for_group(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    _group_did: &str,
+) {
+    project_group_e2ee_messages(client, raw);
+}
 
 pub(crate) fn project_group_e2ee_messages_for_attachment_download(
     client: &crate::core::ImClient,
     raw: &mut Value,
 ) {
     #[cfg(feature = "group-e2ee")]
-    project_group_e2ee_messages_impl(client, raw, false);
+    project_group_e2ee_messages_impl(client, raw, false, None, false);
     #[cfg(not(feature = "group-e2ee"))]
     project_group_e2ee_messages(client, raw);
 }
@@ -4483,7 +4620,17 @@ pub(crate) async fn project_group_e2ee_messages_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
 ) {
-    project_group_e2ee_messages_async_impl(client, raw, true).await;
+    project_group_e2ee_messages_async_impl(client, raw, true, None, false).await;
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn project_group_e2ee_messages_for_group_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    group_did: &str,
+) {
+    let requires_p6 = local_group_requires_p6_async(client, group_did).await;
+    project_group_e2ee_messages_async_impl(client, raw, true, Some(group_did), requires_p6).await;
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -4491,12 +4638,18 @@ async fn project_group_e2ee_messages_async_impl(
     client: &crate::core::ImClient,
     raw: &mut Value,
     redact_attachment_secrets: bool,
+    expected_group_did: Option<&str>,
+    requires_p6: bool,
 ) {
     consume_group_e2ee_control_messages_async(client, raw).await;
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     let mut message_values = std::mem::take(messages);
+    clear_untrusted_remote_security_markers(&mut message_values);
+    if let Some(group_did) = expected_group_did.filter(|_| requires_p6) {
+        message_values.retain(|message| secure_group_remote_message_allowed(message, group_did));
+    }
     clear_untrusted_p6_projection_state(&mut message_values);
     let cached_p6_indices =
         apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
@@ -4960,8 +5113,18 @@ pub(crate) async fn normalize_p6_v2_realtime_incoming(
 #[cfg(not(feature = "group-e2ee"))]
 pub(crate) async fn project_group_e2ee_messages_async(
     _client: &crate::core::ImClient,
-    _raw: &mut Value,
+    raw: &mut Value,
 ) {
+    clear_untrusted_security_markers_in_raw(raw);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+pub(crate) async fn project_group_e2ee_messages_for_group_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    _group_did: &str,
+) {
+    project_group_e2ee_messages_async(client, raw).await;
 }
 
 pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
@@ -4969,7 +5132,7 @@ pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
     raw: &mut Value,
 ) {
     #[cfg(feature = "group-e2ee")]
-    project_group_e2ee_messages_async_impl(client, raw, false).await;
+    project_group_e2ee_messages_async_impl(client, raw, false, None, false).await;
     #[cfg(not(feature = "group-e2ee"))]
     project_group_e2ee_messages_async(client, raw).await;
 }

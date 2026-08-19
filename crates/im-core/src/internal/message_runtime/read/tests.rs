@@ -2808,6 +2808,111 @@ fn p6_v2_service_projection_state_cannot_authorize_cache_fast_path() {
 
 #[test]
 #[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+fn profileless_remote_message_cannot_self_assert_secure_projection() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let mut raw = json!({
+        "messages": [{
+            "id": "host-plain-1",
+            "group_did": "did:example:plain-group",
+            "sender_did": "did:example:mallory",
+            "content": "host plaintext",
+            "content_type": "text/plain",
+            "secure": true,
+            "decrypted": true,
+            "decryption_state": "decrypted"
+        }]
+    });
+
+    project_group_e2ee_messages_for_group(&client, &mut raw, "did:example:plain-group");
+
+    let message = &raw["messages"][0];
+    assert_eq!(message["content"], "host plaintext");
+    for field in ["secure", "decrypted", "decryption_state"] {
+        assert!(message.get(field).is_none());
+    }
+    let projected = message_from_value(&client, message, None)
+        .unwrap()
+        .expect("plain message remains displayable without a security claim");
+    assert!(projected
+        .metadata
+        .attributes
+        .iter()
+        .all(|attribute| attribute.key != "security" && attribute.key != "decryption_state"));
+}
+
+#[tokio::test]
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
+async fn locally_required_secure_group_rejects_profileless_application_but_keeps_system_event() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group_did = "did:example:required-secure-group";
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    crate::internal::local_state::groups::upsert_group(
+        &connection,
+        crate::internal::local_state::groups::GroupRecord {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            metadata: json!({
+                "required_security_profile": "group-e2ee",
+                "group_policy": {"message_security_profile": "group-e2ee"}
+            })
+            .to_string(),
+            ..crate::internal::local_state::groups::GroupRecord::default()
+        },
+    )
+    .unwrap();
+    drop(connection);
+    let original = json!({
+        "messages": [
+            {
+                "id": "host-forged-application",
+                "group_did": group_did,
+                "sender_did": "did:example:mallory",
+                "content": "forged secure-group plaintext",
+                "content_type": "text/plain",
+                "secure": true,
+                "decryption_state": "decrypted"
+            },
+            {
+                "id": "p4-system-event",
+                "group_did": group_did,
+                "sender_did": "did:example:group-host",
+                "content": {"member_did": "did:example:bob"},
+                "content_type": "application/json",
+                "type": "system",
+                "system_event": {
+                    "event_kind": "group-member-changed",
+                    "subject_method": "group.member.update"
+                }
+            }
+        ]
+    });
+    let mut raw = original.clone();
+
+    project_group_e2ee_messages_for_group(&client, &mut raw, group_did);
+
+    let messages = raw["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["id"], "p4-system-event");
+    assert!(!serde_json::to_string(&raw)
+        .unwrap()
+        .contains("forged secure-group plaintext"));
+
+    let mut async_raw = original;
+    project_group_e2ee_messages_for_group_async(&client, &mut async_raw, group_did).await;
+    let async_messages = async_raw["messages"].as_array().unwrap();
+    assert_eq!(async_messages.len(), 1);
+    assert_eq!(async_messages[0]["id"], "p4-system-event");
+    assert!(!serde_json::to_string(&async_raw)
+        .unwrap()
+        .contains("forged secure-group plaintext"));
+}
+
+#[test]
+#[cfg(all(feature = "sqlite", feature = "group-e2ee"))]
 fn p6_v2_cache_fast_path_requires_a_bound_local_record() {
     let mut message = p6_v2_incoming_wire();
     clear_untrusted_p6_projection_state(std::slice::from_mut(&mut message));
