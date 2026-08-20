@@ -200,6 +200,20 @@ fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
             true,
         );
     }
+    if code == "group.not_member" {
+        return SafeError::new(
+            "group_not_member",
+            "The current IM identity is not an active member of the group.",
+            false,
+        );
+    }
+    if code == "group.handle_binding_stale" {
+        return SafeError::new(
+            "group_identity_stale",
+            "The group identity binding requires recovery.",
+            true,
+        );
+    }
     if status == Some(403) || code == "anp.forbidden" {
         return SafeError::new(
             "permission_denied",
@@ -284,6 +298,34 @@ mod tests {
         });
         assert_eq!(error.code, "invalid_otp");
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn group_membership_failures_preserve_only_stable_recovery_semantics() {
+        let not_member = SafeError::from_im(im_core::ImError::Service {
+            status_code: Some(404),
+            code: Some(" group.not_member ".to_owned()),
+            message: "did:wba:private group=secret".to_owned(),
+            data: Some(serde_json::json!({"handle": "private.example"})),
+        });
+        assert_eq!(not_member.code, "group_not_member");
+        assert!(!not_member.retryable);
+
+        let stale = SafeError::from_im(im_core::ImError::Service {
+            status_code: Some(409),
+            code: Some("GROUP.HANDLE_BINDING_STALE".to_owned()),
+            message: "old_did=secret new_did=secret".to_owned(),
+            data: None,
+        });
+        assert_eq!(stale.code, "group_identity_stale");
+        assert!(stale.retryable);
+
+        for error in [not_member, stale] {
+            let payload = serde_json::to_string(&error).unwrap();
+            assert!(!payload.contains("did:wba:private"));
+            assert!(!payload.contains("private.example"));
+            assert!(!payload.contains("old_did"));
+        }
     }
 
     #[test]

@@ -16,6 +16,8 @@ pub struct NodeOpenOptions {
     pub anp_service_did: Option<String>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+    pub multi_device_handle_recovery_enabled: Option<bool>,
+    pub multi_device_audience: Option<String>,
     pub external_http_allow_insecure_loopback_for_testing: Option<bool>,
 }
 
@@ -32,6 +34,8 @@ impl Clone for NodeOpenOptions {
             anp_service_did: self.anp_service_did.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
             sync_timeout_ms: self.sync_timeout_ms,
+            multi_device_handle_recovery_enabled: self.multi_device_handle_recovery_enabled,
+            multi_device_audience: self.multi_device_audience.clone(),
             external_http_allow_insecure_loopback_for_testing: self
                 .external_http_allow_insecure_loopback_for_testing,
         }
@@ -112,6 +116,136 @@ pub struct NodeIdentity {
     pub registered_at_ms: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeExistingHandleRegistration {
+    /// Opaque Core preparation identifier. Callers must not parse or persist it.
+    pub continuation_id: String,
+    pub full_handle: String,
+    pub expected_did: String,
+    /// `ordinary` or `handle_recovery_rebind`.
+    pub mode: String,
+    pub requires_user_presence: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRegistrationOutcome {
+    /// `registered` or `existing_handle`.
+    pub status: String,
+    pub identity: Option<NodeIdentity>,
+    pub existing_handle: Option<NodeExistingHandleRegistration>,
+    pub warnings: Vec<String>,
+}
+
+#[napi(object)]
+pub struct NodePreparedRegistrationJoinInput {
+    pub continuation_id: String,
+    pub operation_id: String,
+    pub ttl_seconds: Option<u32>,
+}
+
+#[napi(object)]
+pub struct NodePreparedRegistrationJoinResumeInput {
+    pub join_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodePreparedRegistrationJoinProgress {
+    pub join_session_id: String,
+    pub did: String,
+    pub local_phase: String,
+    pub remote_state: String,
+    pub completed: bool,
+    pub identity: Option<NodeIdentity>,
+}
+
+pub(crate) fn existing_handle_registration_outcome(
+    preparation: im_core::identity::HandleRegistrationJoinRequiredPreparation,
+    warnings: Vec<String>,
+) -> NodeRegistrationOutcome {
+    let mode = match preparation.mode {
+        im_core::identity::HandleRegistrationJoinMode::Ordinary => "ordinary",
+        im_core::identity::HandleRegistrationJoinMode::HandleRecoveryRebind => {
+            "handle_recovery_rebind"
+        }
+    };
+    NodeRegistrationOutcome {
+        status: "existing_handle".to_owned(),
+        identity: None,
+        existing_handle: Some(NodeExistingHandleRegistration {
+            continuation_id: preparation.preparation_id,
+            full_handle: preparation.full_handle.as_str().to_owned(),
+            expected_did: preparation.expected_did.as_str().to_owned(),
+            mode: mode.to_owned(),
+            requires_user_presence: preparation.requires_user_presence,
+        }),
+        warnings,
+    }
+}
+
+pub(crate) fn prepared_registration_join_progress(
+    value: im_core::identity::AuthorizedJoinActivationProgress,
+    identity: Option<NodeIdentity>,
+) -> NodePreparedRegistrationJoinProgress {
+    let completed = value.join.session.phase == im_core::identity::DeviceJoinLocalPhase::Authorized
+        && value.join.remote_state == im_core::identity::DeviceJoinRemoteState::Consumed;
+    NodePreparedRegistrationJoinProgress {
+        join_session_id: value.join.session.join_session_id,
+        did: value.join.session.did.as_str().to_owned(),
+        local_phase: device_join_local_phase(value.join.session.phase).to_owned(),
+        remote_state: device_join_remote_state(value.join.remote_state).to_owned(),
+        completed,
+        identity,
+    }
+}
+
+fn device_join_local_phase(value: im_core::identity::DeviceJoinLocalPhase) -> &'static str {
+    use im_core::identity::DeviceJoinLocalPhase::*;
+    match value {
+        Pending => "pending",
+        ChallengePrepared => "challenge_prepared",
+        ResponsePrepared => "response_prepared",
+        ResponseVerified => "response_verified",
+        ApprovalPrepared => "approval_prepared",
+        Authorized => "authorized",
+        Cancelled => "cancelled",
+        Expired => "expired",
+    }
+}
+
+fn device_join_remote_state(value: im_core::identity::DeviceJoinRemoteState) -> &'static str {
+    use im_core::identity::DeviceJoinRemoteState::*;
+    match value {
+        Pending => "pending",
+        ChallengeSent => "challenge_sent",
+        ResponseVerified => "response_verified",
+        Consumed => "consumed",
+        Cancelled => "cancelled",
+        Rejected => "rejected",
+        Expired => "expired",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeProfile {
+    pub did: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub tags: Vec<String>,
+    pub updated_at: Option<String>,
+}
+
+#[napi(object)]
+pub struct NodeUpdateProfileInput {
+    pub display_name: String,
+    pub bio: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
 #[napi(object)]
 pub struct NodeRegistrationInput {
     pub handle: String,
@@ -173,6 +307,8 @@ pub struct NodeGroup {
     pub title: String,
     pub description: Option<String>,
     pub member_count: Option<u32>,
+    pub my_role: Option<String>,
+    pub membership_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +316,7 @@ pub struct NodeGroup {
 pub struct NodeAddGroupMemberInput {
     pub group_did: String,
     pub member: String,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +324,60 @@ pub struct NodeAddGroupMemberInput {
 pub struct NodeGroupMember {
     pub did: String,
     pub handle: Option<String>,
+}
+
+#[napi(object)]
+pub struct NodeGroupInput {
+    pub group_did: String,
+}
+
+#[napi(object)]
+pub struct NodeGroupMembersInput {
+    pub group_did: String,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[napi(object)]
+pub struct NodeRemoveGroupMemberInput {
+    pub group_did: String,
+    pub member: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupMemberRecord {
+    pub membership_id: Option<String>,
+    pub peer_persona_id: Option<String>,
+    pub did: Option<String>,
+    pub credential_did: Option<String>,
+    pub handle: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+    pub joined_at: Option<String>,
+    pub subject_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupMemberPage {
+    pub items: Vec<NodeGroupMemberRecord>,
+    pub total: Option<u32>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub page_group: Option<String>,
+    pub group_state_version: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupRebindRecoverySummary {
+    pub processed: u32,
+    pub completed: u32,
+    pub pending: u32,
+    pub blocked: u32,
+    pub warnings: Vec<String>,
 }
 
 #[napi(object)]
@@ -272,6 +463,14 @@ pub struct NodePageOfMessages {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
+pub struct NodePageOfGroups {
+    pub items: Vec<NodeGroup>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
 pub struct NodeConversation {
     pub id: String,
     pub kind: String,
@@ -344,6 +543,81 @@ pub struct NodeSendTextInput {
     pub markdown: Option<bool>,
     pub client_message_id: Option<String>,
     pub idempotency_key: Option<String>,
+}
+
+#[napi(object)]
+pub struct NodeSendPayloadInput {
+    pub conversation_id: String,
+    pub payload_json: String,
+    pub client_message_id: Option<String>,
+    pub idempotency_key: Option<String>,
+}
+
+#[napi(object)]
+pub struct NodeHandleRecoveryOtpInput {
+    pub full_handle: String,
+    pub phone: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeHandleRecoveryOtpResult {
+    pub owner_identity_id: String,
+    pub full_handle: String,
+    pub operation_id: String,
+    pub accepted: bool,
+    pub retry_after_seconds: u32,
+    pub retry_at: String,
+}
+
+#[napi(object)]
+pub struct NodeHandleRecoveryPrepareInput {
+    pub operation_id: String,
+    pub phone: String,
+    pub otp: String,
+}
+
+#[napi(object)]
+pub struct NodeHandleRecoveryOperationInput {
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeHandleRecoveryImpact {
+    pub local_ordinary_data_will_migrate: bool,
+    pub other_devices_must_rejoin: bool,
+    #[napi(js_name = "unsupportedE2eeGroupCount")]
+    pub unsupported_e2ee_group_count: u32,
+    pub unsupported_did_only_group_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeHandleRecoveryProgress {
+    pub operation_id: String,
+    pub owner_identity_id: String,
+    pub full_handle: String,
+    pub previous_did: Option<String>,
+    pub current_did: String,
+    pub phase: String,
+    pub failure_code: Option<String>,
+    pub retryable: bool,
+    pub impact: NodeHandleRecoveryImpact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeHandleRecoveryOperationSummary {
+    pub operation_id: String,
+    pub owner_identity_id: String,
+    pub full_handle: String,
+    pub lifecycle: String,
+    pub commit_attempted: bool,
+    pub key_state: String,
+    pub last_error_code: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[napi(object)]
@@ -716,6 +990,17 @@ pub(crate) fn identity(
     }
 }
 
+pub(crate) fn profile(value: im_core::identity::Profile) -> NodeProfile {
+    NodeProfile {
+        did: value.subject.as_str().to_owned(),
+        handle: value.handle.map(|handle| handle.as_str().to_owned()),
+        display_name: value.display_name,
+        bio: value.bio.or(value.description),
+        tags: value.tags,
+        updated_at: value.updated_at,
+    }
+}
+
 pub(crate) fn peer(value: im_core::directory::DirectoryResolution) -> NodePeer {
     NodePeer {
         did: value.did.as_str().to_owned(),
@@ -812,6 +1097,36 @@ pub(crate) fn created_group_from_snapshot(
         title,
         description: snapshot.description,
         member_count: snapshot.member_count,
+        my_role: snapshot.my_role,
+        membership_status: snapshot.membership_status,
+    }
+}
+
+pub(crate) fn group_from_summary(snapshot: im_core::groups::GroupSummary) -> NodeGroup {
+    let conversation_id = im_core::messages::ConversationIdentity::from_thread_ref(
+        &im_core::messages::ThreadRef::Group(snapshot.did.clone()),
+    )
+    .conversation_id;
+    let title = snapshot
+        .display_name
+        .or(snapshot.name)
+        .unwrap_or_else(|| snapshot.did.as_str().to_owned());
+    NodeGroup {
+        did: snapshot.did.as_str().to_owned(),
+        conversation_id,
+        title,
+        description: None,
+        member_count: snapshot.member_count,
+        my_role: snapshot.my_role,
+        membership_status: snapshot.membership_status,
+    }
+}
+
+pub(crate) fn groups(value: im_core::groups::GroupReadResult) -> NodePageOfGroups {
+    NodePageOfGroups {
+        items: value.groups.into_iter().map(group_from_summary).collect(),
+        next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_owned()),
+        has_more: value.has_more,
     }
 }
 
@@ -823,11 +1138,145 @@ pub(crate) fn group_member_mutation_request(
         group: im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?,
         member: im_core::groups::GroupMemberRef::parse(input.member, default_domain)
             .map_err(SafeError::from_im)?,
-        role: None,
+        role: input
+            .role
+            .map(im_core::groups::GroupMemberRole::parse)
+            .transpose()
+            .map_err(SafeError::from_im)?,
         reason_text: None,
         leave_request_id: None,
         security: im_core::groups::GroupSecurityRequirement::default(),
     })
+}
+
+pub(crate) fn group_member_page(value: im_core::groups::GroupReadResult) -> NodeGroupMemberPage {
+    NodeGroupMemberPage {
+        items: value
+            .members
+            .into_iter()
+            .map(|member| NodeGroupMemberRecord {
+                membership_id: member.membership_id,
+                peer_persona_id: member.peer_persona_id,
+                did: member.did.map(|did| did.as_str().to_owned()),
+                credential_did: member.credential_did.map(|did| did.as_str().to_owned()),
+                handle: member.handle.map(|handle| handle.as_str().to_owned()),
+                role: member.role,
+                status: member.status,
+                joined_at: member.joined_at,
+                subject_type: member.subject_type,
+            })
+            .collect(),
+        total: value.total,
+        next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_owned()),
+        has_more: value.has_more,
+        page_group: value.page_group.map(|group| group.as_str().to_owned()),
+        group_state_version: value.group_state_version,
+        warnings: value.warnings,
+    }
+}
+
+pub(crate) fn rebind_recovery_summary(
+    value: im_core::groups::GroupRebindRecoverySummary,
+) -> NodeGroupRebindRecoverySummary {
+    NodeGroupRebindRecoverySummary {
+        processed: value.processed,
+        completed: value.completed,
+        pending: value.pending,
+        blocked: value.blocked,
+        warnings: value.warnings,
+    }
+}
+
+pub(crate) fn recovery_otp_result(
+    value: im_core::identity::HandleRecoveryOtpResult,
+) -> NodeHandleRecoveryOtpResult {
+    NodeHandleRecoveryOtpResult {
+        owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+        full_handle: value.full_handle,
+        operation_id: value.operation_id,
+        accepted: value.accepted,
+        retry_after_seconds: value.retry_after_seconds,
+        retry_at: value.retry_at,
+    }
+}
+
+pub(crate) fn recovery_progress(
+    value: im_core::identity::HandleRecoveryProgress,
+) -> NodeHandleRecoveryProgress {
+    let failure_code = value.failure_code.map(|code| code.as_str().to_owned());
+    let retryable = value
+        .failure_code
+        .is_some_and(im_core::identity::HandleRecoveryErrorCode::retryable);
+    NodeHandleRecoveryProgress {
+        operation_id: value.operation_id,
+        owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+        full_handle: value.full_handle,
+        previous_did: value.local_previous_did.map(|did| did.as_str().to_owned()),
+        current_did: value.current_did.as_str().to_owned(),
+        phase: recovery_phase(value.phase).to_owned(),
+        failure_code,
+        retryable,
+        impact: NodeHandleRecoveryImpact {
+            local_ordinary_data_will_migrate: value.impact.local_ordinary_data_will_migrate,
+            other_devices_must_rejoin: value.impact.other_devices_must_rejoin,
+            unsupported_e2ee_group_count: value.impact.unsupported_e2ee_group_count,
+            unsupported_did_only_group_count: value.impact.unsupported_did_only_group_count,
+        },
+    }
+}
+
+pub(crate) fn recovery_operation_summary(
+    value: im_core::identity::HandleRecoveryOperationSummary,
+) -> NodeHandleRecoveryOperationSummary {
+    NodeHandleRecoveryOperationSummary {
+        operation_id: value.operation_id,
+        owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+        full_handle: value.full_handle,
+        lifecycle: recovery_lifecycle(value.lifecycle_class).to_owned(),
+        commit_attempted: value.commit_attempted,
+        key_state: recovery_key_state(value.key_state).to_owned(),
+        last_error_code: value.last_error_code,
+        created_at: value.created_at,
+        updated_at: value.updated_at,
+    }
+}
+
+fn recovery_phase(value: im_core::identity::HandleRecoveryPhase) -> &'static str {
+    use im_core::identity::HandleRecoveryPhase::*;
+    match value {
+        AwaitingFactor => "awaiting_factor",
+        ReadyToCommit => "ready_to_commit",
+        RemoteOutcomeUnknown => "remote_outcome_unknown",
+        RemoteCommitted => "remote_committed",
+        IdentityTransitionPending => "identity_transition_pending",
+        Applied => "applied",
+        QuarantinedKeyUnavailable => "quarantined_key_unavailable",
+    }
+}
+
+fn recovery_lifecycle(value: im_core::identity::HandleRecoveryOperationLifecycle) -> &'static str {
+    use im_core::identity::HandleRecoveryOperationLifecycle::*;
+    match value {
+        PreCommit => "pre_commit",
+        RemoteUnresolved => "remote_unresolved",
+        RemoteCommitted => "remote_committed",
+        LocalTransitionPending => "local_transition_pending",
+        Applied => "applied",
+        DiscardedPreAttempt => "discarded_pre_attempt",
+        QuarantinedKeyUnavailable => "quarantined_key_unavailable",
+        SupersededByStateChange => "superseded_by_state_change",
+        FailedTerminal => "failed_terminal",
+    }
+}
+
+fn recovery_key_state(value: im_core::identity::HandleRecoveryKeyState) -> &'static str {
+    use im_core::identity::HandleRecoveryKeyState::*;
+    match value {
+        Available => "available",
+        TemporarilyLocked => "temporarily_locked",
+        PermanentlyUnavailable => "permanently_unavailable",
+        DestroyedPreAttempt => "destroyed_pre_attempt",
+    }
 }
 
 pub(crate) fn added_group_member(

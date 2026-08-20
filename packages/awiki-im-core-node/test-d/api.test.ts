@@ -25,10 +25,46 @@ void opened.then(async client => {
   attempt.headerPatch satisfies readonly { readonly name: string, readonly value: string }[]
   const retry = await attempt.handleResponse({ statusCode: 200, headers: [] })
   retry satisfies import('../src/index.js').ExternalHttpAuthAttempt | null
+  const registration = await client.completeRegistrationWithOutcome({
+    handle: 'alice',
+    phone: '+8613800000000',
+    otp: '123456',
+  })
+  if (registration.status === 'registered') {
+    registration.identity.did satisfies string
+  }
+  else {
+    registration.existingHandle.fullHandle satisfies string
+    registration.existingHandle.expectedDid satisfies string
+    registration.existingHandle.mode satisfies 'ordinary' | 'handle_recovery_rebind'
+    registration.existingHandle.requiresUserPresence satisfies boolean
+    const prepared = await client.beginPreparedRegistrationJoin({
+      continuationId: registration.existingHandle.continuationId,
+      operationId: 'registration-access-type-test',
+      ttlSeconds: 600,
+    })
+    prepared.completed satisfies boolean
+    if (!prepared.completed) {
+      const resumed = await client.resumePreparedRegistrationJoin({
+        joinSessionId: prepared.joinSessionId,
+      })
+      resumed.identity satisfies import('../src/index.js').NodeIdentity | undefined
+    }
+  }
+  registration.warnings satisfies readonly string[]
   const group = await client.createGroup({ name: 'Release Crew', description: 'ships together' })
   group.conversationId satisfies string
   const member = await client.addGroupMember({ groupDid: group.did, member: 'alice' })
   member.did satisfies string
+  const snapshot = await client.getGroup({ groupDid: group.did })
+  snapshot.myRole satisfies string | undefined
+  await client.listGroups({ limit: 20 })
+  const members = await client.listGroupMembers({ groupDid: group.did, limit: 20 })
+  members.groupStateVersion satisfies string | undefined
+  members.items[0]?.did satisfies string | undefined
+  await client.joinGroup({ groupDid: group.did })
+  await client.removeGroupMember({ groupDid: group.did, member: 'alice' })
+  await client.leaveGroup({ groupDid: group.did })
   const localTimeline = await client.getLocalConversationTimeline({ conversationId: group.conversationId })
   localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
   const profiles = await client.hydrateDisplayProfiles({ peers: ['did:wba:awiki.info:user:alice'] })
@@ -53,6 +89,15 @@ void opened.then(async client => {
     fileName: 'bytes.bin',
     mimeType: 'application/octet-stream',
     bytes: new Uint8Array(256 * 1024),
+  })
+  await client.sendPayload({
+    conversationId: group.conversationId,
+    payloadJson: JSON.stringify({ text: '@alice hello', mentions: [{
+      id: 'mention-1',
+      range: { start: 0, end: 6, unit: 'unicode_code_point' },
+      target: { kind: 'human', did: member.did },
+      mention_role: 'addressee',
+    }] }),
   })
   const download = await client.downloadAttachment({
     conversationId: 'group:did:example:group',

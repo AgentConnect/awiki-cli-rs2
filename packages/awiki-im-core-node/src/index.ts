@@ -1,6 +1,7 @@
 import { loadNativeBinding } from './loader.js'
 import type {
   NativeExternalHttpAuthAttempt,
+  NativeHandleRecoveryProgress,
   NativeImCoreNodeClient,
   NativeRealtimeSession,
 } from './native.js'
@@ -14,6 +15,16 @@ import {
   type ExternalHttpHeader,
   type ExternalHttpRequest,
   type ExternalHttpResponse,
+  type GroupInput,
+  type GroupMemberPage,
+  type GroupMembersInput,
+  type GroupRebindRecoverySummary,
+  type HandleRecoveryOperationInput,
+  type HandleRecoveryOperationSummary,
+  type HandleRecoveryOtpInput,
+  type HandleRecoveryOtpResult,
+  type HandleRecoveryPrepareInput,
+  type HandleRecoveryProgress,
   type HistoryInput,
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
@@ -31,22 +42,30 @@ import {
   type NodeGroupMember,
   type NodeIdentity,
   type NodeMessage,
+  type NodeProfile,
   type NodePeer,
   type OtpChallenge,
   type Page,
   type PageInput,
+  type PreparedRegistrationJoinInput,
+  type PreparedRegistrationJoinProgress,
+  type PreparedRegistrationJoinResumeInput,
   type RegistrationInput,
+  type RegistrationOutcome,
   type RegistrationWithOtp,
+  type RemoveGroupMemberInput,
   type SendAttachmentInput,
   type SendMailInput,
   type SendMailResult,
   type SendTextInput,
+  type SendPayloadInput,
   type SyncOptions,
   type SyncResult,
   type RealtimeEvent,
   type RealtimeOptions,
   type RealtimeSession,
   type RealtimeStatus,
+  type UpdateProfileInput,
 } from './types.js'
 
 export * from './types.js'
@@ -112,8 +131,35 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.completeRegistration(input))
   }
 
+  public completeRegistrationWithOutcome(input: RegistrationWithOtp): Promise<RegistrationOutcome> {
+    return call(() => this.native.completeRegistrationWithOutcome(input))
+  }
+
+  public beginPreparedRegistrationJoin(input: PreparedRegistrationJoinInput): Promise<PreparedRegistrationJoinProgress> {
+    return call(async () => copyPreparedRegistrationJoinProgress(
+      await this.native.beginPreparedRegistrationJoin(input),
+    ))
+  }
+
+  public resumePreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<PreparedRegistrationJoinProgress> {
+    return call(async () => copyPreparedRegistrationJoinProgress(
+      await this.native.resumePreparedRegistrationJoin(input),
+    ))
+  }
+
   public updateDisplayName(displayName: string): Promise<NodeIdentity> {
     return call(() => this.native.updateDisplayName(displayName))
+  }
+
+  public getProfile(): Promise<NodeProfile> {
+    return call(() => this.native.getProfile())
+  }
+
+  public updateProfile(input: UpdateProfileInput): Promise<NodeProfile> {
+    return call(() => this.native.updateProfile({
+      ...input,
+      ...(input.tags === undefined ? {} : { tags: [...input.tags] }),
+    }))
   }
 
   public resolvePeer(peer: string): Promise<NodePeer> {
@@ -130,6 +176,34 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember> {
     return call(() => this.native.addGroupMember(input))
+  }
+
+  public getGroup(input: GroupInput): Promise<NodeGroup> {
+    return call(() => this.native.getGroup(input))
+  }
+
+  public listGroups(input?: PageInput): Promise<Page<NodeGroup>> {
+    return call(() => this.native.listGroups(input))
+  }
+
+  public joinGroup(input: GroupInput): Promise<NodeGroup> {
+    return call(() => this.native.joinGroup(input))
+  }
+
+  public leaveGroup(input: GroupInput): Promise<void> {
+    return call(() => this.native.leaveGroup(input))
+  }
+
+  public listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage> {
+    return call(() => this.native.listGroupMembers(input))
+  }
+
+  public removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember> {
+    return call(() => this.native.removeGroupMember(input))
+  }
+
+  public resumeGroupRebindRecovery(limit?: number): Promise<GroupRebindRecoverySummary> {
+    return call(() => this.native.resumeGroupRebindRecovery(limit))
   }
 
   public syncNow(input?: SyncOptions): Promise<SyncResult> {
@@ -161,6 +235,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.sendText(input))
   }
 
+  public sendPayload(input: SendPayloadInput): Promise<NodeMessage> {
+    return call(() => this.native.sendPayload(input))
+  }
+
   public sendAttachment(input: SendAttachmentInput): Promise<NodeMessage> {
     const bytes = Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength)
     return call(() => this.native.sendAttachment({ ...input, bytes }))
@@ -189,6 +267,30 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public sendMail(input: SendMailInput): Promise<SendMailResult> {
     return call(() => this.native.sendMail(input))
+  }
+
+  public requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult> {
+    return call(() => this.native.requestHandleRecoveryOtp(input))
+  }
+
+  public prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<HandleRecoveryProgress> {
+    return call(async () => copyHandleRecoveryProgress(await this.native.prepareHandleRecovery(input)))
+  }
+
+  public activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress> {
+    return call(async () => copyHandleRecoveryProgress(await this.native.activateHandleRecovery(input)))
+  }
+
+  public getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress> {
+    return call(async () => copyHandleRecoveryProgress(await this.native.getHandleRecoveryStatus(input)))
+  }
+
+  public resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress> {
+    return call(async () => copyHandleRecoveryProgress(await this.native.resumeHandleRecovery(input)))
+  }
+
+  public discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary> {
+    return call(() => this.native.discardHandleRecovery(input))
   }
 
   public clearLocalData(): Promise<{ readonly cleared: boolean }> {
@@ -224,6 +326,48 @@ class RustExternalHttpAuthAttempt implements ExternalHttpAuthAttempt {
 
 function copyHeaders(headers: readonly ExternalHttpHeader[]): ExternalHttpHeader[] {
   return headers.map(header => ({ name: header.name, value: header.value }))
+}
+
+function nativeUint32(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 0xffff_ffff) {
+    throw new Error('invalid native unsigned integer')
+  }
+  return value as number
+}
+
+function copyPreparedRegistrationJoinProgress(
+  value: PreparedRegistrationJoinProgress,
+): PreparedRegistrationJoinProgress {
+  return {
+    joinSessionId: value.joinSessionId,
+    did: value.did,
+    localPhase: value.localPhase,
+    remoteState: value.remoteState,
+    completed: value.completed,
+    ...(value.identity === undefined ? {} : { identity: { ...value.identity } }),
+  }
+}
+
+/** Copy the raw binding object so the public SDK never leaks N-API naming details. */
+function copyHandleRecoveryProgress(value: NativeHandleRecoveryProgress): HandleRecoveryProgress {
+  const unsupportedE2eeGroupCount = value.impact.unsupportedE2eeGroupCount
+    ?? value.impact.unsupportedE2EeGroupCount
+  return {
+    operationId: value.operationId,
+    ownerIdentityId: value.ownerIdentityId,
+    fullHandle: value.fullHandle,
+    ...(value.previousDid === undefined ? {} : { previousDid: value.previousDid }),
+    currentDid: value.currentDid,
+    phase: value.phase,
+    ...(value.failureCode === undefined ? {} : { failureCode: value.failureCode }),
+    retryable: value.retryable,
+    impact: {
+      localOrdinaryDataWillMigrate: value.impact.localOrdinaryDataWillMigrate,
+      otherDevicesMustRejoin: value.impact.otherDevicesMustRejoin,
+      unsupportedE2eeGroupCount: nativeUint32(unsupportedE2eeGroupCount),
+      unsupportedDidOnlyGroupCount: nativeUint32(value.impact.unsupportedDidOnlyGroupCount),
+    },
+  }
 }
 
 class RustRealtimeSession implements RealtimeSession {

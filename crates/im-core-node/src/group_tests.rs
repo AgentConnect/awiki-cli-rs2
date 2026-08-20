@@ -65,11 +65,16 @@ fn add_member_contract_accepts_handle_and_projects_authoritative_resolution() {
         NodeAddGroupMemberInput {
             group_did: "did:wba:awiki.info:group:release-crew".to_owned(),
             member: "alice".to_owned(),
+            role: Some("member".to_owned()),
         },
         "awiki.info",
     )
     .unwrap();
     assert_eq!(request.member.as_str(), "alice.awiki.info");
+    assert_eq!(
+        request.role.as_ref().map(|role| role.as_str()),
+        Some("member")
+    );
 
     let member = group_member(im_core::groups::GroupMemberResolution {
         did: im_core::ids::Did::parse("did:wba:awiki.info:alice").unwrap(),
