@@ -290,6 +290,30 @@ pub(crate) fn resign_did_document_with_fresh_key1_proof(
     Ok(())
 }
 
+pub(crate) fn resign_did_document_with_fresh_signer_proof(
+    did_document: &mut Value,
+    did: &crate::ids::Did,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<()> {
+    let verification_method = format!("{}#key-1", did.as_str());
+    let cryptosuite = match signer.public_key(&verification_method)? {
+        anp::PublicKeyMaterial::Ed25519(_) => CRYPTOSUITE_EDDSA_JCS_2022,
+        anp::PublicKeyMaterial::Secp256k1(_) => CRYPTOSUITE_DIDWBA_SECP256K1_2025,
+        _ => return Err(crate::ImError::PermissionDenied),
+    };
+    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+    let options = ProofGenerationOptions {
+        proof_purpose: Some("assertionMethod".to_owned()),
+        proof_type: Some(PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+        cryptosuite: Some(cryptosuite.to_owned()),
+        created: None,
+        domain: Some(domain),
+        challenge: Some(fresh_proof_challenge()),
+    };
+    *did_document = signer.sign_document_proof(did_document, &verification_method, options)?;
+    Ok(())
+}
+
 pub(crate) fn package_from_parts(
     user_did: crate::ids::Did,
     verification_method: String,

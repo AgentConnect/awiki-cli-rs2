@@ -68,16 +68,10 @@ async fn upgrade_inner(
             store.save_did_document(&entry.dir_name, &remote_document)?;
             return Ok(crate::identity::LegacyUpgradeStatus::Completed);
         }
-        let root_private_pem = zeroize::Zeroizing::new(
-            client
-                .runtime()
-                .key_provider
-                .did_document_root_private_pem()?,
-        );
         let target_document =
-            crate::internal::identity_legacy_upgrade::converge_vnext_profile_discovery(
+            crate::internal::identity_legacy_upgrade::converge_vnext_profile_discovery_with_signer(
                 &remote_document,
-                &root_private_pem,
+                client.runtime().key_provider.as_ref(),
             )?
             .ok_or(crate::ImError::PermissionDenied)?;
         let call = crate::internal::identity_wire::update_document::build_update_document_rpc_call(

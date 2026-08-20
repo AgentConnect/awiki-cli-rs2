@@ -136,6 +136,36 @@ pub(crate) fn converge_vnext_profile_discovery(
     Ok(Some(target_document))
 }
 
+pub(crate) fn converge_vnext_profile_discovery_with_signer(
+    current_document: &Value,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<Option<Value>> {
+    let mut target_document = current_document.clone();
+    let (did, changed) = canonicalize_vnext_profile_discovery(&mut target_document)?;
+    if !changed {
+        return Ok(None);
+    }
+    let root_key_id = format!("{}#key-1", did.as_str());
+    let root_method = unique_verification_method(current_document, &root_key_id)?;
+    let document_root_public =
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
+    if signer.public_key(&root_key_id)?.to_pem() != document_root_public.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_signer_proof(
+        &mut target_document,
+        &did,
+        signer,
+    )?;
+    if !anp::authentication::validate_did_document_binding(&target_document, true) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::authentication::validate_device_manifest(&target_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(target_document))
+}
+
 pub(crate) fn vnext_profile_discovery_requires_convergence(
     current_document: &Value,
 ) -> crate::ImResult<bool> {
