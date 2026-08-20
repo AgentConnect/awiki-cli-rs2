@@ -195,7 +195,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
         operation_id: &str,
         plaintext: &V2ApplicationPlaintext,
-        local_static_private: &x25519_dalek::StaticSecret,
+        local_static_to_signed_prekey_dh: &[u8; 32],
         recipient: &V2GetPrekeyBundleResult,
         recipient_static_public: &[u8; 32],
         now: &str,
@@ -230,10 +230,10 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         }
         let metadata =
             outbound_metadata_for_content_type(binding, operation_id, CONTENT_TYPE_DIRECT_INIT_V2);
-        let (state, pending, body) = V2DirectE2eeSession::initiate_session(
+        let (state, pending, body) = V2DirectE2eeSession::initiate_session_with_static_dh(
             binding,
             &metadata,
-            local_static_private,
+            local_static_to_signed_prekey_dh,
             &recipient.prekey_bundle,
             recipient_static_public,
             recipient.one_time_prekey.as_ref(),
@@ -258,7 +258,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
         operation_id: &str,
         plaintext: &V2SecretJsonPayload,
-        local_static_private: &x25519_dalek::StaticSecret,
+        local_static_to_signed_prekey_dh: &[u8; 32],
         recipient: &V2GetPrekeyBundleResult,
         recipient_static_public: &[u8; 32],
         now: &str,
@@ -267,7 +267,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             binding,
             operation_id,
             plaintext,
-            local_static_private,
+            local_static_to_signed_prekey_dh,
             recipient,
             recipient_static_public,
             now,
@@ -281,7 +281,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
         operation_id: &str,
         plaintext: &V2SecretJsonPayload,
-        local_static_private: &x25519_dalek::StaticSecret,
+        local_static_to_signed_prekey_dh: &[u8; 32],
         recipient: &V2GetPrekeyBundleResult,
         recipient_static_public: &[u8; 32],
         now: &str,
@@ -303,16 +303,17 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         }
         let metadata =
             outbound_metadata_for_content_type(binding, operation_id, CONTENT_TYPE_DIRECT_INIT_V2);
-        let (state, pending, body) = V2DirectE2eeSession::initiate_session_secret_json(
-            binding,
-            &metadata,
-            local_static_private,
-            &recipient.prekey_bundle,
-            recipient_static_public,
-            recipient.one_time_prekey.as_ref(),
-            plaintext,
-        )
-        .map_err(v2_error)?;
+        let (state, pending, body) =
+            V2DirectE2eeSession::initiate_session_secret_json_with_static_dh(
+                binding,
+                &metadata,
+                local_static_to_signed_prekey_dh,
+                &recipient.prekey_bundle,
+                recipient_static_public,
+                recipient.one_time_prekey.as_ref(),
+                plaintext,
+            )
+            .map_err(v2_error)?;
         self.store.commit_outbound_with(
             &state,
             &pending,
@@ -738,7 +739,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
         metadata: &V2DirectMetadata,
         body: &V2DirectInitBody,
-        local_static_private: &x25519_dalek::StaticSecret,
+        local_static_to_ephemeral_dh: &[u8; 32],
         sender_static_public: &[u8; 32],
         now: &str,
         validator: impl FnOnce(&V2SecretJsonPayload, &V2DirectSessionState) -> crate::ImResult<T>,
@@ -778,10 +779,10 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             return Err(crate::ImError::PermissionDenied);
         }
         let (next_state, plaintext, consumed_opk_id) =
-            V2DirectE2eeSession::accept_incoming_init_secret_json(
+            V2DirectE2eeSession::accept_incoming_init_secret_json_with_static_dh(
                 binding,
                 metadata,
-                local_static_private,
+                local_static_to_ephemeral_dh,
                 &local.bundle,
                 &local.signed_prekey_private,
                 opk.as_ref().map(|opk| (&opk.public, &opk.private)),
@@ -823,7 +824,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
         metadata: &V2DirectMetadata,
         body: &V2DirectInitBody,
-        local_static_private: &x25519_dalek::StaticSecret,
+        local_static_to_ephemeral_dh: &[u8; 32],
         sender_static_public: &[u8; 32],
         now: &str,
     ) -> crate::ImResult<V2InboundDecryptOutcome> {
@@ -831,7 +832,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             binding,
             metadata,
             body,
-            local_static_private,
+            local_static_to_ephemeral_dh,
             sender_static_public,
             now,
             |plaintext, _| Ok(plaintext.clone()),
@@ -857,7 +858,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
         metadata: &V2DirectMetadata,
         body: &V2DirectInitBody,
-        local_static_private: &x25519_dalek::StaticSecret,
+        local_static_to_ephemeral_dh: &[u8; 32],
         sender_static_public: &[u8; 32],
         now: &str,
         validator: impl FnOnce(&V2ApplicationPlaintext, &V2DirectSessionState) -> crate::ImResult<T>,
@@ -895,17 +896,18 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         if body.recipient_one_time_prekey_id.is_some() != opk.is_some() {
             return Err(crate::ImError::PermissionDenied);
         }
-        let (next_state, plaintext, consumed_opk_id) = V2DirectE2eeSession::accept_incoming_init(
-            binding,
-            metadata,
-            local_static_private,
-            &local.bundle,
-            &local.signed_prekey_private,
-            opk.as_ref().map(|opk| (&opk.public, &opk.private)),
-            sender_static_public,
-            body,
-        )
-        .map_err(v2_error)?;
+        let (next_state, plaintext, consumed_opk_id) =
+            V2DirectE2eeSession::accept_incoming_init_with_static_dh(
+                binding,
+                metadata,
+                local_static_to_ephemeral_dh,
+                &local.bundle,
+                &local.signed_prekey_private,
+                opk.as_ref().map(|opk| (&opk.public, &opk.private)),
+                sender_static_public,
+                body,
+            )
+            .map_err(v2_error)?;
         let validated = validator(&plaintext, &next_state)?;
         match self.store.commit_inbound(
             &next_state,

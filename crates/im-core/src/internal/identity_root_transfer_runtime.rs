@@ -5,6 +5,7 @@
 //! carried only inside an established exact-device P5 v2 session.
 
 use anp::direct_e2ee::{V2SecretJsonPayload, V2SessionBinding, MTI_DIRECT_E2EE_SUITE_V2};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -449,18 +450,26 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                 },
             ),
         PreparedRootTransport::Prekey(prekey) => {
-            let local_static =
-                crate::internal::secure_direct::v2_prekey_runtime::local_static_private(client)?;
             let recipient_static =
                 crate::internal::secure_direct::v2_prekey_runtime::static_public_from_document(
                     &document,
                     &recipient.e2ee_key_id,
                 )?;
+            let recipient_signed_prekey: [u8; 32] = URL_SAFE_NO_PAD
+                .decode(&prekey.prekey_bundle.signed_prekey.public_key_b64u)
+                .map_err(|_| crate::ImError::PermissionDenied)?
+                .try_into()
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            let local_static_dh = client
+                .runtime()
+                .key_provider
+                .ecdh(&sender.e2ee_key_id, &recipient_signed_prekey)
+                .map_err(|_| crate::ImError::PermissionDenied)?;
             direct.prepare_session_init_secret_json_with_commit(
                 &binding,
                 state.message_id.as_str(),
                 &plaintext,
-                &local_static,
+                &local_static_dh,
                 prekey,
                 &recipient_static,
                 &now,

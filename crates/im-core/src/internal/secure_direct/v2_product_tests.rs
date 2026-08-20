@@ -254,12 +254,31 @@ fn context(
         DeviceVaultRootKey::from_bytes([vault_seed; 32]),
         FileSecretVaultStore::new(root.join(format!("{}-vault", device.id))),
     ));
+    let did_document = did_document(did, &[device]);
+    let signer: Arc<dyn crate::internal::key_provider::IdentitySigner> = Arc::new(
+        crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
+            &crate::identity::HostedIdentityMaterial {
+                identity_id: identity_id.to_owned(),
+                did: did.to_owned(),
+                handle: None,
+                display_name: None,
+                did_document,
+                default_signing_private_key_pem: device.signing().to_pem(),
+                e2ee_agreement_private_key_pem: Some(
+                    anp::PrivateKeyMaterial::X25519(device.static_private()).to_pem(),
+                ),
+                auth_token: None,
+            },
+            &device.signing_key_id(did),
+        )
+        .unwrap(),
+    );
     V2DirectProductContext {
         owner_identity_id: identity_id.to_owned(),
         local_did: did.to_owned(),
         local_device_id: device.id.to_owned(),
         local_e2ee_key_id: device.e2ee_key_id(did),
-        local_static_private: device.static_private(),
+        identity_signer: signer,
         sqlite_path: root.join(format!("{}.sqlite", device.id)),
         vault,
         scope: scope(identity_id, did, device),

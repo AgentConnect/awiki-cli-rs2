@@ -349,13 +349,27 @@ pub(crate) async fn receive_root_envelope_candidate(
     )?;
     let now = OffsetDateTime::now_utc();
     let now_text = format_time(now)?;
-    let local_static =
-        crate::internal::secure_direct::v2_prekey_runtime::local_static_private(client)?;
     let sender_static =
         crate::internal::secure_direct::v2_prekey_runtime::static_public_from_document(
             &document,
             &sender_manifest.e2ee_key_id,
         )?;
+    let local_static_dh = match body {
+        V2DirectBody::Init(init) => {
+            let sender_ephemeral: [u8; 32] = URL_SAFE_NO_PAD
+                .decode(&init.sender_ephemeral_pub_b64u)
+                .map_err(|_| crate::ImError::PermissionDenied)?
+                .try_into()
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            Some(
+                client
+                    .runtime()
+                    .key_provider
+                    .ecdh(&local_authorization.e2ee_key_id, &sender_ephemeral)?,
+            )
+        }
+        V2DirectBody::Cipher(_) => None,
+    };
 
     let probe = probe_root_candidate(
         core,
@@ -363,7 +377,7 @@ pub(crate) async fn receive_root_envelope_candidate(
         &binding,
         metadata,
         body,
-        &local_static,
+        local_static_dh.as_deref(),
         &sender_static,
         &now_text,
     )?;
@@ -391,7 +405,9 @@ pub(crate) async fn receive_root_envelope_candidate(
             &binding,
             metadata,
             init,
-            &local_static,
+            local_static_dh
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?,
             &sender_static,
             &now_text,
             |plaintext, session| {
@@ -471,7 +487,7 @@ fn probe_root_candidate(
     binding: &anp::direct_e2ee::V2SessionBinding,
     metadata: &V2DirectMetadata,
     body: &V2DirectBody,
-    local_static: &x25519_dalek::StaticSecret,
+    local_static_dh: Option<&[u8; 32]>,
     sender_static: &[u8; 32],
     now: &str,
 ) -> crate::ImResult<RootProbeOutcome> {
@@ -481,7 +497,7 @@ fn probe_root_candidate(
             binding,
             metadata,
             init,
-            local_static,
+            local_static_dh.ok_or(crate::ImError::PermissionDenied)?,
             sender_static,
             now,
             |plaintext, _| root_system_type(plaintext),
