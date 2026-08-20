@@ -497,14 +497,11 @@ pub(crate) async fn prepare_runtime_p5_test_wires(
     let endpoint = active_local_endpoint_for_client(&core, client).unwrap();
     let recipient_context = V2DirectProductContext::from_client(&core, client).unwrap();
     let local_document = client.runtime().key_provider.did_document().unwrap();
-    let signing_private = anp::PrivateKeyMaterial::from_pem(
-        &client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()
-            .unwrap(),
-    )
-    .unwrap();
+    let signing_public = client
+        .runtime()
+        .key_provider
+        .public_key(&endpoint.signing_key_id)
+        .unwrap();
     let publication = {
         let connection = recipient_context.open_connection().unwrap();
         let store = SqliteV2DirectStateStore::new_with_secret_vault(
@@ -520,12 +517,8 @@ pub(crate) async fn prepare_runtime_p5_test_wires(
                 device_id: &recipient_context.local_device_id,
                 signing_key_id: &endpoint.signing_key_id,
                 e2ee_key_id: &recipient_context.local_e2ee_key_id,
-                signing_public: signing_private.public_key(),
-                signer: &|_, message| {
-                    signing_private
-                        .sign_message(message)
-                        .map_err(|_| crate::ImError::PermissionDenied)
-                },
+                signing_public,
+                signer: &|kid, message| client.runtime().key_provider.sign(kid, message),
             },
             chrono::Utc::now(),
         )

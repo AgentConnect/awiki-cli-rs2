@@ -120,16 +120,55 @@ impl VaultBackedIdentitySigner {
         self.open_utf8_secret(secret_ref, role)
     }
 
-    fn legacy_key1_role_adapter(
+    fn legacy_key1_private_pem(
         &self,
         refs: &LegacyVaultKeyMaterialRefs,
-    ) -> crate::ImResult<super::LegacyKey1RoleAdapter> {
+    ) -> crate::ImResult<String> {
         self.open_utf8_secret_for_kind(
             &refs.default_signing_private,
             SecretKind::IdentityRootPrivate,
             "legacy_key1_private_key",
         )
-        .map(super::LegacyKey1RoleAdapter::new)
+    }
+
+    fn request_signing_private_pem(&self) -> crate::ImResult<String> {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(refs) => self.legacy_key1_private_pem(refs),
+            VaultKeyRoleRefs::VNext(refs) => self.open_utf8_secret_for_kind(
+                &refs.device_request_signing_private,
+                SecretKind::IdentityDeviceSigningPrivate,
+                "device_request_signing_private_key",
+            ),
+        }
+    }
+
+    fn root_private_pem(&self) -> crate::ImResult<String> {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(refs) => self.legacy_key1_private_pem(refs),
+            VaultKeyRoleRefs::VNext(refs) => {
+                let secret_ref = self
+                    .did_document_root_private_ref
+                    .read()
+                    .map_err(|_| crate::ImError::LocalStateUnavailable {
+                        detail: "vault root ref lock poisoned".to_owned(),
+                    })?
+                    .clone()
+                    .ok_or_else(|| crate::ImError::IdentityNotReady {
+                        identity: refs
+                            .device_request_signing_private
+                            .did
+                            .clone()
+                            .or_else(|| refs.device_request_signing_private.identity_id.clone())
+                            .unwrap_or_else(|| "vault-backed".to_owned()),
+                        missing: vec!["did_document_root_private_key".to_owned()],
+                    })?;
+                self.open_utf8_secret_for_kind(
+                    &secret_ref,
+                    SecretKind::IdentityRootPrivate,
+                    "did_document_root_private_key",
+                )
+            }
+        }
     }
 
     fn e2ee_agreement_private_ref(&self) -> &SecretRef {
@@ -181,70 +220,49 @@ impl super::IdentitySigner for VaultBackedIdentitySigner {
         self.file_provider.optional_did_document()
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
         match &self.refs {
-            VaultKeyRoleRefs::Legacy(refs) => Ok(self
-                .legacy_key1_role_adapter(refs)?
-                .device_request_signing_private_pem()),
-            VaultKeyRoleRefs::VNext(refs) => self.open_utf8_secret_for_kind(
-                &refs.device_request_signing_private,
-                SecretKind::IdentityDeviceSigningPrivate,
-                "device_request_signing_private_key",
-            ),
-        }
-    }
-
-    fn device_request_signing_material(
-        &self,
-    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
-        match &self.refs {
-            VaultKeyRoleRefs::Legacy(_) => Ok(super::DeviceRequestSigningMaterial {
-                key_id: super::file::request_signing_key_id(&self.did_document()?)?,
-                private_key_pem: self.device_request_signing_private_pem()?,
-            }),
-            VaultKeyRoleRefs::VNext(refs) => Ok(super::DeviceRequestSigningMaterial {
-                key_id: refs.device_request_signing_private.key_id.clone(),
-                private_key_pem: self.device_request_signing_private_pem()?,
-            }),
-        }
-    }
-
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        match &self.refs {
-            VaultKeyRoleRefs::Legacy(refs) => Ok(self
-                .legacy_key1_role_adapter(refs)?
-                .did_document_root_private_pem()),
-            VaultKeyRoleRefs::VNext(refs) => {
-                let secret_ref = self
-                    .did_document_root_private_ref
-                    .read()
-                    .map_err(|_| crate::ImError::LocalStateUnavailable {
-                        detail: "vault root ref lock poisoned".to_owned(),
-                    })?
-                    .clone()
-                    .ok_or_else(|| crate::ImError::IdentityNotReady {
-                        identity: refs
-                            .device_request_signing_private
-                            .did
-                            .clone()
-                            .or_else(|| refs.device_request_signing_private.identity_id.clone())
-                            .unwrap_or_else(|| "vault-backed".to_owned()),
-                        missing: vec!["did_document_root_private_key".to_owned()],
-                    })?;
-                self.open_utf8_secret_for_kind(
-                    &secret_ref,
-                    SecretKind::IdentityRootPrivate,
-                    "did_document_root_private_key",
-                )
+            VaultKeyRoleRefs::Legacy(_) => {
+                super::file::request_signing_key_id(&self.did_document()?)
             }
+            VaultKeyRoleRefs::VNext(refs) => Ok(refs.device_request_signing_private.key_id.clone()),
         }
     }
 
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        self.open_utf8_secret(
-            self.e2ee_agreement_private_ref(),
-            "vault_e2ee_agreement_private_key",
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.request_signing_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(
+            &self.request_signing_private_pem()?,
+            message,
+            "request signing",
         )
+    }
+
+    fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.root_control_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.root_private_pem()?, message, "root control")
+    }
+
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        if self.agreement_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::ecdh_private_pem(
+            &self.open_utf8_secret(
+                self.e2ee_agreement_private_ref(),
+                "vault_e2ee_agreement_private_key",
+            )?,
+            peer_public,
+            "E2EE agreement",
+        )
+    }
+
+    fn legacy_root_private_pem(&self) -> crate::ImResult<zeroize::Zeroizing<String>> {
+        self.root_private_pem().map(zeroize::Zeroizing::new)
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
@@ -450,15 +468,17 @@ mod tests {
         );
 
         assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
+            provider.request_signing_private_pem().unwrap(),
             "signing-secret"
         );
+        assert_eq!(provider.root_private_pem().unwrap(), "signing-secret");
         assert_eq!(
-            provider.did_document_root_private_pem().unwrap(),
-            "signing-secret"
-        );
-        assert_eq!(
-            provider.e2ee_agreement_private_pem().unwrap(),
+            provider
+                .open_utf8_secret(
+                    provider.e2ee_agreement_private_ref(),
+                    "vault_e2ee_agreement_private_key",
+                )
+                .unwrap(),
             "agreement-secret"
         );
         assert_eq!(
@@ -543,11 +563,11 @@ mod tests {
         ));
 
         assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
+            provider.request_signing_private_pem().unwrap(),
             device_signing_pem
         );
         assert!(matches!(
-            provider.did_document_root_private_pem(),
+            provider.root_private_pem(),
             Err(crate::ImError::IdentityNotReady { missing, .. })
                 if missing == vec!["did_document_root_private_key"]
         ));
@@ -762,9 +782,9 @@ mod tests {
             },
         );
 
-        assert!(provider.did_document_root_private_pem().is_err());
+        assert!(provider.root_private_pem().is_err());
         provider.advance_vault_root_ref(&root_ref).unwrap();
-        assert_eq!(provider.did_document_root_private_pem().unwrap(), root_pem);
+        assert_eq!(provider.root_private_pem().unwrap(), root_pem);
 
         let mut wrong_version = root_ref.clone();
         wrong_version.key_version = 2;
@@ -772,7 +792,7 @@ mod tests {
         let mut wrong_binding = root_ref;
         wrong_binding.device_id = "other-device".to_owned();
         assert!(provider.advance_vault_root_ref(&wrong_binding).is_err());
-        assert_eq!(provider.did_document_root_private_pem().unwrap(), root_pem);
+        assert_eq!(provider.root_private_pem().unwrap(), root_pem);
     }
 
     #[test]
@@ -820,12 +840,12 @@ mod tests {
         );
 
         assert!(matches!(
-            provider.device_request_signing_private_pem(),
+            provider.request_signing_private_pem(),
             Err(crate::ImError::IdentityNotReady { missing, .. })
                 if missing == vec!["device_request_signing_private_key_secret_kind"]
         ));
         assert!(matches!(
-            provider.did_document_root_private_pem(),
+            provider.root_private_pem(),
             Err(crate::ImError::IdentityNotReady { missing, .. })
                 if missing == vec!["did_document_root_private_key_secret_kind"]
         ));

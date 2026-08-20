@@ -114,21 +114,23 @@ impl crate::internal::key_provider::IdentitySigner for FakeBearerProvider {
         unreachable!()
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
         unreachable!()
     }
 
-    fn device_request_signing_material(
+    fn sign(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        unreachable!()
+    }
+
+    fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        unreachable!()
+    }
+
+    fn ecdh(
         &self,
-    ) -> crate::ImResult<crate::internal::key_provider::DeviceRequestSigningMaterial> {
-        unreachable!()
-    }
-
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        unreachable!()
-    }
-
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
+        _kid: &str,
+        _peer_public: &[u8],
+    ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
         unreachable!()
     }
 

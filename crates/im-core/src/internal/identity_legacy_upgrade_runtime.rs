@@ -292,24 +292,34 @@ impl crate::internal::key_provider::IdentitySigner for PendingDeviceProvider {
     fn optional_did_document(&self) -> crate::ImResult<Option<Value>> {
         Ok(Some(self.document.clone()))
     }
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.signing_private_pem.clone())
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        Ok(self.signing_key_id.clone())
     }
-    fn device_request_signing_material(
-        &self,
-    ) -> crate::ImResult<crate::internal::key_provider::DeviceRequestSigningMaterial> {
-        Ok(
-            crate::internal::key_provider::DeviceRequestSigningMaterial {
-                key_id: self.signing_key_id.clone(),
-                private_key_pem: self.signing_private_pem.clone(),
-            },
+
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.signing_key_id != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::key_provider::sign_private_pem(
+            &self.signing_private_pem,
+            message,
+            "pending device signing",
         )
     }
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+
+    fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
         Err(crate::ImError::PermissionDenied)
     }
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.e2ee_private_pem.clone())
+
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        if self.agreement_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::key_provider::ecdh_private_pem(
+            &self.e2ee_private_pem,
+            peer_public,
+            "pending device E2EE agreement",
+        )
     }
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
         Ok(Default::default())

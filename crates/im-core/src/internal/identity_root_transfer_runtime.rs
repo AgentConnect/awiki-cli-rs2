@@ -379,13 +379,11 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
     }
 
     // This is the first operation in the flow that opens the root Vault.
-    let root_pem = zeroize::Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .did_document_root_private_pem()
-            .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?,
-    );
+    let root_pem = client
+        .runtime()
+        .key_provider
+        .legacy_root_private_pem()
+        .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     let root_der = zeroize::Zeroizing::new(
         canonical_ed25519_pkcs8_der(&root_pem)
             .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?,

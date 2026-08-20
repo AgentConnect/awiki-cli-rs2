@@ -2524,9 +2524,17 @@ mod tests {
         let registry_path = paths.identities.registry_path.clone();
         let local_state_path = paths.local_state.sqlite_path.clone();
         let vault_dir = root.path().join("vault");
-        let did = crate::ids::Did::parse("did:wba:awiki.info:alice:e1_root").unwrap();
-        let signing_key_id = format!("{}#dev-a-sign", did.as_str());
-        let e2ee_key_id = format!("{}#dev-a-e2ee", did.as_str());
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.info",
+            "registry-summary",
+            None,
+            None,
+        )
+        .unwrap();
+        let did = generated.did.clone();
+        let protocol_device_id = generated.protocol_device_id.clone();
+        let signing_key_id = generated.device_signing_key_id.clone();
+        let e2ee_key_id = generated.device_e2ee_key_id.clone();
         let vault = Arc::new(FileSecretVault::new(
             DeviceVaultRootKey::from_bytes([29_u8; 32]),
             FileSecretVaultStore::new(&vault_dir),
@@ -2543,9 +2551,9 @@ mod tests {
                     full_handle: "alice.awiki.info".to_owned(),
                     binding_generation: Some("184467440737095516160000000000000000001".to_owned()),
                     jwt_token: "device-token".to_owned(),
-                    did_document: Some(json!({"id": did.as_str()})),
+                    did_document: Some(generated.did_document.clone()),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                        root_key_id: format!("{}#key-1", did.as_str()),
+                        root_key_id: generated.root_key_id.clone(),
                         device_signing_key_id: signing_key_id.clone(),
                         device_e2ee_key_id: e2ee_key_id.clone(),
                     },
@@ -2553,8 +2561,7 @@ mod tests {
                         schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
                         mode: IdentityDeviceMode::VNext,
                         authorization: Some(DeviceAuthorizationProjection {
-                            protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-a")
-                                .unwrap(),
+                            protocol_device_id: protocol_device_id.clone(),
                             signing_key_id: signing_key_id.clone(),
                             e2ee_key_id: e2ee_key_id.clone(),
                             status: DeviceAuthorizationStatus::Active,
@@ -2569,10 +2576,10 @@ mod tests {
                             registry_version: 4,
                         }),
                     }),
-                    key1_private_pem: "root-private".to_owned(),
-                    key1_public_pem: "root-public".to_owned(),
-                    e2ee_signing_private_pem: "device-signing-private".to_owned(),
-                    e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                    key1_private_pem: generated.root_private_pem,
+                    key1_public_pem: generated.root_public_pem,
+                    e2ee_signing_private_pem: generated.device_signing_private_pem,
+                    e2ee_agreement_private_pem: generated.device_e2ee_private_pem,
                     daemon_subkey_package: None,
                     make_default: true,
                 },
@@ -2616,7 +2623,7 @@ mod tests {
                 .protocol_device_id
                 .as_ref()
                 .map(|value| value.as_str()),
-            Some("dev-a")
+            Some(protocol_device_id.as_str())
         );
         assert_eq!(
             summary.signing_key_id.as_deref(),
@@ -2643,7 +2650,7 @@ mod tests {
                 owner_identity_id: "alice-id".to_owned(),
                 account_id: "user-1".to_owned(),
                 current_did: did.as_str().to_owned(),
-                protocol_device_id: "dev-a".to_owned(),
+                protocol_device_id: protocol_device_id.as_str().to_owned(),
                 identity_generation: "184467440737095516160000000000000000001".to_owned(),
                 device_auth_generation: "1".to_owned(),
             }
@@ -2923,9 +2930,21 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let identity_dir = root.path().join("identities").join("alice-id");
         std::fs::create_dir_all(&identity_dir).unwrap();
+        let bundle = anp::authentication::create_did_wba_document(
+            "alice.example",
+            anp::authentication::DidDocumentOptions::default(),
+        )
+        .unwrap();
+        let did = bundle.did().unwrap().to_owned();
+        let signing_pem = bundle.keys[anp::authentication::VM_KEY_AUTH]
+            .private_key_pem
+            .clone();
+        let agreement_pem = bundle.keys[anp::authentication::VM_KEY_E2EE_AGREEMENT]
+            .private_key_pem
+            .clone();
         std::fs::write(
             identity_dir.join("did_document.json"),
-            serde_json::to_vec(&json!({"id": "did:example:alice"})).unwrap(),
+            serde_json::to_vec(&bundle.did_document).unwrap(),
         )
         .unwrap();
         std::fs::write(
@@ -2954,11 +2973,11 @@ mod tests {
                     "workspace-a",
                     "device-a",
                     "alice-id",
-                    "did:example:alice",
+                    &did,
                     SecretKind::IdentityRootPrivate,
                     "key-1",
                 ),
-                plaintext: SecretBytes::from_vec(b"vault-signing-secret".to_vec()),
+                plaintext: SecretBytes::from_vec(signing_pem.as_bytes().to_vec()),
             })
             .unwrap();
         let agreement_ref = vault
@@ -2967,11 +2986,11 @@ mod tests {
                     "workspace-a",
                     "device-a",
                     "alice-id",
-                    "did:example:alice",
+                    &did,
                     SecretKind::IdentityE2eeAgreementPrivate,
                     "key-3",
                 ),
-                plaintext: SecretBytes::from_vec(b"vault-agreement-secret".to_vec()),
+                plaintext: SecretBytes::from_vec(agreement_pem.as_bytes().to_vec()),
             })
             .unwrap();
         let auth_ref = vault
@@ -2980,7 +2999,7 @@ mod tests {
                     "workspace-a",
                     "device-a",
                     "alice-id",
-                    "did:example:alice",
+                    &did,
                     SecretKind::AuthJwt,
                     "auth.json",
                 ),
@@ -2999,7 +3018,7 @@ mod tests {
                     "alice": {
                         "credential_name": "alice",
                         "dir_name": "alice-id",
-                        "did": "did:example:alice",
+                        "did": did,
                         "unique_id": "alice-id",
                         "user_id": "user-1",
                         "name": "Alice",
@@ -3062,17 +3081,15 @@ mod tests {
             .identities()
             .load_runtime(crate::identity::IdentitySelector::Default)
             .unwrap();
-        assert_eq!(
-            runtime
-                .key_provider
-                .device_request_signing_private_pem()
-                .unwrap(),
-            "vault-signing-secret"
-        );
-        assert_eq!(
-            runtime.key_provider.e2ee_agreement_private_pem().unwrap(),
-            "vault-agreement-secret"
-        );
+        runtime
+            .key_provider
+            .ensure_request_signing_available()
+            .unwrap();
+        runtime.key_provider.ensure_agreement_available().unwrap();
+        runtime
+            .key_provider
+            .ensure_root_control_available()
+            .unwrap();
         assert_eq!(
             runtime.key_provider.valid_auth_token().unwrap().as_deref(),
             Some("vault-token-secret")
@@ -3247,6 +3264,13 @@ mod tests {
             DeviceVaultRootKey::from_bytes([29_u8; 32]),
             FileSecretVaultStore::new(&vault_dir),
         ));
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.info",
+            "retirement-replay",
+            None,
+            None,
+        )
+        .unwrap();
 
         let open_core = || {
             crate::ImCore::new_with_options(
@@ -3265,10 +3289,10 @@ mod tests {
             .unwrap()
         };
 
-        let save_identity = |protocol_device_id: &str, device_label: &str| {
-            let did = crate::ids::Did::parse("did:wba:awiki.info:alice:e1_root").unwrap();
-            let signing_key_id = format!("{}#dev-{}-sign", did.as_str(), device_label);
-            let e2ee_key_id = format!("{}#dev-{}-e2ee", did.as_str(), device_label);
+        let save_identity = || {
+            let did = generated.did.clone();
+            let signing_key_id = generated.device_signing_key_id.clone();
+            let e2ee_key_id = generated.device_e2ee_key_id.clone();
             crate::internal::identity_store::IdentityStore::new(&paths.identities)
                 .save_identity_with_secret_storage(
                     crate::internal::identity_store::SaveIdentityInput {
@@ -3283,9 +3307,9 @@ mod tests {
                             "184467440737095516160000000000000000001".to_owned(),
                         ),
                         jwt_token: "device-token".to_owned(),
-                        did_document: Some(json!({"id": did.as_str()})),
+                        did_document: Some(generated.did_document.clone()),
                         key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-                            root_key_id: format!("{}#key-1", did.as_str()),
+                            root_key_id: generated.root_key_id.clone(),
                             device_signing_key_id: signing_key_id.clone(),
                             device_e2ee_key_id: e2ee_key_id.clone(),
                         },
@@ -3293,10 +3317,7 @@ mod tests {
                             schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
                             mode: IdentityDeviceMode::VNext,
                             authorization: Some(DeviceAuthorizationProjection {
-                                protocol_device_id: crate::ids::ProtocolDeviceId::parse(
-                                    protocol_device_id,
-                                )
-                                .unwrap(),
+                                protocol_device_id: generated.protocol_device_id.clone(),
                                 signing_key_id: signing_key_id.clone(),
                                 e2ee_key_id: e2ee_key_id.clone(),
                                 status: DeviceAuthorizationStatus::Active,
@@ -3311,10 +3332,10 @@ mod tests {
                                 registry_version: 4,
                             }),
                         }),
-                        key1_private_pem: "root-private".to_owned(),
-                        key1_public_pem: "root-public".to_owned(),
-                        e2ee_signing_private_pem: "device-signing-private".to_owned(),
-                        e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                        key1_private_pem: generated.root_private_pem.clone(),
+                        key1_public_pem: generated.root_public_pem.clone(),
+                        e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
+                        e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
                         daemon_subkey_package: None,
                         make_default: true,
                     },
@@ -3327,10 +3348,10 @@ mod tests {
                 .unwrap();
         };
 
-        // First registration on device dev-a, then local deletion: registry
+        // First registration, then local deletion: registry
         // entry, identity dir and vault records are removed and a durable
         // Completed tombstone is left behind.
-        save_identity("dev-a", "a");
+        save_identity();
         let core = open_core();
         core.identities()
             .verify_identity_vault(crate::identity::IdentitySelector::Default)
@@ -3344,9 +3365,9 @@ mod tests {
         let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
         assert!(store.load_index().unwrap().credentials.is_empty());
 
-        // Re-register the same handle on a new device (dev-b): same unique_id
-        // and did, fresh vault records.
-        save_identity("dev-b", "b");
+        // Re-register the same handle: same unique_id and DID, fresh vault
+        // records.
+        save_identity();
         let core = open_core();
         core.identities()
             .verify_identity_vault(crate::identity::IdentitySelector::Default)
@@ -3367,15 +3388,8 @@ mod tests {
                 .load_runtime(crate::identity::IdentitySelector::Default)
                 .unwrap();
             assert_eq!(
-                runtime
-                    .key_provider
-                    .device_request_signing_private_pem()
-                    .unwrap(),
-                "device-signing-private"
-            );
-            assert_eq!(
-                runtime.key_provider.e2ee_agreement_private_pem().unwrap(),
-                "device-e2ee-private"
+                runtime.key_provider.request_signing_key_id().unwrap(),
+                generated.device_signing_key_id
             );
             assert_eq!(
                 runtime.key_provider.valid_auth_token().unwrap().as_deref(),
@@ -3406,10 +3420,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+        let bundle = anp::authentication::create_did_wba_document(
+            "vault-migration.example",
+            anp::authentication::DidDocumentOptions::default(),
+        )
+        .unwrap();
+        let did = crate::ids::Did::parse(bundle.did().unwrap()).unwrap();
         store
             .save_identity(crate::internal::identity_store::SaveIdentityInput {
                 local_alias: "alice".to_owned(),
-                did: crate::ids::Did::parse("did:example:alice").unwrap(),
+                did: did.clone(),
                 unique_id: "alice-id".to_owned(),
                 user_id: "user-1".to_owned(),
                 display_name: "Alice".to_owned(),
@@ -3417,13 +3437,19 @@ mod tests {
                 full_handle: "alice.example".to_owned(),
                 binding_generation: None,
                 jwt_token: "jwt-secret-value".to_owned(),
-                did_document: Some(json!({"id": "did:example:alice"})),
+                did_document: Some(bundle.did_document),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
                 device_state: None,
-                key1_private_pem: "signing-private-secret".to_owned(),
-                key1_public_pem: "signing-public".to_owned(),
+                key1_private_pem: bundle.keys[anp::authentication::VM_KEY_AUTH]
+                    .private_key_pem
+                    .clone(),
+                key1_public_pem: bundle.keys[anp::authentication::VM_KEY_AUTH]
+                    .public_key_pem
+                    .clone(),
                 e2ee_signing_private_pem: String::new(),
-                e2ee_agreement_private_pem: "e2ee-agreement-secret".to_owned(),
+                e2ee_agreement_private_pem: bundle.keys[anp::authentication::VM_KEY_E2EE_AGREEMENT]
+                    .private_key_pem
+                    .clone(),
                 daemon_subkey_package: None,
                 make_default: true,
             })
@@ -3458,7 +3484,7 @@ mod tests {
             report.status.selected_backend,
             crate::identity::IdentitySecretStorageBackend::Vault
         );
-        assert_eq!(report.identity.did.as_str(), "did:example:alice");
+        assert_eq!(report.identity.did, did);
 
         let verification = core
             .identities()

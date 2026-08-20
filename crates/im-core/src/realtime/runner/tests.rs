@@ -629,6 +629,11 @@ async fn realtime_async_projector_replays_pending_direct_cipher_after_init() {
         "test-key",
         &exchange.recipient_agreement_private.to_pem(),
     );
+    std::fs::write(
+        fixture.root.join("identities/alice/did.json"),
+        serde_json::to_vec_pretty(&exchange.recipient_document).unwrap(),
+    )
+    .unwrap();
     fixture.cache_identity_document(&exchange.sender_did, &exchange.sender_document);
     seed_direct_init_prekeys(&fixture, &exchange);
     let client = fixture.client();

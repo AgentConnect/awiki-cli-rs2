@@ -7112,6 +7112,14 @@ impl Fixture {
     fn write_peer_document(&self, alias: &str, did: &str, document: &Value) {
         let identities = self.root.join("identities");
         let identity_dir = identities.join(alias);
+        let local_did = serde_json::from_slice::<Value>(
+            &fs::read(self.identity_dir().join("did.json")).unwrap(),
+        )
+        .unwrap()
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned();
         fs::create_dir_all(&identity_dir).unwrap();
         fs::write(
             identities.join("registry.json"),
@@ -7121,7 +7129,7 @@ impl Fixture {
                   "identities": [
                     {{
                       "id": "alice-id",
-                      "did": "did:example:alice",
+                      "did": "{local_did}",
                       "local_alias": "alice",
                       "ready_for_auth": true,
                       "ready_for_messaging": true,

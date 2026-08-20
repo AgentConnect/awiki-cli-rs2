@@ -8,74 +8,12 @@ pub(crate) use self::file::FileBackedIdentitySigner;
 pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
-#[derive(Clone)]
-pub(crate) struct DeviceRequestSigningMaterial {
-    pub(crate) key_id: String,
-    pub(crate) private_key_pem: String,
-}
-
-impl std::fmt::Debug for DeviceRequestSigningMaterial {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeviceRequestSigningMaterial")
-            .field("key_id", &self.key_id)
-            .field("private_key_pem", &"<redacted-private-key>")
-            .finish()
-    }
-}
-
-/// Explicit compatibility adapter for identities where legacy `key-1` has both
-/// request-signing and DID Document root-control semantics.
-///
-/// New multi-device identities must not use this adapter: their device signing
-/// and root-control keys are separate vault records.
-pub(crate) struct LegacyKey1RoleAdapter {
-    key1_private_pem: String,
-}
-
-impl LegacyKey1RoleAdapter {
-    pub(crate) fn new(key1_private_pem: String) -> Self {
-        Self { key1_private_pem }
-    }
-
-    pub(crate) fn device_request_signing_private_pem(&self) -> String {
-        self.key1_private_pem.clone()
-    }
-
-    pub(crate) fn did_document_root_private_pem(&self) -> String {
-        self.key1_private_pem.clone()
-    }
-}
-
-impl std::fmt::Debug for LegacyKey1RoleAdapter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LegacyKey1RoleAdapter")
-            .field("key1_private_pem", &"<redacted-private-key>")
-            .finish()
-    }
-}
-
 pub(crate) trait IdentitySigner: Send + Sync {
     fn did_document(&self) -> crate::ImResult<serde_json::Value>;
 
     fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>>;
 
-    /// Returns the device key used for login, HTTP auth, and daily requests.
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String>;
-
-    /// Returns the exact verification method and matching private key used for
-    /// DID-WBA requests. Callers must not infer `keyid` from relationship
-    /// ordering independently of the selected private key.
-    fn device_request_signing_material(&self) -> crate::ImResult<DeviceRequestSigningMaterial>;
-
-    /// Returns the DID root key used only to create or update a DID Document.
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String>;
-
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String>;
-
-    fn request_signing_key_id(&self) -> crate::ImResult<String> {
-        self.device_request_signing_material()
-            .map(|material| material.key_id)
-    }
+    fn request_signing_key_id(&self) -> crate::ImResult<String>;
 
     fn agreement_key_id(&self) -> crate::ImResult<String> {
         relationship_key_id(&self.did_document()?, "keyAgreement")
@@ -102,37 +40,14 @@ pub(crate) trait IdentitySigner: Send + Sync {
             .map_err(|_| crate::ImError::PermissionDenied)
     }
 
-    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
-        let material = self.device_request_signing_material()?;
-        if material.key_id != kid {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let private = private_key_from_pem(&material.private_key_pem, "request signing")?;
-        private
-            .sign_message(message)
-            .map_err(|_| crate::ImError::PermissionDenied)
-    }
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>>;
 
-    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
-        if self.agreement_key_id()? != kid {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let private = private_key_from_pem(&self.e2ee_agreement_private_pem()?, "E2EE agreement")?;
-        let anp::PrivateKeyMaterial::X25519(private) = private else {
-            return Err(crate::ImError::PermissionDenied);
-        };
-        let peer: [u8; 32] = peer_public
-            .try_into()
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-        let shared = zeroize::Zeroizing::new(
-            private
-                .diffie_hellman(&x25519_dalek::PublicKey::from(peer))
-                .to_bytes(),
-        );
-        if shared.iter().all(|byte| *byte == 0) {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        Ok(shared)
+    fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>>;
+
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>>;
+
+    fn legacy_root_private_pem(&self) -> crate::ImResult<zeroize::Zeroizing<String>> {
+        Err(crate::ImError::PermissionDenied)
     }
 
     fn ensure_request_signing_available(&self) -> crate::ImResult<()> {
@@ -148,18 +63,9 @@ pub(crate) trait IdentitySigner: Send + Sync {
     }
 
     fn ensure_root_control_available(&self) -> crate::ImResult<()> {
-        let private = private_key_from_pem(
-            &self.did_document_root_private_pem()?,
-            "DID document root control",
-        )?;
-        if matches!(
-            private,
-            anp::PrivateKeyMaterial::Ed25519(_) | anp::PrivateKeyMaterial::Secp256k1(_)
-        ) {
-            Ok(())
-        } else {
-            Err(crate::ImError::PermissionDenied)
-        }
+        let kid = self.root_control_key_id()?;
+        self.sign_root(&kid, b"awiki:root-control:availability:v1")
+            .map(|_| ())
     }
 
     fn sign_object_proof(
@@ -186,12 +92,12 @@ pub(crate) trait IdentitySigner: Send + Sync {
         if self.root_control_key_id()? != verification_method {
             return Err(crate::ImError::PermissionDenied);
         }
-        let private = private_key_from_pem(
-            &self.did_document_root_private_pem()?,
-            "DID document root control",
-        )?;
-        anp::proof::generate_w3c_proof(document, &private, verification_method, options)
-            .map_err(map_crypto_error)
+        let public_key = self.public_key(verification_method)?;
+        let prepared =
+            anp::proof::prepare_w3c_proof(document, &public_key, verification_method, options)
+                .map_err(map_crypto_error)?;
+        let signature = self.sign_root(verification_method, prepared.signing_input())?;
+        anp::proof::complete_w3c_proof(prepared, &signature).map_err(map_crypto_error)
     }
 
     fn sign_origin_proof(
@@ -310,6 +216,39 @@ fn private_key_from_pem(
     })
 }
 
+pub(crate) fn sign_private_pem(
+    private_key_pem: &str,
+    message: &[u8],
+    operation: &str,
+) -> crate::ImResult<Vec<u8>> {
+    private_key_from_pem(private_key_pem, operation)?
+        .sign_message(message)
+        .map_err(|_| crate::ImError::PermissionDenied)
+}
+
+pub(crate) fn ecdh_private_pem(
+    private_key_pem: &str,
+    peer_public: &[u8],
+    operation: &str,
+) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+    let private = private_key_from_pem(private_key_pem, operation)?;
+    let anp::PrivateKeyMaterial::X25519(private) = private else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    let peer: [u8; 32] = peer_public
+        .try_into()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let shared = zeroize::Zeroizing::new(
+        private
+            .diffie_hellman(&x25519_dalek::PublicKey::from(peer))
+            .to_bytes(),
+    );
+    if shared.iter().all(|byte| *byte == 0) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(shared)
+}
+
 fn map_crypto_error(error: impl std::fmt::Display) -> crate::ImError {
     crate::ImError::LocalStateUnavailable {
         detail: format!("identity signing operation failed: {error}"),
@@ -326,20 +265,8 @@ impl IdentitySigner for anp::PrivateKeyMaterial {
         Ok(None)
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.to_pem())
-    }
-
-    fn device_request_signing_material(&self) -> crate::ImResult<DeviceRequestSigningMaterial> {
-        Err(crate::ImError::PermissionDenied)
-    }
-
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.to_pem())
-    }
-
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.to_pem())
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        Ok("did:example:test#signing".to_owned())
     }
 
     fn public_key(&self, _kid: &str) -> crate::ImResult<anp::PublicKeyMaterial> {
@@ -349,6 +276,29 @@ impl IdentitySigner for anp::PrivateKeyMaterial {
     fn sign(&self, _kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
         self.sign_message(message)
             .map_err(|_| crate::ImError::PermissionDenied)
+    }
+
+    fn sign_root(&self, _kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        self.sign_message(message)
+            .map_err(|_| crate::ImError::PermissionDenied)
+    }
+
+    fn ecdh(
+        &self,
+        _kid: &str,
+        peer_public: &[u8],
+    ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        let anp::PrivateKeyMaterial::X25519(private) = self else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        let peer: [u8; 32] = peer_public
+            .try_into()
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        Ok(zeroize::Zeroizing::new(
+            private
+                .diffie_hellman(&x25519_dalek::PublicKey::from(peer))
+                .to_bytes(),
+        ))
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {

@@ -3387,14 +3387,6 @@ mod tests {
             result.metadata.legacy_key_material_refs(),
         );
         assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
-            "signing-private-secret"
-        );
-        assert_eq!(
-            provider.e2ee_agreement_private_pem().unwrap(),
-            "e2ee-agreement-secret"
-        );
-        assert_eq!(
             provider.valid_auth_token().unwrap().as_deref(),
             Some("jwt-secret-value")
         );
@@ -3752,7 +3744,7 @@ mod tests {
                         authorization: Some(DeviceAuthorizationProjection {
                             protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-member")
                                 .unwrap(),
-                            signing_key_id,
+                            signing_key_id: signing_key_id.clone(),
                             e2ee_key_id: format!("{}#dev-member-e2ee", did.as_str()),
                             status: DeviceAuthorizationStatus::Active,
                             role: DeviceAuthorizationRole::Member,
@@ -3794,11 +3786,8 @@ mod tests {
             vault,
             refs,
         );
-        assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
-            "member-device-signing-private"
-        );
-        assert!(provider.did_document_root_private_pem().is_err());
+        assert_eq!(provider.request_signing_key_id().unwrap(), signing_key_id);
+        assert!(provider.ensure_root_control_available().is_err());
     }
 
     #[test]
