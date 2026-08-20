@@ -13,6 +13,10 @@ export interface ImCoreNodeOpenOptions {
   readonly operationTimeoutMs?: number
   /** Timeout for bounded synchronization before list reads. */
   readonly syncTimeoutMs?: number
+  /** Enables Core-owned durable phone recovery for an existing Handle. */
+  readonly multiDeviceHandleRecoveryEnabled?: boolean
+  /** Exact User Service audience required when Handle recovery is enabled. */
+  readonly multiDeviceAudience?: string
   /** Test-only exception for literal loopback HTTP external-auth targets. */
   readonly externalHttpAllowInsecureLoopbackForTesting?: boolean
 }
@@ -60,6 +64,22 @@ export interface NodeIdentity {
   readonly registeredAtMs: string
 }
 
+/** Public editable profile projection. Proofs, metadata, and private state are excluded. */
+export interface NodeProfile {
+  readonly did: string
+  readonly handle?: string
+  readonly displayName?: string
+  readonly bio?: string
+  readonly tags: readonly string[]
+  readonly updatedAt?: string
+}
+
+export interface UpdateProfileInput {
+  readonly displayName: string
+  readonly bio?: string
+  readonly tags?: readonly string[]
+}
+
 /** First stage of phone registration. */
 export interface RegistrationInput {
   readonly handle: string
@@ -69,6 +89,68 @@ export interface RegistrationInput {
 /** Second stage of phone registration. */
 export interface RegistrationWithOtp extends RegistrationInput {
   readonly otp: string
+}
+
+export interface ExistingHandleRegistration {
+  /** Opaque process-local Core preparation identifier. */
+  readonly continuationId: string
+  readonly fullHandle: string
+  readonly expectedDid: string
+  readonly mode: 'ordinary' | 'handle_recovery_rebind'
+  readonly requiresUserPresence: boolean
+}
+
+export type RegistrationOutcome =
+  | {
+      readonly status: 'registered'
+      readonly identity: NodeIdentity
+      readonly warnings: readonly string[]
+    }
+  | {
+      readonly status: 'existing_handle'
+      readonly existingHandle: ExistingHandleRegistration
+      readonly warnings: readonly string[]
+    }
+
+/** Host-only activation of a process-local existing-Handle preparation. */
+export interface PreparedRegistrationJoinInput {
+  readonly continuationId: string
+  readonly operationId: string
+  readonly ttlSeconds?: number
+}
+
+/** Host-only continuation of an already-started prepared registration Join. */
+export interface PreparedRegistrationJoinResumeInput {
+  readonly joinSessionId: string
+}
+
+export type PreparedRegistrationJoinLocalPhase =
+  | 'pending'
+  | 'challenge_prepared'
+  | 'response_prepared'
+  | 'response_verified'
+  | 'approval_prepared'
+  | 'authorized'
+  | 'cancelled'
+  | 'expired'
+
+export type PreparedRegistrationJoinRemoteState =
+  | 'pending'
+  | 'challenge_sent'
+  | 'response_verified'
+  | 'consumed'
+  | 'cancelled'
+  | 'rejected'
+  | 'expired'
+
+/** Secret-free progress for a prepared existing-Handle activation. */
+export interface PreparedRegistrationJoinProgress {
+  readonly joinSessionId: string
+  readonly did: string
+  readonly localPhase: PreparedRegistrationJoinLocalPhase
+  readonly remoteState: PreparedRegistrationJoinRemoteState
+  readonly completed: boolean
+  readonly identity?: NodeIdentity
 }
 
 /** Server-issued retry boundary for a registration OTP. */
@@ -99,18 +181,63 @@ export interface NodeGroup {
   readonly title: string
   readonly description?: string
   readonly memberCount?: number
+  readonly myRole?: string
+  readonly membershipStatus?: string
 }
 
 /** One member reference accepted as a DID, full Handle, or local Handle name. */
 export interface AddGroupMemberInput {
   readonly groupDid: string
   readonly member: string
+  readonly role?: 'admin' | 'member'
 }
 
 /** Authoritative member identity returned after group membership mutation. */
 export interface NodeGroupMember {
   readonly did: string
   readonly handle?: string
+}
+
+export interface GroupInput {
+  readonly groupDid: string
+}
+
+export interface GroupMembersInput extends GroupInput, PageInput {}
+
+export interface RemoveGroupMemberInput extends GroupInput {
+  readonly member: string
+}
+
+/** One authoritative group membership record. A stable DID can be absent on malformed legacy rows. */
+export interface NodeGroupMemberRecord {
+  readonly membershipId?: string
+  readonly peerPersonaId?: string
+  readonly did?: string
+  readonly credentialDid?: string
+  readonly handle?: string
+  readonly role?: string
+  readonly status?: string
+  readonly joinedAt?: string
+  readonly subjectType?: string
+}
+
+/** Authoritative member page. Cursor and group version values remain opaque to callers. */
+export interface GroupMemberPage {
+  readonly items: readonly NodeGroupMemberRecord[]
+  readonly total?: number
+  readonly nextCursor?: string
+  readonly hasMore: boolean
+  readonly pageGroup?: string
+  readonly groupStateVersion?: string
+  readonly warnings: readonly string[]
+}
+
+export interface GroupRebindRecoverySummary {
+  readonly processed: number
+  readonly completed: number
+  readonly pending: number
+  readonly blocked: number
+  readonly warnings: readonly string[]
 }
 
 /** Local-only batch lookup used to hydrate message sender labels without network I/O. */
@@ -299,6 +426,79 @@ export interface SendTextInput {
   readonly idempotencyKey?: string
 }
 
+/** Generic JSON Payload send. ANP-P9 mention payloads are validated again in Rust. */
+export interface SendPayloadInput {
+  readonly conversationId: string
+  readonly payloadJson: string
+  readonly clientMessageId?: string
+  readonly idempotencyKey?: string
+}
+
+export interface HandleRecoveryOtpInput {
+  readonly fullHandle: string
+  readonly phone: string
+}
+
+export interface HandleRecoveryOtpResult {
+  readonly ownerIdentityId: string
+  readonly fullHandle: string
+  readonly operationId: string
+  readonly accepted: boolean
+  readonly retryAfterSeconds: number
+  readonly retryAt: string
+}
+
+export interface HandleRecoveryPrepareInput {
+  readonly operationId: string
+  readonly phone: string
+  readonly otp: string
+}
+
+export interface HandleRecoveryOperationInput {
+  readonly operationId: string
+}
+
+export type HandleRecoveryPhase =
+  | 'awaiting_factor'
+  | 'ready_to_commit'
+  | 'remote_outcome_unknown'
+  | 'remote_committed'
+  | 'identity_transition_pending'
+  | 'applied'
+  | 'quarantined_key_unavailable'
+
+export interface HandleRecoveryImpact {
+  readonly localOrdinaryDataWillMigrate: boolean
+  readonly otherDevicesMustRejoin: boolean
+  readonly unsupportedE2eeGroupCount: number
+  readonly unsupportedDidOnlyGroupCount: number
+}
+
+/** Durable recovery status. Hosts resume uncertain states instead of repeating activation. */
+export interface HandleRecoveryProgress {
+  readonly operationId: string
+  readonly ownerIdentityId: string
+  readonly fullHandle: string
+  readonly previousDid?: string
+  readonly currentDid: string
+  readonly phase: HandleRecoveryPhase
+  readonly failureCode?: string
+  readonly retryable: boolean
+  readonly impact: HandleRecoveryImpact
+}
+
+export interface HandleRecoveryOperationSummary {
+  readonly operationId: string
+  readonly ownerIdentityId: string
+  readonly fullHandle: string
+  readonly lifecycle: string
+  readonly commitAttempted: boolean
+  readonly keyState: string
+  readonly lastErrorCode?: string
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
 /** Single attachment send. `bytes` crosses N-API as Uint8Array, never JSON/base64. */
 export interface SendAttachmentInput {
   readonly conversationId: string
@@ -415,11 +615,26 @@ export interface ImCoreNodeClient {
   getDefaultIdentity(): Promise<NodeIdentity | null>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
+  /** Complete registration without collapsing an existing Handle into an error. */
+  completeRegistrationWithOutcome(input: RegistrationWithOtp): Promise<RegistrationOutcome>
+  /** Consume the verified registration continuation after explicit Host confirmation. */
+  beginPreparedRegistrationJoin(input: PreparedRegistrationJoinInput): Promise<PreparedRegistrationJoinProgress>
+  /** Advance an already-started prepared registration Join without repeating its mutation. */
+  resumePreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<PreparedRegistrationJoinProgress>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
+  getProfile(): Promise<NodeProfile>
+  updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]>
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
+  getGroup(input: GroupInput): Promise<NodeGroup>
+  listGroups(input?: PageInput): Promise<Page<NodeGroup>>
+  joinGroup(input: GroupInput): Promise<NodeGroup>
+  leaveGroup(input: GroupInput): Promise<void>
+  listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage>
+  removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
+  resumeGroupRebindRecovery(limit?: number): Promise<GroupRebindRecoverySummary>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   /** Starts the single Core-owned realtime session for this client. */
   startRealtime(input?: RealtimeOptions): Promise<RealtimeSession>
@@ -429,6 +644,7 @@ export interface ImCoreNodeClient {
   getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>
   markConversationRead(conversationId: string): Promise<MarkReadResult>
   sendText(input: SendTextInput): Promise<NodeMessage>
+  sendPayload(input: SendPayloadInput): Promise<NodeMessage>
   sendAttachment(input: SendAttachmentInput): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<NodeDownload>
   getMailAccount(): Promise<MailAccount>
@@ -436,6 +652,12 @@ export interface ImCoreNodeClient {
   readMail(messageId: string): Promise<MailMessage>
   markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
   sendMail(input: SendMailInput): Promise<SendMailResult>
+  requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult>
+  prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<HandleRecoveryProgress>
+  activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
+  getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
+  resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
+  discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */

@@ -17,6 +17,8 @@ fn open_options() -> NodeOpenOptions {
         anp_service_did: None,
         operation_timeout_ms: None,
         sync_timeout_ms: None,
+        multi_device_handle_recovery_enabled: None,
+        multi_device_audience: None,
         external_http_allow_insecure_loopback_for_testing: None,
     }
 }

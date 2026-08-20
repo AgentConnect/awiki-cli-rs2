@@ -6,6 +6,16 @@ import type {
   ExternalHttpHeader,
   ExternalHttpRequest,
   ExternalHttpResponse,
+  GroupInput,
+  GroupMemberPage,
+  GroupMembersInput,
+  GroupRebindRecoverySummary,
+  HandleRecoveryOperationInput,
+  HandleRecoveryOperationSummary,
+  HandleRecoveryOtpInput,
+  HandleRecoveryOtpResult,
+  HandleRecoveryPrepareInput,
+  HandleRecoveryPhase,
   HistoryInput,
   ImCoreNodeOpenOptions,
   MailAccount,
@@ -20,24 +30,52 @@ import type {
   NodeDisplayProfile,
   NodeGroup,
   NodeGroupMember,
+  NodeProfile,
   NodeIdentity,
   NodeMessage,
   NodePeer,
   OtpChallenge,
   Page,
   PageInput,
+  PreparedRegistrationJoinInput,
+  PreparedRegistrationJoinProgress,
+  PreparedRegistrationJoinResumeInput,
   RegistrationInput,
+  RegistrationOutcome,
   RegistrationWithOtp,
+  RemoveGroupMemberInput,
   SendAttachmentInput,
   SendMailInput,
   SendMailResult,
   SendTextInput,
+  SendPayloadInput,
   SyncOptions,
   SyncResult,
+  UpdateProfileInput,
   RealtimeEvent,
   RealtimeOptions,
   RealtimeStatus,
 } from './types.js'
+
+/** Raw N-API recovery shape. Keep it separate from the stable public facade. */
+export interface NativeHandleRecoveryProgress {
+  readonly operationId: string
+  readonly ownerIdentityId: string
+  readonly fullHandle: string
+  readonly previousDid?: string
+  readonly currentDid: string
+  readonly phase: HandleRecoveryPhase
+  readonly failureCode?: string
+  readonly retryable: boolean
+  readonly impact: {
+    readonly localOrdinaryDataWillMigrate: boolean
+    readonly otherDevicesMustRejoin: boolean
+    readonly unsupportedE2eeGroupCount?: number
+    /** Compatibility with native packages built before the explicit N-API field name. */
+    readonly unsupportedE2EeGroupCount?: number
+    readonly unsupportedDidOnlyGroupCount: number
+  }
+}
 
 export interface NativeExternalHttpAuthAttempt {
   getTargetUrl(): string
@@ -63,11 +101,23 @@ export interface NativeImCoreNodeClient {
   getDefaultIdentity(): Promise<NodeIdentity | null>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>
+  completeRegistrationWithOutcome(input: RegistrationWithOtp): Promise<RegistrationOutcome>
+  beginPreparedRegistrationJoin(input: PreparedRegistrationJoinInput): Promise<PreparedRegistrationJoinProgress>
+  resumePreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<PreparedRegistrationJoinProgress>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
+  getProfile(): Promise<NodeProfile>
+  updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<NodeDisplayProfile[]>
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
+  getGroup(input: GroupInput): Promise<NodeGroup>
+  listGroups(input?: PageInput): Promise<Page<NodeGroup>>
+  joinGroup(input: GroupInput): Promise<NodeGroup>
+  leaveGroup(input: GroupInput): Promise<void>
+  listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage>
+  removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
+  resumeGroupRebindRecovery(limit?: number): Promise<GroupRebindRecoverySummary>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   startRealtime(input?: RealtimeOptions): Promise<NativeRealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
@@ -75,6 +125,7 @@ export interface NativeImCoreNodeClient {
   getLocalConversationTimeline(input: HistoryInput): Promise<Page<NodeMessage>>
   markConversationRead(conversationId: string): Promise<MarkReadResult>
   sendText(input: SendTextInput): Promise<NodeMessage>
+  sendPayload(input: SendPayloadInput): Promise<NodeMessage>
   sendAttachment(input: Omit<SendAttachmentInput, 'bytes'> & { readonly bytes: Buffer }): Promise<NodeMessage>
   downloadAttachment(input: DownloadAttachmentInput): Promise<Omit<NodeDownload, 'bytes'> & { readonly bytes: Buffer }>
   getMailAccount(): Promise<MailAccount>
@@ -82,6 +133,12 @@ export interface NativeImCoreNodeClient {
   readMail(messageId: string): Promise<MailMessage>
   markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
   sendMail(input: SendMailInput): Promise<SendMailResult>
+  requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult>
+  prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<NativeHandleRecoveryProgress>
+  activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
+  getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
+  resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
+  discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   close(): Promise<void>
 }

@@ -22,13 +22,13 @@ const PUBLIC_PARITY: &[PublicParity] = &[
     },
     PublicParity {
         capability: "registration",
-        node_method: "completeRegistration",
+        node_method: "completeRegistration/completeRegistrationWithOutcome",
         core_facade: "IdentityRegistry::register_handle_async",
     },
     PublicParity {
         capability: "profile",
-        node_method: "updateDisplayName",
-        core_facade: "IdentityService::update_profile_async",
+        node_method: "getProfile/updateProfile",
+        core_facade: "IdentityService::profile_async/update_profile_async",
     },
     PublicParity {
         capability: "directory",
@@ -49,6 +49,26 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         capability: "group_member_add",
         node_method: "addGroupMember",
         core_facade: "GroupService::add_member_async",
+    },
+    PublicParity {
+        capability: "group_read",
+        node_method: "getGroup/listGroups",
+        core_facade: "GroupService::get_async/list_async",
+    },
+    PublicParity {
+        capability: "group_lifecycle",
+        node_method: "joinGroup/leaveGroup",
+        core_facade: "GroupService::join_async/leave_async",
+    },
+    PublicParity {
+        capability: "group_members",
+        node_method: "listGroupMembers/removeGroupMember",
+        core_facade: "GroupService::members_async/remove_member_async",
+    },
+    PublicParity {
+        capability: "group_rebind_recovery",
+        node_method: "resumeGroupRebindRecovery",
+        core_facade: "GroupService::resume_rebind_recovery_async",
     },
     PublicParity {
         capability: "sync",
@@ -86,6 +106,11 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "MessageService::send_conversation_text_async",
     },
     PublicParity {
+        capability: "payload",
+        node_method: "sendPayload",
+        core_facade: "MessageService::send_conversation_payload_async",
+    },
+    PublicParity {
         capability: "attachment_send",
         node_method: "sendAttachment",
         core_facade: "AttachmentService::send_conversation_async",
@@ -121,6 +146,11 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "EmailService::send_async",
     },
     PublicParity {
+        capability: "handle_recovery",
+        node_method: "request/prepare/activate/status/resume/discardHandleRecovery",
+        core_facade: "HandleRecoveryService public state machine",
+    },
+    PublicParity {
         capability: "local_reset",
         node_method: "clearLocalData",
         core_facade: "environment lifecycle-owned state root",
@@ -144,6 +174,10 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "display_profiles",
         "group_create",
         "group_member_add",
+        "group_read",
+        "group_lifecycle",
+        "group_members",
+        "group_rebind_recovery",
         "sync",
         "realtime",
         "conversation",
@@ -151,6 +185,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "local_timeline",
         "mark_read",
         "text",
+        "payload",
         "attachment_send",
         "attachment_download",
         "mail_account",
@@ -158,6 +193,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "mail_read",
         "mail_mark_read",
         "mail_send",
+        "handle_recovery",
         "local_reset",
         "lifecycle",
     ];

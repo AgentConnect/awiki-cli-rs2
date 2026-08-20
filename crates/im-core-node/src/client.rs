@@ -530,6 +530,28 @@ impl NativeImCoreNodeClient {
         &self,
         input: NodeRegistrationWithOtp,
     ) -> SafeResult<NodeIdentity> {
+        let outcome = self.complete_registration_with_outcome_inner(input).await?;
+        outcome.identity.ok_or_else(|| {
+            SafeError::new(
+                "join_required",
+                "The Handle requires an existing-identity flow.",
+                false,
+            )
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn complete_registration_with_outcome(
+        &self,
+        input: NodeRegistrationWithOtp,
+    ) -> napi::Result<NodeRegistrationOutcome> {
+        napi_result(self.complete_registration_with_outcome_inner(input).await)
+    }
+
+    async fn complete_registration_with_outcome_inner(
+        &self,
+        input: NodeRegistrationWithOtp,
+    ) -> SafeResult<NodeRegistrationOutcome> {
         let otp = input.otp.trim();
         if !(4..=12).contains(&otp.len()) || !otp.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(SafeError::new(
@@ -551,10 +573,10 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         if result.state == im_core::identity::HandleRegistrationState::JoinRequired {
-            return Err(SafeError::new(
-                "join_required",
-                "The Handle requires an existing-device join flow.",
-                false,
+            let preparation = result.join_required.ok_or_else(SafeError::internal)?;
+            return Ok(crate::dto::existing_handle_registration_outcome(
+                preparation,
+                result.warnings,
             ));
         }
         if result.state != im_core::identity::HandleRegistrationState::Registered {
@@ -578,11 +600,134 @@ impl NativeImCoreNodeClient {
                 .await
                 .map_err(|_| SafeError::internal())??;
         environment.state.harden_permissions()?;
-        Ok(crate::dto::identity(
+        Ok(NodeRegistrationOutcome {
+            status: "registered".to_owned(),
+            identity: Some(crate::dto::identity(
+                &identity,
+                identity.display_name.clone(),
+                registered_at_ms,
+            )),
+            existing_handle: None,
+            warnings: result.warnings,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn begin_prepared_registration_join(
+        &self,
+        input: NodePreparedRegistrationJoinInput,
+    ) -> napi::Result<NodePreparedRegistrationJoinProgress> {
+        napi_result(self.begin_prepared_registration_join_inner(input).await)
+    }
+
+    async fn begin_prepared_registration_join_inner(
+        &self,
+        input: NodePreparedRegistrationJoinInput,
+    ) -> SafeResult<NodePreparedRegistrationJoinProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        ensure_unregistered(&environment.core, &self.inner).await?;
+        let value = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .handle_recovery()
+                    .begin_prepared_registration_device_join(
+                        im_core::identity::BeginPreparedRegistrationDeviceJoinRequest {
+                            preparation_id: input.continuation_id,
+                            operation_id: input.operation_id,
+                            ttl_seconds: u64::from(input.ttl_seconds.unwrap_or(600)),
+                            user_presence_confirmed: true,
+                        },
+                    ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        let identity = self
+            .refresh_prepared_registration_client(environment, &value)
+            .await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::prepared_registration_join_progress(
+            value, identity,
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn resume_prepared_registration_join(
+        &self,
+        input: NodePreparedRegistrationJoinResumeInput,
+    ) -> napi::Result<NodePreparedRegistrationJoinProgress> {
+        napi_result(self.resume_prepared_registration_join_inner(input).await)
+    }
+
+    async fn resume_prepared_registration_join_inner(
+        &self,
+        input: NodePreparedRegistrationJoinResumeInput,
+    ) -> SafeResult<NodePreparedRegistrationJoinProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        let value = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .handle_recovery()
+                    .resume_authorized_join_activation(&input.join_session_id),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        let identity = self
+            .refresh_prepared_registration_client(environment, &value)
+            .await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::prepared_registration_join_progress(
+            value, identity,
+        ))
+    }
+
+    async fn refresh_prepared_registration_client(
+        &self,
+        environment: &mut Environment,
+        progress: &im_core::identity::AuthorizedJoinActivationProgress,
+    ) -> SafeResult<Option<NodeIdentity>> {
+        if progress.join.session.phase != im_core::identity::DeviceJoinLocalPhase::Authorized
+            || progress.join.remote_state != im_core::identity::DeviceJoinRemoteState::Consumed
+        {
+            return Ok(None);
+        }
+        let selector = im_core::identity::IdentitySelector::Did(progress.join.session.did.clone());
+        let identity = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .identities()
+                    .resolve_async(selector.clone()),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        let client = self
+            .inner
+            .wait_im(
+                environment.core.client_async(selector),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.client = Some(client);
+        let metadata = environment.state.metadata();
+        let identity_id = identity.id.as_str().to_owned();
+        let registered_at_ms =
+            tokio::task::spawn_blocking(move || metadata.ensure_registered_at(&identity_id))
+                .await
+                .map_err(|_| SafeError::internal())??;
+        Ok(Some(crate::dto::identity(
             &identity,
             identity.display_name.clone(),
             registered_at_ms,
-        ))
+        )))
     }
 
     #[napi(catch_unwind)]
@@ -628,6 +773,68 @@ impl NativeImCoreNodeClient {
             profile.display_name,
             registered_at_ms,
         ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_profile(&self) -> napi::Result<NodeProfile> {
+        napi_result(self.get_profile_inner().await)
+    }
+
+    async fn get_profile_inner(&self) -> SafeResult<NodeProfile> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let profile = self
+            .inner
+            .wait_im(
+                client.identity().profile_async(),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::profile(profile))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn update_profile(&self, input: NodeUpdateProfileInput) -> napi::Result<NodeProfile> {
+        napi_result(self.update_profile_inner(input).await)
+    }
+
+    async fn update_profile_inner(&self, input: NodeUpdateProfileInput) -> SafeResult<NodeProfile> {
+        let display_name = input.display_name.trim().to_owned();
+        if display_name.is_empty() {
+            return Err(SafeError::new(
+                "invalid_input",
+                "The display name must not be empty.",
+                false,
+            ));
+        }
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let client = operation.client()?;
+        let profile = self
+            .inner
+            .wait_im(
+                client
+                    .identity()
+                    .update_profile_async(im_core::identity::ProfilePatch {
+                        display_name: Some(display_name),
+                        bio: input
+                            .bio
+                            .map(|value| value.trim().to_owned())
+                            .filter(|value| !value.is_empty()),
+                        tags: input.tags.map(|tags| {
+                            tags.into_iter()
+                                .map(|tag| tag.trim().to_owned())
+                                .filter(|tag| !tag.is_empty())
+                                .collect()
+                        }),
+                        ..Default::default()
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::profile(profile))
     }
 
     #[napi(catch_unwind)]
@@ -729,6 +936,210 @@ impl NativeImCoreNodeClient {
             )
             .await?;
         crate::dto::added_group_member(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_group(&self, input: NodeGroupInput) -> napi::Result<NodeGroup> {
+        napi_result(self.get_group_inner(input).await)
+    }
+
+    async fn get_group_inner(&self, input: NodeGroupInput) -> SafeResult<NodeGroup> {
+        let group = im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?;
+        let fallback = group.as_str().to_owned();
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(
+                client.groups().get_async(group),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::created_group(result, &fallback)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_groups(
+        &self,
+        input: Option<NodePageInput>,
+    ) -> napi::Result<NodePageOfGroups> {
+        napi_result(self.list_groups_inner(input).await)
+    }
+
+    async fn list_groups_inner(
+        &self,
+        input: Option<NodePageInput>,
+    ) -> SafeResult<NodePageOfGroups> {
+        let input = input.unwrap_or(NodePageInput {
+            cursor: None,
+            limit: None,
+        });
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(
+                client
+                    .groups()
+                    .list_async(im_core::groups::GroupListRequest {
+                        limit: page_limit(input.limit)?,
+                        cursor: input
+                            .cursor
+                            .map(im_core::ids::Cursor::parse)
+                            .transpose()
+                            .map_err(SafeError::from_im)?,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::groups(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn join_group(&self, input: NodeGroupInput) -> napi::Result<NodeGroup> {
+        napi_result(self.join_group_inner(input).await)
+    }
+
+    async fn join_group_inner(&self, input: NodeGroupInput) -> SafeResult<NodeGroup> {
+        let group = im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?;
+        let fallback = group.as_str().to_owned();
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(
+                client
+                    .groups()
+                    .join_async(im_core::groups::GroupJoinRequest {
+                        group,
+                        member_handle: None,
+                        reason_text: None,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::created_group(result, &fallback)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn leave_group(&self, input: NodeGroupInput) -> napi::Result<()> {
+        napi_result(self.leave_group_inner(input).await)
+    }
+
+    async fn leave_group_inner(&self, input: NodeGroupInput) -> SafeResult<()> {
+        let group = im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?;
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        self.inner
+            .wait_im(
+                client
+                    .groups()
+                    .leave_async(im_core::groups::GroupLeaveRequest {
+                        group,
+                        reason_text: None,
+                        security: im_core::groups::GroupSecurityRequirement::default(),
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_group_members(
+        &self,
+        input: NodeGroupMembersInput,
+    ) -> napi::Result<NodeGroupMemberPage> {
+        napi_result(self.list_group_members_inner(input).await)
+    }
+
+    async fn list_group_members_inner(
+        &self,
+        input: NodeGroupMembersInput,
+    ) -> SafeResult<NodeGroupMemberPage> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(
+                client
+                    .groups()
+                    .members_async(im_core::groups::GroupMembersRequest {
+                        group: im_core::ids::GroupRef::parse(input.group_did)
+                            .map_err(SafeError::from_im)?,
+                        limit: page_limit(input.limit)?,
+                        cursor: input
+                            .cursor
+                            .map(im_core::ids::Cursor::parse)
+                            .transpose()
+                            .map_err(SafeError::from_im)?,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::group_member_page(result))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn remove_group_member(
+        &self,
+        input: NodeRemoveGroupMemberInput,
+    ) -> napi::Result<NodeGroupMember> {
+        napi_result(self.remove_group_member_inner(input).await)
+    }
+
+    async fn remove_group_member_inner(
+        &self,
+        input: NodeRemoveGroupMemberInput,
+    ) -> SafeResult<NodeGroupMember> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let result = self
+            .inner
+            .wait_im(
+                client
+                    .groups()
+                    .remove_member_async(crate::dto::group_member_mutation_request(
+                        NodeAddGroupMemberInput {
+                            group_did: input.group_did,
+                            member: input.member,
+                            role: None,
+                        },
+                        client.did_domain(),
+                    )?),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::added_group_member(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn resume_group_rebind_recovery(
+        &self,
+        limit: Option<u32>,
+    ) -> napi::Result<NodeGroupRebindRecoverySummary> {
+        napi_result(self.resume_group_rebind_recovery_inner(limit).await)
+    }
+
+    async fn resume_group_rebind_recovery_inner(
+        &self,
+        limit: Option<u32>,
+    ) -> SafeResult<NodeGroupRebindRecoverySummary> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let value = self
+            .inner
+            .wait_im(
+                client
+                    .groups()
+                    .resume_rebind_recovery_async(limit.unwrap_or(100)),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::rebind_recovery_summary(value))
     }
 
     #[napi(catch_unwind)]
@@ -984,6 +1395,45 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn send_payload(&self, input: NodeSendPayloadInput) -> napi::Result<NodeMessage> {
+        napi_result(self.send_payload_inner(input).await)
+    }
+
+    async fn send_payload_inner(&self, input: NodeSendPayloadInput) -> SafeResult<NodeMessage> {
+        let payload: serde_json::Value =
+            serde_json::from_str(&input.payload_json).map_err(|_| {
+                SafeError::new("invalid_input", "The message payload is invalid.", false)
+            })?;
+        if im_core::messages::is_message_mention_payload(&payload) {
+            im_core::messages::validate_message_mention_payload(&payload)
+                .map_err(SafeError::from_im)?;
+        }
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let conversation_id = input.conversation_id;
+        let messages = client.messages();
+        let send = box_im_future(
+            messages.send_conversation_payload_async(
+                im_core::messages::SendConversationPayloadRequest {
+                    conversation: im_core::messages::ConversationReadRef::new(&conversation_id)
+                        .map_err(SafeError::from_im)?,
+                    payload,
+                    security: im_core::messages::MessageSecurityMode::DefaultPlain,
+                    client_message_id: optional_message_id(input.client_message_id)?,
+                    idempotency_key: non_empty_optional(input.idempotency_key),
+                    wait_for_final_acceptance: false,
+                    delegated_signing: None,
+                },
+            ),
+        );
+        let result = self
+            .inner
+            .wait_im(send, self.inner.operation_timeout)
+            .await?;
+        crate::dto::sent_message(result.message, &conversation_id)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn send_attachment(
         &self,
         input: NodeSendAttachmentInput,
@@ -1165,6 +1615,211 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn request_handle_recovery_otp(
+        &self,
+        input: NodeHandleRecoveryOtpInput,
+    ) -> napi::Result<NodeHandleRecoveryOtpResult> {
+        napi_result(self.request_handle_recovery_otp_inner(input).await)
+    }
+
+    async fn request_handle_recovery_otp_inner(
+        &self,
+        input: NodeHandleRecoveryOtpInput,
+    ) -> SafeResult<NodeHandleRecoveryOtpResult> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let value = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .handle_recovery()
+                    .request_handle_recovery_otp(im_core::identity::HandleRecoveryOtpRequest {
+                        identity: None,
+                        full_handle: input.full_handle,
+                        phone: input.phone,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::recovery_otp_result(value))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn prepare_handle_recovery(
+        &self,
+        input: NodeHandleRecoveryPrepareInput,
+    ) -> napi::Result<NodeHandleRecoveryProgress> {
+        napi_result(self.prepare_handle_recovery_inner(input).await)
+    }
+
+    async fn prepare_handle_recovery_inner(
+        &self,
+        input: NodeHandleRecoveryPrepareInput,
+    ) -> SafeResult<NodeHandleRecoveryProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let value = self
+            .inner
+            .wait_im(
+                environment.core.handle_recovery().prepare_handle_recovery(
+                    im_core::identity::HandleRecoveryPrepareRequest {
+                        operation_id: input.operation_id,
+                        phone: input.phone,
+                        code: input.otp,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::recovery_progress(value))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn activate_handle_recovery(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> napi::Result<NodeHandleRecoveryProgress> {
+        napi_result(self.activate_handle_recovery_inner(input).await)
+    }
+
+    async fn activate_handle_recovery_inner(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> SafeResult<NodeHandleRecoveryProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        let value = self
+            .inner
+            .wait_im(
+                environment.core.handle_recovery().activate_handle_recovery(
+                    im_core::identity::HandleRecoveryActivateRequest {
+                        operation_id: input.operation_id,
+                        user_presence_confirmed: true,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        self.refresh_recovered_client(environment, &value).await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::recovery_progress(value))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_handle_recovery_status(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> napi::Result<NodeHandleRecoveryProgress> {
+        napi_result(self.get_handle_recovery_status_inner(input).await)
+    }
+
+    async fn get_handle_recovery_status_inner(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> SafeResult<NodeHandleRecoveryProgress> {
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let value = environment
+            .core
+            .handle_recovery()
+            .handle_recovery_status(&input.operation_id)
+            .map_err(SafeError::from_im)?;
+        Ok(crate::dto::recovery_progress(value))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn resume_handle_recovery(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> napi::Result<NodeHandleRecoveryProgress> {
+        napi_result(self.resume_handle_recovery_inner(input).await)
+    }
+
+    async fn resume_handle_recovery_inner(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> SafeResult<NodeHandleRecoveryProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        let value = self
+            .inner
+            .wait_im(
+                environment.core.handle_recovery().resume_handle_recovery(
+                    im_core::identity::HandleRecoveryResumeRequest {
+                        operation_id: input.operation_id,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        self.refresh_recovered_client(environment, &value).await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::recovery_progress(value))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn discard_handle_recovery(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> napi::Result<NodeHandleRecoveryOperationSummary> {
+        napi_result(self.discard_handle_recovery_inner(input).await)
+    }
+
+    async fn discard_handle_recovery_inner(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> SafeResult<NodeHandleRecoveryOperationSummary> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let value = environment
+            .core
+            .handle_recovery()
+            .discard_handle_recovery_pre_attempt(im_core::identity::HandleRecoveryDiscardRequest {
+                operation_id: input.operation_id,
+            })
+            .map_err(SafeError::from_im)?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::recovery_operation_summary(value))
+    }
+
+    async fn refresh_recovered_client(
+        &self,
+        environment: &mut Environment,
+        progress: &im_core::identity::HandleRecoveryProgress,
+    ) -> SafeResult<()> {
+        if progress.phase != im_core::identity::HandleRecoveryPhase::Applied {
+            return Ok(());
+        }
+        let client = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .client_async(im_core::identity::IdentitySelector::Id(
+                        progress.owner_identity_id.clone(),
+                    )),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        self.inner
+            .wait_im(
+                client.groups().resume_rebind_recovery_async(100),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.client = Some(client);
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close(&self) -> napi::Result<()> {
         napi_result(self.inner.close().await)
     }
@@ -1290,16 +1945,25 @@ fn core_open_options(
     options: &NodeOpenOptions,
     state: &StateRoot,
 ) -> SafeResult<im_core::ImCoreOpenOptions> {
-    Ok(im_core::ImCoreOpenOptions::default()
+    let core_options = im_core::ImCoreOpenOptions::default()
         .with_identity_secret_vault(
             im_core::IdentitySecretStoragePolicy::VaultRequired,
             state.identity_vault_options()?,
+        )
+        .with_multi_device_handle_recovery_enabled(
+            options
+                .multi_device_handle_recovery_enabled
+                .unwrap_or(false),
         )
         .with_external_http_allow_insecure_loopback_for_testing(
             options
                 .external_http_allow_insecure_loopback_for_testing
                 .unwrap_or(false),
-        ))
+        );
+    Ok(match &options.multi_device_audience {
+        Some(audience) => core_options.with_multi_device_audience(audience.clone()),
+        None => core_options,
+    })
 }
 
 pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCoreConfig> {
@@ -1733,6 +2397,8 @@ mod tests {
             anp_service_did: None,
             operation_timeout_ms: Some(1_000),
             sync_timeout_ms: Some(100),
+            multi_device_handle_recovery_enabled: None,
+            multi_device_audience: None,
             external_http_allow_insecure_loopback_for_testing: None,
         }
     }

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import test from 'node:test'
 
 import { ImCoreNodeError, openImCoreNodeClient } from '../dist/index.js'
@@ -18,6 +19,90 @@ function options(stateRoot) {
     syncTimeoutMs: 100,
   }
 }
+
+async function startRecoveryService(t) {
+  const requests = []
+  const server = createServer((request, response) => {
+    const chunks = []
+    request.on('data', chunk => chunks.push(chunk))
+    request.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      requests.push({ path: request.url, body })
+      let result
+      if (request.url === '/user-service/v1/handle/rpc') {
+        result = {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: { ok: true, retry_after_seconds: 60, retry_at: '2099-08-20T12:00:00Z' },
+        }
+      }
+      else if (request.url === '/user-service/v1/auth/handle-recovery/v4/exchange') {
+        result = {
+          contract_version: 'awiki.handle-recovery.v1.contract.4.20260807',
+          recovery_grant: 'local-shape-test-grant',
+          purpose: 'awiki.identity.handle-recovery.v1',
+          expires_at: '2099-08-20T12:05:00Z',
+          current_binding: {
+            account_user_id: 'local-shape-test-user',
+            full_handle: 'alice.awiki.test',
+            current_did: 'did:wba:awiki.test:users:alice-existing',
+            binding_generation: '7',
+          },
+        }
+      }
+      else {
+        response.writeHead(404).end()
+        return
+      }
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify(result))
+    })
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise((resolve, reject) => {
+    server.close(error => error === undefined ? resolve() : reject(error))
+  }))
+  const address = server.address()
+  assert.notEqual(address, null)
+  assert.equal(typeof address, 'object')
+  return { baseUrl: `http://127.0.0.1:${address.port}`, requests }
+}
+
+test('recovery progress exposes the stable E2EE field through the real native binding', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-recovery-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const service = await startRecoveryService(t)
+  const client = await openImCoreNodeClient({
+    ...options(root),
+    serviceBaseUrl: service.baseUrl,
+    didDomain: 'awiki.test',
+    multiDeviceHandleRecoveryEnabled: true,
+    multiDeviceAudience: 'awiki-user-service',
+  })
+  t.after(() => client.close())
+
+  const challenge = await client.requestHandleRecoveryOtp({
+    fullHandle: 'alice.awiki.test',
+    phone: '+8613800000000',
+  })
+  const progress = await client.prepareHandleRecovery({
+    operationId: challenge.operationId,
+    phone: '+8613800000000',
+    otp: '123456',
+  })
+
+  assert.equal(progress.phase, 'ready_to_commit')
+  assert.equal(progress.impact.unsupportedE2eeGroupCount, 0)
+  assert.equal(Object.hasOwn(progress.impact, 'unsupportedE2EeGroupCount'), false)
+  assert.deepEqual(JSON.parse(JSON.stringify(progress)), progress)
+  assert.deepEqual(service.requests.map(request => request.path), [
+    '/user-service/v1/handle/rpc',
+    '/user-service/v1/auth/handle-recovery/v4/exchange',
+  ])
+})
 
 test('opens an empty Rust state, closes idempotently, and rejects later work', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-'))
@@ -45,6 +130,25 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
       body: new Uint8Array(4 * 1024 * 1024 + 1),
     }),
     error => error instanceof ImCoreNodeError && error.code === 'invalid_input',
+  )
+  await assert.rejects(
+    client.completeRegistrationWithOutcome({
+      handle: 'alice',
+      phone: '+8613800000000',
+      otp: 'not-a-code',
+    }),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'invalid_otp'
+      && error.safeMessage === 'The registration OTP is invalid.',
+  )
+  await assert.rejects(
+    client.beginPreparedRegistrationJoin({
+      continuationId: 'regjoin_missing',
+      operationId: 'registration-access-native-test',
+      ttlSeconds: 600,
+    }),
+    error => error instanceof ImCoreNodeError
+      && !error.message.includes('regjoin_missing'),
   )
   await client.close()
   await client.close()
@@ -124,7 +228,7 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })
 
-test('routes group management and profile hydration through native v5 with structured identity errors', async t => {
+test('routes group, profile, and payload operations through native v6 with structured identity errors', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
@@ -136,6 +240,30 @@ test('routes group management and profile hydration through native v5 with struc
       && error.code === 'identity_required'
       && error.message === error.safeMessage,
   )
+  const identityOperations = [
+    () => client.getProfile(),
+    () => client.getGroup({ groupDid: 'did:wba:example.test:group:release-crew' }),
+    () => client.listGroups(),
+    () => client.joinGroup({ groupDid: 'did:wba:example.test:group:release-crew' }),
+    () => client.leaveGroup({ groupDid: 'did:wba:example.test:group:release-crew' }),
+    () => client.listGroupMembers({ groupDid: 'did:wba:example.test:group:release-crew' }),
+    () => client.removeGroupMember({
+      groupDid: 'did:wba:example.test:group:release-crew',
+      member: 'alice.example.test',
+    }),
+    () => client.sendPayload({
+      conversationId: 'group:did:wba:example.test:group:release-crew',
+      payloadJson: JSON.stringify({ value: true }),
+    }),
+  ]
+  for (const operation of identityOperations) {
+    await assert.rejects(
+      operation(),
+      error => error instanceof ImCoreNodeError
+        && error.code === 'identity_required'
+        && error.message === error.safeMessage,
+    )
+  }
   await assert.rejects(
     client.addGroupMember({
       groupDid: 'did:wba:example.test:group:release-crew',

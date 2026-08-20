@@ -72,6 +72,11 @@ try {
       if (typeof client.startRealtime !== 'function' || typeof client.listMailInbox !== 'function') {
         throw new Error('expected native API v5 realtime and mail facades')
       }
+      if (typeof client.completeRegistrationWithOutcome !== 'function'
+        || typeof client.beginPreparedRegistrationJoin !== 'function'
+        || typeof client.resumePreparedRegistrationJoin !== 'function') {
+        throw new Error('expected native API v8 prepared registration facade')
+      }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()
       if (cleared?.cleared !== true) throw new Error('expected initialized Rust state to be cleared')
