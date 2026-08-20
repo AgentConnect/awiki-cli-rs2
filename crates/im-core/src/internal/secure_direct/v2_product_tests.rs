@@ -492,7 +492,12 @@ pub(crate) async fn prepare_runtime_p5_test_wires(
                 device_id: &recipient_context.local_device_id,
                 signing_key_id: &endpoint.signing_key_id,
                 e2ee_key_id: &recipient_context.local_e2ee_key_id,
-                signing_private: &signing_private,
+                signing_public: signing_private.public_key(),
+                signer: &|_, message| {
+                    signing_private
+                        .sign_message(message)
+                        .map_err(|_| crate::ImError::PermissionDenied)
+                },
             },
             chrono::Utc::now(),
         )
