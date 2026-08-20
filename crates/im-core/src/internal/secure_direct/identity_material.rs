@@ -1,6 +1,6 @@
-use anp::PrivateKeyMaterial;
 use rusqlite::Connection;
 use serde_json::Value;
+use std::sync::Arc;
 
 use super::client::DirectSecureClientInput;
 
@@ -10,8 +10,7 @@ pub(crate) struct DirectSecureIdentityMaterial {
     pub(crate) identity_name: String,
     pub(crate) signing_key_id: String,
     pub(crate) agreement_key_id: String,
-    pub(crate) signing_private_pem: String,
-    pub(crate) agreement_private_pem: String,
+    pub(crate) identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
     pub(crate) local_did_document: Value,
 }
 
@@ -26,8 +25,7 @@ impl DirectSecureIdentityMaterial {
             identity_name: self.identity_name.clone(),
             signing_key_id: self.signing_key_id.clone(),
             agreement_key_id: self.agreement_key_id.clone(),
-            signing_private_pem: self.signing_private_pem.clone(),
-            agreement_private_pem: self.agreement_private_pem.clone(),
+            identity_signer: Arc::clone(&self.identity_signer),
             local_did_document: self.local_did_document.clone(),
             local_state,
         }
@@ -36,7 +34,7 @@ impl DirectSecureIdentityMaterial {
 
 pub(crate) struct DirectSecureAgreementMaterial {
     pub(crate) agreement_key_id: String,
-    pub(crate) agreement_private_pem: String,
+    pub(crate) identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
 }
 
 pub(crate) fn local_identity_material(
@@ -44,8 +42,6 @@ pub(crate) fn local_identity_material(
 ) -> crate::ImResult<DirectSecureIdentityMaterial> {
     let runtime = client.runtime();
     let local_did_document = runtime.key_provider.did_document()?;
-    let signing_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
-    let agreement_private_pem = runtime.key_provider.e2ee_agreement_private_pem()?;
     let owner_did = client.did().as_str().to_owned();
     let (signing_key_id, agreement_key_id) =
         direct_secure_key_ids(&owner_did, runtime.owner.sync_account.as_ref());
@@ -59,8 +55,7 @@ pub(crate) fn local_identity_material(
             .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
         signing_key_id,
         agreement_key_id,
-        signing_private_pem,
-        agreement_private_pem,
+        identity_signer: Arc::clone(&runtime.key_provider),
         local_did_document,
     })
 }
@@ -73,7 +68,7 @@ pub(crate) fn agreement_material(
         direct_secure_key_ids(&owner_did, client.runtime().owner.sync_account.as_ref());
     Ok(DirectSecureAgreementMaterial {
         agreement_key_id,
-        agreement_private_pem: client.runtime().key_provider.e2ee_agreement_private_pem()?,
+        identity_signer: Arc::clone(&client.runtime().key_provider),
     })
 }
 
@@ -89,19 +84,6 @@ fn direct_secure_key_ids(
             )
         })
         .unwrap_or_else(|| (format!("{owner_did}#key-1"), format!("{owner_did}#key-3")))
-}
-
-pub(crate) fn agreement_key_material(
-    client: &crate::core::ImClient,
-) -> crate::ImResult<(String, PrivateKeyMaterial)> {
-    let material = agreement_material(client)?;
-    let private_key =
-        PrivateKeyMaterial::from_pem(&material.agreement_private_pem).map_err(|err| {
-            crate::ImError::Serialization {
-                detail: format!("parse direct E2EE agreement private key: {err}"),
-            }
-        })?;
-    Ok((material.agreement_key_id, private_key))
 }
 
 pub(crate) fn local_did_document(client: &crate::core::ImClient) -> crate::ImResult<Value> {

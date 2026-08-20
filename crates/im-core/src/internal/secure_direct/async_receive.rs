@@ -144,8 +144,14 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
                 AsyncDirectSecureReceiveFallback::NoEstablishedSession,
             ));
         };
-        let (agreement_key_id, agreement_private) =
-            super::identity_material::agreement_key_material(self.client)?;
+        let agreement = super::identity_material::agreement_material(self.client)?;
+        let sender_ephemeral = super::client::decode_public_key_b64u(
+            &input.init_body.sender_ephemeral_pub_b64u,
+            "sender_ephemeral_pub_b64u",
+        )?;
+        let static_to_ephemeral_dh = agreement
+            .identity_signer
+            .ecdh(&agreement.agreement_key_id, &sender_ephemeral)?;
         let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
         let owner_did = self.client.did().as_str().to_owned();
         let consume_one_time_prekey_id = input.init_body.recipient_one_time_prekey_id.clone();
@@ -153,8 +159,8 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
             accept_incoming_init_from_material(IncomingInitCryptoInput {
                 owner_identity_id,
                 owner_did,
-                agreement_key_id,
-                agreement_private,
+                agreement_key_id: agreement.agreement_key_id,
+                static_to_ephemeral_dh,
                 signed_prekey_private,
                 one_time_prekey_private: material.one_time_prekey_private,
                 peer_session_revision: material.peer_session_revision,
@@ -468,7 +474,7 @@ struct IncomingInitCryptoInput {
     owner_identity_id: String,
     owner_did: String,
     agreement_key_id: String,
-    agreement_private: PrivateKeyMaterial,
+    static_to_ephemeral_dh: zeroize::Zeroizing<[u8; 32]>,
     signed_prekey_private: PrivateKeyMaterial,
     one_time_prekey_private: Option<PrivateKeyMaterial>,
     peer_session_revision: Option<i64>,
@@ -492,9 +498,6 @@ fn accept_incoming_init_from_material(
         &input.init_body.sender_static_key_agreement_id,
     )
     .map_err(map_direct_error)?;
-    let PrivateKeyMaterial::X25519(agreement_private) = &input.agreement_private else {
-        return Err(expected_x25519_private_key());
-    };
     let PrivateKeyMaterial::X25519(signed_prekey_private) = &input.signed_prekey_private else {
         return Err(expected_x25519_private_key());
     };
@@ -503,10 +506,10 @@ fn accept_incoming_init_from_material(
         Some(_) => return Err(expected_x25519_private_key()),
         None => None,
     };
-    let (session, plaintext) = DirectE2eeSession::accept_incoming_init_with_opk(
+    let (session, plaintext) = DirectE2eeSession::accept_incoming_init_with_static_dh(
         &input.metadata,
         &input.agreement_key_id,
-        agreement_private,
+        &input.static_to_ephemeral_dh,
         signed_prekey_private,
         one_time_prekey_private,
         &sender_static_public,
@@ -1207,14 +1210,15 @@ mod tests {
 
     #[tokio::test]
     async fn async_direct_receive_processor_accepts_init_via_actor_and_consumes_opk() {
-        let fixture = Fixture::new();
-        let client = fixture.client();
         let exchange = incoming_init_exchange();
+        let fixture =
+            Fixture::with_identity(&exchange.recipient_did, exchange.recipient_document.clone());
         std::fs::write(
             fixture.identity_dir().join("e2ee-agreement-private.pem"),
             exchange.recipient_agreement_private.to_pem(),
         )
         .unwrap();
+        let client = fixture.client();
         let db = client.core_inner().local_state_db().await.unwrap();
         {
             let connection =
@@ -1315,8 +1319,7 @@ mod tests {
 
         let agreement = super::super::identity_material::agreement_material(&client).unwrap();
         assert!(!agreement.agreement_key_id.ends_with("#key-3"));
-        let recipient_private =
-            PrivateKeyMaterial::from_pem(&agreement.agreement_private_pem).unwrap();
+        let recipient_private = fixture.agreement_private_key();
         let exchange = incoming_init_exchange_for_recipient(
             client.did().as_str().to_owned(),
             super::super::identity_material::local_did_document(&client).unwrap(),

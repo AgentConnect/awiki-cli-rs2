@@ -1050,8 +1050,7 @@ async fn db_actor_prepare_direct_secure_prekeys_persists_local_state_and_returns
                 identity_name: "alice".to_string(),
                 signing_key_id: format!("{}#key-1", identity.did),
                 agreement_key_id: format!("{}#key-3", identity.did),
-                signing_private_pem: identity.signing_private_pem,
-                agreement_private_pem: identity.agreement_private_pem,
+                identity_signer: identity.signer(),
                 local_did_document: identity.document,
                 peer: crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
             },
@@ -1314,5 +1313,24 @@ impl TestIdentity {
             signing_private_pem: bundle.private_key_pem("key-1").unwrap().to_owned(),
             agreement_private_pem: bundle.private_key_pem("key-3").unwrap().to_owned(),
         }
+    }
+
+    fn signer(&self) -> std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> {
+        std::sync::Arc::new(
+            crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
+                &crate::identity::HostedIdentityMaterial {
+                    identity_id: self.did.clone(),
+                    did: self.did.clone(),
+                    handle: None,
+                    display_name: None,
+                    did_document: self.document.clone(),
+                    default_signing_private_key_pem: self.signing_private_pem.clone(),
+                    e2ee_agreement_private_key_pem: Some(self.agreement_private_pem.clone()),
+                    auth_token: None,
+                },
+                &format!("{}#key-1", self.did),
+            )
+            .unwrap(),
+        )
     }
 }

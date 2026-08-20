@@ -325,6 +325,7 @@ static RUNTIME_WIRE_DOCUMENTS: OnceLock<Mutex<BTreeMap<PathBuf, BTreeMap<String,
 
 pub(crate) struct RuntimeP5TestClientFixture {
     root: tempfile::TempDir,
+    agreement_private_pem: String,
 }
 
 impl RuntimeP5TestClientFixture {
@@ -348,6 +349,7 @@ impl RuntimeP5TestClientFixture {
                 None,
             )
             .unwrap();
+        let agreement_private_pem = generated.device_e2ee_private_pem.clone();
         let device_state = IdentityDeviceState {
             schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
             mode: IdentityDeviceMode::VNext,
@@ -403,7 +405,10 @@ impl RuntimeP5TestClientFixture {
                 },
             )
             .unwrap();
-        Self { root }
+        Self {
+            root,
+            agreement_private_pem,
+        }
     }
 
     fn paths(root: &Path) -> crate::ImCorePaths {
@@ -463,6 +468,10 @@ impl RuntimeP5TestClientFixture {
 
     pub(crate) fn sqlite_path(&self) -> PathBuf {
         Self::paths(self.root.path()).local_state.sqlite_path
+    }
+
+    pub(crate) fn agreement_private_key(&self) -> anp::PrivateKeyMaterial {
+        anp::PrivateKeyMaterial::from_pem(&self.agreement_private_pem).unwrap()
     }
 }
 

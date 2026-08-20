@@ -110,8 +110,7 @@ where
         identity_name: identity_material.identity_name,
         signing_key_id: identity_material.signing_key_id,
         agreement_key_id: identity_material.agreement_key_id,
-        signing_private_pem: identity_material.signing_private_pem,
-        agreement_private_pem: identity_material.agreement_private_pem,
+        identity_signer: std::sync::Arc::clone(&identity_material.identity_signer),
         local_did_document: identity_material.local_did_document,
         local_state: &connection,
     }) {
@@ -205,8 +204,7 @@ where
         identity_name: identity_material.identity_name,
         signing_key_id: identity_material.signing_key_id,
         agreement_key_id: identity_material.agreement_key_id,
-        signing_private_pem: identity_material.signing_private_pem,
-        agreement_private_pem: identity_material.agreement_private_pem,
+        identity_signer: std::sync::Arc::clone(&identity_material.identity_signer),
         local_did_document: identity_material.local_did_document,
         local_state: &connection,
     }) {

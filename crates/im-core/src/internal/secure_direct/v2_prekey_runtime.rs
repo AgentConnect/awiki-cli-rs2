@@ -457,19 +457,6 @@ fn direct_attachment_http_body(
     }))
 }
 
-pub(crate) fn local_static_private(
-    client: &crate::core::ImClient,
-) -> crate::ImResult<X25519StaticSecret> {
-    match anp::PrivateKeyMaterial::from_pem(
-        &client.runtime().key_provider.e2ee_agreement_private_pem()?,
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?
-    {
-        anp::PrivateKeyMaterial::X25519(private) => Ok(private),
-        _ => Err(crate::ImError::PermissionDenied),
-    }
-}
-
 pub(crate) fn static_public_from_document(
     did_document: &serde_json::Value,
     key_id: &str,
