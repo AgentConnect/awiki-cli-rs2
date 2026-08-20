@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-pub(crate) struct HostedKeyMaterialProvider {
+pub(crate) struct HostedIdentitySigner {
     did_document: Value,
     legacy_key1_private_pem: String,
     request_signing_key_id: Option<String>,
@@ -11,7 +11,7 @@ pub(crate) struct HostedKeyMaterialProvider {
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
 }
 
-pub(crate) struct HostBackedDeviceKeyMaterialProvider {
+pub(crate) struct HostBackedDeviceIdentitySigner {
     did_document: Value,
     device_signing_key_id: String,
     device_signing_private_pem: String,
@@ -22,7 +22,7 @@ pub(crate) struct HostBackedDeviceKeyMaterialProvider {
         Option<std::sync::Arc<dyn crate::identity::HostBackedAuthTokenPersistence>>,
 }
 
-impl HostedKeyMaterialProvider {
+impl HostedIdentitySigner {
     pub(crate) fn new(material: &crate::identity::HostedIdentityMaterial) -> crate::ImResult<Self> {
         Ok(Self {
             did_document: material.did_document.clone(),
@@ -53,7 +53,7 @@ impl HostedKeyMaterialProvider {
     }
 }
 
-impl HostBackedDeviceKeyMaterialProvider {
+impl HostBackedDeviceIdentitySigner {
     pub(crate) fn new(
         material: &crate::identity::HostBackedDeviceIdentityMaterial,
     ) -> crate::ImResult<Self> {
@@ -79,9 +79,9 @@ impl HostBackedDeviceKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for HostedKeyMaterialProvider {
+impl fmt::Debug for HostedIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostedKeyMaterialProvider")
+        f.debug_struct("HostedIdentitySigner")
             .field("backend", &"hosted-memory")
             .field("did_document", &"<redacted-hosted-did-document>")
             .field("legacy_key1_private_pem", &"<redacted-private-key>")
@@ -91,9 +91,9 @@ impl fmt::Debug for HostedKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for HostBackedDeviceKeyMaterialProvider {
+impl fmt::Debug for HostBackedDeviceIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostBackedDeviceKeyMaterialProvider")
+        f.debug_struct("HostBackedDeviceIdentitySigner")
             .field("backend", &"host-backed-device-memory")
             .field("did_document", &"<redacted-hosted-did-document>")
             .field("device_signing_key_id", &self.device_signing_key_id)
@@ -105,7 +105,7 @@ impl fmt::Debug for HostBackedDeviceKeyMaterialProvider {
     }
 }
 
-impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
+impl super::IdentitySigner for HostedIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         Ok(self.did_document.clone())
     }
@@ -174,7 +174,7 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
     }
 }
 
-impl super::KeyMaterialProvider for HostBackedDeviceKeyMaterialProvider {
+impl super::IdentitySigner for HostBackedDeviceIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         Ok(self.did_document.clone())
     }
@@ -395,7 +395,7 @@ fn validate_request_signing_key(
     Ok(request_signing_key_id.to_owned())
 }
 
-impl HostedKeyMaterialProvider {
+impl HostedIdentitySigner {
     fn legacy_key1_role_adapter(&self) -> super::LegacyKey1RoleAdapter {
         super::LegacyKey1RoleAdapter::new(self.legacy_key1_private_pem.clone())
     }
@@ -425,13 +425,13 @@ fn auth_state_from_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::KeyMaterialProvider;
+    use crate::internal::key_provider::IdentitySigner;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
 
     #[test]
     fn hosted_key_provider_keeps_secret_material_in_memory_without_debug_leak() {
-        let provider = HostedKeyMaterialProvider::new(&crate::identity::HostedIdentityMaterial {
+        let provider = HostedIdentitySigner::new(&crate::identity::HostedIdentityMaterial {
             identity_id: "daemon-agent".to_owned(),
             did: "did:example:daemon".to_owned(),
             handle: Some("daemon.example".to_owned()),
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn signing_only_hosted_provider_fails_closed_for_e2ee_material() {
-        let provider = HostedKeyMaterialProvider::new(&crate::identity::HostedIdentityMaterial {
+        let provider = HostedIdentitySigner::new(&crate::identity::HostedIdentityMaterial {
             identity_id: "delegated-inbox".to_owned(),
             did: "did:example:alice".to_owned(),
             handle: None,
@@ -520,7 +520,7 @@ mod tests {
             auth_token: None,
         };
 
-        let provider = HostedKeyMaterialProvider::new_for_request_signing_key(
+        let provider = HostedIdentitySigner::new_for_request_signing_key(
             &material,
             &generated.device_signing_key_id,
         )
@@ -564,7 +564,7 @@ mod tests {
         };
 
         let provider =
-            HostedKeyMaterialProvider::new_for_request_signing_key(&material, &key_id).unwrap();
+            HostedIdentitySigner::new_for_request_signing_key(&material, &key_id).unwrap();
 
         assert_eq!(
             provider.device_request_signing_material().unwrap().key_id,
@@ -594,7 +594,7 @@ mod tests {
         };
 
         assert!(matches!(
-            HostedKeyMaterialProvider::new_for_request_signing_key(
+            HostedIdentitySigner::new_for_request_signing_key(
                 &material,
                 &generated.device_signing_key_id,
             ),

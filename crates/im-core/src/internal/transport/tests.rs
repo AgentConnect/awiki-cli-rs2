@@ -105,7 +105,7 @@ struct FakeBearerProvider {
     missing: bool,
 }
 
-impl crate::internal::key_provider::KeyMaterialProvider for FakeBearerProvider {
+impl crate::internal::key_provider::IdentitySigner for FakeBearerProvider {
     fn did_document(&self) -> crate::ImResult<serde_json::Value> {
         unreachable!()
     }

@@ -44,15 +44,15 @@ enum VaultKeyRoleRefs {
     VNext(VNextVaultKeyMaterialRefs),
 }
 
-pub(crate) struct VaultBackedKeyMaterialProvider {
-    file_provider: super::FileBackedKeyMaterialProvider,
+pub(crate) struct VaultBackedIdentitySigner {
+    file_provider: super::FileBackedIdentitySigner,
     vault: Arc<dyn SecretVault + Send + Sync>,
     refs: VaultKeyRoleRefs,
     did_document_root_private_ref: RwLock<Option<SecretRef>>,
     auth_jwt_ref: RwLock<SecretRef>,
 }
 
-impl VaultBackedKeyMaterialProvider {
+impl VaultBackedIdentitySigner {
     pub(crate) fn new(
         identity_dir: std::path::PathBuf,
         vault: Arc<dyn SecretVault + Send + Sync>,
@@ -60,7 +60,7 @@ impl VaultBackedKeyMaterialProvider {
     ) -> Self {
         let auth_jwt_ref = refs.auth_jwt.clone();
         Self {
-            file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
+            file_provider: super::FileBackedIdentitySigner::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::Legacy(refs),
             did_document_root_private_ref: RwLock::new(None),
@@ -76,7 +76,7 @@ impl VaultBackedKeyMaterialProvider {
         let auth_jwt_ref = refs.auth_jwt.clone();
         let did_document_root_private_ref = refs.did_document_root_private.clone();
         Self {
-            file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
+            file_provider: super::FileBackedIdentitySigner::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::VNext(refs),
             did_document_root_private_ref: RwLock::new(did_document_root_private_ref),
@@ -162,9 +162,9 @@ impl VaultBackedKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for VaultBackedKeyMaterialProvider {
+impl fmt::Debug for VaultBackedIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VaultBackedKeyMaterialProvider")
+        f.debug_struct("VaultBackedIdentitySigner")
             .field("file_provider", &self.file_provider)
             .field("backend", &"vault-backed")
             .field("refs", &"<redacted-secret-refs>")
@@ -172,7 +172,7 @@ impl fmt::Debug for VaultBackedKeyMaterialProvider {
     }
 }
 
-impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
+impl super::IdentitySigner for VaultBackedIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         self.file_provider.did_document()
     }
@@ -397,7 +397,7 @@ fn set_private_lock_file_mode(file: &File) -> crate::ImResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::KeyMaterialProvider;
+    use crate::internal::key_provider::IdentitySigner;
     use crate::internal::platform_secret::DeviceVaultRootKey;
     use crate::internal::secret_vault::record::SecretKind;
     use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore};
@@ -439,7 +439,7 @@ mod tests {
                 ),
             })
             .unwrap();
-        let provider = VaultBackedKeyMaterialProvider::new(
+        let provider = VaultBackedIdentitySigner::new(
             identity_dir,
             vault,
             LegacyVaultKeyMaterialRefs {
@@ -536,7 +536,7 @@ mod tests {
         let serialized_refs = serde_json::to_value(&refs).unwrap();
         assert!(serialized_refs.get("did_document_root_private").is_none());
         let refs: VNextVaultKeyMaterialRefs = serde_json::from_value(serialized_refs).unwrap();
-        let provider = Arc::new(VaultBackedKeyMaterialProvider::new_vnext(
+        let provider = Arc::new(VaultBackedIdentitySigner::new_vnext(
             identity_dir,
             vault,
             refs,
@@ -604,7 +604,7 @@ mod tests {
             "auth.json",
             &crate::internal::auth::state::auth_state_json_for_token("old-token").unwrap(),
         );
-        let mut new_metadata = VaultBackedKeyMaterialProvider::metadata_from_ref(&old_auth_ref);
+        let mut new_metadata = VaultBackedIdentitySigner::metadata_from_ref(&old_auth_ref);
         new_metadata.key_version += 1;
         let new_auth_ref = vault
             .seal(SealSecretRequest {
@@ -614,7 +614,7 @@ mod tests {
                 ),
             })
             .unwrap();
-        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+        let provider = VaultBackedIdentitySigner::new_vnext(
             identity_dir,
             vault,
             VNextVaultKeyMaterialRefs {
@@ -672,7 +672,7 @@ mod tests {
             &crate::internal::auth::state::auth_state_json_for_token("expired-access-token")
                 .unwrap(),
         );
-        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+        let provider = VaultBackedIdentitySigner::new_vnext(
             identity_dir,
             vault.clone(),
             VNextVaultKeyMaterialRefs {
@@ -751,7 +751,7 @@ mod tests {
             "did:example:alice#key-1",
             root_pem.as_bytes(),
         );
-        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+        let provider = VaultBackedIdentitySigner::new_vnext(
             identity_dir,
             vault,
             VNextVaultKeyMaterialRefs {
@@ -808,7 +808,7 @@ mod tests {
             "auth.json",
             &crate::internal::auth::state::auth_state_json_for_token("token-secret").unwrap(),
         );
-        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+        let provider = VaultBackedIdentitySigner::new_vnext(
             identity_dir,
             vault,
             VNextVaultKeyMaterialRefs {

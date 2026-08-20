@@ -193,7 +193,7 @@ async fn upgrade_inner(
                 .err()
         };
 
-        let provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider> =
+        let provider: Arc<dyn crate::internal::key_provider::IdentitySigner> =
             Arc::new(PendingDeviceProvider {
                 document: pending.generated.target_document.clone(),
                 signing_key_id: pending.generated.signing_key_id.clone(),
@@ -291,7 +291,7 @@ struct PendingDeviceProvider {
     e2ee_private_pem: String,
 }
 
-impl crate::internal::key_provider::KeyMaterialProvider for PendingDeviceProvider {
+impl crate::internal::key_provider::IdentitySigner for PendingDeviceProvider {
     fn did_document(&self) -> crate::ImResult<Value> {
         Ok(self.document.clone())
     }

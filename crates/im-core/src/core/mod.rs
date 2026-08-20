@@ -455,7 +455,7 @@ impl ImCore {
         let device_e2ee_key_id = material.device_e2ee_key_id.clone();
         let display_name = material.display_name.clone();
         let key_provider = std::sync::Arc::new(
-            crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new_with_auth_token_persistence(
+            crate::internal::key_provider::HostBackedDeviceIdentitySigner::new_with_auth_token_persistence(
                 &material,
                 auth_token_persistence,
             )?,
@@ -520,12 +520,11 @@ impl ImCore {
             .transpose()?;
         let key_provider = std::sync::Arc::new(match request_signing_key_id {
             Some(key_id) => {
-                crate::internal::key_provider::HostedKeyMaterialProvider::new_for_request_signing_key(
-                    &material,
-                    key_id,
+                crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
+                    &material, key_id,
                 )?
             }
-            None => crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
+            None => crate::internal::key_provider::HostedIdentitySigner::new(&material)?,
         });
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {

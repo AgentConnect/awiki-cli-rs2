@@ -71,7 +71,7 @@ impl ClientFixture {
                 e2ee_agreement_private_key_path: identity_dir.join("e2ee.key"),
                 auth_state_path: identity_dir.join("auth.json"),
                 key_provider: Arc::new(
-                    crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir),
+                    crate::internal::key_provider::FileBackedIdentitySigner::new(identity_dir),
                 ),
                 owner: LocalOwnerContext {
                     identity_id: crate::ids::IdentityId::parse(spec.owner_identity_id).unwrap(),

@@ -521,7 +521,7 @@ impl<'a> CoreHttpTransport<'a> {
 
     pub(crate) fn new_pending_device(
         client: &'a crate::core::ImClient,
-        provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider>,
+        provider: Arc<dyn crate::internal::key_provider::IdentitySigner>,
         expected: ExpectedDeviceAccessOwned,
     ) -> Self {
         Self {
@@ -547,7 +547,7 @@ impl<'a> CoreHttpTransport<'a> {
     /// is accepted; callers classify the returned token against the same pair.
     pub(crate) fn new_pending_device_transition(
         client: &'a crate::core::ImClient,
-        provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider>,
+        provider: Arc<dyn crate::internal::key_provider::IdentitySigner>,
         before: ExpectedDeviceAccessOwned,
         after: ExpectedDeviceAccessOwned,
     ) -> Self {
@@ -1218,7 +1218,7 @@ impl<'a> CoreHttpTransport<'a> {
 }
 
 fn persisted_bearer_selection(
-    provider: &dyn crate::internal::key_provider::KeyMaterialProvider,
+    provider: &dyn crate::internal::key_provider::IdentitySigner,
     requires_exact_device_bearer: bool,
 ) -> (Option<String>, Option<DeferredAuthStateError>) {
     match provider.valid_auth_token() {

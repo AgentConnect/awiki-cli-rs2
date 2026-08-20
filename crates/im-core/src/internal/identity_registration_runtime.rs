@@ -1082,30 +1082,29 @@ pub(crate) fn vnext_bootstrap_save_input(
     }
     let handle = crate::ids::Handle::parse(input.full_handle, "")?;
     crate::core::validate_handle_service_for_did(&generated.did_document, &generated.did, &handle)?;
-    let _validated_provider =
-        crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new(
-            &crate::identity::HostBackedDeviceIdentityMaterial {
-                identity_id: generated.unique_id.clone(),
-                did: generated.did.as_str().to_owned(),
-                handle: Some(input.full_handle.to_owned()),
-                display_name: Some(input.display_name.to_owned()),
-                account_id: input.user_id.to_owned(),
-                binding_generation: input.binding_generation.to_owned(),
-                did_document: generated.did_document.clone(),
-                protocol_device_id: generated.protocol_device_id.clone(),
-                device_signing_key_id: generated.device_signing_key_id.clone(),
-                device_signing_private_key_pem: generated.device_signing_private_pem.clone(),
-                device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
-                device_e2ee_private_key_pem: generated.device_e2ee_private_pem.clone(),
-                root_key_id: generated.root_key_id.clone(),
-                root_private_key_pem: generated.root_private_pem.clone(),
-                authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
-                role: crate::identity::IdentityDeviceRole::Admin,
-                management_ready: true,
-                auth_generation: "1".to_owned(),
-                access_token: input.access_token.to_owned(),
-            },
-        )?;
+    let _validated_provider = crate::internal::key_provider::HostBackedDeviceIdentitySigner::new(
+        &crate::identity::HostBackedDeviceIdentityMaterial {
+            identity_id: generated.unique_id.clone(),
+            did: generated.did.as_str().to_owned(),
+            handle: Some(input.full_handle.to_owned()),
+            display_name: Some(input.display_name.to_owned()),
+            account_id: input.user_id.to_owned(),
+            binding_generation: input.binding_generation.to_owned(),
+            did_document: generated.did_document.clone(),
+            protocol_device_id: generated.protocol_device_id.clone(),
+            device_signing_key_id: generated.device_signing_key_id.clone(),
+            device_signing_private_key_pem: generated.device_signing_private_pem.clone(),
+            device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+            device_e2ee_private_key_pem: generated.device_e2ee_private_pem.clone(),
+            root_key_id: generated.root_key_id.clone(),
+            root_private_key_pem: generated.root_private_pem.clone(),
+            authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
+            role: crate::identity::IdentityDeviceRole::Admin,
+            management_ready: true,
+            auth_generation: "1".to_owned(),
+            access_token: input.access_token.to_owned(),
+        },
+    )?;
     let device_state = crate::internal::identity_device_state::IdentityDeviceState {
         schema_version:
             crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,

@@ -2,14 +2,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 pub(crate) struct ProviderBackedDidAuth {
-    provider: Arc<dyn super::KeyMaterialProvider>,
+    provider: Arc<dyn super::IdentitySigner>,
     auth_mode: anp::authentication::AuthMode,
     tokens: HashMap<String, String>,
 }
 
 impl ProviderBackedDidAuth {
     pub(crate) fn new(
-        provider: Arc<dyn super::KeyMaterialProvider>,
+        provider: Arc<dyn super::IdentitySigner>,
         auth_mode: anp::authentication::AuthMode,
     ) -> Self {
         Self {
@@ -344,7 +344,7 @@ fn normalize_covered_components(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::FileBackedKeyMaterialProvider;
+    use crate::internal::key_provider::FileBackedIdentitySigner;
 
     #[test]
     fn provider_did_auth_generates_http_signature_headers() {
@@ -367,7 +367,7 @@ mod tests {
         )
         .unwrap();
 
-        let provider = Arc::new(FileBackedKeyMaterialProvider::new(identity_dir));
+        let provider = Arc::new(FileBackedIdentitySigner::new(identity_dir));
         let mut auth =
             ProviderBackedDidAuth::new(provider, anp::authentication::AuthMode::HttpSignatures);
         let headers = auth
@@ -399,7 +399,7 @@ mod tests {
         )
         .unwrap();
 
-        let provider = Arc::new(FileBackedKeyMaterialProvider::new(identity_dir));
+        let provider = Arc::new(FileBackedIdentitySigner::new(identity_dir));
         let mut auth =
             ProviderBackedDidAuth::new(provider, anp::authentication::AuthMode::HttpSignatures);
         let request_headers =
@@ -429,7 +429,7 @@ mod tests {
         let identity_dir = root.path().join("identity");
         std::fs::create_dir_all(&identity_dir).unwrap();
 
-        let provider = Arc::new(FileBackedKeyMaterialProvider::new(identity_dir));
+        let provider = Arc::new(FileBackedIdentitySigner::new(identity_dir));
         let mut auth =
             ProviderBackedDidAuth::new(provider, anp::authentication::AuthMode::HttpSignatures);
         auth.update_token(
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn provider_did_auth_accepts_authorization_bearer_and_scopes_cache_to_origin() {
         let root = tempfile::tempdir().unwrap();
-        let provider = Arc::new(FileBackedKeyMaterialProvider::new(
+        let provider = Arc::new(FileBackedIdentitySigner::new(
             root.path().join("missing-identity"),
         ));
         let mut auth =
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn provider_did_auth_rejects_conflicting_response_token_headers() {
         let root = tempfile::tempdir().unwrap();
-        let provider = Arc::new(FileBackedKeyMaterialProvider::new(
+        let provider = Arc::new(FileBackedIdentitySigner::new(
             root.path().join("missing-identity"),
         ));
         let mut auth =

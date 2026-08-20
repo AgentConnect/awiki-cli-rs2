@@ -1058,9 +1058,8 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["identity_vault_metadata".to_string()],
             });
         }
-        let provider =
-            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir);
-        crate::internal::key_provider::KeyMaterialProvider::did_document_root_private_pem(&provider)
+        let provider = crate::internal::key_provider::FileBackedIdentitySigner::new(identity_dir);
+        crate::internal::key_provider::IdentitySigner::did_document_root_private_pem(&provider)
             .map_err(|err| match err {
                 crate::ImError::CredentialFileUnreadable { .. } => {
                     crate::ImError::IdentityNotReady {
@@ -1410,7 +1409,7 @@ impl IdentityRegistry<'_> {
         identity_dir: PathBuf,
         entry: Option<&RegistryEntry>,
         summary: &super::IdentitySummary,
-    ) -> crate::ImResult<Arc<dyn crate::internal::key_provider::KeyMaterialProvider>> {
+    ) -> crate::ImResult<Arc<dyn crate::internal::key_provider::IdentitySigner>> {
         let policy = self.core.inner().identity_secret_storage_policy();
         let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
         let is_vnext = entry
@@ -1448,7 +1447,7 @@ impl IdentityRegistry<'_> {
                 }
             })?;
             return Ok(Arc::new(
-                crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
+                crate::internal::key_provider::vault::VaultBackedIdentitySigner::new_vnext(
                     identity_dir,
                     context.vault(),
                     refs,
@@ -1466,7 +1465,7 @@ impl IdentityRegistry<'_> {
                 if let Some(context) = self.core.inner().identity_vault() {
                     if vault_context_matches_metadata(context, metadata) {
                         return Ok(Arc::new(
-                            crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new(
+                            crate::internal::key_provider::vault::VaultBackedIdentitySigner::new(
                                 identity_dir,
                                 context.vault(),
                                 metadata.legacy_key_material_refs(),
@@ -1511,7 +1510,7 @@ impl IdentityRegistry<'_> {
             });
         }
         Ok(Arc::new(
-            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir),
+            crate::internal::key_provider::FileBackedIdentitySigner::new(identity_dir),
         ))
     }
 
@@ -1617,13 +1616,12 @@ impl IdentityRegistry<'_> {
             Ok(path) => path,
             Err(_) => return (false, Some("identity_directory_invalid".to_owned())),
         };
-        let provider =
-            crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
-                identity_dir,
-                context.vault(),
-                refs,
-            );
-        use crate::internal::key_provider::KeyMaterialProvider;
+        let provider = crate::internal::key_provider::vault::VaultBackedIdentitySigner::new_vnext(
+            identity_dir,
+            context.vault(),
+            refs,
+        );
+        use crate::internal::key_provider::IdentitySigner;
         if provider.device_request_signing_private_pem().is_err()
             || provider.e2ee_agreement_private_pem().is_err()
             || provider.auth_state().is_err()

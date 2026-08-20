@@ -4,8 +4,8 @@ mod hosted;
 pub(crate) mod vault;
 
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
-pub(crate) use self::file::FileBackedKeyMaterialProvider;
-pub(crate) use self::hosted::{HostBackedDeviceKeyMaterialProvider, HostedKeyMaterialProvider};
+pub(crate) use self::file::FileBackedIdentitySigner;
+pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
 #[derive(Clone)]
@@ -54,7 +54,7 @@ impl std::fmt::Debug for LegacyKey1RoleAdapter {
     }
 }
 
-pub(crate) trait KeyMaterialProvider: Send + Sync {
+pub(crate) trait IdentitySigner: Send + Sync {
     fn did_document(&self) -> crate::ImResult<serde_json::Value>;
 
     fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>>;

@@ -3028,7 +3028,7 @@ pub(crate) fn set_private_file_mode(_path: &Path) -> crate::ImResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::KeyMaterialProvider;
+    use crate::internal::key_provider::IdentitySigner;
     use crate::internal::platform_secret::DeviceVaultRootKey;
     use crate::internal::secret_vault::record::SecretRef;
     use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore, SecretVault};
@@ -3381,7 +3381,7 @@ mod tests {
         );
         assert!(identity_dir.join(AUTH_FILE_NAME).exists());
 
-        let provider = crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new(
+        let provider = crate::internal::key_provider::vault::VaultBackedIdentitySigner::new(
             identity_dir,
             vault,
             result.metadata.legacy_key_material_refs(),
@@ -3715,7 +3715,7 @@ mod tests {
             IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
             IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
         };
-        use crate::internal::key_provider::KeyMaterialProvider;
+        use crate::internal::key_provider::IdentitySigner;
 
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
@@ -3789,12 +3789,11 @@ mod tests {
             .and_then(IdentityVaultMigrationMetadata::vnext_key_material_refs)
             .expect("vNext refs");
         assert!(refs.did_document_root_private.is_none());
-        let provider =
-            crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
-                paths.identity_root_dir.join("alice-member-vnext"),
-                vault,
-                refs,
-            );
+        let provider = crate::internal::key_provider::vault::VaultBackedIdentitySigner::new_vnext(
+            paths.identity_root_dir.join("alice-member-vnext"),
+            vault,
+            refs,
+        );
         assert_eq!(
             provider.device_request_signing_private_pem().unwrap(),
             "member-device-signing-private"

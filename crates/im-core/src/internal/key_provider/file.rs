@@ -8,11 +8,11 @@ const LEGACY_KEY1_PRIVATE_FILES: &[&str] = &["private.key", "key-1-private.pem"]
 const E2EE_AGREEMENT_PRIVATE_FILES: &[&str] = &["e2ee-agreement-private.pem", "key-3-private.pem"];
 const AUTH_STATE_FILE: &str = "auth.json";
 
-pub(crate) struct FileBackedKeyMaterialProvider {
+pub(crate) struct FileBackedIdentitySigner {
     identity_dir: PathBuf,
 }
 
-impl FileBackedKeyMaterialProvider {
+impl FileBackedIdentitySigner {
     pub(crate) fn new(identity_dir: PathBuf) -> Self {
         Self { identity_dir }
     }
@@ -34,16 +34,16 @@ impl FileBackedKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for FileBackedKeyMaterialProvider {
+impl fmt::Debug for FileBackedIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileBackedKeyMaterialProvider")
+        f.debug_struct("FileBackedIdentitySigner")
             .field("identity_dir", &self.identity_dir)
             .field("backend", &"file-backed")
             .finish_non_exhaustive()
     }
 }
 
-impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
+impl super::IdentitySigner for FileBackedIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         read_json_file(&self.did_document_path(), "did_document")
     }
@@ -117,7 +117,7 @@ pub(crate) fn request_signing_key_id(document: &Value) -> crate::ImResult<String
     Ok(key_id.to_owned())
 }
 
-impl FileBackedKeyMaterialProvider {
+impl FileBackedIdentitySigner {
     fn legacy_key1_role_adapter(&self) -> crate::ImResult<super::LegacyKey1RoleAdapter> {
         read_non_empty_text_file(
             &self.legacy_key1_private_key_path(),
@@ -181,7 +181,7 @@ fn read_non_empty_text_file(path: &Path, path_kind: &str) -> crate::ImResult<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::KeyMaterialProvider;
+    use crate::internal::key_provider::IdentitySigner;
     use serde_json::json;
 
     const TEST_SIGNING_PEM: &str =
@@ -211,7 +211,7 @@ mod tests {
         )
         .unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
 
         assert_eq!(
             provider
@@ -258,7 +258,7 @@ mod tests {
         std::fs::write(identity_dir.join("key-1-private.pem"), "current-signing").unwrap();
         std::fs::write(identity_dir.join("key-3-private.pem"), "legacy-agreement").unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
 
         assert_eq!(
             provider
@@ -288,7 +288,7 @@ mod tests {
         let identity_dir = root.path().join("identity");
         std::fs::create_dir_all(&identity_dir).unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
 
         assert_eq!(provider.optional_did_document().unwrap(), None);
     }
@@ -299,7 +299,7 @@ mod tests {
         let identity_dir = root.path().join("identity");
         std::fs::create_dir_all(&identity_dir).unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
         provider.persist_auth_token("token-secret-value").unwrap();
 
         assert_eq!(
@@ -318,7 +318,7 @@ mod tests {
         std::fs::create_dir_all(&identity_dir).unwrap();
         std::fs::write(identity_dir.join("private.key"), "   \n").unwrap();
 
-        let err = FileBackedKeyMaterialProvider::new(identity_dir)
+        let err = FileBackedIdentitySigner::new(identity_dir)
             .device_request_signing_private_pem()
             .unwrap_err()
             .to_string();
