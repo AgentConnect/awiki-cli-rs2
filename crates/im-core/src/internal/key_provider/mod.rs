@@ -135,6 +135,33 @@ pub(crate) trait IdentitySigner: Send + Sync {
         Ok(shared)
     }
 
+    fn ensure_request_signing_available(&self) -> crate::ImResult<()> {
+        let kid = self.request_signing_key_id()?;
+        self.sign(&kid, b"awiki:identity-signer:availability:v1")
+            .map(|_| ())
+    }
+
+    fn ensure_agreement_available(&self) -> crate::ImResult<()> {
+        let kid = self.agreement_key_id()?;
+        self.ecdh(&kid, &x25519_dalek::X25519_BASEPOINT_BYTES)
+            .map(|_| ())
+    }
+
+    fn ensure_root_control_available(&self) -> crate::ImResult<()> {
+        let private = private_key_from_pem(
+            &self.did_document_root_private_pem()?,
+            "DID document root control",
+        )?;
+        if matches!(
+            private,
+            anp::PrivateKeyMaterial::Ed25519(_) | anp::PrivateKeyMaterial::Secp256k1(_)
+        ) {
+            Ok(())
+        } else {
+            Err(crate::ImError::PermissionDenied)
+        }
+    }
+
     fn sign_object_proof(
         &self,
         kid: &str,

@@ -1550,13 +1550,13 @@ impl IdentityRegistry<'_> {
             refs,
         );
         use crate::internal::key_provider::IdentitySigner;
-        if provider.device_request_signing_private_pem().is_err()
-            || provider.e2ee_agreement_private_pem().is_err()
+        if provider.ensure_request_signing_available().is_err()
+            || provider.ensure_agreement_available().is_err()
             || provider.auth_state().is_err()
         {
             return (false, Some("device_key_material_unavailable".to_owned()));
         }
-        (provider.did_document_root_private_pem().is_ok(), None)
+        (provider.ensure_root_control_available().is_ok(), None)
     }
 
     fn verify_identity_vault_status(
@@ -1575,8 +1575,8 @@ impl IdentityRegistry<'_> {
             let runtime =
                 self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
             let _ = runtime.key_provider.optional_did_document()?;
-            let _ = runtime.key_provider.device_request_signing_private_pem()?;
-            let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
+            runtime.key_provider.ensure_request_signing_available()?;
+            runtime.key_provider.ensure_agreement_available()?;
             let _ = runtime.key_provider.auth_state()?;
             Ok(())
         };
