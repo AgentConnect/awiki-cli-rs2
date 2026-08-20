@@ -323,7 +323,9 @@ fn internal_signing_identity(
         identity_name: identity.identity_name.clone(),
         did: identity.did.clone(),
         did_document: identity.did_document.clone(),
-        key1_private_pem: identity.key1_private_pem.clone(),
+        signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+            identity.key1_private_pem.clone(),
+        ),
         verification_method: None,
     }
 }

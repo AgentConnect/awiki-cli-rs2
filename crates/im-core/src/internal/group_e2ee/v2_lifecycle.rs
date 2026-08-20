@@ -77,7 +77,9 @@ pub(crate) fn production_context(
     let proof_identity = OriginProofIdentity {
         identity_name: client.current_identity().id.as_str().to_owned(),
         did_document: Some(did_document.clone()),
-        key1_private_pem: signing_private_pem,
+        signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+            signing_private_pem,
+        ),
         verification_method: Some(device.signing_key_id.clone()),
     };
     let runtime = super::v2_runtime::runtime_for_client(client)?;

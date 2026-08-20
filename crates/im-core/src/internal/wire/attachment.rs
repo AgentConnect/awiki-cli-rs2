@@ -41,7 +41,7 @@ pub(crate) struct AttachmentSigningIdentity {
     pub identity_name: String,
     pub did: String,
     pub did_document: Option<Value>,
-    pub key1_private_pem: String,
+    pub signer: crate::internal::proof::origin::OriginProofSigner,
     pub verification_method: Option<String>,
 }
 
@@ -424,7 +424,7 @@ fn build_signed_attachment_send_rpc_params(
         &crate::internal::proof::origin::OriginProofIdentity {
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
-            key1_private_pem: identity.key1_private_pem.clone(),
+            signer: identity.signer.clone(),
             verification_method: identity.verification_method.clone(),
         },
         &payload,

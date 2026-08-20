@@ -410,10 +410,9 @@ pub(super) fn send_group(
     let proof_identity = crate::internal::proof::origin::OriginProofIdentity {
         identity_name: client.current_identity().id.as_str().to_owned(),
         did_document: Some(did_document.clone()),
-        key1_private_pem: client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
+        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+            &client.runtime().key_provider,
+        )),
         verification_method: Some(device.signing_key_id),
     };
     let connection = crate::internal::local_state::open_writable(

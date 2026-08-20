@@ -3330,20 +3330,19 @@ fn sign_group_key_package_binding(
         .ok_or_else(|| crate::ImError::Serialization {
             detail: "identity is missing an assertion verification method".to_owned(),
         })?;
-    let private_key =
-        crate::internal::proof::origin::load_private_key_material(&credentials.key1_private_pem)?;
-    anp::proof::generate_did_wba_binding(
-        owner_did,
+    let binding = serde_json::json!({
+        "agent_did": owner_did,
+        "verification_method": verification_method,
+        "leaf_signature_key_b64u": leaf_signature_key_b64u,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+    });
+    credentials.signer.sign_object_proof(
+        &binding,
         &verification_method,
-        leaf_signature_key_b64u,
-        &private_key,
-        issued_at,
-        expires_at,
+        owner_did,
         Some(issued_at.to_owned()),
     )
-    .map_err(|err| crate::ImError::Serialization {
-        detail: format!("generate group KeyPackage DID WBA binding proof: {err}"),
-    })
 }
 
 #[cfg(feature = "group-e2ee")]

@@ -469,7 +469,7 @@ fn build_signed_group_e2ee_params(
         &crate::internal::proof::origin::OriginProofIdentity {
             identity_name: credentials.identity_name.clone(),
             did_document: credentials.did_document.clone(),
-            key1_private_pem: credentials.key1_private_pem.clone(),
+            signer: credentials.signer.clone(),
             verification_method: credentials.verification_method.clone(),
         },
         &payload,
@@ -1184,7 +1184,9 @@ mod tests {
         crate::internal::message_runtime::group::GroupTextCredentials {
             identity_name: "alice".to_owned(),
             did_document: Some(bundle.did_document),
-            key1_private_pem,
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                key1_private_pem,
+            ),
             verification_method: None,
         }
     }

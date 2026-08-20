@@ -1417,7 +1417,9 @@ fn attach_inbox_origin_proof(
         &crate::internal::proof::origin::OriginProofIdentity {
             identity_name: format!("delegated-inbox:{}", context.inbox_auth_verification_method),
             did_document: Some(context.did_document.clone()),
-            key1_private_pem: context.private_key_pem.clone(),
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                context.private_key_pem.clone(),
+            ),
             verification_method: Some(context.inbox_auth_verification_method.clone()),
         },
         &payload,
@@ -4879,7 +4881,7 @@ pub(crate) async fn project_p6_v2_incoming_message(
         crate::internal::proof::origin::OriginProofIdentity {
             identity_name: client.current_identity().id.as_str().to_owned(),
             did_document: None,
-            key1_private_pem: String::new(),
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(String::new()),
             verification_method: None,
         },
     );

@@ -118,7 +118,9 @@ where
             crate::internal::message_runtime::direct::DirectTextCredentials {
                 identity_name: request.credentials.identity_name,
                 did_document: request.credentials.did_document,
-                key1_private_pem: request.credentials.key1_private_pem,
+                signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                    request.credentials.key1_private_pem,
+                ),
                 verification_method: None,
                 logical_sender_did: None,
             },
@@ -210,7 +212,9 @@ where
             crate::internal::message_runtime::group::GroupTextCredentials {
                 identity_name: request.credentials.identity_name,
                 did_document: request.credentials.did_document,
-                key1_private_pem: request.credentials.key1_private_pem,
+                signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                    request.credentials.key1_private_pem,
+                ),
                 verification_method: None,
             },
         ),
