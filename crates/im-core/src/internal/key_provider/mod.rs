@@ -315,3 +315,51 @@ fn map_crypto_error(error: impl std::fmt::Display) -> crate::ImError {
         detail: format!("identity signing operation failed: {error}"),
     }
 }
+
+#[cfg(test)]
+impl IdentitySigner for anp::PrivateKeyMaterial {
+    fn did_document(&self) -> crate::ImResult<serde_json::Value> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
+    fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>> {
+        Ok(None)
+    }
+
+    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self.to_pem())
+    }
+
+    fn device_request_signing_material(&self) -> crate::ImResult<DeviceRequestSigningMaterial> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
+    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self.to_pem())
+    }
+
+    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self.to_pem())
+    }
+
+    fn public_key(&self, _kid: &str) -> crate::ImResult<anp::PublicKeyMaterial> {
+        Ok(anp::PrivateKeyMaterial::public_key(self))
+    }
+
+    fn sign(&self, _kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        self.sign_message(message)
+            .map_err(|_| crate::ImError::PermissionDenied)
+    }
+
+    fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+        Ok(crate::internal::auth::state::AuthStateSnapshot::default())
+    }
+
+    fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+        Ok(None)
+    }
+
+    fn persist_auth_token(&self, _token: &str) -> crate::ImResult<()> {
+        Err(crate::ImError::PermissionDenied)
+    }
+}

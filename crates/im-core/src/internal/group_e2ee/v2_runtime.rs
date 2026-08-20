@@ -9,15 +9,15 @@
 use anp::group_e2ee::operations::v2::{
     self, V2AcceptKeyPackagePublishInput, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput,
     V2DecryptOutput, V2FinalizeInput, V2FinalizeOutput, V2GenerateKeyPackageInput,
-    V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput,
-    V2MarkTerminalIntentInput, V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate,
-    V2PreparedKeyPackagePublish, V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput,
-    V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
+    V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2KeyPackagePublishPreparation,
+    V2ListLocalGroupMemberEndpointsOutput, V2MarkTerminalIntentInput,
+    V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate, V2PreparedKeyPackagePublish,
+    V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput,
+    V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
     V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
 use anp::group_e2ee::{V2GroupCipherObject, V2GroupKeyPackage};
-use anp::PrivateKeyMaterial;
 use serde_json::Value;
 
 use super::provider::map_group_mls_error;
@@ -44,25 +44,42 @@ impl GroupE2eeV2Runtime {
         &self,
         input: V2GenerateKeyPackageInput,
         did_document: &Value,
-        device_signing_private_key: &PrivateKeyMaterial,
+        identity_signer: &dyn crate::internal::key_provider::IdentitySigner,
     ) -> crate::ImResult<V2GroupKeyPackage> {
-        v2::generate_key_package_v2(&self.store, input, did_document, device_signing_private_key)
-            .map_err(map_group_mls_error)
+        let key_id = input.verification_method.clone();
+        let prepared = v2::prepare_key_package_v2(
+            &self.store,
+            input,
+            did_document,
+            &identity_signer.public_key(&key_id)?,
+        )
+        .map_err(map_group_mls_error)?;
+        let signature = identity_signer.sign(&key_id, prepared.signing_input())?;
+        v2::complete_key_package_v2(&self.store, prepared, &signature).map_err(map_group_mls_error)
     }
 
     pub(crate) fn prepare_or_resume_key_package_publish(
         &self,
         input: V2PrepareKeyPackagePublishInput,
         did_document: &Value,
-        device_signing_private_key: &PrivateKeyMaterial,
+        identity_signer: &dyn crate::internal::key_provider::IdentitySigner,
     ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
-        v2::prepare_or_resume_key_package_publish_v2(
+        let key_id = input.verification_method.clone();
+        match v2::prepare_or_resume_key_package_publish_signing_v2(
             &self.store,
             input,
             did_document,
-            device_signing_private_key,
+            &identity_signer.public_key(&key_id)?,
         )
-        .map_err(map_group_mls_error)
+        .map_err(map_group_mls_error)?
+        {
+            V2KeyPackagePublishPreparation::Ready(prepared) => Ok(prepared),
+            V2KeyPackagePublishPreparation::Signing(prepared) => {
+                let signature = identity_signer.sign(&key_id, prepared.signing_input())?;
+                v2::complete_key_package_publish_signing_v2(&self.store, prepared, &signature)
+                    .map_err(map_group_mls_error)
+            }
+        }
     }
 
     pub(crate) fn accept_key_package_publish(
@@ -215,6 +232,7 @@ pub(crate) fn runtime_for_client(
 mod tests {
     use anp::authentication::{create_did_wba_document, DidDocumentOptions};
     use anp::group_e2ee::storage::GroupMlsOwnerScope;
+    use anp::PrivateKeyMaterial;
     use serde_json::json;
 
     use super::*;

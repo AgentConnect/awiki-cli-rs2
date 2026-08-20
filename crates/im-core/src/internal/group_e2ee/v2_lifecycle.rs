@@ -6,6 +6,7 @@
 //! persisted projection scopes the P6 cryptographic runtime after a restart.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use anp::authentication::{DeviceManifest, PROFILE_GROUP_E2EE_V2};
 use anp::group_e2ee::operations::v2::{
@@ -18,7 +19,6 @@ use anp::group_e2ee::{
     V2GroupStateRef, V2ServiceMetadata, V2Target, GROUP_E2EE_MTI_SUITE_V2, GROUP_E2EE_PROFILE_V2,
     GROUP_E2EE_SECURITY_PROFILE_V2, GROUP_E2EE_TRANSPORT_PROFILE_V2,
 };
-use anp::PrivateKeyMaterial;
 use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
@@ -49,7 +49,7 @@ pub(crate) struct ProductionV2Context<'a> {
     pub(crate) product: ProductionV2Product<'a>,
     pub(crate) device: CurrentV2Device,
     pub(crate) did_document: Value,
-    device_signing_private_key: PrivateKeyMaterial,
+    identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
 }
 
 /// Builds the sole production P6 v2 product context for the current device.
@@ -68,18 +68,12 @@ pub(crate) fn production_context(
     let did_document = resolve_member_document_fresh(client, client.did().as_str())?;
     validate_current_device_document(client.did().as_str(), &device, &did_document)?;
 
-    let signing_private_pem = client
-        .runtime()
-        .key_provider
-        .device_request_signing_private_pem()?;
-    let device_signing_private_key = PrivateKeyMaterial::from_pem(&signing_private_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
     let proof_identity = OriginProofIdentity {
         identity_name: client.current_identity().id.as_str().to_owned(),
         did_document: Some(did_document.clone()),
-        signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
-            signing_private_pem,
-        ),
+        signer: crate::internal::proof::origin::OriginProofSigner::Identity(Arc::clone(
+            &client.runtime().key_provider,
+        )),
         verification_method: Some(device.signing_key_id.clone()),
     };
     let runtime = super::v2_runtime::runtime_for_client(client)?;
@@ -100,7 +94,7 @@ pub(crate) fn production_context(
         product: GroupE2eeV2Product::new(runtime, host),
         device,
         did_document,
-        device_signing_private_key,
+        identity_signer: Arc::clone(&client.runtime().key_provider),
     })
 }
 
@@ -148,7 +142,7 @@ pub(crate) fn publish_current_key_package(
             request_id: format!("{operation_id}-local"),
         },
         &context.did_document,
-        &context.device_signing_private_key,
+        context.identity_signer.as_ref(),
     )?;
     let accepted = context.product.publish_current_key_package(&prepared)?;
     let raw_response =
@@ -208,7 +202,7 @@ pub(crate) async fn publish_stable_key_package(
             request_id: format!("{base_operation_id}-local"),
         },
         &context.did_document,
-        &context.device_signing_private_key,
+        context.identity_signer.as_ref(),
     )?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     context
@@ -258,7 +252,7 @@ pub(crate) fn initialize_created_group(
             request_id: format!("{publish_operation}-local"),
         },
         &context.did_document,
-        &context.device_signing_private_key,
+        context.identity_signer.as_ref(),
     )?;
     context
         .product

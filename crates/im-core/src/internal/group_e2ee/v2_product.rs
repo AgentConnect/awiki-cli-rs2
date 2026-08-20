@@ -26,7 +26,6 @@ use anp::group_e2ee::{
     METHOD_GROUP_CREATE_V2, METHOD_GROUP_REMOVE_V2, METHOD_GROUP_SEND_V2,
 };
 use anp::proof::{ImProofError, Rfc9421OriginProofError, Rfc9421OriginProofVerificationOptions};
-use anp::PrivateKeyMaterial;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -328,7 +327,7 @@ where
         meta: V2ServiceMetadata,
         input: V2GenerateKeyPackageInput,
         did_document: &Value,
-        device_signing_private_key: &PrivateKeyMaterial,
+        identity_signer: &dyn crate::internal::key_provider::IdentitySigner,
     ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
         self.ensure_current_device(&input.owner_did, &input.owner_device_id)?;
         self.ensure_current_device(&meta.sender_did, &meta.sender_device_id)?;
@@ -346,7 +345,7 @@ where
                 request_id: input.request_id,
             },
             did_document,
-            device_signing_private_key,
+            identity_signer,
         )?;
         publish_key_package_request_v2(prepared.meta.clone(), prepared.body.clone())
             .map_err(map_v2_wire_error)?;

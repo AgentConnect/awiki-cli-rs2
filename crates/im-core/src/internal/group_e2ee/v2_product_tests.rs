@@ -25,6 +25,7 @@ use anp::proof::{
 use serde_json::{json, Value};
 
 use super::*;
+use anp::PrivateKeyMaterial;
 
 const NOW: &str = "2026-07-20T00:00:00Z";
 const ISSUED_AT: &str = "2026-07-19T00:00:00Z";
