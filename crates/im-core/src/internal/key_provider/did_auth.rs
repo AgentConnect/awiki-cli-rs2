@@ -37,36 +37,31 @@ impl ProviderBackedDidAuth {
             }
         }
 
-        let did_document = self.provider.did_document()?;
-        let (key_id, private_key) = self.device_request_signing_material()?;
+        let key_id = self.provider.request_signing_key_id()?;
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
-                anp::authentication::generate_http_signature_headers(
-                    &did_document,
-                    server_url,
-                    method,
-                    &private_key,
-                    headers,
-                    body,
-                    anp::authentication::HttpSignatureOptions {
-                        keyid: Some(key_id),
-                        ..anp::authentication::HttpSignatureOptions::default()
-                    },
-                )
-                .map_err(|err| crate::ImError::TransportUnavailable {
-                    detail: format!("DID-WBA HTTP signature generation failed: {err}"),
-                })
+                self.provider
+                    .http_signature_headers(
+                        &key_id,
+                        server_url,
+                        method,
+                        headers,
+                        body,
+                        anp::authentication::HttpSignatureOptions {
+                            ..anp::authentication::HttpSignatureOptions::default()
+                        },
+                    )
+                    .map_err(|err| crate::ImError::TransportUnavailable {
+                        detail: format!("DID-WBA HTTP signature generation failed: {err}"),
+                    })
             }
             anp::authentication::AuthMode::LegacyDidWba => {
-                let value = anp::authentication::generate_auth_header(
-                    &did_document,
-                    &extract_domain(server_url),
-                    &private_key,
-                    "1.1",
-                )
-                .map_err(|err| crate::ImError::TransportUnavailable {
-                    detail: format!("DID-WBA legacy auth generation failed: {err}"),
-                })?;
+                let value = self
+                    .provider
+                    .legacy_did_wba_header(&key_id, &extract_domain(server_url), "1.1")
+                    .map_err(|err| crate::ImError::TransportUnavailable {
+                        detail: format!("DID-WBA legacy auth generation failed: {err}"),
+                    })?;
                 Ok(BTreeMap::from([("Authorization".to_string(), value)]))
             }
         }
@@ -159,54 +154,36 @@ impl ProviderBackedDidAuth {
         );
         let nonce = challenge.get("nonce").cloned();
 
-        let did_document = self.provider.did_document()?;
-        let (key_id, private_key) = self.device_request_signing_material()?;
+        let key_id = self.provider.request_signing_key_id()?;
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
-                anp::authentication::generate_http_signature_headers(
-                    &did_document,
-                    server_url,
-                    method,
-                    &private_key,
-                    headers,
-                    body,
-                    anp::authentication::HttpSignatureOptions {
-                        nonce,
-                        covered_components,
-                        keyid: Some(key_id),
-                        ..anp::authentication::HttpSignatureOptions::default()
-                    },
-                )
-                .map_err(|err| crate::ImError::TransportUnavailable {
-                    detail: format!("DID-WBA challenge signature generation failed: {err}"),
-                })
+                self.provider
+                    .http_signature_headers(
+                        &key_id,
+                        server_url,
+                        method,
+                        headers,
+                        body,
+                        anp::authentication::HttpSignatureOptions {
+                            nonce,
+                            covered_components,
+                            ..anp::authentication::HttpSignatureOptions::default()
+                        },
+                    )
+                    .map_err(|err| crate::ImError::TransportUnavailable {
+                        detail: format!("DID-WBA challenge signature generation failed: {err}"),
+                    })
             }
             anp::authentication::AuthMode::LegacyDidWba => {
-                let value = anp::authentication::generate_auth_header(
-                    &did_document,
-                    &extract_domain(server_url),
-                    &private_key,
-                    "1.1",
-                )
-                .map_err(|err| crate::ImError::TransportUnavailable {
-                    detail: format!("DID-WBA challenge legacy auth generation failed: {err}"),
-                })?;
+                let value = self
+                    .provider
+                    .legacy_did_wba_header(&key_id, &extract_domain(server_url), "1.1")
+                    .map_err(|err| crate::ImError::TransportUnavailable {
+                        detail: format!("DID-WBA challenge legacy auth generation failed: {err}"),
+                    })?;
                 Ok(BTreeMap::from([("Authorization".to_string(), value)]))
             }
         }
-    }
-
-    fn device_request_signing_material(
-        &self,
-    ) -> crate::ImResult<(String, anp::PrivateKeyMaterial)> {
-        let material = self.provider.device_request_signing_material()?;
-        let private_key =
-            anp::PrivateKeyMaterial::from_pem(&material.private_key_pem).map_err(|err| {
-                crate::ImError::TransportUnavailable {
-                    detail: format!("DID-WBA private key material is invalid: {err}"),
-                }
-            })?;
-        Ok((material.key_id, private_key))
     }
 }
 

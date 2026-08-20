@@ -526,8 +526,72 @@ mod tests {
         )
         .unwrap();
         let signing = provider.device_request_signing_material().unwrap();
+        let message = b"identity signer operation boundary";
+        let signature = provider
+            .sign(&generated.device_signing_key_id, message)
+            .unwrap();
 
         assert_eq!(signing.key_id, generated.device_signing_key_id);
+        provider
+            .public_key(&generated.device_signing_key_id)
+            .unwrap()
+            .verify_message(message, &signature)
+            .unwrap();
+        assert_eq!(
+            provider.sign("did:example:foreign#key", message),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn hosted_identity_signer_ecdh_is_kid_scoped() {
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "hosted-ecdh",
+                None,
+                None,
+            )
+            .unwrap();
+        let agreement_key_id = generated.device_e2ee_key_id.clone();
+        let material = crate::identity::HostedIdentityMaterial {
+            identity_id: generated.unique_id,
+            did: generated.did.as_str().to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: generated.did_document,
+            default_signing_private_key_pem: generated.device_signing_private_pem,
+            e2ee_agreement_private_key_pem: Some(generated.device_e2ee_private_pem.clone()),
+            auth_token: None,
+        };
+        let provider = HostedIdentitySigner::new_for_request_signing_key(
+            &material,
+            &generated.device_signing_key_id,
+        )
+        .unwrap();
+        let peer_private = x25519_dalek::StaticSecret::from([29_u8; 32]);
+        let peer_public = x25519_dalek::PublicKey::from(&peer_private).to_bytes();
+        let local_private = match anp::PrivateKeyMaterial::from_pem(
+            material.e2ee_agreement_private_key_pem.as_deref().unwrap(),
+        )
+        .unwrap()
+        {
+            anp::PrivateKeyMaterial::X25519(private) => private,
+            _ => panic!("test requires X25519 agreement key"),
+        };
+
+        let shared = provider.ecdh(&agreement_key_id, &peer_public).unwrap();
+
+        assert_eq!(
+            shared.as_ref(),
+            &local_private
+                .diffie_hellman(&x25519_dalek::PublicKey::from(peer_public))
+                .to_bytes()
+        );
+        assert_eq!(
+            provider.ecdh("did:example:foreign#agreement", &peer_public),
+            Err(crate::ImError::PermissionDenied)
+        );
     }
 
     #[test]
