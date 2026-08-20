@@ -539,18 +539,8 @@ pub(crate) fn prepare_admin_challenge(
         &ciphertext,
         &challenge_expires_at,
     );
-    let signing_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    );
-    let signing_private = private_key_from_pem(
-        signing_pem.as_bytes(),
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
     let proof = sign_object_proof(
-        &signing_private,
+        client.runtime().key_provider.as_ref(),
         &admin_signing_key_id,
         &params,
         &created_at,
@@ -973,16 +963,10 @@ pub(crate) fn prepare_admin_approval(
             format!("cannot add Join device to DID Document: {error}"),
         )
     })?;
-    let root_private_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .did_document_root_private_pem()?,
-    );
-    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+    crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
         &mut new_document,
         &crate::ids::Did::parse(&stored.join_request.did)?,
-        &root_private_pem,
+        client.runtime().key_provider.as_ref(),
     )?;
     validate_authorized_document(&stored.join_request, &new_document)?;
     let response = stored
@@ -1008,18 +992,8 @@ pub(crate) fn prepare_admin_approval(
         "pairing_confirmation": pairing_confirmation,
         "authorizing_device_id": admin_device_id,
     });
-    let signing_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    );
-    let signing_private = private_key_from_pem(
-        signing_pem.as_bytes(),
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
     let proof = sign_object_proof(
-        &signing_private,
+        client.runtime().key_provider.as_ref(),
         &admin_signing_key_id,
         &params,
         &created_at,
@@ -1066,18 +1040,8 @@ pub(crate) fn prepare_admin_rejection(
         "rejecting_device_id": rejecting_device_id,
         "reason": reason.as_str(),
     });
-    let signing_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    );
-    let signing_private = private_key_from_pem(
-        signing_pem.as_bytes(),
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
     let proof = sign_object_proof(
-        &signing_private,
+        client.runtime().key_provider.as_ref(),
         &signing_key_id,
         &params,
         &format_time(OffsetDateTime::now_utc())?,
@@ -2640,7 +2604,7 @@ fn response_params_value(
 }
 
 fn sign_object_proof(
-    private_key: &anp::PrivateKeyMaterial,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
     key_id: &str,
     params: &Value,
     created_at: &str,
@@ -2649,14 +2613,8 @@ fn sign_object_proof(
         .split_once('#')
         .map(|(did, _)| did)
         .ok_or(crate::ImError::PermissionDenied)?;
-    let signed = anp::proof::generate_object_proof(
-        params,
-        private_key,
-        key_id,
-        issuer_did,
-        Some(created_at.to_owned()),
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let signed =
+        signer.sign_object_proof(key_id, params, issuer_did, Some(created_at.to_owned()))?;
     serde_json::from_value(
         signed
             .get("proof")

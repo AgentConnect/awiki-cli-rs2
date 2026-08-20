@@ -241,6 +241,19 @@ pub(crate) fn resign_did_document_with_key1(
     Ok(())
 }
 
+pub(crate) fn resign_did_document_with_signer(
+    did_document: &mut Value,
+    did: &crate::ids::Did,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<()> {
+    let fallback_domain =
+        crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+    let options = proof_generation_options_for_update(did_document, &fallback_domain);
+    let verification_method = format!("{}#key-1", did.as_str());
+    *did_document = signer.sign_document_proof(did_document, &verification_method, options)?;
+    Ok(())
+}
+
 /// Replace any inherited proof with a fresh canonical root proof.
 ///
 /// Legacy promotion uses this entry point because an old proof purpose or

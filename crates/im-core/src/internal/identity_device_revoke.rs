@@ -402,15 +402,7 @@ where
     };
 
     if pending.remote_result.is_none() {
-        let signing_pem = Zeroizing::new(
-            client
-                .runtime()
-                .key_provider
-                .device_request_signing_private_pem()
-                .map_err(unknown_outcome)?,
-        );
-        let signing_private = anp::PrivateKeyMaterial::from_pem(&signing_pem)
-            .map_err(|_| unknown_outcome(crate::ImError::PermissionDenied))?;
+        let identity_signer = &client.runtime().key_provider;
         let prepared = crate::internal::identity_wire::device_revoke::prepare_revoke(
             pending.operation_id.clone(),
             pending.target_device_id.clone(),
@@ -418,7 +410,7 @@ where
             pending.new_document.clone(),
             pending.authorizing_device.device_id.clone(),
             &pending.authorizing_device.signing_key_id,
-            &signing_private,
+            &|kid, message| identity_signer.sign(kid, message),
             now,
         )
         .map_err(unknown_outcome)?;
@@ -545,16 +537,10 @@ fn prepare_initial_intent(
         target_device_id,
     )
     .map_err(|_| crate::ImError::PermissionDenied)?;
-    let root_private_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .did_document_root_private_pem()?,
-    );
-    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+    crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
         &mut new_document,
         did,
-        &root_private_pem,
+        client.runtime().key_provider.as_ref(),
     )?;
     validate_manifest_device(&new_document, &authorizing)?;
     if anp::authentication::validate_device_manifest(&new_document)

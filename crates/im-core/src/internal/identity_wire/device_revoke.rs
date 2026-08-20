@@ -70,7 +70,7 @@ pub(crate) fn prepare_revoke(
     new_document: Value,
     authorizing_device_id: String,
     authorizing_signing_key_id: &str,
-    authorizing_private_key: &anp::PrivateKeyMaterial,
+    signer: &dyn Fn(&str, &[u8]) -> crate::ImResult<Vec<u8>>,
     now: OffsetDateTime,
 ) -> crate::ImResult<PreparedDeviceRevoke> {
     required("operation_id", &operation_id)?;
@@ -80,7 +80,6 @@ pub(crate) fn prepare_revoke(
         || expected_checkpoint.document_version == 0
         || expected_checkpoint.registry_version == 0
         || !valid_digest(&expected_checkpoint.document_hash)
-        || !matches!(authorizing_private_key, anp::PrivateKeyMaterial::Ed25519(_))
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -122,11 +121,7 @@ pub(crate) fn prepare_revoke(
             detail: error.to_string(),
         }
     })?;
-    proof.signature = URL_SAFE_NO_PAD.encode(
-        authorizing_private_key
-            .sign_message(&signing_input)
-            .map_err(|_| crate::ImError::PermissionDenied)?,
-    );
+    proof.signature = URL_SAFE_NO_PAD.encode(signer(&proof.key_id, &signing_input)?);
     Ok(PreparedDeviceRevoke {
         operation_id,
         target_device_id,
@@ -342,7 +337,11 @@ mod tests {
             }),
             "dev-admin".to_owned(),
             "did:wba:awiki.test:user:alice:e1_test#dev-admin-sign",
-            &private,
+            &|_, message| {
+                private
+                    .sign_message(message)
+                    .map_err(|_| crate::ImError::PermissionDenied)
+            },
             OffsetDateTime::from_unix_timestamp(1_784_515_200).unwrap(),
         )
         .unwrap();

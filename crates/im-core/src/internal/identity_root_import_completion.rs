@@ -1212,14 +1212,6 @@ fn prepare_completion_params(
     .map_err(|_| crate::ImError::PermissionDenied)?;
     drop(root_private);
 
-    let device_signing_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    );
-    let device_signing = anp::PrivateKeyMaterial::from_pem(&device_signing_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
     let device_key_id = local_device_entry(core, client)?
         .device_state
         .and_then(|state| state.authorization)
@@ -1231,15 +1223,12 @@ fn prepare_completion_params(
         "type": "awiki.device.root-key-import-complete.v1",
         "statement": signed_statement,
     });
-    let params = anp::proof::generate_object_proof(
-        &unsigned_params,
-        &device_signing,
+    let params = client.runtime().key_provider.sign_object_proof(
         &device_key_id,
+        &unsigned_params,
         &record.did,
         Some(record.imported_at.clone()),
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?;
-    drop(device_signing);
+    )?;
     let canonical = serde_json_canonicalizer::to_vec(&params).map_err(redacted_serialization)?;
     let request_hash = format!(
         "sha256:{}",
