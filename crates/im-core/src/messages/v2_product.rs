@@ -29,6 +29,9 @@ pub(super) async fn send_direct_async(
     let target_did = resolved_direct_did(&resolved)?;
     let target_handle = resolved.direct_handle().map(str::to_owned);
     let peer_scope = resolved.peer_scope.clone();
+    let conversation_id = peer_scope
+        .as_ref()
+        .map(crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope);
     let logical_message_id = required_message_id(&resolved.request)?.to_owned();
     let core = client.core_handle();
 
@@ -45,7 +48,7 @@ pub(super) async fn send_direct_async(
             crate::internal::secure_direct::v2_product::V2AttachmentProductSendInput {
                 logical_message_id: logical_message_id.clone(),
                 target_did: target_did.clone(),
-                conversation_id: None,
+                conversation_id: conversation_id.clone(),
                 object_target: resolved.request.target.clone(),
                 request: attachment,
             },
@@ -60,7 +63,7 @@ pub(super) async fn send_direct_async(
             crate::internal::secure_direct::v2_product::V2DirectProductSendInput {
                 logical_message_id: logical_message_id.clone(),
                 target_did: target_did.clone(),
-                conversation_id: None,
+                conversation_id,
                 body:
                     crate::internal::secure_direct::v2_product::V2OrdinaryBody::from_message_body(
                         &resolved.request.body,

@@ -732,6 +732,21 @@ message metadata/participants remain a compatibility fallback for conversations
 that predate the route projection. App and CLI callers must never manufacture a
 `dm:<DID>` alias to bypass this resolver.
 
+Ordinary Direct sends read that local route without a proactive Directory or
+public WNS request. Only an explicit stale-target service response
+(`anp.invalid_target_binding`, or compatibility JSON-RPC `1406`, together with
+`reason = stale_did`) may enter Direct route recovery. Core serializes recovery
+by `(owner_identity_id, conversation_id)`, checks whether another sender has
+already advanced the route, and otherwise performs one authoritative refresh.
+For a Handle served by the client's own authority domain, the local Directory
+result and public WNS binding must agree on Handle, provider domain, current
+DID, and binding generation. Cross-domain recovery trusts only the public WNS
+binding and never consumes provider-private subject fields. The refreshed
+binding must preserve the existing Persona scope and canonical conversation ID,
+advance rather than regress the binding generation, and resolve to a DID other
+than the failed target; any mismatch fails closed. Group sends and unrelated
+service/application errors never enter this Direct-only recovery path.
+
 Schema 28 makes the verified authority identity explicit. A canonical Direct is
 created from `authority_namespace + authority_subject_id + full_handle`, where
 the namespace is the IDNA-normalized authoritative Handle provider domain and
@@ -758,6 +773,17 @@ wire thread facts, sender/receiver DID snapshots, group identifiers, or
 `server_seq`. Replaying the same owner/message ID with different non-empty wire
 facts fails with `message_wire_identity_conflict`; a replay may only fill wire
 facts that were genuinely absent in a legacy row.
+
+A stale-route retry does not revise wire facts that are already durable. For a
+text/payload local echo written before the first network attempt, the failed
+route remains its wire receiver snapshot, while `direct_peer_routes.current_did`
+and current message metadata may advance to the new delivery route. An
+attachment row first committed after remote acceptance records that accepted
+route; once committed, it has the same immutability rule. Replaying the same
+logical message ID therefore reuses any existing wire receiver snapshot for
+local conflict validation even though the network submission uses the current
+route. This preserves auditable history without making a legitimate DID
+rotation look like `message_wire_identity_conflict`.
 
 Verified Handle projection writes the Persona, current and historical
 identifiers, route, Persona-keyed profile, and matching contact association as
@@ -892,6 +918,17 @@ The API is for fast first paint. Apps should show local conversation timeline ro
 ## 13.1 Conversation Send And Local Echo
 
 Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)`, `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)`, or `attachments.send_conversation()` / Dart `client.attachments.sendConversation(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation through its owner-scoped route projection, writes a durable pending projection row under that same canonical ID before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds. The returned `SendMessageResult.message.metadata.conversation_identity` must expose that same canonical ID after direct-route normalization; it must not retain the transport target Handle or DID identity used before the network send. The first message in a peer-scope conversation does not require a pre-existing message row and must not be bootstrapped with a legacy DID conversation alias.
+
+When the first Direct submission returns the explicit stale-target error above,
+Core may refresh the authoritative binding once and submit once more to the new
+DID. The retry preserves the Persona, canonical conversation ID, message ID,
+operation/idempotency ID, security mode, and logical body. It applies to plain
+text/payload, secure P5 Direct, and conversation attachment sends, including
+blocking and async attachment entry points. Attachment create, object upload,
+and commit remain completed once; recovery resubmits the same prepared Manifest
+instead of uploading another object. A second send failure is terminal for this
+call, so recovery cannot loop or turn an arbitrary service failure into a
+retry.
 
 Plain Direct and Group sends generate `message_id` and `operation_id` before
 signing and transport submission. If the transport reports

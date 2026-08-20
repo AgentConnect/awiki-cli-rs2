@@ -297,6 +297,7 @@ struct FakeHost {
     post_attachment_grant_refs: Vec<Value>,
     fail_fetch_once: BTreeSet<(String, String)>,
     fail_post_once: BTreeSet<(String, String)>,
+    stale_post_once: BTreeSet<(String, String)>,
     ensure_count: usize,
 }
 
@@ -681,6 +682,19 @@ impl V2DirectProductHost for FakeHost {
         if self.fail_post_once.remove(&key) {
             return Err(crate::ImError::TransportUnavailable {
                 detail: "transient direct failure".to_owned(),
+            });
+        }
+        if self.stale_post_once.remove(&key) {
+            return Err(crate::ImError::Service {
+                status_code: None,
+                code: Some("anp.invalid_target_binding".to_owned()),
+                message: "DID is no longer the active handle binding".to_owned(),
+                data: Some(json!({
+                    "reason": "stale_did",
+                    "json_rpc_code": 1406,
+                    "current_did": "did:example:bob-current",
+                    "full_handle": "bob.awiki.test"
+                })),
             });
         }
         Ok(V2DirectSendResult {
@@ -1229,6 +1243,56 @@ async fn partial_retry_attempts_only_the_failed_device() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn stale_target_post_is_recorded_and_propagated_to_rebind_coordinator() {
+    let root = tempfile::tempdir().unwrap();
+    let alice_did = "did:example:alice";
+    let bob_did = "did:example:bob-old";
+    let a1 = DeviceSpec {
+        id: "alice-a1",
+        signing_seed: 221,
+        static_seed: 222,
+        signed_prekey_seed: 223,
+        one_time_prekey_seed: 224,
+    };
+    let b1 = DeviceSpec {
+        id: "bob-b1",
+        signing_seed: 225,
+        static_seed: 226,
+        signed_prekey_seed: 227,
+        one_time_prekey_seed: 228,
+    };
+    let alice = context(root.path(), "identity-alice-a1", alice_did, a1, 229);
+    let mut host = FakeHost::default();
+    host.add_document(alice_did, did_document(alice_did, &[a1]));
+    host.add_document(bob_did, did_document(bob_did, &[b1]));
+    host.add_bundle(bob_did, b1);
+    host.stale_post_once
+        .insert((bob_did.to_owned(), b1.id.to_owned()));
+
+    let error = send_with_host(
+        &alice,
+        &mut host,
+        text_input("logical-stale", bob_did, "retry after rebind"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        crate::internal::service_error::stale_target_binding_from_error(&error, alice_did)
+            .is_some()
+    );
+    let connection = alice.open_connection().unwrap();
+    let (phase, failure_code): (String, Option<String>) = connection
+        .query_row(
+            "SELECT phase, failure_code FROM direct_e2ee_v2_delivery_ledger WHERE delivery_class = 'recipient'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(phase, "failed");
+    assert_eq!(failure_code.as_deref(), Some("transport"));
 }
 
 #[tokio::test]

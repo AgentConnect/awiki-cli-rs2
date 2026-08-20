@@ -1042,6 +1042,15 @@ where
                 context.with_ledger(|ledger| {
                     ledger.mark_failed(&record, failure_code(&error), &now)
                 })?;
+                if target.class == DeliveryClass::Recipient
+                    && crate::internal::service_error::stale_target_binding_from_error(
+                        &error,
+                        &context.local_did,
+                    )
+                    .is_some()
+                {
+                    return Err(error);
+                }
                 failed += 1;
                 continue;
             }
@@ -1059,6 +1068,15 @@ where
                 context.with_ledger(|ledger| {
                     ledger.mark_failed(&record, failure_code(&error), &now_text())
                 })?;
+                if target.class == DeliveryClass::Recipient
+                    && crate::internal::service_error::stale_target_binding_from_error(
+                        &error,
+                        &context.local_did,
+                    )
+                    .is_some()
+                {
+                    return Err(error);
+                }
                 failed += 1;
                 continue;
             }

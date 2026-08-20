@@ -242,7 +242,14 @@ pub(crate) fn persist_direct_outgoing_result(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &direct_outgoing_result_record(client, target_did, target_handle, peer_scope, sdk_result),
+        &direct_outgoing_result_record(
+            client,
+            target_did,
+            target_did,
+            target_handle,
+            peer_scope,
+            sdk_result,
+        ),
     )
 }
 
@@ -265,8 +272,34 @@ pub(crate) async fn persist_direct_outgoing_result_async(
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
-    let record =
-        direct_outgoing_result_record(client, target_did, target_handle, peer_scope, sdk_result);
+    persist_direct_outgoing_result_with_wire_target_async(
+        client,
+        target_did,
+        target_did,
+        target_handle,
+        peer_scope,
+        sdk_result,
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_direct_outgoing_result_with_wire_target_async(
+    client: &crate::core::ImClient,
+    wire_target_did: &str,
+    current_target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = direct_outgoing_result_record(
+        client,
+        wire_target_did,
+        current_target_did,
+        target_handle,
+        peer_scope,
+        sdk_result,
+    );
     client
         .core_inner()
         .local_state_db()
@@ -1183,7 +1216,8 @@ fn direct_outgoing_record(
 #[cfg(feature = "sqlite")]
 fn direct_outgoing_result_record(
     client: &crate::core::ImClient,
-    target_did: &str,
+    wire_target_did: &str,
+    current_target_did: &str,
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
@@ -1192,7 +1226,7 @@ fn direct_outgoing_result_record(
         &sdk_result.message.body,
         sdk_result.message.metadata.content_type.as_deref(),
     );
-    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, wire_target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -1201,7 +1235,7 @@ fn direct_outgoing_result_record(
         thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
-        receiver_did: target_did.trim().to_owned(),
+        receiver_did: wire_target_did.trim().to_owned(),
         content_type,
         content,
         server_seq: sdk_result.message.metadata.server_sequence,
@@ -1210,12 +1244,12 @@ fn direct_outgoing_result_record(
         is_read: true,
         metadata: delivery_metadata_json(
             &sdk_result.message.metadata,
-            direct_metadata_extras(target_handle, peer_scope, target_did),
+            direct_metadata_extras(target_handle, peer_scope, current_target_did),
         ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
-    .with_resolved_wire_thread("direct", target_did)
+    .with_resolved_wire_thread("direct", wire_target_did)
 }
 
 #[cfg(feature = "sqlite")]
