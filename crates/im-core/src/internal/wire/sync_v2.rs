@@ -833,7 +833,11 @@ fn parse_lane_event_v3(lane: SyncLaneV3, value: &Value) -> crate::ImResult<SyncL
                 .filter(|value| value.is_object())
                 .cloned()
                 .ok_or_else(|| invalid_page("p6 control notice must be an object"))?;
-            validate_lane_envelope_v3(&notice, "anp.group.e2ee.v2", "group-e2ee")?;
+            validate_lane_envelope_v3(
+                &notice,
+                "anp.group.e2ee.v2",
+                anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2,
+            )?;
             Ok(SyncLaneEventV3::P6ControlNotice {
                 notice_id: canonical_string_field(event, "notice_id")?,
                 seq: positive_decimal_field(event, "seq")?,
@@ -2382,5 +2386,30 @@ mod tests {
             },
             Some("SYNC_INVALID_PAGE".to_owned())
         );
+    }
+
+    #[test]
+    fn p6_control_notice_lane_requires_the_transport_security_profile() {
+        let mut event = json!({
+            "event_type": "p6.control.notice",
+            "notice_id": "notice-1",
+            "seq": "1",
+            "group_did": "did:example:group",
+            "notice": {
+                "meta": {
+                    "profile": "anp.group.e2ee.v2",
+                    "security_profile": anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2
+                },
+                "body": {"notice_id": "notice-1"}
+            }
+        });
+
+        assert!(matches!(
+            parse_lane_event_v3(SyncLaneV3::P6Group, &event).unwrap(),
+            SyncLaneEventV3::P6ControlNotice { notice_id, .. } if notice_id == "notice-1"
+        ));
+
+        event["notice"]["meta"]["security_profile"] = json!("group-e2ee");
+        assert!(parse_lane_event_v3(SyncLaneV3::P6Group, &event).is_err());
     }
 }
