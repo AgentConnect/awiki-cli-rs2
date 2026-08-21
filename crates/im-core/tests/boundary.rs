@@ -231,6 +231,36 @@ fn identity_custody_status_is_a_secret_free_projection() {
     }
 }
 
+#[test]
+fn anp_bound_runtime_cannot_fall_back_to_legacy_identity_providers() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/identity/registry.rs");
+    let source = fs::read_to_string(&path).unwrap();
+    let provider = rust_item(&source, "fn key_provider_for_entry")
+        .expect("key_provider_for_entry implementation");
+    let anp_branch = provider.find("if has_anp_binding").unwrap();
+    let anp_return = provider[anp_branch..]
+        .find("return Ok(Arc::new(provider));")
+        .map(|offset| anp_branch + offset)
+        .unwrap();
+    let legacy_vault = provider
+        .find("key_provider::vault::VaultBackedIdentitySigner")
+        .unwrap();
+    let legacy_file = provider.find("FileBackedIdentitySigner").unwrap();
+    assert!(anp_branch < anp_return);
+    assert!(anp_return < legacy_vault);
+    assert!(anp_return < legacy_file);
+
+    let readiness = rust_item(&source, "fn vnext_local_key_state")
+        .expect("vnext_local_key_state implementation");
+    let anp_branch = readiness.find("if has_anp_binding").unwrap();
+    let anp_return = readiness[anp_branch..]
+        .find("return (provider.ensure_root_control_available().is_ok(), None);")
+        .map(|offset| anp_branch + offset)
+        .unwrap();
+    let legacy_metadata = readiness.find("entry.vault_migration.as_ref()").unwrap();
+    assert!(anp_return < legacy_metadata);
+}
+
 fn rust_item<'a>(source: &'a str, declaration: &str) -> Option<&'a str> {
     let start = source.find(declaration)?;
     let open = start + source[start..].find('{')?;
