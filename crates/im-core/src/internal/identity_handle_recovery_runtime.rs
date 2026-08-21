@@ -25,7 +25,7 @@ struct RecoveryLocalContext {
     make_default: bool,
     local_previous_did: String,
     fresh_local_state: bool,
-    generated: Option<crate::internal::identity_generation::GeneratedHandleRecoveryIdentity>,
+    identity: Option<crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef>,
 }
 
 pub(crate) async fn request_otp(
@@ -71,7 +71,7 @@ pub(crate) async fn request_otp(
             make_default: identity.is_default,
             local_previous_did: identity.did.as_str().to_owned(),
             fresh_local_state: false,
-            generated: None,
+            identity: None,
         }
     } else {
         let local_matches = index
@@ -94,7 +94,7 @@ pub(crate) async fn request_otp(
                 make_default: entry.is_default,
                 local_previous_did: entry.did.clone(),
                 fresh_local_state: false,
-                generated: None,
+                identity: None,
             }
         } else if let Some(existing) = crate::internal::identity_handle_recovery_operation::list_handle(
             &core.inner().sdk_paths().local_state.sqlite_path,
@@ -121,7 +121,7 @@ pub(crate) async fn request_otp(
                 make_default: pending.make_default,
                 local_previous_did: pending.local_previous_did,
                 fresh_local_state: pending.fresh_local_state,
-                generated: None,
+                identity: None,
             }
         } else {
             let mut vault_only = store
@@ -144,24 +144,23 @@ pub(crate) async fn request_otp(
                     make_default: pending.make_default,
                     local_previous_did: pending.local_previous_did,
                     fresh_local_state: pending.fresh_local_state,
-                    generated: None,
+                    identity: None,
                 }
             } else {
-            let generated =
-                crate::internal::identity_generation::generate_handle_recovery_identity(
-                    &canonical.domain,
-                    &canonical.local_part,
-                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                    core.inner().sdk_config().anp_service_did.as_ref(),
-                )?;
+            let identity = crate::internal::identity_custody::provision_handle_recovery_identity(
+                core,
+                &canonical.domain,
+                &canonical.local_part,
+            )?;
+            let unique_id = identity.unique_id()?;
             RecoveryLocalContext {
-                owner_identity_id: generated.unique_id.clone(),
-                local_alias: generated.unique_id.clone(),
+                owner_identity_id: unique_id.clone(),
+                local_alias: unique_id,
                 display_name: canonical.local_part.clone(),
                 make_default: index.default_credential_name.is_empty(),
-                local_previous_did: format!("{}:unbound", generated.did.as_str()),
+                local_previous_did: format!("{}:unbound", identity.did.as_str()),
                 fresh_local_state: true,
-                generated: Some(generated),
+                identity: Some(identity),
             }
             }
         }
@@ -186,13 +185,12 @@ pub(crate) async fn request_otp(
         operation_id
     } else {
         let operation_id = random_reference("recover_v4")?;
-        let generated = match context.generated.clone() {
-            Some(generated) => generated,
-            None => crate::internal::identity_generation::generate_handle_recovery_identity(
+        let identity = match context.identity.clone() {
+            Some(identity) => identity,
+            None => crate::internal::identity_custody::provision_handle_recovery_identity(
+                core,
                 &canonical.domain,
                 &canonical.local_part,
-                core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                core.inner().sdk_config().anp_service_did.as_ref(),
             )?,
         };
         let pending = PendingHandleRecoveryV4::new_pre_otp(
@@ -204,7 +202,7 @@ pub(crate) async fn request_otp(
             context.fresh_local_state,
             canonical.full.clone(),
             context.local_previous_did.clone(),
-            generated,
+            identity,
         )?;
         store.create_v4(&pending)?;
         let now = format_timestamp(
@@ -457,6 +455,12 @@ pub(crate) fn discard_pre_attempt(
         && index.key_state
             == crate::internal::identity_handle_recovery_operation::RecoveryKeyState::DestroyedPreAttempt
     {
+        if let Some((_, pending)) = store.load_v4(&request.operation_id)? {
+            crate::internal::identity_custody::discard_unpublished_handle_recovery(
+                core,
+                &pending.identity,
+            )?;
+        }
         store.delete_v4_pre_attempt(&request.operation_id)?;
         return operation_summary(index);
     }
@@ -481,6 +485,10 @@ pub(crate) fn discard_pre_attempt(
         sqlite_path,
         &request.operation_id,
         &now_second_z()?,
+    )?;
+    crate::internal::identity_custody::discard_unpublished_handle_recovery(
+        core,
+        &pending.identity,
     )?;
     store.delete_v4_pre_attempt(&request.operation_id)?;
     operation_summary(
@@ -517,8 +525,21 @@ pub(crate) fn quarantine_key_unavailable(
         != crate::internal::identity_handle_recovery_operation::RecoveryKeyState::PermanentlyUnavailable
     {
         if let Ok(store) = PendingHandleRecoveryStore::from_core(core) {
-            if matches!(store.load_v4(&request.operation_id), Ok(Some(_))) {
-                return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
+            if let Ok(Some((_, pending))) = store.load_v4(&request.operation_id) {
+                match crate::internal::identity_custody::handle_recovery_identity(
+                    core,
+                    &pending.identity,
+                ) {
+                    Ok(_) => {
+                        return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
+                    }
+                    Err(crate::ImError::IdentityNotFound { .. }) => {}
+                    Err(_) => {
+                        return Err(recovery_error(
+                            HandleRecoveryErrorCode::LocalKeyUnavailable,
+                        ));
+                    }
+                }
             }
         }
     }
@@ -726,7 +747,7 @@ pub(crate) async fn prepare(
         &request.code,
         &pending.full_handle,
         &operation_id,
-        &pending.generated.device_signing_key_id,
+        &pending.identity.device_signing_key_id,
         &bootstrap_signing_public_key,
     )?;
     let mut transport = crate::internal::transport::CorePlainTransport::new(core);
@@ -1397,8 +1418,6 @@ async fn send_commit_v4(
         .map_err(|_| crate::ImError::Internal {
             message: "generate Handle Recovery V4 proof nonce failed".to_owned(),
         })?;
-    let private = anp::PrivateKeyMaterial::from_pem(&pending.generated.device_signing_private_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
     let intent = pending
         .intent
         .clone()
@@ -1416,16 +1435,24 @@ async fn send_commit_v4(
             proof: crate::internal::identity_wire::handle_recovery::KeyPossessionProofInputV4 {
                 intent: &intent,
                 intent_hash: &intent_hash,
-                bootstrap_signing_private_key: &private,
                 audience,
                 created_at: &created_at,
                 expires_at: &expires_at,
                 nonce: &nonce,
             },
             recovery_grant: pending.recovery_grant()?,
-            new_did_document: pending.generated.did_document.clone(),
+            new_did_document: pending.identity.did_document.clone(),
         },
     )?;
+    let signature =
+        crate::internal::identity_custody::handle_recovery_identity(core, &pending.identity)?
+            .sign_device_assertion(
+                &pending.identity.device_signing_key_id,
+                prepared.signing_input(),
+            )
+            .map_err(crate::internal::identity_custody::map_error)?;
+    let prepared =
+        crate::internal::identity_wire::handle_recovery::complete_commit_v4(prepared, &signature)?;
     if !pending.commit_attempted {
         let attempted_at = now_second_z()?;
         crate::internal::identity_handle_recovery_operation::mark_commit_attempted(
@@ -1513,8 +1540,6 @@ async fn reconcile_result_v4(
         .map_err(|_| crate::ImError::Internal {
             message: "generate Handle Recovery V4 result proof nonce failed".to_owned(),
         })?;
-    let private = anp::PrivateKeyMaterial::from_pem(&pending.generated.device_signing_private_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
     let intent = pending
         .intent
         .clone()
@@ -1531,12 +1556,21 @@ async fn reconcile_result_v4(
         crate::internal::identity_wire::handle_recovery::KeyPossessionProofInputV4 {
             intent: &intent,
             intent_hash: &intent_hash,
-            bootstrap_signing_private_key: &private,
             audience,
             created_at: &created_at,
             expires_at: &expires_at,
             nonce: &nonce,
         },
+    )?;
+    let signature =
+        crate::internal::identity_custody::handle_recovery_identity(core, &pending.identity)?
+            .sign_device_assertion(
+                &pending.identity.device_signing_key_id,
+                prepared.signing_input(),
+            )
+            .map_err(crate::internal::identity_custody::map_error)?;
+    let prepared = crate::internal::identity_wire::handle_recovery::complete_result_get_v4(
+        prepared, &signature,
     )?;
     let mut transport = crate::internal::transport::CorePlainTransport::new(core);
     let raw = match transport
@@ -1818,7 +1852,7 @@ async fn apply_local_transition_v4(
                 result.bootstrap_device.auth_generation,
             )?;
         }
-        let generated = &pending.generated;
+        let generated = &pending.identity;
         let device_state = crate::internal::identity_device_state::IdentityDeviceState {
             schema_version:
                 crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
@@ -1843,8 +1877,14 @@ async fn apply_local_transition_v4(
                 },
             ),
         };
+        let projection_storage =
+            crate::internal::identity_store::AnpIdentityProjectionStorage::from_core_pending_auth(
+                core,
+                generated.store_id.clone(),
+                generated.identity_id.clone(),
+            )?;
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .save_recovered_identity_with_secret_storage(
+            .save_anp_identity_transition_projection(
             crate::internal::identity_store::SaveIdentityInput {
                 local_alias: pending.local_alias.clone(),
                 did: generated.did.clone(),
@@ -1865,15 +1905,18 @@ async fn apply_local_transition_v4(
                     device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 },
                 device_state: Some(device_state),
-                key1_private_pem: generated.root_private_pem.clone(),
-                key1_public_pem: generated.root_public_pem.clone(),
-                e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
-                e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
+                key1_private_pem: String::new(),
+                key1_public_pem: String::new(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: String::new(),
                 daemon_subkey_package: None,
                 make_default: pending.make_default,
             },
-            crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?,
-            &[],
+            projection_storage,
+            crate::internal::identity_store::AnpIdentityProjectionReplacement {
+                expected_did: &pending.local_previous_did,
+                expected_unique_id: &pending.owner_identity_id,
+            },
         )?;
         crate::internal::identity_transition_pending::update_phase(
             sqlite_path,
@@ -1964,6 +2007,9 @@ fn validate_switched_identity_v4(
             && entry.did == result.current_did
             && entry.full_handle == pending.full_handle
             && entry.binding_generation.as_deref() == Some(result.binding_generation.as_str())
+            && entry.identity_custody_backend.as_deref() == Some("anp_identity")
+            && entry.anp_identity_store_id.as_deref() == Some(pending.identity.store_id.as_str())
+            && entry.anp_identity_id.as_deref() == Some(pending.identity.identity_id.as_str())
     });
     if matches.count() != 1 {
         return Err(crate::ImError::PermissionDenied);
@@ -2505,7 +2551,7 @@ fn progress_v4(
             .map(|binding| binding.account_user_id.clone()),
         full_handle: pending.full_handle.clone(),
         local_previous_did: Some(crate::ids::Did::parse(&pending.local_previous_did)?),
-        current_did: pending.generated.did.clone(),
+        current_did: pending.identity.did.clone(),
         binding_generation: result.map(|result| result.binding_generation.clone()),
         state_root_fingerprint: applied_marker.map(|marker| marker.state_root_fingerprint.clone()),
         phase: match pending.phase {
@@ -2798,6 +2844,17 @@ mod tests {
             None,
         )
         .unwrap();
+        let identity =
+            crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef {
+                store_id: "store-test".to_owned(),
+                identity_id: "identity-test".to_owned(),
+                did: generated.did,
+                did_document: generated.did_document,
+                protocol_device_id: generated.protocol_device_id,
+                root_key_id: generated.root_key_id,
+                device_signing_key_id: generated.device_signing_key_id,
+                device_e2ee_key_id: generated.device_e2ee_key_id,
+            };
         PendingHandleRecoveryV4::new_pre_otp(
             operation_id.to_owned(),
             owner_identity_id.to_owned(),
@@ -2807,7 +2864,7 @@ mod tests {
             false,
             "alice.awiki.test".to_owned(),
             "did:wba:awiki.test:users:alice-old".to_owned(),
-            generated,
+            identity,
         )
         .unwrap()
     }
@@ -2849,19 +2906,19 @@ mod tests {
             account_user_id: account_user_id.to_owned(),
             full_handle: pending.full_handle.clone(),
             previous_did: pending.local_previous_did.clone(),
-            current_did: pending.generated.did.as_str().to_owned(),
+            current_did: pending.identity.did.as_str().to_owned(),
             binding_generation: "8".to_owned(),
             checkpoint: crate::internal::identity_handle_recovery_pending::RecoveryCheckpointV4 {
                 document_version: 1,
                 document_hash: crate::internal::identity_wire::document::document_hash(
-                    &pending.generated.did_document,
+                    &pending.identity.did_document,
                 )
                 .unwrap(),
                 registry_version: 1,
             },
             bootstrap_device:
                 crate::internal::identity_handle_recovery_pending::RecoveryBootstrapDeviceV4 {
-                    device_id: pending.generated.protocol_device_id.as_str().to_owned(),
+                    device_id: pending.identity.protocol_device_id.as_str().to_owned(),
                     status: "active".to_owned(),
                     role: "admin".to_owned(),
                     management_ready: true,
@@ -2879,7 +2936,14 @@ mod tests {
         PendingHandleRecoveryV4,
         crate::internal::secret_vault::SecretRef,
     ) {
-        let pending = v4_awaiting_factor_pending(operation_id, owner_identity_id);
+        let mut pending = v4_awaiting_factor_pending(operation_id, owner_identity_id);
+        pending.identity = crate::internal::identity_custody::provision_handle_recovery_identity(
+            core,
+            "awiki.test",
+            "alice",
+        )
+        .unwrap();
+        pending.validate().unwrap();
         let store = PendingHandleRecoveryStore::from_core(core).unwrap();
         let secret_ref = store.create_v4(&pending).unwrap();
         let operation = crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
@@ -3226,7 +3290,7 @@ mod tests {
         let mut pending = v4_awaiting_factor_pending("recover-v4-d0-d1-d2", "owner-d0-d1-d2");
         let local_d0 = pending.local_previous_did.clone();
         let remote_d1 = "did:wba:awiki.test:users:alice-remote-d1".to_owned();
-        let committed_d2 = pending.generated.did.as_str().to_owned();
+        let committed_d2 = pending.identity.did.as_str().to_owned();
         pending
             .freeze_exchange(
                 crate::internal::identity_handle_recovery_pending::RecoveryAuthoritativeBindingV4 {
@@ -3257,14 +3321,14 @@ mod tests {
             checkpoint: crate::internal::identity_handle_recovery_pending::RecoveryCheckpointV4 {
                 document_version: 1,
                 document_hash: crate::internal::identity_wire::document::document_hash(
-                    &pending.generated.did_document,
+                    &pending.identity.did_document,
                 )
                 .unwrap(),
                 registry_version: 1,
             },
             bootstrap_device:
                 crate::internal::identity_handle_recovery_pending::RecoveryBootstrapDeviceV4 {
-                    device_id: pending.generated.protocol_device_id.as_str().to_owned(),
+                    device_id: pending.identity.protocol_device_id.as_str().to_owned(),
                     status: "active".to_owned(),
                     role: "admin".to_owned(),
                     management_ready: true,

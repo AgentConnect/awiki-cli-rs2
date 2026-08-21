@@ -64,11 +64,42 @@ impl std::fmt::Debug for RecoveryGrantExchangeResultV4 {
 pub(crate) struct KeyPossessionProofInputV4<'a> {
     pub(crate) intent: &'a crate::internal::identity_handle_recovery_pending::RecoveryIntentV4,
     pub(crate) intent_hash: &'a str,
-    pub(crate) bootstrap_signing_private_key: &'a anp::PrivateKeyMaterial,
     pub(crate) audience: &'a str,
     pub(crate) created_at: &'a str,
     pub(crate) expires_at: &'a str,
     pub(crate) nonce: &'a [u8],
+}
+
+pub(crate) struct PendingCommitV4 {
+    intent: crate::internal::identity_handle_recovery_pending::RecoveryIntentV4,
+    intent_hash: String,
+    recovery_grant: SecretBytes,
+    new_did_document: Value,
+    proof: PendingKeyPossessionProofV4,
+}
+
+impl PendingCommitV4 {
+    pub(crate) fn signing_input(&self) -> &[u8] {
+        &self.proof.signing_input
+    }
+}
+
+pub(crate) struct PendingResultGetV4 {
+    intent: crate::internal::identity_handle_recovery_pending::RecoveryIntentV4,
+    intent_hash: String,
+    proof: PendingKeyPossessionProofV4,
+}
+
+impl PendingResultGetV4 {
+    pub(crate) fn signing_input(&self) -> &[u8] {
+        &self.proof.signing_input
+    }
+}
+
+struct PendingKeyPossessionProofV4 {
+    proof: Value,
+    signed_object: Value,
+    signing_input: Vec<u8>,
 }
 
 pub(crate) struct CommitProofInputV4<'a> {
@@ -555,9 +586,7 @@ pub(crate) fn intent_hash_v4(
     ))
 }
 
-pub(crate) fn prepare_commit_v4(
-    input: CommitProofInputV4<'_>,
-) -> crate::ImResult<PreparedCommitV4> {
+pub(crate) fn prepare_commit_v4(input: CommitProofInputV4<'_>) -> crate::ImResult<PendingCommitV4> {
     let computed_intent_hash = intent_hash_v4(input.proof.intent)?;
     require_matching_intent_hash(input.proof.intent_hash, &computed_intent_hash)?;
     let computed_document_hash = new_did_document_hash_v4(&input.new_did_document)?;
@@ -578,18 +607,32 @@ pub(crate) fn prepare_commit_v4(
             "DID document id does not match the immutable Recovery intent",
         ));
     }
-    let (proof, signed_object) = build_key_possession_proof_v4(
+    let proof = prepare_key_possession_proof_v4(
         &input.proof,
         HANDLE_RECOVERY_COMMIT_V4_METHOD,
         HANDLE_RECOVERY_COMMIT_V4_PURPOSE,
     )?;
-    let recovery_grant = String::from_utf8(input.recovery_grant.expose_secret().to_vec())
+    Ok(PendingCommitV4 {
+        intent: input.proof.intent.clone(),
+        intent_hash: computed_intent_hash,
+        recovery_grant: input.recovery_grant,
+        new_did_document: input.new_did_document,
+        proof,
+    })
+}
+
+pub(crate) fn complete_commit_v4(
+    pending: PendingCommitV4,
+    signature: &[u8],
+) -> crate::ImResult<PreparedCommitV4> {
+    let (proof, signed_object) = complete_key_possession_proof_v4(pending.proof, signature)?;
+    let recovery_grant = String::from_utf8(pending.recovery_grant.expose_secret().to_vec())
         .map_err(|_| invalid("recovery_grant", "Recovery grant must be UTF-8"))?;
     let params = json!({
-        "intent": input.proof.intent,
-        "intent_hash": computed_intent_hash,
+        "intent": pending.intent,
+        "intent_hash": pending.intent_hash,
         "recovery_grant": required(&recovery_grant, "recovery_grant")?,
-        "new_did_document": input.new_did_document,
+        "new_did_document": pending.new_did_document,
         "bootstrap_key_possession_proof": proof,
     });
     Ok(PreparedCommitV4 {
@@ -599,25 +642,37 @@ pub(crate) fn prepare_commit_v4(
             super::TransportProfile::RpcDefault,
             params,
         ),
-        intent_hash: computed_intent_hash,
+        intent_hash: pending.intent_hash,
         signed_object,
     })
 }
 
 pub(crate) fn prepare_result_get_v4(
     input: KeyPossessionProofInputV4<'_>,
-) -> crate::ImResult<PreparedResultGetV4> {
+) -> crate::ImResult<PendingResultGetV4> {
     let computed_intent_hash = intent_hash_v4(input.intent)?;
     require_matching_intent_hash(input.intent_hash, &computed_intent_hash)?;
-    let (proof, signed_object) = build_key_possession_proof_v4(
+    let proof = prepare_key_possession_proof_v4(
         &input,
         HANDLE_RECOVERY_RESULT_GET_V4_METHOD,
         HANDLE_RECOVERY_RESULT_GET_V4_PURPOSE,
     )?;
+    Ok(PendingResultGetV4 {
+        intent: input.intent.clone(),
+        intent_hash: computed_intent_hash,
+        proof,
+    })
+}
+
+pub(crate) fn complete_result_get_v4(
+    pending: PendingResultGetV4,
+    signature: &[u8],
+) -> crate::ImResult<PreparedResultGetV4> {
+    let (proof, signed_object) = complete_key_possession_proof_v4(pending.proof, signature)?;
     let params = json!({
         "contract_version": HANDLE_RECOVERY_V4_CONTRACT_VERSION,
-        "intent": input.intent,
-        "intent_hash": computed_intent_hash,
+        "intent": pending.intent,
+        "intent_hash": pending.intent_hash,
         "bootstrap_key_possession_proof": proof,
     });
     Ok(PreparedResultGetV4 {
@@ -627,7 +682,7 @@ pub(crate) fn prepare_result_get_v4(
             super::TransportProfile::RpcDefault,
             params,
         ),
-        intent_hash: computed_intent_hash,
+        intent_hash: pending.intent_hash,
         signed_object,
     })
 }
@@ -697,11 +752,11 @@ pub(crate) fn parse_result_get_v4(
     }
 }
 
-fn build_key_possession_proof_v4(
+fn prepare_key_possession_proof_v4(
     input: &KeyPossessionProofInputV4<'_>,
     method: &'static str,
     purpose: &'static str,
-) -> crate::ImResult<(Value, Value)> {
+) -> crate::ImResult<PendingKeyPossessionProofV4> {
     validate_intent_v4(input.intent)?;
     let computed_intent_hash = intent_hash_v4(input.intent)?;
     require_matching_intent_hash(input.intent_hash, &computed_intent_hash)?;
@@ -721,15 +776,6 @@ fn build_key_possession_proof_v4(
             "proof nonce must contain exactly 32 bytes",
         ));
     }
-    if !matches!(
-        input.bootstrap_signing_private_key,
-        anp::PrivateKeyMaterial::Ed25519(_)
-    ) {
-        return Err(invalid(
-            "bootstrap_signing_private_key",
-            "Recovery proof requires an Ed25519 private key",
-        ));
-    }
     let nonce = URL_SAFE_NO_PAD.encode(input.nonce);
     let signed_object = json!({
         "type": HANDLE_RECOVERY_KEY_POSSESSION_PROOF_TYPE,
@@ -744,22 +790,29 @@ fn build_key_possession_proof_v4(
         "nonce": nonce,
     });
     let signing_bytes = serde_json_canonicalizer::to_vec(&signed_object).map_err(serialization)?;
-    let signature = input
-        .bootstrap_signing_private_key
-        .sign_message(&signing_bytes)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    if signature.len() != 64 {
-        return Err(crate::ImError::PermissionDenied);
-    }
     let proof = json!({
         "type": HANDLE_RECOVERY_KEY_POSSESSION_PROOF_TYPE,
         "key_id": input.intent.bootstrap_signing_key_id,
         "created_at": input.created_at,
         "expires_at": input.expires_at,
         "nonce": nonce,
-        "signature": URL_SAFE_NO_PAD.encode(signature),
     });
-    Ok((proof, signed_object))
+    Ok(PendingKeyPossessionProofV4 {
+        proof,
+        signed_object,
+        signing_input: signing_bytes,
+    })
+}
+
+fn complete_key_possession_proof_v4(
+    mut pending: PendingKeyPossessionProofV4,
+    signature: &[u8],
+) -> crate::ImResult<(Value, Value)> {
+    if signature.len() != 64 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    pending.proof["signature"] = Value::String(URL_SAFE_NO_PAD.encode(signature));
+    Ok((pending.proof, pending.signed_object))
 }
 
 fn validate_intent_v4(

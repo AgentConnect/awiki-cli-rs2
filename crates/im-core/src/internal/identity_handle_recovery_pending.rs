@@ -12,7 +12,7 @@ use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 pub(crate) const V4_CONTRACT_VERSION: &str = "awiki.handle-recovery.v1.contract.4.20260807";
 pub(crate) const V4_CONTRACT_HASH: &str =
     "0b8c713448ab2b9ab54dd90fc6875da38e2a73f6b017c6d84e685f8f8c0c500a";
-const V4_SCHEMA_VERSION: u32 = 1;
+const V4_SCHEMA_VERSION: u32 = 2;
 const V4_KEY_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,7 +203,7 @@ pub(crate) struct PendingHandleRecoveryV4 {
     pub(crate) fresh_local_state: bool,
     pub(crate) full_handle: String,
     pub(crate) local_previous_did: String,
-    pub(crate) generated: crate::internal::identity_generation::GeneratedHandleRecoveryIdentity,
+    pub(crate) identity: HandleRecoveryIdentityRef,
     pub(crate) factor_state: RecoveryFactorStateV4,
     pub(crate) authoritative_binding: Option<RecoveryAuthoritativeBindingV4>,
     pub(crate) intent: Option<RecoveryIntentV4>,
@@ -220,6 +220,65 @@ pub(crate) struct PendingHandleRecoveryV4 {
     pub(crate) last_error_code: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HandleRecoveryIdentityRef {
+    pub(crate) store_id: String,
+    pub(crate) identity_id: String,
+    pub(crate) did: crate::ids::Did,
+    pub(crate) did_document: serde_json::Value,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub(crate) root_key_id: String,
+    pub(crate) device_signing_key_id: String,
+    pub(crate) device_e2ee_key_id: String,
+}
+
+impl HandleRecoveryIdentityRef {
+    pub(crate) fn unique_id(&self) -> crate::ImResult<String> {
+        self.did
+            .as_str()
+            .rsplit(':')
+            .next()
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or(crate::ImError::PermissionDenied)
+    }
+
+    pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        if self.store_id.trim().is_empty()
+            || self.identity_id.trim().is_empty()
+            || self
+                .did_document
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                != Some(self.did.as_str())
+            || self.root_key_id != format!("{}#key-1", self.did.as_str())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let manifest = anp::authentication::validate_device_manifest(&self.did_document)
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if manifest.devices.len() != 1
+            || manifest.devices[0].device_id != self.protocol_device_id.as_str()
+            || manifest.devices[0].signing_key_id != self.device_signing_key_id
+            || manifest.devices[0].e2ee_key_id != self.device_e2ee_key_id
+            || self.did_document["authentication"]
+                .as_array()
+                .is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry
+                            .as_str()
+                            .is_some_and(|kid| kid.ends_with("#daemon-key-1"))
+                    })
+                })
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for PendingHandleRecoveryV4 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -228,7 +287,7 @@ impl std::fmt::Debug for PendingHandleRecoveryV4 {
             .field("operation_id", &self.operation_id)
             .field("owner_identity_id", &self.owner_identity_id)
             .field("full_handle", &self.full_handle)
-            .field("generated", &"<redacted-generated-identity>")
+            .field("identity", &self.identity)
             .field("factor_state", &self.factor_state)
             .field("has_intent", &self.intent.is_some())
             .field("recovery_grant", &"<redacted>")
@@ -253,7 +312,7 @@ impl PendingHandleRecoveryV4 {
         fresh_local_state: bool,
         full_handle: String,
         local_previous_did: String,
-        generated: crate::internal::identity_generation::GeneratedHandleRecoveryIdentity,
+        identity: HandleRecoveryIdentityRef,
     ) -> crate::ImResult<Self> {
         let value = Self {
             schema_version: V4_SCHEMA_VERSION,
@@ -268,7 +327,7 @@ impl PendingHandleRecoveryV4 {
             fresh_local_state,
             full_handle,
             local_previous_did,
-            generated,
+            identity,
             factor_state: RecoveryFactorStateV4::AwaitingOtp,
             authoritative_binding: None,
             intent: None,
@@ -308,7 +367,7 @@ impl PendingHandleRecoveryV4 {
         if self.fresh_local_state {
             self.local_previous_did = authoritative_binding.current_did.clone();
         }
-        let signing_public_key = generated_signing_public_jwk(&self.generated)?;
+        let signing_public_key = identity_signing_public_jwk(&self.identity)?;
         let intent = RecoveryIntentV4 {
             schema_version: "1".to_owned(),
             contract_version: V4_CONTRACT_VERSION.to_owned(),
@@ -317,10 +376,10 @@ impl PendingHandleRecoveryV4 {
             full_handle: authoritative_binding.full_handle.clone(),
             expected_previous_did: authoritative_binding.current_did.clone(),
             expected_binding_generation: authoritative_binding.binding_generation.clone(),
-            new_did: self.generated.did.as_str().to_owned(),
-            new_did_document_hash: v4_did_document_hash(&self.generated.did_document)?,
-            bootstrap_device_id: self.generated.protocol_device_id.as_str().to_owned(),
-            bootstrap_signing_key_id: self.generated.device_signing_key_id.clone(),
+            new_did: self.identity.did.as_str().to_owned(),
+            new_did_document_hash: v4_did_document_hash(&self.identity.did_document)?,
+            bootstrap_device_id: self.identity.protocol_device_id.as_str().to_owned(),
+            bootstrap_signing_key_id: self.identity.device_signing_key_id.clone(),
             bootstrap_signing_public_key: signing_public_key,
         };
         intent.validate()?;
@@ -377,8 +436,8 @@ impl PendingHandleRecoveryV4 {
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        self.owner_identity_id = self.generated.unique_id.clone();
-        self.local_alias = self.generated.unique_id.clone();
+        self.owner_identity_id = self.identity.unique_id()?;
+        self.local_alias = self.identity.unique_id()?;
         self.local_previous_did = authoritative_previous_did.to_owned();
         self.fresh_local_state = true;
         self.validate()
@@ -393,7 +452,7 @@ impl PendingHandleRecoveryV4 {
     }
 
     pub(crate) fn bootstrap_signing_public_key(&self) -> crate::ImResult<serde_json::Value> {
-        generated_signing_public_jwk(&self.generated)
+        identity_signing_public_jwk(&self.identity)
     }
 
     /// Reissues only the expiring Grant/JTI. The immutable intent and its
@@ -537,6 +596,7 @@ impl PendingHandleRecoveryV4 {
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        self.identity.validate()?;
         if self.schema_version != V4_SCHEMA_VERSION
             || self.contract_version != V4_CONTRACT_VERSION
             || self.contract_hash != V4_CONTRACT_HASH
@@ -544,7 +604,7 @@ impl PendingHandleRecoveryV4 {
             || self.owner_identity_id.trim().is_empty()
             || self.local_alias.trim().is_empty()
             || self.display_name.trim().is_empty()
-            || self.generated.did.as_str() == self.local_previous_did
+            || self.identity.did.as_str() == self.local_previous_did
             || self.full_handle.len() > 320
             || crate::internal::identity_wire::handle_recovery::canonical_handle(&self.full_handle)
                 .is_err()
@@ -582,18 +642,18 @@ impl PendingHandleRecoveryV4 {
                 if let Some(result) = &self.remote_result {
                     self.validate_remote_result(result)?;
                 }
-                let expected_document_hash = v4_did_document_hash(&self.generated.did_document)?;
-                let expected_public_key = generated_signing_public_jwk(&self.generated)?;
+                let expected_document_hash = v4_did_document_hash(&self.identity.did_document)?;
+                let expected_public_key = identity_signing_public_jwk(&self.identity)?;
                 if binding.account_user_id != intent.account_user_id
                     || binding.full_handle != intent.full_handle
                     || binding.current_did != intent.expected_previous_did
                     || binding.binding_generation != intent.expected_binding_generation
                     || intent.operation_id != self.operation_id
                     || intent.full_handle != self.full_handle
-                    || intent.new_did != self.generated.did.as_str()
+                    || intent.new_did != self.identity.did.as_str()
                     || intent.new_did_document_hash != expected_document_hash
-                    || intent.bootstrap_device_id != self.generated.protocol_device_id.as_str()
-                    || intent.bootstrap_signing_key_id != self.generated.device_signing_key_id
+                    || intent.bootstrap_device_id != self.identity.protocol_device_id.as_str()
+                    || intent.bootstrap_signing_key_id != self.identity.device_signing_key_id
                     || intent.bootstrap_signing_public_key != expected_public_key
                     || self.intent_hash.as_deref() != Some(calculated_intent_hash.as_str())
                     || self
@@ -642,7 +702,7 @@ impl PendingHandleRecoveryV4 {
             increment_canonical_generation(&intent.expected_binding_generation)
                 .ok_or(crate::ImError::PermissionDenied)?;
         let expected_document_hash =
-            crate::internal::identity_wire::document::document_hash(&self.generated.did_document)?;
+            crate::internal::identity_wire::document::document_hash(&self.identity.did_document)?;
         if result.account_user_id != intent.account_user_id
             || result.full_handle != intent.full_handle
             || result.previous_did != intent.expected_previous_did
@@ -657,11 +717,21 @@ impl PendingHandleRecoveryV4 {
     }
 }
 
-fn generated_signing_public_jwk(
-    generated: &crate::internal::identity_generation::GeneratedHandleRecoveryIdentity,
+fn identity_signing_public_jwk(
+    identity: &HandleRecoveryIdentityRef,
 ) -> crate::ImResult<serde_json::Value> {
-    let public = anp::PublicKeyMaterial::from_pem(&generated.device_signing_public_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let method = identity
+        .did_document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|methods| {
+            methods.iter().find(|method| {
+                method.get("id").and_then(serde_json::Value::as_str)
+                    == Some(identity.device_signing_key_id.as_str())
+            })
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let public = crate::internal::identity_wire::document::extract_identity_public_key(method)?;
     let anp::PublicKeyMaterial::Ed25519(public) = public else {
         return Err(crate::ImError::PermissionDenied);
     };
@@ -795,7 +865,7 @@ impl PendingHandleRecoveryStore {
                     .map_err(|_| crate::ImError::PermissionDenied)?;
             pending.validate()?;
             if secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
-                || secret_ref.did.as_deref() != Some(pending.generated.did.as_str())
+                || secret_ref.did.as_deref() != Some(pending.identity.did.as_str())
             {
                 return Err(crate::ImError::PermissionDenied);
             }
@@ -824,7 +894,7 @@ impl PendingHandleRecoveryStore {
                     .map_err(|_| crate::ImError::PermissionDenied)?;
             pending.validate()?;
             if secret_ref.key_id != pending_v4_key_id(&pending.operation_id)
-                || secret_ref.did.as_deref() != Some(pending.generated.did.as_str())
+                || secret_ref.did.as_deref() != Some(pending.identity.did.as_str())
             {
                 return Err(crate::ImError::PermissionDenied);
             }
@@ -915,7 +985,7 @@ impl PendingHandleRecoveryStore {
             workspace_id: self.workspace_id.clone(),
             device_id: self.device_id.clone(),
             identity_id: Some(pending.owner_identity_id.clone()),
-            did: Some(pending.generated.did.as_str().to_owned()),
+            did: Some(pending.identity.did.as_str().to_owned()),
             kind: SecretKind::IdentityHandleRecoveryPending,
             key_id: pending_v4_key_id(&pending.operation_id),
             key_version: V4_KEY_VERSION,
@@ -997,6 +1067,16 @@ mod tests {
             None,
         )
         .unwrap();
+        let identity = super::HandleRecoveryIdentityRef {
+            store_id: "store-1".to_owned(),
+            identity_id: "identity-1".to_owned(),
+            did: generated.did,
+            did_document: generated.did_document,
+            protocol_device_id: generated.protocol_device_id,
+            root_key_id: generated.root_key_id,
+            device_signing_key_id: generated.device_signing_key_id,
+            device_e2ee_key_id: generated.device_e2ee_key_id,
+        };
         super::PendingHandleRecoveryV4::new_pre_otp(
             "op_v4_12345678".to_owned(),
             "owner-1".to_owned(),
@@ -1006,7 +1086,7 @@ mod tests {
             false,
             "alice.example.invalid".to_owned(),
             "did:wba:example.invalid:user:alice:old".to_owned(),
-            generated,
+            identity,
         )
         .unwrap()
     }
@@ -1017,6 +1097,17 @@ mod tests {
             super::V4_CONTRACT_HASH,
             "0b8c713448ab2b9ab54dd90fc6875da38e2a73f6b017c6d84e685f8f8c0c500a"
         );
+    }
+
+    #[test]
+    fn v4_pending_contains_only_public_identity_custody_references() {
+        let pending = v4_pending();
+        let encoded = serde_json::to_string(&pending).unwrap();
+        assert!(!encoded.contains("PRIVATE KEY"));
+        assert!(!encoded.contains("private_pem"));
+        assert!(!encoded.contains("root_private"));
+        assert!(!encoded.contains("device_signing_private"));
+        assert!(!encoded.contains("device_e2ee_private"));
     }
 
     #[test]
@@ -1136,7 +1227,7 @@ mod tests {
     #[test]
     fn recovery_owner_continuity_conflict_uses_generated_fresh_owner() {
         let mut pending = v4_pending();
-        let generated_owner = pending.generated.unique_id.clone();
+        let generated_owner = pending.identity.unique_id().unwrap();
         pending
             .freeze_fresh_local_owner("did:wba:example.invalid:user:alice:remote-current")
             .unwrap();
@@ -1153,7 +1244,7 @@ mod tests {
     fn fresh_machine_freezes_the_authoritative_previous_did() {
         let mut pending = v4_pending();
         pending.fresh_local_state = true;
-        pending.local_previous_did = format!("{}:unbound", pending.generated.did.as_str());
+        pending.local_previous_did = format!("{}:unbound", pending.identity.did.as_str());
         let authoritative_previous = "did:wba:example.invalid:user:alice:remote";
 
         pending
@@ -1247,7 +1338,7 @@ mod tests {
             checkpoint: super::RecoveryCheckpointV4 {
                 document_version: 1,
                 document_hash: crate::internal::identity_wire::document::document_hash(
-                    &pending.generated.did_document,
+                    &pending.identity.did_document,
                 )
                 .unwrap(),
                 registry_version: 1,

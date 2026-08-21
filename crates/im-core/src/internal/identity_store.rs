@@ -131,6 +131,7 @@ pub(crate) struct AnpIdentityProjectionStorage {
     pub(crate) store_id: String,
     pub(crate) identity_id: String,
     auth: AnpIdentityProjectionAuth,
+    allow_missing_auth: bool,
 }
 
 pub(crate) struct AnpIdentityProjectionReplacement<'a> {
@@ -190,7 +191,18 @@ impl AnpIdentityProjectionStorage {
             store_id,
             identity_id,
             auth,
+            allow_missing_auth: false,
         })
+    }
+
+    pub(crate) fn from_core_pending_auth(
+        core: &crate::core::ImCore,
+        store_id: impl Into<String>,
+        identity_id: impl Into<String>,
+    ) -> crate::ImResult<Self> {
+        let mut storage = Self::from_core(core, store_id, identity_id)?;
+        storage.allow_missing_auth = true;
+        Ok(storage)
     }
 }
 
@@ -470,8 +482,13 @@ impl<'a> IdentityStore<'a> {
                 device_id,
                 vault,
             } => {
-                let auth_ref =
-                    seal_anp_projection_auth(&input, workspace_id, device_id, vault.as_ref())?;
+                let auth_ref = seal_anp_projection_auth(
+                    &input,
+                    workspace_id,
+                    device_id,
+                    vault.as_ref(),
+                    storage.allow_missing_auth,
+                )?;
                 remove_file_if_exists(&identity_dir.join(AUTH_FILE_NAME))?;
                 Some(auth_ref)
             }
@@ -3124,8 +3141,9 @@ fn seal_anp_projection_auth(
     workspace_id: &str,
     device_id: &str,
     vault: &dyn crate::internal::secret_vault::SecretVault,
+    allow_missing_auth: bool,
 ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
-    let auth_state_raw = identity_auth_state_raw(&input.jwt_token, false)?;
+    let auth_state_raw = identity_auth_state_raw(&input.jwt_token, allow_missing_auth)?;
     crate::internal::auth::state::parse_auth_state(&auth_state_raw)?;
     let auth_ref = vault.seal(crate::internal::secret_vault::SealSecretRequest {
         metadata: vault_secret_metadata(
@@ -5165,6 +5183,7 @@ mod tests {
                     store_id: "store-file".to_string(),
                     identity_id: "custody-file".to_string(),
                     auth: AnpIdentityProjectionAuth::FileCompat,
+                    allow_missing_auth: false,
                 },
             )
             .unwrap();
@@ -5212,6 +5231,7 @@ mod tests {
                         device_id: "device-a".to_string(),
                         vault: vault.clone(),
                     },
+                    allow_missing_auth: false,
                 },
             )
             .unwrap();
@@ -5249,6 +5269,7 @@ mod tests {
                 store_id: "store-retry".to_string(),
                 identity_id: format!("custody-retry-{index}"),
                 auth: AnpIdentityProjectionAuth::FileCompat,
+                allow_missing_auth: false,
             };
             assert!(store
                 .save_anp_identity_projection_inner(
