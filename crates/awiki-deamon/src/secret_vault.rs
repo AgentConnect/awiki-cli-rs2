@@ -3,30 +3,37 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
 };
+use hkdf::Hkdf;
 use im_core::vault::{
     DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealIfAbsentResult,
     SealSecretRequest, SecretBytes, SecretRef, SecretVault, DEVICE_VAULT_ROOT_KEY_LEN,
 };
 use rand::rngs::OsRng;
 use rand::RngCore;
+use sha2::Sha256;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 use crate::DaemonConfig;
 
 pub const DAEMON_VAULT_ROOT_KEY_ENV: &str = "AWIKI_DAEMON_VAULT_ROOT_KEY_B64";
 const DAEMON_LOCAL_ROOT_KEY_FILE_NAME: &str = "root-key.b64u";
+const ANP_IDENTITY_ROOT_KEY_INFO: &[u8] = b"awiki-daemon/anp-identity/root-key/v1";
 
 #[derive(Debug)]
 pub struct DaemonSecretVault {
     inner: FileSecretVault,
+    anp_identity_root_key: Zeroizing<[u8; DEVICE_VAULT_ROOT_KEY_LEN]>,
 }
 
 impl DaemonSecretVault {
     pub fn from_config(config: &DaemonConfig) -> Result<Self> {
-        let root_key = load_or_create_root_key(config)?;
-        Ok(Self::from_root_key(config, root_key))
+        Ok(Self::from_root_key_bytes(
+            config,
+            load_or_create_root_key_bytes(config)?,
+        ))
     }
 
     pub fn from_config_and_env(config: &DaemonConfig) -> Result<Self> {
@@ -34,24 +41,33 @@ impl DaemonSecretVault {
             .ok()
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
-        let root_key = parse_root_key(raw.as_deref())?;
-        Ok(Self::from_root_key(config, root_key))
+        Ok(Self::from_root_key_bytes(
+            config,
+            parse_root_key_bytes_from_source(raw.as_deref(), DAEMON_VAULT_ROOT_KEY_ENV)?,
+        ))
     }
 
     pub fn from_root_key_bytes(
         config: &DaemonConfig,
-        bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN],
+        mut bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN],
     ) -> Self {
-        Self::from_root_key(config, DeviceVaultRootKey::from_bytes(bytes))
-    }
-
-    fn from_root_key(config: &DaemonConfig, root_key: DeviceVaultRootKey) -> Self {
+        let mut anp_identity_root_key = Zeroizing::new([0_u8; DEVICE_VAULT_ROOT_KEY_LEN]);
+        Hkdf::<Sha256>::new(None, &bytes)
+            .expand(ANP_IDENTITY_ROOT_KEY_INFO, anp_identity_root_key.as_mut())
+            .expect("32-byte HKDF output is valid");
+        let root_key = DeviceVaultRootKey::from_bytes(bytes);
+        bytes.fill(0);
         Self {
             inner: FileSecretVault::new(
                 root_key,
                 FileSecretVaultStore::new(config.secret_vault_dir.clone()),
             ),
+            anp_identity_root_key,
         }
+    }
+
+    pub(crate) fn anp_identity_root_key(&self) -> [u8; DEVICE_VAULT_ROOT_KEY_LEN] {
+        *self.anp_identity_root_key
     }
 
     pub fn seal(&self, request: SealSecretRequest) -> im_core::ImResult<SecretRef> {
@@ -88,7 +104,8 @@ impl DaemonSecretVault {
 }
 
 pub fn parse_root_key(raw: Option<&str>) -> Result<DeviceVaultRootKey> {
-    parse_root_key_from_source(raw, DAEMON_VAULT_ROOT_KEY_ENV)
+    parse_root_key_bytes_from_source(raw, DAEMON_VAULT_ROOT_KEY_ENV)
+        .map(DeviceVaultRootKey::from_bytes)
 }
 
 fn local_root_key_file(config: &DaemonConfig) -> PathBuf {
@@ -97,35 +114,31 @@ fn local_root_key_file(config: &DaemonConfig) -> PathBuf {
         .join(DAEMON_LOCAL_ROOT_KEY_FILE_NAME)
 }
 
-fn load_or_create_root_key(config: &DaemonConfig) -> Result<DeviceVaultRootKey> {
+fn load_or_create_root_key_bytes(config: &DaemonConfig) -> Result<[u8; DEVICE_VAULT_ROOT_KEY_LEN]> {
     let raw = std::env::var(DAEMON_VAULT_ROOT_KEY_ENV)
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
     if raw.is_some() {
-        return parse_root_key(raw.as_deref());
+        return parse_root_key_bytes_from_source(raw.as_deref(), DAEMON_VAULT_ROOT_KEY_ENV);
     }
     load_or_create_local_root_key(&local_root_key_file(config))
 }
 
-fn load_or_create_local_root_key(path: &Path) -> Result<DeviceVaultRootKey> {
+fn load_or_create_local_root_key(path: &Path) -> Result<[u8; DEVICE_VAULT_ROOT_KEY_LEN]> {
     if let Some(raw) = read_local_root_key_file(path)? {
-        return parse_root_key_from_source(Some(&raw), "daemon local vault root key file");
+        return parse_root_key_bytes_from_source(Some(&raw), "daemon local vault root key file");
     }
 
     let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
     OsRng.fill_bytes(&mut bytes);
     match write_local_root_key_file(path, &bytes)? {
-        LocalRootKeyWriteOutcome::Created => {
-            let root_key = DeviceVaultRootKey::from_bytes(bytes);
-            bytes.fill(0);
-            Ok(root_key)
-        }
+        LocalRootKeyWriteOutcome::Created => Ok(bytes),
         LocalRootKeyWriteOutcome::AlreadyExists => {
             bytes.fill(0);
             let raw = read_local_root_key_file(path)?
                 .context("daemon local vault root key file appeared but could not be read")?;
-            parse_root_key_from_source(Some(&raw), "daemon local vault root key file")
+            parse_root_key_bytes_from_source(Some(&raw), "daemon local vault root key file")
         }
     }
 }
@@ -259,7 +272,10 @@ fn set_private_file_mode(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_root_key_from_source(raw: Option<&str>, source_name: &str) -> Result<DeviceVaultRootKey> {
+fn parse_root_key_bytes_from_source(
+    raw: Option<&str>,
+    source_name: &str,
+) -> Result<[u8; DEVICE_VAULT_ROOT_KEY_LEN]> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         bail!(
             "{source_name} is required for daemon secret vault persistence; refusing plaintext fallback"
@@ -274,7 +290,7 @@ fn parse_root_key_from_source(raw: Option<&str>, source_name: &str) -> Result<De
     }
     let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
     bytes.copy_from_slice(&decoded);
-    Ok(DeviceVaultRootKey::from_bytes(bytes))
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -326,6 +342,21 @@ mod tests {
         assert_eq!(opened.expose_secret(), b"daemon-private-key");
         assert_eq!(vault.list().unwrap(), vec![secret_ref]);
         assert!(config.secret_vault_dir.join("records").is_dir());
+    }
+
+    #[test]
+    fn identity_custody_uses_a_stable_domain_separated_root_key() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let source = [21_u8; DEVICE_VAULT_ROOT_KEY_LEN];
+        let first = DaemonSecretVault::from_root_key_bytes(&config, source);
+        let second = DaemonSecretVault::from_root_key_bytes(&config, source);
+
+        assert_eq!(
+            first.anp_identity_root_key(),
+            second.anp_identity_root_key()
+        );
+        assert_ne!(first.anp_identity_root_key(), source);
     }
 
     fn test_metadata(key_id: &str) -> SecretMetadata {

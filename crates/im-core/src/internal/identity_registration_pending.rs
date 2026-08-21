@@ -53,15 +53,12 @@ pub(crate) struct PendingRegistration {
 pub(crate) struct PendingRegistrationIdentity {
     pub(crate) controller_store_id: String,
     pub(crate) controller_identity_id: String,
-    pub(crate) daemon_store_id: String,
-    pub(crate) daemon_identity_id: String,
     pub(crate) did: crate::ids::Did,
     pub(crate) did_document: serde_json::Value,
     pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
     pub(crate) root_key_id: String,
     pub(crate) device_signing_key_id: String,
     pub(crate) device_e2ee_key_id: String,
-    pub(crate) daemon_key_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) controller_revision_id: Option<String>,
 }
@@ -200,8 +197,6 @@ impl PendingRegistrationIdentity {
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
         if self.controller_store_id.trim().is_empty()
             || self.controller_identity_id.trim().is_empty()
-            || self.daemon_store_id.trim().is_empty()
-            || self.daemon_identity_id.trim().is_empty()
             || self
                 .did_document
                 .get("id")
@@ -220,7 +215,6 @@ impl PendingRegistrationIdentity {
                     self.did.as_str(),
                     self.protocol_device_id.as_str()
                 )
-            || self.daemon_key_id != format!("{}#daemon-key-1", self.did.as_str())
             || self
                 .controller_revision_id
                 .as_ref()
@@ -235,14 +229,15 @@ impl PendingRegistrationIdentity {
             || manifest.devices[0].device_id != self.protocol_device_id.as_str()
             || manifest.devices[0].signing_key_id != self.device_signing_key_id
             || manifest.devices[0].e2ee_key_id != self.device_e2ee_key_id
-            || !anp::authentication::is_authentication_authorized(
-                &self.did_document,
-                &self.daemon_key_id,
-            )
-            || anp::authentication::is_assertion_method_authorized(
-                &self.did_document,
-                &self.daemon_key_id,
-            )
+            || self.did_document["authentication"]
+                .as_array()
+                .is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry
+                            .as_str()
+                            .is_some_and(|kid| kid.ends_with("#daemon-key-1"))
+                    })
+                })
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -412,10 +407,6 @@ mod tests {
             original.controller_identity_id
         );
         assert_eq!(
-            pending.identity.daemon_identity_id,
-            original.daemon_identity_id
-        );
-        assert_eq!(
             pending.identity.device_e2ee_key_id,
             original.device_e2ee_key_id
         );
@@ -426,25 +417,29 @@ mod tests {
     }
 
     fn identity() -> PendingRegistrationIdentity {
-        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        let create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
             "example.test",
             "alice",
             None,
             None,
         )
         .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut store = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
+        let generated = store.create_identity(create.spec).unwrap();
+        let manifest = anp::authentication::validate_device_manifest(generated.document())
+            .unwrap()
+            .unwrap();
+        let device = &manifest.devices[0];
         PendingRegistrationIdentity {
             controller_store_id: "controller-store".to_owned(),
             controller_identity_id: "controller-identity".to_owned(),
-            daemon_store_id: "daemon-store".to_owned(),
-            daemon_identity_id: "daemon-identity".to_owned(),
-            did: generated.did,
-            did_document: generated.did_document,
-            protocol_device_id: generated.protocol_device_id,
-            root_key_id: generated.root_key_id,
-            device_signing_key_id: generated.device_signing_key_id,
-            device_e2ee_key_id: generated.device_e2ee_key_id,
-            daemon_key_id: generated.daemon_subkey_package.verification_method,
+            did: crate::ids::Did::parse(generated.did()).unwrap(),
+            did_document: generated.document().clone(),
+            protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
+            root_key_id: format!("{}#key-1", generated.did()),
+            device_signing_key_id: device.signing_key_id.clone(),
+            device_e2ee_key_id: device.e2ee_key_id.clone(),
             controller_revision_id: Some("revision-1".to_owned()),
         }
     }

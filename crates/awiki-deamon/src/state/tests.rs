@@ -1456,7 +1456,8 @@ fn user_delegated_identity_roundtrips_and_replays_idempotently() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.user_did, identity.user_did);
-    assert_eq!(loaded.private_key_material, "z-private-secret");
+    assert_eq!(loaded.private_key_material, "<awiki-secret-vault-ref>");
+    assert!(loaded.private_key_ref_json.is_some());
     assert_eq!(loaded.status, "paired_key_received");
     assert!(!format!("{loaded:?}").contains("z-private-secret"));
 
@@ -1632,7 +1633,7 @@ INSERT INTO user_delegated_identity (
         .unwrap_err()
         .to_string();
 
-    assert!(error.contains("private_key_ref_json is missing a daemon secret vault ref"));
+    assert!(error.contains("delegated identity custody reference is missing"));
     let (stored_private_key_material, private_key_ref_json): (String, Option<String>) = connection
         .query_row(
             r#"

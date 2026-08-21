@@ -2,8 +2,7 @@ use std::path::Path;
 
 use anp_identity::{
     AdoptVerifiedDocumentSpec, DocumentUpdateSpec, IdentityState, KeyOrigin, KeyRole, KeyState,
-    PublicationState, RequestSigningEnrollmentSpec, RequestSigningMutationSpec,
-    RequestSigningPublicKeySpec, VerifiedDocumentEvidence,
+    PublicationState, VerifiedDocumentEvidence,
 };
 
 pub(crate) fn open_controller_store(
@@ -44,28 +43,13 @@ pub(crate) fn open_controller_store(
     }
 }
 
-/// Opens the daemon-only custody domain used for rootless `daemon-key-1`
-/// enrollments. It deliberately has a different store root and root-key file
-/// from the controller store.
-pub(crate) fn open_daemon_store(
-    core: &crate::core::ImCore,
-) -> crate::ImResult<anp_identity::DidStore> {
-    let root = core
-        .inner()
-        .sdk_paths()
-        .identities
-        .identity_root_dir
-        .join(".anp-identity-daemon");
-    open_or_initialize_local_file(&root)
-}
-
 pub(crate) fn provision_registration_identity(
     core: &crate::core::ImCore,
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
     let mut controller_store = open_controller_store(core)?;
-    let mut controller = match find_unprojected_registration_identity(
+    let controller = match find_unprojected_registration_identity(
         core,
         &controller_store,
         domain,
@@ -99,99 +83,17 @@ pub(crate) fn provision_registration_identity(
         .find(|key| key.role == KeyRole::RootControl && key.origin == KeyOrigin::Managed)
         .map(|key| key.kid.clone())
         .ok_or(crate::ImError::PermissionDenied)?;
-    let checkpoint = controller
-        .checkpoint()
-        .cloned()
-        .ok_or(crate::ImError::PermissionDenied)?;
-
-    let mut daemon_store = open_daemon_store(core)?;
-    let daemon = match daemon_store.open_identity(controller.did()) {
-        Ok(identity) => identity,
-        Err(anp_identity::DidError::IdentityNotFound) => daemon_store
-            .prepare_request_signing_enrollment(RequestSigningEnrollmentSpec {
-                verified_document: controller.document().clone(),
-                evidence: VerifiedDocumentEvidence {
-                    document_version: checkpoint.document_version,
-                    registry_version: checkpoint.registry_version,
-                    document_digest: checkpoint.document_digest,
-                },
-                fragment: "daemon-key-1".to_owned(),
-                capabilities: anp_identity::Capabilities { did_wba: true },
-            })
-            .map(|(identity, _)| identity)
-            .map_err(map_error)?,
-        Err(error) => return Err(map_error(error)),
-    };
-    let daemon_key = daemon
-        .keys()
-        .iter()
-        .find(|key| {
-            key.role == KeyRole::RequestSigning
-                && key.origin == KeyOrigin::Managed
-                && matches!(key.state, KeyState::Pending | KeyState::Active)
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let daemon_key_id = format!("{}#daemon-key-1", controller.did());
-    if daemon_key.kid != daemon_key_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-
-    let (did_document, controller_revision_id) = match controller.pending_revision() {
-        Some(pending) => {
-            let method = anp::authentication::find_verification_method(
-                &pending.candidate_document,
-                &daemon_key_id,
-            )
-            .ok_or(crate::ImError::PermissionDenied)?;
-            if method
-                .get("publicKeyMultibase")
-                .and_then(serde_json::Value::as_str)
-                != Some(daemon_key.public_key_multibase.as_str())
-                || pending.state == PublicationState::PublicationUncertain
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-            (pending.candidate_document, Some(pending.revision_id))
-        }
-        None if request_signing_method_matches(
-            controller.document(),
-            &daemon_key_id,
-            &daemon_key.public_key_multibase,
-        ) =>
-        {
-            (controller.document().clone(), None)
-        }
-        None => {
-            let prepared = controller
-                .prepare_update(DocumentUpdateSpec {
-                    request_signing_rotation: None,
-                    request_signing_mutations: vec![RequestSigningMutationSpec::Add {
-                        key: RequestSigningPublicKeySpec {
-                            kid: daemon_key_id.clone(),
-                            public_key_multibase: daemon_key.public_key_multibase.clone(),
-                        },
-                    }],
-                    device_mutations: Vec::new(),
-                    services: None,
-                })
-                .map_err(map_error)?;
-            (prepared.candidate_document, Some(prepared.revision_id))
-        }
-    };
     let did = crate::ids::Did::parse(controller.did())?;
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
         controller_store_id: controller_store.manifest().store_id.clone(),
         controller_identity_id: controller.identity_id().to_owned(),
-        daemon_store_id: daemon_store.manifest().store_id.clone(),
-        daemon_identity_id: daemon.identity_id().to_owned(),
         did,
-        did_document,
+        did_document: controller.document().clone(),
         protocol_device_id,
         root_key_id,
         device_signing_key_id: device.signing_key_id.clone(),
         device_e2ee_key_id: device.e2ee_key_id.clone(),
-        daemon_key_id,
-        controller_revision_id,
+        controller_revision_id: None,
     };
     identity.validate()?;
     Ok(identity)
@@ -788,97 +690,32 @@ pub(crate) fn refresh_registration_document(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
 ) -> crate::ImResult<(serde_json::Value, String)> {
-    let revision_id = identity
-        .controller_revision_id
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
     let mut controller = open_registration_controller(core, identity)?;
-    let pending = controller
-        .pending_revision()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if pending.revision_id != revision_id || pending.state != PublicationState::Prepared {
-        return Err(crate::ImError::PermissionDenied);
+    if let Some(revision_id) = identity.controller_revision_id.as_deref() {
+        let pending = controller
+            .pending_revision()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if pending.revision_id != revision_id || pending.state != PublicationState::Prepared {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        controller.abort_update(revision_id).map_err(map_error)?;
     }
-    controller.abort_update(revision_id).map_err(map_error)?;
-    let daemon = open_registration_daemon(core, identity)?;
-    let daemon_key = daemon
-        .key_metadata(&identity.daemon_key_id)
-        .map_err(map_error)?;
+    let services = service_specs(controller.document())?;
     let prepared = controller
         .prepare_update(DocumentUpdateSpec {
             request_signing_rotation: None,
-            request_signing_mutations: vec![RequestSigningMutationSpec::Add {
-                key: RequestSigningPublicKeySpec {
-                    kid: identity.daemon_key_id.clone(),
-                    public_key_multibase: daemon_key.public_key_multibase.clone(),
-                },
-            }],
+            request_signing_mutations: Vec::new(),
             device_mutations: Vec::new(),
-            services: None,
+            services: Some(services),
         })
         .map_err(map_error)?;
     Ok((prepared.candidate_document, prepared.revision_id))
-}
-
-pub(crate) fn activate_registration_daemon(
-    core: &crate::core::ImCore,
-    identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
-) -> crate::ImResult<()> {
-    let controller = open_registration_controller(core, identity)?;
-    ensure_document_matches(controller.document(), &identity.did_document)?;
-    let checkpoint = controller
-        .checkpoint()
-        .cloned()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let mut daemon = open_registration_daemon(core, identity)?;
-    let outcome = daemon
-        .adopt_verified_document(AdoptVerifiedDocumentSpec {
-            document: identity.did_document.clone(),
-            evidence: VerifiedDocumentEvidence {
-                document_version: checkpoint.document_version,
-                registry_version: checkpoint.registry_version,
-                document_digest: checkpoint.document_digest,
-            },
-        })
-        .map_err(map_error)?;
-    if !matches!(
-        outcome,
-        anp_identity::AdoptDocumentOutcome::Activated
-            | anp_identity::AdoptDocumentOutcome::Unchanged
-    ) || daemon.state() != IdentityState::Active
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(())
 }
 
 pub(crate) fn discard_unpublished_registration(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
 ) -> crate::ImResult<()> {
-    let mut daemon_store = open_daemon_store(core)?;
-    if daemon_store.manifest().store_id != identity.daemon_store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    match daemon_store.open_identity(identity.did.as_str()) {
-        Ok(daemon) => {
-            if daemon.identity_id() != identity.daemon_identity_id
-                || daemon.state() != IdentityState::Enrolling
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-            daemon_store
-                .discard_unpublished_enrollment(
-                    identity.did.as_str(),
-                    &identity.daemon_identity_id,
-                    daemon_store.generation(),
-                )
-                .map_err(map_error)?;
-        }
-        Err(anp_identity::DidError::IdentityNotFound) => {}
-        Err(error) => return Err(map_error(error)),
-    }
-
     let mut controller_store = open_controller_store(core)?;
     if controller_store.manifest().store_id != identity.controller_store_id {
         return Err(crate::ImError::PermissionDenied);
@@ -1005,23 +842,6 @@ fn open_registration_controller(
     Ok(identity)
 }
 
-fn open_registration_daemon(
-    core: &crate::core::ImCore,
-    expected: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let store = open_daemon_store(core)?;
-    if store.manifest().store_id != expected.daemon_store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let identity = store
-        .open_identity(expected.did.as_str())
-        .map_err(map_error)?;
-    if identity.identity_id() != expected.daemon_identity_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(identity)
-}
-
 fn ensure_controller_document(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1042,19 +862,56 @@ fn ensure_document_matches(
     Ok(())
 }
 
-fn request_signing_method_matches(
-    document: &serde_json::Value,
-    kid: &str,
-    public_key_multibase: &str,
-) -> bool {
-    anp::authentication::find_verification_method(document, kid).is_some_and(|method| {
-        method
-            .get("publicKeyMultibase")
-            .and_then(serde_json::Value::as_str)
-            == Some(public_key_multibase)
-            && anp::authentication::is_authentication_authorized(document, kid)
-            && !anp::authentication::is_assertion_method_authorized(document, kid)
-    })
+fn service_specs(document: &serde_json::Value) -> crate::ImResult<Vec<anp_identity::ServiceSpec>> {
+    document
+        .get("service")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(crate::ImError::PermissionDenied)?
+        .iter()
+        .filter(|service| {
+            service.get("type").and_then(serde_json::Value::as_str) != Some("AgentDescription")
+        })
+        .map(|service| {
+            let id = service
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(|id| id.rsplit_once('#').map_or(id, |(_, fragment)| fragment))
+                .ok_or(crate::ImError::PermissionDenied)?;
+            let strings = |field: &str| {
+                service
+                    .get(field)
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(ToOwned::to_owned)
+                            .ok_or(crate::ImError::PermissionDenied)
+                    })
+                    .collect::<crate::ImResult<Vec<_>>>()
+            };
+            Ok(anp_identity::ServiceSpec {
+                id: id.to_owned(),
+                service_type: service
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(crate::ImError::PermissionDenied)?
+                    .to_owned(),
+                service_endpoint: service
+                    .get("serviceEndpoint")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(crate::ImError::PermissionDenied)?
+                    .to_owned(),
+                service_did: service
+                    .get("serviceDid")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                profiles: strings("profiles")?,
+                security_profiles: strings("securityProfiles")?,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1113,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn registration_provisioning_recovers_the_same_controller_and_daemon_namespaces() {
+    fn registration_provisioning_recovers_one_controller_namespace() {
         let root = tempfile::tempdir().unwrap();
         let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
 
@@ -1122,25 +979,21 @@ mod tests {
 
         assert_eq!(recovered, first);
         let controller = open_controller_store(&core).unwrap();
-        let daemon = open_daemon_store(&core).unwrap();
         assert_eq!(controller.list_identities().unwrap().len(), 1);
-        assert_eq!(daemon.list_identities().unwrap().len(), 1);
-        assert_ne!(first.controller_store_id, first.daemon_store_id);
-        let controller_root =
-            std::fs::read(root.path().join("identities/.anp-identity/root-key.b64u")).unwrap();
-        let daemon_root = std::fs::read(
-            root.path()
-                .join("identities/.anp-identity-daemon/root-key.b64u"),
-        )
-        .unwrap();
-        assert_ne!(controller_root, daemon_root);
+        assert!(!first.did_document["authentication"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry
+                .as_str()
+                .is_some_and(|kid| kid.ends_with("#daemon-key-1"))));
         let encoded = serde_json::to_string(&first).unwrap();
         assert!(!encoded.contains("PRIVATE KEY"));
         assert!(!encoded.contains("private_pem"));
     }
 
     #[test]
-    fn unpublished_registration_cleanup_removes_both_namespaces_and_is_idempotent() {
+    fn unpublished_registration_cleanup_removes_controller_namespace_and_is_idempotent() {
         let root = tempfile::tempdir().unwrap();
         let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
         let identity = provision_registration_identity(&core, "example.test", "alice").unwrap();
@@ -1149,11 +1002,6 @@ mod tests {
         discard_unpublished_registration(&core, &identity).unwrap();
 
         assert!(open_controller_store(&core)
-            .unwrap()
-            .list_identities()
-            .unwrap()
-            .is_empty());
-        assert!(open_daemon_store(&core)
             .unwrap()
             .list_identities()
             .unwrap()

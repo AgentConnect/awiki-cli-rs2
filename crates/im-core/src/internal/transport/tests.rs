@@ -1002,26 +1002,29 @@ fn write_rpc_success(stream: &mut std::net::TcpStream) {
 
 #[test]
 fn registration_reconciliation_registry_requires_the_exact_single_device() {
-    let generated =
-        crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
-            "example.test",
-            "alice",
-            None,
-            None,
-        )
+    let create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+        "example.test",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut custody = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
+    let generated = custody.create_identity(create.spec).unwrap();
+    let manifest = anp::authentication::validate_device_manifest(generated.document())
+        .unwrap()
         .unwrap();
+    let device = &manifest.devices[0];
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
         controller_store_id: "controller-store".to_owned(),
         controller_identity_id: "controller-identity".to_owned(),
-        daemon_store_id: "daemon-store".to_owned(),
-        daemon_identity_id: "daemon-identity".to_owned(),
-        did: generated.did,
-        did_document: generated.did_document,
-        protocol_device_id: generated.protocol_device_id,
-        root_key_id: generated.root_key_id,
-        device_signing_key_id: generated.device_signing_key_id,
-        device_e2ee_key_id: generated.device_e2ee_key_id,
-        daemon_key_id: generated.daemon_subkey_package.verification_method,
+        did: crate::ids::Did::parse(generated.did()).unwrap(),
+        did_document: generated.document().clone(),
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
+        root_key_id: format!("{}#key-1", generated.did()),
+        device_signing_key_id: device.signing_key_id.clone(),
+        device_e2ee_key_id: device.e2ee_key_id.clone(),
         controller_revision_id: Some("revision-1".to_owned()),
     };
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(

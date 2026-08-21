@@ -1120,7 +1120,6 @@ fn commit_pending_registration(
         .remote_result
         .as_ref()
         .ok_or(crate::ImError::PermissionDenied)?;
-    crate::internal::identity_custody::activate_registration_daemon(core, &pending.identity)?;
     let storage = crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
         core,
         pending.identity.controller_store_id.clone(),
@@ -1151,7 +1150,6 @@ async fn commit_pending_registration_async(
     let identity = pending.identity.clone();
     let input = registration_save_input(pending, remote)?;
     let stored = tokio::task::spawn_blocking(move || {
-        crate::internal::identity_custody::activate_registration_daemon(&core, &identity)?;
         let storage = crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
             &core,
             identity.controller_store_id,
@@ -1953,10 +1951,6 @@ mod tests {
             original.controller_identity_id
         );
         assert_eq!(
-            expired_pending.identity.daemon_identity_id,
-            original.daemon_identity_id
-        );
-        assert_eq!(
             expired_pending.identity.device_signing_key_id,
             original.device_signing_key_id
         );
@@ -2262,14 +2256,6 @@ mod tests {
         runtime
             .key_provider
             .sign(&pending.identity.device_signing_key_id, b"registration")
-            .unwrap();
-        let daemon_store = crate::internal::identity_custody::open_daemon_store(&core).unwrap();
-        let daemon = daemon_store
-            .open_identity(pending.identity.did.as_str())
-            .unwrap();
-        assert_eq!(daemon.state(), anp_identity::IdentityState::Active);
-        daemon
-            .sign(&pending.identity.daemon_key_id, b"daemon")
             .unwrap();
     }
 

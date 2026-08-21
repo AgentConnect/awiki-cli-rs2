@@ -288,6 +288,127 @@ fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
 }
 
 #[test]
+fn messages_read_runtime_uses_the_current_anp_request_signer() {
+    let fixture = Fixture::new();
+    let source_root = tempfile::tempdir().unwrap();
+    let mut source_store =
+        anp_identity::DidStore::initialize_injected(source_root.path(), "source", [95; 32])
+            .unwrap();
+    let mut source = source_store
+        .create_identity(anp_identity::DidCreateSpec {
+            profile: anp_identity::DidProfile::E1,
+            domain: "awiki.test".to_owned(),
+            port: None,
+            path_segments: vec!["users".to_owned(), "delegated-read".to_owned()],
+            capabilities: anp_identity::Capabilities { did_wba: false },
+            managed_keys: vec![anp_identity::ManagedKeySpec {
+                fragment: "key-1".to_owned(),
+                role: anp_identity::KeyRole::RootControl,
+            }],
+            external_keys: Vec::new(),
+            services: Vec::new(),
+            agent_description_url: None,
+            extensions: Vec::new(),
+        })
+        .unwrap();
+    let daemon_root = tempfile::tempdir().unwrap();
+    let mut daemon_store =
+        anp_identity::DidStore::initialize_injected(daemon_root.path(), "daemon", [96; 32])
+            .unwrap();
+    let (mut daemon_identity, prepared) = daemon_store
+        .prepare_request_signing_enrollment(anp_identity::RequestSigningEnrollmentSpec {
+            verified_document: source.document().clone(),
+            evidence: anp_identity::VerifiedDocumentEvidence {
+                document_version: 1,
+                registry_version: 1,
+                document_digest: anp_identity::canonical_document_digest(source.document())
+                    .unwrap(),
+            },
+            fragment: "daemon-key-1".to_owned(),
+            capabilities: anp_identity::Capabilities { did_wba: true },
+        })
+        .unwrap();
+    let update = source
+        .prepare_update(anp_identity::DocumentUpdateSpec {
+            request_signing_rotation: None,
+            request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
+                key: anp_identity::RequestSigningPublicKeySpec {
+                    kid: prepared.request_signing_key.kid.clone(),
+                    public_key_multibase: prepared.request_signing_key.public_key_multibase.clone(),
+                },
+            }],
+            device_mutations: Vec::new(),
+            services: None,
+        })
+        .unwrap();
+    source.begin_publication(&update.revision_id).unwrap();
+    source.mark_published(&update.revision_id).unwrap();
+    source.commit_update(&update.revision_id).unwrap();
+    daemon_identity
+        .adopt_verified_document(anp_identity::AdoptVerifiedDocumentSpec {
+            document: source.document().clone(),
+            evidence: anp_identity::VerifiedDocumentEvidence {
+                document_version: 2,
+                registry_version: 2,
+                document_digest: anp_identity::canonical_document_digest(source.document())
+                    .unwrap(),
+            },
+        })
+        .unwrap();
+    let user_did = source.did().to_owned();
+    let verification_method = prepared.request_signing_key.kid;
+    let client = fixture
+        .core()
+        .client_with_anp_delegated_identity(daemon_identity)
+        .unwrap();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        DelegatedProofOnlySessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({
+                "messages": [{
+                    "id": "msg-anp-delegated",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": user_did,
+                    "content": "plain delegated",
+                    "content_type": "text/plain",
+                    "server_seq": 19
+                }],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                    inbox_owner_did: Some(user_did.clone()),
+                    inbox_auth_verification_method: Some(verification_method.clone()),
+                    inbox_auth_key_ref: Some("anp-identity:current".to_owned()),
+                    inbox_auth: None,
+                }),
+            },
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items[0].id.as_str(), "msg-anp-delegated");
+    let calls = calls.borrow();
+    assert_eq!(calls[0].params["meta"]["sender_did"], user_did);
+    assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("keyid=\"{verification_method}\"")));
+}
+
+#[test]
 fn messages_read_runtime_uses_vault_delegated_inbox_key_ref() {
     install_test_im_core_vault_root_key();
     let fixture = Fixture::new();
@@ -7004,6 +7125,14 @@ impl Fixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
+        self.core()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_string(),
+            ))
+            .unwrap()
+    }
+
+    fn core(&self) -> crate::core::ImCore {
         crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -7033,10 +7162,6 @@ impl Fixture {
             },
             crate::ImCoreOpenOptions::default(),
         )
-        .unwrap()
-        .client(crate::identity::IdentitySelector::LocalAlias(
-            "alice".to_string(),
-        ))
         .unwrap()
     }
 

@@ -544,19 +544,38 @@ fn write_bootstrap_did_document_cache(config: &DaemonConfig, payload: &Value) {
     let user_did = package["user_did"].as_str().unwrap();
     let method = package["verification_method"].as_str().unwrap();
     let public_key = package["public_key_multibase"].as_str().unwrap();
+    let root_private =
+        crate::app_bridge::secret_store::ed25519_private_key_pem_for_test(&[18_u8; 32]);
+    let root_public =
+        crate::app_bridge::secret_store::public_key_multibase_from_private_material(&root_private)
+            .unwrap();
+    let root_method = format!("{user_did}#key-1");
     let identity_dir = config.identity_root_dir.join("alice");
     std::fs::create_dir_all(&identity_dir).unwrap();
     std::fs::write(
         identity_dir.join("did.json"),
         serde_json::to_vec_pretty(&json!({
             "id": user_did,
-            "verificationMethod": [{
-                "id": method,
-                "type": "Multikey",
-                "controller": user_did,
-                "publicKeyMultibase": public_key
-            }],
-            "authentication": [method]
+            "verificationMethod": [
+                {
+                    "id": root_method,
+                    "type": "Multikey",
+                    "controller": user_did,
+                    "publicKeyMultibase": root_public
+                },
+                {
+                    "id": method,
+                    "type": "Multikey",
+                    "controller": user_did,
+                    "publicKeyMultibase": public_key
+                }
+            ],
+            "authentication": [method],
+            "proof": {
+                "type": "DataIntegrityProof",
+                "verificationMethod": root_method,
+                "proofValue": "zTestFixtureOnly"
+            }
         }))
         .unwrap(),
     )
@@ -3409,10 +3428,13 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         .unwrap();
     assert_eq!(loaded.user_did, "did:human:alice");
     assert_eq!(loaded.daemon_agent_did, daemon.agent_did);
-    assert_eq!(
-        loaded.private_key_material,
-        bootstrap_key_material().1.trim()
-    );
+    assert_eq!(loaded.private_key_material, "<awiki-secret-vault-ref>");
+    let custody: crate::identity_custody::DaemonIdentityRef =
+        serde_json::from_str(loaded.private_key_ref_json.as_deref().unwrap()).unwrap();
+    crate::identity_custody::open_referenced_identity(&state, &custody)
+        .unwrap()
+        .sign(&custody.key_id, b"migrated bootstrap key")
+        .unwrap();
     assert!(!format!("{loaded:?}").contains("BEGIN PRIVATE KEY"));
     let binding = state
         .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")

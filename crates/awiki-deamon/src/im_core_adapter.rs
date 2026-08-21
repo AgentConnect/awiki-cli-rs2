@@ -229,6 +229,13 @@ impl ImCoreAdapter {
                 auth_token: None,
             })?)
     }
+
+    pub fn client_for_anp_delegated_identity(
+        &self,
+        identity: anp_identity::DidIdentity,
+    ) -> Result<im_core::ImClient> {
+        Ok(self.core.client_with_anp_delegated_identity(identity)?)
+    }
 }
 
 fn host_backed_device_identity_material(

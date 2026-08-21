@@ -1,13 +1,7 @@
 use anyhow::{bail, Context, Result};
-use base64::Engine as _;
 use im_core::messages::{
     InboxHistoryOptions, InboxQuery, InboxScope, Message, MessageBodyView, MessageDeliveryOptions,
     MessageDirection,
-};
-use im_core::vault::{
-    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
-    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
-    DEVICE_VAULT_ROOT_KEY_LEN,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -22,7 +16,6 @@ use crate::app_bridge::personal_agent::{
     APP_MESSAGE_HANDLER_ROLE, APP_PERSONAL_AGENT_STATUS_ACTIVE, APP_PERSONAL_AGENT_STATUS_ENSURING,
     APP_PERSONAL_AGENT_STATUS_READY,
 };
-use crate::app_bridge::secret_store::normalize_delegated_private_key_pem;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
     ImCoreAgentOutbox, RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
@@ -280,16 +273,21 @@ fn delegated_runtime_run_id(state: &DaemonState, task_id: &str) -> Result<String
 
 pub struct ImCoreDelegatedInboxClient<'a> {
     config: &'a DaemonConfig,
+    state: &'a DaemonState,
     im_core: &'a ImCoreAdapter,
 }
 
 impl<'a> ImCoreDelegatedInboxClient<'a> {
     pub fn new(
         config: &'a DaemonConfig,
-        _state: &'a DaemonState,
+        state: &'a DaemonState,
         im_core: &'a ImCoreAdapter,
     ) -> Self {
-        Self { config, im_core }
+        Self {
+            config,
+            state,
+            im_core,
+        }
     }
 }
 
@@ -315,14 +313,9 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
             &did_document,
             time::OffsetDateTime::now_utc(),
         )?;
-        let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
-        let key_ref = ensure_delegated_inbox_key_ref(self.config, identity, &private_key_pem)?;
-        let client = self.im_core.client_for_delegated_signing_identity(
-            delegated_identity_alias(&identity.user_did),
-            identity.user_did.clone(),
-            minimal_user_did_document(identity),
-            private_key_pem,
-        )?;
+        let (_, custody) =
+            crate::identity_custody::ensure_record_custody(self.state, identity, &did_document)?;
+        let client = self.im_core.client_for_anp_delegated_identity(custody)?;
         let page = client.messages().inbox_with_metadata(InboxQuery {
             scope: InboxScope::All,
             limit: im_core::ids::PageLimit::new(limit)?,
@@ -333,7 +326,7 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
                 inbox_auth_verification_method: Some(
                     binding.inbox_auth_verification_method.clone(),
                 ),
-                inbox_auth_key_ref: Some(key_ref),
+                inbox_auth_key_ref: Some("anp-identity:current".to_owned()),
                 inbox_auth: None,
             }),
         })?;
@@ -1577,103 +1570,6 @@ fn allowed_actions(binding: &AppPersonalAgentBindingRecord) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-fn ensure_delegated_inbox_key_ref(
-    config: &DaemonConfig,
-    identity: &UserDelegatedIdentityRecord,
-    private_key_pem: &str,
-) -> Result<String> {
-    let vault = im_core_file_vault(config)?;
-    let secret_ref = vault
-        .seal(SealSecretRequest {
-            metadata: SecretMetadata {
-                workspace_id: "awiki-im-core".to_owned(),
-                device_id: "local-device".to_owned(),
-                identity_id: Some(delegated_identity_alias(&identity.user_did)),
-                did: Some(identity.user_did.clone()),
-                kind: SecretKind::IdentityDaemonPrivate,
-                key_id: identity.verification_method.clone(),
-                key_version: 1,
-                policy: SecretAccessPolicy::no_prompt_local_secret(),
-            },
-            plaintext: SecretBytes::from_vec(private_key_pem.as_bytes().to_vec()),
-        })
-        .context("seal delegated inbox key_ref to im-core vault")?;
-    let opened = vault
-        .open(&secret_ref)
-        .context("verify delegated inbox key_ref vault secret")?;
-    if opened.expose_secret() != private_key_pem.as_bytes() {
-        bail!("delegated inbox key_ref vault verification failed");
-    }
-    Ok(im_core::vault::encode_delegated_key_ref(&secret_ref)?)
-}
-
-fn im_core_file_vault(config: &DaemonConfig) -> Result<FileSecretVault> {
-    let raw = std::env::var(im_core_vault_root_key_env()).with_context(|| {
-        format!(
-            "{} is required for delegated inbox key_ref vault",
-            im_core_vault_root_key_env()
-        )
-    })?;
-    let root_key = parse_im_core_vault_root_key(&raw)?;
-    let vault_dir = config
-        .im_core_sqlite_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new(""))
-        .join("secrets")
-        .join("vault");
-    Ok(FileSecretVault::new(
-        root_key,
-        FileSecretVaultStore::new(vault_dir),
-    ))
-}
-
-fn parse_im_core_vault_root_key(raw: &str) -> Result<DeviceVaultRootKey> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        bail!("{} must not be empty", im_core_vault_root_key_env());
-    }
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(trimmed)
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(trimmed))
-        .with_context(|| {
-            format!(
-                "{} must be base64url/base64 encoded",
-                im_core_vault_root_key_env()
-            )
-        })?;
-    if decoded.len() != DEVICE_VAULT_ROOT_KEY_LEN {
-        bail!(
-            "{} must decode to {} bytes",
-            im_core_vault_root_key_env(),
-            DEVICE_VAULT_ROOT_KEY_LEN
-        );
-    }
-    let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
-    bytes.copy_from_slice(&decoded);
-    Ok(DeviceVaultRootKey::from_bytes(bytes))
-}
-
-fn im_core_vault_root_key_env() -> &'static str {
-    "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
-}
-
-fn minimal_user_did_document(identity: &UserDelegatedIdentityRecord) -> Value {
-    json!({
-        "id": identity.user_did,
-        "verificationMethod": [{
-            "id": identity.verification_method,
-            "type": "Multikey",
-            "controller": identity.user_did,
-            "publicKeyMultibase": identity.public_key_multibase
-        }],
-        "authentication": [identity.verification_method]
-    })
-}
-
-fn delegated_identity_alias(user_did: &str) -> String {
-    format!("delegated-inbox-{}", stable_id_suffix(user_did))
-}
-
 fn event_id(owner_did: &str, message_id: &str) -> String {
     format!(
         "evt_{}",

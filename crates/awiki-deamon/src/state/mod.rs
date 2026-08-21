@@ -106,6 +106,39 @@ impl DaemonState {
         Ok(connection)
     }
 
+    pub(crate) fn identity_custody_root(&self) -> Result<PathBuf> {
+        self.database_path
+            .parent()
+            .map(|parent| parent.join("identity-custody"))
+            .context("daemon database path has no state root")
+    }
+
+    pub(crate) fn identity_custody_root_key(&self) -> Result<[u8; DEVICE_VAULT_ROOT_KEY_LEN]> {
+        self.secret_vault
+            .as_ref()
+            .map(|vault| vault.anp_identity_root_key())
+            .context("daemon identity custody requires the daemon vault root key")
+    }
+
+    pub(crate) fn open_secret_ref(
+        &self,
+        secret_ref: &im_core::vault::SecretRef,
+    ) -> Result<im_core::vault::SecretBytes> {
+        self.secret_vault
+            .as_ref()
+            .context("daemon secret vault is unavailable")?
+            .open(secret_ref)
+            .map_err(anyhow::Error::from)
+    }
+
+    pub(crate) fn delete_secret_ref(&self, secret_ref: &im_core::vault::SecretRef) -> Result<()> {
+        self.secret_vault
+            .as_ref()
+            .context("daemon secret vault is unavailable")?
+            .delete(secret_ref)
+            .map_err(anyhow::Error::from)
+    }
+
     pub(crate) fn secret_vault(&self) -> Option<&DaemonSecretVault> {
         self.secret_vault.as_deref()
     }
