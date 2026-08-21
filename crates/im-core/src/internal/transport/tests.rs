@@ -1010,6 +1010,20 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
             None,
         )
         .unwrap();
+    let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
+        controller_store_id: "controller-store".to_owned(),
+        controller_identity_id: "controller-identity".to_owned(),
+        daemon_store_id: "daemon-store".to_owned(),
+        daemon_identity_id: "daemon-identity".to_owned(),
+        did: generated.did,
+        did_document: generated.did_document,
+        protocol_device_id: generated.protocol_device_id,
+        root_key_id: generated.root_key_id,
+        device_signing_key_id: generated.device_signing_key_id,
+        device_e2ee_key_id: generated.device_e2ee_key_id,
+        daemon_key_id: generated.daemon_subkey_package.verification_method,
+        controller_revision_id: Some("revision-1".to_owned()),
+    };
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         "alice".to_owned(),
         "example.test".to_owned(),
@@ -1019,20 +1033,20 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
         "already_verified".to_owned(),
         None,
         None,
-        generated,
+        identity,
     )
     .unwrap();
     let registry = |e2ee_key_id: &str| {
         json!({
-            "did": pending.generated.did.as_str(),
+            "did": pending.identity.did.as_str(),
             "checkpoint": {
                 "document_version": 1,
                 "document_hash": pending.document_hash,
                 "registry_version": 1
             },
             "devices": [{
-                "device_id": pending.generated.protocol_device_id.as_str(),
-                "signing_key_id": pending.generated.device_signing_key_id,
+                "device_id": pending.identity.protocol_device_id.as_str(),
+                "signing_key_id": pending.identity.device_signing_key_id,
                 "e2ee_key_id": e2ee_key_id,
                 "status": "active",
                 "role": "admin",
@@ -1044,13 +1058,13 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
 
     validate_pending_registration_registry_value(
         &pending,
-        registry(&pending.generated.device_e2ee_key_id),
+        registry(&pending.identity.device_e2ee_key_id),
     )
     .unwrap();
     assert_eq!(
         validate_pending_registration_registry_value(
             &pending,
-            registry(&format!("{}#wrong-e2ee", pending.generated.did.as_str()))
+            registry(&format!("{}#wrong-e2ee", pending.identity.did.as_str()))
         ),
         Err(crate::ImError::PermissionDenied)
     );

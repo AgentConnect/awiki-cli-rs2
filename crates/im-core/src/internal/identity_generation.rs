@@ -39,6 +39,15 @@ const VNEXT_SERVICE_SECURITY_PROFILES: &[&str] =
     &["transport-protected", "direct-e2ee", "group-e2ee"];
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VNextAnpIdentityCreateSpec {
+    pub(crate) spec: anp_identity::DidCreateSpec,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub(crate) root_key_fragment: String,
+    pub(crate) device_signing_fragment: String,
+    pub(crate) device_e2ee_fragment: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GeneratedIdentity {
     pub(crate) did: crate::ids::Did,
     pub(crate) unique_id: String,
@@ -151,6 +160,101 @@ pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
     )?;
     add_handle_service_and_resign(&mut generated, hostname, &local_part)?;
     Ok(generated)
+}
+
+pub(crate) fn vnext_handle_anp_identity_create_spec(
+    hostname: &str,
+    local_part: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<VNextAnpIdentityCreateSpec> {
+    let local_part = canonical_handle_local_part(local_part)?;
+    let hostname = hostname.trim();
+    if hostname.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("hostname".to_owned()),
+            "hostname is required",
+        ));
+    }
+    let endpoint = service_endpoint.map_or_else(
+        || default_anp_service_endpoint(hostname),
+        |endpoint| endpoint.as_str().to_owned(),
+    );
+    let service_did = service_did.map_or_else(
+        || default_anp_service_did(hostname),
+        |did| did.as_str().to_owned(),
+    );
+    validate_anp_service_did(&service_did)?;
+    let protocol_device_id = crate::ids::ProtocolDeviceId::generate()?;
+    let root_key_fragment = VM_KEY_AUTH.to_owned();
+    let device_signing_fragment = format!("{}-sign", protocol_device_id.as_str());
+    let device_e2ee_fragment = format!("{}-e2ee", protocol_device_id.as_str());
+    Ok(VNextAnpIdentityCreateSpec {
+        spec: anp_identity::DidCreateSpec {
+            profile: anp_identity::DidProfile::E1,
+            domain: hostname.to_owned(),
+            port: None,
+            path_segments: vec!["user".to_owned(), local_part.clone()],
+            capabilities: anp_identity::Capabilities { did_wba: true },
+            managed_keys: vec![
+                anp_identity::ManagedKeySpec {
+                    fragment: root_key_fragment.clone(),
+                    role: anp_identity::KeyRole::RootControl,
+                },
+                anp_identity::ManagedKeySpec {
+                    fragment: device_signing_fragment.clone(),
+                    role: anp_identity::KeyRole::DeviceSigning,
+                },
+                anp_identity::ManagedKeySpec {
+                    fragment: device_e2ee_fragment.clone(),
+                    role: anp_identity::KeyRole::E2eeAgreement,
+                },
+            ],
+            external_keys: Vec::new(),
+            services: vec![
+                anp_identity::ServiceSpec {
+                    id: "message".to_owned(),
+                    service_type: "ANPMessageService".to_owned(),
+                    service_endpoint: endpoint,
+                    service_did: Some(service_did),
+                    profiles: VNEXT_SERVICE_PROFILES
+                        .iter()
+                        .map(|profile| (*profile).to_owned())
+                        .collect(),
+                    security_profiles: VNEXT_SERVICE_SECURITY_PROFILES
+                        .iter()
+                        .map(|profile| (*profile).to_owned())
+                        .collect(),
+                },
+                anp_identity::ServiceSpec {
+                    id: "handle".to_owned(),
+                    service_type: "ANPHandleService".to_owned(),
+                    service_endpoint: format!("https://{hostname}/.well-known/handle/{local_part}"),
+                    service_did: None,
+                    profiles: Vec::new(),
+                    security_profiles: Vec::new(),
+                },
+            ],
+            agent_description_url: None,
+            extensions: vec![anp_identity::DidExtensionSpec::DeviceManifest(
+                anp_identity::DeviceManifestSpec {
+                    devices: vec![anp_identity::DeviceManifestEntrySpec {
+                        device_id: protocol_device_id.as_str().to_owned(),
+                        signing_key_id: device_signing_fragment.clone(),
+                        e2ee_key_id: device_e2ee_fragment.clone(),
+                        profiles: VNEXT_DEVICE_PROFILES
+                            .iter()
+                            .map(|profile| (*profile).to_owned())
+                            .collect(),
+                    }],
+                },
+            )],
+        },
+        protocol_device_id,
+        root_key_fragment,
+        device_signing_fragment,
+        device_e2ee_fragment,
+    })
 }
 
 /// Generates the exact three-method Manifest document required by Handle

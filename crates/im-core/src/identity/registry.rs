@@ -1367,13 +1367,13 @@ impl IdentityRegistry<'_> {
                         missing: vec!["anp_identity_id".to_owned()],
                     }
                 })?;
-                let store = open_controller_anp_identity_store(self.core)?;
+                let store = crate::internal::identity_custody::open_controller_store(self.core)?;
                 if store.manifest().store_id != expected_store_id {
                     return Err(crate::ImError::PermissionDenied);
                 }
                 let identity = store
                     .open_identity(summary.did.as_str())
-                    .map_err(map_anp_identity_error)?;
+                    .map_err(crate::internal::identity_custody::map_error)?;
                 if identity.identity_id() != expected_identity_id {
                     return Err(crate::ImError::PermissionDenied);
                 }
@@ -1734,74 +1734,6 @@ impl IdentityRegistry<'_> {
             missing,
             warnings,
         }
-    }
-}
-
-fn open_controller_anp_identity_store(
-    core: &crate::core::ImCore,
-) -> crate::ImResult<anp_identity::DidStore> {
-    let root = core
-        .inner()
-        .sdk_paths()
-        .identities
-        .identity_root_dir
-        .join(".anp-identity");
-    if let Some(context) = core.inner().identity_vault() {
-        let key_id = format!("awiki-workspace-vault:{}", context.workspace_id());
-        let open = || {
-            anp_identity::DidStore::open_injected(
-                &root,
-                key_id.clone(),
-                context.anp_identity_root_key(),
-            )
-        };
-        match open() {
-            Ok(store) => Ok(store),
-            Err(anp_identity::DidError::StoreNotFound) => {
-                match anp_identity::DidStore::initialize_injected(
-                    &root,
-                    key_id.clone(),
-                    context.anp_identity_root_key(),
-                ) {
-                    Ok(store) => Ok(store),
-                    Err(anp_identity::DidError::Conflict) => open().map_err(map_anp_identity_error),
-                    Err(error) => Err(map_anp_identity_error(error)),
-                }
-            }
-            Err(error) => Err(map_anp_identity_error(error)),
-        }
-    } else {
-        match anp_identity::DidStore::open_local_file(&root) {
-            Ok(store) => Ok(store),
-            Err(anp_identity::DidError::StoreNotFound) => {
-                match anp_identity::DidStore::initialize_local_file(&root) {
-                    Ok(store) => Ok(store),
-                    Err(anp_identity::DidError::Conflict) => {
-                        anp_identity::DidStore::open_local_file(&root)
-                            .map_err(map_anp_identity_error)
-                    }
-                    Err(error) => Err(map_anp_identity_error(error)),
-                }
-            }
-            Err(error) => Err(map_anp_identity_error(error)),
-        }
-    }
-}
-
-fn map_anp_identity_error(error: anp_identity::DidError) -> crate::ImError {
-    match error {
-        anp_identity::DidError::IdentityNotFound => crate::ImError::IdentityNotFound {
-            selector: "anp-identity".to_string(),
-        },
-        anp_identity::DidError::Conflict => crate::ImError::LocalStateUnavailable {
-            detail: "anp identity store generation changed; reload is required".to_string(),
-        },
-        anp_identity::DidError::RootKeyMismatch | anp_identity::DidError::ProviderUnavailable => {
-            crate::ImError::PermissionDenied
-        }
-        error => crate::ImError::LocalStateUnavailable {
-            detail: format!("anp identity store operation failed: {error}"),
-        },
     }
 }
 
@@ -3794,7 +3726,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
-        let mut custody = open_controller_anp_identity_store(&core).unwrap();
+        let mut custody = crate::internal::identity_custody::open_controller_store(&core).unwrap();
         let identity = custody
             .create_identity(anp_identity_spec("created"))
             .unwrap();

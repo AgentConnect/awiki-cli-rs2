@@ -406,6 +406,55 @@ impl ImCore {
         self.client_with_device_identity_material_inner(material, None)
     }
 
+    pub(crate) fn client_with_pending_anp_identity(
+        &self,
+        identity: anp_identity::DidIdentity,
+        handle: &str,
+        display_name: &str,
+        protocol_device_id: &crate::ids::ProtocolDeviceId,
+    ) -> crate::ImResult<ImClient> {
+        let did = crate::ids::Did::parse(identity.did())?;
+        let identity_id = crate::ids::IdentityId::parse(
+            did.as_str()
+                .rsplit(':')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )?;
+        let handle = crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain)?;
+        let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
+            std::sync::Arc::new(
+                crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
+            );
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle: Some(handle),
+                display_name: Some(display_name.to_owned()),
+                local_alias: None,
+                device_id: Some(protocol_device_id.as_str().to_owned()),
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: false,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider: provider,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+                sync_account: None,
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
     /// Creates an exact-device client whose validated replacement access tokens
     /// are durably committed by the trusted host.
     pub fn client_with_device_identity_material_and_auth_persistence(

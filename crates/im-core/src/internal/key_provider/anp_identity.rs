@@ -16,6 +16,9 @@ pub(crate) struct AnpIdentitySigner {
 }
 
 enum AnpIdentityAuth {
+    Ephemeral {
+        state: RwLock<crate::internal::auth::state::AuthStateSnapshot>,
+    },
     File {
         auth_state_path: PathBuf,
     },
@@ -38,6 +41,7 @@ impl fmt::Debug for AnpIdentitySigner {
 impl fmt::Debug for AnpIdentityAuth {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Ephemeral { .. } => formatter.write_str("EphemeralAuth(<memory-only>)"),
             Self::File { auth_state_path } => formatter
                 .debug_struct("FileAuth")
                 .field("auth_state_path", auth_state_path)
@@ -48,6 +52,15 @@ impl fmt::Debug for AnpIdentityAuth {
 }
 
 impl AnpIdentitySigner {
+    pub(crate) fn new_ephemeral(identity: DidIdentity) -> Self {
+        Self {
+            identity: Mutex::new(identity),
+            auth: AnpIdentityAuth::Ephemeral {
+                state: RwLock::new(Default::default()),
+            },
+        }
+    }
+
     pub(crate) fn new_file(identity: DidIdentity, auth_state_path: PathBuf) -> Self {
         Self {
             identity: Mutex::new(identity),
@@ -270,6 +283,12 @@ impl super::IdentitySigner for AnpIdentitySigner {
             return Err(crate::ImError::PermissionDenied);
         }
         match &self.auth {
+            AnpIdentityAuth::Ephemeral { state } => state
+                .read()
+                .map(|state| state.clone())
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "ephemeral auth state lock poisoned".to_owned(),
+                }),
             AnpIdentityAuth::File { auth_state_path } => {
                 crate::internal::auth::state::read_auth_state(auth_state_path)
             }
@@ -292,6 +311,16 @@ impl super::IdentitySigner for AnpIdentitySigner {
             return Err(crate::ImError::PermissionDenied);
         }
         match &self.auth {
+            AnpIdentityAuth::Ephemeral { state } => {
+                let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
+                let snapshot = crate::internal::auth::state::parse_auth_state(&raw)?;
+                *state
+                    .write()
+                    .map_err(|_| crate::ImError::LocalStateUnavailable {
+                        detail: "ephemeral auth state lock poisoned".to_owned(),
+                    })? = snapshot;
+                Ok(())
+            }
             AnpIdentityAuth::File { auth_state_path } => {
                 crate::internal::auth::state::persist_jwt_token(auth_state_path, token)
             }

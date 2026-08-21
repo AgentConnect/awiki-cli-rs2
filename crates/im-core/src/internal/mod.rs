@@ -21,6 +21,7 @@ pub(crate) mod handle_discovery;
 pub(crate) mod http;
 pub(crate) mod idempotent_submission;
 pub(crate) mod identity_bind_runtime;
+pub(crate) mod identity_custody;
 pub(crate) mod identity_daemon_subkey;
 pub(crate) mod identity_device_join;
 pub(crate) mod identity_device_join_runtime;
