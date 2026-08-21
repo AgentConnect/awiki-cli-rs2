@@ -437,7 +437,7 @@ pub(crate) struct V2DirectProductContext {
     local_did: String,
     local_device_id: String,
     local_e2ee_key_id: String,
-    local_static_private: x25519_dalek::StaticSecret,
+    identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
     sqlite_path: PathBuf,
     vault: Arc<dyn crate::vault::SecretVault + Send + Sync>,
     scope: V2OwnerScope,
@@ -504,7 +504,7 @@ impl V2DirectProductContext {
             local_did: client.did().as_str().to_owned(),
             local_device_id: endpoint.device_id,
             local_e2ee_key_id: endpoint.e2ee_key_id,
-            local_static_private: super::v2_prekey_runtime::local_static_private(client)?,
+            identity_signer: Arc::clone(&client.runtime().key_provider),
             sqlite_path: core.inner().sdk_paths().local_state.sqlite_path.clone(),
             vault,
             scope: endpoint.scope,
@@ -1163,6 +1163,14 @@ where
         target_document,
         &record.recipient_e2ee_key_id,
     )?;
+    let recipient_signed_prekey: [u8; 32] = URL_SAFE_NO_PAD
+        .decode(&fetched.prekey_bundle.signed_prekey.public_key_b64u)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .try_into()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let local_static_dh = context
+        .identity_signer
+        .ecdh(&context.local_e2ee_key_id, &recipient_signed_prekey)?;
     context.with_direct(|direct| {
         // The first logical business payload is the Init plaintext. Session
         // confirmation happens automatically on receive; the user never has
@@ -1171,7 +1179,7 @@ where
             binding,
             &record.operation_id,
             plaintext,
-            &context.local_static_private,
+            &local_static_dh,
             &fetched,
             &recipient_static,
             now,
@@ -1237,7 +1245,10 @@ fn validate_local_endpoint(
         local_document,
         &context.local_e2ee_key_id,
     )?;
-    if x25519_dalek::PublicKey::from(&context.local_static_private).to_bytes() != document_public {
+    if !matches!(
+        context.identity_signer.public_key(&context.local_e2ee_key_id)?,
+        anp::PublicKeyMaterial::X25519(public) if public == document_public
+    ) {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
@@ -2368,12 +2379,20 @@ where
             if is_session_reply_operation_id(&metadata.operation_id) {
                 return Ok(V2InboundProductOutcome::ConsumedControl);
             }
+            let sender_ephemeral: [u8; 32] = URL_SAFE_NO_PAD
+                .decode(&init.sender_ephemeral_pub_b64u)
+                .map_err(|_| crate::ImError::PermissionDenied)?
+                .try_into()
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            let local_static_dh = context
+                .identity_signer
+                .ecdh(&context.local_e2ee_key_id, &sender_ephemeral)?;
             let decrypted = context.with_direct(|direct| {
                 direct.decrypt_inbound_init_validated(
                     &binding,
                     &metadata,
                     &init,
-                    &context.local_static_private,
+                    &local_static_dh,
                     &sender_static,
                     &now,
                     |plaintext, _| {

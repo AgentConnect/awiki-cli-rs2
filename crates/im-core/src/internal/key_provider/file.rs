@@ -8,11 +8,11 @@ const LEGACY_KEY1_PRIVATE_FILES: &[&str] = &["private.key", "key-1-private.pem"]
 const E2EE_AGREEMENT_PRIVATE_FILES: &[&str] = &["e2ee-agreement-private.pem", "key-3-private.pem"];
 const AUTH_STATE_FILE: &str = "auth.json";
 
-pub(crate) struct FileBackedKeyMaterialProvider {
+pub(crate) struct FileBackedIdentitySigner {
     identity_dir: PathBuf,
 }
 
-impl FileBackedKeyMaterialProvider {
+impl FileBackedIdentitySigner {
     pub(crate) fn new(identity_dir: PathBuf) -> Self {
         Self { identity_dir }
     }
@@ -34,16 +34,16 @@ impl FileBackedKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for FileBackedKeyMaterialProvider {
+impl fmt::Debug for FileBackedIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileBackedKeyMaterialProvider")
+        f.debug_struct("FileBackedIdentitySigner")
             .field("identity_dir", &self.identity_dir)
             .field("backend", &"file-backed")
             .finish_non_exhaustive()
     }
 }
 
-impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
+impl super::IdentitySigner for FileBackedIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         read_json_file(&self.did_document_path(), "did_document")
     }
@@ -52,33 +52,40 @@ impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
         read_optional_json_file(&self.did_document_path(), "did_document")
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self
-            .legacy_key1_role_adapter()?
-            .device_request_signing_private_pem())
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        request_signing_key_id(&self.did_document()?)
     }
 
-    fn device_request_signing_material(
-        &self,
-    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
-        let did_document = self.did_document()?;
-        Ok(super::DeviceRequestSigningMaterial {
-            key_id: request_signing_key_id(&did_document)?,
-            private_key_pem: self.device_request_signing_private_pem()?,
-        })
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.request_signing_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.legacy_key1_private_pem()?, message, "request signing")
     }
 
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self
-            .legacy_key1_role_adapter()?
-            .did_document_root_private_pem())
+    fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.root_control_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.legacy_key1_private_pem()?, message, "root control")
     }
 
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        read_non_empty_text_file(
-            &self.e2ee_agreement_private_key_path(),
-            "e2ee_agreement_private_key",
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        if self.agreement_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::ecdh_private_pem(
+            &read_non_empty_text_file(
+                &self.e2ee_agreement_private_key_path(),
+                "e2ee_agreement_private_key",
+            )?,
+            peer_public,
+            "E2EE agreement",
         )
+    }
+
+    fn legacy_root_private_pem(&self) -> crate::ImResult<zeroize::Zeroizing<String>> {
+        self.legacy_key1_private_pem().map(zeroize::Zeroizing::new)
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
@@ -117,13 +124,12 @@ pub(crate) fn request_signing_key_id(document: &Value) -> crate::ImResult<String
     Ok(key_id.to_owned())
 }
 
-impl FileBackedKeyMaterialProvider {
-    fn legacy_key1_role_adapter(&self) -> crate::ImResult<super::LegacyKey1RoleAdapter> {
+impl FileBackedIdentitySigner {
+    fn legacy_key1_private_pem(&self) -> crate::ImResult<String> {
         read_non_empty_text_file(
             &self.legacy_key1_private_key_path(),
             "legacy_key1_private_key",
         )
-        .map(super::LegacyKey1RoleAdapter::new)
     }
 }
 
@@ -181,7 +187,7 @@ fn read_non_empty_text_file(path: &Path, path_kind: &str) -> crate::ImResult<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::KeyMaterialProvider;
+    use crate::internal::key_provider::IdentitySigner;
     use serde_json::json;
 
     const TEST_SIGNING_PEM: &str =
@@ -211,7 +217,7 @@ mod tests {
         )
         .unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
 
         assert_eq!(
             provider
@@ -222,15 +228,15 @@ mod tests {
             Some("did:wba:alice.example")
         );
         assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
+            provider.legacy_key1_private_pem().unwrap(),
             TEST_SIGNING_PEM
         );
         assert_eq!(
-            provider.did_document_root_private_pem().unwrap(),
-            TEST_SIGNING_PEM
-        );
-        assert_eq!(
-            provider.e2ee_agreement_private_pem().unwrap(),
+            read_non_empty_text_file(
+                &provider.e2ee_agreement_private_key_path(),
+                "e2ee_agreement_private_key",
+            )
+            .unwrap(),
             TEST_AGREEMENT_PEM
         );
         assert_eq!(
@@ -258,7 +264,7 @@ mod tests {
         std::fs::write(identity_dir.join("key-1-private.pem"), "current-signing").unwrap();
         std::fs::write(identity_dir.join("key-3-private.pem"), "legacy-agreement").unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
 
         assert_eq!(
             provider
@@ -269,15 +275,15 @@ mod tests {
             Some("did:wba:legacy.example")
         );
         assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
+            provider.legacy_key1_private_pem().unwrap(),
             "legacy-signing"
         );
         assert_eq!(
-            provider.did_document_root_private_pem().unwrap(),
-            "legacy-signing"
-        );
-        assert_eq!(
-            provider.e2ee_agreement_private_pem().unwrap(),
+            read_non_empty_text_file(
+                &provider.e2ee_agreement_private_key_path(),
+                "e2ee_agreement_private_key",
+            )
+            .unwrap(),
             "legacy-agreement"
         );
     }
@@ -288,7 +294,7 @@ mod tests {
         let identity_dir = root.path().join("identity");
         std::fs::create_dir_all(&identity_dir).unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
 
         assert_eq!(provider.optional_did_document().unwrap(), None);
     }
@@ -299,7 +305,7 @@ mod tests {
         let identity_dir = root.path().join("identity");
         std::fs::create_dir_all(&identity_dir).unwrap();
 
-        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+        let provider = FileBackedIdentitySigner::new(identity_dir);
         provider.persist_auth_token("token-secret-value").unwrap();
 
         assert_eq!(
@@ -318,8 +324,8 @@ mod tests {
         std::fs::create_dir_all(&identity_dir).unwrap();
         std::fs::write(identity_dir.join("private.key"), "   \n").unwrap();
 
-        let err = FileBackedKeyMaterialProvider::new(identity_dir)
-            .device_request_signing_private_pem()
+        let err = FileBackedIdentitySigner::new(identity_dir)
+            .legacy_key1_private_pem()
             .unwrap_err()
             .to_string();
 

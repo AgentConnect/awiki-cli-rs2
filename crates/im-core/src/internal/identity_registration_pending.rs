@@ -1,10 +1,9 @@
 //! Vault-only crash-convergence record for the normal `register` flow.
 //!
-//! The record preserves the exact generated vNext identity across ambiguous
-//! remote results and local activation retries. Only an explicit server
-//! expired-proof reason may replace its root proof while retaining all identity
-//! and device keys. It never stores OTP plaintext, a Genesis grant/proof, or a
-//! refresh token.
+//! The record preserves only public anp-identity references and the exact
+//! public vNext document across ambiguous remote results and local activation
+//! retries. It never stores identity private keys, OTP plaintext, a Genesis
+//! grant/proof, or a refresh token.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -15,7 +14,7 @@ use crate::internal::secret_vault::policy::SecretAccessPolicy;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const KEY_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,14 +39,30 @@ pub(crate) struct PendingRegistration {
     pub(crate) verification_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) invite_code: Option<String>,
-    pub(crate) generated:
-        crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
+    pub(crate) identity: PendingRegistrationIdentity,
     pub(crate) document_hash: String,
     pub(crate) phase: PendingRegistrationPhase,
     #[serde(default)]
     pub(crate) remote_attempted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) remote_result: Option<PendingRegistrationRemoteResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingRegistrationIdentity {
+    pub(crate) controller_store_id: String,
+    pub(crate) controller_identity_id: String,
+    pub(crate) did: crate::ids::Did,
+    pub(crate) did_document: serde_json::Value,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub(crate) root_key_id: String,
+    pub(crate) device_signing_key_id: String,
+    pub(crate) device_e2ee_key_id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) legacy_daemon_authorization: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) controller_revision_id: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +90,7 @@ impl std::fmt::Debug for PendingRegistration {
                 &self.verification_target.is_some(),
             )
             .field("has_invite_code", &self.invite_code.is_some())
-            .field("generated", &"<redacted-generated-identity>")
+            .field("identity", &self.identity)
             .field("document_hash", &self.document_hash)
             .field("phase", &self.phase)
             .field("remote_attempted", &self.remote_attempted)
@@ -94,10 +109,10 @@ impl PendingRegistration {
         verification_kind: String,
         verification_target: Option<String>,
         invite_code: Option<String>,
-        generated: crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
+        identity: PendingRegistrationIdentity,
     ) -> crate::ImResult<Self> {
         let document_hash =
-            crate::internal::identity_wire::document::document_hash(&generated.did_document)?;
+            crate::internal::identity_wire::document::document_hash(&identity.did_document)?;
         let pending = Self {
             schema_version: SCHEMA_VERSION,
             target_handle,
@@ -108,7 +123,7 @@ impl PendingRegistration {
             verification_kind,
             verification_target,
             invite_code,
-            generated,
+            identity,
             document_hash,
             phase: PendingRegistrationPhase::Prepared,
             remote_attempted: false,
@@ -130,7 +145,7 @@ impl PendingRegistration {
             )
             || self.document_hash
                 != crate::internal::identity_wire::document::document_hash(
-                    &self.generated.did_document,
+                    &self.identity.did_document,
                 )?
         {
             return Err(crate::ImError::PermissionDenied);
@@ -146,7 +161,7 @@ impl PendingRegistration {
         }
         if let Some(remote) = &self.remote_result {
             if !self.remote_attempted
-                || remote.did != self.generated.did.as_str()
+                || remote.did != self.identity.did.as_str()
                 || remote.user_id.trim().is_empty()
                 || remote.handle != self.target_handle
                 || remote.full_handle != format!("{}.{}", self.target_handle, self.target_domain)
@@ -156,25 +171,84 @@ impl PendingRegistration {
                 return Err(crate::ImError::PermissionDenied);
             }
         }
+        self.identity.validate()?;
         Ok(())
     }
 
-    pub(crate) fn refresh_expired_root_proof(&mut self) -> crate::ImResult<()> {
+    pub(crate) fn replace_prepared_document(
+        &mut self,
+        did_document: serde_json::Value,
+        controller_revision_id: Option<String>,
+    ) -> crate::ImResult<()> {
         if self.phase != PendingRegistrationPhase::Prepared
             || self.remote_result.is_some()
             || !self.remote_attempted
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_key1_proof(
-            &mut self.generated.did_document,
-            &self.generated.did,
-            &self.generated.root_private_pem,
-        )?;
+        self.identity.did_document = did_document;
+        self.identity.controller_revision_id = controller_revision_id;
         self.document_hash =
-            crate::internal::identity_wire::document::document_hash(&self.generated.did_document)?;
+            crate::internal::identity_wire::document::document_hash(&self.identity.did_document)?;
         self.remote_attempted = false;
         self.validate()
+    }
+}
+
+impl PendingRegistrationIdentity {
+    pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        let daemon_kid = format!("{}#daemon-key-1", self.did.as_str());
+        let daemon_method_present =
+            anp::authentication::find_verification_method(&self.did_document, &daemon_kid)
+                .is_some();
+        let daemon_authenticated =
+            anp::authentication::is_authentication_authorized(&self.did_document, &daemon_kid);
+        let daemon_assertion =
+            anp::authentication::is_assertion_method_authorized(&self.did_document, &daemon_kid);
+        let daemon_authorization_valid = if self.legacy_daemon_authorization {
+            daemon_method_present && daemon_authenticated && !daemon_assertion
+        } else {
+            !daemon_method_present && !daemon_authenticated && !daemon_assertion
+        };
+        if self.controller_store_id.trim().is_empty()
+            || self.controller_identity_id.trim().is_empty()
+            || self
+                .did_document
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                != Some(self.did.as_str())
+            || self.root_key_id != format!("{}#key-1", self.did.as_str())
+            || self.device_signing_key_id
+                != format!(
+                    "{}#{}-sign",
+                    self.did.as_str(),
+                    self.protocol_device_id.as_str()
+                )
+            || self.device_e2ee_key_id
+                != format!(
+                    "{}#{}-e2ee",
+                    self.did.as_str(),
+                    self.protocol_device_id.as_str()
+                )
+            || self
+                .controller_revision_id
+                .as_ref()
+                .is_some_and(|revision_id| revision_id.trim().is_empty())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let manifest = anp::authentication::validate_device_manifest(&self.did_document)
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if manifest.devices.len() != 1
+            || manifest.devices[0].device_id != self.protocol_device_id.as_str()
+            || manifest.devices[0].signing_key_id != self.device_signing_key_id
+            || manifest.devices[0].e2ee_key_id != self.device_e2ee_key_id
+            || !daemon_authorization_valid
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
     }
 }
 
@@ -250,8 +324,8 @@ impl PendingRegistrationStore {
             metadata: SecretMetadata {
                 workspace_id: self.workspace_id.clone(),
                 device_id: self.device_id.clone(),
-                identity_id: Some(pending.generated.unique_id.clone()),
-                did: Some(pending.generated.did.as_str().to_owned()),
+                identity_id: Some(pending.identity.controller_identity_id.clone()),
+                did: Some(pending.identity.did.as_str().to_owned()),
                 kind: SecretKind::IdentityRegistrationPending,
                 key_id: pending_key_id(&pending.target_handle, &pending.target_domain),
                 key_version: KEY_VERSION,
@@ -282,20 +356,16 @@ fn pending_key_id(handle: &str, domain: &str) -> String {
     format!("registration-{}", URL_SAFE_NO_PAD.encode(digest))
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn pending_registration_contains_no_verification_or_refresh_secret() {
-        let generated =
-            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
-                "example.test",
-                "alice",
-                None,
-                None,
-            )
-            .unwrap();
         let pending = PendingRegistration::new(
             "alice".to_owned(),
             "example.test".to_owned(),
@@ -305,7 +375,7 @@ mod tests {
             "phone".to_owned(),
             Some("+15555550123".to_owned()),
             Some("invite-public-id".to_owned()),
-            generated,
+            identity(),
         )
         .unwrap();
 
@@ -313,19 +383,13 @@ mod tests {
         assert!(!encoded.contains("otp"));
         assert!(!encoded.contains("grant"));
         assert!(!encoded.contains("refresh_token"));
+        assert!(!encoded.contains("PRIVATE KEY"));
+        assert!(!encoded.contains("private_pem"));
         assert!(!format!("{pending:?}").contains("PRIVATE KEY"));
     }
 
     #[test]
-    fn expired_root_proof_refresh_keeps_identity_and_device_material() {
-        let generated =
-            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
-                "example.test",
-                "alice",
-                None,
-                None,
-            )
-            .unwrap();
+    fn prepared_document_replacement_keeps_custody_and_key_references() {
         let mut pending = PendingRegistration::new(
             "alice".to_owned(),
             "example.test".to_owned(),
@@ -335,31 +399,60 @@ mod tests {
             "already_verified".to_owned(),
             None,
             None,
-            generated,
+            identity(),
         )
         .unwrap();
         pending.remote_attempted = true;
-        let original = pending.generated.clone();
+        let original = pending.identity.clone();
         let original_hash = pending.document_hash.clone();
+        let mut replacement = pending.identity.did_document.clone();
+        replacement["proof"]["created"] = serde_json::json!("2099-01-01T00:00:00Z");
 
-        pending.refresh_expired_root_proof().unwrap();
+        pending
+            .replace_prepared_document(replacement, Some("revision-next".to_owned()))
+            .unwrap();
 
-        assert_eq!(pending.generated.did, original.did);
+        assert_eq!(pending.identity.did, original.did);
         assert_eq!(
-            pending.generated.root_private_pem,
-            original.root_private_pem
+            pending.identity.controller_identity_id,
+            original.controller_identity_id
         );
         assert_eq!(
-            pending.generated.device_signing_private_pem,
-            original.device_signing_private_pem
+            pending.identity.device_e2ee_key_id,
+            original.device_e2ee_key_id
         );
-        assert_eq!(
-            pending.generated.device_e2ee_private_pem,
-            original.device_e2ee_private_pem
-        );
-        assert_ne!(pending.generated.did_document, original.did_document);
+        assert_ne!(pending.identity.did_document, original.did_document);
         assert_ne!(pending.document_hash, original_hash);
         assert!(!pending.remote_attempted);
         pending.validate().unwrap();
+    }
+
+    fn identity() -> PendingRegistrationIdentity {
+        let create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+            "example.test",
+            "alice",
+            None,
+            None,
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut store = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
+        let generated = store.create_identity(create.spec).unwrap();
+        let manifest = anp::authentication::validate_device_manifest(generated.document())
+            .unwrap()
+            .unwrap();
+        let device = &manifest.devices[0];
+        PendingRegistrationIdentity {
+            controller_store_id: "controller-store".to_owned(),
+            controller_identity_id: "controller-identity".to_owned(),
+            did: crate::ids::Did::parse(generated.did()).unwrap(),
+            did_document: generated.document().clone(),
+            protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
+            root_key_id: format!("{}#key-1", generated.did()),
+            device_signing_key_id: device.signing_key_id.clone(),
+            device_e2ee_key_id: device.e2ee_key_id.clone(),
+            legacy_daemon_authorization: false,
+            controller_revision_id: Some("revision-1".to_owned()),
+        }
     }
 }

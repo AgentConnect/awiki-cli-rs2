@@ -179,7 +179,6 @@ fn v4_commit_and_result_get_sign_distinct_exact_transcripts() {
         proof: KeyPossessionProofInputV4 {
             intent: &intent,
             intent_hash: &intent_hash,
-            bootstrap_signing_private_key: &private,
             audience: "awiki-user-service-recovery",
             created_at: "2026-08-07T12:00:00Z",
             expires_at: "2026-08-07T12:02:00Z",
@@ -189,6 +188,8 @@ fn v4_commit_and_result_get_sign_distinct_exact_transcripts() {
         new_did_document: document,
     })
     .unwrap();
+    let commit_signature = private.sign_message(commit.signing_input()).unwrap();
+    let commit = complete_commit_v4(commit, &commit_signature).unwrap();
     assert_eq!(commit.call.method, HANDLE_RECOVERY_COMMIT_V4_METHOD);
     assert_eq!(
         sorted_keys(&commit.call.params),
@@ -224,13 +225,14 @@ fn v4_commit_and_result_get_sign_distinct_exact_transcripts() {
     let result_get = prepare_result_get_v4(KeyPossessionProofInputV4 {
         intent: &intent,
         intent_hash: &intent_hash,
-        bootstrap_signing_private_key: &private,
         audience: "awiki-user-service-recovery",
         created_at: "2026-08-07T12:00:00Z",
         expires_at: "2026-08-07T12:02:00Z",
         nonce: &[10_u8; 32],
     })
     .unwrap();
+    let result_signature = private.sign_message(result_get.signing_input()).unwrap();
+    let result_get = complete_result_get_v4(result_get, &result_signature).unwrap();
     assert_eq!(result_get.call.method, HANDLE_RECOVERY_RESULT_GET_V4_METHOD);
     assert_eq!(
         sorted_keys(&result_get.call.params),
@@ -256,7 +258,6 @@ fn v4_commit_and_result_get_sign_distinct_exact_transcripts() {
 #[test]
 fn v4_proof_rejects_wrong_nonce_timestamp_lifetime_and_intent_hash() {
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
-    let private = anp::PrivateKeyMaterial::Ed25519(signing_key.clone());
     let document = json!({"id": "did:wba:example.invalid:users:alice-new"});
     let intent = signing_intent_v4(&signing_key, &document);
     let hash = intent_hash_v4(&intent).unwrap();
@@ -265,7 +266,6 @@ fn v4_proof_rejects_wrong_nonce_timestamp_lifetime_and_intent_hash() {
         prepare_result_get_v4(KeyPossessionProofInputV4 {
             intent: &intent,
             intent_hash,
-            bootstrap_signing_private_key: &private,
             audience: "awiki-user-service-recovery",
             created_at,
             expires_at,

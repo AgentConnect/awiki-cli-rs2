@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anp::direct_e2ee::{
     ApplicationPlaintext, DirectE2eeError, DirectE2eeSession, DirectEnvelopeMetadata,
@@ -35,8 +36,7 @@ pub(crate) struct DirectSecureClientInput<'a> {
     pub(crate) identity_name: String,
     pub(crate) signing_key_id: String,
     pub(crate) agreement_key_id: String,
-    pub(crate) signing_private_pem: String,
-    pub(crate) agreement_private_pem: String,
+    pub(crate) identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
     pub(crate) local_did_document: Value,
     pub(crate) local_state: &'a Connection,
 }
@@ -48,8 +48,7 @@ pub(crate) struct PreparedDirectSecureClient<'a> {
     pub(crate) local_service_did: String,
     pub(crate) signing_key_id: String,
     pub(crate) agreement_key_id: String,
-    pub(crate) signing_private: PrivateKeyMaterial,
-    pub(crate) agreement_private: PrivateKeyMaterial,
+    pub(crate) identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
     pub(crate) local_did_document: Value,
     pub(crate) local_state: &'a Connection,
 }
@@ -69,18 +68,15 @@ pub(crate) fn prepare_direct_secure_client(
     let identity_name = required("identity_name", &input.identity_name)?;
     let signing_key_id = default_key_id(&owner_did, &input.signing_key_id, "key-1");
     let agreement_key_id = default_key_id(&owner_did, &input.agreement_key_id, "key-3");
-    let signing_private =
-        PrivateKeyMaterial::from_pem(&input.signing_private_pem).map_err(|err| {
-            crate::ImError::Serialization {
-                detail: format!("parse direct E2EE signing private key: {err}"),
-            }
-        })?;
-    let agreement_private =
-        PrivateKeyMaterial::from_pem(&input.agreement_private_pem).map_err(|err| {
-            crate::ImError::Serialization {
-                detail: format!("parse direct E2EE agreement private key: {err}"),
-            }
-        })?;
+    if !matches!(
+        input.identity_signer.public_key(&signing_key_id)?,
+        PublicKeyMaterial::Ed25519(_) | PublicKeyMaterial::Secp256k1(_)
+    ) || !matches!(
+        input.identity_signer.public_key(&agreement_key_id)?,
+        PublicKeyMaterial::X25519(_)
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
     let local_service_did =
         anp::direct_e2ee::message_service_did_from_document(&input.local_did_document)
             .map_err(map_direct_error)?;
@@ -91,8 +87,7 @@ pub(crate) fn prepare_direct_secure_client(
         local_service_did,
         signing_key_id,
         agreement_key_id,
-        signing_private,
-        agreement_private,
+        identity_signer: input.identity_signer,
         local_did_document: input.local_did_document,
         local_state: input.local_state,
     })
@@ -318,14 +313,15 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             } else {
                 (None, None)
             };
-        let PrivateKeyMaterial::X25519(agreement_private) = &self.prepared.agreement_private else {
-            return Err(expected_x25519_private_key());
-        };
-        let (session, _pending, body) = DirectE2eeSession::initiate_session_with_opk(
+        let static_dh = self.prepared.identity_signer.ecdh(
+            &self.prepared.agreement_key_id,
+            &recipient_signed_prekey_public,
+        )?;
+        let (session, _pending, body) = DirectE2eeSession::initiate_session_with_static_dh(
             &metadata,
             operation_id,
             &self.prepared.agreement_key_id,
-            agreement_private,
+            &static_dh,
             &verified.bundle,
             &recipient_static_public,
             &recipient_signed_prekey_public,
@@ -377,9 +373,6 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         } else {
             None
         };
-        let PrivateKeyMaterial::X25519(agreement_private) = &self.prepared.agreement_private else {
-            return Err(expected_x25519_private_key());
-        };
         let PrivateKeyMaterial::X25519(signed_prekey_private) = &signed_prekey_private else {
             return Err(expected_x25519_private_key());
         };
@@ -388,10 +381,18 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             Some(_) => return Err(expected_x25519_private_key()),
             None => None,
         };
-        let (session, plaintext) = DirectE2eeSession::accept_incoming_init_with_opk(
+        let sender_ephemeral_public = decode_public_key_b64u(
+            &init_body.sender_ephemeral_pub_b64u,
+            "sender_ephemeral_pub_b64u",
+        )?;
+        let static_dh = self
+            .prepared
+            .identity_signer
+            .ecdh(&self.prepared.agreement_key_id, &sender_ephemeral_public)?;
+        let (session, plaintext) = DirectE2eeSession::accept_incoming_init_with_static_dh(
             metadata,
             &self.prepared.agreement_key_id,
-            agreement_private,
+            &static_dh,
             signed_prekey_private,
             one_time_prekey_private,
             &sender_static_public,
@@ -559,16 +560,25 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
     ) -> crate::ImResult<PrekeyBundle> {
         let bundle_id = super::prekey_lifecycle::bundle_id(&signed_prekey);
         let proof_created = super::prekey_lifecycle::bundle_proof_created(&signed_prekey)?;
-        anp::direct_e2ee::build_prekey_bundle(
+        let public_key = self
+            .prepared
+            .identity_signer
+            .public_key(&self.prepared.signing_key_id)?;
+        let prepared = anp::direct_e2ee::prepare_prekey_bundle(
             &bundle_id,
             &self.prepared.owner_did,
             &self.prepared.agreement_key_id,
             signed_prekey,
-            &self.prepared.signing_private,
+            &public_key,
             &self.prepared.signing_key_id,
             Some(&proof_created),
         )
-        .map_err(map_direct_error)
+        .map_err(map_direct_error)?;
+        let signature = self
+            .prepared
+            .identity_signer
+            .sign(&self.prepared.signing_key_id, prepared.signing_input())?;
+        anp::direct_e2ee::complete_prekey_bundle(prepared, &signature).map_err(map_direct_error)
     }
 
     fn ensure_fresh_one_time_prekeys(&mut self, min_count: usize) -> crate::ImResult<()> {
@@ -747,7 +757,7 @@ fn expected_x25519_private_key() -> crate::ImError {
     }
 }
 
-fn decode_public_key_b64u(value: &str, field: &str) -> crate::ImResult<[u8; 32]> {
+pub(crate) fn decode_public_key_b64u(value: &str, field: &str) -> crate::ImResult<[u8; 32]> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let bytes = URL_SAFE_NO_PAD
         .decode(value)
@@ -854,6 +864,7 @@ mod tests {
     fn secure_direct_client_publishes_prekey_bundle_from_sqlite_state() {
         let db = Connection::open_in_memory().unwrap();
         let identity = test_identity("alice.example", "alice");
+        let identity_signer = identity.signer();
         let calls = Rc::new(RefCell::new(Vec::<(String, Map<String, Value>)>::new()));
         let rpc_calls = calls.clone();
         let mut client = MessageServiceDirectSecureClient::new(
@@ -863,8 +874,7 @@ mod tests {
                 identity_name: "alice".to_owned(),
                 signing_key_id: format!("{}#key-1", identity.did),
                 agreement_key_id: format!("{}#key-3", identity.did),
-                signing_private_pem: identity.signing_private_pem,
-                agreement_private_pem: identity.agreement_private_pem,
+                identity_signer,
                 local_did_document: identity.document,
                 local_state: &db,
             })
@@ -1050,6 +1060,7 @@ mod tests {
     fn prepare_direct_secure_client_rejects_empty_owner_identity() {
         let db = Connection::open_in_memory().unwrap();
         let identity = test_identity("alice.example", "alice");
+        let identity_signer = identity.signer();
 
         let err = match prepare_direct_secure_client(DirectSecureClientInput {
             owner_identity_id: " ".to_owned(),
@@ -1057,8 +1068,7 @@ mod tests {
             identity_name: "alice".to_owned(),
             signing_key_id: String::new(),
             agreement_key_id: String::new(),
-            signing_private_pem: identity.signing_private_pem,
-            agreement_private_pem: identity.agreement_private_pem,
+            identity_signer,
             local_did_document: identity.document,
             local_state: &db,
         }) {
@@ -1086,8 +1096,7 @@ mod tests {
             identity_name: owner_identity_id.to_owned(),
             signing_key_id: format!("{}#key-1", identity.did),
             agreement_key_id: format!("{}#key-3", identity.did),
-            signing_private_pem: identity.signing_private_pem.clone(),
-            agreement_private_pem: identity.agreement_private_pem.clone(),
+            identity_signer: identity.signer(),
             local_did_document: identity.document.clone(),
             local_state: db,
         })
@@ -1144,6 +1153,27 @@ mod tests {
         document: Value,
         signing_private_pem: String,
         agreement_private_pem: String,
+    }
+
+    impl TestIdentity {
+        fn signer(&self) -> Arc<dyn crate::internal::key_provider::IdentitySigner> {
+            Arc::new(
+                crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
+                    &crate::identity::HostedIdentityMaterial {
+                        identity_id: self.did.clone(),
+                        did: self.did.clone(),
+                        handle: None,
+                        display_name: None,
+                        did_document: self.document.clone(),
+                        default_signing_private_key_pem: self.signing_private_pem.clone(),
+                        e2ee_agreement_private_key_pem: Some(self.agreement_private_pem.clone()),
+                        auth_token: None,
+                    },
+                    &format!("{}#key-1", self.did),
+                )
+                .unwrap(),
+            )
+        }
     }
 
     fn test_identity(domain: &str, label: &str) -> TestIdentity {

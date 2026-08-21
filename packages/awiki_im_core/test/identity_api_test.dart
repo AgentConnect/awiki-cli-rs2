@@ -9,6 +9,10 @@ Future<DeleteLocalIdentityResult> _deleteIdentityDataApiShape(
   AwikiImCore core,
 ) => core.deleteLocalIdentityData(const IdentitySelector.id('identity-alice'));
 
+Future<IdentityCustodyStatus> _identityCustodyStatusApiShape(
+  AwikiImCore core,
+) => core.identityCustodyStatus(const IdentitySelector.id('identity-alice'));
+
 void main() {
   test(
     'active sync account binding exposes exactly the six stable strings',
@@ -69,9 +73,42 @@ void main() {
     final core = web.AwikiImCore();
 
     await expectLater(
-      core.deleteLocalIdentityData(
-        const IdentitySelector.id('identity-alice'),
+      core.deleteLocalIdentityData(const IdentitySelector.id('identity-alice')),
+      throwsA(isA<UnsupportedError>()),
+    );
+  });
+
+  test('identity custody status is independent from legacy vault policy', () {
+    const status = IdentityCustodyStatus(
+      identity: IdentitySummary(
+        id: 'id-alice',
+        did: 'did:example:alice',
+        isDefault: true,
+        readyForAuth: true,
+        readyForMessaging: true,
       ),
+      backend: IdentityCustodyBackend.anpIdentity,
+      state: IdentityCustodyState.active,
+      ready: true,
+      rootControlAvailable: true,
+      pendingOperation: false,
+      storeId: 'store-public-id',
+      custodyIdentityId: 'custody-public-id',
+    );
+
+    expect(status.backend, IdentityCustodyBackend.anpIdentity);
+    expect(status.state, IdentityCustodyState.active);
+    expect(status.ready, isTrue);
+    expect(status.rootControlAvailable, isTrue);
+    expect(status.missing, isEmpty);
+    expect(_identityCustodyStatusApiShape, isA<Function>());
+  });
+
+  test('web identity custody status fails closed as unavailable', () async {
+    final core = web.AwikiImCore();
+
+    await expectLater(
+      core.identityCustodyStatus(const IdentitySelector.id('identity-alice')),
       throwsA(isA<UnsupportedError>()),
     );
   });

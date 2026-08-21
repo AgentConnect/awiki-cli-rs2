@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use im_core::ids::{GroupRef, MessageId, PeerRef};
 use im_core::messages::{MessageKind, MessageMetadata, MessageMetadataAttribute, ThreadRef};
 use tempfile::TempDir;
@@ -1062,43 +1061,6 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
 }
 
 #[test]
-fn delegated_inbox_key_ref_uses_vault_without_private_key_files() {
-    install_test_im_core_vault_root_key();
-    let root = tempfile::tempdir().unwrap();
-    let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let mut identity = fixture().identity;
-    identity.private_key_material =
-        crate::app_bridge::secret_store::ed25519_private_key_pem_for_test(&[17_u8; 32]);
-
-    let private_key_pem = crate::app_bridge::secret_store::normalize_delegated_private_key_pem(
-        &identity.private_key_material,
-    )
-    .unwrap();
-    let key_ref = ensure_delegated_inbox_key_ref(&config, &identity, &private_key_pem).unwrap();
-
-    assert!(key_ref.starts_with("vault:"));
-    let legacy_key_path = config
-        .runtime_cache_dir
-        .join("delegated-inbox")
-        .join(stable_id_suffix(&identity.user_did))
-        .join("daemon-key-1.pem");
-    let shadow_private_key_path = config
-        .identity_root_dir
-        .join(delegated_identity_alias(&identity.user_did))
-        .join("private.key");
-    assert!(!legacy_key_path.exists());
-    assert!(!shadow_private_key_path.exists());
-    assert!(config
-        .im_core_sqlite_path
-        .parent()
-        .unwrap()
-        .join("secrets")
-        .join("vault")
-        .join("records")
-        .is_dir());
-}
-
-#[test]
 fn delegated_runtime_host_final_rejects_non_controller_target() {
     let fixture = fixture();
     let state = &fixture.state;
@@ -1472,13 +1434,6 @@ fn system_payload_message(id: &str, sender: &str) -> Message {
             ..MessageMetadata::default()
         },
     }
-}
-
-fn install_test_im_core_vault_root_key() {
-    std::env::set_var(
-        "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64",
-        URL_SAFE_NO_PAD.encode([31_u8; 32]),
-    );
 }
 
 fn mention_payload_message(id: &str, sender: &str, payload: Value) -> Message {

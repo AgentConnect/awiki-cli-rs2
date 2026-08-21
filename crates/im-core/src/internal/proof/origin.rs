@@ -3,16 +3,91 @@ use anp::proof::{
 };
 use anp::PrivateKeyMaterial;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::internal::wire::direct::DirectPayload;
 
 pub(crate) const ORIGIN_PROOF_SCHEME: &str = "anp-rfc9421-origin-proof-v1";
 
+#[derive(Clone)]
+pub(crate) enum OriginProofSigner {
+    Identity(Arc<dyn crate::internal::key_provider::IdentitySigner>),
+    PrivateKeyPem(String),
+}
+
+impl std::fmt::Debug for OriginProofSigner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Identity(_) => formatter.write_str("OriginProofSigner::Identity(..)"),
+            Self::PrivateKeyPem(_) => formatter.write_str("OriginProofSigner::PrivateKeyPem(..)"),
+        }
+    }
+}
+
+impl PartialEq for OriginProofSigner {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Identity(left), Self::Identity(right)) => Arc::ptr_eq(left, right),
+            (Self::PrivateKeyPem(left), Self::PrivateKeyPem(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl OriginProofSigner {
+    pub(crate) fn sign_origin_proof(
+        &self,
+        method: &str,
+        meta: &Value,
+        body: &Value,
+        key_id: &str,
+        options: Rfc9421OriginProofGenerationOptions,
+    ) -> crate::ImResult<Rfc9421OriginProof> {
+        match self {
+            Self::Identity(signer) => signer.sign_origin_proof(method, meta, body, key_id, options),
+            Self::PrivateKeyPem(private_key_pem) => {
+                let private_key = load_private_key_material(private_key_pem)?;
+                generate_rfc9421_origin_proof(method, meta, body, &private_key, key_id, options)
+                    .map_err(|err| crate::ImError::Serialization {
+                        detail: format!("generate origin proof: {err}"),
+                    })
+            }
+        }
+    }
+
+    pub(crate) fn sign_object_proof(
+        &self,
+        document: &Value,
+        key_id: &str,
+        issuer_did: &str,
+        created: Option<String>,
+    ) -> crate::ImResult<Value> {
+        match self {
+            Self::Identity(signer) => {
+                signer.sign_object_proof(key_id, document, issuer_did, created)
+            }
+            Self::PrivateKeyPem(private_key_pem) => {
+                let private_key = load_private_key_material(private_key_pem)?;
+                anp::proof::generate_object_proof(
+                    document,
+                    &private_key,
+                    key_id,
+                    issuer_did,
+                    created,
+                )
+                .map_err(|err| crate::ImError::Serialization {
+                    detail: format!("generate object proof: {err}"),
+                })
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OriginProofIdentity {
     pub identity_name: String,
     pub did_document: Option<Value>,
-    pub key1_private_pem: String,
+    pub signer: OriginProofSigner,
     pub verification_method: Option<String>,
 }
 
@@ -64,18 +139,13 @@ pub(crate) fn build_origin_proof(
     if key_id.is_empty() {
         return Err(missing_verification_method_error(identity));
     }
-    let private_key = load_private_key_material(&identity.key1_private_pem)?;
-    generate_rfc9421_origin_proof(
+    identity.signer.sign_origin_proof(
         &payload.method,
         &payload.meta,
         &payload.body,
-        &private_key,
         &key_id,
         Rfc9421OriginProofGenerationOptions::default(),
     )
-    .map_err(|err| crate::ImError::Serialization {
-        detail: format!("generate origin proof: {err}"),
-    })
 }
 
 pub(crate) fn validate_verification_method_in_document(

@@ -4,12 +4,13 @@ use crate::dto::{
     error::DartImError,
     identity::{
         DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
-        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
-        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice,
-        DartDeviceJoinSessionSummary, DartDeviceRevokeResult,
-        DartHandleRecoveryAccountEpochReceipt, DartHandleRecoveryOperationSummary,
-        DartHandleRecoveryOtpResult, DartHandleRecoveryProgress, DartHandleRegistrationResult,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPublicPackage,
+        DartDaemonSubkeyPublicProposal, DartDeleteLocalIdentityResult,
+        DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
+        DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice, DartDeviceJoinSessionSummary,
+        DartDeviceRevokeResult, DartHandleRecoveryAccountEpochReceipt,
+        DartHandleRecoveryOperationSummary, DartHandleRecoveryOtpResult,
+        DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityCustodyStatus,
         DartIdentityDeviceSummary, DartIdentitySelector, DartIdentitySummary,
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartInitialProfile,
@@ -540,6 +541,20 @@ pub async fn identity_device_summary(
         .map_err(DartImError::from)
 }
 
+pub async fn identity_custody_status(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartIdentityCustodyStatus, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .custody_status_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+#[allow(deprecated)]
 pub async fn identity_vault_status(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -578,6 +593,7 @@ pub async fn upgrade_legacy_identity(
         .map_err(DartImError::from)
 }
 
+#[allow(deprecated)]
 pub async fn migrate_identity_vault(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -591,6 +607,7 @@ pub async fn migrate_identity_vault(
         .map_err(DartImError::from)
 }
 
+#[allow(deprecated)]
 pub async fn verify_identity_vault(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -630,27 +647,15 @@ pub async fn delete_local_identity_data(
         .map_err(DartImError::from)
 }
 
-pub async fn load_daemon_subkey_package(
+pub async fn authorize_daemon_subkey(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
-) -> Result<DartDaemonSubkeyPrivatePackage, DartImError> {
+    proposal: DartDaemonSubkeyPublicProposal,
+) -> Result<DartDaemonSubkeyPublicPackage, DartImError> {
     let inner = core.clone_inner()?;
     inner
         .identities()
-        .load_daemon_subkey_package_async(selector.try_into()?)
-        .await
-        .map(Into::into)
-        .map_err(DartImError::from)
-}
-
-pub async fn ensure_daemon_subkey_package(
-    core: &Arc<crate::api::core::DartImCore>,
-    selector: DartIdentitySelector,
-) -> Result<DartDaemonSubkeyPrivatePackage, DartImError> {
-    let inner = core.clone_inner()?;
-    inner
-        .identities()
-        .ensure_daemon_subkey_package_async(selector.try_into()?)
+        .authorize_daemon_subkey_async(selector.try_into()?, proposal.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

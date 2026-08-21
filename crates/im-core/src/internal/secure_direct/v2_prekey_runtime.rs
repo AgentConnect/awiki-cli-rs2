@@ -4,11 +4,12 @@
 //! are never merged into the standard cross-domain `direct.send` request.
 
 use anp::direct_e2ee::{
-    build_prekey_bundle_v2, get_prekey_bundle_request_v2, key_service_metadata_v2,
+    complete_prekey_bundle_v2, get_prekey_bundle_request_v2, key_service_metadata_v2,
     parse_get_prekey_bundle_result_v2, parse_publish_prekey_bundle_result_v2,
-    publish_prekey_bundle_request_v2, verify_prekey_bundle_v2, V2GetPrekeyBundleBody,
-    V2GetPrekeyBundleResult, V2OneTimePrekey, V2PrekeyBundle, V2PublishPrekeyBundleBody,
-    V2PublishPrekeyBundleResult, V2SignedPrekey, MTI_DIRECT_E2EE_SUITE_V2,
+    prepare_prekey_bundle_v2, publish_prekey_bundle_request_v2, verify_prekey_bundle_v2,
+    V2GetPrekeyBundleBody, V2GetPrekeyBundleResult, V2OneTimePrekey, V2PrekeyBundle,
+    V2PublishPrekeyBundleBody, V2PublishPrekeyBundleResult, V2SignedPrekey,
+    MTI_DIRECT_E2EE_SUITE_V2,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -28,7 +29,8 @@ pub(crate) struct V2LocalPrekeyIdentity<'a> {
     pub(crate) device_id: &'a str,
     pub(crate) signing_key_id: &'a str,
     pub(crate) e2ee_key_id: &'a str,
-    pub(crate) signing_private: &'a anp::PrivateKeyMaterial,
+    pub(crate) signing_public: anp::PublicKeyMaterial,
+    pub(crate) signer: &'a dyn Fn(&str, &[u8]) -> crate::ImResult<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,17 +96,19 @@ pub(crate) fn ensure_local_prekey_publication(
     };
     let bundle_id = opaque_key_id("bundle", &signed_prekey_public);
     let created = now.to_rfc3339_opts(SecondsFormat::Secs, true);
-    let bundle = build_prekey_bundle_v2(
+    let prepared = prepare_prekey_bundle_v2(
         &bundle_id,
         identity.did,
         identity.device_id,
         identity.e2ee_key_id,
         signed_prekey,
-        identity.signing_private,
+        &identity.signing_public,
         identity.signing_key_id,
         Some(&created),
     )
     .map_err(v2_error)?;
+    let signature = (identity.signer)(identity.signing_key_id, prepared.signing_input())?;
+    let bundle = complete_prekey_bundle_v2(prepared, &signature).map_err(v2_error)?;
 
     let mut local_opks = Vec::with_capacity(DEFAULT_OPK_BATCH_SIZE);
     for _ in 0..DEFAULT_OPK_BATCH_SIZE {
@@ -278,13 +282,8 @@ where
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let signing_private = anp::PrivateKeyMaterial::from_pem(
-        &client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let identity_signer = &client.runtime().key_provider;
+    let signing_public = identity_signer.public_key(&authorization.signing_key_id)?;
     let publication = {
         let connection = crate::internal::local_state::open_writable(
             &core.inner().sdk_paths().local_state.sqlite_path,
@@ -304,7 +303,8 @@ where
                 device_id: authorization.protocol_device_id.as_str(),
                 signing_key_id: &authorization.signing_key_id,
                 e2ee_key_id: &authorization.e2ee_key_id,
-                signing_private: &signing_private,
+                signing_public,
+                signer: &|kid, message| identity_signer.sign_device_assertion(kid, message),
             },
             Utc::now(),
         )?
@@ -455,19 +455,6 @@ fn direct_attachment_http_body(
         "direct_request": direct_request,
         "attachment_grant_refs": [attachment_grant_ref],
     }))
-}
-
-pub(crate) fn local_static_private(
-    client: &crate::core::ImClient,
-) -> crate::ImResult<X25519StaticSecret> {
-    match anp::PrivateKeyMaterial::from_pem(
-        &client.runtime().key_provider.e2ee_agreement_private_pem()?,
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?
-    {
-        anp::PrivateKeyMaterial::X25519(private) => Ok(private),
-        _ => Err(crate::ImError::PermissionDenied),
-    }
 }
 
 pub(crate) fn static_public_from_document(
@@ -719,7 +706,12 @@ mod tests {
                 device_id: "alice-phone",
                 signing_key_id: "did:example:alice#phone-sign",
                 e2ee_key_id: "did:example:alice#phone-e2ee",
-                signing_private: &signing,
+                signing_public: signing.public_key(),
+                signer: &|_, message| {
+                    signing
+                        .sign_message(message)
+                        .map_err(|_| crate::ImError::PermissionDenied)
+                },
             },
             now,
         )
@@ -739,7 +731,12 @@ mod tests {
                 device_id: "alice-phone",
                 signing_key_id: "did:example:alice#phone-sign",
                 e2ee_key_id: "did:example:alice#phone-e2ee",
-                signing_private: &signing,
+                signing_public: signing.public_key(),
+                signer: &|_, message| {
+                    signing
+                        .sign_message(message)
+                        .map_err(|_| crate::ImError::PermissionDenied)
+                },
             },
             now,
         )
@@ -769,7 +766,12 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3"#,
                 device_id: "alice-phone",
                 signing_key_id: "did:example:alice#phone-sign",
                 e2ee_key_id: "did:example:alice#phone-e2ee",
-                signing_private: &signing,
+                signing_public: signing.public_key(),
+                signer: &|_, message| {
+                    signing
+                        .sign_message(message)
+                        .map_err(|_| crate::ImError::PermissionDenied)
+                },
             },
             now,
         )
@@ -828,7 +830,12 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3"#,
                 device_id: "alice-phone",
                 signing_key_id: "did:example:alice#phone-sign-rotated",
                 e2ee_key_id: "did:example:alice#phone-e2ee-rotated",
-                signing_private: &signing,
+                signing_public: signing.public_key(),
+                signer: &|_, message| {
+                    signing
+                        .sign_message(message)
+                        .map_err(|_| crate::ImError::PermissionDenied)
+                },
             },
             now,
         )

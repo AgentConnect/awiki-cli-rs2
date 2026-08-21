@@ -105,7 +105,7 @@ struct FakeBearerProvider {
     missing: bool,
 }
 
-impl crate::internal::key_provider::KeyMaterialProvider for FakeBearerProvider {
+impl crate::internal::key_provider::IdentitySigner for FakeBearerProvider {
     fn did_document(&self) -> crate::ImResult<serde_json::Value> {
         unreachable!()
     }
@@ -114,21 +114,23 @@ impl crate::internal::key_provider::KeyMaterialProvider for FakeBearerProvider {
         unreachable!()
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
         unreachable!()
     }
 
-    fn device_request_signing_material(
+    fn sign(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        unreachable!()
+    }
+
+    fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        unreachable!()
+    }
+
+    fn ecdh(
         &self,
-    ) -> crate::ImResult<crate::internal::key_provider::DeviceRequestSigningMaterial> {
-        unreachable!()
-    }
-
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        unreachable!()
-    }
-
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
+        _kid: &str,
+        _peer_public: &[u8],
+    ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
         unreachable!()
     }
 
@@ -1000,14 +1002,32 @@ fn write_rpc_success(stream: &mut std::net::TcpStream) {
 
 #[test]
 fn registration_reconciliation_registry_requires_the_exact_single_device() {
-    let generated =
-        crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
-            "example.test",
-            "alice",
-            None,
-            None,
-        )
+    let create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+        "example.test",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut custody = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
+    let generated = custody.create_identity(create.spec).unwrap();
+    let manifest = anp::authentication::validate_device_manifest(generated.document())
+        .unwrap()
         .unwrap();
+    let device = &manifest.devices[0];
+    let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
+        controller_store_id: "controller-store".to_owned(),
+        controller_identity_id: "controller-identity".to_owned(),
+        did: crate::ids::Did::parse(generated.did()).unwrap(),
+        did_document: generated.document().clone(),
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
+        root_key_id: format!("{}#key-1", generated.did()),
+        device_signing_key_id: device.signing_key_id.clone(),
+        device_e2ee_key_id: device.e2ee_key_id.clone(),
+        legacy_daemon_authorization: false,
+        controller_revision_id: Some("revision-1".to_owned()),
+    };
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         "alice".to_owned(),
         "example.test".to_owned(),
@@ -1017,20 +1037,20 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
         "already_verified".to_owned(),
         None,
         None,
-        generated,
+        identity,
     )
     .unwrap();
     let registry = |e2ee_key_id: &str| {
         json!({
-            "did": pending.generated.did.as_str(),
+            "did": pending.identity.did.as_str(),
             "checkpoint": {
                 "document_version": 1,
                 "document_hash": pending.document_hash,
                 "registry_version": 1
             },
             "devices": [{
-                "device_id": pending.generated.protocol_device_id.as_str(),
-                "signing_key_id": pending.generated.device_signing_key_id,
+                "device_id": pending.identity.protocol_device_id.as_str(),
+                "signing_key_id": pending.identity.device_signing_key_id,
                 "e2ee_key_id": e2ee_key_id,
                 "status": "active",
                 "role": "admin",
@@ -1042,13 +1062,13 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
 
     validate_pending_registration_registry_value(
         &pending,
-        registry(&pending.generated.device_e2ee_key_id),
+        registry(&pending.identity.device_e2ee_key_id),
     )
     .unwrap();
     assert_eq!(
         validate_pending_registration_registry_value(
             &pending,
-            registry(&format!("{}#wrong-e2ee", pending.generated.did.as_str()))
+            registry(&format!("{}#wrong-e2ee", pending.identity.did.as_str()))
         ),
         Err(crate::ImError::PermissionDenied)
     );

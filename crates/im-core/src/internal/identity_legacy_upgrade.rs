@@ -100,6 +100,135 @@ pub(crate) fn build_legacy_upgrade(
     Ok(generated)
 }
 
+pub(crate) fn build_custodied_legacy_upgrade(
+    legacy_document: &Value,
+    custody: crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    enrollment: &anp_identity::PreparedEnrollment,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef> {
+    let did = crate::ids::Did::parse(
+        legacy_document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )?;
+    if enrollment.did != did.as_str()
+        || enrollment.identity_id != custody.identity_id
+        || enrollment.enrollment_id != custody.enrollment_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut identity = crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef {
+        custody,
+        did,
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(&enrollment.device_id)?,
+        signing_key_id: enrollment.device_signing_key.kid.clone(),
+        signing_public_key_multibase: enrollment.device_signing_key.public_key_multibase.clone(),
+        e2ee_key_id: enrollment.device_e2ee_key.kid.clone(),
+        e2ee_public_key_multibase: enrollment.device_e2ee_key.public_key_multibase.clone(),
+        target_document: Value::Null,
+        target_document_hash: String::new(),
+    };
+    rebuild_custodied_legacy_upgrade_target(&mut identity, legacy_document, signer)?;
+    Ok(identity)
+}
+
+pub(crate) fn rebuild_custodied_legacy_upgrade_target(
+    identity: &mut crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef,
+    legacy_document: &Value,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<()> {
+    if legacy_document.get("deviceManifest").is_some() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let did = crate::ids::Did::parse(
+        legacy_document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )?;
+    if did != identity.did
+        || identity.signing_key_id
+            != format!(
+                "{}#{}-sign",
+                did.as_str(),
+                identity.protocol_device_id.as_str()
+            )
+        || identity.e2ee_key_id
+            != format!(
+                "{}#{}-e2ee",
+                did.as_str(),
+                identity.protocol_device_id.as_str()
+            )
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let root_key_id = format!("{}#key-1", did.as_str());
+    let root_method = unique_verification_method(legacy_document, &root_key_id)?;
+    let document_root_public =
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
+    if signer.public_key(&root_key_id)?.to_pem() != document_root_public.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let signing_method = json!({
+        "id": identity.signing_key_id,
+        "type": "Multikey",
+        "controller": did.as_str(),
+        "publicKeyMultibase": identity.signing_public_key_multibase,
+    });
+    let e2ee_method = json!({
+        "id": identity.e2ee_key_id,
+        "type": "X25519KeyAgreementKey2019",
+        "controller": did.as_str(),
+        "publicKeyMultibase": identity.e2ee_public_key_multibase,
+    });
+    if !matches!(
+        crate::internal::identity_wire::document::extract_identity_public_key(&signing_method)?,
+        anp::PublicKeyMaterial::Ed25519(_)
+    ) || !matches!(
+        crate::internal::identity_wire::document::extract_identity_public_key(&e2ee_method)?,
+        anp::PublicKeyMaterial::X25519(_)
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let daemon_method = validated_legacy_daemon_method(legacy_document, &did)?;
+    let device = anp::authentication::DeviceManifestEntry {
+        device_id: identity.protocol_device_id.as_str().to_owned(),
+        signing_key_id: identity.signing_key_id.clone(),
+        e2ee_key_id: identity.e2ee_key_id.clone(),
+        profiles: VNEXT_DEVICE_PROFILES
+            .iter()
+            .map(|profile| (*profile).to_owned())
+            .collect(),
+    };
+    let base_document = legacy_base_document(legacy_document)?;
+    let mut target_document = anp::authentication::build_vnext_did_document(
+        &base_document,
+        &root_key_id,
+        root_method,
+        &device,
+        &signing_method,
+        &e2ee_method,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    if let Some(method) = daemon_method {
+        append_daemon_method(&mut target_document, &did, method)?;
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_signer_proof(
+        &mut target_document,
+        &did,
+        signer,
+    )?;
+    anp::authentication::validate_device_manifest(&target_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .filter(|manifest| manifest.devices.len() == 1)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    identity.target_document_hash =
+        crate::internal::identity_wire::document::document_hash(&target_document)?;
+    identity.target_document = target_document;
+    identity.validate()
+}
+
 /// Returns a freshly signed canonical vNext document when only the Messaging
 /// discovery contract needs convergence. An already canonical document
 /// produces `None`, so callers can avoid both root access and remote writes.
@@ -126,6 +255,36 @@ pub(crate) fn converge_vnext_profile_discovery(
         &mut target_document,
         &did,
         root_private_pem,
+    )?;
+    if !anp::authentication::validate_did_document_binding(&target_document, true) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::authentication::validate_device_manifest(&target_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(target_document))
+}
+
+pub(crate) fn converge_vnext_profile_discovery_with_signer(
+    current_document: &Value,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<Option<Value>> {
+    let mut target_document = current_document.clone();
+    let (did, changed) = canonicalize_vnext_profile_discovery(&mut target_document)?;
+    if !changed {
+        return Ok(None);
+    }
+    let root_key_id = format!("{}#key-1", did.as_str());
+    let root_method = unique_verification_method(current_document, &root_key_id)?;
+    let document_root_public =
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
+    if signer.public_key(&root_key_id)?.to_pem() != document_root_public.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_signer_proof(
+        &mut target_document,
+        &did,
+        signer,
     )?;
     if !anp::authentication::validate_did_document_binding(&target_document, true) {
         return Err(crate::ImError::PermissionDenied);

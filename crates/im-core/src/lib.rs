@@ -47,8 +47,11 @@ pub use crate::error::{
 };
 pub use crate::groups::GroupService;
 pub use crate::identity::{
-    ActiveSyncAccountBinding, AgentIdentityKind, DeleteLocalIdentityResult,
-    HostBackedAuthTokenPersistence, HostBackedDeviceIdentityMaterial, HostedIdentityMaterial,
+    ActiveSyncAccountBinding, AgentIdentityKind, DaemonSubkeyPublicPackage,
+    DaemonSubkeyPublicProposal, DeleteLocalIdentityResult, HostBackedAuthTokenPersistence,
+    HostBackedDeviceIdentityMaterial, HostedIdentityMaterial, IdentityCustodyBackend,
+    IdentityCustodyMigrationIdentityReport, IdentityCustodyMigrationPhase,
+    IdentityCustodyMigrationReport, IdentityCustodyState, IdentityCustodyStatus,
     IdentityDeviceAuthorizationStatus, IdentityDeviceRole, IdentitySecretStorageBackend,
     IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
     IdentityVaultVerificationReport, LegacyRegistryEpochAdoptionAuthority,

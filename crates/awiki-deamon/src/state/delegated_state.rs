@@ -295,6 +295,33 @@ WHERE verification_method = ?1
         Ok(Some(identity))
     }
 
+    pub(crate) fn replace_user_delegated_identity_custody_ref(
+        &self,
+        verification_method: &str,
+        expected_custody_ref_json: &str,
+        custody_ref_json: &str,
+    ) -> Result<()> {
+        crate::identity_custody::verify_reference(self, custody_ref_json)?;
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            r#"UPDATE user_delegated_identity
+SET private_key_material = ?1, private_key_ref_json = ?2,
+    updated_at_ms = ?3
+WHERE verification_method = ?4 AND private_key_ref_json = ?5"#,
+            rusqlite::params![
+                VAULT_PRIVATE_KEY_SENTINEL,
+                custody_ref_json,
+                current_time_millis()?,
+                verification_method,
+                expected_custody_ref_json,
+            ],
+        )?;
+        if changed != 1 {
+            bail!("delegated identity custody row changed concurrently");
+        }
+        Ok(())
+    }
+
     pub fn load_bootstrap_replay(
         &self,
         bootstrap_id: &str,
@@ -1431,6 +1458,12 @@ impl DaemonState {
         if identity.private_key_material == VAULT_PRIVATE_KEY_SENTINEL {
             let secret_ref_json = non_empty(identity.private_key_ref_json.as_deref())
                 .context("user delegated private key is missing a daemon secret vault ref")?;
+            if serde_json::from_str::<crate::identity_custody::DaemonIdentityRef>(secret_ref_json)
+                .is_ok()
+            {
+                crate::identity_custody::verify_reference(self, secret_ref_json)?;
+                return Ok(secret_ref_json.to_owned());
+            }
             let secret_ref: SecretRef =
                 serde_json::from_str(secret_ref_json).context("parse private_key_ref_json")?;
             vault
@@ -1465,24 +1498,10 @@ impl DaemonState {
         &self,
         mut record: UserDelegatedIdentityRecord,
     ) -> Result<UserDelegatedIdentityRecord> {
-        let opened = self.open_user_delegated_private_key(
-            record.private_key_ref_json.as_deref(),
-            &record.private_key_material,
-        )?;
-        record.private_key_material = opened.private_key_pem;
+        non_empty(record.private_key_ref_json.as_deref())
+            .context("delegated identity custody reference is missing")?;
+        record.private_key_material = VAULT_PRIVATE_KEY_SENTINEL.to_owned();
         Ok(record)
-    }
-
-    fn open_user_delegated_private_key(
-        &self,
-        secret_ref_json: Option<&str>,
-        legacy_private_key_pem: &str,
-    ) -> Result<OpenedAgentIdentitySecret> {
-        self.open_agent_identity_secret(
-            secret_ref_json,
-            legacy_private_key_pem,
-            "private_key_ref_json",
-        )
     }
 
     fn seal_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<String> {

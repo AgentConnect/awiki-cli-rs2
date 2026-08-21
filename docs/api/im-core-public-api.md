@@ -382,7 +382,7 @@ pub struct ActiveSyncAccountBinding {
 }
 
 // Secret-bearing trusted-host DTOs. Neither type implements Serde and both
-// redact documents, private keys, tokens, and private packages from Debug.
+// redact documents, private keys, and tokens from Debug.
 pub struct VNextAgentBootstrapMaterial { /* typed Agent/device/key material */ }
 pub struct HostBackedDeviceIdentityMaterial { /* exact account/device access */ }
 pub trait HostBackedAuthTokenPersistence: Send + Sync {
@@ -444,6 +444,25 @@ impl IdentityRegistry<'_> {
         &self,
         selector: IdentitySelector,
     ) -> ImResult<IdentityDeviceSummary>;
+    pub fn custody_status(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentityCustodyStatus>;
+    pub fn inspect_identity_custody_migration(
+        &self,
+    ) -> ImResult<IdentityCustodyMigrationReport>;
+    pub fn migrate_identity_custody(
+        &self,
+    ) -> ImResult<IdentityCustodyMigrationReport>;
+    pub async fn authorize_daemon_subkey_async(
+        &self,
+        selector: IdentitySelector,
+        proposal: DaemonSubkeyPublicProposal,
+    ) -> ImResult<DaemonSubkeyPublicPackage>;
+
+    // Deprecated AWiki-vault compatibility views. Use custody_status for
+    // identity custody. The migration compatibility name now performs the
+    // real old-to-ANP Identity migration.
     pub fn vault_status(&self, selector: IdentitySelector) -> ImResult<IdentityVaultStatus>;
     pub fn migrate_identity_vault(
         &self,
@@ -479,6 +498,20 @@ pub enum LegacyUpgradeStatus {
     Completed,
 }
 ```
+
+`IdentityCustodyStatus` is secret-free and independent from
+`IdentitySecretStoragePolicy`. `backend` is one of `anp_identity`,
+`legacy_file_compat`, or `legacy_vault`; `state` is one of `creating`, `active`,
+`enrolling`, `revoked`, `legacy`, or `unavailable`. It may expose only opaque
+store/identity IDs, readiness/root-capability/pending booleans, and closed
+missing/warning lists. It never exposes private-key presence by KID, a JWT,
+`SecretRef`, document checkpoint, root fingerprint, or provider root key.
+
+`migrate_identity_vault` is retained only for source compatibility. For an
+unmigrated identity it invokes the workspace copy → verify → atomic cutover →
+cleanup migration; for an ANP-managed identity it returns `migrated=false` and
+the explicit `already_migrated` warning. A blocked pre-cutover migration fails
+without deleting legacy records.
 
 `IdentityDeviceSummary` 是面向产品层的安全投影，只公开协议设备 ID、公开
 key ID、角色和由本地密钥可用性与服务端授权共同计算出的 readiness。它不公开
@@ -680,27 +713,33 @@ Vault restart-safe activation、Root 流程和 P5 发布共用同一个解析边
 Root transfer is an identity-scoped `ImClient::root_key_transfer()` capability
 with no rollout gate. The host first calls `prepare` with only the exact
 recipient `ProtocolDeviceId`. Core verifies the current ready Admin, the active
-Member/not-ready recipient, Manifest/Registry bindings, Root Vault metadata and
-P5 Session or PreKey readiness. It returns an opaque 60-second, single-use
+Member/not-ready recipient, Manifest/Registry bindings, ANP Identity root
+capability and P5 Session or PreKey readiness. It returns an opaque 60-second, single-use
 authorization handle plus a secret-free recipient summary. The host then calls
 `confirm_and_send` once with that handle and local user presence; Core, not the
-host, generates the message ID.
+host, generates the message ID. A false confirmation fails before ANP Identity
+exports any root bytes. A true confirmation authorizes exactly that one handle,
+recipient and Core-generated message ID.
 
-The RootKeyEnvelope is secret JSON carried by a standard P5 v2 Init or Cipher.
+The sender always emits the legacy `RootKeyEnvelopeV1`; it does not negotiate or
+send the wrapped-root format. ANP Identity exposes the active managed root key
+to native Core as a zeroizing PKCS#8 DER value only after confirmation, and
+Core immediately constructs the secret JSON carried by a standard P5 v2 Init
+or Cipher.
 There is no private endpoint, delivery class, sidecar, empty-Init handshake,
 imported ACK, public list/retry state, or host-supplied message ID. Core commits
 the standard P5 pending state and its secret-free sender delivery ledger in the
 same SQLite transaction, and an uncertain transport response is retried only
 with the identical P5 bytes and message ID. Startup and an explicit later
 prepare first recover any `pending_delivery` by resuming those durable bytes;
-P5 acceptance and the sender `sent` fact commit atomically. Core never reopens
-the Root Vault or creates a replacement message during recovery, and it rejects
+P5 acceptance and the sender `sent` fact commit atomically. Core never re-exports
+the root or creates a replacement message during recovery, and it rejects
 a new transfer while that recipient already has a pending or sent fact.
 
 On the recipient, authenticated Mailbox delivery supplies the exact accepted
 tuple and timestamp. Core validates the outer P5 binding, Registry/Manifest,
-RootEnvelope, fingerprint and current checkpoint before sealing the root as
-`IdentityRootImportPending`. It then sends the closed, double-proof
+RootEnvelope, fingerprint and current checkpoint before importing the root as a
+pending ANP Identity capability. It then sends the closed, double-proof
 `device_root_import_complete` request. The exact canonical params, proof and
 nonce are reused after response loss. A fresh DID-WBA `get_me` may return only
 the original Member principal or the next-generation ready Admin principal:
@@ -711,8 +750,8 @@ persist the new Admin access token. Root envelopes are never projected
 as ordinary messages or public DTOs. A realtime Root candidate is only a hint:
 Core hydrates the exact authenticated Inbox row and never substitutes local
 arrival time for the service-provided `accepted_at`. Startup recovery replays
-`registry_confirmed` and `promoted` coordinators to repair both local promotion
-and pending-Vault cleanup crash windows.
+`registry_confirmed` and `promoted` coordinators to repair local promotion and
+projection cleanup crash windows.
 
 ### 5.3 Multi-device P5/P6 message rollout gates
 

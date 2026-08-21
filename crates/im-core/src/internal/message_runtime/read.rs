@@ -1293,7 +1293,7 @@ struct DelegatedInboxContext {
     inbox_owner_did: String,
     inbox_auth_verification_method: String,
     did_document: Value,
-    private_key_pem: String,
+    signer: crate::internal::proof::origin::OriginProofSigner,
 }
 
 fn delegated_inbox_context(
@@ -1327,13 +1327,25 @@ fn delegated_inbox_context(
         &method,
         "inbox_auth_verification_method",
     )?;
-    let private_key_pem =
-        crate::internal::delegated_identity::load_private_key_ref(client, &key_ref)?;
+    let signer = if key_ref == "anp-identity:current" {
+        if client.did().as_str() != owner
+            || client.runtime().key_provider.request_signing_key_id()? != method
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::proof::origin::OriginProofSigner::Identity(
+            client.runtime().key_provider.clone(),
+        )
+    } else {
+        crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+            crate::internal::delegated_identity::load_private_key_ref(client, &key_ref)?,
+        )
+    };
     Ok(Some(DelegatedInboxContext {
         inbox_owner_did: owner,
         inbox_auth_verification_method: method,
         did_document,
-        private_key_pem,
+        signer,
     }))
 }
 
@@ -1370,13 +1382,26 @@ async fn delegated_inbox_context_async(
         &method,
         "inbox_auth_verification_method",
     )?;
-    let private_key_pem =
-        crate::internal::delegated_identity::load_private_key_ref_async(client, &key_ref).await?;
+    let signer = if key_ref == "anp-identity:current" {
+        if client.did().as_str() != owner
+            || client.runtime().key_provider.request_signing_key_id()? != method
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::proof::origin::OriginProofSigner::Identity(
+            client.runtime().key_provider.clone(),
+        )
+    } else {
+        crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+            crate::internal::delegated_identity::load_private_key_ref_async(client, &key_ref)
+                .await?,
+        )
+    };
     Ok(Some(DelegatedInboxContext {
         inbox_owner_did: owner,
         inbox_auth_verification_method: method,
         did_document,
-        private_key_pem,
+        signer,
     }))
 }
 
@@ -1417,7 +1442,7 @@ fn attach_inbox_origin_proof(
         &crate::internal::proof::origin::OriginProofIdentity {
             identity_name: format!("delegated-inbox:{}", context.inbox_auth_verification_method),
             did_document: Some(context.did_document.clone()),
-            key1_private_pem: context.private_key_pem.clone(),
+            signer: context.signer.clone(),
             verification_method: Some(context.inbox_auth_verification_method.clone()),
         },
         &payload,
@@ -4879,7 +4904,7 @@ pub(crate) async fn project_p6_v2_incoming_message(
         crate::internal::proof::origin::OriginProofIdentity {
             identity_name: client.current_identity().id.as_str().to_owned(),
             did_document: None,
-            key1_private_pem: String::new(),
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(String::new()),
             verification_method: None,
         },
     );

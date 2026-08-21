@@ -11,7 +11,6 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use x25519_dalek::PublicKey as X25519PublicKey;
-#[cfg(any(test, feature = "system-test-probe"))]
 use zeroize::Zeroizing;
 
 use crate::app_bridge::secret_store::{
@@ -27,6 +26,7 @@ pub const DAEMON_BOOTSTRAP_SCHEMA: &str = "awiki.daemon.bootstrap.v1";
 pub const DAEMON_BOOTSTRAP_SECURE_SCHEMA: &str = "awiki.daemon.bootstrap.secure.v1";
 pub const USER_SUBKEY_PACKAGE_SCHEMA: &str = "awiki.daemon.user_subkey_package.v1";
 pub const USER_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
+pub const USER_SUBKEY_PACKAGE_SCHEMA_V3: &str = "awiki.daemon.user_subkey_package.v3";
 pub const DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED: &str = "paired_key_received";
 const MVP_DAEMON_KEY_FRAGMENT: &str = "daemon-key-1";
 const DAEMON_BOOTSTRAP_KEY_FRAGMENT: &str = "key-3";
@@ -84,11 +84,11 @@ pub struct UserSubkeyPackage {
     #[serde(default)]
     pub key_algorithm: Option<String>,
     pub public_key_multibase: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_key_encoding: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_key_pem: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub private_key_multibase: String,
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -265,7 +265,25 @@ pub fn process_bootstrap_envelope(
     let payload_hash = stable_payload_hash(&envelope)?;
     let legacy_payload_hash = legacy_stable_payload_hash(&envelope)?;
     let package = &envelope.user_subkey_package;
-    let private_key = secret_from_private_key_multibase(package.private_key_material());
+    let custody = if package.schema == USER_SUBKEY_PACKAGE_SCHEMA_V3 {
+        let prepared =
+            crate::identity_custody::prepare_daemon_subkey_custody(state, &did_document)?;
+        if prepared.reference.key_id != package.verification_method
+            || prepared.public_key_multibase != package.public_key_multibase
+        {
+            bail!("prepared daemon subkey does not match bootstrap package");
+        }
+        crate::identity_custody::adopt_daemon_document(state, &prepared.reference, &did_document)?;
+        prepared.reference
+    } else {
+        let private_key = secret_from_private_key_multibase(package.private_key_material());
+        crate::identity_custody::import_existing_daemon_subkey(
+            state,
+            &did_document,
+            &package.verification_method,
+            Zeroizing::new(private_key.expose_secret().to_owned()),
+        )?
+    };
     let identity = UserDelegatedIdentityRecord {
         user_did: package.user_did.clone(),
         verification_method: package.verification_method.clone(),
@@ -273,8 +291,8 @@ pub fn process_bootstrap_envelope(
         controller_did: envelope.controller_did.clone(),
         daemon_agent_did: daemon_agent_did.to_string(),
         public_key_multibase: package.public_key_multibase.clone(),
-        private_key_material: private_key.expose_secret().to_string(),
-        private_key_ref_json: None,
+        private_key_material: "<awiki-secret-vault-ref>".to_owned(),
+        private_key_ref_json: Some(serde_json::to_string(&custody)?),
         allowed_scopes_json: json!(package.allowed_scopes),
         status: DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED.to_string(),
         expires_at: package.expires_at.clone(),
@@ -646,11 +664,18 @@ fn validate_user_subkey_package(package: &UserSubkeyPackage) -> Result<()> {
     require_non_empty("public_key_multibase", &package.public_key_multibase)?;
     if !matches!(
         package.schema.as_str(),
-        USER_SUBKEY_PACKAGE_SCHEMA | USER_SUBKEY_PACKAGE_SCHEMA_V2
+        USER_SUBKEY_PACKAGE_SCHEMA | USER_SUBKEY_PACKAGE_SCHEMA_V2 | USER_SUBKEY_PACKAGE_SCHEMA_V3
     ) {
         bail!("unsupported user subkey package schema: {}", package.schema);
     }
-    if package.schema == USER_SUBKEY_PACKAGE_SCHEMA_V2 {
+    if package.schema == USER_SUBKEY_PACKAGE_SCHEMA_V3 {
+        if package.private_key_pem.is_some()
+            || !package.private_key_multibase.trim().is_empty()
+            || package.private_key_encoding.is_some()
+        {
+            bail!("daemon subkey v3 must not contain private key material");
+        }
+    } else if package.schema == USER_SUBKEY_PACKAGE_SCHEMA_V2 {
         if package
             .private_key_encoding
             .as_deref()
@@ -705,6 +730,7 @@ pub(crate) fn validate_user_delegated_identity_against_did_document(
     did_document: &Value,
     now: OffsetDateTime,
 ) -> Result<()> {
+    identity.validate()?;
     let package = UserSubkeyPackage {
         schema: USER_SUBKEY_PACKAGE_SCHEMA.to_string(),
         user_did: identity.user_did.clone(),
@@ -713,13 +739,15 @@ pub(crate) fn validate_user_delegated_identity_against_did_document(
         key_algorithm: Some("Ed25519".to_string()),
         public_key_multibase: identity.public_key_multibase.clone(),
         private_key_encoding: Some(PRIVATE_KEY_ENCODING_PEM.to_string()),
-        private_key_pem: Some(identity.private_key_material.clone()),
+        private_key_pem: None,
         private_key_multibase: String::new(),
         expires_at: identity.expires_at.clone(),
         allowed_scopes: Vec::new(),
         extra: BTreeMap::new(),
     };
-    validate_user_subkey_package_against_did_document(&package, did_document, now)
+    validate_daemon_key_verification_method(&package.user_did, &package.verification_method)?;
+    validate_package_expiration(&package, now)?;
+    validate_did_document_daemon_subkey(&package, did_document)
 }
 
 pub(crate) fn validate_user_subkey_package_against_did_document(
@@ -729,10 +757,13 @@ pub(crate) fn validate_user_subkey_package_against_did_document(
 ) -> Result<()> {
     validate_user_subkey_package(package)?;
     validate_package_expiration(package, now)?;
-    let derived_public = public_key_multibase_from_private_material(package.private_key_material())
-        .context("derive delegated private key public key")?;
-    if derived_public != package.public_key_multibase {
-        bail!("daemon subkey private/public key mismatch");
+    if package.schema != USER_SUBKEY_PACKAGE_SCHEMA_V3 {
+        let derived_public =
+            public_key_multibase_from_private_material(package.private_key_material())
+                .context("derive delegated private key public key")?;
+        if derived_public != package.public_key_multibase {
+            bail!("daemon subkey private/public key mismatch");
+        }
     }
     validate_did_document_daemon_subkey(package, did_document)?;
     Ok(())
@@ -1749,6 +1780,120 @@ mod tests {
             OffsetDateTime::now_utc(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn public_only_v3_bootstrap_adopts_a_daemon_generated_subkey() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let source_root = tempfile::tempdir().unwrap();
+        let mut source_store =
+            anp_identity::DidStore::initialize_injected(source_root.path(), "source", [92; 32])
+                .unwrap();
+        let mut source = source_store
+            .create_identity(anp_identity::DidCreateSpec {
+                profile: anp_identity::DidProfile::E1,
+                domain: "example.com".to_owned(),
+                port: None,
+                path_segments: vec!["users".to_owned(), "bootstrap-v3".to_owned()],
+                capabilities: anp_identity::Capabilities { did_wba: false },
+                managed_keys: vec![anp_identity::ManagedKeySpec {
+                    fragment: "key-1".to_owned(),
+                    role: anp_identity::KeyRole::RootControl,
+                }],
+                external_keys: Vec::new(),
+                services: Vec::new(),
+                agent_description_url: None,
+                extensions: Vec::new(),
+            })
+            .unwrap();
+        let prepared =
+            crate::identity_custody::prepare_daemon_subkey(&state, source.document()).unwrap();
+        let update = source
+            .prepare_update(anp_identity::DocumentUpdateSpec {
+                request_signing_rotation: None,
+                request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
+                    key: anp_identity::RequestSigningPublicKeySpec {
+                        kid: prepared.verification_method.clone(),
+                        public_key_multibase: prepared.public_key_multibase.clone(),
+                    },
+                }],
+                device_mutations: Vec::new(),
+                services: None,
+            })
+            .unwrap();
+        source.begin_publication(&update.revision_id).unwrap();
+        source.mark_published(&update.revision_id).unwrap();
+        source.commit_update(&update.revision_id).unwrap();
+
+        let mut payload = valid_payload();
+        payload["controller_did"] = json!(source.did());
+        payload["idempotency_key"] =
+            json!(format!("personal-agent-bootstrap:{}:app_1", source.did()));
+        let package = payload["user_subkey_package"].as_object_mut().unwrap();
+        package.insert("schema".to_owned(), json!(USER_SUBKEY_PACKAGE_SCHEMA_V3));
+        package.insert("user_did".to_owned(), json!(source.did()));
+        package.insert(
+            "verification_method".to_owned(),
+            json!(prepared.verification_method),
+        );
+        package.insert(
+            "public_key_multibase".to_owned(),
+            json!(prepared.public_key_multibase),
+        );
+        package.remove("private_key_encoding");
+        package.remove("private_key_pem");
+        package.remove("private_key_multibase");
+        let envelope = parse_bootstrap_payload(payload).unwrap();
+        let serialized = serde_json::to_value(&envelope).unwrap();
+        let serialized_package = &serialized["user_subkey_package"];
+        assert!(serialized_package.get("private_key_encoding").is_none());
+        assert!(serialized_package.get("private_key_pem").is_none());
+        assert!(serialized_package.get("private_key_multibase").is_none());
+        let resolver = StaticDidResolver {
+            document: source.document().clone(),
+        };
+
+        process_bootstrap_envelope(
+            &state,
+            "did:agent:daemon",
+            source.did(),
+            &resolver,
+            envelope,
+        )
+        .unwrap();
+
+        let stored = state
+            .load_user_delegated_identity(&prepared.verification_method)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.private_key_material, "<awiki-secret-vault-ref>");
+        let stored_reference: crate::identity_custody::DaemonIdentityRef =
+            serde_json::from_str(stored.private_key_ref_json.as_deref().unwrap()).unwrap();
+        assert_eq!(stored_reference.did, prepared.user_did);
+        assert_eq!(stored_reference.key_id, prepared.verification_method);
+        crate::identity_custody::open_referenced_identity(&state, &stored_reference)
+            .unwrap()
+            .sign(&stored_reference.key_id, b"public-only bootstrap")
+            .unwrap();
+    }
+
+    #[test]
+    fn v3_bootstrap_rejects_even_an_empty_private_key_field() {
+        let mut payload = valid_payload();
+        let package = payload["user_subkey_package"].as_object_mut().unwrap();
+        package.insert("schema".to_owned(), json!(USER_SUBKEY_PACKAGE_SCHEMA_V3));
+        package.remove("private_key_encoding");
+        package.insert("private_key_pem".to_owned(), json!(""));
+        package.remove("private_key_multibase");
+        let envelope = parse_bootstrap_payload(payload).unwrap();
+
+        let error = validate_user_subkey_package(&envelope.user_subkey_package).unwrap_err();
+
+        assert!(error.to_string().contains("must not contain private key"));
     }
 
     #[test]

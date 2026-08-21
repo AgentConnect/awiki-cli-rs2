@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-pub(crate) struct HostedKeyMaterialProvider {
+pub(crate) struct HostedIdentitySigner {
     did_document: Value,
     legacy_key1_private_pem: String,
     request_signing_key_id: Option<String>,
@@ -11,7 +11,7 @@ pub(crate) struct HostedKeyMaterialProvider {
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
 }
 
-pub(crate) struct HostBackedDeviceKeyMaterialProvider {
+pub(crate) struct HostBackedDeviceIdentitySigner {
     did_document: Value,
     device_signing_key_id: String,
     device_signing_private_pem: String,
@@ -22,7 +22,7 @@ pub(crate) struct HostBackedDeviceKeyMaterialProvider {
         Option<std::sync::Arc<dyn crate::identity::HostBackedAuthTokenPersistence>>,
 }
 
-impl HostedKeyMaterialProvider {
+impl HostedIdentitySigner {
     pub(crate) fn new(material: &crate::identity::HostedIdentityMaterial) -> crate::ImResult<Self> {
         Ok(Self {
             did_document: material.did_document.clone(),
@@ -53,7 +53,7 @@ impl HostedKeyMaterialProvider {
     }
 }
 
-impl HostBackedDeviceKeyMaterialProvider {
+impl HostBackedDeviceIdentitySigner {
     pub(crate) fn new(
         material: &crate::identity::HostBackedDeviceIdentityMaterial,
     ) -> crate::ImResult<Self> {
@@ -79,9 +79,9 @@ impl HostBackedDeviceKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for HostedKeyMaterialProvider {
+impl fmt::Debug for HostedIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostedKeyMaterialProvider")
+        f.debug_struct("HostedIdentitySigner")
             .field("backend", &"hosted-memory")
             .field("did_document", &"<redacted-hosted-did-document>")
             .field("legacy_key1_private_pem", &"<redacted-private-key>")
@@ -91,9 +91,9 @@ impl fmt::Debug for HostedKeyMaterialProvider {
     }
 }
 
-impl fmt::Debug for HostBackedDeviceKeyMaterialProvider {
+impl fmt::Debug for HostBackedDeviceIdentitySigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostBackedDeviceKeyMaterialProvider")
+        f.debug_struct("HostBackedDeviceIdentitySigner")
             .field("backend", &"host-backed-device-memory")
             .field("did_document", &"<redacted-hosted-did-document>")
             .field("device_signing_key_id", &self.device_signing_key_id)
@@ -105,7 +105,7 @@ impl fmt::Debug for HostBackedDeviceKeyMaterialProvider {
     }
 }
 
-impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
+impl super::IdentitySigner for HostedIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         Ok(self.did_document.clone())
     }
@@ -114,38 +114,44 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
         Ok(Some(self.did_document.clone()))
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self
-            .legacy_key1_role_adapter()
-            .device_request_signing_private_pem())
-    }
-
-    fn device_request_signing_material(
-        &self,
-    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
-        Ok(super::DeviceRequestSigningMaterial {
-            key_id: self
-                .request_signing_key_id
-                .clone()
-                .map(Ok)
-                .unwrap_or_else(|| super::file::request_signing_key_id(&self.did_document))?,
-            private_key_pem: self.device_request_signing_private_pem()?,
-        })
-    }
-
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self
-            .legacy_key1_role_adapter()
-            .did_document_root_private_pem())
-    }
-
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        self.e2ee_agreement_private_pem
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        self.request_signing_key_id
             .clone()
-            .ok_or_else(|| crate::ImError::IdentityNotReady {
+            .map(Ok)
+            .unwrap_or_else(|| super::file::request_signing_key_id(&self.did_document))
+    }
+
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.request_signing_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.legacy_key1_private_pem, message, "request signing")
+    }
+
+    fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.root_control_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.legacy_key1_private_pem, message, "root control")
+    }
+
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        if self.agreement_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let private = self.e2ee_agreement_private_pem.as_deref().ok_or_else(|| {
+            crate::ImError::IdentityNotReady {
                 identity: "hosted-memory".to_owned(),
                 missing: vec!["e2ee_agreement_private_key".to_owned()],
-            })
+            }
+        })?;
+        super::ecdh_private_pem(private, peer_public, "E2EE agreement")
+    }
+
+    fn legacy_root_private_pem(&self) -> crate::ImResult<zeroize::Zeroizing<String>> {
+        Ok(zeroize::Zeroizing::new(
+            self.legacy_key1_private_pem.clone(),
+        ))
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
@@ -174,7 +180,7 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
     }
 }
 
-impl super::KeyMaterialProvider for HostBackedDeviceKeyMaterialProvider {
+impl super::IdentitySigner for HostBackedDeviceIdentitySigner {
     fn did_document(&self) -> crate::ImResult<Value> {
         Ok(self.did_document.clone())
     }
@@ -183,25 +189,37 @@ impl super::KeyMaterialProvider for HostBackedDeviceKeyMaterialProvider {
         Ok(Some(self.did_document.clone()))
     }
 
-    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.device_signing_private_pem.clone())
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        Ok(self.device_signing_key_id.clone())
     }
 
-    fn device_request_signing_material(
-        &self,
-    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
-        Ok(super::DeviceRequestSigningMaterial {
-            key_id: self.device_signing_key_id.clone(),
-            private_key_pem: self.device_signing_private_pem.clone(),
-        })
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.device_signing_key_id != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.device_signing_private_pem, message, "device signing")
     }
 
-    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.root_private_pem.clone())
+    fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        if self.root_control_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::sign_private_pem(&self.root_private_pem, message, "root control")
     }
 
-    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.e2ee_agreement_private_pem.clone())
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        if self.agreement_key_id()? != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        super::ecdh_private_pem(
+            &self.e2ee_agreement_private_pem,
+            peer_public,
+            "device E2EE agreement",
+        )
+    }
+
+    fn legacy_root_private_pem(&self) -> crate::ImResult<zeroize::Zeroizing<String>> {
+        Ok(zeroize::Zeroizing::new(self.root_private_pem.clone()))
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
@@ -395,12 +413,6 @@ fn validate_request_signing_key(
     Ok(request_signing_key_id.to_owned())
 }
 
-impl HostedKeyMaterialProvider {
-    fn legacy_key1_role_adapter(&self) -> super::LegacyKey1RoleAdapter {
-        super::LegacyKey1RoleAdapter::new(self.legacy_key1_private_pem.clone())
-    }
-}
-
 fn require_non_empty_secret(field: &'static str, value: &str) -> crate::ImResult<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -425,13 +437,13 @@ fn auth_state_from_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::KeyMaterialProvider;
+    use crate::internal::key_provider::IdentitySigner;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
 
     #[test]
     fn hosted_key_provider_keeps_secret_material_in_memory_without_debug_leak() {
-        let provider = HostedKeyMaterialProvider::new(&crate::identity::HostedIdentityMaterial {
+        let provider = HostedIdentitySigner::new(&crate::identity::HostedIdentityMaterial {
             identity_id: "daemon-agent".to_owned(),
             did: "did:example:daemon".to_owned(),
             handle: Some("daemon.example".to_owned()),
@@ -443,17 +455,10 @@ mod tests {
         })
         .unwrap();
 
+        assert_eq!(provider.legacy_key1_private_pem, "signing-secret");
         assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
-            "signing-secret"
-        );
-        assert_eq!(
-            provider.did_document_root_private_pem().unwrap(),
-            "signing-secret"
-        );
-        assert_eq!(
-            provider.e2ee_agreement_private_pem().unwrap(),
-            "agreement-secret"
+            provider.e2ee_agreement_private_pem.as_deref(),
+            Some("agreement-secret")
         );
         assert_eq!(
             provider.valid_auth_token().unwrap().as_deref(),
@@ -469,14 +474,11 @@ mod tests {
         assert!(!debug.contains("agreement-secret"));
         assert!(!debug.contains("token-secret"));
         assert!(!debug.contains("fresh-secret"));
-        let adapter_debug = format!("{:?}", provider.legacy_key1_role_adapter());
-        assert!(!adapter_debug.contains("signing-secret"));
-        assert!(adapter_debug.contains("<redacted-private-key>"));
     }
 
     #[test]
     fn signing_only_hosted_provider_fails_closed_for_e2ee_material() {
-        let provider = HostedKeyMaterialProvider::new(&crate::identity::HostedIdentityMaterial {
+        let provider = HostedIdentitySigner::new(&crate::identity::HostedIdentityMaterial {
             identity_id: "delegated-inbox".to_owned(),
             did: "did:example:alice".to_owned(),
             handle: None,
@@ -488,15 +490,8 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(
-            provider.device_request_signing_private_pem().unwrap(),
-            "signing-secret"
-        );
-        assert!(matches!(
-            provider.e2ee_agreement_private_pem(),
-            Err(crate::ImError::IdentityNotReady { missing, .. })
-                if missing == vec!["e2ee_agreement_private_key"]
-        ));
+        assert_eq!(provider.legacy_key1_private_pem, "signing-secret");
+        assert!(provider.ensure_agreement_available().is_err());
     }
 
     #[test]
@@ -520,14 +515,80 @@ mod tests {
             auth_token: None,
         };
 
-        let provider = HostedKeyMaterialProvider::new_for_request_signing_key(
+        let provider = HostedIdentitySigner::new_for_request_signing_key(
             &material,
             &generated.device_signing_key_id,
         )
         .unwrap();
-        let signing = provider.device_request_signing_material().unwrap();
+        let message = b"identity signer operation boundary";
+        let signature = provider
+            .sign(&generated.device_signing_key_id, message)
+            .unwrap();
 
-        assert_eq!(signing.key_id, generated.device_signing_key_id);
+        assert_eq!(
+            provider.request_signing_key_id().unwrap(),
+            generated.device_signing_key_id
+        );
+        provider
+            .public_key(&generated.device_signing_key_id)
+            .unwrap()
+            .verify_message(message, &signature)
+            .unwrap();
+        assert_eq!(
+            provider.sign("did:example:foreign#key", message),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn hosted_identity_signer_ecdh_is_kid_scoped() {
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "hosted-ecdh",
+                None,
+                None,
+            )
+            .unwrap();
+        let agreement_key_id = generated.device_e2ee_key_id.clone();
+        let material = crate::identity::HostedIdentityMaterial {
+            identity_id: generated.unique_id,
+            did: generated.did.as_str().to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: generated.did_document,
+            default_signing_private_key_pem: generated.device_signing_private_pem,
+            e2ee_agreement_private_key_pem: Some(generated.device_e2ee_private_pem.clone()),
+            auth_token: None,
+        };
+        let provider = HostedIdentitySigner::new_for_request_signing_key(
+            &material,
+            &generated.device_signing_key_id,
+        )
+        .unwrap();
+        let peer_private = x25519_dalek::StaticSecret::from([29_u8; 32]);
+        let peer_public = x25519_dalek::PublicKey::from(&peer_private).to_bytes();
+        let local_private = match anp::PrivateKeyMaterial::from_pem(
+            material.e2ee_agreement_private_key_pem.as_deref().unwrap(),
+        )
+        .unwrap()
+        {
+            anp::PrivateKeyMaterial::X25519(private) => private,
+            _ => panic!("test requires X25519 agreement key"),
+        };
+
+        let shared = provider.ecdh(&agreement_key_id, &peer_public).unwrap();
+
+        assert_eq!(
+            shared.as_ref(),
+            &local_private
+                .diffie_hellman(&x25519_dalek::PublicKey::from(peer_public))
+                .to_bytes()
+        );
+        assert_eq!(
+            provider.ecdh("did:example:foreign#agreement", &peer_public),
+            Err(crate::ImError::PermissionDenied)
+        );
     }
 
     #[test]
@@ -564,12 +625,9 @@ mod tests {
         };
 
         let provider =
-            HostedKeyMaterialProvider::new_for_request_signing_key(&material, &key_id).unwrap();
+            HostedIdentitySigner::new_for_request_signing_key(&material, &key_id).unwrap();
 
-        assert_eq!(
-            provider.device_request_signing_material().unwrap().key_id,
-            key_id,
-        );
+        assert_eq!(provider.request_signing_key_id().unwrap(), key_id);
     }
 
     #[test]
@@ -594,7 +652,7 @@ mod tests {
         };
 
         assert!(matches!(
-            HostedKeyMaterialProvider::new_for_request_signing_key(
+            HostedIdentitySigner::new_for_request_signing_key(
                 &material,
                 &generated.device_signing_key_id,
             ),

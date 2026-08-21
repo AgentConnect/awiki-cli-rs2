@@ -17,7 +17,7 @@ use crate::dto::{
     },
     identity::{
         DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
-        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPublicPackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
         DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
         DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
@@ -30,6 +30,7 @@ use crate::dto::{
         DartHandleRecoveryProgress, DartHandleRecoveryResetReference,
         DartHandleRecoveryTransitionSourceKind, DartHandleRegistrationJoinMode,
         DartHandleRegistrationJoinRequiredPreparation, DartHandleRegistrationResult,
+        DartIdentityCustodyBackend, DartIdentityCustodyState, DartIdentityCustodyStatus,
         DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
         DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
@@ -620,6 +621,46 @@ impl From<im_core::IdentitySecretStoragePolicy>
     }
 }
 
+impl From<im_core::identity::IdentityCustodyBackend> for DartIdentityCustodyBackend {
+    fn from(value: im_core::identity::IdentityCustodyBackend) -> Self {
+        match value {
+            im_core::identity::IdentityCustodyBackend::AnpIdentity => Self::AnpIdentity,
+            im_core::identity::IdentityCustodyBackend::LegacyFileCompat => Self::LegacyFileCompat,
+            im_core::identity::IdentityCustodyBackend::LegacyVault => Self::LegacyVault,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityCustodyState> for DartIdentityCustodyState {
+    fn from(value: im_core::identity::IdentityCustodyState) -> Self {
+        match value {
+            im_core::identity::IdentityCustodyState::Creating => Self::Creating,
+            im_core::identity::IdentityCustodyState::Active => Self::Active,
+            im_core::identity::IdentityCustodyState::Enrolling => Self::Enrolling,
+            im_core::identity::IdentityCustodyState::Revoked => Self::Revoked,
+            im_core::identity::IdentityCustodyState::Legacy => Self::Legacy,
+            im_core::identity::IdentityCustodyState::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityCustodyStatus> for DartIdentityCustodyStatus {
+    fn from(value: im_core::identity::IdentityCustodyStatus) -> Self {
+        Self {
+            identity: value.identity.into(),
+            backend: value.backend.into(),
+            state: value.state.into(),
+            ready: value.ready,
+            root_control_available: value.root_control_available,
+            pending_operation: value.pending_operation,
+            store_id: value.store_id,
+            custody_identity_id: value.custody_identity_id,
+            missing: value.missing,
+            warnings: value.warnings,
+        }
+    }
+}
+
 impl From<im_core::identity::IdentitySecretStorageBackend> for DartIdentitySecretStorageBackend {
     fn from(value: im_core::identity::IdentitySecretStorageBackend) -> Self {
         match value {
@@ -852,18 +893,15 @@ impl From<im_core::identity::DeleteLocalIdentityResult> for DartDeleteLocalIdent
     }
 }
 
-impl From<im_core::identity::DaemonSubkeyPrivatePackage> for DartDaemonSubkeyPrivatePackage {
-    fn from(value: im_core::identity::DaemonSubkeyPrivatePackage) -> Self {
+impl From<im_core::identity::DaemonSubkeyPublicPackage> for DartDaemonSubkeyPublicPackage {
+    fn from(value: im_core::identity::DaemonSubkeyPublicPackage) -> Self {
         Self {
             schema: value.schema,
-            user_did: value.user_did.as_str().to_string(),
+            user_did: value.user_did.as_str().to_owned(),
             verification_method: value.verification_method,
             key_type: value.key_type,
             key_algorithm: value.key_algorithm,
             public_key_multibase: value.public_key_multibase,
-            private_key_encoding: value.private_key_encoding,
-            private_key_pem: value.private_key_pem,
-            private_key_multibase: value.private_key_multibase,
         }
     }
 }

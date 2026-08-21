@@ -433,16 +433,25 @@ implementation. After eligibility and PreKey/session checks, one explicit user
 confirmation authorizes one target and message ID; V1 does not add a system
 PIN/biometric step to this transfer. An existing session sends a standard
 Cipher; when no session exists, the first standard Init carries the same
-RootKeyEnvelope as its first application plaintext. Core never sends an empty
-Init and never asks for a second confirmation.
+`RootKeyEnvelopeV1` as its first application plaintext. Only after the host
+passes `user_presence_confirmed=true` does Core call ANP Identity's public Rust
+root export and construct that envelope in zeroizing memory. Core never sends
+an empty Init and never asks for a second confirmation.
+
+The envelope object, canonical JSON output and P5 `V2SecretJsonPayload` are all
+owned by zeroizing containers. This is an SDK allocation-lifetime guarantee,
+not a claim that serializers or cryptographic backends can never create a
+transient implementation buffer. The security boundary is that plaintext is
+short-lived and is never persisted, logged, projected or exposed through a
+public host API.
 
 The sender persists ratchet state and byte-identical retry ciphertext before
 network I/O. The receiver processes the control JSON before ordinary message
 projection, revalidates the current Manifest/Registry and root fingerprint, and
-atomically seals the root as a `pending` Vault capability together with the
-consumed message and exact completion state. Root plaintext and control JSON
-never reach History, conversation, notification preview, search, Dart, CLI, or
-ordinary backup surfaces.
+atomically imports the root as a pending ANP Identity capability together with
+the consumed message and exact completion state. Root plaintext and control
+JSON never reach History, conversation, notification preview, search, Dart,
+CLI, or ordinary backup surfaces.
 
 The receiver then submits one HTTPS `device_root_import_complete` request with
 an outer importing-device Object Proof and an inner root-possession Object
@@ -647,45 +656,65 @@ host-backed devices with mandatory root material; a future rootless member
 host boundary requires a separate explicit contract rather than weakening this
 one.
 
-The compatibility default remains file-backed when a host opens `ImCore` without
-explicit vault options:
+Controller identities now use one workspace-scoped ANP Identity store. New
+Registration, Join, Handle Recovery and Legacy Upgrade flows generate or import
+their identity keys directly into that store; the AWiki identity index keeps
+only `anp_identity_store_id`, `anp_identity_id`, backend and auth references.
+Normal post-cutover signing, proof, HTTP authentication and ECDH operations are
+KID-scoped ANP Identity calls and never reopen legacy PEM or AWiki identity-vault
+records.
 
-- DID documents are read from the identity directory.
-- DID/default signing keys are read from `private.key` or `key-1-private.pem`.
-- secure direct agreement keys are read from `e2ee-agreement-private.pem` or legacy `key-3-private.pem`.
-- auth/session state remains compatible with `auth.json`.
+The ANP Identity store root follows the host's existing policy. A host-provided
+`DeviceVaultRootKey` is injected when AWiki vault options are available;
+otherwise the store uses its pinned private local-file root provider. This
+choice controls store encryption and does not change `IdentitySecretStoragePolicy`,
+which continues to describe the retained AWiki vault used by auth tokens, P5/P6,
+MLS, pairing and other non-identity secrets.
 
-Vault-backed identity storage is explicit and no-prompt by design:
+Legacy file/vault identity readers, legacy identity `SecretKind` values and key
+generation helpers remain reachable only by the permanent skip-version
+migration path or the explicitly documented hosted Agent boundary. They are
+not normal identity runtime backends after the schema-v6 cutover marker. The
+migration order is fixed: copy all identities, reopen and verify every imported
+key/document binding, atomically write the complete workspace cutover marker,
+then perform idempotent cleanup. No legacy key record is deleted before marker
+commit.
 
-- Hosts pass `ImCoreOpenOptions` with `IdentitySecretStoragePolicy::VaultPreferred` or `VaultRequired` plus `ImCoreSecretVaultOptions`.
-- The vault root key is a host-provided no-prompt secret. It must not be written to `ImCoreConfig`, CLI workspace config, ordinary App JSON state, logs, diagnostics, JSON output, or `Debug` output. Explicit E2E runs may use a private file test provider that remains local and untracked.
-- `SecretVault` stores per-record AEAD ciphertext and binds workspace, local vault-context device, identity, DID, kind, key id/version, schema, cipher, KDF, and no-prompt policy into authenticated metadata. The vault-context device id is a local storage scope and is a distinct Rust type from the random `ProtocolDeviceId`; it must never be published in a DID Manifest or copied into cross-domain messages.
-- `VaultRequired` is fail-closed. Missing root key, missing vault context, wrong workspace/device metadata, corrupt metadata, or failed open/verify must not silently fall back to plaintext for new secret persistence.
-- In `VaultRequired`, new registration, one-time Legacy upgrade, device Join/admin promotion, daemon subkey package persistence, and access-token replacement use vault-backed persistence and must not write private PEM/JWT material to the legacy identity files.
-- Identity vault migration seals records, opens them back for verification, and only then writes `vault_migration` metadata. Existing PEM/auth.json compatibility files are retained until an explicit cleanup path is available; migration failure must not delete or quarantine them.
-- Status, migration, and verification APIs expose backend/status/warnings summaries only. They must not expose the root key, private key, JWT, full `SecretRef`, or ciphertext internals.
+The migration-gated CLI command `id vault migrate` remains a legacy AWiki-vault
+bridge for old operator/test workspaces and refuses an existing ANP custody
+binding. Product and SDK identity migration use `migrate_identity_custody` (or
+the deprecated Rust/Dart `migrate_identity_vault` compatibility name), which
+performs the old-to-ANP workspace cutover described above.
 
-Process boundaries matter. App, CLI, and daemon run as separate hosts and must each unlock or provide their own vault context for their own state root. Do not assume one OS keychain item is readable across all processes.
+`identity_custody_status` is the authoritative safe status surface. It reports
+the custody backend/state, readiness, root-control availability, pending state,
+opaque store/identity IDs and closed missing/warning lists without private key,
+JWT, `SecretRef` or checkpoint data. The older vault status/verify methods are
+deprecated compatibility views. The old `migrate_identity_vault` name now runs
+the real workspace old-to-ANP migration and returns `migrated_to_anp_identity`
+or an explicit `already_migrated` warning; it no longer migrates an active
+identity from plaintext files into the old AWiki identity vault.
 
-Current host integration status:
+Process boundaries remain independent. The controller workspace and daemon do
+not share an ANP Identity store. For delegated user signing, daemon creates a
+rootless `#daemon-key-1` in its own state-root store and publishes only a V3
+public proposal. Controller authorizes that public method in `authentication`;
+the bootstrap payload contains no private field. V1/V2 daemon private packages
+and old identity vault kinds remain receive-only migration inputs. Hosted
+daemon/runtime Agent device identities are the existing trusted-native-host
+exception and remain sealed by the daemon's own SecretVault.
 
-- Plain `ImCore::new` / `open` remains FileCompat for compatibility. Secure callers must pass explicit vault options.
-- `awiki-cli` resolves `secret_storage.mode`, `vault_dir`, `workspace_id`, and `device_id` from workspace config. The root key is read from `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` when present, otherwise from `vault_dir/root-key.b64u`; normal live paths may create that local private root-key file, while status/dry-run surfaces only report a redacted plan. `id vault status`, `id vault migrate`, `id vault cleanup-plaintext`, and doctor output are redacted.
-- `im-core-dart` / `packages/awiki_im_core` expose optional Dart open options plus identity vault status/migrate/verify facade methods. The Dart package does not generate or persist host root keys.
-- `awiki-me` opens `im-core` with `VaultRequired`. Production and custom state-root runs use `SecureAppKeyValueStore` for the App-local root key; only explicit E2E state roots use a private file test provider.
-- `awiki-deamon` stores daemon/runtime `agent_identity` private keys and `user_delegated_identity` private keys as SecretVault refs in `daemon.db`; the legacy PEM columns keep a sentinel for compatibility. Older plaintext rows are read only as a migration bridge and are re-sealed when a daemon vault root key is available.
+The daemon has no independent Registry version source for delegated user DID
+documents. `adopt_daemon_document` therefore increments its local evidence
+version only when the canonical digest changes. That synthesized counter is a
+local monotonicity input, not proof of global Registry freshness or rollback
+resistance; authorization relies on the controller/bootstrap path supplying an
+already accepted document and on the upstream resolver/service validation.
 
-Known residual risks after the App/CLI/daemon vault integration:
-
-- CLI root keys supplied through `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` are visible to the process environment; CLI root keys stored in `vault_dir/root-key.b64u` rely on private local file permissions. A platform wrapping/root-key backend and rotation/backup story remain follow-up work.
-- App root key rotation, backup, recovery UX, and secure deletion of old plaintext compatibility files are not implemented.
-- `id vault cleanup-plaintext` is a migration-gated/preflight surface unless a CLI-safe live cleanup API is added. Do not document it as deleting legacy files in this build.
-- Explicit delegated `key_ref` flows support `vault:` refs and should use them for new daemon-owned delegated keys. `file:` / `local:` / bare path refs remain compatibility inputs and can still read caller-provided delegated private key files.
-- The daemon Message/im-core SDK vNext path uses validated host-backed Device Identity material and does not write `private.key`, `e2ee-agreement-private.pem`, or `auth.json` into Core identity directories. Generic hosted material remains a Legacy/delegated compatibility boundary and cannot activate account sync.
-- The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
-- Direct E2EE session/prekey local state is encrypted at rest through SecretVault envelopes. Group MLS private state is outside this hardening pass.
-- `awiki-deamon` `agent_auth_state` bearer tokens are persisted as daemon SecretVault refs with a sentinel in the `jwt_token` column; do not log or expose them.
-- External key-agent IPC, public signing APIs, and DID child-key scope/revocation semantics are outside this boundary.
+Direct E2EE session/prekey state, Group MLS state, JWTs, pairing keys and runtime
+secrets remain outside ANP Identity and continue using their owning stores.
+Root-key provider rotation/backup and external key-agent IPC are outside this
+boundary.
 
 ## 10. API References
 

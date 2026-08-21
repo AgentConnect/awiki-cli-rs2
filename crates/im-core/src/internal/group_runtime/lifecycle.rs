@@ -15,7 +15,7 @@ pub(crate) struct GroupLifecycleRuntime<'a, P, T> {
 pub(crate) struct GroupLifecycleCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
-    pub key1_private_pem: String,
+    pub signer: crate::internal::proof::origin::OriginProofSigner,
     pub verification_method: Option<String>,
 }
 
@@ -173,7 +173,7 @@ where
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
-                key1_private_pem: credentials.key1_private_pem,
+                signer: credentials.signer,
                 verification_method: credentials.verification_method,
             },
             &payload,
@@ -360,7 +360,7 @@ where
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
-                key1_private_pem: credentials.key1_private_pem,
+                signer: credentials.signer,
                 verification_method: credentials.verification_method,
             },
             &payload,
@@ -388,12 +388,14 @@ where
 fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let signing = runtime.key_provider.device_request_signing_material()?;
+    let key_id = runtime.key_provider.request_signing_key_id()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem: signing.private_key_pem,
-        verification_method: Some(signing.key_id),
+        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+            &runtime.key_provider,
+        )),
+        verification_method: Some(key_id),
     })
 }
 
@@ -402,12 +404,14 @@ async fn load_credentials_async(
 ) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let signing = runtime.key_provider.device_request_signing_material()?;
+    let key_id = runtime.key_provider.request_signing_key_id()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem: signing.private_key_pem,
-        verification_method: Some(signing.key_id),
+        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+            &runtime.key_provider,
+        )),
+        verification_method: Some(key_id),
     })
 }
 
@@ -1208,7 +1212,9 @@ mod tests {
             GroupLifecycleCredentials {
                 identity_name: "alice".to_string(),
                 did_document: Some(bundle.did_document),
-                key1_private_pem,
+                signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                    key1_private_pem,
+                ),
                 verification_method: None,
             }
         }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SecretVault};
 
@@ -131,6 +132,7 @@ pub(crate) struct IdentityVaultContext {
     vault: Arc<dyn SecretVault + Send + Sync>,
     workspace_id: String,
     vault_context_device_id: crate::ids::VaultContextDeviceId,
+    anp_identity_root_key: Zeroizing<[u8; 32]>,
 }
 
 impl IdentityVaultContext {
@@ -143,6 +145,7 @@ impl IdentityVaultContext {
                 "vault directory must not be empty",
             ));
         }
+        let anp_identity_root_key = Zeroizing::new(*options.root_key.expose_secret());
         let vault = Arc::new(FileSecretVault::new(
             options.root_key,
             FileSecretVaultStore::new(options.vault_dir),
@@ -152,6 +155,7 @@ impl IdentityVaultContext {
             vault,
             workspace_id,
             vault_context_device_id,
+            anp_identity_root_key,
         })
     }
 
@@ -170,6 +174,10 @@ impl IdentityVaultContext {
 
     pub(crate) fn vault_context_device_id(&self) -> &crate::ids::VaultContextDeviceId {
         &self.vault_context_device_id
+    }
+
+    pub(crate) fn anp_identity_root_key(&self) -> [u8; 32] {
+        *self.anp_identity_root_key
     }
 }
 

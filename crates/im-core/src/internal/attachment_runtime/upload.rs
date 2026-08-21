@@ -42,7 +42,7 @@ pub(crate) struct AttachmentManifestSendInput {
 pub(crate) struct AttachmentUploadCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
-    pub key1_private_pem: String,
+    pub signer: crate::internal::proof::origin::OriginProofSigner,
     pub verification_method: Option<String>,
 }
 
@@ -406,7 +406,7 @@ where
             identity_name: credentials.identity_name,
             did: self.client.did().as_str().to_string(),
             did_document: credentials.did_document,
-            key1_private_pem: credentials.key1_private_pem,
+            signer: credentials.signer,
             verification_method: credentials.verification_method,
         };
         let (method, params) = match target {
@@ -756,7 +756,7 @@ where
             identity_name: credentials.identity_name,
             did: self.client.did().as_str().to_string(),
             did_document: credentials.did_document,
-            key1_private_pem: credentials.key1_private_pem,
+            signer: credentials.signer,
             verification_method: credentials.verification_method,
         };
         let (method, params) = match target {
@@ -1269,12 +1269,14 @@ fn load_credentials(
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let signing = runtime.key_provider.device_request_signing_material()?;
+    let key_id = runtime.key_provider.request_signing_key_id()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem: signing.private_key_pem,
-        verification_method: Some(signing.key_id),
+        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+            &runtime.key_provider,
+        )),
+        verification_method: Some(key_id),
     })
 }
 
@@ -1283,12 +1285,14 @@ async fn load_credentials_async(
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let signing = runtime.key_provider.device_request_signing_material()?;
+    let key_id = runtime.key_provider.request_signing_key_id()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem: signing.private_key_pem,
-        verification_method: Some(signing.key_id),
+        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+            &runtime.key_provider,
+        )),
+        verification_method: Some(key_id),
     })
 }
 

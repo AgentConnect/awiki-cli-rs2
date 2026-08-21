@@ -43,6 +43,9 @@ pub struct ImCoreAdapter {
 impl ImCoreAdapter {
     pub fn open(config: &DaemonConfig) -> Result<Self> {
         let core = ImCore::new(config.im_core_config()?, config.im_core_paths())?;
+        core.identities()
+            .migrate_identity_custody()
+            .context("migrate daemon im-core identity custody")?;
         Ok(Self { core })
     }
 
@@ -228,6 +231,13 @@ impl ImCoreAdapter {
                 e2ee_agreement_private_key_pem: None,
                 auth_token: None,
             })?)
+    }
+
+    pub fn client_for_anp_delegated_identity(
+        &self,
+        identity: anp_identity::DidIdentity,
+    ) -> Result<im_core::ImClient> {
+        Ok(self.core.client_with_anp_delegated_identity(identity)?)
     }
 }
 

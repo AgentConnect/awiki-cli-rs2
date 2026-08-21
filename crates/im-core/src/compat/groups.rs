@@ -342,7 +342,9 @@ impl GroupLifecycleCredentials {
         crate::internal::group_runtime::lifecycle::GroupLifecycleCredentials {
             identity_name: self.identity_name,
             did_document: self.did_document,
-            key1_private_pem: self.key1_private_pem,
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                self.key1_private_pem,
+            ),
             verification_method: None,
         }
     }

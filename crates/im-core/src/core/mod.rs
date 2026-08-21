@@ -169,7 +169,7 @@ impl ImCore {
             self.inner.sdk_config().anp_service_endpoint.as_ref(),
             self.inner.sdk_config().anp_service_did.as_ref(),
         )?;
-        vnext_agent_bootstrap_material(kind, local_part, generated, true)
+        vnext_agent_bootstrap_material(kind, local_part, generated)
     }
 
     /// Prepares a same-DID vNext target for an existing Legacy Agent.
@@ -227,7 +227,6 @@ impl ImCore {
             did_document: generated.target_document,
             document_hash: generated.target_document_hash,
             protocol_device_id: generated.protocol_device_id,
-            daemon_subkey_package: None,
         })
     }
 
@@ -406,6 +405,107 @@ impl ImCore {
         self.client_with_device_identity_material_inner(material, None)
     }
 
+    pub(crate) fn client_with_pending_anp_identity(
+        &self,
+        identity: anp_identity::DidIdentity,
+        handle: Option<&str>,
+        display_name: &str,
+        protocol_device_id: &crate::ids::ProtocolDeviceId,
+    ) -> crate::ImResult<ImClient> {
+        let did = crate::ids::Did::parse(identity.did())?;
+        let identity_id = crate::ids::IdentityId::parse(
+            did.as_str()
+                .rsplit(':')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )?;
+        let handle = handle
+            .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
+            .transpose()?;
+        let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
+            std::sync::Arc::new(
+                crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
+            );
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle,
+                display_name: Some(display_name.to_owned()),
+                local_alias: None,
+                device_id: Some(protocol_device_id.as_str().to_owned()),
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: false,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider: provider,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+                sync_account: None,
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
+    #[doc(hidden)]
+    pub fn client_with_anp_delegated_identity(
+        &self,
+        identity: anp_identity::DidIdentity,
+    ) -> crate::ImResult<ImClient> {
+        if identity.state() != anp_identity::IdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let did = crate::ids::Did::parse(identity.did())?;
+        let identity_id = crate::ids::IdentityId::parse(
+            did.as_str()
+                .rsplit(':')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )?;
+        let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
+            std::sync::Arc::new(
+                crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
+            );
+        provider.ensure_request_signing_available()?;
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle: None,
+                display_name: None,
+                local_alias: None,
+                device_id: None,
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: false,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider: provider,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+                sync_account: None,
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
     /// Creates an exact-device client whose validated replacement access tokens
     /// are durably committed by the trusted host.
     pub fn client_with_device_identity_material_and_auth_persistence(
@@ -455,7 +555,7 @@ impl ImCore {
         let device_e2ee_key_id = material.device_e2ee_key_id.clone();
         let display_name = material.display_name.clone();
         let key_provider = std::sync::Arc::new(
-            crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new_with_auth_token_persistence(
+            crate::internal::key_provider::HostBackedDeviceIdentitySigner::new_with_auth_token_persistence(
                 &material,
                 auth_token_persistence,
             )?,
@@ -520,12 +620,11 @@ impl ImCore {
             .transpose()?;
         let key_provider = std::sync::Arc::new(match request_signing_key_id {
             Some(key_id) => {
-                crate::internal::key_provider::HostedKeyMaterialProvider::new_for_request_signing_key(
-                    &material,
-                    key_id,
+                crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
+                    &material, key_id,
                 )?
             }
-            None => crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
+            None => crate::internal::key_provider::HostedIdentitySigner::new(&material)?,
         });
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
@@ -811,7 +910,6 @@ fn vnext_agent_bootstrap_material(
     kind: crate::identity::AgentIdentityKind,
     local_part: String,
     generated: crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
-    include_daemon_subkey: bool,
 ) -> crate::ImResult<crate::identity::VNextAgentBootstrapMaterial> {
     let document_hash =
         crate::internal::identity_wire::document::document_hash(&generated.did_document)?;
@@ -832,7 +930,6 @@ fn vnext_agent_bootstrap_material(
         device_e2ee_key_id: generated.device_e2ee_key_id,
         device_e2ee_private_key_pem: generated.device_e2ee_private_pem,
         device_e2ee_public_key_pem: generated.device_e2ee_public_pem,
-        daemon_subkey_package: include_daemon_subkey.then_some(generated.daemon_subkey_package),
     })
 }
 

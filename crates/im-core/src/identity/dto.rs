@@ -92,6 +92,39 @@ pub struct IdentityDeviceSummary {
     pub blocked_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityCustodyBackend {
+    AnpIdentity,
+    LegacyFileCompat,
+    LegacyVault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityCustodyState {
+    Creating,
+    Active,
+    Enrolling,
+    Revoked,
+    Legacy,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityCustodyStatus {
+    pub identity: IdentitySummary,
+    pub backend: IdentityCustodyBackend,
+    pub state: IdentityCustodyState,
+    pub ready: bool,
+    pub root_control_available: bool,
+    pub pending_operation: bool,
+    pub store_id: Option<String>,
+    pub custody_identity_id: Option<String>,
+    pub missing: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentitySecretStorageBackend {
@@ -129,6 +162,42 @@ pub struct IdentityVaultVerificationReport {
     pub identity: IdentitySummary,
     pub status: IdentityVaultStatus,
     pub verified: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityCustodyMigrationPhase {
+    NotRequired,
+    Blocked,
+    Eligible,
+    Copied,
+    Verified,
+    Cutover,
+    Cleaned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityCustodyMigrationIdentityReport {
+    pub identity_name: String,
+    pub did: String,
+    pub eligible: bool,
+    pub already_managed: bool,
+    pub root_capability_present: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityCustodyMigrationReport {
+    pub dry_run: bool,
+    pub phase: IdentityCustodyMigrationPhase,
+    pub store_id: Option<String>,
+    pub marker_written: bool,
+    pub cleanup_complete: bool,
+    pub copied_count: usize,
+    pub verified_count: usize,
+    pub identities: Vec<IdentityCustodyMigrationIdentityReport>,
+    pub blockers: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -185,7 +254,6 @@ pub struct VNextAgentBootstrapMaterial {
     pub device_e2ee_key_id: String,
     pub device_e2ee_private_key_pem: String,
     pub device_e2ee_public_key_pem: String,
-    pub daemon_subkey_package: Option<DaemonSubkeyPrivatePackage>,
 }
 
 impl std::fmt::Debug for VNextAgentBootstrapMaterial {
@@ -201,7 +269,6 @@ impl std::fmt::Debug for VNextAgentBootstrapMaterial {
             .field("root_key_material", &"<redacted-key-material>")
             .field("device_signing_key_material", &"<redacted-key-material>")
             .field("device_e2ee_key_material", &"<redacted-key-material>")
-            .field("daemon_subkey_package", &"<redacted-private-package>")
             .finish()
     }
 }
@@ -331,23 +398,23 @@ pub struct RegisterHandleRequest {
     pub make_default: bool,
 }
 
-pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V1: &str = "awiki.daemon.user_subkey_package.v1";
-pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
-pub const DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM: &str = "pem";
+pub(crate) const DAEMON_SUBKEY_PACKAGE_SCHEMA_V1: &str = "awiki.daemon.user_subkey_package.v1";
+pub(crate) const DAEMON_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
+pub(crate) const DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM: &str = "pem";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DaemonSubkeyPrivatePackage {
-    pub schema: String,
-    pub user_did: crate::ids::Did,
-    pub verification_method: String,
-    pub key_type: String,
-    pub key_algorithm: Option<String>,
-    pub public_key_multibase: String,
-    pub private_key_encoding: String,
-    pub private_key_pem: String,
+pub(crate) struct DaemonSubkeyPrivatePackage {
+    pub(crate) schema: String,
+    pub(crate) user_did: crate::ids::Did,
+    pub(crate) verification_method: String,
+    pub(crate) key_type: String,
+    pub(crate) key_algorithm: Option<String>,
+    pub(crate) public_key_multibase: String,
+    pub(crate) private_key_encoding: String,
+    pub(crate) private_key_pem: String,
     /// Legacy compatibility field. New JSON serialization writes `private_key_pem`
     /// instead of this v1 field, but older Rust/Dart callers may still read it.
-    pub private_key_multibase: String,
+    pub(crate) private_key_multibase: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,8 +424,29 @@ pub struct DaemonSubkeyAuthorizationRevokeResult {
     pub updated: bool,
 }
 
+pub const DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3: &str = "awiki.daemon.user_subkey_package.v3";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonSubkeyPublicProposal {
+    pub user_did: crate::ids::Did,
+    pub verification_method: String,
+    pub public_key_multibase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonSubkeyPublicPackage {
+    pub schema: String,
+    pub user_did: crate::ids::Did,
+    pub verification_method: String,
+    pub key_type: String,
+    pub key_algorithm: String,
+    pub public_key_multibase: String,
+}
+
 impl DaemonSubkeyPrivatePackage {
-    pub fn new_v2_pem(
+    pub(crate) fn new_v2_pem(
         user_did: crate::ids::Did,
         verification_method: String,
         key_type: String,
@@ -379,7 +467,7 @@ impl DaemonSubkeyPrivatePackage {
         }
     }
 
-    pub fn private_key_material(&self) -> &str {
+    pub(crate) fn private_key_material(&self) -> &str {
         if !self.private_key_pem.trim().is_empty() {
             &self.private_key_pem
         } else {
@@ -387,7 +475,7 @@ impl DaemonSubkeyPrivatePackage {
         }
     }
 
-    pub fn is_v2_pem(&self) -> bool {
+    pub(crate) fn is_v2_pem(&self) -> bool {
         self.schema == DAEMON_SUBKEY_PACKAGE_SCHEMA_V2
             && self.private_key_encoding == DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
             && !self.private_key_pem.trim().is_empty()

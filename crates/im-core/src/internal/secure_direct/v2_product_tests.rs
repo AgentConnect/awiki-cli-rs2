@@ -254,12 +254,31 @@ fn context(
         DeviceVaultRootKey::from_bytes([vault_seed; 32]),
         FileSecretVaultStore::new(root.join(format!("{}-vault", device.id))),
     ));
+    let did_document = did_document(did, &[device]);
+    let signer: Arc<dyn crate::internal::key_provider::IdentitySigner> = Arc::new(
+        crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
+            &crate::identity::HostedIdentityMaterial {
+                identity_id: identity_id.to_owned(),
+                did: did.to_owned(),
+                handle: None,
+                display_name: None,
+                did_document,
+                default_signing_private_key_pem: device.signing().to_pem(),
+                e2ee_agreement_private_key_pem: Some(
+                    anp::PrivateKeyMaterial::X25519(device.static_private()).to_pem(),
+                ),
+                auth_token: None,
+            },
+            &device.signing_key_id(did),
+        )
+        .unwrap(),
+    );
     V2DirectProductContext {
         owner_identity_id: identity_id.to_owned(),
         local_did: did.to_owned(),
         local_device_id: device.id.to_owned(),
         local_e2ee_key_id: device.e2ee_key_id(did),
-        local_static_private: device.static_private(),
+        identity_signer: signer,
         sqlite_path: root.join(format!("{}.sqlite", device.id)),
         vault,
         scope: scope(identity_id, did, device),
@@ -306,6 +325,7 @@ static RUNTIME_WIRE_DOCUMENTS: OnceLock<Mutex<BTreeMap<PathBuf, BTreeMap<String,
 
 pub(crate) struct RuntimeP5TestClientFixture {
     root: tempfile::TempDir,
+    agreement_private_pem: String,
 }
 
 impl RuntimeP5TestClientFixture {
@@ -329,6 +349,7 @@ impl RuntimeP5TestClientFixture {
                 None,
             )
             .unwrap();
+        let agreement_private_pem = generated.device_e2ee_private_pem.clone();
         let device_state = IdentityDeviceState {
             schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
             mode: IdentityDeviceMode::VNext,
@@ -384,7 +405,10 @@ impl RuntimeP5TestClientFixture {
                 },
             )
             .unwrap();
-        Self { root }
+        Self {
+            root,
+            agreement_private_pem,
+        }
     }
 
     fn paths(root: &Path) -> crate::ImCorePaths {
@@ -445,6 +469,10 @@ impl RuntimeP5TestClientFixture {
     pub(crate) fn sqlite_path(&self) -> PathBuf {
         Self::paths(self.root.path()).local_state.sqlite_path
     }
+
+    pub(crate) fn agreement_private_key(&self) -> anp::PrivateKeyMaterial {
+        anp::PrivateKeyMaterial::from_pem(&self.agreement_private_pem).unwrap()
+    }
 }
 
 pub(crate) enum RuntimeP5TestBody {
@@ -469,14 +497,11 @@ pub(crate) async fn prepare_runtime_p5_test_wires(
     let endpoint = active_local_endpoint_for_client(&core, client).unwrap();
     let recipient_context = V2DirectProductContext::from_client(&core, client).unwrap();
     let local_document = client.runtime().key_provider.did_document().unwrap();
-    let signing_private = anp::PrivateKeyMaterial::from_pem(
-        &client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()
-            .unwrap(),
-    )
-    .unwrap();
+    let signing_public = client
+        .runtime()
+        .key_provider
+        .public_key(&endpoint.signing_key_id)
+        .unwrap();
     let publication = {
         let connection = recipient_context.open_connection().unwrap();
         let store = SqliteV2DirectStateStore::new_with_secret_vault(
@@ -492,7 +517,13 @@ pub(crate) async fn prepare_runtime_p5_test_wires(
                 device_id: &recipient_context.local_device_id,
                 signing_key_id: &endpoint.signing_key_id,
                 e2ee_key_id: &recipient_context.local_e2ee_key_id,
-                signing_private: &signing_private,
+                signing_public,
+                signer: &|kid, message| {
+                    client
+                        .runtime()
+                        .key_provider
+                        .sign_device_assertion(kid, message)
+                },
             },
             chrono::Utc::now(),
         )

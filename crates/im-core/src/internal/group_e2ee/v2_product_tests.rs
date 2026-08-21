@@ -25,6 +25,7 @@ use anp::proof::{
 use serde_json::{json, Value};
 
 use super::*;
+use anp::PrivateKeyMaterial;
 
 const NOW: &str = "2026-07-20T00:00:00Z";
 const ISSUED_AT: &str = "2026-07-19T00:00:00Z";
@@ -1167,7 +1168,9 @@ fn product(
         OriginProofIdentity {
             identity_name: format!("identity-{}", device.device_id),
             did_document: Some(fixture.document.clone()),
-            key1_private_pem: device.signing_private_pem.clone(),
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                device.signing_private_pem.clone(),
+            ),
             verification_method: Some(device.signing_key_id.clone()),
         },
     );
@@ -1545,7 +1548,9 @@ fn origin_auth<M: serde::Serialize, B: serde::Serialize>(
         &OriginProofIdentity {
             identity_name: format!("identity-{}", device.device_id),
             did_document: Some(fixture.document.clone()),
-            key1_private_pem: device.signing_private_pem.clone(),
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
+                device.signing_private_pem.clone(),
+            ),
             verification_method: Some(device.signing_key_id.clone()),
         },
         &DirectPayload {

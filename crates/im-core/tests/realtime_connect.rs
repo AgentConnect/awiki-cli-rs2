@@ -596,8 +596,36 @@ impl RuntimeFixture {
         .unwrap();
         let dir = identities.join(alias);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("did.json"), r#"{"id":"did:example:test"}"#).unwrap();
-        std::fs::write(dir.join("private.key"), "test-private-key").unwrap();
+        let did = format!("did:example:{alias}");
+        let key_id = format!("{did}#key-1");
+        let private_key = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        ));
+        let public_key_multibase = match private_key.public_key() {
+            anp::PublicKeyMaterial::Ed25519(key) => {
+                let mut bytes = vec![0xed, 0x01];
+                bytes.extend_from_slice(&key.to_bytes());
+                format!("z{}", bs58::encode(bytes).into_string())
+            }
+            _ => unreachable!("test request-signing key must be Ed25519"),
+        };
+        std::fs::write(
+            dir.join("did.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": did,
+                "controller": did,
+                "verificationMethod": [{
+                    "id": key_id,
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": public_key_multibase,
+                }],
+                "authentication": [key_id],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("private.key"), private_key.to_pem()).unwrap();
         if let Some(token) = token {
             std::fs::write(
                 dir.join("auth.json"),

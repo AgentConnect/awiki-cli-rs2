@@ -75,7 +75,6 @@ struct PendingVNextRegistrationSecret {
     device_e2ee_key_id: String,
     device_e2ee_private_key_pem: String,
     device_e2ee_public_key_pem: String,
-    daemon_subkey_package_json: Option<Value>,
 }
 
 impl std::fmt::Debug for PendingVNextRegistrationSecret {
@@ -91,7 +90,6 @@ impl std::fmt::Debug for PendingVNextRegistrationSecret {
             .field("root_key_material", &"<redacted-key-material>")
             .field("device_signing_key_material", &"<redacted-key-material>")
             .field("device_e2ee_key_material", &"<redacted-key-material>")
-            .field("daemon_subkey_package", &"<redacted-private-package>")
             .finish()
     }
 }
@@ -2958,12 +2956,6 @@ fn prepare_vnext_agent_registration(
 
     let im_core = ImCoreAdapter::open(config)?;
     let generated = im_core.generate_vnext_agent_bootstrap(agent_kind, handle)?;
-    let daemon_subkey_package_json = generated
-        .daemon_subkey_package
-        .as_ref()
-        .map(serde_json::to_value)
-        .transpose()
-        .context("serialize daemon authentication subkey package")?;
     let secret = PendingVNextRegistrationSecret {
         registration_token: registration_token.as_str().to_owned(),
         identity_id: generated.identity_id,
@@ -2980,7 +2972,6 @@ fn prepare_vnext_agent_registration(
         device_e2ee_key_id: generated.device_e2ee_key_id,
         device_e2ee_private_key_pem: generated.device_e2ee_private_key_pem,
         device_e2ee_public_key_pem: generated.device_e2ee_public_key_pem,
-        daemon_subkey_package_json,
     };
     let document_digest = secret.document_hash.clone();
     let request_digest = format!(
@@ -3116,7 +3107,7 @@ fn activate_vnext_agent_identity(
             device_signing_private_key_pem: prepared.secret.device_signing_private_key_pem.clone(),
             device_e2ee_key_id: prepared.secret.device_e2ee_key_id.clone(),
             device_e2ee_private_key_pem: prepared.secret.device_e2ee_private_key_pem.clone(),
-            daemon_subkey_package_json: prepared.secret.daemon_subkey_package_json.clone(),
+            daemon_subkey_package_json: None,
             authorization_status: "active".to_owned(),
             role: "admin".to_owned(),
             management_ready: true,

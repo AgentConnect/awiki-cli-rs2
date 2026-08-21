@@ -34,10 +34,7 @@ impl<'a> FileSessionProvider<'a> {
     fn snapshot(&self) -> crate::ImResult<SessionSnapshot> {
         let runtime = self.client.runtime();
         let did_document_available = runtime.key_provider.optional_did_document()?.is_some();
-        let private_key_available = runtime
-            .key_provider
-            .device_request_signing_private_pem()
-            .is_ok();
+        let private_key_available = runtime.key_provider.request_signing_key_id().is_ok();
         let auth_state = runtime.key_provider.auth_state()?;
         Ok(SessionSnapshot {
             subject: self.client.did().clone(),

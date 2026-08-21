@@ -267,7 +267,6 @@ fn bootstrap_material_from_pending(
         device_e2ee_key_id: secret.device_e2ee_key_id.clone(),
         device_e2ee_private_key_pem: secret.device_e2ee_private_key_pem.clone(),
         device_e2ee_public_key_pem: e2ee_private.public_key().to_pem(),
-        daemon_subkey_package: None,
     })
 }
 

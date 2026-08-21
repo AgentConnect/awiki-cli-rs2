@@ -603,6 +603,7 @@ class AwikiImCore {
     return progress._toModel();
   }
 
+  @Deprecated('Use identityCustodyStatus for identity custody state.')
   Future<IdentityVaultStatus> identityVaultStatus(
     IdentitySelector selector,
   ) async {
@@ -642,6 +643,9 @@ class AwikiImCore {
     return status._toModel();
   }
 
+  @Deprecated(
+    'Use identity custody migration APIs; this name migrates to ANP Identity.',
+  )
   Future<IdentityVaultMigrationReport> migrateIdentityVault(
     IdentitySelector selector,
   ) async {
@@ -655,6 +659,7 @@ class AwikiImCore {
     return report._toModel();
   }
 
+  @Deprecated('Use identityCustodyStatus for identity custody state.')
   Future<IdentityVaultVerificationReport> verifyIdentityVault(
     IdentitySelector selector,
   ) async {
@@ -681,6 +686,19 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<IdentityCustodyStatus> identityCustodyStatus(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.identityCustodyStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   /// Deletes one local identity together with all of its owner-scoped local
   /// projections. It does not change the remote account or other identities.
   Future<DeleteLocalIdentityResult> deleteLocalIdentityData(
@@ -696,27 +714,16 @@ class AwikiImCore {
     return result._toModel();
   }
 
-  Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
-    IdentitySelector selector,
-  ) async {
+  Future<DaemonSubkeyPublicPackage> authorizeDaemonSubkey({
+    required IdentitySelector selector,
+    required DaemonSubkeyPublicProposal proposal,
+  }) async {
     _ensureNotDisposed();
     final package = await _mapNativeErrors(
-      () => gen_identity_api.loadDaemonSubkeyPackage(
+      () => gen_identity_api.authorizeDaemonSubkey(
         core: _inner,
         selector: selector._toGen(),
-      ),
-    );
-    return package._toModel();
-  }
-
-  Future<DaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage(
-    IdentitySelector selector,
-  ) async {
-    _ensureNotDisposed();
-    final package = await _mapNativeErrors(
-      () => gen_identity_api.ensureDaemonSubkeyPackage(
-        core: _inner,
-        selector: selector._toGen(),
+        proposal: proposal._toGen(),
       ),
     );
     return package._toModel();
@@ -2664,6 +2671,47 @@ extension on gen_identity.DartIdentitySecretStorageBackend {
   };
 }
 
+extension on gen_identity.DartIdentityCustodyBackend {
+  IdentityCustodyBackend _toModel() => switch (this) {
+    gen_identity.DartIdentityCustodyBackend.anpIdentity =>
+      IdentityCustodyBackend.anpIdentity,
+    gen_identity.DartIdentityCustodyBackend.legacyFileCompat =>
+      IdentityCustodyBackend.legacyFileCompat,
+    gen_identity.DartIdentityCustodyBackend.legacyVault =>
+      IdentityCustodyBackend.legacyVault,
+  };
+}
+
+extension on gen_identity.DartIdentityCustodyState {
+  IdentityCustodyState _toModel() => switch (this) {
+    gen_identity.DartIdentityCustodyState.creating =>
+      IdentityCustodyState.creating,
+    gen_identity.DartIdentityCustodyState.active => IdentityCustodyState.active,
+    gen_identity.DartIdentityCustodyState.enrolling =>
+      IdentityCustodyState.enrolling,
+    gen_identity.DartIdentityCustodyState.revoked =>
+      IdentityCustodyState.revoked,
+    gen_identity.DartIdentityCustodyState.legacy => IdentityCustodyState.legacy,
+    gen_identity.DartIdentityCustodyState.unavailable =>
+      IdentityCustodyState.unavailable,
+  };
+}
+
+extension on gen_identity.DartIdentityCustodyStatus {
+  IdentityCustodyStatus _toModel() => IdentityCustodyStatus(
+    identity: identity._toModel(),
+    backend: backend._toModel(),
+    state: state._toModel(),
+    ready: ready,
+    rootControlAvailable: rootControlAvailable,
+    pendingOperation: pendingOperation,
+    storeId: storeId,
+    custodyIdentityId: custodyIdentityId,
+    missing: missing,
+    warnings: warnings,
+  );
+}
+
 extension on gen_identity.DartIdentityVaultStatus {
   IdentityVaultStatus _toModel() => IdentityVaultStatus(
     identity: identity._toModel(),
@@ -2725,17 +2773,23 @@ extension on gen_identity.DartDeleteLocalIdentityResult {
   );
 }
 
-extension on gen_identity.DartDaemonSubkeyPrivatePackage {
-  DaemonSubkeyPrivatePackage _toModel() => DaemonSubkeyPrivatePackage(
+extension on DaemonSubkeyPublicProposal {
+  gen_identity.DartDaemonSubkeyPublicProposal _toGen() =>
+      gen_identity.DartDaemonSubkeyPublicProposal(
+        userDid: userDid,
+        verificationMethod: verificationMethod,
+        publicKeyMultibase: publicKeyMultibase,
+      );
+}
+
+extension on gen_identity.DartDaemonSubkeyPublicPackage {
+  DaemonSubkeyPublicPackage _toModel() => DaemonSubkeyPublicPackage(
     schema: schema,
     userDid: userDid,
     verificationMethod: verificationMethod,
     keyType: keyType,
     keyAlgorithm: keyAlgorithm,
     publicKeyMultibase: publicKeyMultibase,
-    privateKeyEncoding: privateKeyEncoding,
-    privateKeyPem: privateKeyPem,
-    privateKeyMultibase: privateKeyMultibase,
   );
 }
 

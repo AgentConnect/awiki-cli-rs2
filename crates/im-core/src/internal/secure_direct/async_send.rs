@@ -2,7 +2,6 @@ use anp::direct_e2ee::models::{SESSION_STATUS_ESTABLISHED, SESSION_STATUS_PENDIN
 use anp::direct_e2ee::{
     ApplicationPlaintext, DirectE2eeSession, DirectEnvelopeMetadata, OneTimePrekey, PrekeyBundle,
 };
-use anp::PrivateKeyMaterial;
 use serde_json::Value;
 
 use crate::internal::auth::session::AsyncSessionProvider;
@@ -600,7 +599,7 @@ struct EncryptedInit {
 
 struct AsyncInitLocalMaterial {
     agreement_key_id: String,
-    agreement_private_pem: String,
+    identity_signer: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner>,
 }
 
 struct VerifiedPrekeyBundle {
@@ -613,7 +612,7 @@ struct AsyncInitEncryptInput {
     owner_identity_id: String,
     owner_did: String,
     agreement_key_id: String,
-    agreement_private_pem: String,
+    static_to_signed_prekey_dh: zeroize::Zeroizing<[u8; 32]>,
     target_did: String,
     prekey: VerifiedPrekeyBundle,
     operation_id: String,
@@ -659,12 +658,20 @@ where
     let operation_id_for_crypto = operation_id.clone();
     let message_id_for_crypto = message_id.clone();
     let plaintext = ApplicationPlaintext::new_text("text/plain", text);
+    let recipient_signed_prekey_public = decode_public_key_b64u(
+        &prekey.bundle.signed_prekey.public_key_b64u,
+        "signed_prekey.public_key_b64u",
+    )?;
+    let static_to_signed_prekey_dh = local_material.identity_signer.ecdh(
+        &local_material.agreement_key_id,
+        &recipient_signed_prekey_public,
+    )?;
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
             owner_did,
             agreement_key_id: local_material.agreement_key_id,
-            agreement_private_pem: local_material.agreement_private_pem,
+            static_to_signed_prekey_dh,
             target_did: target_did_for_crypto,
             prekey,
             operation_id: operation_id_for_crypto,
@@ -766,12 +773,20 @@ where
     let full_manifest = committed.full_manifest.clone();
     let redacted_manifest = committed.redacted_manifest.clone();
     let grant_ref = committed.grant_ref.clone();
+    let recipient_signed_prekey_public = decode_public_key_b64u(
+        &prekey.bundle.signed_prekey.public_key_b64u,
+        "signed_prekey.public_key_b64u",
+    )?;
+    let static_to_signed_prekey_dh = local_material.identity_signer.ecdh(
+        &local_material.agreement_key_id,
+        &recipient_signed_prekey_public,
+    )?;
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
             owner_did,
             agreement_key_id: local_material.agreement_key_id,
-            agreement_private_pem: local_material.agreement_private_pem,
+            static_to_signed_prekey_dh,
             target_did: target_did_for_crypto,
             prekey,
             operation_id: operation_id_for_crypto,
@@ -907,15 +922,6 @@ fn encrypt_follow_up_plaintext_from_record(
 fn encrypt_init_from_prekey(input: AsyncInitEncryptInput) -> crate::ImResult<EncryptedInit> {
     anp::direct_e2ee::verify_prekey_bundle(&input.prekey.bundle, &input.prekey.did_document)
         .map_err(map_direct_error)?;
-    let PrivateKeyMaterial::X25519(agreement_private) =
-        PrivateKeyMaterial::from_pem(&input.agreement_private_pem).map_err(|err| {
-            crate::ImError::Serialization {
-                detail: format!("parse direct E2EE agreement private key: {err}"),
-            }
-        })?
-    else {
-        return Err(expected_x25519_private_key());
-    };
     let recipient_static_public = anp::direct_e2ee::extract_x25519_public_key(
         &input.prekey.did_document,
         &input.prekey.bundle.static_key_agreement_id,
@@ -945,11 +951,11 @@ fn encrypt_init_from_prekey(input: AsyncInitEncryptInput) -> crate::ImResult<Enc
         profile: DIRECT_E2EE_PROFILE.to_owned(),
         security_profile: DIRECT_E2EE_SECURITY_PROFILE.to_owned(),
     };
-    let (session, _, body) = DirectE2eeSession::initiate_session_with_opk(
+    let (session, _, body) = DirectE2eeSession::initiate_session_with_static_dh(
         &metadata,
         &input.operation_id,
         &input.agreement_key_id,
-        &agreement_private,
+        &input.static_to_signed_prekey_dh,
         &input.prekey.bundle,
         &recipient_static_public,
         &recipient_signed_prekey_public,
@@ -994,7 +1000,7 @@ async fn async_init_local_material(
     let material = super::identity_material::agreement_material(client)?;
     Ok(AsyncInitLocalMaterial {
         agreement_key_id: material.agreement_key_id,
-        agreement_private_pem: material.agreement_private_pem,
+        identity_signer: material.identity_signer,
     })
 }
 

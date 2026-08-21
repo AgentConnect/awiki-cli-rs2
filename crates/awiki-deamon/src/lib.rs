@@ -26,6 +26,7 @@ pub mod daemon_cli;
     reason = "foreground routing keeps security, persistence, and delivery dependencies explicit"
 )]
 pub mod foreground;
+pub mod identity_custody;
 pub mod im_core_adapter;
 pub mod inbox;
 mod legacy_migration;

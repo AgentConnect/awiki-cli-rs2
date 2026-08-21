@@ -94,27 +94,21 @@ class DartDaemonSubkeyAuthorizationRevokeResult {
           updated == other.updated;
 }
 
-class DartDaemonSubkeyPrivatePackage {
+class DartDaemonSubkeyPublicPackage {
   final String schema;
   final String userDid;
   final String verificationMethod;
   final String keyType;
-  final String? keyAlgorithm;
+  final String keyAlgorithm;
   final String publicKeyMultibase;
-  final String privateKeyEncoding;
-  final String privateKeyPem;
-  final String privateKeyMultibase;
 
-  const DartDaemonSubkeyPrivatePackage({
+  const DartDaemonSubkeyPublicPackage({
     required this.schema,
     required this.userDid,
     required this.verificationMethod,
     required this.keyType,
-    this.keyAlgorithm,
+    required this.keyAlgorithm,
     required this.publicKeyMultibase,
-    required this.privateKeyEncoding,
-    required this.privateKeyPem,
-    required this.privateKeyMultibase,
   });
 
   @override
@@ -124,25 +118,46 @@ class DartDaemonSubkeyPrivatePackage {
       verificationMethod.hashCode ^
       keyType.hashCode ^
       keyAlgorithm.hashCode ^
-      publicKeyMultibase.hashCode ^
-      privateKeyEncoding.hashCode ^
-      privateKeyPem.hashCode ^
-      privateKeyMultibase.hashCode;
+      publicKeyMultibase.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is DartDaemonSubkeyPrivatePackage &&
+      other is DartDaemonSubkeyPublicPackage &&
           runtimeType == other.runtimeType &&
           schema == other.schema &&
           userDid == other.userDid &&
           verificationMethod == other.verificationMethod &&
           keyType == other.keyType &&
           keyAlgorithm == other.keyAlgorithm &&
-          publicKeyMultibase == other.publicKeyMultibase &&
-          privateKeyEncoding == other.privateKeyEncoding &&
-          privateKeyPem == other.privateKeyPem &&
-          privateKeyMultibase == other.privateKeyMultibase;
+          publicKeyMultibase == other.publicKeyMultibase;
+}
+
+class DartDaemonSubkeyPublicProposal {
+  final String userDid;
+  final String verificationMethod;
+  final String publicKeyMultibase;
+
+  const DartDaemonSubkeyPublicProposal({
+    required this.userDid,
+    required this.verificationMethod,
+    required this.publicKeyMultibase,
+  });
+
+  @override
+  int get hashCode =>
+      userDid.hashCode ^
+      verificationMethod.hashCode ^
+      publicKeyMultibase.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDaemonSubkeyPublicProposal &&
+          runtimeType == other.runtimeType &&
+          userDid == other.userDid &&
+          verificationMethod == other.verificationMethod &&
+          publicKeyMultibase == other.publicKeyMultibase;
 }
 
 class DartDefaultIdentityChange {
@@ -979,6 +994,72 @@ class DartHandleRegistrationResult {
           state == other.state &&
           joinRequired == other.joinRequired &&
           defaultIdentityChange == other.defaultIdentityChange &&
+          warnings == other.warnings;
+}
+
+enum DartIdentityCustodyBackend { anpIdentity, legacyFileCompat, legacyVault }
+
+enum DartIdentityCustodyState {
+  creating,
+  active,
+  enrolling,
+  revoked,
+  legacy,
+  unavailable,
+}
+
+class DartIdentityCustodyStatus {
+  final DartIdentitySummary identity;
+  final DartIdentityCustodyBackend backend;
+  final DartIdentityCustodyState state;
+  final bool ready;
+  final bool rootControlAvailable;
+  final bool pendingOperation;
+  final String? storeId;
+  final String? custodyIdentityId;
+  final List<String> missing;
+  final List<String> warnings;
+
+  const DartIdentityCustodyStatus({
+    required this.identity,
+    required this.backend,
+    required this.state,
+    required this.ready,
+    required this.rootControlAvailable,
+    required this.pendingOperation,
+    this.storeId,
+    this.custodyIdentityId,
+    required this.missing,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      backend.hashCode ^
+      state.hashCode ^
+      ready.hashCode ^
+      rootControlAvailable.hashCode ^
+      pendingOperation.hashCode ^
+      storeId.hashCode ^
+      custodyIdentityId.hashCode ^
+      missing.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityCustodyStatus &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          backend == other.backend &&
+          state == other.state &&
+          ready == other.ready &&
+          rootControlAvailable == other.rootControlAvailable &&
+          pendingOperation == other.pendingOperation &&
+          storeId == other.storeId &&
+          custodyIdentityId == other.custodyIdentityId &&
+          missing == other.missing &&
           warnings == other.warnings;
 }
 

@@ -7,7 +7,7 @@ pub(crate) struct ClientIdentityRuntime {
     pub(crate) private_key_path: PathBuf,
     pub(crate) e2ee_agreement_private_key_path: PathBuf,
     pub(crate) auth_state_path: PathBuf,
-    pub(crate) key_provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider>,
+    pub(crate) key_provider: Arc<dyn crate::internal::key_provider::IdentitySigner>,
     pub(crate) owner: LocalOwnerContext,
 }
 

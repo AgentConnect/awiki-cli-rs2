@@ -521,7 +521,7 @@ impl<'a> CoreHttpTransport<'a> {
 
     pub(crate) fn new_pending_device(
         client: &'a crate::core::ImClient,
-        provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider>,
+        provider: Arc<dyn crate::internal::key_provider::IdentitySigner>,
         expected: ExpectedDeviceAccessOwned,
     ) -> Self {
         Self {
@@ -547,7 +547,7 @@ impl<'a> CoreHttpTransport<'a> {
     /// is accepted; callers classify the returned token against the same pair.
     pub(crate) fn new_pending_device_transition(
         client: &'a crate::core::ImClient,
-        provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider>,
+        provider: Arc<dyn crate::internal::key_provider::IdentitySigner>,
         before: ExpectedDeviceAccessOwned,
         after: ExpectedDeviceAccessOwned,
     ) -> Self {
@@ -1218,7 +1218,7 @@ impl<'a> CoreHttpTransport<'a> {
 }
 
 fn persisted_bearer_selection(
-    provider: &dyn crate::internal::key_provider::KeyMaterialProvider,
+    provider: &dyn crate::internal::key_provider::IdentitySigner,
     requires_exact_device_bearer: bool,
 ) -> (Option<String>, Option<DeferredAuthStateError>) {
     match provider.valid_auth_token() {
@@ -2260,7 +2260,7 @@ fn reconcile_pending_registration(
         &client,
         &format!("{}.{}", pending.target_handle, pending.target_domain),
     )?;
-    if lookup.did != pending.generated.did {
+    if lookup.did != pending.identity.did {
         return Err(crate::ImError::PermissionDenied);
     }
     let binding_generation = lookup
@@ -2292,7 +2292,7 @@ async fn reconcile_pending_registration_async(
         &format!("{}.{}", pending.target_handle, pending.target_domain),
     )
     .await?;
-    if lookup.did != pending.generated.did {
+    if lookup.did != pending.identity.did {
         return Err(crate::ImError::PermissionDenied);
     }
     let binding_generation = lookup
@@ -2309,24 +2309,18 @@ fn pending_registration_client(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<crate::core::ImClient> {
-    core.client_with_identity_material_and_signing_key_id(
-        crate::identity::HostedIdentityMaterial {
-            identity_id: pending.generated.unique_id.clone(),
-            did: pending.generated.did.as_str().to_owned(),
-            handle: Some(format!(
-                "{}.{}",
-                pending.target_handle, pending.target_domain
-            )),
-            display_name: Some(pending.display_name.clone()),
-            did_document: pending.generated.did_document.clone(),
-            // The pending hosted client is used only for device-signed probing.
-            // Give the hosted provider the exact Manifest device private key; the
-            // root private key remains solely in PendingRegistration.
-            default_signing_private_key_pem: pending.generated.device_signing_private_pem.clone(),
-            e2ee_agreement_private_key_pem: Some(pending.generated.device_e2ee_private_pem.clone()),
-            auth_token: None,
-        },
-        &pending.generated.device_signing_key_id,
+    let identity = crate::internal::identity_custody::registration_controller_signing_identity(
+        core,
+        &pending.identity,
+    )?;
+    core.client_with_pending_anp_identity(
+        identity,
+        Some(&format!(
+            "{}.{}",
+            pending.target_handle, pending.target_domain
+        )),
+        &pending.display_name,
+        &pending.identity.protocol_device_id,
     )
 }
 
@@ -2338,10 +2332,10 @@ fn pending_registration_transport<'a>(
         client,
         client.runtime().key_provider.clone(),
         ExpectedDeviceAccessOwned {
-            did: pending.generated.did.as_str().to_owned(),
+            did: pending.identity.did.as_str().to_owned(),
             user_id: String::new(),
-            device_id: pending.generated.protocol_device_id.as_str().to_owned(),
-            key_id: pending.generated.device_signing_key_id.clone(),
+            device_id: pending.identity.protocol_device_id.as_str().to_owned(),
+            key_id: pending.identity.device_signing_key_id.clone(),
             auth_generation: 1,
             role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
             management_ready: true,
@@ -2354,7 +2348,7 @@ fn validate_pending_registration_registry(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<()> {
     let call = crate::internal::identity_wire::device_join::build_registry_call(
-        &pending.generated.did,
+        &pending.identity.did,
         false,
     );
     let raw = AuthenticatedRpcTransport::authenticated_rpc(
@@ -2371,7 +2365,7 @@ async fn validate_pending_registration_registry_async(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<()> {
     let call = crate::internal::identity_wire::device_join::build_registry_call(
-        &pending.generated.did,
+        &pending.identity.did,
         false,
     );
     let raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
@@ -2390,16 +2384,16 @@ fn validate_pending_registration_registry_value(
 ) -> crate::ImResult<()> {
     let registry = crate::internal::identity_wire::device_join::parse_registry_result(
         raw,
-        &pending.generated.did,
+        &pending.identity.did,
         false,
     )?;
     let device = registry
         .devices
         .iter()
-        .find(|device| device.device_id == pending.generated.protocol_device_id.as_str())
+        .find(|device| device.device_id == pending.identity.protocol_device_id.as_str())
         .filter(|device| {
-            device.signing_key_id == pending.generated.device_signing_key_id
-                && device.e2ee_key_id == pending.generated.device_e2ee_key_id
+            device.signing_key_id == pending.identity.device_signing_key_id
+                && device.e2ee_key_id == pending.identity.device_e2ee_key_id
                 && device.role
                     == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
                 && device.management_ready

@@ -37,7 +37,7 @@ pub(crate) struct PendingLegacyUpgrade {
     pub(crate) local_alias: String,
     pub(crate) source_document_hash: String,
     pub(crate) root_ref: SecretRef,
-    pub(crate) generated: crate::internal::identity_legacy_upgrade::GeneratedLegacyUpgrade,
+    pub(crate) identity: LegacyUpgradeIdentityRef,
     pub(crate) phase: PendingLegacyUpgradePhase,
     pub(crate) attempt: PendingLegacyUpgradeAttempt,
     pub(crate) last_attempt_at: String,
@@ -48,6 +48,67 @@ pub(crate) struct PendingLegacyUpgrade {
         Option<crate::internal::identity_device_state::IdentityInternalCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) root_imported_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LegacyUpgradeIdentityRef {
+    pub(crate) custody: crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    pub(crate) did: crate::ids::Did,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub(crate) signing_key_id: String,
+    pub(crate) signing_public_key_multibase: String,
+    pub(crate) e2ee_key_id: String,
+    pub(crate) e2ee_public_key_multibase: String,
+    pub(crate) target_document: serde_json::Value,
+    pub(crate) target_document_hash: String,
+}
+
+impl LegacyUpgradeIdentityRef {
+    pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        if self.custody.store_id.trim().is_empty()
+            || self.custody.identity_id.trim().is_empty()
+            || self.custody.enrollment_id.trim().is_empty()
+            || self
+                .target_document
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                != Some(self.did.as_str())
+            || self.target_document_hash
+                != crate::internal::identity_wire::document::document_hash(&self.target_document)?
+            || self.signing_public_key_multibase.trim().is_empty()
+            || self.e2ee_public_key_multibase.trim().is_empty()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let manifest = anp::authentication::validate_device_manifest(&self.target_document)
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if manifest.devices.len() != 1
+            || manifest.devices[0].device_id != self.protocol_device_id.as_str()
+            || manifest.devices[0].signing_key_id != self.signing_key_id
+            || manifest.devices[0].e2ee_key_id != self.e2ee_key_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        for (kid, multibase) in [
+            (&self.signing_key_id, &self.signing_public_key_multibase),
+            (&self.e2ee_key_id, &self.e2ee_public_key_multibase),
+        ] {
+            let method = anp::authentication::find_verification_method(&self.target_document, kid)
+                .ok_or(crate::ImError::PermissionDenied)?;
+            if method
+                .get("publicKeyMultibase")
+                .and_then(serde_json::Value::as_str)
+                != Some(multibase.as_str())
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for PendingLegacyUpgrade {
@@ -56,7 +117,7 @@ impl std::fmt::Debug for PendingLegacyUpgrade {
             .field("local_alias", &self.local_alias)
             .field("source_document_hash", &self.source_document_hash)
             .field("root_ref", &self.root_ref)
-            .field("generated", &self.generated)
+            .field("identity", &self.identity)
             .field("phase", &self.phase)
             .field("attempt", &self.attempt)
             .field("last_attempt_at", &self.last_attempt_at)
@@ -72,47 +133,51 @@ impl PendingLegacyUpgrade {
         local_alias: String,
         source_document_hash: String,
         root_ref: SecretRef,
-        generated: crate::internal::identity_legacy_upgrade::GeneratedLegacyUpgrade,
+        identity: LegacyUpgradeIdentityRef,
     ) -> crate::ImResult<Self> {
         let pending = Self {
-            schema_version: 1,
+            schema_version: 2,
             local_alias,
             source_document_hash,
             root_ref,
-            generated,
+            identity,
             phase: PendingLegacyUpgradePhase::Prepared,
             attempt: PendingLegacyUpgradeAttempt::Running,
             last_attempt_at: now(),
             failure_code: None,
             checkpoint: None,
             access_token: None,
+            root_imported_at: None,
         };
         pending.validate()?;
         Ok(pending)
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
-        if self.schema_version != 1
+        self.identity.validate()?;
+        if self.schema_version != 2
             || self.local_alias.trim().is_empty()
             || self.source_document_hash.trim().is_empty()
             || self.last_attempt_at.trim().is_empty()
             || self.root_ref.kind != SecretKind::IdentityRootPrivate
-            || self.generated.target_document_hash
-                != crate::internal::identity_wire::document::document_hash(
-                    &self.generated.target_document,
-                )?
         {
             return Err(crate::ImError::PermissionDenied);
         }
         match self.phase {
             PendingLegacyUpgradePhase::Prepared
-                if self.checkpoint.is_none() && self.access_token.is_none() => {}
+                if self.checkpoint.is_none()
+                    && self.access_token.is_none()
+                    && self.root_imported_at.is_none() => {}
             PendingLegacyUpgradePhase::RemoteCommitted
                 if self.checkpoint.is_some()
                     && self
                         .access_token
                         .as_deref()
-                        .is_some_and(|v| !v.trim().is_empty()) => {}
+                        .is_some_and(|v| !v.trim().is_empty())
+                    && self
+                        .root_imported_at
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty()) => {}
             _ => return Err(crate::ImError::PermissionDenied),
         }
         Ok(())
@@ -133,7 +198,7 @@ impl PendingLegacyUpgrade {
     pub(crate) fn rebuild_from_proven_remote_legacy(
         &mut self,
         remote_document: &serde_json::Value,
-        root_private_pem: &str,
+        signer: &dyn crate::internal::key_provider::IdentitySigner,
     ) -> crate::ImResult<()> {
         if self.phase != PendingLegacyUpgradePhase::Prepared
             || self.checkpoint.is_some()
@@ -141,10 +206,10 @@ impl PendingLegacyUpgrade {
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        crate::internal::identity_legacy_upgrade::rebuild_legacy_upgrade_target(
-            &mut self.generated,
+        crate::internal::identity_legacy_upgrade::rebuild_custodied_legacy_upgrade_target(
+            &mut self.identity,
             remote_document,
-            root_private_pem,
+            signer,
         )?;
         self.source_document_hash =
             crate::internal::identity_wire::document::document_hash(remote_document)?;
@@ -154,13 +219,13 @@ impl PendingLegacyUpgrade {
     pub(crate) fn reconcile_remote_document(
         &mut self,
         remote_document: &serde_json::Value,
-        root_private_pem: &str,
+        signer: &dyn crate::internal::key_provider::IdentitySigner,
     ) -> crate::ImResult<PendingLegacyUpgradeRemoteState> {
         let remote_hash = crate::internal::identity_wire::document::document_hash(remote_document)?;
-        if remote_hash == self.generated.target_document_hash {
+        if remote_hash == self.identity.target_document_hash {
             return Ok(PendingLegacyUpgradeRemoteState::TargetCommitted);
         }
-        self.rebuild_from_proven_remote_legacy(remote_document, root_private_pem)?;
+        self.rebuild_from_proven_remote_legacy(remote_document, signer)?;
         Ok(PendingLegacyUpgradeRemoteState::LegacyRebuilt)
     }
 }
@@ -217,7 +282,7 @@ impl PendingLegacyUpgradeStore {
                 workspace_id: self.workspace_id.clone(),
                 device_id: self.device_id.clone(),
                 identity_id: self.root_identity_id(pending),
-                did: Some(pending.generated.did.as_str().to_owned()),
+                did: Some(pending.identity.did.as_str().to_owned()),
                 kind: SecretKind::IdentityLegacyUpgradePending,
                 key_id: pending_key_id(&pending.local_alias),
                 key_version: 1,
@@ -256,6 +321,100 @@ mod tests {
     use crate::internal::platform_secret::DeviceVaultRootKey;
     use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore};
 
+    struct RootSigner {
+        document: serde_json::Value,
+        root_key_id: String,
+        root_private_pem: String,
+    }
+
+    impl crate::internal::key_provider::IdentitySigner for RootSigner {
+        fn did_document(&self) -> crate::ImResult<serde_json::Value> {
+            Ok(self.document.clone())
+        }
+
+        fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>> {
+            Ok(Some(self.document.clone()))
+        }
+
+        fn request_signing_key_id(&self) -> crate::ImResult<String> {
+            Ok(self.root_key_id.clone())
+        }
+
+        fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+            self.sign_root(kid, message)
+        }
+
+        fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+            if kid != self.root_key_id {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            crate::internal::key_provider::sign_private_pem(
+                &self.root_private_pem,
+                message,
+                "legacy test root",
+            )
+        }
+
+        fn ecdh(
+            &self,
+            _kid: &str,
+            _peer_public: &[u8],
+        ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+            Err(crate::ImError::PermissionDenied)
+        }
+
+        fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+            Ok(Default::default())
+        }
+
+        fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+            Ok(None)
+        }
+
+        fn persist_auth_token(&self, _token: &str) -> crate::ImResult<()> {
+            Ok(())
+        }
+    }
+
+    fn root_signer(legacy: &crate::internal::identity_generation::GeneratedIdentity) -> RootSigner {
+        RootSigner {
+            document: legacy.did_document.clone(),
+            root_key_id: format!("{}#key-1", legacy.did.as_str()),
+            root_private_pem: legacy.key1_private_pem.clone(),
+        }
+    }
+
+    fn custody_identity(
+        generated: &crate::internal::identity_legacy_upgrade::GeneratedLegacyUpgrade,
+    ) -> LegacyUpgradeIdentityRef {
+        let method = |kid: &str| {
+            generated.target_document["verificationMethod"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|method| method["id"] == kid)
+                .unwrap()["publicKeyMultibase"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        LegacyUpgradeIdentityRef {
+            custody: crate::internal::identity_join_activation_pending::JoinEnrollmentRef {
+                store_id: "store-1".to_owned(),
+                identity_id: "identity-1".to_owned(),
+                enrollment_id: "enrollment-1".to_owned(),
+            },
+            did: generated.did.clone(),
+            protocol_device_id: generated.protocol_device_id.clone(),
+            signing_key_id: generated.signing_key_id.clone(),
+            signing_public_key_multibase: method(&generated.signing_key_id),
+            e2ee_key_id: generated.e2ee_key_id.clone(),
+            e2ee_public_key_multibase: method(&generated.e2ee_key_id),
+            target_document: generated.target_document.clone(),
+            target_document_hash: generated.target_document_hash.clone(),
+        }
+    }
+
     #[test]
     fn retry_required_status_and_code_survive_vault_restart() {
         let root = tempfile::tempdir().unwrap();
@@ -278,7 +437,7 @@ mod tests {
         let root_ref = SecretRef {
             workspace_id: "workspace-1".to_owned(),
             device_id: "vault-device-1".to_owned(),
-            identity_id: Some(legacy.unique_id),
+            identity_id: Some(legacy.unique_id.clone()),
             did: Some(legacy.did.as_str().to_owned()),
             kind: SecretKind::IdentityRootPrivate,
             key_id: format!("{}#key-1", legacy.did.as_str()),
@@ -288,10 +447,13 @@ mod tests {
             "alice".to_owned(),
             crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
             root_ref,
-            generated,
+            custody_identity(&generated),
         )
         .unwrap();
         pending.mark_retry_required("transport_unavailable");
+        let encoded = serde_json::to_string(&pending).unwrap();
+        assert!(!encoded.contains("PRIVATE KEY"));
+        assert!(!encoded.contains("private_pem"));
 
         let first_store = PendingLegacyUpgradeStore {
             workspace_id: "workspace-1".to_owned(),
@@ -315,7 +477,7 @@ mod tests {
         let (_, loaded) = restarted_store.load("alice").unwrap().unwrap();
 
         assert_eq!(loaded.attempt, PendingLegacyUpgradeAttempt::RetryRequired);
-        assert_eq!(loaded.generated, pending.generated);
+        assert_eq!(loaded.identity, pending.identity);
         assert_eq!(
             loaded.failure_code.as_deref(),
             Some("transport_unavailable")
@@ -341,7 +503,7 @@ mod tests {
         let root_ref = SecretRef {
             workspace_id: "workspace-1".to_owned(),
             device_id: "vault-device-1".to_owned(),
-            identity_id: Some(legacy.unique_id),
+            identity_id: Some(legacy.unique_id.clone()),
             did: Some(legacy.did.as_str().to_owned()),
             kind: SecretKind::IdentityRootPrivate,
             key_id: format!("{}#key-1", legacy.did.as_str()),
@@ -351,16 +513,16 @@ mod tests {
             "alice".to_owned(),
             crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
             root_ref,
-            generated.clone(),
+            custody_identity(&generated),
         )
         .unwrap();
 
         let state = pending
-            .reconcile_remote_document(&generated.target_document, &legacy.key1_private_pem)
+            .reconcile_remote_document(&generated.target_document, &root_signer(&legacy))
             .unwrap();
 
         assert_eq!(state, PendingLegacyUpgradeRemoteState::TargetCommitted);
-        assert_eq!(pending.generated, generated);
+        assert_eq!(pending.identity, custody_identity(&generated));
     }
 
     #[test]
@@ -382,7 +544,7 @@ mod tests {
         let root_ref = SecretRef {
             workspace_id: "workspace-1".to_owned(),
             device_id: "vault-device-1".to_owned(),
-            identity_id: Some(legacy.unique_id),
+            identity_id: Some(legacy.unique_id.clone()),
             did: Some(legacy.did.as_str().to_owned()),
             kind: SecretKind::IdentityRootPrivate,
             key_id: format!("{}#key-1", legacy.did.as_str()),
@@ -392,37 +554,29 @@ mod tests {
             "alice".to_owned(),
             crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
             root_ref,
-            generated.clone(),
+            custody_identity(&generated),
         )
         .unwrap();
         let mut current_remote_legacy = legacy.did_document.clone();
         current_remote_legacy["x-awiki-server-extension"] = serde_json::json!({"revision": 2});
 
         let state = pending
-            .reconcile_remote_document(&current_remote_legacy, &legacy.key1_private_pem)
+            .reconcile_remote_document(&current_remote_legacy, &root_signer(&legacy))
             .unwrap();
 
         assert_eq!(state, PendingLegacyUpgradeRemoteState::LegacyRebuilt);
         assert_eq!(
-            pending.generated.protocol_device_id,
+            pending.identity.protocol_device_id,
             generated.protocol_device_id
         );
-        assert_eq!(pending.generated.signing_key_id, generated.signing_key_id);
-        assert_eq!(
-            pending.generated.signing_private_pem,
-            generated.signing_private_pem
-        );
-        assert_eq!(pending.generated.e2ee_key_id, generated.e2ee_key_id);
-        assert_eq!(
-            pending.generated.e2ee_private_pem,
-            generated.e2ee_private_pem
-        );
+        assert_eq!(pending.identity.signing_key_id, generated.signing_key_id);
+        assert_eq!(pending.identity.e2ee_key_id, generated.e2ee_key_id);
         assert_ne!(
-            pending.generated.target_document_hash,
+            pending.identity.target_document_hash,
             generated.target_document_hash
         );
         assert_eq!(
-            pending.generated.target_document["x-awiki-server-extension"],
+            pending.identity.target_document["x-awiki-server-extension"],
             serde_json::json!({"revision": 2})
         );
     }
@@ -446,7 +600,7 @@ mod tests {
         let root_ref = SecretRef {
             workspace_id: "workspace-1".to_owned(),
             device_id: "vault-device-1".to_owned(),
-            identity_id: Some(legacy.unique_id),
+            identity_id: Some(legacy.unique_id.clone()),
             did: Some(legacy.did.as_str().to_owned()),
             kind: SecretKind::IdentityRootPrivate,
             key_id: format!("{}#key-1", legacy.did.as_str()),
@@ -456,16 +610,16 @@ mod tests {
             "alice".to_owned(),
             crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
             root_ref,
-            generated.clone(),
+            custody_identity(&generated),
         )
         .unwrap();
         let mut different_manifest = generated.target_document.clone();
         different_manifest["x-awiki-other-commit"] = serde_json::json!(true);
 
         assert!(matches!(
-            pending.reconcile_remote_document(&different_manifest, &legacy.key1_private_pem),
+            pending.reconcile_remote_document(&different_manifest, &root_signer(&legacy)),
             Err(crate::ImError::PermissionDenied)
         ));
-        assert_eq!(pending.generated, generated);
+        assert_eq!(pending.identity, custody_identity(&generated));
     }
 }
