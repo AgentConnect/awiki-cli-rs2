@@ -482,16 +482,30 @@ impl<'a> IdentityStore<'a> {
         &self,
         mut input: SaveIdentityInput,
         secret_storage: SaveIdentitySecretStorage,
-        archived_identity_names: &[String],
     ) -> crate::ImResult<StoredIdentity> {
         let lock = self.lock_index_mutation()?;
         let original = self.load_index()?;
         let mut prepared = original.clone();
-        let archived = archived_identity_names
-            .iter()
-            .map(|name| name.trim())
-            .filter(|name| !name.is_empty())
-            .collect::<std::collections::BTreeSet<_>>();
+        let local_alias = sanitize_identity_name(&input.local_alias);
+        let (handle, full_handle) =
+            stored_handle_fields(&input.handle, &input.full_handle, input.did.as_str());
+        input.handle = handle;
+        input.full_handle = full_handle;
+        let binding_generation = input.binding_generation.as_deref().ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "recovered identity is missing its authoritative Handle generation"
+                    .to_owned(),
+            }
+        })?;
+        let archived = recoverable_stale_identity_names(
+            &prepared,
+            &local_alias,
+            &input.unique_id,
+            &input.user_id,
+            &input.full_handle,
+            input.did.as_str(),
+            binding_generation,
+        )?;
         let default_was_archived = archived.contains(prepared.default_credential_name.trim());
         prepared
             .credentials
@@ -508,6 +522,100 @@ impl<'a> IdentityStore<'a> {
                 Err(error)
             }
         }
+    }
+
+    /// Repairs the only post-checkpoint Recovery crash window: the recovered
+    /// credential is active, but one or more older credentials for the same
+    /// authoritative account and Handle are still present in the index.
+    /// Identity directories and owner-scoped business data are deliberately
+    /// retained; only their active index entries are removed.
+    pub(crate) fn reconcile_recovered_identity_index(
+        &self,
+        owner_identity_id: &str,
+        account_user_id: &str,
+        full_handle: &str,
+        current_did: &str,
+        binding_generation: &str,
+    ) -> crate::ImResult<Vec<String>> {
+        let full_handle = full_handle.trim().to_lowercase();
+        if owner_identity_id.trim().is_empty()
+            || account_user_id.trim().is_empty()
+            || full_handle.is_empty()
+            || current_did.trim().is_empty()
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "cannot reconcile a recovered identity without exact authority".to_owned(),
+            });
+        }
+        anp::wns::BindingGeneration::new(binding_generation.to_owned()).map_err(|_| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "recovered Handle generation is not canonical".to_owned(),
+            }
+        })?;
+
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let matching_aliases = index
+            .credentials
+            .iter()
+            .filter_map(|(alias, entry)| {
+                (entry.unique_id.trim() == owner_identity_id.trim()
+                    && entry.user_id.trim() == account_user_id.trim()
+                    && entry.full_handle.trim().to_lowercase() == full_handle
+                    && entry.did.trim() == current_did.trim()
+                    && entry.binding_generation.as_deref() == Some(binding_generation))
+                .then_some(alias.clone())
+            })
+            .collect::<Vec<_>>();
+        let [local_alias] = matching_aliases.as_slice() else {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail:
+                    "recovered identity authority does not select exactly one active credential"
+                        .to_owned(),
+            });
+        };
+        let target = index.credentials.get(local_alias).ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "recovered identity is missing from the active index".to_owned(),
+            }
+        })?;
+        if target.unique_id.trim() != owner_identity_id.trim()
+            || target.user_id.trim() != account_user_id.trim()
+            || target.full_handle.trim().to_lowercase() != full_handle
+            || target.did.trim() != current_did.trim()
+            || target.binding_generation.as_deref() != Some(binding_generation)
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "active recovered identity does not match transition authority".to_owned(),
+            });
+        }
+
+        let archived = recoverable_stale_identity_names(
+            &index,
+            local_alias,
+            owner_identity_id,
+            account_user_id,
+            &full_handle,
+            current_did,
+            binding_generation,
+        )?;
+        let default_was_archived = archived.contains(index.default_credential_name.trim());
+        index
+            .credentials
+            .retain(|name, _| !archived.contains(name.as_str()));
+        if default_was_archived {
+            index.default_credential_name = local_alias.clone();
+        }
+        if !archived.is_empty() {
+            self.save_index_locked(&lock, index.clone())?;
+        }
+
+        // Repeating this write also repairs a crash after the index rename but
+        // before the compatibility default pointer was replaced.
+        if index.default_credential_name == *local_alias {
+            self.write_default_identity(local_alias)?;
+        }
+        Ok(archived.into_iter().collect())
     }
 
     pub(crate) async fn save_identity_async(
@@ -2233,6 +2341,63 @@ fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPa
         }
     }
     Ok(payload)
+}
+
+fn recoverable_stale_identity_names(
+    index: &IndexPayload,
+    current_alias: &str,
+    current_owner_identity_id: &str,
+    current_account_user_id: &str,
+    current_full_handle: &str,
+    current_did: &str,
+    current_binding_generation: &str,
+) -> crate::ImResult<BTreeSet<String>> {
+    let current_generation =
+        anp::wns::BindingGeneration::new(current_binding_generation.to_owned()).map_err(|_| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "recovered Handle generation is not canonical".to_owned(),
+            }
+        })?;
+    let current_full_handle = current_full_handle.trim().to_lowercase();
+    if current_alias.trim().is_empty()
+        || current_owner_identity_id.trim().is_empty()
+        || current_account_user_id.trim().is_empty()
+        || current_full_handle.is_empty()
+        || current_did.trim().is_empty()
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "cannot activate a recovered identity without exact authority".to_owned(),
+        });
+    }
+
+    let mut archived = BTreeSet::new();
+    for (name, entry) in &index.credentials {
+        if name == current_alias || entry.full_handle.trim().to_lowercase() != current_full_handle {
+            continue;
+        }
+        if entry.user_id.trim() != current_account_user_id.trim() {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "local Handle is bound to a different account".to_owned(),
+            });
+        }
+        if let Some(stored_generation) = entry.binding_generation.as_deref() {
+            let stored_generation = anp::wns::BindingGeneration::new(stored_generation.to_owned())
+                .map_err(|_| crate::ImError::IdentityBindingConflict {
+                    detail: "stored Handle generation is not canonical".to_owned(),
+                })?;
+            if stored_generation > current_generation
+                || (stored_generation == current_generation
+                    && entry.did.trim() != current_did.trim())
+            {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "local Handle credential is not older than the recovered identity"
+                        .to_owned(),
+                });
+            }
+        }
+        archived.insert(name.clone());
+    }
+    Ok(archived)
 }
 
 fn merge_identity_binding_generation(
@@ -4744,19 +4909,25 @@ mod tests {
     }
 
     #[test]
-    fn recovered_identity_reuses_stable_id_after_removing_archived_alias() {
+    fn recovered_identity_replaces_only_older_active_handle_credentials() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let store = IdentityStore::new(&paths);
-        let input = |alias: &str, did: &str| SaveIdentityInput {
+        let input = |alias: &str,
+                     did: &str,
+                     owner_identity_id: &str,
+                     account_user_id: &str,
+                     full_handle: &str,
+                     generation: &str,
+                     make_default: bool| SaveIdentityInput {
             local_alias: alias.to_owned(),
             did: crate::ids::Did::parse(did).unwrap(),
-            unique_id: "stable-owner".to_owned(),
-            user_id: "user-alice".to_owned(),
+            unique_id: owner_identity_id.to_owned(),
+            user_id: account_user_id.to_owned(),
             display_name: "Alice".to_owned(),
-            handle: "alice".to_owned(),
-            full_handle: "alice.example".to_owned(),
-            binding_generation: None,
+            handle: full_handle.split('.').next().unwrap().to_owned(),
+            full_handle: full_handle.to_owned(),
+            binding_generation: Some(generation.to_owned()),
             jwt_token: "jwt".to_owned(),
             did_document: Some(json!({"id": did})),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
@@ -4766,23 +4937,137 @@ mod tests {
             e2ee_signing_private_pem: "signing".to_owned(),
             e2ee_agreement_private_pem: "agreement".to_owned(),
             daemon_subkey_package: None,
-            make_default: true,
+            make_default,
         };
-        store
-            .save_identity(input("alice-old", "did:example:old"))
+        let old = store
+            .save_identity(input(
+                "alice-old",
+                "did:example:old",
+                "old-owner",
+                "user-alice",
+                "alice.example",
+                "3",
+                true,
+            ))
+            .unwrap();
+        let unrelated = store
+            .save_identity(input(
+                "bob",
+                "did:example:bob",
+                "bob-owner",
+                "user-bob",
+                "bob.example",
+                "2",
+                false,
+            ))
             .unwrap();
         let recovered = store
             .save_recovered_identity_with_secret_storage(
-                input("alice-recovering", "did:example:new"),
+                input(
+                    "alice-recovering",
+                    "did:example:new",
+                    "new-owner",
+                    "user-alice",
+                    "alice.example",
+                    "5",
+                    false,
+                ),
                 SaveIdentitySecretStorage::FileCompat,
-                &["alice-old".to_owned()],
             )
             .unwrap();
-        assert_eq!(recovered.unique_id, "stable-owner");
+        assert_eq!(recovered.unique_id, "new-owner");
         let index = store.load_index().unwrap();
         assert!(!index.credentials.contains_key("alice-old"));
+        assert!(index.credentials.contains_key("bob"));
         assert_eq!(index.default_credential_name, "alice-recovering");
         assert_eq!(index.credentials["alice-recovering"].did, "did:example:new");
+        assert!(store.local_identity_dir(&old.dir_name).unwrap().exists());
+        assert!(store
+            .local_identity_dir(&unrelated.dir_name)
+            .unwrap()
+            .exists());
+
+        // Simulate the released crash window: a stale credential was written
+        // back after the recovered identity and marker reached
+        // `identity_switched`. Resume must repair only the active index.
+        let late_stale = store
+            .save_identity(input(
+                "alice-late-stale",
+                "did:example:late-stale",
+                "late-stale-owner",
+                "user-alice",
+                "alice.example",
+                "4",
+                false,
+            ))
+            .unwrap();
+        let archived = store
+            .reconcile_recovered_identity_index(
+                "new-owner",
+                "user-alice",
+                "alice.example",
+                "did:example:new",
+                "5",
+            )
+            .unwrap();
+        assert_eq!(archived, vec!["alice-late-stale".to_owned()]);
+        let reconciled = store.load_index().unwrap();
+        assert!(!reconciled.credentials.contains_key("alice-late-stale"));
+        assert!(reconciled.credentials.contains_key("alice-recovering"));
+        assert!(reconciled.credentials.contains_key("bob"));
+        assert!(store
+            .local_identity_dir(&late_stale.dir_name)
+            .unwrap()
+            .exists());
+    }
+
+    #[test]
+    fn recovered_identity_does_not_retire_a_conflicting_account() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let identity =
+            |alias: &str, did: &str, user_id: &str, generation: &str| SaveIdentityInput {
+                local_alias: alias.to_owned(),
+                did: crate::ids::Did::parse(did).unwrap(),
+                unique_id: format!("{alias}-owner"),
+                user_id: user_id.to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.example".to_owned(),
+                binding_generation: Some(generation.to_owned()),
+                jwt_token: "jwt".to_owned(),
+                did_document: Some(json!({"id": did})),
+                key_mode: SaveIdentityKeyMode::LegacyKey1,
+                device_state: None,
+                key1_private_pem: "private".to_owned(),
+                key1_public_pem: "public".to_owned(),
+                e2ee_signing_private_pem: "signing".to_owned(),
+                e2ee_agreement_private_pem: "agreement".to_owned(),
+                daemon_subkey_package: None,
+                make_default: true,
+            };
+        store
+            .save_identity(identity(
+                "conflict",
+                "did:example:conflict",
+                "user-other",
+                "3",
+            ))
+            .unwrap();
+        let error = store
+            .save_recovered_identity_with_secret_storage(
+                identity("recovered", "did:example:new", "user-alice", "5"),
+                SaveIdentitySecretStorage::FileCompat,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::IdentityBindingConflict { .. }
+        ));
+        let index = store.load_index().unwrap();
+        assert!(index.credentials.contains_key("conflict"));
+        assert!(!index.credentials.contains_key("recovered"));
     }
 
     #[test]

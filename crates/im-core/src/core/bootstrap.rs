@@ -111,6 +111,7 @@ impl<'a> CoreBootstrap<'a> {
                 fs::create_dir_all(parent)?;
             }
             let schema_version = initialize_local_state_schema(sqlite_path)?;
+            reconcile_interrupted_identity_switches(self.core)?;
             Ok(LocalStateStatus {
                 sqlite_path: sqlite_path.display().to_string(),
                 initialized: true,
@@ -131,6 +132,7 @@ impl<'a> CoreBootstrap<'a> {
             tokio::fs::create_dir_all(parent).await?;
         }
         let schema_version = initialize_local_state_schema_async(self.core).await?;
+        reconcile_interrupted_identity_switches(self.core)?;
         Ok(LocalStateStatus {
             sqlite_path: sqlite_path.display().to_string(),
             initialized: true,
@@ -246,6 +248,30 @@ impl<'a> CoreBootstrap<'a> {
             applied,
         })
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn reconcile_interrupted_identity_switches(core: &super::ImCore) -> crate::ImResult<()> {
+    let paths = core.inner().sdk_paths();
+    let markers = crate::internal::identity_transition_pending::load_identity_switched(
+        &paths.local_state.sqlite_path,
+    )?;
+    let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+    for marker in markers {
+        store.reconcile_recovered_identity_index(
+            &marker.owner_identity_id,
+            &marker.account_user_id,
+            &marker.handle,
+            &marker.current_did,
+            &marker.binding_generation,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn reconcile_interrupted_identity_switches(_core: &super::ImCore) -> crate::ImResult<()> {
+    Ok(())
 }
 
 fn check_optional_path(kind: &str, path: Option<&Path>) -> PathCheck {

@@ -1875,7 +1875,6 @@ async fn apply_local_transition_v4(
                 make_default: pending.make_default,
             },
             crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?,
-            &[],
         )?;
         crate::internal::identity_transition_pending::update_phase(
             sqlite_path,
@@ -1886,6 +1885,14 @@ async fn apply_local_transition_v4(
     } else if marker.phase
         == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
     {
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .reconcile_recovered_identity_index(
+            &pending.owner_identity_id,
+            &result.account_user_id,
+            &pending.full_handle,
+            &result.current_did,
+            &result.binding_generation,
+        )?;
         validate_switched_identity_v4(core, pending, &result)?;
     }
     let marker =
