@@ -397,6 +397,43 @@ final class LegacyUpgradeCompleted extends LegacyUpgradeStatus {
 
 enum IdentitySecretStorageBackend { fileCompat, vault }
 
+enum IdentityCustodyBackend { anpIdentity, legacyFileCompat, legacyVault }
+
+enum IdentityCustodyState {
+  creating,
+  active,
+  enrolling,
+  revoked,
+  legacy,
+  unavailable,
+}
+
+class IdentityCustodyStatus {
+  const IdentityCustodyStatus({
+    required this.identity,
+    required this.backend,
+    required this.state,
+    required this.ready,
+    required this.rootControlAvailable,
+    required this.pendingOperation,
+    this.storeId,
+    this.custodyIdentityId,
+    this.missing = const [],
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentityCustodyBackend backend;
+  final IdentityCustodyState state;
+  final bool ready;
+  final bool rootControlAvailable;
+  final bool pendingOperation;
+  final String? storeId;
+  final String? custodyIdentityId;
+  final List<String> missing;
+  final List<String> warnings;
+}
+
 class IdentityVaultStatus {
   const IdentityVaultStatus({
     required this.identity,

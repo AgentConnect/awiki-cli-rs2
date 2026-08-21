@@ -237,7 +237,14 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  @Deprecated('Use identityCustodyStatus for identity custody state.')
   Future<IdentityVaultStatus> identityVaultStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<IdentityCustodyStatus> identityCustodyStatus(
     IdentitySelector selector,
   ) async {
     throw _unsupported();
@@ -255,12 +262,16 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  @Deprecated(
+    'Use identity custody migration APIs; this name migrates to ANP Identity.',
+  )
   Future<IdentityVaultMigrationReport> migrateIdentityVault(
     IdentitySelector selector,
   ) async {
     throw _unsupported();
   }
 
+  @Deprecated('Use identityCustodyStatus for identity custody state.')
   Future<IdentityVaultVerificationReport> verifyIdentityVault(
     IdentitySelector selector,
   ) async {

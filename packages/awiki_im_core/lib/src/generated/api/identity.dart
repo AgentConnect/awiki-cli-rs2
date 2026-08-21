@@ -330,6 +330,14 @@ Future<DartIdentityDeviceSummary> identityDeviceSummary({
   selector: selector,
 );
 
+Future<DartIdentityCustodyStatus> identityCustodyStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityCustodyStatus(
+  core: core,
+  selector: selector,
+);
+
 Future<DartIdentityVaultStatus> identityVaultStatus({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

@@ -603,6 +603,7 @@ class AwikiImCore {
     return progress._toModel();
   }
 
+  @Deprecated('Use identityCustodyStatus for identity custody state.')
   Future<IdentityVaultStatus> identityVaultStatus(
     IdentitySelector selector,
   ) async {
@@ -642,6 +643,9 @@ class AwikiImCore {
     return status._toModel();
   }
 
+  @Deprecated(
+    'Use identity custody migration APIs; this name migrates to ANP Identity.',
+  )
   Future<IdentityVaultMigrationReport> migrateIdentityVault(
     IdentitySelector selector,
   ) async {
@@ -655,6 +659,7 @@ class AwikiImCore {
     return report._toModel();
   }
 
+  @Deprecated('Use identityCustodyStatus for identity custody state.')
   Future<IdentityVaultVerificationReport> verifyIdentityVault(
     IdentitySelector selector,
   ) async {
@@ -674,6 +679,19 @@ class AwikiImCore {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.deleteLocalIdentity(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<IdentityCustodyStatus> identityCustodyStatus(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.identityCustodyStatus(
         core: _inner,
         selector: selector._toGen(),
       ),
@@ -2651,6 +2669,47 @@ extension on gen_identity.DartIdentitySecretStorageBackend {
     gen_identity.DartIdentitySecretStorageBackend.vault =>
       IdentitySecretStorageBackend.vault,
   };
+}
+
+extension on gen_identity.DartIdentityCustodyBackend {
+  IdentityCustodyBackend _toModel() => switch (this) {
+    gen_identity.DartIdentityCustodyBackend.anpIdentity =>
+      IdentityCustodyBackend.anpIdentity,
+    gen_identity.DartIdentityCustodyBackend.legacyFileCompat =>
+      IdentityCustodyBackend.legacyFileCompat,
+    gen_identity.DartIdentityCustodyBackend.legacyVault =>
+      IdentityCustodyBackend.legacyVault,
+  };
+}
+
+extension on gen_identity.DartIdentityCustodyState {
+  IdentityCustodyState _toModel() => switch (this) {
+    gen_identity.DartIdentityCustodyState.creating =>
+      IdentityCustodyState.creating,
+    gen_identity.DartIdentityCustodyState.active => IdentityCustodyState.active,
+    gen_identity.DartIdentityCustodyState.enrolling =>
+      IdentityCustodyState.enrolling,
+    gen_identity.DartIdentityCustodyState.revoked =>
+      IdentityCustodyState.revoked,
+    gen_identity.DartIdentityCustodyState.legacy => IdentityCustodyState.legacy,
+    gen_identity.DartIdentityCustodyState.unavailable =>
+      IdentityCustodyState.unavailable,
+  };
+}
+
+extension on gen_identity.DartIdentityCustodyStatus {
+  IdentityCustodyStatus _toModel() => IdentityCustodyStatus(
+    identity: identity._toModel(),
+    backend: backend._toModel(),
+    state: state._toModel(),
+    ready: ready,
+    rootControlAvailable: rootControlAvailable,
+    pendingOperation: pendingOperation,
+    storeId: storeId,
+    custodyIdentityId: custodyIdentityId,
+    missing: missing,
+    warnings: warnings,
+  );
 }
 
 extension on gen_identity.DartIdentityVaultStatus {

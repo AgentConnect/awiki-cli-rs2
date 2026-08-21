@@ -382,7 +382,7 @@ pub struct ActiveSyncAccountBinding {
 }
 
 // Secret-bearing trusted-host DTOs. Neither type implements Serde and both
-// redact documents, private keys, tokens, and private packages from Debug.
+// redact documents, private keys, and tokens from Debug.
 pub struct VNextAgentBootstrapMaterial { /* typed Agent/device/key material */ }
 pub struct HostBackedDeviceIdentityMaterial { /* exact account/device access */ }
 pub trait HostBackedAuthTokenPersistence: Send + Sync {
@@ -444,6 +444,25 @@ impl IdentityRegistry<'_> {
         &self,
         selector: IdentitySelector,
     ) -> ImResult<IdentityDeviceSummary>;
+    pub fn custody_status(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentityCustodyStatus>;
+    pub fn inspect_identity_custody_migration(
+        &self,
+    ) -> ImResult<IdentityCustodyMigrationReport>;
+    pub fn migrate_identity_custody(
+        &self,
+    ) -> ImResult<IdentityCustodyMigrationReport>;
+    pub async fn authorize_daemon_subkey_async(
+        &self,
+        selector: IdentitySelector,
+        proposal: DaemonSubkeyPublicProposal,
+    ) -> ImResult<DaemonSubkeyPublicPackage>;
+
+    // Deprecated AWiki-vault compatibility views. Use custody_status for
+    // identity custody. The migration compatibility name now performs the
+    // real old-to-ANP Identity migration.
     pub fn vault_status(&self, selector: IdentitySelector) -> ImResult<IdentityVaultStatus>;
     pub fn migrate_identity_vault(
         &self,
@@ -479,6 +498,20 @@ pub enum LegacyUpgradeStatus {
     Completed,
 }
 ```
+
+`IdentityCustodyStatus` is secret-free and independent from
+`IdentitySecretStoragePolicy`. `backend` is one of `anp_identity`,
+`legacy_file_compat`, or `legacy_vault`; `state` is one of `creating`, `active`,
+`enrolling`, `revoked`, `legacy`, or `unavailable`. It may expose only opaque
+store/identity IDs, readiness/root-capability/pending booleans, and closed
+missing/warning lists. It never exposes private-key presence by KID, a JWT,
+`SecretRef`, document checkpoint, root fingerprint, or provider root key.
+
+`migrate_identity_vault` is retained only for source compatibility. For an
+unmigrated identity it invokes the workspace copy → verify → atomic cutover →
+cleanup migration; for an ANP-managed identity it returns `migrated=false` and
+the explicit `already_migrated` warning. A blocked pre-cutover migration fails
+without deleting legacy records.
 
 `IdentityDeviceSummary` 是面向产品层的安全投影，只公开协议设备 ID、公开
 key ID、角色和由本地密钥可用性与服务端授权共同计算出的 readiness。它不公开

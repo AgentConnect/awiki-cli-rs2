@@ -176,10 +176,11 @@ final core = await AwikiImCore.open(
 );
 ```
 
-`AwikiImCoreOpenOptions.fileCompat()` keeps the compatibility default. Use
-`vaultPreferred` only as a migration-period mode; production App safety should
-use `vaultRequired` and fail closed when the host cannot provide the root key or
-matching vault context.
+`AwikiImCoreOpenOptions.fileCompat()` and the vault policies select the root
+provider and retained AWiki non-identity vault behavior. Identity custody itself
+is reported separately and converges to ANP Identity after workspace migration.
+Production App safety continues to use `vaultRequired` and fails closed when
+the host cannot provide the root key or matching vault context.
 
 The Dart SDK does not generate, persist, rotate, or back up the host root key.
 The host must get it from its own no-prompt secure storage path and pass it only
@@ -190,18 +191,31 @@ Auth APIs may still return `bearerToken` in session DTOs for existing flows;
 callers must treat it as sensitive and must not log or persist it outside the
 SDK-owned auth/session storage path.
 
-Identity vault diagnostics are exposed as narrow facade methods:
+Identity custody is exposed through the independent safe facade:
 
 ```dart
-final status = await core.identityVaultStatus(selector);
+final custody = await core.identityCustodyStatus(selector);
+```
+
+The result reports `backend`, lifecycle `state`, readiness, root-control
+availability, pending state, opaque store/identity IDs, and closed
+missing/warning lists. It never returns a private key, JWT, `SecretRef`, root
+fingerprint, provider key, DID Document, or Registry checkpoint.
+
+The older vault-named methods remain for source compatibility and are marked
+deprecated:
+
+```dart
+final legacyView = await core.identityVaultStatus(selector);
 final migration = await core.migrateIdentityVault(selector);
 final verification = await core.verifyIdentityVault(selector);
 ```
 
-Status/migration/verification DTOs report backend, metadata, warnings, and
-plaintext compatibility retention only. They do not expose root key material,
-JWTs, bearer tokens, or secret refs. Flutter Web remains a stub and cannot run
-the native vault-backed backend.
+`migrateIdentityVault` now executes the real workspace old-to-ANP migration. It
+returns `migrated_to_anp_identity` after a successful cutover and the explicit
+`already_migrated` warning with `migrated=false` on repetition. It preserves the
+copy → verify → cutover-marker → cleanup order. Flutter Web remains a stub and
+cannot run native custody or vault operations.
 
 Native hosts can read the current identity's safe device projection without
 opening any private key:

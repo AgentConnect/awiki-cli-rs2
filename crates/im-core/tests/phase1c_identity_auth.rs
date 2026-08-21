@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -49,6 +51,16 @@ fn identity_registry_lists_default_and_resolves_selectors() {
         ))
         .unwrap();
     assert_eq!(by_handle.did.as_str(), "did:example:bob");
+
+    let custody = core
+        .identities()
+        .custody_status(IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(custody.backend, IdentityCustodyBackend::LegacyFileCompat);
+    assert_eq!(custody.state, IdentityCustodyState::Legacy);
+    assert!(custody
+        .missing
+        .contains(&"anp_identity_custody".to_string()));
 }
 
 #[tokio::test]

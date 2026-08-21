@@ -997,6 +997,72 @@ class DartHandleRegistrationResult {
           warnings == other.warnings;
 }
 
+enum DartIdentityCustodyBackend { anpIdentity, legacyFileCompat, legacyVault }
+
+enum DartIdentityCustodyState {
+  creating,
+  active,
+  enrolling,
+  revoked,
+  legacy,
+  unavailable,
+}
+
+class DartIdentityCustodyStatus {
+  final DartIdentitySummary identity;
+  final DartIdentityCustodyBackend backend;
+  final DartIdentityCustodyState state;
+  final bool ready;
+  final bool rootControlAvailable;
+  final bool pendingOperation;
+  final String? storeId;
+  final String? custodyIdentityId;
+  final List<String> missing;
+  final List<String> warnings;
+
+  const DartIdentityCustodyStatus({
+    required this.identity,
+    required this.backend,
+    required this.state,
+    required this.ready,
+    required this.rootControlAvailable,
+    required this.pendingOperation,
+    this.storeId,
+    this.custodyIdentityId,
+    required this.missing,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      backend.hashCode ^
+      state.hashCode ^
+      ready.hashCode ^
+      rootControlAvailable.hashCode ^
+      pendingOperation.hashCode ^
+      storeId.hashCode ^
+      custodyIdentityId.hashCode ^
+      missing.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityCustodyStatus &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          backend == other.backend &&
+          state == other.state &&
+          ready == other.ready &&
+          rootControlAvailable == other.rootControlAvailable &&
+          pendingOperation == other.pendingOperation &&
+          storeId == other.storeId &&
+          custodyIdentityId == other.custodyIdentityId &&
+          missing == other.missing &&
+          warnings == other.warnings;
+}
+
 enum DartIdentityDeviceMode { legacy, vNext }
 
 enum DartIdentityDeviceReadiness {

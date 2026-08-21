@@ -10,9 +10,10 @@ use crate::dto::{
         DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice, DartDeviceJoinSessionSummary,
         DartDeviceRevokeResult, DartHandleRecoveryAccountEpochReceipt,
         DartHandleRecoveryOperationSummary, DartHandleRecoveryOtpResult,
-        DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityDeviceSummary,
-        DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
+        DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityCustodyStatus,
+        DartIdentityDeviceSummary, DartIdentitySelector, DartIdentitySummary,
+        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartInitialProfile,
         DartLegacyRegistryEpochAdoptionAuthority, DartLegacyUpgradeStatus,
         DartRootKeyTransferError, DartRootKeyTransferPreparation, DartRootKeyTransferSendResult,
     },
@@ -540,6 +541,20 @@ pub async fn identity_device_summary(
         .map_err(DartImError::from)
 }
 
+pub async fn identity_custody_status(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartIdentityCustodyStatus, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .custody_status_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+#[allow(deprecated)]
 pub async fn identity_vault_status(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -578,6 +593,7 @@ pub async fn upgrade_legacy_identity(
         .map_err(DartImError::from)
 }
 
+#[allow(deprecated)]
 pub async fn migrate_identity_vault(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
@@ -591,6 +607,7 @@ pub async fn migrate_identity_vault(
         .map_err(DartImError::from)
 }
 
+#[allow(deprecated)]
 pub async fn verify_identity_vault(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,

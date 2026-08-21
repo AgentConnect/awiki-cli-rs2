@@ -581,6 +581,34 @@ impl<'a> IdentityRegistry<'a> {
         daemon_public_package(proposal)
     }
 
+    pub fn custody_status(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityCustodyStatus> {
+        let registry = self.load_registry()?;
+        if registry.entries.is_empty() {
+            let summary = self.resolve_from_snapshot(&registry, selector)?;
+            return Ok(self.identity_custody_status(&summary, None));
+        }
+        let entry = registry.find_entry(selector)?;
+        Ok(self.identity_custody_status(&entry.summary, Some(entry)))
+    }
+
+    pub async fn custody_status_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityCustodyStatus> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).custody_status(selector)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
+    #[deprecated(note = "Use custody_status for identity custody state")]
     pub fn vault_status(
         &self,
         selector: super::IdentitySelector,
@@ -594,6 +622,7 @@ impl<'a> IdentityRegistry<'a> {
         Ok(self.identity_vault_status(&entry.summary, Some(entry)))
     }
 
+    #[deprecated(note = "Use custody_status_async for identity custody state")]
     pub async fn vault_status_async(
         &self,
         selector: super::IdentitySelector,
@@ -607,102 +636,69 @@ impl<'a> IdentityRegistry<'a> {
         Ok(self.identity_vault_status(&entry.summary, Some(entry)))
     }
 
+    #[deprecated(
+        note = "Use migrate_identity_custody; this compatibility name migrates to ANP Identity"
+    )]
+    #[allow(deprecated)]
     pub fn migrate_identity_vault(
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
-        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
-            crate::ImError::LocalStateUnavailable {
-                detail: "identity vault migration requires identity secret vault open options"
-                    .to_owned(),
+        let before = self.custody_status(selector.clone())?;
+        let already_migrated = before.backend == super::IdentityCustodyBackend::AnpIdentity;
+        if !already_migrated {
+            let migration = self.migrate_identity_custody()?;
+            if migration.phase == super::IdentityCustodyMigrationPhase::Blocked
+                || !migration.blockers.is_empty()
+            {
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "identity custody migration is blocked".to_owned(),
+                });
             }
-        })?;
-        let registry = self.load_registry()?;
-        let entry = registry.find_entry(selector)?;
-        let local_alias =
-            entry
-                .local_alias
-                .clone()
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: entry.summary.id.as_str().to_owned(),
-                })?;
-        crate::internal::identity_store::IdentityStore::new(
-            &self.core.inner().sdk_paths().identities,
-        )
-        .migrate_identity_to_vault(
-            &local_alias,
-            context.workspace_id(),
-            context.vault_context_device_id().as_str(),
-            context.vault().as_ref(),
-        )?;
-        let status = self.vault_status(super::IdentitySelector::LocalAlias(local_alias))?;
-        self.verify_identity_vault_status(status, true)
-            .map(|verification| super::IdentityVaultMigrationReport {
-                plaintext_compat_retained: verification
-                    .status
-                    .plaintext_compat_retained
-                    .unwrap_or(false),
-                warnings: verification.warnings,
-                identity: verification.identity,
-                status: verification.status,
-                migrated: true,
-                verified: verification.verified,
-            })
+        }
+        let custody = self.custody_status(selector.clone())?;
+        if custody.backend != super::IdentityCustodyBackend::AnpIdentity || !custody.ready {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "identity custody migration did not converge".to_owned(),
+            });
+        }
+        let status = self.vault_status(selector)?;
+        let mut warnings = status.warnings.clone();
+        warnings.push(if already_migrated {
+            "already_migrated".to_owned()
+        } else {
+            "migrated_to_anp_identity".to_owned()
+        });
+        Ok(super::IdentityVaultMigrationReport {
+            identity: custody.identity,
+            status,
+            migrated: !already_migrated,
+            verified: custody.missing.is_empty(),
+            plaintext_compat_retained: false,
+            warnings,
+        })
     }
 
+    #[deprecated(
+        note = "Use migrate_identity_custody_async; this compatibility name migrates to ANP Identity"
+    )]
+    #[allow(deprecated)]
     pub async fn migrate_identity_vault_async(
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
-        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
-            crate::ImError::LocalStateUnavailable {
-                detail: "identity vault migration requires identity secret vault open options"
-                    .to_owned(),
-            }
-        })?;
-        let registry = self.load_registry_async().await?;
-        let entry = registry.find_entry(selector)?;
-        let local_alias =
-            entry
-                .local_alias
-                .clone()
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: entry.summary.id.as_str().to_owned(),
-                })?;
-        let paths = self.core.inner().sdk_paths().identities.clone();
-        let workspace_id = context.workspace_id().to_owned();
-        let device_id = context.vault_context_device_id().as_str().to_owned();
-        let vault = context.vault();
-        let local_alias_for_migration = local_alias.clone();
+        let core = (*self.core).clone();
         crate::internal::runtime::worker::run_blocking(move || {
-            crate::internal::identity_store::IdentityStore::new(&paths).migrate_identity_to_vault(
-                &local_alias_for_migration,
-                &workspace_id,
-                &device_id,
-                vault.as_ref(),
-            )
+            IdentityRegistry::new(&core).migrate_identity_vault(selector)
         })
         .await
-        .map_err(|err| crate::ImError::Internal {
-            message: err.to_string(),
-        })??;
-        let status = self
-            .vault_status_async(super::IdentitySelector::LocalAlias(local_alias))
-            .await?;
-        self.verify_identity_vault_status(status, true)
-            .map(|verification| super::IdentityVaultMigrationReport {
-                plaintext_compat_retained: verification
-                    .status
-                    .plaintext_compat_retained
-                    .unwrap_or(false),
-                warnings: verification.warnings,
-                identity: verification.identity,
-                status: verification.status,
-                migrated: true,
-                verified: verification.verified,
-            })
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
     }
 
+    #[deprecated(note = "Use custody_status; this is the legacy AWiki vault view")]
+    #[allow(deprecated)]
     pub fn verify_identity_vault(
         &self,
         selector: super::IdentitySelector,
@@ -711,6 +707,8 @@ impl<'a> IdentityRegistry<'a> {
         self.verify_identity_vault_status(status, true)
     }
 
+    #[deprecated(note = "Use custody_status_async; this is the legacy AWiki vault view")]
+    #[allow(deprecated)]
     pub async fn verify_identity_vault_async(
         &self,
         selector: super::IdentitySelector,
@@ -1753,6 +1751,102 @@ impl IdentityRegistry<'_> {
             warnings,
         }
     }
+
+    fn identity_custody_status(
+        &self,
+        summary: &super::IdentitySummary,
+        entry: Option<&RegistryEntry>,
+    ) -> super::IdentityCustodyStatus {
+        let Some(entry) = entry else {
+            return legacy_identity_custody_status(summary, None);
+        };
+        if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+            return legacy_identity_custody_status(summary, Some(entry));
+        }
+
+        let mut status = super::IdentityCustodyStatus {
+            identity: summary.clone(),
+            backend: super::IdentityCustodyBackend::AnpIdentity,
+            state: super::IdentityCustodyState::Unavailable,
+            ready: false,
+            root_control_available: false,
+            pending_operation: false,
+            store_id: entry.anp_identity_store_id.clone(),
+            custody_identity_id: entry.anp_identity_id.clone(),
+            missing: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let Some(expected_store_id) = entry.anp_identity_store_id.as_deref() else {
+            status.missing.push("anp_identity_store_id".to_owned());
+            return status;
+        };
+        let Some(expected_identity_id) = entry.anp_identity_id.as_deref() else {
+            status.missing.push("anp_identity_id".to_owned());
+            return status;
+        };
+        let Ok(store) = crate::internal::identity_custody::open_controller_store(self.core) else {
+            status.missing.push("anp_identity_store".to_owned());
+            return status;
+        };
+        if store.manifest().store_id != expected_store_id {
+            status.missing.push("anp_identity_store_binding".to_owned());
+            return status;
+        }
+        let Ok(identity) = store.open_identity(summary.did.as_str()) else {
+            status.missing.push("anp_identity_record".to_owned());
+            return status;
+        };
+        if identity.identity_id() != expected_identity_id {
+            status
+                .missing
+                .push("anp_identity_record_binding".to_owned());
+            return status;
+        }
+        status.state = match identity.state() {
+            anp_identity::IdentityState::Creating => super::IdentityCustodyState::Creating,
+            anp_identity::IdentityState::Active => super::IdentityCustodyState::Active,
+            anp_identity::IdentityState::Enrolling => super::IdentityCustodyState::Enrolling,
+            anp_identity::IdentityState::Revoked => super::IdentityCustodyState::Revoked,
+        };
+        status.ready = identity.state() == anp_identity::IdentityState::Active;
+        status.root_control_available = identity.keys().iter().any(|key| {
+            key.role == anp_identity::KeyRole::RootControl
+                && key.origin == anp_identity::KeyOrigin::Managed
+                && key.state == anp_identity::KeyState::Active
+                && !key.material_erased
+        });
+        status.pending_operation = identity.pending_revision().is_some()
+            || identity.root_capability() == anp_identity::RootCapabilityState::Pending;
+        if !status.ready {
+            status.missing.push("anp_identity_active".to_owned());
+        }
+        status
+    }
+}
+
+fn legacy_identity_custody_status(
+    summary: &super::IdentitySummary,
+    entry: Option<&RegistryEntry>,
+) -> super::IdentityCustodyStatus {
+    let vault_backed = entry
+        .and_then(|entry| entry.vault_migration.as_ref())
+        .is_some_and(vault_metadata_is_verified);
+    super::IdentityCustodyStatus {
+        identity: summary.clone(),
+        backend: if vault_backed {
+            super::IdentityCustodyBackend::LegacyVault
+        } else {
+            super::IdentityCustodyBackend::LegacyFileCompat
+        },
+        state: super::IdentityCustodyState::Legacy,
+        ready: summary.readiness.ready_for_auth,
+        root_control_available: summary.readiness.ready_for_auth,
+        pending_operation: false,
+        store_id: None,
+        custody_identity_id: None,
+        missing: vec!["anp_identity_custody".to_owned()],
+        warnings: vec!["legacy identity custody requires migration".to_owned()],
+    }
 }
 
 fn identity_vault_failure_from_status(
@@ -2568,6 +2662,7 @@ fn optional_trimmed_string(value: Option<String>) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::internal::platform_secret::{DeviceVaultRootKey, SecretBytes};
@@ -3563,12 +3658,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
-        let bundle = anp::authentication::create_did_wba_document(
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
             "vault-migration.example",
-            anp::authentication::DidDocumentOptions::default(),
+            "alice",
+            None,
+            None,
         )
         .unwrap();
-        let did = crate::ids::Did::parse(bundle.did().unwrap()).unwrap();
+        let did = generated.did.clone();
+        let document_hash =
+            crate::internal::identity_wire::document::document_hash(&generated.did_document)
+                .unwrap();
         store
             .save_identity(crate::internal::identity_store::SaveIdentityInput {
                 local_alias: "alice".to_owned(),
@@ -3580,19 +3680,40 @@ mod tests {
                 full_handle: "alice.example".to_owned(),
                 binding_generation: None,
                 jwt_token: "jwt-secret-value".to_owned(),
-                did_document: Some(bundle.did_document),
-                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
-                device_state: None,
-                key1_private_pem: bundle.keys[anp::authentication::VM_KEY_AUTH]
-                    .private_key_pem
-                    .clone(),
-                key1_public_pem: bundle.keys[anp::authentication::VM_KEY_AUTH]
-                    .public_key_pem
-                    .clone(),
-                e2ee_signing_private_pem: String::new(),
-                e2ee_agreement_private_pem: bundle.keys[anp::authentication::VM_KEY_E2EE_AGREEMENT]
-                    .private_key_pem
-                    .clone(),
+                did_document: Some(generated.did_document.clone()),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                    root_key_id: generated.root_key_id.clone(),
+                    device_signing_key_id: generated.device_signing_key_id.clone(),
+                    device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                },
+                device_state: Some(
+                    crate::internal::identity_device_state::IdentityDeviceState {
+                        schema_version: crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: crate::internal::identity_device_state::IdentityDeviceMode::VNext,
+                        authorization: Some(
+                            crate::internal::identity_device_state::DeviceAuthorizationProjection {
+                                protocol_device_id: generated.protocol_device_id.clone(),
+                                signing_key_id: generated.device_signing_key_id.clone(),
+                                e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                                status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                                management_ready: true,
+                                auth_generation: 1,
+                            },
+                        ),
+                        checkpoint: Some(
+                            crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                                document_version: 1,
+                                document_hash,
+                                registry_version: 1,
+                            },
+                        ),
+                    },
+                ),
+                key1_private_pem: generated.root_private_pem.clone(),
+                key1_public_pem: generated.root_public_pem.clone(),
+                e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
+                e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
                 daemon_subkey_package: None,
                 make_default: true,
             })
@@ -3622,12 +3743,25 @@ mod tests {
 
         assert!(report.migrated);
         assert!(report.verified);
-        assert!(report.plaintext_compat_retained);
+        assert!(!report.plaintext_compat_retained);
+        assert!(report
+            .warnings
+            .contains(&"migrated_to_anp_identity".to_owned()));
         assert_eq!(
             report.status.selected_backend,
             crate::identity::IdentitySecretStorageBackend::Vault
         );
         assert_eq!(report.identity.did, did);
+
+        let repeated = core
+            .identities()
+            .migrate_identity_vault(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+        assert!(!repeated.migrated);
+        assert!(repeated.verified);
+        assert!(repeated.warnings.contains(&"already_migrated".to_owned()));
 
         let verification = core
             .identities()
@@ -3773,6 +3907,25 @@ mod tests {
         assert!(!encoded.contains("private"));
         assert!(!encoded.contains("store_id"));
         assert!(!encoded.contains("identity_id"));
+
+        let status = core
+            .identities()
+            .custody_status(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert_eq!(
+            status.backend,
+            crate::identity::IdentityCustodyBackend::AnpIdentity
+        );
+        assert_eq!(status.state, crate::identity::IdentityCustodyState::Active);
+        assert!(status.ready);
+        assert!(status.root_control_available);
+        assert!(!status.pending_operation);
+        assert_eq!(status.store_id.as_deref(), Some(store_id.as_str()));
+        assert_eq!(
+            status.custody_identity_id.as_deref(),
+            Some(identity_id.as_str())
+        );
+        assert!(status.missing.is_empty());
     }
 
     #[test]

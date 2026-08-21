@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use im_core::{
     IdentitySecretStorageBackend, IdentitySecretStoragePolicy, IdentitySelector, ImCore,

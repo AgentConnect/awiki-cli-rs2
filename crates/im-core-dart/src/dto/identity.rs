@@ -413,6 +413,37 @@ impl std::fmt::Debug for DartDeviceJoinApprovalPrompt {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartIdentityCustodyBackend {
+    AnpIdentity,
+    LegacyFileCompat,
+    LegacyVault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartIdentityCustodyState {
+    Creating,
+    Active,
+    Enrolling,
+    Revoked,
+    Legacy,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartIdentityCustodyStatus {
+    pub identity: DartIdentitySummary,
+    pub backend: DartIdentityCustodyBackend,
+    pub state: DartIdentityCustodyState,
+    pub ready: bool,
+    pub root_control_available: bool,
+    pub pending_operation: bool,
+    pub store_id: Option<String>,
+    pub custody_identity_id: Option<String>,
+    pub missing: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartIdentitySecretStorageBackend {
     FileCompat,
     Vault,

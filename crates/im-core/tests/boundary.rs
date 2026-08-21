@@ -208,6 +208,29 @@ fn rust_identity_public_surface_has_no_daemon_private_package_api() {
     }
 }
 
+#[test]
+fn identity_custody_status_is_a_secret_free_projection() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/identity/dto.rs");
+    let source = fs::read_to_string(&path).unwrap();
+    let item = rust_item(&source, "struct IdentityCustodyStatus")
+        .expect("IdentityCustodyStatus public DTO");
+    for forbidden in [
+        "private",
+        "secret_ref",
+        "jwt",
+        "token",
+        "fingerprint",
+        "document_hash",
+        "checkpoint",
+        "provider_key",
+    ] {
+        assert!(
+            !item.to_ascii_lowercase().contains(forbidden),
+            "IdentityCustodyStatus contains forbidden field marker {forbidden}"
+        );
+    }
+}
+
 fn rust_item<'a>(source: &'a str, declaration: &str) -> Option<&'a str> {
     let start = source.find(declaration)?;
     let open = start + source[start..].find('{')?;

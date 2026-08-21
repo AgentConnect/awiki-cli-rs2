@@ -801,6 +801,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentityCustodyBackend dco_decode_dart_identity_custody_backend(
+    dynamic raw,
+  );
+
+  @protected
+  DartIdentityCustodyState dco_decode_dart_identity_custody_state(dynamic raw);
+
+  @protected
+  DartIdentityCustodyStatus dco_decode_dart_identity_custody_status(
+    dynamic raw,
+  );
+
+  @protected
   DartIdentityDeviceMode dco_decode_dart_identity_device_mode(dynamic raw);
 
   @protected
@@ -2273,6 +2286,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityCustodyBackend sse_decode_dart_identity_custody_backend(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityCustodyState sse_decode_dart_identity_custody_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityCustodyStatus sse_decode_dart_identity_custody_status(
     SseDeserializer deserializer,
   );
 
@@ -4064,6 +4092,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_handle_registration_result(
     DartHandleRegistrationResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_custody_backend(
+    DartIdentityCustodyBackend self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_custody_state(
+    DartIdentityCustodyState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_custody_status(
+    DartIdentityCustodyStatus self,
     SseSerializer serializer,
   );
 
