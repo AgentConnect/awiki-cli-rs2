@@ -316,7 +316,10 @@ enum DaemonFixturePrepareFailureStage {
     SubkeyAuthorizeLocalPermission,
     SubkeyAuthorizeServiceDocumentProof,
     SubkeyAuthorizeServiceDocumentBinding,
-    SubkeyAuthorizeServiceDocumentAuthority,
+    SubkeyAuthorizeServiceDocumentManifest,
+    SubkeyAuthorizeServiceDocumentMethods,
+    SubkeyAuthorizeServiceDocumentRelationships,
+    SubkeyAuthorizeServiceDocumentAuthorityOther,
     SubkeyAuthorizeServiceDocumentDelegated,
     SubkeyAuthorizeServiceDocumentOther,
     SubkeyAuthorizeServiceProof,
@@ -351,8 +354,17 @@ impl DaemonFixturePrepareFailureStage {
             Self::SubkeyAuthorizeServiceDocumentBinding => {
                 "subkey_authorize_service_document_binding"
             }
-            Self::SubkeyAuthorizeServiceDocumentAuthority => {
-                "subkey_authorize_service_document_authority"
+            Self::SubkeyAuthorizeServiceDocumentManifest => {
+                "subkey_authorize_service_document_manifest"
+            }
+            Self::SubkeyAuthorizeServiceDocumentMethods => {
+                "subkey_authorize_service_document_methods"
+            }
+            Self::SubkeyAuthorizeServiceDocumentRelationships => {
+                "subkey_authorize_service_document_relationships"
+            }
+            Self::SubkeyAuthorizeServiceDocumentAuthorityOther => {
+                "subkey_authorize_service_document_authority_other"
             }
             Self::SubkeyAuthorizeServiceDocumentDelegated => {
                 "subkey_authorize_service_document_delegated"
@@ -424,11 +436,14 @@ fn daemon_subkey_document_failure_stage(message: &str) -> DaemonFixturePrepareFa
         DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentProof
     } else if message.contains("binding") {
         DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentBinding
-    } else if message.contains("deviceManifest")
-        || message.contains("root or device")
-        || message.contains("authority")
-    {
-        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentAuthority
+    } else if message.contains("deviceManifest") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentManifest
+    } else if message.contains("verification methods") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentMethods
+    } else if message.contains("relationships") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentRelationships
+    } else if message.contains("root or device") || message.contains("authority") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentAuthorityOther
     } else {
         DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentOther
     }
@@ -5223,6 +5238,12 @@ mod tests {
         assert_eq!(
             daemon_subkey_document_failure_stage("Document update DID root proof is invalid"),
             DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentProof
+        );
+        assert_eq!(
+            daemon_subkey_document_failure_stage(
+                "Document update may not change root or device key relationships"
+            ),
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentRelationships
         );
         assert_eq!(
             daemon_subkey_authorize_failure_stage(&im_core::ImError::PermissionDenied),
