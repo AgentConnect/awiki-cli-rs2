@@ -37,6 +37,9 @@ pub(crate) mod sync_v2;
 pub(crate) mod schema;
 
 #[cfg(feature = "sqlite")]
+pub(crate) const BUSY_TIMEOUT_MS: i64 = 30_000;
+
+#[cfg(feature = "sqlite")]
 #[allow(dead_code)]
 pub(crate) trait LocalStateStore {
     fn ensure_schema(&self) -> crate::ImResult<()>;
@@ -105,13 +108,13 @@ pub(crate) fn open_writable(path: &std::path::Path) -> crate::ImResult<rusqlite:
 #[cfg(feature = "sqlite")]
 pub(crate) fn configure(connection: &rusqlite::Connection) -> crate::ImResult<()> {
     connection
+        .pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)
+        .map_err(local_state_unavailable)?;
+    connection
         .pragma_update(None, "journal_mode", "WAL")
         .map_err(local_state_unavailable)?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
-        .map_err(local_state_unavailable)?;
-    connection
-        .pragma_update(None, "busy_timeout", 5000)
         .map_err(local_state_unavailable)?;
     connection
         .pragma_update(None, "mmap_size", 0)
@@ -130,4 +133,35 @@ pub(crate) fn local_state_unavailable(err: impl std::fmt::Display) -> crate::ImE
 #[allow(dead_code)]
 fn unsupported_operation(name: &str) -> crate::ImError {
     crate::ImError::unsupported(format!("local_state.{name}"))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn open_writable_waits_for_a_concurrent_writer_during_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("im.sqlite");
+        drop(super::open_writable(&path).unwrap());
+
+        let holder = rusqlite::Connection::open(&path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let opened_path = path.clone();
+        let opener = std::thread::spawn(move || super::open_writable(&opened_path));
+
+        std::thread::sleep(Duration::from_millis(100));
+        holder.execute_batch("COMMIT").unwrap();
+
+        opener
+            .join()
+            .unwrap()
+            .expect("a competing writer should be retried during connection configuration");
+
+        let opened = super::open_writable(&path).unwrap();
+        let busy_timeout: i64 = opened
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout, 30_000);
+    }
 }

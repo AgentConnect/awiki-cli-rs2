@@ -22,13 +22,17 @@ pub(crate) fn open_writable(
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn configure(connection: &rusqlite::Connection) -> crate::ImResult<()> {
     connection
+        .pragma_update(
+            None,
+            "busy_timeout",
+            crate::internal::local_state::BUSY_TIMEOUT_MS,
+        )
+        .map_err(local_state_unavailable)?;
+    connection
         .pragma_update(None, "journal_mode", "WAL")
         .map_err(local_state_unavailable)?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
-        .map_err(local_state_unavailable)?;
-    connection
-        .pragma_update(None, "busy_timeout", 5000)
         .map_err(local_state_unavailable)?;
     Ok(())
 }
