@@ -410,7 +410,7 @@ where
             pending.new_document.clone(),
             pending.authorizing_device.device_id.clone(),
             &pending.authorizing_device.signing_key_id,
-            &|kid, message| identity_signer.sign(kid, message),
+            &|kid, message| identity_signer.sign_device_assertion(kid, message),
             now,
         )
         .map_err(unknown_outcome)?;

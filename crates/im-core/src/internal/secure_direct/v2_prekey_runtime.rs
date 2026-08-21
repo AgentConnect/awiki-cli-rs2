@@ -304,7 +304,7 @@ where
                 signing_key_id: &authorization.signing_key_id,
                 e2ee_key_id: &authorization.e2ee_key_id,
                 signing_public,
-                signer: &|kid, message| identity_signer.sign(kid, message),
+                signer: &|kid, message| identity_signer.sign_device_assertion(kid, message),
             },
             Utc::now(),
         )?

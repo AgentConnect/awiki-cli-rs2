@@ -54,7 +54,7 @@ impl GroupE2eeV2Runtime {
             &identity_signer.public_key(&key_id)?,
         )
         .map_err(map_group_mls_error)?;
-        let signature = identity_signer.sign(&key_id, prepared.signing_input())?;
+        let signature = identity_signer.sign_device_assertion(&key_id, prepared.signing_input())?;
         v2::complete_key_package_v2(&self.store, prepared, &signature).map_err(map_group_mls_error)
     }
 
@@ -75,7 +75,8 @@ impl GroupE2eeV2Runtime {
         {
             V2KeyPackagePublishPreparation::Ready(prepared) => Ok(prepared),
             V2KeyPackagePublishPreparation::Signing(prepared) => {
-                let signature = identity_signer.sign(&key_id, prepared.signing_input())?;
+                let signature =
+                    identity_signer.sign_device_assertion(&key_id, prepared.signing_input())?;
                 v2::complete_key_package_publish_signing_v2(&self.store, prepared, &signature)
                     .map_err(map_group_mls_error)
             }

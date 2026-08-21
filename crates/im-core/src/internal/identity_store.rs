@@ -292,6 +292,14 @@ impl<'a> IdentityStore<'a> {
         input.full_handle = full_handle;
 
         let mut index = self.load_index()?;
+        if index
+            .credentials
+            .get(&local_alias)
+            .and_then(|entry| entry.identity_custody_backend.as_deref())
+            .is_some()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
         let dir_name = preferred_dir_name(&input.unique_id)?;
         for (name, entry) in &index.credentials {
             if name == &local_alias {
@@ -435,6 +443,14 @@ impl<'a> IdentityStore<'a> {
                 .and_then(|entry| entry.device_state.clone())
         });
         let binding_generation = input.binding_generation.clone();
+        let existing_custody = index.credentials.get(&local_alias).map(|entry| {
+            (
+                entry.identity_custody_backend.clone(),
+                entry.anp_identity_store_id.clone(),
+                entry.anp_identity_id.clone(),
+                entry.anp_identity_auth_ref.clone(),
+            )
+        });
         index.credentials.insert(
             local_alias.clone(),
             IndexEntry {
@@ -450,6 +466,18 @@ impl<'a> IdentityStore<'a> {
                 created_at: created_at.clone(),
                 is_default,
                 vault_migration: vault_metadata,
+                identity_custody_backend: existing_custody
+                    .as_ref()
+                    .and_then(|values| values.0.clone()),
+                anp_identity_store_id: existing_custody
+                    .as_ref()
+                    .and_then(|values| values.1.clone()),
+                anp_identity_id: existing_custody
+                    .as_ref()
+                    .and_then(|values| values.2.clone()),
+                anp_identity_auth_ref: existing_custody
+                    .as_ref()
+                    .and_then(|values| values.3.clone()),
                 device_state,
             },
         );
@@ -1991,6 +2019,14 @@ pub(crate) struct IndexEntry {
     pub(crate) is_default: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vault_migration: Option<IdentityVaultMigrationMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) identity_custody_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) anp_identity_store_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) anp_identity_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) anp_identity_auth_ref: Option<crate::internal::secret_vault::record::SecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }

@@ -518,7 +518,12 @@ pub(crate) async fn prepare_runtime_p5_test_wires(
                 signing_key_id: &endpoint.signing_key_id,
                 e2ee_key_id: &recipient_context.local_e2ee_key_id,
                 signing_public,
-                signer: &|kid, message| client.runtime().key_provider.sign(kid, message),
+                signer: &|kid, message| {
+                    client
+                        .runtime()
+                        .key_provider
+                        .sign_device_assertion(kid, message)
+                },
             },
             chrono::Utc::now(),
         )

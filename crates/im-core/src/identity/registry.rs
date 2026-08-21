@@ -763,7 +763,12 @@ impl<'a> IdentityRegistry<'a> {
                             did_document.clone(),
                             authorizing_device_id,
                             &authorizing_signing_key_id,
-                            &|kid, message| client.runtime().key_provider.sign(kid, message),
+                            &|kid, message| {
+                                client
+                                    .runtime()
+                                    .key_provider
+                                    .sign_device_assertion(kid, message)
+                            },
                             time::OffsetDateTime::now_utc(),
                         )?;
                     let call =
@@ -1338,6 +1343,61 @@ impl IdentityRegistry<'_> {
         entry: Option<&RegistryEntry>,
         summary: &super::IdentitySummary,
     ) -> crate::ImResult<Arc<dyn crate::internal::key_provider::IdentitySigner>> {
+        if let Some(entry) = entry {
+            let has_anp_binding = entry.identity_custody_backend.is_some()
+                || entry.anp_identity_store_id.is_some()
+                || entry.anp_identity_id.is_some();
+            if has_anp_binding {
+                if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+                    return Err(crate::ImError::IdentityNotReady {
+                        identity: summary.did.as_str().to_owned(),
+                        missing: vec!["anp_identity_backend_marker".to_owned()],
+                    });
+                }
+                let expected_store_id =
+                    entry.anp_identity_store_id.as_deref().ok_or_else(|| {
+                        crate::ImError::IdentityNotReady {
+                            identity: summary.did.as_str().to_owned(),
+                            missing: vec!["anp_identity_store_id".to_owned()],
+                        }
+                    })?;
+                let expected_identity_id = entry.anp_identity_id.as_deref().ok_or_else(|| {
+                    crate::ImError::IdentityNotReady {
+                        identity: summary.did.as_str().to_owned(),
+                        missing: vec!["anp_identity_id".to_owned()],
+                    }
+                })?;
+                let store = open_controller_anp_identity_store(&self.core)?;
+                if store.manifest().store_id != expected_store_id {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                let identity = store
+                    .open_identity(summary.did.as_str())
+                    .map_err(map_anp_identity_error)?;
+                if identity.identity_id() != expected_identity_id {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                let provider = if let Some(auth_ref) = entry.anp_identity_auth_ref.clone() {
+                    let context = self.core.inner().identity_vault().ok_or_else(|| {
+                        crate::ImError::IdentityNotReady {
+                            identity: summary.did.as_str().to_owned(),
+                            missing: vec!["identity_secret_vault".to_owned()],
+                        }
+                    })?;
+                    crate::internal::key_provider::AnpIdentitySigner::new_vault(
+                        identity,
+                        context.vault(),
+                        auth_ref,
+                    )?
+                } else {
+                    crate::internal::key_provider::AnpIdentitySigner::new_file(
+                        identity,
+                        identity_dir.join("auth.json"),
+                    )
+                };
+                return Ok(Arc::new(provider));
+            }
+        }
         let policy = self.core.inner().identity_secret_storage_policy();
         let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
         let is_vnext = entry
@@ -1677,6 +1737,74 @@ impl IdentityRegistry<'_> {
     }
 }
 
+fn open_controller_anp_identity_store(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<anp_identity::DidStore> {
+    let root = core
+        .inner()
+        .sdk_paths()
+        .identities
+        .identity_root_dir
+        .join(".anp-identity");
+    if let Some(context) = core.inner().identity_vault() {
+        let key_id = format!("awiki-workspace-vault:{}", context.workspace_id());
+        let open = || {
+            anp_identity::DidStore::open_injected(
+                &root,
+                key_id.clone(),
+                context.anp_identity_root_key(),
+            )
+        };
+        match open() {
+            Ok(store) => Ok(store),
+            Err(anp_identity::DidError::StoreNotFound) => {
+                match anp_identity::DidStore::initialize_injected(
+                    &root,
+                    key_id.clone(),
+                    context.anp_identity_root_key(),
+                ) {
+                    Ok(store) => Ok(store),
+                    Err(anp_identity::DidError::Conflict) => open().map_err(map_anp_identity_error),
+                    Err(error) => Err(map_anp_identity_error(error)),
+                }
+            }
+            Err(error) => Err(map_anp_identity_error(error)),
+        }
+    } else {
+        match anp_identity::DidStore::open_local_file(&root) {
+            Ok(store) => Ok(store),
+            Err(anp_identity::DidError::StoreNotFound) => {
+                match anp_identity::DidStore::initialize_local_file(&root) {
+                    Ok(store) => Ok(store),
+                    Err(anp_identity::DidError::Conflict) => {
+                        anp_identity::DidStore::open_local_file(&root)
+                            .map_err(map_anp_identity_error)
+                    }
+                    Err(error) => Err(map_anp_identity_error(error)),
+                }
+            }
+            Err(error) => Err(map_anp_identity_error(error)),
+        }
+    }
+}
+
+fn map_anp_identity_error(error: anp_identity::DidError) -> crate::ImError {
+    match error {
+        anp_identity::DidError::IdentityNotFound => crate::ImError::IdentityNotFound {
+            selector: "anp-identity".to_string(),
+        },
+        anp_identity::DidError::Conflict => crate::ImError::LocalStateUnavailable {
+            detail: "anp identity store generation changed; reload is required".to_string(),
+        },
+        anp_identity::DidError::RootKeyMismatch | anp_identity::DidError::ProviderUnavailable => {
+            crate::ImError::PermissionDenied
+        }
+        error => crate::ImError::LocalStateUnavailable {
+            detail: format!("anp identity store operation failed: {error}"),
+        },
+    }
+}
+
 fn identity_vault_failure_from_status(
     status: &super::IdentityVaultStatus,
 ) -> crate::IdentityVaultFailure {
@@ -1918,6 +2046,10 @@ struct RegistryEntry {
     binding_generation: Option<String>,
     summary: super::IdentitySummary,
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
+    identity_custody_backend: Option<String>,
+    anp_identity_store_id: Option<String>,
+    anp_identity_id: Option<String>,
+    anp_identity_auth_ref: Option<crate::internal::secret_vault::record::SecretRef>,
     device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
 
@@ -2061,6 +2193,14 @@ struct SdkIdentityRecord {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_custody_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anp_identity_store_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anp_identity_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anp_identity_auth_ref: Option<crate::internal::secret_vault::record::SecretRef>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
@@ -2098,6 +2238,14 @@ struct LegacyIdentityRecord {
     is_default: bool,
     #[serde(default)]
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
+    #[serde(default)]
+    identity_custody_backend: Option<String>,
+    #[serde(default)]
+    anp_identity_store_id: Option<String>,
+    #[serde(default)]
+    anp_identity_id: Option<String>,
+    #[serde(default)]
+    anp_identity_auth_ref: Option<crate::internal::secret_vault::record::SecretRef>,
     #[serde(default)]
     device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
@@ -2161,6 +2309,10 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
                 },
             },
             vault_migration: record.vault_migration,
+            identity_custody_backend: record.identity_custody_backend,
+            anp_identity_store_id: record.anp_identity_store_id,
+            anp_identity_id: record.anp_identity_id,
+            anp_identity_auth_ref: record.anp_identity_auth_ref,
             device_state: record.device_state,
         });
     }
@@ -2211,6 +2363,10 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
                     .map(identity_missing_item_to_string)
                     .collect(),
                 vault_migration: entry.vault_migration.clone(),
+                identity_custody_backend: entry.identity_custody_backend.clone(),
+                anp_identity_store_id: entry.anp_identity_store_id.clone(),
+                anp_identity_id: entry.anp_identity_id.clone(),
+                anp_identity_auth_ref: entry.anp_identity_auth_ref.clone(),
                 device_state: entry.device_state.clone(),
             })
             .collect(),
@@ -2272,6 +2428,10 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
                 },
             },
             vault_migration: record.vault_migration,
+            identity_custody_backend: record.identity_custody_backend,
+            anp_identity_store_id: record.anp_identity_store_id,
+            anp_identity_id: record.anp_identity_id,
+            anp_identity_auth_ref: record.anp_identity_auth_ref,
             device_state: record.device_state,
         });
     }
@@ -3500,6 +3660,136 @@ mod tests {
     }
 
     #[test]
+    fn anp_identity_file_backend_loads_runtime_without_awiki_private_key_files() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        std::fs::create_dir_all(paths.identities.identity_root_dir.join("alice-id")).unwrap();
+        let mut custody = anp_identity::DidStore::initialize_local_file(
+            paths.identities.identity_root_dir.join(".anp-identity"),
+        )
+        .unwrap();
+        let identity = custody.create_identity(anp_identity_spec("file")).unwrap();
+        let did = identity.did().to_string();
+        let store_id = custody.manifest().store_id.clone();
+        let identity_id = identity.identity_id().to_string();
+        crate::internal::auth::state::persist_jwt_token(
+            &paths
+                .identities
+                .identity_root_dir
+                .join("alice-id/auth.json"),
+            "file-anp-token",
+        )
+        .unwrap();
+        write_anp_identity_registry(
+            &paths.identities.registry_path,
+            &did,
+            &store_id,
+            &identity_id,
+            None,
+        );
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+
+        let runtime = core
+            .identities()
+            .load_runtime(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        runtime
+            .key_provider
+            .ensure_request_signing_available()
+            .unwrap();
+        runtime.key_provider.ensure_agreement_available().unwrap();
+        runtime
+            .key_provider
+            .ensure_root_control_available()
+            .unwrap();
+        assert_eq!(
+            runtime.key_provider.valid_auth_token().unwrap().as_deref(),
+            Some("file-anp-token")
+        );
+        let identity_dir = paths.identities.identity_root_dir.join("alice-id");
+        for name in [
+            "private.key",
+            "key-1-private.pem",
+            "e2ee-agreement-private.pem",
+        ] {
+            assert!(!identity_dir.join(name).exists());
+        }
+    }
+
+    #[test]
+    fn anp_identity_vault_backend_reuses_the_injected_workspace_root_and_auth_ref() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let vault_dir = root.path().join("vault");
+        std::fs::create_dir_all(paths.identities.identity_root_dir.join("alice-id")).unwrap();
+        let mut custody = anp_identity::DidStore::initialize_injected(
+            paths.identities.identity_root_dir.join(".anp-identity"),
+            "awiki-workspace-vault:workspace-a",
+            [62_u8; 32],
+        )
+        .unwrap();
+        let identity = custody.create_identity(anp_identity_spec("vault")).unwrap();
+        let did = identity.did().to_string();
+        let store_id = custody.manifest().store_id.clone();
+        let identity_id = identity.identity_id().to_string();
+        let vault = FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([62_u8; 32]),
+            FileSecretVaultStore::new(&vault_dir),
+        );
+        let auth_ref = vault
+            .seal(SealSecretRequest {
+                metadata: test_secret_metadata(
+                    "workspace-a",
+                    "device-a",
+                    "alice-id",
+                    &did,
+                    SecretKind::AuthJwt,
+                    "auth.json",
+                ),
+                plaintext: SecretBytes::from_vec(
+                    crate::internal::auth::state::auth_state_json_for_token("vault-anp-token")
+                        .unwrap(),
+                ),
+            })
+            .unwrap();
+        write_anp_identity_registry(
+            &paths.identities.registry_path,
+            &did,
+            &store_id,
+            &identity_id,
+            Some(auth_ref),
+        );
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            paths,
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([62_u8; 32]),
+                    &vault_dir,
+                    "workspace-a",
+                    "device-a",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let runtime = core
+            .identities()
+            .load_runtime(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        runtime
+            .key_provider
+            .ensure_request_signing_available()
+            .unwrap();
+        runtime.key_provider.ensure_agreement_available().unwrap();
+        assert_eq!(
+            runtime.key_provider.valid_auth_token().unwrap().as_deref(),
+            Some("vault-anp-token")
+        );
+    }
+
+    #[test]
     fn vault_required_without_vault_options_fails_closed() {
         let root = tempfile::tempdir().unwrap();
         let err = match crate::ImCore::new_with_options(
@@ -3522,6 +3812,78 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("VaultRequired"));
         assert!(!message.contains("root key"));
+    }
+
+    fn write_anp_identity_registry(
+        path: &Path,
+        did: &str,
+        store_id: &str,
+        identity_id: &str,
+        auth_ref: Option<crate::internal::secret_vault::record::SecretRef>,
+    ) {
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 5,
+                "default_credential_name": "alice",
+                "credentials": {
+                    "alice": {
+                        "credential_name": "alice",
+                        "dir_name": "alice-id",
+                        "did": did,
+                        "unique_id": "alice-id",
+                        "user_id": "user-alice",
+                        "name": "Alice",
+                        "handle": "alice",
+                        "full_handle": "alice.example.com",
+                        "is_default": true,
+                        "identity_custody_backend": "anp_identity",
+                        "anp_identity_store_id": store_id,
+                        "anp_identity_id": identity_id,
+                        "anp_identity_auth_ref": auth_ref,
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn anp_identity_spec(name: &str) -> anp_identity::DidCreateSpec {
+        anp_identity::DidCreateSpec {
+            profile: anp_identity::DidProfile::E1,
+            domain: "example.com".to_string(),
+            port: None,
+            path_segments: vec!["awiki".to_string(), name.to_string()],
+            capabilities: anp_identity::Capabilities { did_wba: true },
+            managed_keys: vec![
+                anp_identity::ManagedKeySpec {
+                    fragment: "root".to_string(),
+                    role: anp_identity::KeyRole::RootControl,
+                },
+                anp_identity::ManagedKeySpec {
+                    fragment: "device".to_string(),
+                    role: anp_identity::KeyRole::DeviceSigning,
+                },
+                anp_identity::ManagedKeySpec {
+                    fragment: "agreement".to_string(),
+                    role: anp_identity::KeyRole::E2eeAgreement,
+                },
+            ],
+            external_keys: Vec::new(),
+            services: Vec::new(),
+            agent_description_url: None,
+            extensions: vec![anp_identity::DidExtensionSpec::DeviceManifest(
+                anp_identity::DeviceManifestSpec {
+                    devices: vec![anp_identity::DeviceManifestEntrySpec {
+                        device_id: "device-a".to_string(),
+                        signing_key_id: "#device".to_string(),
+                        e2ee_key_id: "#agreement".to_string(),
+                        profiles: vec!["anp.core.binding.v1".to_string()],
+                    }],
+                },
+            )],
+        }
     }
 
     fn assert_registry_error_contains(err: crate::ImError, expected: &str) {

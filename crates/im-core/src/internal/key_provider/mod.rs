@@ -1,8 +1,10 @@
+mod anp_identity;
 mod did_auth;
 mod file;
 mod hosted;
 pub(crate) mod vault;
 
+pub(crate) use self::anp_identity::AnpIdentitySigner;
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedIdentitySigner;
 pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};
@@ -41,6 +43,10 @@ pub(crate) trait IdentitySigner: Send + Sync {
     }
 
     fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>>;
+
+    fn sign_device_assertion(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        self.sign(kid, message)
+    }
 
     fn sign_root(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>>;
 
