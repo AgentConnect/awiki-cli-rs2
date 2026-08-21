@@ -338,6 +338,12 @@ enum DaemonFixturePrepareFailureStage {
     BootstrapSendService,
     BootstrapSendAuthorization,
     BootstrapSendDeliveryFailed,
+    BootstrapSendPeer,
+    BootstrapSendIdentity,
+    BootstrapSendSerialization,
+    BootstrapSendLocalState,
+    BootstrapSendInvalidInput,
+    BootstrapSendUnsupported,
     BootstrapSendLocalOther,
 }
 
@@ -390,6 +396,12 @@ impl DaemonFixturePrepareFailureStage {
             Self::BootstrapSendService => "bootstrap_send_service",
             Self::BootstrapSendAuthorization => "bootstrap_send_authorization",
             Self::BootstrapSendDeliveryFailed => "bootstrap_send_delivery_failed",
+            Self::BootstrapSendPeer => "bootstrap_send_peer",
+            Self::BootstrapSendIdentity => "bootstrap_send_identity",
+            Self::BootstrapSendSerialization => "bootstrap_send_serialization",
+            Self::BootstrapSendLocalState => "bootstrap_send_local_state",
+            Self::BootstrapSendInvalidInput => "bootstrap_send_invalid_input",
+            Self::BootstrapSendUnsupported => "bootstrap_send_unsupported",
             Self::BootstrapSendLocalOther => "bootstrap_send_local_other",
         }
     }
@@ -562,6 +574,32 @@ fn daemon_bootstrap_send_failure_stage(
         | im_core::ImError::SessionExpired
         | im_core::ImError::PermissionDenied => {
             DaemonFixturePrepareFailureStage::BootstrapSendAuthorization
+        }
+        im_core::ImError::PeerNotFound { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendPeer
+        }
+        im_core::ImError::IdentityRequired
+        | im_core::ImError::IdentityNotFound { .. }
+        | im_core::ImError::IdentityNotReady { .. }
+        | im_core::ImError::IdentityUnresolved { .. }
+        | im_core::ImError::IdentityBindingConflict { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendIdentity
+        }
+        im_core::ImError::Serialization { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendSerialization
+        }
+        im_core::ImError::LocalStateUnavailable { .. }
+        | im_core::ImError::LocalStateUpgradeRequired { .. }
+        | im_core::ImError::LocalStateUpgradeInProgress
+        | im_core::ImError::LocalStateUpgradeFailed { .. }
+        | im_core::ImError::LocalProjectionUnavailable { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendLocalState
+        }
+        im_core::ImError::InvalidInput { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendInvalidInput
+        }
+        im_core::ImError::UnsupportedCapability { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendUnsupported
         }
         _ => DaemonFixturePrepareFailureStage::BootstrapSendLocalOther,
     }
@@ -5310,6 +5348,12 @@ mod tests {
         assert_eq!(
             daemon_bootstrap_send_failure_stage(&im_core::ImError::PermissionDenied),
             DaemonFixturePrepareFailureStage::BootstrapSendAuthorization
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::PeerNotFound {
+                peer: "redacted".to_owned(),
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendPeer
         );
     }
 
