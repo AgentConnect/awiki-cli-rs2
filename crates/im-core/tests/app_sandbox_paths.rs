@@ -473,26 +473,42 @@ mod app_sandbox_paths {
             fs::create_dir_all(&identity_dir).unwrap();
 
             let did = format!("did:example:{alias}");
+            let key_id = format!("{did}#key-1");
+            let private_key = anp::PrivateKeyMaterial::Ed25519(
+                ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng),
+            );
+            let public_key_multibase = match private_key.public_key() {
+                anp::PublicKeyMaterial::Ed25519(key) => {
+                    let mut bytes = vec![0xed, 0x01];
+                    bytes.extend_from_slice(&key.to_bytes());
+                    format!("z{}", bs58::encode(bytes).into_string())
+                }
+                _ => unreachable!("test request-signing key must be Ed25519"),
+            };
+            let document = serde_json::json!({
+                "id": did,
+                "controller": did,
+                "verificationMethod": [{
+                    "id": key_id,
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": public_key_multibase,
+                }],
+                "authentication": [key_id],
+            });
+            let private_key_pem = private_key.to_pem();
             fs::write(
                 identity_dir.join("did.json"),
-                format!(r#"{{"id":"{did}","controller":"{did}"}}"#),
+                serde_json::to_vec(&document).unwrap(),
             )
             .unwrap();
             fs::write(
                 identity_dir.join("did_document.json"),
-                format!(r#"{{"id":"{did}","controller":"{did}"}}"#),
+                serde_json::to_vec(&document).unwrap(),
             )
             .unwrap();
-            fs::write(
-                identity_dir.join("private.key"),
-                format!("test-private-key-for-{alias}\n"),
-            )
-            .unwrap();
-            fs::write(
-                identity_dir.join("key-1-private.pem"),
-                format!("test-pem-private-key-for-{alias}\n"),
-            )
-            .unwrap();
+            fs::write(identity_dir.join("private.key"), &private_key_pem).unwrap();
+            fs::write(identity_dir.join("key-1-private.pem"), private_key_pem).unwrap();
             fs::write(
                 identity_dir.join("auth.json"),
                 format!(r#"{{"subject":"{did}","token":"test-token-for-{alias}"}}"#),
