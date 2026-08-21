@@ -1,16 +1,20 @@
 # Changelog
 
-## 0.1.5
+## 0.1.6
 
 - Add `completeRegistrationWithOutcome` so an existing Handle remains a structured, secret-free continuation instead of being collapsed into an error.
 - Add prepared registration Join activation so a Host can reuse the verified registration factor after explicit confirmation instead of sending another OTP.
+- Add Profile, complete group-member management, P9 mention, Payload send, and high-level durable group-rebind recovery APIs.
+- Add stable `group_not_member` and `group_identity_stale` error codes so product hosts can recover old groups after a Handle changes without parsing service text.
+- Raise the native API contract to v8 so wrappers reject binaries missing the new registration, recovery, Profile, group, mention, or Payload methods.
+- Run N-API futures on an addon-owned Tokio runtime with an 8 MiB worker stack and keep Payload sends behind the same boxed Core-future boundary as text and attachment sends.
+
+## 0.1.5
+
 - Add bounded realtime synchronization signals with explicit stream-close reconciliation.
 - Add the identity-bound on-demand mail account, inbox, read, mark-read, and send facade.
-- Add high-level durable group-rebind recovery and stable `group_not_member` / `group_identity_stale`
-  error codes so product hosts can recover old groups after a Handle changes without parsing service text.
 - Interpret timezone-less mail service timestamps as UTC before exposing canonical RFC 3339 values.
-- Raise the native API contract to v8 so wrappers reject binaries missing prepared registration Join, recovery, Profile, group, realtime, mail, or mention methods.
-- Run N-API futures on an addon-owned Tokio runtime with an 8 MiB worker stack and keep Payload sends behind the same boxed Core-future boundary as text and attachment sends.
+- Raise the native API contract to v5 so wrappers reject binaries missing realtime or mail methods.
 
 ## 0.1.4
 
