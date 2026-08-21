@@ -172,6 +172,10 @@ pub(crate) trait IdentitySigner: Send + Sync {
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()>;
 
+    fn reload_custody(&self) -> crate::ImResult<()> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
     /// Advances a live Vault-backed provider to the auth SecretRef committed
     /// by the identity index. Non-Vault providers cannot participate in this
     /// local vNext convergence operation.

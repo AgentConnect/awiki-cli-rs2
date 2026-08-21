@@ -464,6 +464,10 @@ impl super::IdentitySigner for AnpIdentitySigner {
         }
     }
 
+    fn reload_custody(&self) -> crate::ImResult<()> {
+        self.reload()
+    }
+
     fn advance_vault_auth_ref(&self, committed: &SecretRef) -> crate::ImResult<()> {
         if self.lock_identity()?.state() != anp_identity::IdentityState::Active {
             return Err(crate::ImError::PermissionDenied);

@@ -1,14 +1,13 @@
 //! Receiver-only RootKeyEnvelope validation and crash coordinator.
 //!
 //! This module is deliberately below the message projection boundary. It
-//! stores canonical root DER only in the encrypted pending Vault kind and
+//! imports canonical root DER directly into anp-identity pending custody and
 //! keeps SQLite state secret-free.
 
 use anp::direct_e2ee::{
     V2DirectBody, V2DirectMetadata, V2DirectSessionState, V2SecretJsonPayload,
     DIRECT_E2EE_PROFILE_V2, V2_SESSION_STATUS_ESTABLISHED,
 };
-use base64::engine::general_purpose::STANDARD;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
@@ -24,12 +23,6 @@ use crate::internal::identity_device_join_runtime::{
 };
 use crate::internal::identity_device_state::{
     DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityDeviceMode,
-};
-use crate::internal::platform_secret::SecretBytes;
-use crate::internal::secret_vault::{
-    policy::SecretAccessPolicy,
-    record::{SecretKind, SecretMetadata, SecretRef},
-    SealIfAbsentResult, SealSecretRequest,
 };
 use crate::internal::secure_direct::v2_runtime::{
     V2EstablishedDirectRuntime, V2ValidatedSecretInboundOutcome,
@@ -250,6 +243,14 @@ pub(crate) struct RootImportSealedPlan {
     document_hash: String,
     registry_version: u64,
     now: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RootImportCustodyRef {
+    pub(crate) store_id: String,
+    pub(crate) identity_id: String,
+    pub(crate) did: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -615,7 +616,7 @@ struct CompletionRecord {
     recipient_e2ee_key_id: String,
     imported_at: String,
     expires_at: String,
-    pending_root_ref: SecretRef,
+    pending_root_ref: RootImportCustodyRef,
     root_key_id: String,
     root_fingerprint: String,
     document_version: u64,
@@ -930,7 +931,7 @@ async fn converge_completed_root_import(
 
     // Always replay the local promotion repair, including phase=promoted.
     // This closes both crash windows: index committed before coordinator and
-    // coordinator committed before pending Vault cleanup.
+    // coordinator committed before the local custody state was reloaded.
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
@@ -1167,31 +1168,9 @@ fn prepare_completion_params(
         return Err(crate::ImError::PermissionDenied);
     }
 
-    let vault = core
-        .inner()
-        .identity_vault()
-        .ok_or(crate::ImError::IdentityVault {
-            failure: crate::IdentityVaultFailure::Unavailable,
-        })?
-        .vault();
-    let opened = vault.open(&record.pending_root_ref)?;
-    let pending: PendingRootSecretV1 =
-        serde_json::from_slice(opened.expose_secret()).map_err(redacted_serialization)?;
-    let pending = Zeroizing::new(pending);
-    let canonical_pending = Zeroizing::new(
-        serde_json_canonicalizer::to_vec(&*pending).map_err(redacted_serialization)?,
-    );
-    if canonical_pending.as_slice() != opened.expose_secret()
-        || pending.schema_version != 1
-        || pending.did != record.did
-        || pending.message_id != record.message_id
-        || pending.sender_device_id != record.sender_device_id
-        || pending.recipient_device_id != record.recipient_device_id
-        || pending.sender_e2ee_key_id != record.sender_e2ee_key_id
-        || pending.recipient_e2ee_key_id != record.recipient_e2ee_key_id
-        || pending.root_key_id != record.root_key_id
-        || pending.root_public_key_fingerprint != record.root_fingerprint
-        || pending.envelope_expires_at != record.expires_at
+    if record.pending_root_ref.did != record.did
+        || record.pending_root_ref.store_id.trim().is_empty()
+        || record.pending_root_ref.identity_id.trim().is_empty()
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1216,17 +1195,13 @@ fn prepare_completion_params(
         "expires_at": record.expires_at.clone(),
         "nonce": nonce,
     });
-    let root_private = anp::PrivateKeyMaterial::from_pem(&pending.root_private_key_pkcs8_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    let signed_statement = anp::proof::generate_object_proof(
+    let signed_statement = crate::internal::identity_custody::sign_pending_completion_root_proof(
+        core,
+        &record.pending_root_ref,
+        &record.root_key_id,
         &statement,
-        &root_private,
-        &pending.root_key_id,
-        &pending.did,
         Some(record.imported_at.clone()),
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?;
-    drop(root_private);
+    )?;
 
     let device_key_id = local_device_entry(core, client)?
         .device_state
@@ -1360,22 +1335,6 @@ fn parse_completion_phase(value: &str) -> crate::ImResult<RootImportCompletionPh
     }
 }
 
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-#[serde(deny_unknown_fields)]
-struct PendingRootSecretV1 {
-    schema_version: u8,
-    did: String,
-    message_id: String,
-    root_key_id: String,
-    root_public_key_fingerprint: String,
-    sender_device_id: String,
-    recipient_device_id: String,
-    sender_e2ee_key_id: String,
-    recipient_e2ee_key_id: String,
-    envelope_expires_at: String,
-    root_private_key_pkcs8_pem: String,
-}
-
 pub(crate) fn validate_and_seal_pending_root(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
@@ -1398,56 +1357,42 @@ pub(crate) fn validate_and_seal_pending_root(
     let root_der = decode_canonical_root_der(&envelope.root_private_key_pkcs8_b64u)?;
     validate_root_key_material(envelope, document, &root_der)?;
 
-    let pending_ref = expected_pending_ref(&local_entry, client, &envelope.message_id)?;
-    let root_pem = canonical_root_pem(&root_der)?;
-    let pending_secret = Zeroizing::new(PendingRootSecretV1 {
-        schema_version: 1,
+    let pending_ref = RootImportCustodyRef {
+        store_id: local_entry
+            .anp_identity_store_id
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?,
+        identity_id: local_entry
+            .anp_identity_id
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?,
         did: envelope.did.clone(),
-        message_id: envelope.message_id.clone(),
-        root_key_id: envelope.root_key_id.clone(),
-        root_public_key_fingerprint: envelope.root_public_key_fingerprint.clone(),
-        sender_device_id: envelope.sender_device_id.clone(),
-        recipient_device_id: envelope.recipient_device_id.clone(),
-        sender_e2ee_key_id: envelope.sender_e2ee_key_id.clone(),
-        recipient_e2ee_key_id: envelope.recipient_e2ee_key_id.clone(),
-        envelope_expires_at: envelope.expires_at.clone(),
-        root_private_key_pkcs8_pem: root_pem.to_string(),
-    });
-    let pending_bytes = Zeroizing::new(
-        serde_json_canonicalizer::to_vec(&*pending_secret).map_err(redacted_serialization)?,
-    );
-    let vault = core
-        .inner()
-        .identity_vault()
-        .ok_or(crate::ImError::IdentityVault {
-            failure: crate::IdentityVaultFailure::Unavailable,
-        })?
-        .vault();
-    let sealed = vault.seal_if_absent(SealSecretRequest {
-        metadata: SecretMetadata {
-            workspace_id: pending_ref.workspace_id.clone(),
-            device_id: pending_ref.device_id.clone(),
-            identity_id: pending_ref.identity_id.clone(),
-            did: pending_ref.did.clone(),
-            kind: SecretKind::IdentityRootImportPending,
-            key_id: pending_ref.key_id.clone(),
-            key_version: 1,
-            policy: SecretAccessPolicy::no_prompt_local_secret(),
-        },
-        plaintext: SecretBytes::from_vec(pending_bytes.to_vec()),
-    })?;
-    let actual_ref = match sealed {
-        SealIfAbsentResult::Sealed(secret_ref) | SealIfAbsentResult::AlreadyExists(secret_ref) => {
-            secret_ref
-        }
     };
-    if actual_ref != pending_ref {
+    if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
+        || local_entry.did != envelope.did
+    {
         return Err(crate::ImError::PermissionDenied);
     }
-    let opened = vault.open(&pending_ref)?;
-    if opened.expose_secret() != pending_bytes.as_slice() {
-        return Err(crate::ImError::PermissionDenied);
-    }
+    crate::internal::identity_custody::import_legacy_completion_root(
+        core,
+        &pending_ref,
+        anp_identity::LegacyRootTransferEvidence {
+            transfer_id: envelope.message_id.clone(),
+            source_did: envelope.did.clone(),
+            target_did: envelope.did.clone(),
+            sender_device_id: envelope.sender_device_id.clone(),
+            recipient_device_id: envelope.recipient_device_id.clone(),
+            recipient_agreement_kid: envelope.recipient_e2ee_key_id.clone(),
+            root_kid: envelope.root_key_id.clone(),
+            checkpoint: anp_identity::DocumentCheckpoint {
+                document_version: envelope.document_version,
+                registry_version: envelope.registry_version,
+                document_digest: envelope.document_hash.clone(),
+            },
+            accepted_at: imported_at.clone(),
+        },
+        root_der,
+    )?;
     Ok(RootImportSealedPlan {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
@@ -1826,20 +1771,6 @@ fn validate_root_key_material(
     Ok(())
 }
 
-fn canonical_root_pem(der: &[u8]) -> crate::ImResult<Zeroizing<String>> {
-    if der.len() != 48 || der[..ED25519_PKCS8_PREFIX.len()] != ED25519_PKCS8_PREFIX {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let encoded = Zeroizing::new(STANDARD.encode(der));
-    if encoded.len() != 64 {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(Zeroizing::new(format!(
-        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
-        encoded.as_str()
-    )))
-}
-
 fn decode_canonical_root_der(value: &str) -> crate::ImResult<Zeroizing<Vec<u8>>> {
     if value.len() != 64 || value.contains('=') {
         return Err(crate::ImError::PermissionDenied);
@@ -1853,35 +1784,6 @@ fn decode_canonical_root_der(value: &str) -> crate::ImResult<Zeroizing<Vec<u8>>>
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(decoded)
-}
-
-fn expected_pending_ref(
-    entry: &crate::internal::identity_store::IndexEntry,
-    client: &crate::core::ImClient,
-    message_id: &str,
-) -> crate::ImResult<SecretRef> {
-    let anchor = entry
-        .vault_migration
-        .as_ref()
-        .and_then(|metadata| metadata.vnext_refs.as_ref())
-        .map(|refs| &refs.device_request_signing_private)
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let mut hasher = Sha256::new();
-    hasher.update(client.did().as_str().as_bytes());
-    hasher.update([0]);
-    hasher.update(message_id.as_bytes());
-    let key_id = format!("root-import-pending:{}", hex_lower(&hasher.finalize()));
-    Ok(SecretMetadata {
-        workspace_id: anchor.workspace_id.clone(),
-        device_id: anchor.device_id.clone(),
-        identity_id: anchor.identity_id.clone(),
-        did: anchor.did.clone(),
-        kind: SecretKind::IdentityRootImportPending,
-        key_id,
-        key_version: 1,
-        policy: SecretAccessPolicy::no_prompt_local_secret(),
-    }
-    .secret_ref())
 }
 
 fn unique_method<'a>(document: &'a Value, key_id: &str) -> crate::ImResult<&'a Value> {

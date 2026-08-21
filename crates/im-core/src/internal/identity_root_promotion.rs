@@ -1,37 +1,33 @@
 //! Crash-repairable finalization for a verified root-key import.
 //!
-//! This module joins the encrypted Vault transition, atomic identity-index
-//! transition, local sync-account authorization generation and secret-free
-//! SQLite coordinator transition. It does not interpret wire input and never
-//! exposes the pending Vault kind through a key provider.
+//! This module joins the anp-identity root-capability transition, local
+//! identity projection, sync-account authorization generation and secret-free
+//! SQLite coordinator transition. It does not interpret wire input.
 
 use crate::internal::identity_device_state::IdentityInternalCheckpoint;
-use crate::internal::identity_store::{
-    IdentityStore, PromoteVerifiedRootImportInput, RootImportPromotionResult,
-    SaveIdentitySecretStorage,
-};
-use crate::internal::secret_vault::record::SecretRef;
+use crate::internal::identity_store::IdentityStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RootImportPromotionRequest {
     pub(crate) completed_message_id: String,
     pub(crate) auth_generation: u64,
     pub(crate) checkpoint: IdentityInternalCheckpoint,
-    pub(crate) pending_root_ref: SecretRef,
+    pub(crate) pending_root_ref:
+        crate::internal::identity_root_import_completion::RootImportCustodyRef,
     pub(crate) root_key_id: String,
     pub(crate) root_public_key_fingerprint: String,
 }
 
 /// Replays the same exact transition after a process crash. It repairs:
 ///
-/// - active Vault present while the index is still a member projection;
+/// - active root capability present while the index is still a member projection;
 /// - index promoted while the coordinator remains `registry_confirmed`;
-/// - coordinator promoted while the pending Vault record remains.
+/// - coordinator promoted while a long-lived client still has stale custody state.
 pub(crate) fn repair_root_import_promotion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     request: RootImportPromotionRequest,
-) -> crate::ImResult<RootImportPromotionResult> {
+) -> crate::ImResult<()> {
     converge_root_import_promotion(core, client, request)
 }
 
@@ -39,11 +35,12 @@ fn converge_root_import_promotion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     request: RootImportPromotionRequest,
-) -> crate::ImResult<RootImportPromotionResult> {
+) -> crate::ImResult<()> {
     if request.completed_message_id.trim().is_empty()
         || request.auth_generation == 0
-        || request.pending_root_ref.kind
-            != crate::internal::secret_vault::record::SecretKind::IdentityRootImportPending
+        || request.pending_root_ref.store_id.trim().is_empty()
+        || request.pending_root_ref.identity_id.trim().is_empty()
+        || request.pending_root_ref.did != client.did().as_str()
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -68,22 +65,47 @@ fn converge_root_import_promotion(
         .as_deref()
         .unwrap_or(owner_identity_id)
         .to_owned();
-    let secret_storage = SaveIdentitySecretStorage::from_core(core)?;
-    let mut result = IdentityStore::new(&core.inner().sdk_paths().identities)
-        .promote_verified_root_import(PromoteVerifiedRootImportInput {
-            local_alias,
-            completed_message_id: request.completed_message_id.clone(),
-            pending_root_ref: request.pending_root_ref.clone(),
-            root_key_id: request.root_key_id.clone(),
-            root_public_key_fingerprint: request.root_public_key_fingerprint.clone(),
-            auth_generation: request.auth_generation,
-            checkpoint: request.checkpoint.clone(),
-            secret_storage: secret_storage.clone(),
-        })?;
-    client
-        .runtime()
-        .key_provider
-        .advance_vault_root_ref(&result.active_root_ref)?;
+    let store = IdentityStore::new(&core.inner().sdk_paths().identities);
+    let index = store.load_index()?;
+    let entry = index
+        .credentials
+        .get(&local_alias)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if entry.identity_custody_backend.as_deref() != Some("anp_identity")
+        || entry.anp_identity_store_id.as_deref()
+            != Some(request.pending_root_ref.store_id.as_str())
+        || entry.anp_identity_id.as_deref() != Some(request.pending_root_ref.identity_id.as_str())
+        || entry.did != request.pending_root_ref.did
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let document = client.runtime().key_provider.did_document()?;
+    if crate::internal::identity_wire::document::document_hash(&document)?
+        != request.checkpoint.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    crate::internal::identity_custody::confirm_completion_root(
+        core,
+        &request.pending_root_ref,
+        &document,
+        &request.checkpoint,
+    )?;
+    let mut state = entry
+        .device_state
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization = state
+        .authorization
+        .as_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    authorization.role = crate::internal::identity_device_state::DeviceAuthorizationRole::Admin;
+    authorization.management_ready = true;
+    authorization.auth_generation = request.auth_generation;
+    state.checkpoint = Some(request.checkpoint.clone());
+    state.validate_for_did(client.did())?;
+    store.save_device_state(&local_alias, state)?;
+    client.runtime().key_provider.reload_custody()?;
 
     mark_coordinator_promoted(
         &connection,
@@ -94,13 +116,7 @@ fn converge_root_import_promotion(
         request.auth_generation,
     )?;
 
-    let SaveIdentitySecretStorage::Vault { vault, .. } = secret_storage else {
-        return Err(crate::ImError::PermissionDenied);
-    };
-    if vault.delete(&request.pending_root_ref).is_ok() {
-        result.pending_cleanup_required = false;
-    }
-    Ok(result)
+    Ok(())
 }
 
 fn require_exact_registry_confirmed_coordinator(
@@ -128,11 +144,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3
                 owner_identity_id,
                 local_device_id,
                 request.completed_message_id,
-                request
-                    .pending_root_ref
-                    .did
-                    .as_deref()
-                    .ok_or(crate::ImError::PermissionDenied)?,
+                request.pending_root_ref.did,
                 pending_ref_json,
                 request.root_key_id,
                 request.root_public_key_fingerprint,

@@ -602,6 +602,80 @@ pub(crate) fn promote_legacy_upgrade_root(
     Ok(())
 }
 
+pub(crate) fn import_legacy_completion_root(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+    evidence: anp_identity::LegacyRootTransferEvidence,
+    root_key: zeroize::Zeroizing<Vec<u8>>,
+) -> crate::ImResult<()> {
+    let mut identity = open_root_import_identity(core, reference)?;
+    let outcome = identity
+        .import_legacy_root_transfer(anp_identity::LegacyRootTransferImportSpec {
+            evidence,
+            encoding: anp_identity::PrivateKeyEncoding::Pkcs8Der,
+            root_key,
+        })
+        .map_err(map_error)?;
+    if !matches!(
+        outcome,
+        anp_identity::RootTransferImportOutcome::Pending
+            | anp_identity::RootTransferImportOutcome::Active
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+pub(crate) fn sign_pending_completion_root_proof(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+    root_key_id: &str,
+    statement: &serde_json::Value,
+    created: Option<String>,
+) -> crate::ImResult<serde_json::Value> {
+    open_root_import_identity(core, reference)?
+        .sign_pending_root_object_proof(root_key_id, statement, &reference.did, created)
+        .map_err(map_error)
+}
+
+pub(crate) fn confirm_completion_root(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    let mut identity = open_root_import_identity(core, reference)?;
+    identity
+        .confirm_root_promotion(anp_identity::RootPromotionSpec {
+            document: document.clone(),
+            evidence: anp_identity::VerifiedDocumentEvidence {
+                document_version: checkpoint.document_version,
+                registry_version: checkpoint.registry_version,
+                document_digest: checkpoint.document_hash.clone(),
+            },
+        })
+        .map_err(map_error)?;
+    if identity.root_capability() != anp_identity::RootCapabilityState::Active {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn open_root_import_identity(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+) -> crate::ImResult<anp_identity::DidIdentity> {
+    let store = open_controller_store(core)?;
+    if store.manifest().store_id != reference.store_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let identity = store.open_identity(&reference.did).map_err(map_error)?;
+    if identity.identity_id() != reference.identity_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(identity)
+}
+
 fn open_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -1209,6 +1283,102 @@ mod tests {
         managed
             .sign_device_assertion(&identity.signing_key_id, b"device")
             .unwrap();
+    }
+
+    #[test]
+    fn completion_root_import_keeps_proof_and_promotion_inside_custody() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let legacy = crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
+            "example.test",
+            "completion",
+            None,
+            None,
+        )
+        .unwrap()
+        .identity;
+        let signer = RootSigner {
+            document: legacy.did_document.clone(),
+            kid: format!("{}#key-1", legacy.did.as_str()),
+            private_pem: legacy.key1_private_pem.clone(),
+        };
+        let (custody, enrollment) =
+            prepare_join_enrollment(&core, &legacy.did, &legacy.did_document).unwrap();
+        let target = crate::internal::identity_legacy_upgrade::build_custodied_legacy_upgrade(
+            &legacy.did_document,
+            custody.clone(),
+            &enrollment,
+            &signer,
+        )
+        .unwrap();
+        let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+            document_version: 2,
+            document_hash: crate::internal::identity_wire::document::document_hash(
+                &target.target_document,
+            )
+            .unwrap(),
+            registry_version: 2,
+        };
+        adopt_join_identity(
+            &core,
+            &target.did,
+            &custody,
+            &target.target_document,
+            &checkpoint,
+        )
+        .unwrap();
+        let reference = crate::internal::identity_root_import_completion::RootImportCustodyRef {
+            store_id: custody.store_id,
+            identity_id: custody.identity_id,
+            did: target.did.as_str().to_owned(),
+        };
+        let root_der = zeroize::Zeroizing::new(
+            crate::internal::identity_root_transfer_runtime::canonical_ed25519_pkcs8_der(
+                &legacy.key1_private_pem,
+            )
+            .unwrap(),
+        );
+        import_legacy_completion_root(
+            &core,
+            &reference,
+            anp_identity::LegacyRootTransferEvidence {
+                transfer_id: "completion-message".to_owned(),
+                source_did: target.did.as_str().to_owned(),
+                target_did: target.did.as_str().to_owned(),
+                sender_device_id: "sender-device".to_owned(),
+                recipient_device_id: target.protocol_device_id.as_str().to_owned(),
+                recipient_agreement_kid: target.e2ee_key_id.clone(),
+                root_kid: format!("{}#key-1", target.did.as_str()),
+                checkpoint: anp_identity::DocumentCheckpoint {
+                    document_version: checkpoint.document_version,
+                    registry_version: checkpoint.registry_version,
+                    document_digest: checkpoint.document_hash.clone(),
+                },
+                accepted_at: "2026-08-21T00:00:00Z".to_owned(),
+            },
+            root_der,
+        )
+        .unwrap();
+        let statement = serde_json::json!({"type": "root-possession"});
+        let proof = sign_pending_completion_root_proof(
+            &core,
+            &reference,
+            &format!("{}#key-1", target.did.as_str()),
+            &statement,
+            Some("2026-08-21T00:00:00Z".to_owned()),
+        )
+        .unwrap();
+        anp::proof::verify_object_proof(&proof, target.did.as_str(), &target.target_document)
+            .unwrap();
+        confirm_completion_root(&core, &reference, &target.target_document, &checkpoint).unwrap();
+        assert_eq!(
+            open_controller_store(&core)
+                .unwrap()
+                .open_identity(target.did.as_str())
+                .unwrap()
+                .root_capability(),
+            anp_identity::RootCapabilityState::Active
+        );
     }
 
     fn test_config() -> crate::ImCoreConfig {
