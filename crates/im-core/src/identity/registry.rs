@@ -1553,6 +1553,37 @@ impl IdentityRegistry<'_> {
     }
 
     fn vnext_local_key_state(&self, entry: &RegistryEntry) -> (bool, Option<String>) {
+        let has_anp_binding = entry.identity_custody_backend.is_some()
+            || entry.anp_identity_store_id.is_some()
+            || entry.anp_identity_id.is_some();
+        if has_anp_binding {
+            let Some(dir_name) = entry.identity_dir_name() else {
+                return (false, Some("identity_directory_missing".to_owned()));
+            };
+            let identity_dir = match local_identity_dir(
+                &self.core.inner().sdk_paths().identities.identity_root_dir,
+                &dir_name,
+            ) {
+                Ok(path) => path,
+                Err(_) => return (false, Some("identity_directory_invalid".to_owned())),
+            };
+            let provider =
+                match self.key_provider_for_entry(identity_dir, Some(entry), &entry.summary) {
+                    Ok(provider) => provider,
+                    Err(_) => return (false, Some("anp_identity_custody_unavailable".to_owned())),
+                };
+            if provider.ensure_request_signing_available().is_err()
+                || provider.ensure_agreement_available().is_err()
+                || provider.auth_state().is_err()
+            {
+                return (
+                    false,
+                    Some("anp_identity_device_material_unavailable".to_owned()),
+                );
+            }
+            return (provider.ensure_root_control_available().is_ok(), None);
+        }
+
         let Some(metadata) = entry.vault_migration.as_ref() else {
             return (false, Some("identity_vault_metadata_missing".to_owned()));
         };
@@ -3752,6 +3783,17 @@ mod tests {
             crate::identity::IdentitySecretStorageBackend::Vault
         );
         assert_eq!(report.identity.did, did);
+
+        let device = core
+            .identities()
+            .device_summary(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+        assert_eq!(
+            device.readiness,
+            crate::identity::IdentityDeviceReadiness::AdminReady
+        );
 
         let repeated = core
             .identities()
