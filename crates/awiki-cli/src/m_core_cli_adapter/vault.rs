@@ -195,7 +195,7 @@ pub fn identity_vault_migrate_via_im_core(
     let core = super::build_im_core(resolved)?;
     let report = core
         .identities()
-        .migrate_identity_vault(selector)
+        .migrate_legacy_identity_to_vault(selector)
         .map_err(|err| super::map_im_error(err, "id vault migrate"))?;
     Ok(vault_migration_result(report, &plan))
 }
@@ -216,7 +216,7 @@ pub async fn identity_vault_migrate_via_im_core_async(
     let core = super::build_im_core_async(resolved).await?;
     let report = core
         .identities()
-        .migrate_identity_vault_async(selector)
+        .migrate_legacy_identity_to_vault_async(selector)
         .await
         .map_err(|err| super::map_im_error(err, "id vault migrate"))?;
     Ok(vault_migration_result(report, &plan))

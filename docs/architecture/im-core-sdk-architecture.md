@@ -673,6 +673,12 @@ key/document binding, atomically write the complete workspace cutover marker,
 then perform idempotent cleanup. No legacy key record is deleted before marker
 commit.
 
+The migration-gated CLI command `id vault migrate` remains a legacy AWiki-vault
+bridge for old operator/test workspaces and refuses an existing ANP custody
+binding. Product and SDK identity migration use `migrate_identity_custody` (or
+the deprecated Rust/Dart `migrate_identity_vault` compatibility name), which
+performs the old-to-ANP workspace cutover described above.
+
 `identity_custody_status` is the authoritative safe status surface. It reports
 the custody backend/state, readiness, root-control availability, pending state,
 opaque store/identity IDs and closed missing/warning lists without private key,

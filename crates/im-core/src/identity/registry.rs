@@ -652,7 +652,10 @@ impl<'a> IdentityRegistry<'a> {
                 || !migration.blockers.is_empty()
             {
                 return Err(crate::ImError::LocalStateUnavailable {
-                    detail: "identity custody migration is blocked".to_owned(),
+                    detail: format!(
+                        "identity custody migration is blocked: {}",
+                        migration.blockers.join("; ")
+                    ),
                 });
             }
         }
@@ -690,6 +693,82 @@ impl<'a> IdentityRegistry<'a> {
         let core = (*self.core).clone();
         crate::internal::runtime::worker::run_blocking(move || {
             IdentityRegistry::new(&core).migrate_identity_vault(selector)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
+    /// Legacy CLI migration-only bridge. Normal identity custody migration
+    /// must use `migrate_identity_custody` or `migrate_identity_vault`.
+    #[doc(hidden)]
+    #[allow(deprecated)]
+    pub fn migrate_legacy_identity_to_vault(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
+        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
+            crate::ImError::LocalStateUnavailable {
+                detail:
+                    "legacy identity vault migration requires identity secret vault open options"
+                        .to_owned(),
+            }
+        })?;
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        if entry.identity_custody_backend.is_some()
+            || entry.anp_identity_store_id.is_some()
+            || entry.anp_identity_id.is_some()
+        {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "legacy identity vault migration cannot run after ANP custody binding"
+                    .to_owned(),
+            });
+        }
+        let local_alias =
+            entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_owned(),
+                })?;
+        crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .migrate_identity_to_vault(
+            &local_alias,
+            context.workspace_id(),
+            context.vault_context_device_id().as_str(),
+            context.vault().as_ref(),
+        )?;
+        let status = self.vault_status(super::IdentitySelector::LocalAlias(local_alias))?;
+        self.verify_identity_vault_status(status, true)
+            .map(|verification| super::IdentityVaultMigrationReport {
+                plaintext_compat_retained: verification
+                    .status
+                    .plaintext_compat_retained
+                    .unwrap_or(false),
+                warnings: verification
+                    .warnings
+                    .into_iter()
+                    .chain(std::iter::once("legacy_vault_migration_only".to_owned()))
+                    .collect(),
+                identity: verification.identity,
+                status: verification.status,
+                migrated: true,
+                verified: verification.verified,
+            })
+    }
+
+    #[doc(hidden)]
+    pub async fn migrate_legacy_identity_to_vault_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).migrate_legacy_identity_to_vault(selector)
         })
         .await
         .map_err(|error| crate::ImError::Internal {
