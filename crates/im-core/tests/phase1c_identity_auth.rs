@@ -1116,16 +1116,36 @@ fn collect_text_files_inner(root: &Path, out: &mut String) {
 fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str, expires_at: &str) {
     let identity_dir = identities.join(alias);
     fs::create_dir_all(&identity_dir).unwrap();
+    let key_id = format!("{did}#key-1");
+    let private_key = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
+        &mut rand::rngs::OsRng,
+    ));
+    let public_key_multibase = match private_key.public_key() {
+        anp::PublicKeyMaterial::Ed25519(key) => {
+            let mut bytes = vec![0xed, 0x01];
+            bytes.extend_from_slice(&key.to_bytes());
+            format!("z{}", bs58::encode(bytes).into_string())
+        }
+        _ => unreachable!("test request-signing key must be Ed25519"),
+    };
+    let document = json!({
+        "id": did,
+        "controller": did,
+        "verificationMethod": [{
+            "id": key_id,
+            "type": "Multikey",
+            "controller": did,
+            "publicKeyMultibase": public_key_multibase,
+        }],
+        "authentication": [key_id],
+    });
+    let private_key_pem = private_key.to_pem();
     fs::write(
         identity_dir.join("did.json"),
-        format!(r#"{{"id":"{did}","controller":"{did}"}}"#),
+        serde_json::to_vec(&document).unwrap(),
     )
     .unwrap();
-    fs::write(
-        identity_dir.join("private.key"),
-        format!("test-private-key-for-{alias}\n"),
-    )
-    .unwrap();
+    fs::write(identity_dir.join("private.key"), private_key_pem).unwrap();
     fs::write(
         identity_dir.join("auth.json"),
         format!(r#"{{"jwt_token":"test-token-for-{alias}","expires_at":"{expires_at}"}}"#),
