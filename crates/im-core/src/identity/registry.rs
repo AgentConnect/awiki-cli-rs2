@@ -1367,7 +1367,7 @@ impl IdentityRegistry<'_> {
                         missing: vec!["anp_identity_id".to_owned()],
                     }
                 })?;
-                let store = open_controller_anp_identity_store(&self.core)?;
+                let store = open_controller_anp_identity_store(self.core)?;
                 if store.manifest().store_id != expected_store_id {
                     return Err(crate::ImError::PermissionDenied);
                 }

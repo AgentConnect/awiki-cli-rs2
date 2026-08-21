@@ -126,6 +126,86 @@ impl std::fmt::Debug for SaveIdentitySecretStorage {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct AnpIdentityProjectionStorage {
+    pub(crate) store_id: String,
+    pub(crate) identity_id: String,
+    auth: AnpIdentityProjectionAuth,
+}
+
+#[derive(Clone)]
+enum AnpIdentityProjectionAuth {
+    FileCompat,
+    Vault {
+        workspace_id: String,
+        device_id: String,
+        vault: Arc<dyn crate::internal::secret_vault::SecretVault + Send + Sync>,
+    },
+}
+
+impl AnpIdentityProjectionStorage {
+    pub(crate) fn from_core(
+        core: &crate::core::ImCore,
+        store_id: impl Into<String>,
+        identity_id: impl Into<String>,
+    ) -> crate::ImResult<Self> {
+        let store_id = store_id.into();
+        let identity_id = identity_id.into();
+        if store_id.trim().is_empty() || identity_id.trim().is_empty() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let auth = match core.inner().identity_secret_storage_policy() {
+            crate::core::IdentitySecretStoragePolicy::FileCompat => {
+                AnpIdentityProjectionAuth::FileCompat
+            }
+            crate::core::IdentitySecretStoragePolicy::VaultPreferred => {
+                match core.inner().identity_vault() {
+                    Some(context) => AnpIdentityProjectionAuth::Vault {
+                        workspace_id: context.workspace_id().to_owned(),
+                        device_id: context.vault_context_device_id().as_str().to_owned(),
+                        vault: context.vault(),
+                    },
+                    None => AnpIdentityProjectionAuth::FileCompat,
+                }
+            }
+            crate::core::IdentitySecretStoragePolicy::VaultRequired => {
+                let context = core.inner().identity_vault().ok_or_else(|| {
+                    crate::ImError::LocalStateUnavailable {
+                        detail: "VaultRequired requires an identity auth vault".to_string(),
+                    }
+                })?;
+                AnpIdentityProjectionAuth::Vault {
+                    workspace_id: context.workspace_id().to_owned(),
+                    device_id: context.vault_context_device_id().as_str().to_owned(),
+                    vault: context.vault(),
+                }
+            }
+        };
+        Ok(Self {
+            store_id,
+            identity_id,
+            auth,
+        })
+    }
+}
+
+impl std::fmt::Debug for AnpIdentityProjectionStorage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AnpIdentityProjectionStorage")
+            .field("store_id", &self.store_id)
+            .field("identity_id", &self.identity_id)
+            .field(
+                "auth",
+                &match &self.auth {
+                    AnpIdentityProjectionAuth::FileCompat => "file-compat",
+                    AnpIdentityProjectionAuth::Vault { .. } => "vault",
+                },
+            )
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredIdentity {
     pub(crate) local_alias: String,
@@ -252,6 +332,154 @@ impl<'a> IdentityStore<'a> {
         input: SaveIdentityInput,
     ) -> crate::ImResult<StoredIdentity> {
         self.save_identity_with_secret_storage(input, SaveIdentitySecretStorage::FileCompat)
+    }
+
+    pub(crate) fn save_anp_identity_projection(
+        &self,
+        mut input: SaveIdentityInput,
+        storage: AnpIdentityProjectionStorage,
+    ) -> crate::ImResult<StoredIdentity> {
+        validate_anp_projection_input(&input, &storage)?;
+        let lock = self.lock_index_mutation()?;
+        let local_alias = sanitize_identity_name(&input.local_alias);
+        if local_alias.is_empty() || input.unique_id.trim().is_empty() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(state) = input.device_state.as_ref() {
+            state.validate_for_did(&input.did)?;
+        }
+        let (handle, full_handle) =
+            stored_handle_fields(&input.handle, &input.full_handle, input.did.as_str());
+        input.handle = handle;
+        input.full_handle = full_handle;
+        let mut index = self.load_index()?;
+        if let Some(existing) = index.credentials.get(&local_alias) {
+            let same_binding = existing.identity_custody_backend.as_deref() == Some("anp_identity")
+                && existing.anp_identity_store_id.as_deref() == Some(storage.store_id.as_str())
+                && existing.anp_identity_id.as_deref() == Some(storage.identity_id.as_str())
+                && existing.did == input.did.as_str();
+            if !same_binding {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        let dir_name = preferred_dir_name(&input.unique_id)?;
+        for (name, entry) in &index.credentials {
+            if name != &local_alias
+                && (entry.dir_name == dir_name
+                    || entry.did == input.did.as_str()
+                    || entry.anp_identity_id.as_deref() == Some(storage.identity_id.as_str()))
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        input.binding_generation = merge_identity_binding_generation(
+            index.credentials.get(&local_alias),
+            input.did.as_str(),
+            input.binding_generation.as_deref(),
+        )?;
+        let identity_dir = self.local_identity_dir(&dir_name)?;
+        let created_at = index
+            .credentials
+            .get(&local_alias)
+            .map(|entry| entry.created_at.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(now_rfc3339);
+        fs::create_dir_all(&self.paths.identity_root_dir)?;
+        set_private_dir_mode(&self.paths.identity_root_dir)?;
+        fs::create_dir_all(&identity_dir)?;
+        set_private_dir_mode(&identity_dir)?;
+        remove_known_plaintext_secret_files(&identity_dir)?;
+        write_secure_json(
+            &identity_dir.join(IDENTITY_FILE_NAME),
+            &IdentityPayload {
+                did: input.did.as_str().to_string(),
+                unique_id: input.unique_id.clone(),
+                created_at: created_at.clone(),
+                user_id: input.user_id.clone(),
+                display_name: input.display_name.clone(),
+                handle: input.handle.clone(),
+                full_handle: input.full_handle.clone(),
+                binding_generation: input.binding_generation.clone(),
+            },
+        )?;
+        write_secure_json(
+            &identity_dir.join(DID_DOCUMENT_FILE_NAME),
+            input
+                .did_document
+                .as_ref()
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )?;
+        let auth_ref = match &storage.auth {
+            AnpIdentityProjectionAuth::FileCompat => {
+                write_secure_json(
+                    &identity_dir.join(AUTH_FILE_NAME),
+                    &json!({ "jwt_token": nullable_string(&input.jwt_token) }),
+                )?;
+                None
+            }
+            AnpIdentityProjectionAuth::Vault {
+                workspace_id,
+                device_id,
+                vault,
+            } => {
+                let auth_ref =
+                    seal_anp_projection_auth(&input, workspace_id, device_id, vault.as_ref())?;
+                remove_file_if_exists(&identity_dir.join(AUTH_FILE_NAME))?;
+                Some(auth_ref)
+            }
+        };
+        remove_file_if_exists(&identity_dir.join(KEY1_PUBLIC_FILE_NAME))?;
+        remove_file_if_exists(&identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME))?;
+        if input.make_default || index.default_credential_name.is_empty() {
+            index.default_credential_name = local_alias.clone();
+        }
+        let is_default = index.default_credential_name == local_alias;
+        let binding_generation = input.binding_generation.clone();
+        index.credentials.insert(
+            local_alias.clone(),
+            IndexEntry {
+                credential_name: local_alias.clone(),
+                dir_name: dir_name.clone(),
+                did: input.did.as_str().to_string(),
+                unique_id: input.unique_id.clone(),
+                user_id: input.user_id.clone(),
+                name: input.display_name.clone(),
+                handle: input.handle.clone(),
+                full_handle: input.full_handle.clone(),
+                binding_generation: binding_generation.clone(),
+                created_at: created_at.clone(),
+                is_default,
+                vault_migration: None,
+                identity_custody_backend: Some("anp_identity".to_string()),
+                anp_identity_store_id: Some(storage.store_id),
+                anp_identity_id: Some(storage.identity_id),
+                anp_identity_auth_ref: auth_ref,
+                device_state: input.device_state,
+            },
+        );
+        self.save_index_locked(&lock, index)?;
+        if is_default {
+            self.write_default_identity(&local_alias)?;
+        }
+        Ok(StoredIdentity {
+            local_alias,
+            dir_name,
+            did: input.did,
+            unique_id: input.unique_id,
+            user_id: input.user_id,
+            display_name: input.display_name,
+            handle: input.handle,
+            full_handle: input.full_handle,
+            binding_generation,
+            created_at,
+            jwt_token: input.jwt_token,
+            is_default,
+            has_did_document: true,
+            has_key1_private: false,
+            has_key1_public: false,
+            has_e2ee_signing_private: false,
+            has_e2ee_agreement_private: false,
+        })
     }
 
     pub(crate) fn save_identity_with_secret_storage(
@@ -2818,6 +3046,54 @@ fn identity_auth_state_raw(token: &str, allow_missing_auth: bool) -> crate::ImRe
     crate::internal::auth::state::auth_state_json_for_token(token)
 }
 
+fn validate_anp_projection_input(
+    input: &SaveIdentityInput,
+    storage: &AnpIdentityProjectionStorage,
+) -> crate::ImResult<()> {
+    if storage.store_id.trim().is_empty()
+        || storage.identity_id.trim().is_empty()
+        || input
+            .did_document
+            .as_ref()
+            .and_then(|document| document.get("id").and_then(Value::as_str))
+            != Some(input.did.as_str())
+        || !input.key1_private_pem.is_empty()
+        || !input.key1_public_pem.is_empty()
+        || !input.e2ee_signing_private_pem.is_empty()
+        || !input.e2ee_agreement_private_pem.is_empty()
+        || input.daemon_subkey_package.is_some()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn seal_anp_projection_auth(
+    input: &SaveIdentityInput,
+    workspace_id: &str,
+    device_id: &str,
+    vault: &dyn crate::internal::secret_vault::SecretVault,
+) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
+    let auth_state_raw = identity_auth_state_raw(&input.jwt_token, false)?;
+    crate::internal::auth::state::parse_auth_state(&auth_state_raw)?;
+    let auth_ref = vault.seal(crate::internal::secret_vault::SealSecretRequest {
+        metadata: vault_secret_metadata(
+            workspace_id,
+            device_id,
+            input.unique_id.trim(),
+            input.did.as_str(),
+            crate::internal::secret_vault::record::SecretKind::AuthJwt,
+            AUTH_FILE_NAME,
+        ),
+        plaintext: crate::internal::platform_secret::SecretBytes::from_vec(auth_state_raw.clone()),
+    })?;
+    let opened = vault.open(&auth_ref)?;
+    if opened.expose_secret() != auth_state_raw.as_slice() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(auth_ref)
+}
+
 fn ensure_verified_vault_metadata_context(
     metadata: &IdentityVaultMigrationMetadata,
     workspace_id: &str,
@@ -3066,7 +3342,7 @@ mod tests {
     use super::*;
     use crate::internal::key_provider::IdentitySigner;
     use crate::internal::platform_secret::DeviceVaultRootKey;
-    use crate::internal::secret_vault::record::SecretRef;
+    use crate::internal::secret_vault::record::{SecretKind, SecretRef};
     use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore, SecretVault};
     use std::sync::Arc;
 
@@ -4823,6 +5099,109 @@ mod tests {
         assert!(refreshed.has_token);
         assert!(refreshed.has_valid_token);
         assert_eq!(refreshed.bearer_token.as_deref(), Some("e30.e30.signature"));
+    }
+
+    #[test]
+    fn anp_identity_projection_persists_only_public_binding_and_auth_storage() {
+        let file_root = tempfile::tempdir().unwrap();
+        let file_paths = test_paths(file_root.path());
+        let file_store = IdentityStore::new(&file_paths);
+        let file_input = anp_projection_input("alice", "did:example:alice", "alice-anp-id");
+        let stored = file_store
+            .save_anp_identity_projection(
+                file_input.clone(),
+                AnpIdentityProjectionStorage {
+                    store_id: "store-file".to_string(),
+                    identity_id: "custody-file".to_string(),
+                    auth: AnpIdentityProjectionAuth::FileCompat,
+                },
+            )
+            .unwrap();
+        assert!(!stored.has_key1_private);
+        assert!(!stored.has_e2ee_signing_private);
+        assert!(!stored.has_e2ee_agreement_private);
+        let entry = &file_store.load_index().unwrap().credentials["alice"];
+        assert_eq!(
+            entry.identity_custody_backend.as_deref(),
+            Some("anp_identity")
+        );
+        assert_eq!(entry.anp_identity_store_id.as_deref(), Some("store-file"));
+        assert_eq!(entry.anp_identity_id.as_deref(), Some("custody-file"));
+        assert!(entry.anp_identity_auth_ref.is_none());
+        let identity_dir = file_paths.identity_root_dir.join("alice-anp-id");
+        assert!(identity_dir.join(AUTH_FILE_NAME).exists());
+        for name in [
+            KEY1_PRIVATE_FILE_NAME,
+            KEY1_PUBLIC_FILE_NAME,
+            E2EE_SIGNING_PRIVATE_FILE_NAME,
+            E2EE_AGREEMENT_PRIVATE_FILE_NAME,
+        ] {
+            assert!(!identity_dir.join(name).exists());
+        }
+        assert_eq!(
+            file_store.save_identity(file_input).err(),
+            Some(crate::ImError::PermissionDenied)
+        );
+
+        let vault_root = tempfile::tempdir().unwrap();
+        let vault_paths = test_paths(vault_root.path());
+        let vault_store = IdentityStore::new(&vault_paths);
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([87_u8; 32]),
+            FileSecretVaultStore::new(vault_root.path().join("vault")),
+        ));
+        vault_store
+            .save_anp_identity_projection(
+                anp_projection_input("bob", "did:example:bob", "bob-anp-id"),
+                AnpIdentityProjectionStorage {
+                    store_id: "store-vault".to_string(),
+                    identity_id: "custody-vault".to_string(),
+                    auth: AnpIdentityProjectionAuth::Vault {
+                        workspace_id: "workspace-a".to_string(),
+                        device_id: "device-a".to_string(),
+                        vault: vault.clone(),
+                    },
+                },
+            )
+            .unwrap();
+        let entry = &vault_store.load_index().unwrap().credentials["bob"];
+        assert_eq!(
+            entry.anp_identity_auth_ref.as_ref().unwrap().kind,
+            SecretKind::AuthJwt
+        );
+        assert_eq!(vault.list().unwrap().len(), 1);
+        assert!(!vault_paths
+            .identity_root_dir
+            .join("bob-anp-id")
+            .join(AUTH_FILE_NAME)
+            .exists());
+    }
+
+    fn anp_projection_input(alias: &str, did: &str, unique_id: &str) -> SaveIdentityInput {
+        SaveIdentityInput {
+            local_alias: alias.to_string(),
+            did: crate::ids::Did::parse(did).unwrap(),
+            unique_id: unique_id.to_string(),
+            user_id: format!("user-{alias}"),
+            display_name: alias.to_string(),
+            handle: alias.to_string(),
+            full_handle: format!("{alias}.example.com"),
+            binding_generation: None,
+            jwt_token: "projection-token".to_string(),
+            did_document: Some(json!({"id": did})),
+            key_mode: SaveIdentityKeyMode::VNext {
+                root_key_id: format!("{did}#root"),
+                device_signing_key_id: format!("{did}#device"),
+                device_e2ee_key_id: format!("{did}#agreement"),
+            },
+            device_state: None,
+            key1_private_pem: String::new(),
+            key1_public_pem: String::new(),
+            e2ee_signing_private_pem: String::new(),
+            e2ee_agreement_private_pem: String::new(),
+            daemon_subkey_package: None,
+            make_default: true,
+        }
     }
 
     fn collect_text_files_inner(root: &Path, out: &mut String) {

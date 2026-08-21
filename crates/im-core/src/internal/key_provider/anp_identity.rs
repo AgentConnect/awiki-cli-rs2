@@ -82,6 +82,9 @@ impl AnpIdentitySigner {
 
     fn active_kid(&self, roles: &[KeyRole]) -> crate::ImResult<String> {
         let identity = self.lock_identity()?;
+        if identity.state() != anp_identity::IdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
         identity
             .keys()
             .iter()
@@ -263,6 +266,9 @@ impl super::IdentitySigner for AnpIdentitySigner {
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+        if self.lock_identity()?.state() != anp_identity::IdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
         match &self.auth {
             AnpIdentityAuth::File { auth_state_path } => {
                 crate::internal::auth::state::read_auth_state(auth_state_path)
@@ -282,6 +288,9 @@ impl super::IdentitySigner for AnpIdentitySigner {
     }
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
+        if self.lock_identity()?.state() != anp_identity::IdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
         match &self.auth {
             AnpIdentityAuth::File { auth_state_path } => {
                 crate::internal::auth::state::persist_jwt_token(auth_state_path, token)
@@ -317,6 +326,9 @@ impl super::IdentitySigner for AnpIdentitySigner {
     }
 
     fn advance_vault_auth_ref(&self, committed: &SecretRef) -> crate::ImResult<()> {
+        if self.lock_identity()?.state() != anp_identity::IdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
         let AnpIdentityAuth::Vault { vault, auth_ref } = &self.auth else {
             return Err(crate::ImError::PermissionDenied);
         };
