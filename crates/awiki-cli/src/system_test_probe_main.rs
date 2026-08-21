@@ -341,7 +341,9 @@ enum DaemonFixturePrepareFailureStage {
     BootstrapSendPeer,
     BootstrapSendIdentity,
     BootstrapSendSerialization,
-    BootstrapSendLocalState,
+    BootstrapSendLocalStateUnavailable,
+    BootstrapSendLocalStateUpgrade,
+    BootstrapSendLocalProjection,
     BootstrapSendInvalidInput,
     BootstrapSendUnsupported,
     BootstrapSendLocalOther,
@@ -399,7 +401,9 @@ impl DaemonFixturePrepareFailureStage {
             Self::BootstrapSendPeer => "bootstrap_send_peer",
             Self::BootstrapSendIdentity => "bootstrap_send_identity",
             Self::BootstrapSendSerialization => "bootstrap_send_serialization",
-            Self::BootstrapSendLocalState => "bootstrap_send_local_state",
+            Self::BootstrapSendLocalStateUnavailable => "bootstrap_send_local_state_unavailable",
+            Self::BootstrapSendLocalStateUpgrade => "bootstrap_send_local_state_upgrade",
+            Self::BootstrapSendLocalProjection => "bootstrap_send_local_projection",
             Self::BootstrapSendInvalidInput => "bootstrap_send_invalid_input",
             Self::BootstrapSendUnsupported => "bootstrap_send_unsupported",
             Self::BootstrapSendLocalOther => "bootstrap_send_local_other",
@@ -588,12 +592,16 @@ fn daemon_bootstrap_send_failure_stage(
         im_core::ImError::Serialization { .. } => {
             DaemonFixturePrepareFailureStage::BootstrapSendSerialization
         }
-        im_core::ImError::LocalStateUnavailable { .. }
-        | im_core::ImError::LocalStateUpgradeRequired { .. }
+        im_core::ImError::LocalStateUnavailable { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendLocalStateUnavailable
+        }
+        im_core::ImError::LocalStateUpgradeRequired { .. }
         | im_core::ImError::LocalStateUpgradeInProgress
-        | im_core::ImError::LocalStateUpgradeFailed { .. }
-        | im_core::ImError::LocalProjectionUnavailable { .. } => {
-            DaemonFixturePrepareFailureStage::BootstrapSendLocalState
+        | im_core::ImError::LocalStateUpgradeFailed { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendLocalStateUpgrade
+        }
+        im_core::ImError::LocalProjectionUnavailable { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendLocalProjection
         }
         im_core::ImError::InvalidInput { .. } => {
             DaemonFixturePrepareFailureStage::BootstrapSendInvalidInput
@@ -5354,6 +5362,12 @@ mod tests {
                 peer: "redacted".to_owned(),
             }),
             DaemonFixturePrepareFailureStage::BootstrapSendPeer
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::LocalStateUnavailable {
+                detail: "redacted".to_owned(),
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendLocalStateUnavailable
         );
     }
 
