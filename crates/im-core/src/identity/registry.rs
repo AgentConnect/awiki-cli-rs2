@@ -411,6 +411,9 @@ impl<'a> IdentityRegistry<'a> {
     ) -> crate::ImResult<super::DaemonSubkeyPublicPackage> {
         let registry = self.load_registry_async().await?;
         let entry = registry.find_entry(selector.clone())?.clone();
+        let vnext_device_state = entry.device_state.clone().filter(|state| {
+            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+        });
         if proposal.user_did != entry.summary.did
             || proposal.verification_method
                 != format!("{}#daemon-key-1", proposal.user_did.as_str())
@@ -494,6 +497,29 @@ impl<'a> IdentityRegistry<'a> {
             let pending = identity
                 .pending_revision()
                 .ok_or(crate::ImError::PermissionDenied)?;
+            let pending_candidate = pending.candidate_document.clone();
+            if remote_document == pending_candidate {
+                if let Some(mut state) = vnext_device_state.clone() {
+                    advance_daemon_document_checkpoint(
+                        &mut state,
+                        &proposal.user_did,
+                        &pending_candidate,
+                    )?;
+                    let local_alias = entry
+                        .local_alias
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let paths = self.core.inner().sdk_paths().identities.clone();
+                    crate::internal::runtime::worker::run_blocking(move || {
+                        crate::internal::identity_store::IdentityStore::new(&paths)
+                            .save_device_state(&local_alias, state)
+                    })
+                    .await
+                    .map_err(|error| crate::ImError::Internal {
+                        message: error.to_string(),
+                    })??;
+                }
+            }
             let outcome = identity
                 .reconcile_update(&pending.revision_id, &remote_document)
                 .map_err(crate::internal::identity_custody::map_error)?;
@@ -541,28 +567,107 @@ impl<'a> IdentityRegistry<'a> {
         drop(identity);
         drop(store);
 
-        let call = crate::internal::identity_wire::update_document::build_update_document_rpc_call(
-            crate::internal::identity_wire::UpdateDocumentRpcParams {
-                did_document: candidate.clone(),
-                is_public: None,
-                is_agent: None,
-                role: None,
-                endpoint_url: None,
-            },
-        );
-        use crate::internal::transport::AsyncAuthenticatedRpcTransport;
-        if let Err(error) = crate::internal::transport::CoreHttpTransport::new(&client)
-            .authenticated_rpc(call.endpoint, call.method, call.params)
+        let publication_result: crate::ImResult<
+            Option<(
+                crate::internal::identity_device_state::IdentityDeviceState,
+                String,
+            )>,
+        > = async {
+            use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+            let Some(mut state) = vnext_device_state else {
+                let call =
+                    crate::internal::identity_wire::update_document::build_update_document_rpc_call(
+                        crate::internal::identity_wire::UpdateDocumentRpcParams {
+                            did_document: candidate.clone(),
+                            is_public: None,
+                            is_agent: None,
+                            role: None,
+                            endpoint_url: None,
+                        },
+                    );
+                crate::internal::transport::CoreHttpTransport::new(&client)
+                    .authenticated_rpc(call.endpoint, call.method, call.params)
+                    .await?;
+                return Ok(None);
+            };
+
+            let expected_checkpoint = state
+                .checkpoint
+                .clone()
+                .ok_or(crate::ImError::PermissionDenied)?;
+            let (admin_client, authorizing_device_id, authorizing_signing_key_id) =
+                crate::internal::identity_device_join::ready_admin_context(
+                    self.core, &selector, None,
+                )?;
+            let expected_result_checkpoint =
+                advance_daemon_document_checkpoint(&mut state, &proposal.user_did, &candidate)?;
+            let operation_id = format!(
+                "daemon-subkey-authorize-{}",
+                expected_result_checkpoint
+                    .document_hash
+                    .strip_prefix("sha256:")
+                    .ok_or(crate::ImError::PermissionDenied)?
+            );
+            let prepared = crate::internal::identity_wire::device_document_update::prepare_update(
+                operation_id,
+                expected_checkpoint,
+                candidate.clone(),
+                authorizing_device_id,
+                &authorizing_signing_key_id,
+                &|kid, message| {
+                    admin_client
+                        .runtime()
+                        .key_provider
+                        .sign_device_assertion(kid, message)
+                },
+                time::OffsetDateTime::now_utc(),
+            )?;
+            let call = crate::internal::identity_wire::device_document_update::build_update_call(
+                &prepared,
+            )?;
+            let raw = crate::internal::transport::CoreHttpTransport::new(&admin_client)
+                .authenticated_rpc(call.endpoint, call.method, call.params)
+                .await?;
+            let checkpoint =
+                crate::internal::identity_wire::device_document_update::parse_update_result(
+                    raw,
+                    &proposal.user_did,
+                    &expected_result_checkpoint,
+                )?;
+            state.checkpoint = Some(checkpoint);
+            state.validate_for_did(&proposal.user_did)?;
+            let local_alias = admin_client
+                .current_identity()
+                .local_alias
+                .clone()
+                .ok_or(crate::ImError::PermissionDenied)?;
+            Ok(Some((state, local_alias)))
+        }
+        .await;
+        let updated_device_state = match publication_result {
+            Ok(state) => state,
+            Err(error) => {
+                let store = crate::internal::identity_custody::open_controller_store(self.core)?;
+                let mut identity = store
+                    .open_identity(proposal.user_did.as_str())
+                    .map_err(crate::internal::identity_custody::map_error)?;
+                identity
+                    .mark_publication_uncertain(&revision_id)
+                    .map_err(crate::internal::identity_custody::map_error)?;
+                return Err(error);
+            }
+        };
+
+        if let Some((state, local_alias)) = updated_device_state {
+            let paths = self.core.inner().sdk_paths().identities.clone();
+            crate::internal::runtime::worker::run_blocking(move || {
+                crate::internal::identity_store::IdentityStore::new(&paths)
+                    .save_device_state(&local_alias, state)
+            })
             .await
-        {
-            let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-            let mut identity = store
-                .open_identity(proposal.user_did.as_str())
-                .map_err(crate::internal::identity_custody::map_error)?;
-            identity
-                .mark_publication_uncertain(&revision_id)
-                .map_err(crate::internal::identity_custody::map_error)?;
-            return Err(error);
+            .map_err(|error| crate::ImError::Internal {
+                message: error.to_string(),
+            })??;
         }
 
         let store = crate::internal::identity_custody::open_controller_store(self.core)?;
@@ -2021,6 +2126,33 @@ fn require_daemon_proposal_document_binding(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+fn advance_daemon_document_checkpoint(
+    state: &mut crate::internal::identity_device_state::IdentityDeviceState,
+    did: &crate::ids::Did,
+    document: &serde_json::Value,
+) -> crate::ImResult<crate::internal::identity_device_state::IdentityInternalCheckpoint> {
+    let current = state
+        .checkpoint
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let document_hash = crate::internal::identity_wire::document::document_hash(document)?;
+    let checkpoint = if current.document_hash == document_hash {
+        current
+    } else {
+        crate::internal::identity_device_state::IdentityInternalCheckpoint {
+            document_version: current
+                .document_version
+                .checked_add(1)
+                .ok_or(crate::ImError::PermissionDenied)?,
+            document_hash,
+            registry_version: current.registry_version,
+        }
+    };
+    state.checkpoint = Some(checkpoint.clone());
+    state.validate_for_did(did)?;
+    Ok(checkpoint)
 }
 
 fn save_identity_document_projection(

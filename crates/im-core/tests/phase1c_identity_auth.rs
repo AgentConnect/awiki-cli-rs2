@@ -15,6 +15,7 @@ use awiki_im_core::prelude::*;
 use awiki_im_core::vault::DeviceVaultRootKey;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
+use sha2::{Digest as _, Sha256};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -404,7 +405,7 @@ async fn daemon_public_proposal_is_authorized_without_exporting_private_material
     let server = TestServer::spawn(vec![
         ExpectedHttp::registration_result(),
         ExpectedHttp::prekey_publication_result(),
-        ExpectedHttp::rpc_result(json!({"updated": true})),
+        ExpectedHttp::device_document_update_result(),
     ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
@@ -454,8 +455,14 @@ async fn daemon_public_proposal_is_authorized_without_exporting_private_material
     let requests = server.join();
     assert_eq!(requests.len(), 3);
     let update = requests[2].json_body();
-    assert_eq!(update["method"], "update_document");
-    let document = &update["params"]["did_document"];
+    assert_eq!(update["method"], "device_document_update");
+    assert_eq!(update["params"]["expected_document_version"], 1);
+    assert_eq!(update["params"]["expected_registry_version"], 1);
+    assert!(update["params"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("daemon-subkey-authorize-"));
+    let document = &update["params"]["new_document"];
     assert!(document["authentication"]
         .as_array()
         .unwrap()
@@ -466,6 +473,21 @@ async fn daemon_public_proposal_is_authorized_without_exporting_private_material
         .unwrap()
         .iter()
         .all(|item| item.as_str() != Some(package.verification_method.as_str())));
+    let registry: Value = serde_json::from_slice(
+        &fs::read(fixture.root.join("identities").join("registry.json")).unwrap(),
+    )
+    .unwrap();
+    let entry = &registry["credentials"]["daemon-public"];
+    assert_eq!(entry["device_state"]["checkpoint"]["document_version"], 2);
+    let canonical = serde_json_canonicalizer::to_vec(&update["params"]["new_document"]).unwrap();
+    let expected_hash = format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+    );
+    assert_eq!(
+        entry["device_state"]["checkpoint"]["document_hash"].as_str(),
+        Some(expected_hash.as_str())
+    );
 }
 
 #[tokio::test]
@@ -1318,6 +1340,38 @@ impl ExpectedHttp {
             "id": "req-1",
             "result": result,
         }))
+    }
+
+    fn device_document_update_result() -> Self {
+        Self {
+            status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(|request| {
+                let rpc = request.json_body();
+                let params = &rpc["params"];
+                let document = &params["new_document"];
+                let canonical = serde_json_canonicalizer::to_vec(document).unwrap();
+                let document_hash = format!(
+                    "sha256:{}",
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+                );
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": rpc["id"].clone(),
+                    "result": {
+                        "did": document["id"].clone(),
+                        "checkpoint": {
+                            "document_version": params["expected_document_version"]
+                                .as_u64()
+                                .unwrap()
+                                + 1,
+                            "document_hash": document_hash,
+                            "registry_version": params["expected_registry_version"].clone(),
+                        },
+                    },
+                })
+            })),
+        }
     }
 
     fn registration_result() -> Self {

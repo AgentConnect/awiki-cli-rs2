@@ -306,6 +306,16 @@ fn closed_daemon_continuity_result(evidence: DaemonContinuityEvidence) -> Value 
 enum DaemonFixturePrepareFailureStage {
     Token,
     Setup,
+    RuntimeState,
+    DaemonIdentity,
+    DaemonClient,
+    BootstrapPublicKey,
+    RuntimeToken,
+    ControllerDocument,
+    SubkeyPrepare,
+    SubkeyAuthorize,
+    SubkeyContract,
+    BootstrapEncrypt,
     RuntimeMaterial,
     SyncInitializeCallFailed,
     SyncInitializeRecoveryRequired,
@@ -319,6 +329,16 @@ impl DaemonFixturePrepareFailureStage {
         match self {
             Self::Token => "token",
             Self::Setup => "setup",
+            Self::RuntimeState => "runtime_state",
+            Self::DaemonIdentity => "daemon_identity",
+            Self::DaemonClient => "daemon_client",
+            Self::BootstrapPublicKey => "bootstrap_public_key",
+            Self::RuntimeToken => "runtime_token",
+            Self::ControllerDocument => "controller_document",
+            Self::SubkeyPrepare => "subkey_prepare",
+            Self::SubkeyAuthorize => "subkey_authorize",
+            Self::SubkeyContract => "subkey_contract",
+            Self::BootstrapEncrypt => "bootstrap_encrypt",
             Self::RuntimeMaterial => "runtime_material",
             Self::SyncInitializeCallFailed => "sync_initialize_call_failed",
             Self::SyncInitializeRecoveryRequired => "sync_initialize_recovery_required",
@@ -1807,24 +1827,37 @@ impl Probe {
         }
 
         let preparation = async {
-            let config = awiki_deamon::DaemonConfig::for_state_root(&params.state_root)
-                .map_err(|_| ProbeFailure::Runtime)?;
-            let state =
-                awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+            let config =
+                awiki_deamon::DaemonConfig::for_state_root(&params.state_root).map_err(|_| {
+                    DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::RuntimeState)
+                })?;
+            let state = awiki_deamon::DaemonState::open(&config).map_err(|_| {
+                DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::RuntimeState)
+            })?;
             let daemon_identity = state
                 .load_agent_device_identity(&daemon_agent_did)
-                .map_err(|_| ProbeFailure::Runtime)?
-                .ok_or(ProbeFailure::Runtime)?;
-            let daemon_adapter =
-                awiki_deamon::ImCoreAdapter::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+                .map_err(|_| {
+                    DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::DaemonIdentity)
+                })?
+                .ok_or(DaemonFixturePrepareFailure(
+                    DaemonFixturePrepareFailureStage::DaemonIdentity,
+                ))?;
+            let daemon_adapter = awiki_deamon::ImCoreAdapter::open(&config).map_err(|_| {
+                DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::DaemonClient)
+            })?;
             let daemon_client = daemon_adapter
                 .client_for_agent_device_identity(&daemon_identity)
-                .map_err(|_| ProbeFailure::Runtime)?;
+                .map_err(|_| {
+                    DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::DaemonClient)
+                })?;
             let recipient_public = daemon_bootstrap_public_key(
                 &daemon_identity.did_document,
                 &daemon_agent_did,
                 &daemon_identity.device_e2ee_key_id,
-            )?;
+            )
+            .map_err(|_| {
+                DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::BootstrapPublicKey)
+            })?;
 
             let runtime_token_handle = daemon_fixture_runtime_token_handle(
                 &self.local_did,
@@ -1841,15 +1874,24 @@ impl Probe {
                         &params.app_instance_id,
                     ),
                 )
-                .await?;
+                .await
+                .map_err(|_| {
+                    DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::RuntimeToken)
+                })?;
             let controller_document = core
                 .identities()
                 .identity_document_async(im_core::IdentitySelector::Default)
                 .await
-                .map_err(|_| ProbeFailure::Runtime)?;
+                .map_err(|_| {
+                    DaemonFixturePrepareFailure(
+                        DaemonFixturePrepareFailureStage::ControllerDocument,
+                    )
+                })?;
             let prepared =
                 awiki_deamon::identity_custody::prepare_daemon_subkey(&state, &controller_document)
-                    .map_err(|_| ProbeFailure::Runtime)?;
+                    .map_err(|_| {
+                        DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SubkeyPrepare)
+                    })?;
             let subkey = core
                 .identities()
                 .authorize_daemon_subkey_async(
@@ -1862,12 +1904,16 @@ impl Probe {
                     },
                 )
                 .await
-                .map_err(|_| ProbeFailure::Runtime)?;
+                .map_err(|_| {
+                    DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SubkeyAuthorize)
+                })?;
             if subkey.user_did.as_str() != self.local_did
                 || !subkey.verification_method.ends_with("#daemon-key-1")
                 || subkey.schema != "awiki.daemon.user_subkey_package.v3"
             {
-                return Err(ProbeFailure::InvalidState.into());
+                return Err(DaemonFixturePrepareFailure(
+                    DaemonFixturePrepareFailureStage::SubkeyContract,
+                ));
             }
             let bootstrap_id = format!("boot_{}", random_hex(12)?);
             let idempotency_key = format!("personal-agent-bootstrap:{}", random_hex(12)?);
@@ -1940,7 +1986,9 @@ impl Probe {
                 }),
                 plaintext.as_slice(),
             )
-            .map_err(|_| ProbeFailure::Runtime)?;
+            .map_err(|_| {
+                DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::BootstrapEncrypt)
+            })?;
             let message_id = im_core::ids::MessageId::parse(&format!("msg-{}", random_hex(12)?))
                 .map_err(|_| ProbeFailure::Runtime)?;
             let send_request = im_core::messages::SendMessageRequest {
@@ -4870,14 +4918,12 @@ mod tests {
             app_instance_id: "app-test",
             controller_did: LOCAL_DID,
             user_subkey_package: ProbeUserSubkeyPackage {
-                schema: "awiki.user-subkey-package.v2",
+                schema: "awiki.daemon.user_subkey_package.v3",
                 user_did: LOCAL_DID,
                 verification_method: "did:wba:example.test:user:local#daemon-key-1",
                 key_type: "JsonWebKey2020",
                 key_algorithm: "Ed25519",
                 public_key_multibase: "zPublic",
-                private_key_encoding: "pkcs8-pem",
-                private_key_pem: "private-test-material",
                 allowed_scopes: ["message.inbox.read.plain"],
             },
             desired_personal_agent: ProbeDesiredPersonalAgent {
@@ -4898,6 +4944,12 @@ mod tests {
         };
 
         let serialized = serde_json::to_value(payload).expect("serialize Probe bootstrap payload");
+        assert!(serialized["user_subkey_package"]
+            .get("private_key_pem")
+            .is_none());
+        assert!(serialized["user_subkey_package"]
+            .get("private_key_encoding")
+            .is_none());
         assert_eq!(
             serialized["desired_personal_agent"],
             json!({
