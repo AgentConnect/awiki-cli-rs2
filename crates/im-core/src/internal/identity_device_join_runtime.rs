@@ -644,20 +644,18 @@ async fn refresh_join_device_access(
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
 ) -> crate::ImResult<DeviceJoinAccessResult> {
     pending.validate()?;
-    let client = core.client_with_identity_material_and_signing_key_id(
-        crate::identity::HostedIdentityMaterial {
-            identity_id: crate::internal::identity_join_activation_pending::identity_suffix(
-                &pending.did,
-            ),
-            did: pending.did.as_str().to_owned(),
-            handle: None,
-            display_name: None,
-            did_document: pending.resolved_document.clone(),
-            default_signing_private_key_pem: pending.signing_private_pem.clone(),
-            e2ee_agreement_private_key_pem: Some(pending.e2ee_private_pem.clone()),
-            auth_token: None,
-        },
+    let identity = crate::internal::identity_custody::active_join_identity(
+        core,
+        &pending.did,
+        &pending.custody,
         &pending.authorization.device.signing_key_id,
+        &pending.authorization.device.e2ee_key_id,
+    )?;
+    let client = core.client_with_pending_anp_identity(
+        identity,
+        None,
+        pending.did.as_str(),
+        &crate::ids::ProtocolDeviceId::parse(&pending.authorization.device.device_id)?,
     )?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new_pending_device(
         &client,
@@ -888,7 +886,8 @@ where
         F: FnOnce(&crate::identity::DeviceJoinSessionSummary) -> crate::ImResult<()>,
     {
         let operation_id = request.operation_id.clone();
-        let local = self.core.device_join().start(request)?;
+        let document = self.resolver.resolve(&request.did).await?;
+        let local = self.core.device_join().start(request, &document)?;
         local_hook(&local.session)?;
         if local.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
             return Ok(local.session);

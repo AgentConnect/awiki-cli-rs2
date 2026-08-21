@@ -72,6 +72,18 @@ impl crate::internal::transport::AsyncRawJsonTransport for UnusedResolver {
     }
 }
 
+struct StaticResolver(serde_json::Value);
+
+impl crate::internal::transport::AsyncRawJsonTransport for StaticResolver {
+    async fn get_json_url(
+        &mut self,
+        _url: &str,
+        _headers: std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<serde_json::Value> {
+        Ok(self.0.clone())
+    }
+}
+
 const JOIN_ACCESS_SECRET_DID: &str = "did:wba:private.example:users:secret";
 const JOIN_ACCESS_SECRET_TOKEN: &str = "bearer-secret-token";
 
@@ -492,11 +504,14 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
         crate::internal::identity_wire::document::document_hash(&current_document).unwrap();
     let started = candidate
         .device_join()
-        .start(crate::identity::DeviceJoinStartRequest {
-            operation_id: "join-access-runtime-start".to_owned(),
-            did,
-            ttl_seconds: 300,
-        })
+        .start(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "join-access-runtime-start".to_owned(),
+                did,
+                ttl_seconds: 300,
+            },
+            &current_document,
+        )
         .unwrap();
     let join_session_id = started.session.join_session_id.clone();
     let join_request = started.join_request;
@@ -726,19 +741,27 @@ fn response_notification_only_advances_a_waiting_admin_session() {
 async fn registration_recovery_join_marker_is_durable_before_remote_join_create() {
     let directory = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(directory.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.info",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
+    let current_did = generated.did.clone();
     let sqlite_path = core.inner().sdk_paths().local_state.sqlite_path.clone();
     let mut runtime = DeviceJoinNewDeviceRuntime::new(
         &core,
         JoinedMarkerAssertingRemote {
             sqlite_path: sqlite_path.clone(),
         },
-        DeviceJoinDidResolver::new(UnusedResolver),
+        DeviceJoinDidResolver::new(StaticResolver(generated.did_document)),
     );
     let session = runtime
         .begin_with_local_hook(
             crate::identity::DeviceJoinStartRequest {
                 operation_id: "authorized-join-operation-1".to_owned(),
-                did: crate::ids::Did::parse("did:wba:awiki.info:users:alice-new").unwrap(),
+                did: current_did.clone(),
                 ttl_seconds: 300,
             },
             &SecretBytes::from_vec(b"account-verification-token".to_vec()),
@@ -750,7 +773,7 @@ async fn registration_recovery_join_marker_is_durable_before_remote_join_create(
                     "owner-1",
                     "alice.awiki.info",
                     "did:wba:awiki.info:users:alice-old",
-                    "did:wba:awiki.info:users:alice-new",
+                    current_did.as_str(),
                     "8",
                 )?;
                 crate::internal::identity_transition_pending::persist(&sqlite_path, &marker)
@@ -778,11 +801,14 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
     let document_hash = crate::internal::identity_wire::document::document_hash(&document).unwrap();
     let started = candidate
         .device_join()
-        .start(crate::identity::DeviceJoinStartRequest {
-            operation_id: "start-runtime-replay".to_owned(),
-            did,
-            ttl_seconds: 300,
-        })
+        .start(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "start-runtime-replay".to_owned(),
+                did,
+                ttl_seconds: 300,
+            },
+            &document,
+        )
         .unwrap();
     let join_session_id = started.session.join_session_id.clone();
     let prepared = core

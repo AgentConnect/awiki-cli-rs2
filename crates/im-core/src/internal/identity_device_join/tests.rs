@@ -216,7 +216,7 @@ fn mark_new_device_join_authorized(
         .load(join_session_id, DeviceJoinSide::NewDevice)
         .unwrap()
         .unwrap();
-    cleanup_cancelled_join_secrets(core, &stored).unwrap();
+    cleanup_consumed_join_secrets(core, &stored).unwrap();
     stored.join_request.did = did.as_str().to_owned();
     stored.join_request.device_id = protocol_device_id.as_str().to_owned();
     stored.join_request_hash =
@@ -224,8 +224,6 @@ fn mark_new_device_join_authorized(
     stored.phase = DeviceJoinLocalPhase::Authorized;
     stored.activation_pending = false;
     stored.join_session_token_ref = None;
-    stored.signing_private_ref = None;
-    stored.e2ee_private_ref = None;
     store.save(&stored).unwrap();
     stored
 }
@@ -259,13 +257,23 @@ fn response_signature_input_is_closed_and_canonicalizable() {
 fn join_start_emits_mixed_profiles() {
     let candidate_root = tempfile::tempdir().unwrap();
     let candidate = open_empty_vault_core(candidate_root.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "example.com",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
     let started = candidate
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "start-mixed-profiles".to_owned(),
-            did: crate::ids::Did::parse("did:wba:example.com:user:alice").unwrap(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "start-mixed-profiles".to_owned(),
+                did: generated.did,
+                ttl_seconds: 300,
+            },
+            &generated.did_document,
+        )
         .unwrap();
 
     assert_eq!(
@@ -279,6 +287,77 @@ fn join_start_emits_mixed_profiles() {
             "anp.group.e2ee.v2",
         ]
     );
+    let stored = JoinStateStore::new(&candidate)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    let encoded = serde_json::to_string(&stored).unwrap();
+    assert!(!encoded.contains("private_pem"));
+    assert!(!encoded.contains("IdentityDeviceSigningPrivate"));
+    assert!(!encoded.contains("IdentityE2eeAgreementPrivate"));
+    assert!(required_vault(&candidate)
+        .unwrap()
+        .list()
+        .unwrap()
+        .iter()
+        .all(|secret_ref| !matches!(
+            secret_ref.kind,
+            SecretKind::IdentityDeviceSigningPrivate | SecretKind::IdentityE2eeAgreementPrivate
+        )));
+    let custody = stored.join_custody.unwrap();
+    let anp_store = crate::internal::identity_custody::open_controller_store(&candidate).unwrap();
+    let identity = anp_store
+        .open_identity(started.session.did.as_str())
+        .unwrap();
+    assert_eq!(identity.identity_id(), custody.identity_id);
+    assert_eq!(identity.state(), anp_identity::IdentityState::Enrolling);
+}
+
+#[test]
+fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.test",
+        "cancelled",
+        None,
+        None,
+    )
+    .unwrap();
+    let started = core
+        .device_join()
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "cancel-unpublished".to_owned(),
+                did: generated.did.clone(),
+                ttl_seconds: 300,
+            },
+            &generated.did_document,
+        )
+        .unwrap();
+    let stored = JoinStateStore::new(&core)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+
+    cancel_join(
+        &core,
+        &started.session.join_session_id,
+        DeviceJoinSide::NewDevice,
+    )
+    .unwrap();
+
+    assert_eq!(
+        crate::internal::identity_custody::open_controller_store(&core)
+            .unwrap()
+            .open_identity(generated.did.as_str())
+            .err(),
+        Some(anp_identity::DidError::IdentityNotFound)
+    );
+    assert!(required_vault(&core)
+        .unwrap()
+        .open(&stored.pairing_private_ref)
+        .is_err());
 }
 
 #[test]
@@ -303,31 +382,42 @@ fn join_profile_reader_accepts_only_canonical_or_legacy_complete_sets() {
 fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
     let root = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(root.path());
-    let did = crate::ids::Did::parse("did:wba:awiki.test:user:alice").unwrap();
-    let other_did = crate::ids::Did::parse("did:wba:awiki.test:user:bob").unwrap();
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey("awiki.test", "alice", None, None).unwrap();
+    let other_generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey("awiki.test", "bob", None, None).unwrap();
+    let did = generated.did.clone();
+    let other_did = other_generated.did.clone();
     let authorized = core
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "retire-authorized".to_owned(),
-            did: did.clone(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "retire-authorized".to_owned(),
+                did: did.clone(),
+                ttl_seconds: 300,
+            },
+            &generated.did_document,
+        )
         .unwrap();
     let pending = core
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "preserve-pending".to_owned(),
-            did: did.clone(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "preserve-pending".to_owned(),
+                did: did.clone(),
+                ttl_seconds: 300,
+            },
+            &generated.did_document,
+        )
         .unwrap();
     let other = core
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "preserve-other".to_owned(),
-            did: other_did.clone(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "preserve-other".to_owned(),
+                did: other_did.clone(),
+                ttl_seconds: 300,
+            },
+            &other_generated.did_document,
+        )
         .unwrap();
     let authorized_device_id = authorized.session.protocol_device_id.clone();
     let authorized_state = mark_new_device_join_authorized(
@@ -373,7 +463,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
 #[test]
 fn identity_retirement_replays_exact_join_cleanup_after_restart() {
     let root = tempfile::tempdir().unwrap();
-    let (core, _, did) = open_ready_admin_core(root.path());
+    let (core, document, did) = open_ready_admin_core(root.path());
     let protocol_device_id = core
         .identities()
         .device_summary(crate::identity::IdentitySelector::Default)
@@ -382,19 +472,25 @@ fn identity_retirement_replays_exact_join_cleanup_after_restart() {
         .unwrap();
     let authorized = core
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "identity-retire-authorized".to_owned(),
-            did: did.clone(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "identity-retire-authorized".to_owned(),
+                did: did.clone(),
+                ttl_seconds: 300,
+            },
+            &document,
+        )
         .unwrap();
     let pending = core
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "identity-retire-preserve-pending".to_owned(),
-            did: did.clone(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "identity-retire-preserve-pending".to_owned(),
+                did: did.clone(),
+                ttl_seconds: 300,
+            },
+            &document,
+        )
         .unwrap();
     let late_authorized = mark_new_device_join_authorized(
         &core,
@@ -532,11 +628,14 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     let document_hash = canonical_hash(&document).unwrap();
     let started = candidate
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "start-local-progress".to_owned(),
-            did,
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "start-local-progress".to_owned(),
+                did,
+                ttl_seconds: 300,
+            },
+            &document,
+        )
         .unwrap();
     let prepared = core
         .device_join()
@@ -618,11 +717,14 @@ fn admin_rejects_legacy_join_before_preparing_document_mutation() {
     let document_hash = canonical_hash(&document).unwrap();
     let started = candidate
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "start-legacy-approval".to_owned(),
-            did,
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "start-legacy-approval".to_owned(),
+                did,
+                ttl_seconds: 300,
+            },
+            &document,
+        )
         .unwrap();
     let challenged = admin
         .device_join()
@@ -705,11 +807,14 @@ fn local_new_device_sas_is_restart_safe_and_read_only() {
     let document_hash = canonical_hash(&document).unwrap();
     let started = candidate
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "start-candidate-progress".to_owned(),
-            did,
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "start-candidate-progress".to_owned(),
+                did,
+                ttl_seconds: 300,
+            },
+            &document,
+        )
         .unwrap();
     assert!(
         local_new_device_verification_sas(&candidate, &started.session.join_session_id,).is_err()
@@ -864,11 +969,14 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
 
     let started = candidate
         .device_join()
-        .start(DeviceJoinStartRequest {
-            operation_id: "joined-crash-start".to_owned(),
-            did: current_did.clone(),
-            ttl_seconds: 300,
-        })
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "joined-crash-start".to_owned(),
+                did: current_did.clone(),
+                ttl_seconds: 300,
+            },
+            &admin_document,
+        )
         .unwrap();
     let join_request = started.join_request.clone();
     let marker =
@@ -1170,6 +1278,24 @@ VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].did, current_did.as_str());
     assert_eq!(matches[0].binding_generation.as_deref(), Some("8"));
+    assert_eq!(
+        matches[0].identity_custody_backend.as_deref(),
+        Some("anp_identity")
+    );
+    assert!(matches[0].anp_identity_store_id.is_some());
+    assert!(matches[0].anp_identity_id.is_some());
+    let runtime = reopened
+        .identities()
+        .load_runtime(crate::identity::IdentitySelector::Did(current_did.clone()))
+        .unwrap();
+    runtime
+        .key_provider
+        .sign(&authorization.device.signing_key_id, b"joined device")
+        .unwrap();
+    assert_eq!(
+        runtime.key_provider.ensure_root_control_available(),
+        Err(crate::ImError::PermissionDenied)
+    );
     drop(reopened);
     let recovery_core = reopen_join_test_recovery_core(candidate_root.path());
     let receipt = super::super::identity_handle_recovery_runtime::authorized_receipt(

@@ -2315,7 +2315,10 @@ fn pending_registration_client(
     )?;
     core.client_with_pending_anp_identity(
         identity,
-        &format!("{}.{}", pending.target_handle, pending.target_domain),
+        Some(&format!(
+            "{}.{}",
+            pending.target_handle, pending.target_domain
+        )),
         &pending.display_name,
         &pending.identity.protocol_device_id,
     )

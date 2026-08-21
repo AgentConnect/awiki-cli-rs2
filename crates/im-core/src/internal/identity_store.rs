@@ -133,6 +133,11 @@ pub(crate) struct AnpIdentityProjectionStorage {
     auth: AnpIdentityProjectionAuth,
 }
 
+pub(crate) struct AnpIdentityProjectionReplacement<'a> {
+    pub(crate) expected_did: &'a str,
+    pub(crate) expected_unique_id: &'a str,
+}
+
 #[derive(Clone)]
 enum AnpIdentityProjectionAuth {
     FileCompat,
@@ -358,13 +363,23 @@ impl<'a> IdentityStore<'a> {
         input: SaveIdentityInput,
         storage: AnpIdentityProjectionStorage,
     ) -> crate::ImResult<StoredIdentity> {
-        self.save_anp_identity_projection_inner(input, storage, None)
+        self.save_anp_identity_projection_inner(input, storage, None, None)
+    }
+
+    pub(crate) fn save_anp_identity_transition_projection(
+        &self,
+        input: SaveIdentityInput,
+        storage: AnpIdentityProjectionStorage,
+        replacement: AnpIdentityProjectionReplacement<'_>,
+    ) -> crate::ImResult<StoredIdentity> {
+        self.save_anp_identity_projection_inner(input, storage, Some(replacement), None)
     }
 
     fn save_anp_identity_projection_inner(
         &self,
         mut input: SaveIdentityInput,
         storage: AnpIdentityProjectionStorage,
+        replacement: Option<AnpIdentityProjectionReplacement<'_>>,
         failure: Option<AnpProjectionFailurePoint>,
     ) -> crate::ImResult<StoredIdentity> {
         validate_anp_projection_input(&input, &storage)?;
@@ -386,7 +401,12 @@ impl<'a> IdentityStore<'a> {
                 && existing.anp_identity_store_id.as_deref() == Some(storage.store_id.as_str())
                 && existing.anp_identity_id.as_deref() == Some(storage.identity_id.as_str())
                 && existing.did == input.did.as_str();
-            if !same_binding {
+            let authorized_replacement = replacement.as_ref().is_some_and(|replacement| {
+                existing.did == replacement.expected_did
+                    && existing.unique_id == replacement.expected_unique_id
+                    && input.unique_id == replacement.expected_unique_id
+            });
+            if !same_binding && !authorized_replacement {
                 return Err(crate::ImError::PermissionDenied);
             }
         }
@@ -5231,7 +5251,12 @@ mod tests {
                 auth: AnpIdentityProjectionAuth::FileCompat,
             };
             assert!(store
-                .save_anp_identity_projection_inner(input.clone(), storage.clone(), Some(failure),)
+                .save_anp_identity_projection_inner(
+                    input.clone(),
+                    storage.clone(),
+                    None,
+                    Some(failure),
+                )
                 .is_err());
             store.save_anp_identity_projection(input, storage).unwrap();
             let committed = store.load_index().unwrap();

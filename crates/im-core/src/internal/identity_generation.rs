@@ -25,6 +25,13 @@ const VNEXT_DEVICE_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_GROUP_BASE_V1,
     anp::authentication::PROFILE_GROUP_E2EE_V2,
 ];
+
+pub(crate) fn vnext_device_profiles() -> Vec<String> {
+    VNEXT_DEVICE_PROFILES
+        .iter()
+        .map(|profile| (*profile).to_owned())
+        .collect()
+}
 const VNEXT_SERVICE_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_CORE_BINDING_V1,
     anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,

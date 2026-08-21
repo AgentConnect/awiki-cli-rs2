@@ -1,11 +1,12 @@
 //! Restart-safe AWiki-local device Join crypto, intent and state.
 //!
-//! Private signing, E2EE and pairing material is always sealed in SecretVault.
-//! The adjacent state file contains only public control objects, digests and
-//! opaque SecretVault references. Remote tokens stay sealed, approval requests
-//! are frozen before network I/O, and SAS values are derived on demand rather
-//! than persisted. Join state mutations are serialized across both threads and
-//! processes that share the same identity root.
+//! Pending device signing and E2EE keys remain in anp-identity; the ephemeral
+//! pairing key and remote token remain sealed in SecretVault. The adjacent
+//! state file contains only public control objects, digests and opaque custody
+//! references. Approval requests are frozen before network I/O, and SAS values
+//! are derived on demand rather than persisted. Join state mutations are
+//! serialized across both threads and processes that share the same identity
+//! root.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -40,7 +41,7 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
-const JOIN_STATE_SCHEMA_VERSION: u32 = 1;
+const JOIN_STATE_SCHEMA_VERSION: u32 = 2;
 const JOIN_STATE_DIR: &str = ".device-join";
 const JOIN_STATE_LOCK_FILE: &str = ".awiki-device-join-state.lock";
 const JOIN_CHALLENGE_LEN: usize = 32;
@@ -133,8 +134,8 @@ struct StoredJoinSession {
     approval: Option<StoredAdminApproval>,
     #[serde(default, skip_serializing_if = "is_false")]
     activation_pending: bool,
-    signing_private_ref: Option<SecretRef>,
-    e2ee_private_ref: Option<SecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    join_custody: Option<crate::internal::identity_join_activation_pending::JoinEnrollmentRef>,
     pairing_private_ref: SecretRef,
     admin_identity: Option<crate::identity::IdentitySelector>,
 }
@@ -169,6 +170,7 @@ impl std::fmt::Debug for StoredJoinSession {
 pub(crate) fn start(
     core: &crate::core::ImCore,
     request: DeviceJoinStartRequest,
+    resolved_document: &Value,
 ) -> crate::ImResult<DeviceJoinStartResult> {
     let _guard = lock_join_state(core)?;
     validate_operation_id(&request.operation_id)?;
@@ -193,34 +195,27 @@ pub(crate) fn start(
     let now = OffsetDateTime::now_utc();
     let expires_at = now + Duration::seconds(request.ttl_seconds as i64);
     let join_session_id = random_id("join", JOIN_RANDOM_ID_LEN)?;
-    let protocol_device_id = crate::ids::ProtocolDeviceId::generate()?;
-    let signing_key_id = format!(
-        "{}#{}-sign",
-        request.did.as_str(),
-        protocol_device_id.as_str()
-    );
-    let e2ee_key_id = format!(
-        "{}#{}-e2ee",
-        request.did.as_str(),
-        protocol_device_id.as_str()
-    );
-
-    let signing_private = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
-        &mut rand::rngs::OsRng,
-    ));
-    let e2ee_private =
-        anp::PrivateKeyMaterial::X25519(X25519StaticSecret::random_from_rng(rand::rngs::OsRng));
+    let (join_custody, enrollment) = crate::internal::identity_custody::prepare_join_enrollment(
+        core,
+        &request.did,
+        resolved_document,
+    )?;
+    let protocol_device_id = crate::ids::ProtocolDeviceId::parse(&enrollment.device_id)?;
+    let signing_key_id = enrollment.device_signing_key.kid.clone();
+    let e2ee_key_id = enrollment.device_e2ee_key.kid.clone();
     let pairing_private =
         anp::PrivateKeyMaterial::X25519(X25519StaticSecret::random_from_rng(rand::rngs::OsRng));
-    let signing_method = verification_method(
+    let signing_method = verification_method_from_multibase(
         request.did.as_str(),
         &signing_key_id,
-        &signing_private.public_key(),
+        &enrollment.device_signing_key.public_key_multibase,
+        "Multikey",
     )?;
-    let e2ee_method = verification_method(
+    let e2ee_method = verification_method_from_multibase(
         request.did.as_str(),
         &e2ee_key_id,
-        &e2ee_private.public_key(),
+        &enrollment.device_e2ee_key.public_key_multibase,
+        "X25519KeyAgreementKey2019",
     )?;
     let pairing_public_key = x25519_public_b64u(&pairing_private.public_key())?;
     let mut join_request = DeviceJoinRequest {
@@ -247,7 +242,13 @@ pub(crate) fn start(
         },
     };
     join_request.join_request_proof.proof_value_b64u =
-        sign_join_request(&join_request, &signing_private)?;
+        URL_SAFE_NO_PAD.encode(crate::internal::identity_custody::sign_join_enrollment(
+            core,
+            &request.did,
+            &join_custody,
+            &signing_key_id,
+            &join_request_proof_input_bytes(&join_request)?,
+        )?);
     validate_join_request(&join_request, now)?;
     let join_request_hash =
         canonical_hash(&serde_json::to_value(&join_request).map_err(|err| {
@@ -256,34 +257,8 @@ pub(crate) fn start(
             }
         })?)?;
 
-    let signing_pem = Zeroizing::new(signing_private.to_pem());
-    let e2ee_pem = Zeroizing::new(e2ee_private.to_pem());
     let pairing_pem = Zeroizing::new(pairing_private.to_pem());
     let mut sealed = Vec::new();
-    let signing_ref = seal_join_secret(
-        core,
-        &*vault,
-        &request.did,
-        SecretKind::IdentityDeviceSigningPrivate,
-        &signing_key_id,
-        signing_pem.as_bytes(),
-    )?;
-    sealed.push(signing_ref.clone());
-    let e2ee_ref = match seal_join_secret(
-        core,
-        &*vault,
-        &request.did,
-        SecretKind::IdentityE2eeAgreementPrivate,
-        &e2ee_key_id,
-        e2ee_pem.as_bytes(),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            cleanup_secrets(&*vault, &sealed);
-            return Err(err);
-        }
-    };
-    sealed.push(e2ee_ref.clone());
     let pairing_ref = match seal_join_secret(
         core,
         &*vault,
@@ -295,6 +270,11 @@ pub(crate) fn start(
         Ok(value) => value,
         Err(err) => {
             cleanup_secrets(&*vault, &sealed);
+            let _ = crate::internal::identity_custody::discard_join_enrollment(
+                core,
+                &request.did,
+                &join_custody,
+            );
             return Err(err);
         }
     };
@@ -319,13 +299,17 @@ pub(crate) fn start(
         join_session_token_ref: None,
         approval: None,
         activation_pending: false,
-        signing_private_ref: Some(signing_ref),
-        e2ee_private_ref: Some(e2ee_ref),
+        join_custody: Some(join_custody.clone()),
         pairing_private_ref: pairing_ref,
         admin_identity: None,
     };
     if let Err(err) = store.save(&stored) {
         cleanup_secrets(&*vault, &sealed);
+        let _ = crate::internal::identity_custody::discard_join_enrollment(
+            core,
+            &request.did,
+            &join_custody,
+        );
         return Err(err);
     }
     Ok(DeviceJoinStartResult {
@@ -586,8 +570,7 @@ pub(crate) fn prepare_admin_challenge(
         join_session_token_ref: None,
         approval: None,
         activation_pending: false,
-        signing_private_ref: None,
-        e2ee_private_ref: None,
+        join_custody: None,
         pairing_private_ref: pairing_ref.clone(),
         admin_identity: Some(request.admin_identity),
     };
@@ -680,15 +663,26 @@ fn respond_as_new_device_inner(
         &admin_signing_method,
     )?;
 
-    let vault = required_vault(core)?;
-    let e2ee_ref = stored
-        .e2ee_private_ref
+    let custody = stored
+        .join_custody
         .as_ref()
-        .ok_or_else(|| invalid_state("new-device E2EE key reference missing"))?;
-    let e2ee_private =
-        open_private_key(&*vault, e2ee_ref, SecretKind::IdentityE2eeAgreementPrivate)?;
+        .ok_or_else(|| invalid_state("new-device custody reference missing"))?;
+    let peer = decode_x25519_b64u(
+        "challenge.admin_pairing_public_key",
+        &challenge.admin_pairing_public_key,
+    )?;
+    let shared = crate::internal::identity_custody::ecdh_join_enrollment(
+        core,
+        &crate::ids::Did::parse(&stored.join_request.did)?,
+        custody,
+        method_id(
+            &stored.join_request.e2ee_public_key,
+            "join_request.e2ee_public_key",
+        )?,
+        &peer,
+    )?;
     let decrypted_challenge = decrypt_challenge(
-        &e2ee_private,
+        &shared,
         &stored.join_request,
         &stored.join_request_hash,
         &challenge,
@@ -732,15 +726,6 @@ fn respond_as_new_device_inner(
         &decrypted_challenge.checkpoint,
     )?;
     let pairing_transcript_hash = canonical_hash(&transcript)?;
-    let signing_ref = stored
-        .signing_private_ref
-        .as_ref()
-        .ok_or_else(|| invalid_state("new-device signing key reference missing"))?;
-    let signing_private = open_private_key(
-        &*vault,
-        signing_ref,
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
     let response_params = response_params_value(
         &operation_id,
         &stored.join_request.join_session_id,
@@ -750,7 +735,16 @@ fn respond_as_new_device_inner(
         &pairing_transcript_hash,
     );
     let response_signature_b64u =
-        sign_bytes(&signing_private, &canonical_bytes(&response_params)?)?;
+        URL_SAFE_NO_PAD.encode(crate::internal::identity_custody::sign_join_enrollment(
+            core,
+            &crate::ids::Did::parse(&stored.join_request.did)?,
+            custody,
+            method_id(
+                &stored.join_request.signing_public_key,
+                "join_request.signing_public_key",
+            )?,
+            &canonical_bytes(&response_params)?,
+        )?);
     let response = DeviceJoinChallengeResponse {
         operation_id: operation_id.clone(),
         join_session_id: stored.join_request.join_session_id.clone(),
@@ -1254,6 +1248,7 @@ pub(crate) fn prepare_new_device_activation(
     if let Some((_, pending)) = pending_store.load(&join_session_id, &did)? {
         if pending.authorization != *authorization
             || pending.resolved_document != *resolved_document
+            || Some(&pending.custody) != stored.join_custody.as_ref()
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -1264,24 +1259,10 @@ pub(crate) fn prepare_new_device_activation(
         return Ok(pending);
     }
     validate_remote_authorization(&stored, authorization, resolved_document)?;
-    let signing_ref = stored
-        .signing_private_ref
-        .as_ref()
-        .ok_or_else(|| invalid_state("new-device signing private key is missing"))?;
-    let signing_private = open_private_key(
-        &*required_vault(core)?,
-        signing_ref,
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
-    let e2ee_ref = stored
-        .e2ee_private_ref
-        .as_ref()
-        .ok_or_else(|| invalid_state("new-device E2EE private key is missing"))?;
-    let e2ee_private = open_private_key(
-        &*required_vault(core)?,
-        e2ee_ref,
-        SecretKind::IdentityE2eeAgreementPrivate,
-    )?;
+    let custody = stored
+        .join_custody
+        .clone()
+        .ok_or_else(|| invalid_state("new-device custody reference is missing"))?;
     let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?;
     if domain
         != core
@@ -1293,13 +1274,19 @@ pub(crate) fn prepare_new_device_activation(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    crate::internal::identity_custody::adopt_join_identity(
+        core,
+        &did,
+        &custody,
+        resolved_document,
+        &authorization.checkpoint,
+    )?;
     let pending = crate::internal::identity_join_activation_pending::PendingJoinActivation::new(
         join_session_id,
         did,
         resolved_document.clone(),
         authorization.clone(),
-        signing_private.to_pem(),
-        e2ee_private.to_pem(),
+        custody,
     )?;
     pending_store.save(&pending)?;
     if !stored.activation_pending {
@@ -1402,12 +1389,6 @@ fn finish_authorized_new_device_cleanup(
     if let Some(secret_ref) = stored.join_session_token_ref.as_ref() {
         refs.push(secret_ref);
     }
-    if let Some(secret_ref) = stored.signing_private_ref.as_ref() {
-        refs.push(secret_ref);
-    }
-    if let Some(secret_ref) = stored.e2ee_private_ref.as_ref() {
-        refs.push(secret_ref);
-    }
     delete_secret_refs(&*vault, refs)?;
     let did = crate::ids::Did::parse(&stored.join_request.did)?;
     let pending_store =
@@ -1418,8 +1399,6 @@ fn finish_authorized_new_device_cleanup(
         pending_store.delete(&secret_ref)?;
     }
     stored.activation_pending = false;
-    stored.signing_private_ref = None;
-    stored.e2ee_private_ref = None;
     stored.join_session_token_ref = None;
     state_store.save(stored)
 }
@@ -1458,29 +1437,31 @@ fn promote_join_identity(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let vault = required_vault(core)?;
-    let signing_ref = stored
-        .signing_private_ref
+    let custody = stored
+        .join_custody
         .as_ref()
-        .ok_or_else(|| invalid_state("new-device signing private key is missing"))?;
-    let e2ee_ref = stored
-        .e2ee_private_ref
-        .as_ref()
-        .ok_or_else(|| invalid_state("new-device E2EE private key is missing"))?;
-    let signing_private = open_private_key(
-        &*vault,
-        signing_ref,
-        SecretKind::IdentityDeviceSigningPrivate,
+        .ok_or_else(|| invalid_state("new-device custody reference is missing"))?;
+    if custody != &pending.custody {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let custody_identity = crate::internal::identity_custody::active_join_identity(
+        core,
+        &did,
+        custody,
+        &pending.authorization.device.signing_key_id,
+        &pending.authorization.device.e2ee_key_id,
     )?;
-    let e2ee_private =
-        open_private_key(&*vault, e2ee_ref, SecretKind::IdentityE2eeAgreementPrivate)?;
     let expected_signing_public =
         extract_identity_public_key(&stored.join_request.signing_public_key)?;
     let expected_e2ee_public = extract_identity_public_key(&stored.join_request.e2ee_public_key)?;
-    let signing_public = signing_private.public_key();
-    let e2ee_public = e2ee_private.public_key();
-    if signing_public.to_pem() != expected_signing_public.to_pem()
-        || e2ee_public.to_pem() != expected_e2ee_public.to_pem()
+    if custody_identity
+        .public_key_bytes(&pending.authorization.device.signing_key_id)
+        .map_err(crate::internal::identity_custody::map_error)?
+        != public_key_bytes(&expected_signing_public)?
+        || custody_identity
+            .public_key_bytes(&pending.authorization.device.e2ee_key_id)
+            .map_err(crate::internal::identity_custody::map_error)?
+            != public_key_bytes(&expected_e2ee_public)?
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1496,11 +1477,18 @@ fn promote_join_identity(
             })
         })
         .ok_or(crate::ImError::PermissionDenied)?;
-    let root_public =
-        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
-    if !matches!(root_public, anp::PublicKeyMaterial::Ed25519(_)) {
+    if !matches!(
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?,
+        anp::PublicKeyMaterial::Ed25519(_)
+    ) {
         return Err(crate::ImError::PermissionDenied);
     }
+    let projection_storage =
+        crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
+            core,
+            custody.store_id.clone(),
+            custody.identity_id.clone(),
+        )?;
 
     let identity_store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
@@ -1618,9 +1606,7 @@ fn promote_join_identity(
         if !identity_already_switched {
             let handle =
                 crate::internal::identity_wire::handle_recovery::canonical_handle(&marker.handle)?;
-            let secret_storage =
-                crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
-            identity_store.save_identity_with_secret_storage(
+            identity_store.save_anp_identity_transition_projection(
                 crate::internal::identity_store::SaveIdentityInput {
                     local_alias: (*local_alias).clone(),
                     did: did.clone(),
@@ -1654,13 +1640,17 @@ fn promote_join_identity(
                         checkpoint: Some(pending.authorization.checkpoint.clone()),
                     }),
                     key1_private_pem: String::new(),
-                    key1_public_pem: root_public.to_pem(),
-                    e2ee_signing_private_pem: signing_private.to_pem(),
-                    e2ee_agreement_private_pem: e2ee_private.to_pem(),
+                    key1_public_pem: String::new(),
+                    e2ee_signing_private_pem: String::new(),
+                    e2ee_agreement_private_pem: String::new(),
                     daemon_subkey_package: None,
                     make_default: previous_entry.is_default,
                 },
-                secret_storage,
+                projection_storage.clone(),
+                crate::internal::identity_store::AnpIdentityProjectionReplacement {
+                    expected_did: &previous_entry.did,
+                    expected_unique_id: &marker.owner_identity_id,
+                },
             )?;
             #[cfg(test)]
             if FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE
@@ -1713,9 +1703,7 @@ fn promote_join_identity(
     ensure_existing_join_identity_is_rootless(&index, &local_alias, &did, &pending.authorization)?;
     let unique_id =
         crate::internal::identity_join_activation_pending::identity_suffix(&pending.did);
-    let secret_storage =
-        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
-    identity_store.save_identity_with_secret_storage(
+    identity_store.save_anp_identity_projection(
         crate::internal::identity_store::SaveIdentityInput {
             local_alias: local_alias.clone(),
             did: did.clone(),
@@ -1749,13 +1737,13 @@ fn promote_join_identity(
                 checkpoint: Some(pending.authorization.checkpoint.clone()),
             }),
             key1_private_pem: String::new(),
-            key1_public_pem: root_public.to_pem(),
-            e2ee_signing_private_pem: signing_private.to_pem(),
-            e2ee_agreement_private_pem: e2ee_private.to_pem(),
+            key1_public_pem: String::new(),
+            e2ee_signing_private_pem: String::new(),
+            e2ee_agreement_private_pem: String::new(),
             daemon_subkey_package: None,
             make_default,
         },
-        secret_storage.clone(),
+        projection_storage,
     )?;
     let committed = identity_store.load_index()?;
     ensure_existing_join_identity_is_rootless(
@@ -1839,11 +1827,14 @@ fn ensure_existing_join_identity_is_rootless(
         .authorization
         .as_ref()
         .ok_or(crate::ImError::PermissionDenied)?;
-    let root_absent = entry
-        .vault_migration
-        .as_ref()
-        .and_then(|metadata| metadata.vnext_refs.as_ref())
-        .is_some_and(|refs| refs.did_document_root_private.is_none());
+    let root_absent = (entry.identity_custody_backend.as_deref() == Some("anp_identity")
+        && entry.anp_identity_store_id.is_some()
+        && entry.anp_identity_id.is_some())
+        || entry
+            .vault_migration
+            .as_ref()
+            .and_then(|metadata| metadata.vnext_refs.as_ref())
+            .is_some_and(|refs| refs.did_document_root_private.is_none());
     if entry.did != did.as_str()
         || state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
         || !root_absent
@@ -1986,7 +1977,7 @@ pub(crate) fn retire_authorized_new_device_sessions(
         .collect::<Vec<_>>();
 
     for stored in matching {
-        cleanup_cancelled_join_secrets(core, &stored)?;
+        cleanup_consumed_join_secrets(core, &stored)?;
         if stored.activation_pending {
             let pending_store = crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(core)?;
             if let Some((secret_ref, _)) =
@@ -2248,18 +2239,21 @@ fn cleanup_cancelled_join_secrets(
     core: &crate::core::ImCore,
     stored: &StoredJoinSession,
 ) -> crate::ImResult<()> {
+    if stored.side == DeviceJoinSide::NewDevice {
+        let custody = stored
+            .join_custody
+            .as_ref()
+            .ok_or_else(|| invalid_state("new-device custody reference missing"))?;
+        crate::internal::identity_custody::discard_join_enrollment(
+            core,
+            &crate::ids::Did::parse(&stored.join_request.did)?,
+            custody,
+        )?;
+    }
     let vault = required_vault(core)?;
     let mut refs = vec![&stored.pairing_private_ref];
     if let Some(secret_ref) = stored.join_session_token_ref.as_ref() {
         refs.push(secret_ref);
-    }
-    if stored.side == DeviceJoinSide::NewDevice {
-        if let Some(secret_ref) = stored.signing_private_ref.as_ref() {
-            refs.push(secret_ref);
-        }
-        if let Some(secret_ref) = stored.e2ee_private_ref.as_ref() {
-            refs.push(secret_ref);
-        }
     }
     delete_secret_refs(&*vault, refs)
 }
@@ -2371,53 +2365,28 @@ fn cleanup_secrets(vault: &dyn SecretVault, refs: &[SecretRef]) {
     }
 }
 
-fn open_private_key(
+fn open_pairing_private_key(
     vault: &dyn SecretVault,
     secret_ref: &SecretRef,
-    expected_kind: SecretKind,
 ) -> crate::ImResult<anp::PrivateKeyMaterial> {
-    if secret_ref.kind != expected_kind {
+    if secret_ref.kind != SecretKind::IdentityJoinPairingPrivate {
         return Err(crate::ImError::PermissionDenied);
     }
     let secret = vault.open(secret_ref)?;
-    private_key_from_pem(secret.expose_secret(), expected_kind)
-}
-
-fn private_key_from_pem(
-    pem: &[u8],
-    expected_kind: SecretKind,
-) -> crate::ImResult<anp::PrivateKeyMaterial> {
-    let pem = std::str::from_utf8(pem).map_err(|_| crate::ImError::Serialization {
-        detail: "Join private key PEM is not UTF-8".to_owned(),
-    })?;
+    let pem =
+        std::str::from_utf8(secret.expose_secret()).map_err(|_| crate::ImError::Serialization {
+            detail: "Join pairing key PEM is not UTF-8".to_owned(),
+        })?;
     let key = anp::PrivateKeyMaterial::from_pem(pem).map_err(|_| {
         crate::ImError::CredentialFileUnreadable {
-            path_kind: "device_join_private_key".to_owned(),
-            detail: "invalid private key material".to_owned(),
+            path_kind: "device_join_pairing_key".to_owned(),
+            detail: "invalid pairing key material".to_owned(),
         }
     })?;
-    let valid = matches!(
-        (&expected_kind, &key),
-        (
-            SecretKind::IdentityDeviceSigningPrivate,
-            anp::PrivateKeyMaterial::Ed25519(_)
-        ) | (
-            SecretKind::IdentityE2eeAgreementPrivate | SecretKind::IdentityJoinPairingPrivate,
-            anp::PrivateKeyMaterial::X25519(_),
-        )
-    );
-    if !valid {
+    if !matches!(key, anp::PrivateKeyMaterial::X25519(_)) {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(key)
-}
-
-fn sign_join_request(
-    request: &DeviceJoinRequest,
-    private_key: &anp::PrivateKeyMaterial,
-) -> crate::ImResult<String> {
-    let content = join_request_proof_input_bytes(request)?;
-    sign_bytes(private_key, &content)
 }
 
 fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> crate::ImResult<()> {
@@ -2737,7 +2706,7 @@ fn encrypt_challenge(
 }
 
 fn decrypt_challenge(
-    new_device_e2ee_private: &anp::PrivateKeyMaterial,
+    shared: &[u8; 32],
     join_request: &DeviceJoinRequest,
     join_request_hash: &str,
     challenge: &DeviceJoinChallenge,
@@ -2745,11 +2714,6 @@ fn decrypt_challenge(
     if challenge.ciphertext.algorithm != DEVICE_JOIN_CHALLENGE_ALGORITHM {
         return Err(crate::ImError::PermissionDenied);
     }
-    let peer = decode_x25519_b64u(
-        "challenge.admin_pairing_public_key",
-        &challenge.admin_pairing_public_key,
-    )?;
-    let shared = x25519_shared(new_device_e2ee_private, peer)?;
     let aad = challenge_aad(
         join_request,
         join_request_hash,
@@ -2758,7 +2722,7 @@ fn decrypt_challenge(
         &challenge.admin_pairing_public_key,
         &challenge.challenge_expires_at,
     )?;
-    let key = derive_key(&shared, &aad, CHALLENGE_KDF_INFO)?;
+    let key = derive_key(shared, &aad, CHALLENGE_KDF_INFO)?;
     let nonce = URL_SAFE_NO_PAD
         .decode(challenge.ciphertext.nonce_b64u.as_bytes())
         .map_err(|_| crate::ImError::PermissionDenied)?;
@@ -2922,11 +2886,7 @@ fn derive_sas_for_state(
     transcript: &Value,
 ) -> crate::ImResult<String> {
     let vault = required_vault(core)?;
-    let pairing_private = open_private_key(
-        &*vault,
-        &stored.pairing_private_ref,
-        SecretKind::IdentityJoinPairingPrivate,
-    )?;
+    let pairing_private = open_pairing_private_key(&*vault, &stored.pairing_private_ref)?;
     let challenge = stored
         .challenge
         .as_ref()
@@ -3023,6 +2983,14 @@ fn x25519_public_b64u(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<St
     }
 }
 
+fn public_key_bytes(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<Vec<u8>> {
+    match public_key {
+        anp::PublicKeyMaterial::Ed25519(key) => Ok(key.to_bytes().to_vec()),
+        anp::PublicKeyMaterial::X25519(key) => Ok(key.to_vec()),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
 fn decode_x25519_b64u(field: &str, value: &str) -> crate::ImResult<[u8; 32]> {
     let decoded = URL_SAFE_NO_PAD
         .decode(value.as_bytes())
@@ -3054,11 +3022,19 @@ fn verification_method(
     }))
 }
 
-fn sign_bytes(private_key: &anp::PrivateKeyMaterial, content: &[u8]) -> crate::ImResult<String> {
-    let signature = private_key
-        .sign_message(content)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    Ok(URL_SAFE_NO_PAD.encode(signature))
+fn verification_method_from_multibase(
+    did: &str,
+    key_id: &str,
+    public_key_multibase: &str,
+    method_type: &str,
+) -> crate::ImResult<Value> {
+    let public = anp::authentication::extract_public_key(&json!({
+        "id": key_id,
+        "type": method_type,
+        "publicKeyMultibase": public_key_multibase,
+    }))
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    verification_method(did, key_id, &public)
 }
 
 fn canonical_bytes(value: &Value) -> crate::ImResult<Vec<u8>> {
@@ -3337,18 +3313,11 @@ impl<'a> JoinStateStore<'a> {
         }
         match stored.side {
             DeviceJoinSide::NewDevice => {
-                let long_term_refs_present =
-                    stored.signing_private_ref.as_ref().is_some_and(|value| {
-                        value.kind == SecretKind::IdentityDeviceSigningPrivate
-                    }) && stored.e2ee_private_ref.as_ref().is_some_and(|value| {
-                        value.kind == SecretKind::IdentityE2eeAgreementPrivate
-                    });
-                let long_term_refs_cleaned = stored.phase == DeviceJoinLocalPhase::Authorized
-                    && !stored.activation_pending
-                    && stored.signing_private_ref.is_none()
-                    && stored.e2ee_private_ref.is_none();
-                if (!long_term_refs_present && !long_term_refs_cleaned)
-                    || stored.admin_identity.is_some()
+                if stored.join_custody.as_ref().is_none_or(|custody| {
+                    custody.store_id.trim().is_empty()
+                        || custody.identity_id.trim().is_empty()
+                        || custody.enrollment_id.trim().is_empty()
+                }) || stored.admin_identity.is_some()
                     || stored.approval.is_some()
                     || (stored.activation_pending
                         && !matches!(
@@ -3365,8 +3334,7 @@ impl<'a> JoinStateStore<'a> {
                 }
             }
             DeviceJoinSide::Admin => {
-                if stored.signing_private_ref.is_some()
-                    || stored.e2ee_private_ref.is_some()
+                if stored.join_custody.is_some()
                     || stored.activation_pending
                     || stored.admin_identity.is_none()
                     || stored.join_session_token_ref.is_some()

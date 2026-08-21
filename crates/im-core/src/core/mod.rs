@@ -409,7 +409,7 @@ impl ImCore {
     pub(crate) fn client_with_pending_anp_identity(
         &self,
         identity: anp_identity::DidIdentity,
-        handle: &str,
+        handle: Option<&str>,
         display_name: &str,
         protocol_device_id: &crate::ids::ProtocolDeviceId,
     ) -> crate::ImResult<ImClient> {
@@ -421,7 +421,9 @@ impl ImCore {
                 .filter(|value| !value.is_empty())
                 .ok_or(crate::ImError::PermissionDenied)?,
         )?;
-        let handle = crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain)?;
+        let handle = handle
+            .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
+            .transpose()?;
         let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
             std::sync::Arc::new(
                 crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
@@ -430,7 +432,7 @@ impl ImCore {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
                 did: did.clone(),
-                handle: Some(handle),
+                handle,
                 display_name: Some(display_name.to_owned()),
                 local_alias: None,
                 device_id: Some(protocol_device_id.as_str().to_owned()),

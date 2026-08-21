@@ -197,6 +197,201 @@ pub(crate) fn provision_registration_identity(
     Ok(identity)
 }
 
+pub(crate) fn prepare_join_enrollment(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    resolved_document: &serde_json::Value,
+) -> crate::ImResult<(
+    crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    anp_identity::PreparedEnrollment,
+)> {
+    if resolved_document
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        != Some(did.as_str())
+        || !anp::authentication::validate_did_document_binding(resolved_document, true)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut store = open_controller_store(core)?;
+    let (identity, prepared) = match store.open_identity(did.as_str()) {
+        Ok(identity) => {
+            if identity.state() != IdentityState::Enrolling
+                || anp_identity::canonical_document_digest(identity.document())
+                    .map_err(map_error)?
+                    != anp_identity::canonical_document_digest(resolved_document)
+                        .map_err(map_error)?
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            let prepared = identity
+                .pending_enrollment()
+                .ok_or(crate::ImError::PermissionDenied)?;
+            (identity, prepared)
+        }
+        Err(anp_identity::DidError::IdentityNotFound) => {
+            let device_id = crate::ids::ProtocolDeviceId::generate()?;
+            let signing_fragment = format!("{}-sign", device_id.as_str());
+            let e2ee_fragment = format!("{}-e2ee", device_id.as_str());
+            store
+                .prepare_enrollment(anp_identity::EnrollmentSpec {
+                    verified_document: resolved_document.clone(),
+                    evidence: VerifiedDocumentEvidence {
+                        document_version: 1,
+                        registry_version: 1,
+                        document_digest: crate::internal::identity_wire::document::document_hash(
+                            resolved_document,
+                        )?,
+                    },
+                    device_id: device_id.as_str().to_owned(),
+                    device_signing_fragment: signing_fragment,
+                    device_e2ee_fragment: e2ee_fragment,
+                    profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                    capabilities: anp_identity::Capabilities { did_wba: true },
+                })
+                .map_err(map_error)?
+        }
+        Err(error) => return Err(map_error(error)),
+    };
+    if prepared.did != did.as_str() || prepared.identity_id != identity.identity_id() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok((
+        crate::internal::identity_join_activation_pending::JoinEnrollmentRef {
+            store_id: store.manifest().store_id.clone(),
+            identity_id: prepared.identity_id.clone(),
+            enrollment_id: prepared.enrollment_id.clone(),
+        },
+        prepared,
+    ))
+}
+
+pub(crate) fn sign_join_enrollment(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    kid: &str,
+    message: &[u8],
+) -> crate::ImResult<Vec<u8>> {
+    open_join_identity(core, did, custody)?
+        .sign_pending_enrollment(&custody.enrollment_id, kid, message)
+        .map_err(map_error)
+}
+
+pub(crate) fn ecdh_join_enrollment(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    kid: &str,
+    peer_public: &[u8],
+) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+    open_join_identity(core, did, custody)?
+        .ecdh_pending_enrollment(&custody.enrollment_id, kid, peer_public)
+        .map(|shared| zeroize::Zeroizing::new(*shared.as_bytes()))
+        .map_err(map_error)
+}
+
+pub(crate) fn adopt_join_identity(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    let mut identity = open_join_identity(core, did, custody)?;
+    let outcome = identity
+        .adopt_verified_document(AdoptVerifiedDocumentSpec {
+            document: document.clone(),
+            evidence: VerifiedDocumentEvidence {
+                document_version: checkpoint.document_version,
+                registry_version: checkpoint.registry_version,
+                document_digest: checkpoint.document_hash.clone(),
+            },
+        })
+        .map_err(map_error)?;
+    if !matches!(
+        outcome,
+        anp_identity::AdoptDocumentOutcome::Activated
+            | anp_identity::AdoptDocumentOutcome::Unchanged
+    ) || identity.state() != IdentityState::Active
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+pub(crate) fn active_join_identity(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    signing_kid: &str,
+    e2ee_kid: &str,
+) -> crate::ImResult<anp_identity::DidIdentity> {
+    let identity = open_join_identity(core, did, custody)?;
+    if identity.state() != IdentityState::Active {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    for (kid, role) in [
+        (signing_kid, KeyRole::DeviceSigning),
+        (e2ee_kid, KeyRole::E2eeAgreement),
+    ] {
+        let key = identity.key_metadata(kid).map_err(map_error)?;
+        if key.role != role
+            || key.origin != KeyOrigin::Managed
+            || key.state != KeyState::Active
+            || key.material_erased
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    Ok(identity)
+}
+
+pub(crate) fn discard_join_enrollment(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+) -> crate::ImResult<()> {
+    let mut store = open_controller_store(core)?;
+    if store.manifest().store_id != custody.store_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    match store.open_identity(did.as_str()) {
+        Ok(identity) => {
+            if identity.identity_id() != custody.identity_id
+                || identity.state() != IdentityState::Enrolling
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            store
+                .discard_unpublished_enrollment(
+                    did.as_str(),
+                    &custody.identity_id,
+                    store.generation(),
+                )
+                .map_err(map_error)
+        }
+        Err(anp_identity::DidError::IdentityNotFound) => Ok(()),
+        Err(error) => Err(map_error(error)),
+    }
+}
+
+fn open_join_identity(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+) -> crate::ImResult<anp_identity::DidIdentity> {
+    let store = open_controller_store(core)?;
+    if store.manifest().store_id != custody.store_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let identity = store.open_identity(did.as_str()).map_err(map_error)?;
+    if identity.identity_id() != custody.identity_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(identity)
+}
+
 pub(crate) fn begin_registration_publication(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -612,6 +807,34 @@ mod tests {
             .list_identities()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn join_enrollment_reuses_the_same_pending_device_after_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "example.test",
+            "joined",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let first =
+            prepare_join_enrollment(&core, &generated.did, &generated.did_document).unwrap();
+        let recovered =
+            prepare_join_enrollment(&core, &generated.did, &generated.did_document).unwrap();
+
+        assert_eq!(recovered, first);
+        assert_eq!(
+            open_controller_store(&core)
+                .unwrap()
+                .list_identities()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn test_config() -> crate::ImCoreConfig {
