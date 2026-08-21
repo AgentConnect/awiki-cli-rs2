@@ -206,6 +206,25 @@ impl std::fmt::Debug for AnpIdentityProjectionStorage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnpProjectionFailurePoint {
+    AuthPersisted,
+    IndexCommitted,
+    DefaultCommitted,
+}
+
+fn maybe_fail_anp_projection(
+    configured: Option<AnpProjectionFailurePoint>,
+    current: AnpProjectionFailurePoint,
+) -> crate::ImResult<()> {
+    if configured == Some(current) {
+        return Err(crate::ImError::Io {
+            detail: "injected anp identity projection failure".to_string(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredIdentity {
     pub(crate) local_alias: String,
@@ -336,8 +355,17 @@ impl<'a> IdentityStore<'a> {
 
     pub(crate) fn save_anp_identity_projection(
         &self,
+        input: SaveIdentityInput,
+        storage: AnpIdentityProjectionStorage,
+    ) -> crate::ImResult<StoredIdentity> {
+        self.save_anp_identity_projection_inner(input, storage, None)
+    }
+
+    fn save_anp_identity_projection_inner(
+        &self,
         mut input: SaveIdentityInput,
         storage: AnpIdentityProjectionStorage,
+        failure: Option<AnpProjectionFailurePoint>,
     ) -> crate::ImResult<StoredIdentity> {
         validate_anp_projection_input(&input, &storage)?;
         let lock = self.lock_index_mutation()?;
@@ -428,6 +456,7 @@ impl<'a> IdentityStore<'a> {
                 Some(auth_ref)
             }
         };
+        maybe_fail_anp_projection(failure, AnpProjectionFailurePoint::AuthPersisted)?;
         remove_file_if_exists(&identity_dir.join(KEY1_PUBLIC_FILE_NAME))?;
         remove_file_if_exists(&identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME))?;
         if input.make_default || index.default_credential_name.is_empty() {
@@ -458,9 +487,11 @@ impl<'a> IdentityStore<'a> {
             },
         );
         self.save_index_locked(&lock, index)?;
+        maybe_fail_anp_projection(failure, AnpProjectionFailurePoint::IndexCommitted)?;
         if is_default {
             self.write_default_identity(&local_alias)?;
         }
+        maybe_fail_anp_projection(failure, AnpProjectionFailurePoint::DefaultCommitted)?;
         Ok(StoredIdentity {
             local_alias,
             dir_name,
@@ -5175,6 +5206,50 @@ mod tests {
             .join("bob-anp-id")
             .join(AUTH_FILE_NAME)
             .exists());
+    }
+
+    #[test]
+    fn anp_identity_projection_retries_every_local_commit_crash_without_key_duplication() {
+        for (index, failure) in [
+            AnpProjectionFailurePoint::AuthPersisted,
+            AnpProjectionFailurePoint::IndexCommitted,
+            AnpProjectionFailurePoint::DefaultCommitted,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root = tempfile::tempdir().unwrap();
+            let paths = test_paths(root.path());
+            let store = IdentityStore::new(&paths);
+            let alias = format!("retry-{index}");
+            let did = format!("did:example:retry-{index}");
+            let unique_id = format!("retry-anp-{index}");
+            let input = anp_projection_input(&alias, &did, &unique_id);
+            let storage = AnpIdentityProjectionStorage {
+                store_id: "store-retry".to_string(),
+                identity_id: format!("custody-retry-{index}"),
+                auth: AnpIdentityProjectionAuth::FileCompat,
+            };
+            assert!(store
+                .save_anp_identity_projection_inner(input.clone(), storage.clone(), Some(failure),)
+                .is_err());
+            store.save_anp_identity_projection(input, storage).unwrap();
+            let committed = store.load_index().unwrap();
+            assert_eq!(committed.credentials.len(), 1);
+            let entry = &committed.credentials[&alias];
+            assert_eq!(
+                entry.identity_custody_backend.as_deref(),
+                Some("anp_identity")
+            );
+            assert_eq!(
+                entry.anp_identity_id.as_deref(),
+                Some(format!("custody-retry-{index}").as_str())
+            );
+            let identity_dir = paths.identity_root_dir.join(unique_id);
+            assert!(identity_dir.join(AUTH_FILE_NAME).exists());
+            assert!(!identity_dir.join(KEY1_PRIVATE_FILE_NAME).exists());
+            assert!(!identity_dir.join(E2EE_AGREEMENT_PRIVATE_FILE_NAME).exists());
+        }
     }
 
     fn anp_projection_input(alias: &str, did: &str, unique_id: &str) -> SaveIdentityInput {
