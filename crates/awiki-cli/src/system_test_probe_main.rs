@@ -314,7 +314,11 @@ enum DaemonFixturePrepareFailureStage {
     ControllerDocument,
     SubkeyPrepare,
     SubkeyAuthorizeLocalPermission,
-    SubkeyAuthorizeServiceDocument,
+    SubkeyAuthorizeServiceDocumentProof,
+    SubkeyAuthorizeServiceDocumentBinding,
+    SubkeyAuthorizeServiceDocumentAuthority,
+    SubkeyAuthorizeServiceDocumentDelegated,
+    SubkeyAuthorizeServiceDocumentOther,
     SubkeyAuthorizeServiceProof,
     SubkeyAuthorizeServiceCheckpoint,
     SubkeyAuthorizeServiceAuthorization,
@@ -343,7 +347,17 @@ impl DaemonFixturePrepareFailureStage {
             Self::ControllerDocument => "controller_document",
             Self::SubkeyPrepare => "subkey_prepare",
             Self::SubkeyAuthorizeLocalPermission => "subkey_authorize_local_permission",
-            Self::SubkeyAuthorizeServiceDocument => "subkey_authorize_service_document",
+            Self::SubkeyAuthorizeServiceDocumentProof => "subkey_authorize_service_document_proof",
+            Self::SubkeyAuthorizeServiceDocumentBinding => {
+                "subkey_authorize_service_document_binding"
+            }
+            Self::SubkeyAuthorizeServiceDocumentAuthority => {
+                "subkey_authorize_service_document_authority"
+            }
+            Self::SubkeyAuthorizeServiceDocumentDelegated => {
+                "subkey_authorize_service_document_delegated"
+            }
+            Self::SubkeyAuthorizeServiceDocumentOther => "subkey_authorize_service_document_other",
             Self::SubkeyAuthorizeServiceProof => "subkey_authorize_service_proof",
             Self::SubkeyAuthorizeServiceCheckpoint => "subkey_authorize_service_checkpoint",
             Self::SubkeyAuthorizeServiceAuthorization => "subkey_authorize_service_authorization",
@@ -371,14 +385,14 @@ fn daemon_subkey_authorize_failure_stage(
         im_core::ImError::PermissionDenied => {
             DaemonFixturePrepareFailureStage::SubkeyAuthorizeLocalPermission
         }
-        im_core::ImError::Service { data, .. } => {
+        im_core::ImError::Service { data, message, .. } => {
             let code = data
                 .as_ref()
                 .and_then(|value| value.get("awiki_code"))
                 .and_then(Value::as_str);
             match code {
                 Some("device.document_invalid" | "device.manifest_binding_invalid") => {
-                    DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocument
+                    daemon_subkey_document_failure_stage(message)
                 }
                 Some(code) if code.contains("proof") => {
                     DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceProof
@@ -400,6 +414,23 @@ fn daemon_subkey_authorize_failure_stage(
             }
         }
         _ => DaemonFixturePrepareFailureStage::SubkeyAuthorizeLocalOther,
+    }
+}
+
+fn daemon_subkey_document_failure_stage(message: &str) -> DaemonFixturePrepareFailureStage {
+    if message.contains("daemon-key-1") || message.contains("Delegated daemon key") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentDelegated
+    } else if message.contains("proof") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentProof
+    } else if message.contains("binding") {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentBinding
+    } else if message.contains("deviceManifest")
+        || message.contains("root or device")
+        || message.contains("authority")
+    {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentAuthority
+    } else {
+        DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentOther
     }
 }
 
@@ -5181,7 +5212,17 @@ mod tests {
         };
         assert_eq!(
             daemon_subkey_authorize_failure_stage(&service),
-            DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocument
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentOther
+        );
+        assert_eq!(
+            daemon_subkey_document_failure_stage(
+                "DID Document authentication references daemon-key-1 but verificationMethod is missing"
+            ),
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentDelegated
+        );
+        assert_eq!(
+            daemon_subkey_document_failure_stage("Document update DID root proof is invalid"),
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocumentProof
         );
         assert_eq!(
             daemon_subkey_authorize_failure_stage(&im_core::ImError::PermissionDenied),
