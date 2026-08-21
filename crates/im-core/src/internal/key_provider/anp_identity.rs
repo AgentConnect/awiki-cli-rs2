@@ -102,6 +102,20 @@ impl AnpIdentitySigner {
         })
     }
 
+    fn identity_operation<T>(
+        &self,
+        mut operation: impl FnMut(&DidIdentity) -> anp_identity::DidResult<T>,
+    ) -> crate::ImResult<T> {
+        let mut identity = self.lock_identity()?;
+        match operation(&identity) {
+            Err(anp_identity::DidError::Conflict) => {
+                identity.reload().map_err(map_identity_error)?;
+                operation(&identity).map_err(map_identity_error)
+            }
+            result => result.map_err(map_identity_error),
+        }
+    }
+
     fn active_kid(&self, roles: &[KeyRole]) -> crate::ImResult<String> {
         let identity = self.lock_identity()?;
         if identity.state() != anp_identity::IdentityState::Active {
@@ -259,15 +273,11 @@ impl super::IdentitySigner for AnpIdentitySigner {
     }
 
     fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
-        self.lock_identity()?
-            .sign(kid, message)
-            .map_err(map_identity_error)
+        self.identity_operation(|identity| identity.sign(kid, message))
     }
 
     fn sign_device_assertion(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
-        self.lock_identity()?
-            .sign_device_assertion(kid, message)
-            .map_err(map_identity_error)
+        self.identity_operation(|identity| identity.sign_device_assertion(kid, message))
     }
 
     fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
@@ -275,10 +285,8 @@ impl super::IdentitySigner for AnpIdentitySigner {
     }
 
     fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
-        self.lock_identity()?
-            .ecdh(kid, peer_public)
+        self.identity_operation(|identity| identity.ecdh(kid, peer_public))
             .map(|secret| zeroize::Zeroizing::new(*secret.as_bytes()))
-            .map_err(map_identity_error)
     }
 
     fn sign_object_proof(
@@ -288,9 +296,9 @@ impl super::IdentitySigner for AnpIdentitySigner {
         issuer_did: &str,
         created: Option<String>,
     ) -> crate::ImResult<serde_json::Value> {
-        self.lock_identity()?
-            .sign_object_proof(kid, document, issuer_did, created)
-            .map_err(map_identity_error)
+        self.identity_operation(|identity| {
+            identity.sign_object_proof(kid, document, issuer_did, created.clone())
+        })
     }
 
     fn sign_document_proof(
@@ -299,9 +307,9 @@ impl super::IdentitySigner for AnpIdentitySigner {
         verification_method: &str,
         options: anp::proof::ProofGenerationOptions,
     ) -> crate::ImResult<serde_json::Value> {
-        self.lock_identity()?
-            .sign_document_proof(document, verification_method, options)
-            .map_err(map_identity_error)
+        self.identity_operation(|identity| {
+            identity.sign_document_proof(document, verification_method, options.clone())
+        })
     }
 
     fn sign_origin_proof(
@@ -312,9 +320,9 @@ impl super::IdentitySigner for AnpIdentitySigner {
         kid: &str,
         options: anp::proof::Rfc9421OriginProofGenerationOptions,
     ) -> crate::ImResult<anp::proof::Rfc9421OriginProof> {
-        self.lock_identity()?
-            .sign_origin_proof(method, meta, body, kid, options)
-            .map_err(map_identity_error)
+        self.identity_operation(|identity| {
+            identity.sign_origin_proof(method, meta, body, kid, options.clone())
+        })
     }
 
     fn legacy_did_wba_header(
@@ -323,36 +331,35 @@ impl super::IdentitySigner for AnpIdentitySigner {
         service_domain: &str,
         version: &str,
     ) -> crate::ImResult<String> {
-        self.lock_identity()?
-            .legacy_did_wba_header(kid, service_domain, version)
-            .map_err(map_identity_error)
+        self.identity_operation(|identity| {
+            identity.legacy_did_wba_header(kid, service_domain, version)
+        })
     }
 
     fn ensure_root_control_available(&self) -> crate::ImResult<()> {
-        let identity = self.lock_identity()?;
-        let root_kid = identity
-            .keys()
-            .iter()
-            .find(|key| {
-                key.role == KeyRole::RootControl
-                    && key.state == KeyState::Active
-                    && key.origin == anp_identity::KeyOrigin::Managed
-            })
-            .map(|key| key.kid.clone())
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let mut unsigned = identity.document().clone();
-        let domain = unsigned
-            .get("proof")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|proof| proof.get("domain"))
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned);
-        unsigned
-            .as_object_mut()
-            .ok_or(crate::ImError::PermissionDenied)?
-            .remove("proof");
-        identity
-            .sign_document_proof(
+        self.identity_operation(|identity| {
+            let root_kid = identity
+                .keys()
+                .iter()
+                .find(|key| {
+                    key.role == KeyRole::RootControl
+                        && key.state == KeyState::Active
+                        && key.origin == anp_identity::KeyOrigin::Managed
+                })
+                .map(|key| key.kid.clone())
+                .ok_or(anp_identity::DidError::KeyNotFound)?;
+            let mut unsigned = identity.document().clone();
+            let domain = unsigned
+                .get("proof")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|proof| proof.get("domain"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned);
+            unsigned
+                .as_object_mut()
+                .ok_or(anp_identity::DidError::InvalidIdentity)?
+                .remove("proof");
+            identity.sign_document_proof(
                 &unsigned,
                 &root_kid,
                 anp::proof::ProofGenerationOptions {
@@ -363,8 +370,8 @@ impl super::IdentitySigner for AnpIdentitySigner {
                     ..Default::default()
                 },
             )
-            .map(|_| ())
-            .map_err(map_identity_error)
+        })
+        .map(|_| ())
     }
 
     fn http_signature_headers(
@@ -376,16 +383,16 @@ impl super::IdentitySigner for AnpIdentitySigner {
         body: Option<&[u8]>,
         options: anp::authentication::HttpSignatureOptions,
     ) -> crate::ImResult<BTreeMap<String, String>> {
-        self.lock_identity()?
-            .http_signature_headers_with_options(
+        self.identity_operation(|identity| {
+            identity.http_signature_headers_with_options(
                 kid,
                 request_url,
                 request_method,
                 headers,
                 body,
-                options,
+                options.clone(),
             )
-            .map_err(map_identity_error)
+        })
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {

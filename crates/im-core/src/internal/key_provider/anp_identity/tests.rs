@@ -1,6 +1,6 @@
 use anp_identity::{
     Capabilities, DeviceManifestEntrySpec, DeviceManifestSpec, DidCreateSpec, DidExtensionSpec,
-    DidProfile, DidStore, KeyRole, ManagedKeySpec,
+    DidProfile, DidStore, KeyRole, ManagedKeySpec, ServiceSpec,
 };
 use serde_json::json;
 
@@ -94,6 +94,50 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
     );
     assert!(!format!("{signer:?}").contains("test-token"));
     signer.reload().unwrap();
+}
+
+#[test]
+fn anp_identity_signer_reloads_once_after_external_generation_advance() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store =
+        DidStore::initialize_injected(root.path().join("store"), "host", [42_u8; 32]).unwrap();
+    let identity = store.create_identity(spec()).unwrap();
+    let did = identity.did().to_owned();
+    let request_kid = format!("{did}#request");
+    let signer = AnpIdentitySigner::new_ephemeral(identity);
+    let mut external = store.open_identity(&did).unwrap();
+    let prepared = external
+        .prepare_update(anp_identity::DocumentUpdateSpec {
+            request_signing_rotation: None,
+            request_signing_mutations: Vec::new(),
+            device_mutations: Vec::new(),
+            services: Some(vec![ServiceSpec {
+                id: "message-v2".to_owned(),
+                service_type: "ANPMessageService".to_owned(),
+                service_endpoint: "https://example.com/im/v2".to_owned(),
+                service_did: None,
+                profiles: vec!["anp.core.binding.v1".to_owned()],
+                security_profiles: vec!["transport-protected".to_owned()],
+            }]),
+        })
+        .unwrap();
+    external.begin_publication(&prepared.revision_id).unwrap();
+    external.mark_published(&prepared.revision_id).unwrap();
+    external.commit_update(&prepared.revision_id).unwrap();
+
+    let signature = signer.sign(&request_kid, b"after-update").unwrap();
+    signer
+        .public_key(&request_kid)
+        .unwrap()
+        .verify_message(b"after-update", &signature)
+        .unwrap();
+    assert!(signer.did_document().unwrap()["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|service| service["id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with("#message-v2"))));
 }
 
 fn spec() -> DidCreateSpec {
