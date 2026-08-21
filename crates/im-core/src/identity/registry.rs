@@ -3790,6 +3790,95 @@ mod tests {
     }
 
     #[test]
+    fn new_identity_creation_uses_anp_custody_then_commits_only_a_public_projection() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        let mut custody = open_controller_anp_identity_store(&core).unwrap();
+        let identity = custody
+            .create_identity(anp_identity_spec("created"))
+            .unwrap();
+        let did = crate::ids::Did::parse(identity.did()).unwrap();
+        let root_kid = identity
+            .keys()
+            .iter()
+            .find(|key| key.role == anp_identity::KeyRole::RootControl)
+            .unwrap()
+            .kid
+            .clone();
+        let device_kid = identity
+            .keys()
+            .iter()
+            .find(|key| key.role == anp_identity::KeyRole::DeviceSigning)
+            .unwrap()
+            .kid
+            .clone();
+        let agreement_kid = identity
+            .keys()
+            .iter()
+            .find(|key| key.role == anp_identity::KeyRole::E2eeAgreement)
+            .unwrap()
+            .kid
+            .clone();
+        crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .save_anp_identity_projection(
+                crate::internal::identity_store::SaveIdentityInput {
+                    local_alias: "alice".to_string(),
+                    did: did.clone(),
+                    unique_id: "created-anp-id".to_string(),
+                    user_id: "user-alice".to_string(),
+                    display_name: "Alice".to_string(),
+                    handle: "alice".to_string(),
+                    full_handle: "alice.example.com".to_string(),
+                    binding_generation: None,
+                    jwt_token: "new-anp-token".to_string(),
+                    did_document: Some(identity.document().clone()),
+                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                        root_key_id: root_kid,
+                        device_signing_key_id: device_kid,
+                        device_e2ee_key_id: agreement_kid,
+                    },
+                    device_state: None,
+                    key1_private_pem: String::new(),
+                    key1_public_pem: String::new(),
+                    e2ee_signing_private_pem: String::new(),
+                    e2ee_agreement_private_pem: String::new(),
+                    daemon_subkey_package: None,
+                    make_default: true,
+                },
+                crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
+                    &core,
+                    custody.manifest().store_id.clone(),
+                    identity.identity_id().to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let runtime = core
+            .identities()
+            .load_runtime(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        runtime
+            .key_provider
+            .ensure_request_signing_available()
+            .unwrap();
+        runtime.key_provider.ensure_agreement_available().unwrap();
+        assert_eq!(runtime.summary.did, did);
+        assert!(
+            std::fs::read_dir(paths.identities.identity_root_dir.join("created-anp-id"))
+                .unwrap()
+                .all(|entry| {
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("private")
+                })
+        );
+    }
+
+    #[test]
     fn vault_required_without_vault_options_fails_closed() {
         let root = tempfile::tempdir().unwrap();
         let err = match crate::ImCore::new_with_options(
