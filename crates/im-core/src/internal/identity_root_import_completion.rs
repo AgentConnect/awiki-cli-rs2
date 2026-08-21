@@ -202,6 +202,7 @@ impl std::fmt::Debug for RootKeyEnvelope {
 pub(crate) enum RootSecretPayload {
     NotRoot,
     Root(Zeroizing<RootKeyEnvelope>),
+    Wrapped(anp_identity::WrappedRootEnvelope),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,36 +259,64 @@ pub(crate) struct RootImportCustodyRef {
 #[derive(Debug, Deserialize)]
 struct RootTypeProbe {
     system_type: Option<String>,
+    #[serde(rename = "type")]
+    envelope_type: Option<String>,
+    version: Option<u32>,
 }
 
 pub(crate) fn decode_root_secret_payload(
     plaintext: &V2SecretJsonPayload,
 ) -> crate::ImResult<RootSecretPayload> {
-    // This probe intentionally ignores every member except `system_type`, so
-    // it never materializes the private-key string in an ordinary JSON tree.
+    // This probe intentionally ignores payload bodies and never materializes
+    // the receive-only legacy private-key string in an ordinary JSON tree.
     let probe: RootTypeProbe =
         serde_json::from_slice(plaintext.expose_secret()).map_err(redacted_serialization)?;
-    let Some(system_type) = probe.system_type.as_deref() else {
-        return Ok(RootSecretPayload::NotRoot);
-    };
-    if system_type != ROOT_KEY_ENVELOPE_SYSTEM_TYPE {
-        return Ok(RootSecretPayload::NotRoot);
+    match (probe.system_type.as_deref(), probe.envelope_type.as_deref()) {
+        (Some(ROOT_KEY_ENVELOPE_SYSTEM_TYPE), None) => {
+            let envelope: RootKeyEnvelope = serde_json::from_slice(plaintext.expose_secret())
+                .map_err(redacted_serialization)?;
+            require_canonical_root_payload(plaintext, &envelope)?;
+            Ok(RootSecretPayload::Root(Zeroizing::new(envelope)))
+        }
+        (None, Some(anp_identity::WRAPPED_ROOT_ENVELOPE_TYPE)) => {
+            let envelope: anp_identity::WrappedRootEnvelope =
+                serde_json::from_slice(plaintext.expose_secret())
+                    .map_err(redacted_serialization)?;
+            require_canonical_root_payload(plaintext, &envelope)?;
+            Ok(RootSecretPayload::Wrapped(envelope))
+        }
+        (None, None) => Ok(RootSecretPayload::NotRoot),
+        (Some(_), None) => Ok(RootSecretPayload::NotRoot),
+        (None, Some(envelope_type)) if envelope_type.starts_with("anp.identity.root-transfer.") => {
+            Err(crate::ImError::PermissionDenied)
+        }
+        (None, Some(_)) => Ok(RootSecretPayload::NotRoot),
+        (Some(_), Some(_)) => Err(crate::ImError::PermissionDenied),
     }
-    let envelope: RootKeyEnvelope =
-        serde_json::from_slice(plaintext.expose_secret()).map_err(redacted_serialization)?;
-    let canonical = Zeroizing::new(
-        serde_json_canonicalizer::to_vec(&envelope).map_err(redacted_serialization)?,
-    );
-    if canonical.as_slice() != plaintext.expose_secret() {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(RootSecretPayload::Root(Zeroizing::new(envelope)))
 }
 
 fn root_system_type(plaintext: &V2SecretJsonPayload) -> crate::ImResult<bool> {
     let probe: RootTypeProbe =
         serde_json::from_slice(plaintext.expose_secret()).map_err(redacted_serialization)?;
-    Ok(probe.system_type.as_deref() == Some(ROOT_KEY_ENVELOPE_SYSTEM_TYPE))
+    Ok(
+        probe.system_type.as_deref() == Some(ROOT_KEY_ENVELOPE_SYSTEM_TYPE)
+            || probe
+                .envelope_type
+                .as_deref()
+                .is_some_and(|value| value.starts_with("anp.identity.root-transfer.")),
+    )
+}
+
+fn require_canonical_root_payload(
+    plaintext: &V2SecretJsonPayload,
+    value: &impl Serialize,
+) -> crate::ImResult<()> {
+    let canonical =
+        Zeroizing::new(serde_json_canonicalizer::to_vec(value).map_err(redacted_serialization)?);
+    if canonical.as_slice() != plaintext.expose_secret() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 pub(crate) async fn receive_root_envelope_candidate(
@@ -555,6 +584,15 @@ fn classify_and_seal_root(
         Ok(RootSecretPayload::NotRoot) => Ok(RootInboundValidation::NotRoot),
         Ok(RootSecretPayload::Root(envelope)) => match validate_and_seal_pending_root(
             core, client, metadata, body, session, delivery, &envelope, document, registry, now,
+        ) {
+            Ok(plan) => Ok(RootInboundValidation::Root(plan)),
+            Err(crate::ImError::PermissionDenied)
+            | Err(crate::ImError::InvalidInput { .. })
+            | Err(crate::ImError::Serialization { .. }) => Ok(RootInboundValidation::Terminal),
+            Err(error) => Err(error),
+        },
+        Ok(RootSecretPayload::Wrapped(envelope)) => match validate_and_import_wrapped_root(
+            core, client, metadata, delivery, &envelope, document, registry, now,
         ) {
             Ok(plan) => Ok(RootInboundValidation::Root(plan)),
             Err(crate::ImError::PermissionDenied)
@@ -1603,6 +1641,177 @@ pub(crate) fn validate_and_seal_pending_root(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn validate_and_import_wrapped_root(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    metadata: &V2DirectMetadata,
+    delivery: &TrustedDirectDeliveryContext,
+    envelope: &anp_identity::WrappedRootEnvelope,
+    document: &Value,
+    registry: &DeviceJoinRemoteRegistry,
+    now: OffsetDateTime,
+) -> crate::ImResult<RootImportSealedPlan> {
+    delivery.validate()?;
+    let accepted_at = authoritative_root_accepted_at(delivery)?;
+    let context = &envelope.context;
+    if envelope.envelope_type != anp_identity::WRAPPED_ROOT_ENVELOPE_TYPE
+        || envelope.version != anp_identity::WRAPPED_ROOT_ENVELOPE_VERSION
+        || context.source_did != client.did().as_str()
+        || context.target_did != client.did().as_str()
+        || context.sender_device_id != metadata.sender_device_id
+        || context.recipient_device_id != metadata.recipient_device_id
+        || document.get("id").and_then(Value::as_str) != Some(client.did().as_str())
+        || registry.did.as_str() != client.did().as_str()
+        || context.checkpoint.document_version != registry.checkpoint.document_version
+        || context.checkpoint.registry_version != registry.checkpoint.registry_version
+        || context.checkpoint.document_digest
+            != anp_identity::canonical_document_digest(document)
+                .map_err(crate::internal::identity_custody::map_error)?
+        || context.checkpoint.document_digest != registry.checkpoint.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let local_entry = local_device_entry(core, client)?;
+    let authorization = local_entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .filter(|authorization| {
+            authorization.status == DeviceAuthorizationStatus::Active
+                && authorization.protocol_device_id.as_str() == context.recipient_device_id
+                && authorization.e2ee_key_id == context.recipient_agreement_kid
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let sender = registry
+        .devices
+        .iter()
+        .find(|device| device.device_id == context.sender_device_id)
+        .filter(|device| {
+            device.status == DeviceAuthorizationStatus::Active
+                && device.role == DeviceAuthorizationRole::Admin
+                && device.management_ready
+                && device.device_id != authorization.protocol_device_id.as_str()
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let recipient = registry
+        .devices
+        .iter()
+        .find(|device| device.device_id == context.recipient_device_id)
+        .filter(|device| {
+            device.status == DeviceAuthorizationStatus::Active
+                && device.role == DeviceAuthorizationRole::Member
+                && !device.management_ready
+                && device.signing_key_id == authorization.signing_key_id
+                && device.e2ee_key_id == authorization.e2ee_key_id
+                && device.auth_generation == authorization.auth_generation
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let sender_manifest = anp::authentication::find_eligible_device(
+        document,
+        &sender.device_id,
+        anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?
+    .filter(|manifest| {
+        manifest.signing_key_id == sender.signing_key_id
+            && manifest.e2ee_key_id == sender.e2ee_key_id
+    })
+    .ok_or(crate::ImError::PermissionDenied)?;
+    let recipient_manifest = anp::authentication::find_eligible_device(
+        document,
+        &recipient.device_id,
+        anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?
+    .filter(|manifest| {
+        manifest.signing_key_id == recipient.signing_key_id
+            && manifest.e2ee_key_id == recipient.e2ee_key_id
+    })
+    .ok_or(crate::ImError::PermissionDenied)?;
+    let _ = recipient_manifest;
+    let imported_at = validate_wrapped_envelope_time(context, accepted_at, now)?;
+    let store = crate::internal::identity_custody::open_controller_store(core)?;
+    if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
+        || local_entry.anp_identity_store_id.as_deref() != Some(store.manifest().store_id.as_str())
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut identity = store
+        .open_identity(client.did().as_str())
+        .map_err(crate::internal::identity_custody::map_error)?;
+    if local_entry.anp_identity_id.as_deref() != Some(identity.identity_id()) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let outcome = identity
+        .import_wrapped_root(envelope)
+        .map_err(crate::internal::identity_custody::map_error)?;
+    if !matches!(
+        outcome,
+        anp_identity::RootTransferImportOutcome::Pending
+            | anp_identity::RootTransferImportOutcome::Active
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let pending_ref = RootImportCustodyRef {
+        store_id: store.manifest().store_id.clone(),
+        identity_id: identity.identity_id().to_owned(),
+        did: client.did().as_str().to_owned(),
+    };
+    Ok(RootImportSealedPlan {
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        local_device_id: authorization.protocol_device_id.as_str().to_owned(),
+        message_id: metadata.message_id.clone(),
+        sender_device_id: sender.device_id.clone(),
+        recipient_device_id: recipient.device_id.clone(),
+        sender_e2ee_key_id: sender_manifest.e2ee_key_id.clone(),
+        recipient_e2ee_key_id: context.recipient_agreement_kid.clone(),
+        accepted_at: accepted_at.to_owned(),
+        imported_at,
+        envelope_expires_at: context.expires_at.clone(),
+        pending_root_ref_json: serde_json::to_string(&pending_ref)
+            .map_err(redacted_serialization)?,
+        root_key_id: context.root_kid.clone(),
+        root_fingerprint: identity.root_key_fingerprint().to_owned(),
+        document_version: context.checkpoint.document_version,
+        document_hash: context.checkpoint.document_digest.clone(),
+        registry_version: context.checkpoint.registry_version,
+        now: format_time(now)?,
+    })
+}
+
+fn validate_wrapped_envelope_time(
+    context: &anp_identity::RootTransferContext,
+    accepted_at: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<String> {
+    let created_at = parse_whole_second_time("created_at", &context.created_at)?;
+    let expires_at = parse_whole_second_time("expires_at", &context.expires_at)?;
+    let accepted_at = parse_six_microsecond_time("accepted_at", accepted_at)?;
+    let accepted_ceiling = if accepted_at.nanosecond() == 0 {
+        accepted_at
+    } else {
+        accepted_at
+            .replace_nanosecond(0)
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            + Duration::seconds(1)
+    };
+    let current_whole_second = now
+        .to_offset(time::UtcOffset::UTC)
+        .replace_nanosecond(0)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let imported_at = accepted_ceiling.max(current_whole_second);
+    if expires_at <= created_at
+        || expires_at - created_at > Duration::seconds(ROOT_ENVELOPE_MAX_WINDOW_SECONDS)
+        || accepted_at > expires_at
+        || imported_at > expires_at
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    format_time(imported_at)
+}
+
 fn authoritative_root_accepted_at(
     delivery: &TrustedDirectDeliveryContext,
 ) -> crate::ImResult<&str> {
@@ -2168,6 +2377,69 @@ mod tests {
         )
         .unwrap();
         assert!(decode_root_secret_payload(&unknown).is_err());
+    }
+
+    #[test]
+    fn wrapped_root_dispatch_is_explicit_and_never_falls_back_to_legacy() {
+        let wrapped = anp_identity::WrappedRootEnvelope {
+            envelope_type: anp_identity::WRAPPED_ROOT_ENVELOPE_TYPE.to_owned(),
+            version: anp_identity::WRAPPED_ROOT_ENVELOPE_VERSION,
+            context: anp_identity::RootTransferContext {
+                source_did: "did:wba:example.test:user:alice:e1_root".to_owned(),
+                target_did: "did:wba:example.test:user:alice:e1_root".to_owned(),
+                sender_device_id: "sender".to_owned(),
+                recipient_device_id: "recipient".to_owned(),
+                recipient_agreement_kid: "did:wba:example.test:user:alice:e1_root#recipient-e2ee"
+                    .to_owned(),
+                root_kid: "did:wba:example.test:user:alice:e1_root#key-1".to_owned(),
+                checkpoint: anp_identity::DocumentCheckpoint {
+                    document_version: 1,
+                    registry_version: 1,
+                    document_digest: "sha256:test".to_owned(),
+                },
+                created_at: "2026-08-21T00:00:00Z".to_owned(),
+                expires_at: "2026-08-21T00:10:00Z".to_owned(),
+            },
+            ephemeral_public_b64u: "ephemeral".to_owned(),
+            nonce_b64u: "nonce".to_owned(),
+            ciphertext_b64u: "ciphertext".to_owned(),
+            signature_b64u: "signature".to_owned(),
+        };
+        let payload = V2SecretJsonPayload::from_canonical_json_object(
+            serde_json_canonicalizer::to_vec(&wrapped).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            decode_root_secret_payload(&payload).unwrap(),
+            RootSecretPayload::Wrapped(_)
+        ));
+
+        let mut unknown_version = serde_json::to_value(&wrapped).unwrap();
+        unknown_version["version"] = serde_json::json!(2);
+        let unknown_version = V2SecretJsonPayload::from_canonical_json_object(
+            serde_json_canonicalizer::to_vec(&unknown_version).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            decode_root_secret_payload(&unknown_version).unwrap(),
+            RootSecretPayload::Wrapped(envelope) if envelope.version == 2
+        ));
+
+        let mut unknown_type = serde_json::to_value(&wrapped).unwrap();
+        unknown_type["type"] = serde_json::json!("anp.identity.root-transfer.future");
+        let unknown_type = V2SecretJsonPayload::from_canonical_json_object(
+            serde_json_canonicalizer::to_vec(&unknown_type).unwrap(),
+        )
+        .unwrap();
+        assert!(decode_root_secret_payload(&unknown_type).is_err());
+
+        let mut ambiguous = serde_json::to_value(&wrapped).unwrap();
+        ambiguous["system_type"] = serde_json::json!(ROOT_KEY_ENVELOPE_SYSTEM_TYPE);
+        let ambiguous = V2SecretJsonPayload::from_canonical_json_object(
+            serde_json_canonicalizer::to_vec(&ambiguous).unwrap(),
+        )
+        .unwrap();
+        assert!(decode_root_secret_payload(&ambiguous).is_err());
     }
 
     #[test]

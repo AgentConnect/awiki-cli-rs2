@@ -106,6 +106,27 @@ fn pending_identity_records_do_not_embed_private_key_fields() {
     );
 }
 
+#[test]
+fn root_transfer_sender_has_no_legacy_plaintext_envelope_path() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/internal/identity_root_transfer_runtime.rs");
+    let source = fs::read_to_string(&path).unwrap();
+    let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+    for forbidden in [
+        "RootKeyEnvelopeV1",
+        "root_private_key_pkcs8_b64u",
+        "legacy_root_private_pem",
+        "awiki.device.root-key-envelope.v1",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "Root Transfer sender still contains legacy plaintext path marker {forbidden}"
+        );
+    }
+    assert!(production.contains("export_wrapped_root"));
+    assert!(production.contains("envelope_format = 'wrapped_v1'"));
+}
+
 fn rust_item<'a>(source: &'a str, declaration: &str) -> Option<&'a str> {
     let start = source.find(declaration)?;
     let open = start + source[start..].find('{')?;

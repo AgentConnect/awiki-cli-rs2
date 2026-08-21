@@ -6,7 +6,6 @@
 
 use anp::direct_e2ee::{V2SecretJsonPayload, V2SessionBinding, MTI_DIRECT_E2EE_SUITE_V2};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -25,7 +24,6 @@ use crate::internal::secure_direct::v2_store::{SqliteV2DirectStateStore, V2Owner
 const ROOT_TRANSFER_PREFLIGHT_DEADLINE_SECONDS: u64 = 10;
 const ROOT_TRANSFER_HANDLE_TTL_SECONDS: i64 = 60;
 const ROOT_TRANSFER_ENVELOPE_TTL_SECONDS: i64 = 600;
-const ROOT_KEY_ENVELOPE_V1: &str = "awiki.device.root-key-envelope.v1";
 pub(crate) const ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX: &str = "msg-root-key-";
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
@@ -128,26 +126,6 @@ impl RootKeyTransferAuthorizationStore {
             }
         }
     }
-}
-
-#[derive(Serialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
-#[serde(deny_unknown_fields)]
-struct RootKeyEnvelopeV1 {
-    system_type: String,
-    message_id: String,
-    did: String,
-    root_key_id: String,
-    root_public_key_fingerprint: String,
-    root_private_key_pkcs8_b64u: String,
-    sender_device_id: String,
-    sender_e2ee_key_id: String,
-    recipient_device_id: String,
-    recipient_e2ee_key_id: String,
-    document_version: u64,
-    document_hash: String,
-    registry_version: u64,
-    issued_at: String,
-    expires_at: String,
 }
 
 pub(crate) async fn prepare_root_key_transfer(
@@ -378,46 +356,57 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
 
-    // This is the first operation in the flow that opens the root Vault.
-    let root_pem = client
-        .runtime()
-        .key_provider
-        .legacy_root_private_pem()
+    let custody_store = crate::internal::identity_custody::open_controller_store(&core)
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
-    let root_der = zeroize::Zeroizing::new(
-        canonical_ed25519_pkcs8_der(&root_pem)
-            .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?,
-    );
-    validate_root_private_matches_document(&root_pem, &document, &state.root_key_id)
+    if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
+        || local_entry.anp_identity_store_id.as_deref()
+            != Some(custody_store.manifest().store_id.as_str())
+    {
+        return Err(root_error(RootTransferErrorCode::RootVaultUnavailable));
+    }
+    let custody_identity = custody_store
+        .open_identity(client.did().as_str())
+        .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
+    if local_entry.anp_identity_id.as_deref() != Some(custody_identity.identity_id())
+        || custody_identity.root_capability() != anp_identity::RootCapabilityState::Active
+    {
+        return Err(root_error(RootTransferErrorCode::RootVaultUnavailable));
+    }
+    let checkpoint = custody_identity
+        .checkpoint()
+        .ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
+    let document_digest = anp_identity::canonical_document_digest(&document)
         .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+    if checkpoint.document_version != registry.checkpoint.document_version
+        || checkpoint.registry_version != registry.checkpoint.registry_version
+        || checkpoint.document_digest != document_digest
+        || registry.checkpoint.document_hash != document_digest
+    {
+        return Err(root_error(RootTransferErrorCode::StateChanged));
+    }
+    let recipient_method =
+        anp::authentication::find_verification_method(&document, &recipient.e2ee_key_id)
+            .ok_or_else(|| root_error(RootTransferErrorCode::RecipientNotEligible))?;
+    let recipient_public = anp::authentication::extract_public_key(&recipient_method)
+        .map_err(|_| root_error(RootTransferErrorCode::RecipientNotEligible))?;
+    let anp::PublicKeyMaterial::X25519(recipient_agreement_public) = recipient_public else {
+        return Err(root_error(RootTransferErrorCode::RecipientNotEligible));
+    };
+    let envelope = custody_identity
+        .export_wrapped_root(anp_identity::RootTransferExportSpec {
+            target_did: state.did.as_str().to_owned(),
+            sender_device_id: sender.device_id.clone(),
+            recipient_device_id: recipient.device_id.clone(),
+            recipient_agreement_kid: recipient.e2ee_key_id.clone(),
+            recipient_agreement_public,
+            root_kid: state.root_key_id,
+            ttl_seconds: ROOT_TRANSFER_ENVELOPE_TTL_SECONDS as u32,
+        })
+        .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     let issued_at = whole_second(OffsetDateTime::now_utc())
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
-    let envelope_expires_at = issued_at + Duration::seconds(ROOT_TRANSFER_ENVELOPE_TTL_SECONDS);
-    let root_private_key_pkcs8_b64u = {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(root_der.as_slice()))
-    };
-    let envelope = zeroize::Zeroizing::new(RootKeyEnvelopeV1 {
-        system_type: ROOT_KEY_ENVELOPE_V1.to_owned(),
-        message_id: state.message_id.as_str().to_owned(),
-        did: state.did.as_str().to_owned(),
-        root_key_id: state.root_key_id,
-        root_public_key_fingerprint: state.root_public_key_fingerprint,
-        root_private_key_pkcs8_b64u: root_private_key_pkcs8_b64u.to_string(),
-        sender_device_id: sender.device_id.clone(),
-        sender_e2ee_key_id: sender.e2ee_key_id.clone(),
-        recipient_device_id: recipient.device_id.clone(),
-        recipient_e2ee_key_id: recipient.e2ee_key_id.clone(),
-        document_version: registry.checkpoint.document_version,
-        document_hash: registry.checkpoint.document_hash.clone(),
-        registry_version: registry.checkpoint.registry_version,
-        issued_at: format_time(issued_at)
-            .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
-        expires_at: format_time(envelope_expires_at)
-            .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
-    });
     let canonical = zeroize::Zeroizing::new(
-        serde_json_canonicalizer::to_vec(&*envelope)
+        serde_json_canonicalizer::to_vec(&envelope)
             .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
     );
     let plaintext = V2SecretJsonPayload::from_canonical_json_object(canonical.to_vec())
@@ -427,6 +416,8 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), local_state)
             .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     let now = format_time(issued_at)
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    ensure_sender_envelope_format_column(&core)
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
     let prepared = with_v2_runtime(&core, &scope, |direct| match &state.transport {
         PreparedRootTransport::EstablishedSession => direct
@@ -544,8 +535,8 @@ fn persist_sender_delivery_pending_tx(
         .execute(
             r#"INSERT INTO identity_root_transfer_sender_v1 (
 owner_identity_id, owner_did, local_device_id, message_id,
-recipient_device_id, phase, created_at, updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, 'pending_delivery', ?6, ?6)
+recipient_device_id, envelope_format, phase, created_at, updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, 'wrapped_v1', 'pending_delivery', ?6, ?6)
 ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             rusqlite::params![
                 owner_identity_id,
@@ -562,6 +553,7 @@ ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             r#"SELECT COUNT(*) FROM identity_root_transfer_sender_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND message_id = ?4 AND recipient_device_id = ?5
+  AND envelope_format = 'wrapped_v1'
   AND phase IN ('pending_delivery', 'sent')"#,
             rusqlite::params![
                 owner_identity_id,
@@ -677,12 +669,33 @@ fn load_pending_sender_deliveries(
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
+    ensure_sender_envelope_format_column_with_connection(&connection)?;
+    let retired = connection
+        .execute(
+            r#"UPDATE identity_root_transfer_sender_v1
+SET phase = 'terminal_failed', failure_code = 'legacy_plaintext_retry_forbidden',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
+  AND phase = 'pending_delivery' AND envelope_format = 'legacy_v1'"#,
+            rusqlite::params![
+                client.current_identity().id.as_str(),
+                client.did().as_str(),
+                local_device_id,
+            ],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if retired > 0 {
+        return Err(crate::ImError::unsupported(
+            "legacy-root-transfer-retry-forbidden-restart-with-encrypted-transfer",
+        ));
+    }
     let mut statement = connection
         .prepare(
             r#"SELECT message_id, recipient_device_id
 FROM identity_root_transfer_sender_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND phase = 'pending_delivery'
+  AND envelope_format = 'wrapped_v1'
 ORDER BY created_at, message_id"#,
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -714,6 +727,7 @@ fn sender_delivery_exists_for_recipient(
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
+    ensure_sender_envelope_format_column_with_connection(&connection)?;
     let count: i64 = connection
         .query_row(
             r#"SELECT COUNT(*) FROM identity_root_transfer_sender_v1
@@ -729,6 +743,38 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(count > 0)
+}
+
+fn ensure_sender_envelope_format_column(core: &crate::core::ImCore) -> crate::ImResult<()> {
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    ensure_sender_envelope_format_column_with_connection(&connection)
+}
+
+fn ensure_sender_envelope_format_column_with_connection(
+    connection: &rusqlite::Connection,
+) -> crate::ImResult<()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(identity_root_transfer_sender_v1)")
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let has_column = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .iter()
+        .any(|name| name == "envelope_format");
+    drop(statement);
+    if !has_column {
+        connection
+            .execute(
+                "ALTER TABLE identity_root_transfer_sender_v1 ADD COLUMN envelope_format TEXT NOT NULL DEFAULT 'legacy_v1'",
+                [],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+    }
+    Ok(())
 }
 
 fn root_error(code: RootTransferErrorCode) -> RootTransferError {
@@ -974,34 +1020,8 @@ fn validate_root_public(
     Ok(fingerprint)
 }
 
-fn validate_root_private_matches_document(
-    private_pem: &str,
-    document: &Value,
-    root_key_id: &str,
-) -> crate::ImResult<()> {
-    let private = anp::PrivateKeyMaterial::from_pem(private_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    if !matches!(private, anp::PrivateKeyMaterial::Ed25519(_)) {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let method = document
-        .get("verificationMethod")
-        .and_then(Value::as_array)
-        .and_then(|methods| {
-            let mut matches = methods
-                .iter()
-                .filter(|method| method.get("id").and_then(Value::as_str) == Some(root_key_id));
-            let method = matches.next()?;
-            matches.next().is_none().then_some(method)
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let public = crate::internal::identity_wire::document::extract_identity_public_key(method)?;
-    if private.public_key().to_pem() != public.to_pem() {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(())
-}
-
+/// Legacy Upgrade receive/migration ingress only. Root Transfer sending never
+/// calls this parser and has no plaintext fallback.
 pub(crate) fn canonical_ed25519_pkcs8_der(private_pem: &str) -> crate::ImResult<Vec<u8>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 

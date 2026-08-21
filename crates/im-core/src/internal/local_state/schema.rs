@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS identity_root_transfer_sender_v1 (
     local_device_id     TEXT NOT NULL,
     message_id          TEXT NOT NULL,
     recipient_device_id TEXT NOT NULL,
+    envelope_format     TEXT NOT NULL DEFAULT 'legacy_v1',
     phase               TEXT NOT NULL,
     accepted_at         TEXT,
     failure_code        TEXT,
