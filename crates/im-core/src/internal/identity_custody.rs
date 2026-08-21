@@ -399,6 +399,47 @@ pub(crate) fn adopt_join_identity(
     Ok(())
 }
 
+pub(crate) fn adopt_controller_document(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    store_id: &str,
+    identity_id: &str,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    if crate::internal::identity_wire::document::document_hash(document)?
+        != checkpoint.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let store = open_controller_store(core)?;
+    if store.manifest().store_id != store_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut identity = store.open_identity(did.as_str()).map_err(map_error)?;
+    if identity.identity_id() != identity_id || identity.state() != IdentityState::Active {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let outcome = identity
+        .adopt_verified_document(AdoptVerifiedDocumentSpec {
+            document: document.clone(),
+            evidence: VerifiedDocumentEvidence {
+                document_version: checkpoint.document_version,
+                registry_version: checkpoint.registry_version,
+                document_digest: checkpoint.document_hash.clone(),
+            },
+        })
+        .map_err(map_error)?;
+    if !matches!(
+        outcome,
+        anp_identity::AdoptDocumentOutcome::Updated | anp_identity::AdoptDocumentOutcome::Unchanged
+    ) || identity.state() != IdentityState::Active
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
 pub(crate) fn active_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,

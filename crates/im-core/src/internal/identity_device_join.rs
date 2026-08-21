@@ -1181,6 +1181,22 @@ fn commit_admin_join_projection(
             return Err(crate::ImError::PermissionDenied);
         }
     }
+    if entry.identity_custody_backend.as_deref() == Some("anp_identity") {
+        crate::internal::identity_custody::adopt_controller_document(
+            core,
+            client.did(),
+            entry
+                .anp_identity_store_id
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?,
+            entry
+                .anp_identity_id
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?,
+            resolved_document,
+            checkpoint,
+        )?;
+    }
     state.checkpoint = Some(checkpoint.clone());
     state.validate_for_did(client.did())?;
 

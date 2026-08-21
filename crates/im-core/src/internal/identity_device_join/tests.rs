@@ -142,6 +142,47 @@ fn open_empty_vault_core(root: &Path) -> crate::ImCore {
     .unwrap()
 }
 
+fn open_anp_ready_admin_core(
+    root: &Path,
+) -> (
+    crate::ImCore,
+    crate::internal::identity_registration_pending::PendingRegistrationIdentity,
+) {
+    let core = open_empty_vault_core(root);
+    let identity = crate::internal::identity_custody::provision_registration_identity(
+        &core,
+        "awiki.test",
+        "alice",
+    )
+    .unwrap();
+    let document_hash = canonical_hash(&identity.did_document).unwrap();
+    let input = crate::internal::identity_registration_runtime::anp_vnext_bootstrap_save_input(
+        crate::internal::identity_registration_runtime::AnpVNextBootstrapSaveInput {
+            identity: &identity,
+            document_hash: &document_hash,
+            local_alias: "alice",
+            display_name: "Alice",
+            user_id: "user-1",
+            handle: "alice",
+            full_handle: "alice.awiki.test",
+            binding_generation: "1",
+            access_token: "access-token",
+            make_default: true,
+        },
+    )
+    .unwrap();
+    let storage = crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
+        &core,
+        identity.controller_store_id.clone(),
+        identity.controller_identity_id.clone(),
+    )
+    .unwrap();
+    crate::internal::identity_store::IdentityStore::new(&test_paths(root).identities)
+        .save_anp_identity_projection(input, storage)
+        .unwrap();
+    (core, identity)
+}
+
 fn reopen_join_test_core(root: &Path) -> crate::ImCore {
     crate::ImCore::new_with_options(
         test_config(),
@@ -896,6 +937,81 @@ fn admin_join_projection_advances_checkpoint_and_is_repeat_safe() {
         .unwrap();
     assert_eq!(state.checkpoint.as_ref(), Some(&checkpoint));
     state.validate_for_did(&did).unwrap();
+}
+
+#[test]
+fn admin_join_projection_adopts_published_document_into_anp_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, projected) = open_anp_ready_admin_core(root.path());
+    let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
+    let mut identity = store.open_identity(projected.did.as_str()).unwrap();
+    let current = identity.checkpoint().unwrap().clone();
+    let signing_private = ed25519_dalek::SigningKey::from_bytes(&[91_u8; 32]);
+    let mut signing_multikey = vec![0xed, 0x01];
+    signing_multikey.extend_from_slice(&signing_private.verifying_key().to_bytes());
+    let agreement_private = x25519_dalek::StaticSecret::from([92_u8; 32]);
+    let mut agreement_multikey = vec![0xec, 0x01];
+    agreement_multikey
+        .extend_from_slice(&x25519_dalek::PublicKey::from(&agreement_private).to_bytes());
+    let prepared = identity
+        .prepare_update(anp_identity::DocumentUpdateSpec {
+            request_signing_rotation: None,
+            request_signing_mutations: Vec::new(),
+            device_mutations: vec![anp_identity::DeviceMutationSpec::Add {
+                device: anp_identity::DeviceAddSpec {
+                    device_id: "peer-device".to_owned(),
+                    signing_key: anp_identity::DevicePublicKeySpec {
+                        kid: format!("{}#peer-sign", projected.did.as_str()),
+                        public_key_multibase: format!(
+                            "z{}",
+                            bs58::encode(signing_multikey).into_string()
+                        ),
+                    },
+                    e2ee_key: anp_identity::DevicePublicKeySpec {
+                        kid: format!("{}#peer-e2ee", projected.did.as_str()),
+                        public_key_multibase: format!(
+                            "z{}",
+                            bs58::encode(agreement_multikey).into_string()
+                        ),
+                    },
+                    profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                },
+            }],
+            services: None,
+        })
+        .unwrap();
+    let updated_document = prepared.candidate_document;
+    identity.abort_update(&prepared.revision_id).unwrap();
+    drop(identity);
+    drop(store);
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: current.document_version + 1,
+        document_hash: canonical_hash(&updated_document).unwrap(),
+        registry_version: current.registry_version + 1,
+    };
+
+    commit_admin_join_projection(
+        &core,
+        &crate::identity::IdentitySelector::Default,
+        &checkpoint,
+        &updated_document,
+    )
+    .unwrap();
+    commit_admin_join_projection(
+        &core,
+        &crate::identity::IdentitySelector::Default,
+        &checkpoint,
+        &updated_document,
+    )
+    .unwrap();
+
+    let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
+    let identity = store.open_identity(projected.did.as_str()).unwrap();
+    assert_eq!(identity.document(), &updated_document);
+    assert_eq!(
+        identity.checkpoint().unwrap().document_digest,
+        checkpoint.document_hash
+    );
 }
 
 #[test]
