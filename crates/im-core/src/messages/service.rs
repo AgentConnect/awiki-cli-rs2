@@ -1313,6 +1313,7 @@ mod conversation_read_model_tests {
             resolved.target_did.as_deref(),
             resolved.target_handle.as_deref(),
             resolved.peer_scope.as_ref(),
+            Some(&resolved.wire_created_at),
         )
         .await
         .unwrap();
@@ -2535,6 +2536,7 @@ impl<'a> MessageService<'a> {
                 resolved.wire_target_did.as_deref(),
                 resolved.target_handle.as_deref(),
                 resolved.peer_scope.as_ref(),
+                Some(&resolved.wire_created_at),
             )
             .await?;
             self.client
@@ -2645,6 +2647,7 @@ impl<'a> MessageService<'a> {
                 resolved.wire_target_did.as_deref(),
                 resolved.target_handle.as_deref(),
                 resolved.peer_scope.as_ref(),
+                Some(&resolved.wire_created_at),
             )
             .await;
         match failed {
@@ -2666,6 +2669,7 @@ impl<'a> MessageService<'a> {
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
                     crate::internal::transport::CoreHttpTransport::new(self.client),
                 )
+                .with_wire_created_at(&resolved.wire_created_at)
                 .send_async(crate::internal::message_runtime::direct::DirectTextSend {
                     request: resolved.request.clone(),
                     resolved_target_did: resolved.target_did.clone(),
@@ -2689,6 +2693,7 @@ impl<'a> MessageService<'a> {
                     resolved.target_handle.as_deref(),
                     resolved.peer_scope.as_ref(),
                     &result.sdk_result,
+                    Some(&resolved.wire_created_at),
                 )
                 .await
                 {
@@ -4618,6 +4623,7 @@ struct ResolvedConversationSendRequest {
     conversation_id: String,
     request: super::SendMessageRequest,
     wire_target_did: Option<String>,
+    wire_created_at: String,
     target_did: Option<String>,
     target_handle: Option<String>,
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
@@ -4718,9 +4724,15 @@ fn conversation_send_request(
         .filter(|value| !value.is_empty())
         .or_else(|| Some(format!("op-{}", client_message_id.as_str())));
     let resolved_target = conversation_send_target(resolved)?;
-    let wire_target_did =
-        existing_conversation_wire_target_did(client, &conversation_id, &client_message_id)?
-            .or_else(|| resolved_target.target_did.clone());
+    let existing_wire =
+        existing_conversation_wire_snapshot(client, &conversation_id, &client_message_id)?;
+    let wire_target_did = existing_wire
+        .as_ref()
+        .map(|snapshot| snapshot.target_did.clone())
+        .or_else(|| resolved_target.target_did.clone());
+    let wire_created_at = existing_wire
+        .and_then(|snapshot| snapshot.created_at)
+        .unwrap_or_else(crate::internal::wire::common::now_rfc3339);
     let request = super::SendMessageRequest {
         target: resolved_target.target,
         body,
@@ -4736,36 +4748,48 @@ fn conversation_send_request(
         conversation_id,
         request,
         wire_target_did,
+        wire_created_at,
         target_did: resolved_target.target_did,
         target_handle: resolved_target.target_handle,
         peer_scope: resolved_target.peer_scope,
     })
 }
 
+struct ExistingConversationWireSnapshot {
+    target_did: String,
+    created_at: Option<String>,
+}
+
 #[cfg(feature = "sqlite")]
-fn existing_conversation_wire_target_did(
+fn existing_conversation_wire_snapshot(
     client: &crate::core::ImClient,
     conversation_id: &str,
     message_id: &crate::ids::MessageId,
-) -> crate::ImResult<Option<String>> {
+) -> crate::ImResult<Option<ExistingConversationWireSnapshot>> {
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::messages::existing_outgoing_direct_wire_target(
+    crate::internal::local_state::messages::existing_outgoing_direct_wire_snapshot(
         &connection,
         client.current_identity().id.as_str(),
         client.did().as_str(),
         conversation_id,
         message_id.as_str(),
     )
+    .map(|snapshot| {
+        snapshot.map(|snapshot| ExistingConversationWireSnapshot {
+            target_did: snapshot.target_did,
+            created_at: snapshot.created_at,
+        })
+    })
 }
 
 #[cfg(not(feature = "sqlite"))]
-fn existing_conversation_wire_target_did(
+fn existing_conversation_wire_snapshot(
     _client: &crate::core::ImClient,
     _conversation_id: &str,
     _message_id: &crate::ids::MessageId,
-) -> crate::ImResult<Option<String>> {
+) -> crate::ImResult<Option<ExistingConversationWireSnapshot>> {
     Ok(None)
 }
 

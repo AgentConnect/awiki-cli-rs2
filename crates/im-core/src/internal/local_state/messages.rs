@@ -444,13 +444,19 @@ pub(crate) fn upsert_message(
 }
 
 #[cfg(feature = "sqlite")]
-pub(crate) fn existing_outgoing_direct_wire_target(
+pub(crate) struct ExistingOutgoingDirectWireSnapshot {
+    pub(crate) target_did: String,
+    pub(crate) created_at: Option<String>,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn existing_outgoing_direct_wire_snapshot(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
     owner_did: &str,
     conversation_id: &str,
     message_id: &str,
-) -> crate::ImResult<Option<String>> {
+) -> crate::ImResult<Option<ExistingOutgoingDirectWireSnapshot>> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
     let owner_did = required("owner_did", owner_did)?;
     let conversation_id = required("conversation_id", conversation_id)?;
@@ -458,7 +464,12 @@ pub(crate) fn existing_outgoing_direct_wire_target(
     let existing = connection
         .query_row(
             r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref, direction,
-                      sender_did, receiver_did, group_id, group_did
+                      sender_did, receiver_did, group_id, group_did,
+                      CASE
+                          WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{}')) = 1
+                          THEN json_extract(COALESCE(NULLIF(metadata, ''), '{}'), '$.wire_created_at')
+                          ELSE NULL
+                      END
 FROM messages
 WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
             (&owner_identity_id, &message_id),
@@ -472,6 +483,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
                     row.get::<_, Option<String>>(5)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(6)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(8)?.unwrap_or_default(),
                 ))
             },
         )
@@ -486,6 +498,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         receiver_did,
         group_id,
         group_did,
+        created_at,
     )) = existing
     else {
         return Ok(None);
@@ -503,7 +516,10 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
             message_id: message_id.to_owned(),
         });
     }
-    Ok(Some(receiver_did.trim().to_owned()))
+    Ok(Some(ExistingOutgoingDirectWireSnapshot {
+        target_did: receiver_did.trim().to_owned(),
+        created_at: Some(created_at.trim().to_owned()).filter(|value| !value.is_empty()),
+    }))
 }
 
 #[cfg(feature = "sqlite")]

@@ -9,6 +9,7 @@ pub(crate) struct DirectTextSender<'a, P, T> {
     client: &'a crate::core::ImClient,
     session_provider: P,
     transport: T,
+    wire_created_at: Option<String>,
 }
 
 pub(crate) struct DirectTextSend {
@@ -50,7 +51,13 @@ where
             client,
             session_provider,
             transport,
+            wire_created_at: None,
         }
+    }
+
+    pub(crate) fn with_wire_created_at(mut self, created_at: &str) -> Self {
+        self.wire_created_at = Some(created_at.to_owned());
+        self
     }
 
     pub(crate) fn send(mut self, input: DirectTextSend) -> crate::ImResult<DirectTextSendResult> {
@@ -71,7 +78,11 @@ where
             .unwrap_or_else(|| self.client.did().as_str());
         let message_type = body.message_type();
         let mut payload = build_direct_payload(sender_did, &target_did, &body)?;
-        apply_delivery_overrides(&mut payload.meta, &input.request);
+        apply_delivery_overrides(
+            &mut payload.meta,
+            &input.request,
+            self.wire_created_at.as_deref(),
+        );
         let origin_proof = crate::internal::proof::origin::build_origin_proof(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
@@ -137,7 +148,11 @@ where
             .unwrap_or_else(|| self.client.did().as_str());
         let message_type = body.message_type();
         let mut payload = build_direct_payload(sender_did, &target_did, &body)?;
-        apply_delivery_overrides(&mut payload.meta, &input.request);
+        apply_delivery_overrides(
+            &mut payload.meta,
+            &input.request,
+            self.wire_created_at.as_deref(),
+        );
         let origin_proof = crate::internal::proof::origin::build_origin_proof(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
@@ -459,9 +474,19 @@ fn build_direct_payload(
     }
 }
 
-fn apply_delivery_overrides(meta: &mut Value, request: &crate::messages::SendMessageRequest) {
+fn apply_delivery_overrides(
+    meta: &mut Value,
+    request: &crate::messages::SendMessageRequest,
+    wire_created_at: Option<&str>,
+) {
     if let Some(message_id) = request.client_message_id.as_ref() {
         meta["message_id"] = Value::String(message_id.as_str().to_string());
+    }
+    if let Some(created_at) = wire_created_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        meta["created_at"] = Value::String(created_at.to_owned());
     }
     if let Some(idempotency_key) = request.delivery.idempotency_key.as_ref() {
         let value = idempotency_key.trim();

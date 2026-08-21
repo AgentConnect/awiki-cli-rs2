@@ -91,6 +91,8 @@ mod stale_direct_rebind_http_tests {
         );
         assert!(result.warnings.is_empty());
 
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
         let replay = client
             .messages()
             .send_conversation_text_async(crate::messages::SendConversationTextRequest {
@@ -154,6 +156,11 @@ mod stale_direct_rebind_http_tests {
             assert_eq!(request.params()["meta"]["operation_id"], OPERATION_ID);
             assert_eq!(request.params()["body"]["text"], TEXT);
         }
+        assert_eq!(
+            sends[1].params()["meta"]["created_at"],
+            sends[2].params()["meta"]["created_at"],
+            "logical replay must preserve the first wire timestamp across seconds"
+        );
     }
 
     #[tokio::test]

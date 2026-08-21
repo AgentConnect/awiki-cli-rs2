@@ -249,6 +249,7 @@ pub(crate) fn persist_direct_outgoing_result(
             target_handle,
             peer_scope,
             sdk_result,
+            None,
         ),
     )
 }
@@ -279,6 +280,7 @@ pub(crate) async fn persist_direct_outgoing_result_async(
         target_handle,
         peer_scope,
         sdk_result,
+        None,
     )
     .await
 }
@@ -291,6 +293,7 @@ pub(crate) async fn persist_direct_outgoing_result_with_wire_target_async(
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
+    wire_created_at: Option<&str>,
 ) -> crate::ImResult<()> {
     let record = direct_outgoing_result_record(
         client,
@@ -299,6 +302,7 @@ pub(crate) async fn persist_direct_outgoing_result_with_wire_target_async(
         target_handle,
         peer_scope,
         sdk_result,
+        wire_created_at,
     );
     client
         .core_inner()
@@ -426,8 +430,9 @@ pub(crate) async fn persist_send_projection_async(
     target_did: Option<&str>,
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    stable_created_at: Option<&str>,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
-    let sdk_result = send_projection_result(
+    let mut sdk_result = send_projection_result(
         client,
         target,
         body,
@@ -438,6 +443,12 @@ pub(crate) async fn persist_send_projection_async(
         target_handle,
         peer_scope,
     )?;
+    if let Some(created_at) = stable_created_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sdk_result.message.sent_at = Some(created_at.to_owned());
+    }
     let record = send_projection_record(
         client,
         target,
@@ -446,6 +457,7 @@ pub(crate) async fn persist_send_projection_async(
         target_did,
         target_handle,
         peer_scope,
+        stable_created_at,
     )?;
     client
         .core_inner()
@@ -467,8 +479,9 @@ pub(crate) async fn persist_send_projection_async(
     target_did: Option<&str>,
     _target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    stable_created_at: Option<&str>,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
-    send_projection_result(
+    let mut result = send_projection_result(
         client,
         target,
         body,
@@ -478,7 +491,14 @@ pub(crate) async fn persist_send_projection_async(
         target_did,
         _target_handle,
         peer_scope,
-    )
+    )?;
+    if let Some(created_at) = stable_created_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        result.message.sent_at = Some(created_at.to_owned());
+    }
+    Ok(result)
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
@@ -1221,6 +1241,7 @@ fn direct_outgoing_result_record(
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
+    wire_created_at: Option<&str>,
 ) -> crate::internal::local_state::messages::MessageRecord {
     let (content_type, content) = body_projection(
         &sdk_result.message.body,
@@ -1242,10 +1263,16 @@ fn direct_outgoing_result_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: false,
         is_read: true,
-        metadata: delivery_metadata_json(
-            &sdk_result.message.metadata,
-            direct_metadata_extras(target_handle, peer_scope, current_target_did),
-        ),
+        metadata: {
+            let mut extras = direct_metadata_extras(target_handle, peer_scope, current_target_did);
+            if let Some(created_at) = wire_created_at
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                extras.push(("wire_created_at", created_at.to_owned()));
+            }
+            delivery_metadata_json(&sdk_result.message.metadata, extras)
+        },
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -1261,6 +1288,7 @@ fn send_projection_record(
     target_did: Option<&str>,
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    stable_created_at: Option<&str>,
 ) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
     let (content_type, content) = request_body_projection(body)?;
     let record = match target {
@@ -1290,10 +1318,16 @@ fn send_projection_record(
                     .unwrap_or_else(crate::internal::wire::common::now_rfc3339),
                 is_e2ee: false,
                 is_read: true,
-                metadata: delivery_metadata_json(
-                    &sdk_result.message.metadata,
-                    direct_metadata_extras(target_handle, peer_scope, target_did),
-                ),
+                metadata: {
+                    let mut extras = direct_metadata_extras(target_handle, peer_scope, target_did);
+                    if let Some(created_at) = stable_created_at
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        extras.push(("wire_created_at", created_at.to_owned()));
+                    }
+                    delivery_metadata_json(&sdk_result.message.metadata, extras)
+                },
                 credential_name: credential_name(client),
                 ..crate::internal::local_state::messages::MessageRecord::default()
             }
@@ -2596,6 +2630,7 @@ mod tests {
             Some("did:example:bob"),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2630,6 +2665,7 @@ mod tests {
                 reason: "network unavailable".to_owned(),
             },
             Some("did:example:bob"),
+            None,
             None,
             None,
         )
@@ -2701,6 +2737,7 @@ mod tests {
             Some("did:example:bob-current"),
             Some("bob.awiki.test"),
             Some(&scope),
+            None,
         )
         .await
         .unwrap();
