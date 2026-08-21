@@ -170,7 +170,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
     assert_eq!(stored.identity["binding_generation"], "1");
-    assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
+    assert_anp_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity
     }
 }
 
-fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
+fn assert_anp_identity_has_auth_ref_and_no_plaintext_secret_files(
     workspace: &Path,
     identity_name: &str,
 ) {
@@ -298,14 +298,14 @@ fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
     let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let entry = &index["credentials"][identity_name];
-    let vault = &entry["vault_migration"];
-    assert_eq!(vault["status"], "verified");
-    assert_eq!(vault["backend"], "vault");
-    assert_eq!(vault["plaintext_compat_retained"], false);
+    assert_eq!(entry["identity_custody_backend"], "anp_identity");
+    assert!(entry["anp_identity_store_id"].as_str().is_some());
+    assert!(entry["anp_identity_id"].as_str().is_some());
     assert!(
-        vault["refs"]["auth_jwt"].is_object(),
-        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+        entry["anp_identity_auth_ref"].is_object(),
+        "ANP Identity projection should store auth JWT as a vault ref: {entry:?}"
     );
+    assert!(entry.get("vault_migration").is_none());
     let dir_name = entry["dir_name"].as_str().unwrap();
     let identity_dir = tenant.join("identities").join(dir_name);
     for file in [
