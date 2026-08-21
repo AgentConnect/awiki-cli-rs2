@@ -438,6 +438,13 @@ passes `user_presence_confirmed=true` does Core call ANP Identity's public Rust
 root export and construct that envelope in zeroizing memory. Core never sends
 an empty Init and never asks for a second confirmation.
 
+The envelope object, canonical JSON output and P5 `V2SecretJsonPayload` are all
+owned by zeroizing containers. This is an SDK allocation-lifetime guarantee,
+not a claim that serializers or cryptographic backends can never create a
+transient implementation buffer. The security boundary is that plaintext is
+short-lived and is never persisted, logged, projected or exposed through a
+public host API.
+
 The sender persists ratchet state and byte-identical retry ciphertext before
 network I/O. The receiver processes the control JSON before ordinary message
 projection, revalidates the current Manifest/Registry and root fingerprint, and
