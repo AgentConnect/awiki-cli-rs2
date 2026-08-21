@@ -17,7 +17,7 @@ use crate::dto::{
     },
     identity::{
         DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
-        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPublicPackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
         DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
         DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
@@ -852,18 +852,15 @@ impl From<im_core::identity::DeleteLocalIdentityResult> for DartDeleteLocalIdent
     }
 }
 
-impl From<im_core::identity::DaemonSubkeyPrivatePackage> for DartDaemonSubkeyPrivatePackage {
-    fn from(value: im_core::identity::DaemonSubkeyPrivatePackage) -> Self {
+impl From<im_core::identity::DaemonSubkeyPublicPackage> for DartDaemonSubkeyPublicPackage {
+    fn from(value: im_core::identity::DaemonSubkeyPublicPackage) -> Self {
         Self {
             schema: value.schema,
-            user_did: value.user_did.as_str().to_string(),
+            user_did: value.user_did.as_str().to_owned(),
             verification_method: value.verification_method,
             key_type: value.key_type,
             key_algorithm: value.key_algorithm,
             public_key_multibase: value.public_key_multibase,
-            private_key_encoding: value.private_key_encoding,
-            private_key_pem: value.private_key_pem,
-            private_key_multibase: value.private_key_multibase,
         }
     }
 }

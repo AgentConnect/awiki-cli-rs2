@@ -169,7 +169,7 @@ impl ImCore {
             self.inner.sdk_config().anp_service_endpoint.as_ref(),
             self.inner.sdk_config().anp_service_did.as_ref(),
         )?;
-        vnext_agent_bootstrap_material(kind, local_part, generated, true)
+        vnext_agent_bootstrap_material(kind, local_part, generated)
     }
 
     /// Prepares a same-DID vNext target for an existing Legacy Agent.
@@ -227,7 +227,6 @@ impl ImCore {
             did_document: generated.target_document,
             document_hash: generated.target_document_hash,
             protocol_device_id: generated.protocol_device_id,
-            daemon_subkey_package: None,
         })
     }
 
@@ -911,7 +910,6 @@ fn vnext_agent_bootstrap_material(
     kind: crate::identity::AgentIdentityKind,
     local_part: String,
     generated: crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
-    include_daemon_subkey: bool,
 ) -> crate::ImResult<crate::identity::VNextAgentBootstrapMaterial> {
     let document_hash =
         crate::internal::identity_wire::document::document_hash(&generated.did_document)?;
@@ -932,7 +930,6 @@ fn vnext_agent_bootstrap_material(
         device_e2ee_key_id: generated.device_e2ee_key_id,
         device_e2ee_private_key_pem: generated.device_e2ee_private_pem,
         device_e2ee_public_key_pem: generated.device_e2ee_public_pem,
-        daemon_subkey_package: include_daemon_subkey.then_some(generated.daemon_subkey_package),
     })
 }
 

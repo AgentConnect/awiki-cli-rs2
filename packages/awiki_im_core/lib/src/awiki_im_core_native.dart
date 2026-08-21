@@ -696,27 +696,16 @@ class AwikiImCore {
     return result._toModel();
   }
 
-  Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
-    IdentitySelector selector,
-  ) async {
+  Future<DaemonSubkeyPublicPackage> authorizeDaemonSubkey({
+    required IdentitySelector selector,
+    required DaemonSubkeyPublicProposal proposal,
+  }) async {
     _ensureNotDisposed();
     final package = await _mapNativeErrors(
-      () => gen_identity_api.loadDaemonSubkeyPackage(
+      () => gen_identity_api.authorizeDaemonSubkey(
         core: _inner,
         selector: selector._toGen(),
-      ),
-    );
-    return package._toModel();
-  }
-
-  Future<DaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage(
-    IdentitySelector selector,
-  ) async {
-    _ensureNotDisposed();
-    final package = await _mapNativeErrors(
-      () => gen_identity_api.ensureDaemonSubkeyPackage(
-        core: _inner,
-        selector: selector._toGen(),
+        proposal: proposal._toGen(),
       ),
     );
     return package._toModel();
@@ -2725,17 +2714,23 @@ extension on gen_identity.DartDeleteLocalIdentityResult {
   );
 }
 
-extension on gen_identity.DartDaemonSubkeyPrivatePackage {
-  DaemonSubkeyPrivatePackage _toModel() => DaemonSubkeyPrivatePackage(
+extension on DaemonSubkeyPublicProposal {
+  gen_identity.DartDaemonSubkeyPublicProposal _toGen() =>
+      gen_identity.DartDaemonSubkeyPublicProposal(
+        userDid: userDid,
+        verificationMethod: verificationMethod,
+        publicKeyMultibase: publicKeyMultibase,
+      );
+}
+
+extension on gen_identity.DartDaemonSubkeyPublicPackage {
+  DaemonSubkeyPublicPackage _toModel() => DaemonSubkeyPublicPackage(
     schema: schema,
     userDid: userDid,
     verificationMethod: verificationMethod,
     keyType: keyType,
     keyAlgorithm: keyAlgorithm,
     publicKeyMultibase: publicKeyMultibase,
-    privateKeyEncoding: privateKeyEncoding,
-    privateKeyPem: privateKeyPem,
-    privateKeyMultibase: privateKeyMultibase,
   );
 }
 

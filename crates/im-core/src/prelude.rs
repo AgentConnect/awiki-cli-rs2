@@ -37,11 +37,11 @@ pub use crate::groups::{
 };
 pub use crate::identity::{
     ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingRequest,
-    ContactBindingState, DaemonSubkeyPrivatePackage, DefaultIdentityChange,
-    DeleteLocalIdentityResult, DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt,
-    DeviceJoinAuthorizationStatus, DeviceJoinAuthorizedDeviceSummary, DeviceJoinBeginRequest,
-    DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase, DeviceJoinProgress,
-    DeviceJoinRegistrySnapshot, DeviceJoinRejectReason, DeviceJoinRemoteState,
+    ContactBindingState, DaemonSubkeyPublicPackage, DaemonSubkeyPublicProposal,
+    DefaultIdentityChange, DeleteLocalIdentityResult, DeviceJoinAccountVerificationGrant,
+    DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus, DeviceJoinAuthorizedDeviceSummary,
+    DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase,
+    DeviceJoinProgress, DeviceJoinRegistrySnapshot, DeviceJoinRejectReason, DeviceJoinRemoteState,
     DeviceJoinRequestNotice, DeviceJoinRole, DeviceJoinSessionView, DeviceJoinSide,
     DeviceRegistryAuthorizedDeviceSummary, DeviceRevokeOutcomeCategory, DeviceRevokeRequest,
     DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus, HandleRegistrationJoinMode,

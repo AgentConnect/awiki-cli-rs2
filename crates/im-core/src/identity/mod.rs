@@ -13,8 +13,8 @@ pub use self::device_revoke::{
 pub use self::dto::{
     ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingMethodKind,
     ContactBindingRequest, ContactBindingResult, ContactBindingState,
-    DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPrivatePackage, DefaultIdentityChange,
-    DeleteLocalIdentityResult, HandleRegistrationJoinMode,
+    DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPublicPackage, DaemonSubkeyPublicProposal,
+    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationJoinMode,
     HandleRegistrationJoinRequiredPreparation, HandleRegistrationResult, HandleRegistrationState,
     HostBackedAuthTokenPersistence, HostBackedDeviceIdentityMaterial, HostedIdentityMaterial,
     IdentityCustodyMigrationIdentityReport, IdentityCustodyMigrationPhase,
@@ -28,8 +28,11 @@ pub use self::dto::{
     ReplaceDidExecutionRequest, ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity,
     ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
     VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
-    VNextAgentLegacyUpgradeSession, VerificationInput, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1,
-    DAEMON_SUBKEY_PACKAGE_SCHEMA_V2, DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
+    VNextAgentLegacyUpgradeSession, VerificationInput, DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3,
+};
+pub(crate) use self::dto::{
+    DaemonSubkeyPrivatePackage, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1, DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,
+    DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
 };
 pub use self::handle_recovery::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,

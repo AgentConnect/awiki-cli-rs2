@@ -240,6 +240,7 @@ pub fn daemon_snapshot_payload(
     let service = service_status(config);
     let release = check_release_status(config);
     reconcile_daemon_upgrade_state(state, daemon, &release)?;
+    let delegated_subkey = daemon_delegated_subkey_proposal(config, state, daemon);
     let runtimes = state
         .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)?
         .into_iter()
@@ -255,6 +256,7 @@ pub fn daemon_snapshot_payload(
             &now,
             &release,
             daemon_bootstrap_key_summary(state, daemon).as_ref(),
+            delegated_subkey.as_ref(),
         ),
         "runtimes": runtimes,
         "runs": [],
@@ -265,7 +267,7 @@ pub fn daemon_lightweight_payload(config: &DaemonConfig, daemon: &AgentDefinitio
     let now = rfc3339_now();
     let service = service_status(config);
     let release = check_release_status(config);
-    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release, None)
+    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release, None, None)
 }
 
 fn daemon_lightweight_payload_with_release(
@@ -275,6 +277,7 @@ fn daemon_lightweight_payload_with_release(
     now: &str,
     release: &DaemonReleaseStatus,
     bootstrap_key: Option<&DaemonBootstrapKeySummary>,
+    delegated_subkey: Option<&crate::identity_custody::PreparedDaemonSubkey>,
 ) -> Value {
     json!({
         "schema": "awiki.agent.status.v1",
@@ -285,7 +288,15 @@ fn daemon_lightweight_payload_with_release(
         "command_id": null,
         "state": "ready",
         "message": "daemon heartbeat",
-        "daemon": daemon_status_payload(config, daemon, service, now, release, bootstrap_key),
+        "daemon": daemon_status_payload(
+            config,
+            daemon,
+            service,
+            now,
+            release,
+            bootstrap_key,
+            delegated_subkey,
+        ),
         "runtimes": [],
         "runs": [],
         "details": {
@@ -342,6 +353,7 @@ fn latest_status_items_with_release(
             &service,
             release,
             daemon_bootstrap_key_summary(state, daemon).as_ref(),
+            None,
         ),
     }];
     for runtime in state.list_runtime_agent_definitions_for_daemon(&daemon.agent_did)? {
@@ -382,6 +394,7 @@ pub fn daemon_latest_diagnostics_summary(
         service,
         release,
         daemon_bootstrap_key_summary(state, daemon).as_ref(),
+        None,
     )
 }
 
@@ -501,6 +514,7 @@ where
                 &now,
                 release,
                 daemon_bootstrap_key_summary(state, daemon).as_ref(),
+                None,
             )
         },
     })
@@ -535,6 +549,7 @@ fn daemon_status_payload(
     now: &str,
     release: &DaemonReleaseStatus,
     bootstrap_key: Option<&DaemonBootstrapKeySummary>,
+    delegated_subkey: Option<&crate::identity_custody::PreparedDaemonSubkey>,
 ) -> Value {
     json!({
         "agent_did": daemon.agent_did,
@@ -548,7 +563,12 @@ fn daemon_status_payload(
         "needs_upgrade": release.needs_upgrade,
         "last_error_code": null,
         "last_error_summary": null,
-        "diagnostics_summary": daemon_diagnostics_summary(service, release, bootstrap_key),
+        "diagnostics_summary": daemon_diagnostics_summary(
+            service,
+            release,
+            bootstrap_key,
+            delegated_subkey,
+        ),
     })
 }
 
@@ -564,6 +584,7 @@ fn daemon_diagnostics_summary(
     service: &ServiceStatus,
     release: &DaemonReleaseStatus,
     bootstrap_key: Option<&DaemonBootstrapKeySummary>,
+    delegated_subkey: Option<&crate::identity_custody::PreparedDaemonSubkey>,
 ) -> Value {
     let mut config_summary = json!({
         "service_installed": service.installed,
@@ -593,11 +614,46 @@ fn daemon_diagnostics_summary(
             );
         }
     }
+    if let Some(delegated_subkey) = delegated_subkey {
+        if let Some(object) = config_summary.as_object_mut() {
+            object.insert(
+                "delegated_subkey_proposal".to_string(),
+                delegated_subkey_proposal_value(delegated_subkey),
+            );
+        }
+    }
     json!({
         "installation_status": if service.installed { "installed" } else { "not_installed" },
         "runner_status": if service.running { "running" } else { "not_running" },
         "config_summary": config_summary,
     })
+}
+
+fn delegated_subkey_proposal_value(
+    delegated_subkey: &crate::identity_custody::PreparedDaemonSubkey,
+) -> Value {
+    json!({
+        "schema": crate::app_bridge::bootstrap::USER_SUBKEY_PACKAGE_SCHEMA_V3,
+        "user_did": delegated_subkey.user_did,
+        "verification_method": delegated_subkey.verification_method,
+        "key_type": "Multikey/Ed25519",
+        "key_algorithm": "Ed25519",
+        "public_key_multibase": delegated_subkey.public_key_multibase,
+    })
+}
+
+fn daemon_delegated_subkey_proposal(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+) -> Option<crate::identity_custody::PreparedDaemonSubkey> {
+    use crate::app_bridge::bootstrap::BootstrapDidDocumentResolver;
+
+    let resolver = crate::app_bridge::bootstrap::DefaultBootstrapDidDocumentResolver::new(config);
+    let document = resolver
+        .resolve_user_did_document(daemon.controller_did.trim())
+        .ok()?;
+    crate::identity_custody::prepare_daemon_subkey(state, &document).ok()
 }
 
 pub fn reconcile_daemon_upgrade_state(
@@ -2190,6 +2246,24 @@ mod tests {
         let dump = payload.to_string();
         assert!(!dump.contains("token"));
         assert!(!dump.contains("private"));
+    }
+
+    #[test]
+    fn delegated_subkey_status_proposal_is_public_only_v3() {
+        let value =
+            delegated_subkey_proposal_value(&crate::identity_custody::PreparedDaemonSubkey {
+                user_did: "did:wba:awiki.test:user:alice:e1_user".to_string(),
+                verification_method: "did:wba:awiki.test:user:alice:e1_user#daemon-key-1"
+                    .to_string(),
+                public_key_multibase: "zPublic".to_string(),
+            });
+
+        assert_eq!(
+            value["schema"],
+            crate::app_bridge::bootstrap::USER_SUBKEY_PACKAGE_SCHEMA_V3
+        );
+        assert_eq!(value["key_algorithm"], "Ed25519");
+        assert!(!value.to_string().contains("private"));
     }
 
     #[test]

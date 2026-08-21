@@ -11,7 +11,7 @@ use crate::dto::{
     email::DartSendEmailRequest,
     error::DartImError,
     group::DartCreateGroupRequest,
-    identity::DartIdentitySelector,
+    identity::{DartDaemonSubkeyPublicProposal, DartIdentitySelector},
     message::{
         DartConversationReadRef, DartDelegatedSigningOptions, DartInboxAuth,
         DartInboxHistoryOptions, DartMarkConversationReadRequest, DartMessageSecurityMode,
@@ -258,6 +258,18 @@ impl TryFrom<DartIdentitySelector> for im_core::identity::IdentitySelector {
                 .map_err(DartImError::from),
             DartIdentitySelector::LocalAlias { alias } => Ok(Self::LocalAlias(alias)),
         }
+    }
+}
+
+impl TryFrom<DartDaemonSubkeyPublicProposal> for im_core::identity::DaemonSubkeyPublicProposal {
+    type Error = DartImError;
+
+    fn try_from(value: DartDaemonSubkeyPublicProposal) -> Result<Self, Self::Error> {
+        Ok(Self {
+            user_did: im_core::ids::Did::parse(value.user_did).map_err(DartImError::from)?,
+            verification_method: value.verification_method,
+            public_key_multibase: value.public_key_multibase,
+        })
     }
 }
 

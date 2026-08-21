@@ -492,30 +492,34 @@ class DeleteLocalIdentityResult {
   final List<String> warnings;
 }
 
-class DaemonSubkeyPrivatePackage {
-  const DaemonSubkeyPrivatePackage({
+class DaemonSubkeyPublicProposal {
+  const DaemonSubkeyPublicProposal({
+    required this.userDid,
+    required this.verificationMethod,
+    required this.publicKeyMultibase,
+  });
+
+  final String userDid;
+  final String verificationMethod;
+  final String publicKeyMultibase;
+}
+
+class DaemonSubkeyPublicPackage {
+  const DaemonSubkeyPublicPackage({
     required this.schema,
     required this.userDid,
     required this.verificationMethod,
     required this.keyType,
-    this.keyAlgorithm,
+    required this.keyAlgorithm,
     required this.publicKeyMultibase,
-    this.privateKeyEncoding = 'pem',
-    String? privateKeyPem,
-    String? privateKeyMultibase,
-  }) : privateKeyPem = privateKeyPem ?? privateKeyMultibase ?? '',
-       privateKeyMultibase = privateKeyMultibase ?? privateKeyPem ?? '';
+  });
 
   final String schema;
   final String userDid;
   final String verificationMethod;
   final String keyType;
-  final String? keyAlgorithm;
+  final String keyAlgorithm;
   final String publicKeyMultibase;
-  final String privateKeyEncoding;
-  final String privateKeyPem;
-  @Deprecated('Use privateKeyPem for PEM v2 packages.')
-  final String privateKeyMultibase;
 }
 
 class DaemonSubkeyAuthorizationRevokeResult {

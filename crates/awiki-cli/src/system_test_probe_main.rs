@@ -203,8 +203,6 @@ struct ProbeUserSubkeyPackage<'a> {
     key_type: &'a str,
     key_algorithm: &'a str,
     public_key_multibase: &'a str,
-    private_key_encoding: &'a str,
-    private_key_pem: &'a str,
     allowed_scopes: [&'static str; 1],
 }
 
@@ -1280,16 +1278,11 @@ impl Probe {
                 Ok((self.daemon_marker_processed(&message_id)?, false))
             }
             Action::HumanDaemonSubkeyState => {
-                let core = self._core.as_ref().ok_or(ProbeFailure::InvalidState)?;
-                let vault_present = core
-                    .identities()
-                    .load_daemon_subkey_package_async(im_core::IdentitySelector::Default)
-                    .await
-                    .is_ok();
+                let _ = self._core.as_ref().ok_or(ProbeFailure::InvalidState)?;
                 Ok((
                     json!({
                         "document_present": self.local_daemon_subkey_present,
-                        "vault_present": vault_present,
+                        "vault_present": false,
                     }),
                     false,
                 ))
@@ -1849,26 +1842,31 @@ impl Probe {
                     ),
                 )
                 .await?;
-            let mut subkey = core
+            let controller_document = core
                 .identities()
-                .ensure_daemon_subkey_package_async(im_core::IdentitySelector::Default)
+                .identity_document_async(im_core::IdentitySelector::Default)
+                .await
+                .map_err(|_| ProbeFailure::Runtime)?;
+            let prepared =
+                awiki_deamon::identity_custody::prepare_daemon_subkey(&state, &controller_document)
+                    .map_err(|_| ProbeFailure::Runtime)?;
+            let subkey = core
+                .identities()
+                .authorize_daemon_subkey_async(
+                    im_core::IdentitySelector::Default,
+                    im_core::DaemonSubkeyPublicProposal {
+                        user_did: im_core::ids::Did::parse(&prepared.user_did)
+                            .map_err(|_| ProbeFailure::InvalidState)?,
+                        verification_method: prepared.verification_method,
+                        public_key_multibase: prepared.public_key_multibase,
+                    },
+                )
                 .await
                 .map_err(|_| ProbeFailure::Runtime)?;
             if subkey.user_did.as_str() != self.local_did
                 || !subkey.verification_method.ends_with("#daemon-key-1")
-                || !subkey.is_v2_pem()
+                || subkey.schema != "awiki.daemon.user_subkey_package.v3"
             {
-                return Err(ProbeFailure::InvalidState.into());
-            }
-            let private_key = Zeroizing::new(std::mem::take(&mut subkey.private_key_pem));
-            let legacy_private_key =
-                Zeroizing::new(std::mem::take(&mut subkey.private_key_multibase));
-            let private_key_material = if private_key.trim().is_empty() {
-                legacy_private_key.as_str()
-            } else {
-                private_key.as_str()
-            };
-            if private_key_material.trim().is_empty() {
                 return Err(ProbeFailure::InvalidState.into());
             }
             let bootstrap_id = format!("boot_{}", random_hex(12)?);
@@ -1888,10 +1886,8 @@ impl Probe {
                     user_did: subkey.user_did.as_str(),
                     verification_method: &subkey.verification_method,
                     key_type: &subkey.key_type,
-                    key_algorithm: subkey.key_algorithm.as_deref().unwrap_or("Ed25519"),
+                    key_algorithm: &subkey.key_algorithm,
                     public_key_multibase: &subkey.public_key_multibase,
-                    private_key_encoding: &subkey.private_key_encoding,
-                    private_key_pem: private_key_material,
                     allowed_scopes: ["message.inbox.read.plain"],
                 },
                 desired_personal_agent: ProbeDesiredPersonalAgent {

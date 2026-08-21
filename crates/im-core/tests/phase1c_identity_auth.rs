@@ -349,13 +349,6 @@ async fn register_handle_leaves_daemon_subkey_provisioning_to_the_daemon() {
         .unwrap();
 
     let identity = result.identity.unwrap();
-    let package_error = core
-        .identities()
-        .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("daemon".to_string()))
-        .await
-        .unwrap_err();
-    assert!(matches!(package_error, ImError::IdentityNotFound { .. }));
-
     let requests = server.join();
     let body = requests[0].json_body();
     let did_document = &body["params"]["did_document"];
@@ -392,6 +385,75 @@ async fn register_handle_leaves_daemon_subkey_provisioning_to_the_daemon() {
         "DID Document proof must remain valid without controller-side daemon provisioning"
     );
     assert_prekey_publication_request(&requests[1]);
+}
+
+#[tokio::test]
+async fn daemon_public_proposal_is_authorized_without_exporting_private_material() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+        ExpectedHttp::rpc_result(json!({"updated": true})),
+    ]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [44_u8; 32])
+        .await;
+    let identity = core
+        .identities()
+        .register_handle_async(RegisterHandleRequest {
+            local_alias: Some("daemon-public".to_string()),
+            requested_handle: Handle::parse("daemon-public.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Daemon Public User".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .await
+        .unwrap()
+        .identity
+        .unwrap();
+    let daemon_private = ed25519_dalek::SigningKey::from_bytes(&[105_u8; 32]);
+    let mut multikey = vec![0xed, 0x01];
+    multikey.extend_from_slice(&daemon_private.verifying_key().to_bytes());
+    let public_key_multibase = format!("z{}", bs58::encode(multikey).into_string());
+    let verification_method = format!("{}#daemon-key-1", identity.did.as_str());
+
+    let package = core
+        .identities()
+        .authorize_daemon_subkey_async(
+            IdentitySelector::LocalAlias("daemon-public".to_string()),
+            DaemonSubkeyPublicProposal {
+                user_did: identity.did.clone(),
+                verification_method: verification_method.clone(),
+                public_key_multibase: public_key_multibase.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(package.schema, "awiki.daemon.user_subkey_package.v3");
+    assert_eq!(package.verification_method, verification_method);
+    assert_eq!(package.public_key_multibase, public_key_multibase);
+    assert!(!serde_json::to_string(&package).unwrap().contains("private"));
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    let update = requests[2].json_body();
+    assert_eq!(update["method"], "update_document");
+    let document = &update["params"]["did_document"];
+    assert!(document["authentication"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
+    assert!(document["assertionMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item.as_str() != Some(package.verification_method.as_str())));
 }
 
 #[tokio::test]
@@ -433,12 +495,6 @@ async fn register_handle_vault_required_persists_identity_without_plaintext() {
     assert_eq!(status.plaintext_compat_retained, Some(false));
     assert!(status.missing.is_empty(), "{:?}", status.missing);
 
-    let package_error = core
-        .identities()
-        .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("secure".to_string()))
-        .await
-        .unwrap_err();
-    assert!(matches!(package_error, ImError::IdentityNotFound { .. }));
     assert_secure_identity_dir_has_no_plaintext(
         &fixture.root.join("identities").join(identity.id.as_str()),
         "phase1c-secure-access-token",
@@ -447,85 +503,6 @@ async fn register_handle_vault_required_persists_identity_without_plaintext() {
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_prekey_publication_request(&requests[1]);
-}
-
-#[tokio::test]
-async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_identity() {
-    let fixture = Fixture::new();
-    let identity = fixture.write_generated_identity_without_daemon_key("legacy", true);
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": identity.did,
-        "user_id": "user-legacy",
-        "message": "DID document updated",
-        "access_token": "jwt-legacy-updated"
-    }))]);
-    let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
-
-    let package = core
-        .identities()
-        .ensure_daemon_subkey_package_async(IdentitySelector::LocalAlias("legacy".to_string()))
-        .await
-        .unwrap();
-
-    assert_eq!(package.user_did.as_str(), identity.did);
-    assert_eq!(
-        package.verification_method,
-        format!("{}#daemon-key-1", identity.did)
-    );
-    let requests = server.join();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
-    let body = requests[0].json_body();
-    assert_eq!(body["method"], "update_document");
-    assert_eq!(body["params"].get("is_public"), None);
-    assert_eq!(body["params"].get("is_agent"), None);
-    let did_document = &body["params"]["did_document"];
-    assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
-    assert_ne!(
-        did_document["proof"]["challenge"].as_str(),
-        identity.did_document["proof"]["challenge"].as_str()
-    );
-    assert!(did_document["authentication"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
-    let method = did_document["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["id"].as_str() == Some(package.verification_method.as_str()))
-        .unwrap();
-    assert_eq!(
-        method["publicKeyMultibase"].as_str(),
-        Some(package.public_key_multibase.as_str())
-    );
-    let proof_method = did_document["proof"]["verificationMethod"]
-        .as_str()
-        .expect("proof method");
-    let proof_public_key = did_document["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["id"].as_str() == Some(proof_method))
-        .and_then(|item| extract_public_key(item).ok())
-        .expect("proof public key");
-    assert!(verify_w3c_proof(
-        did_document,
-        &proof_public_key,
-        ProofVerificationOptions::default()
-    ));
-
-    let saved = fs::read_to_string(
-        fixture
-            .root
-            .join("identities")
-            .join("legacy-id")
-            .join("daemon-subkey-package.json"),
-    )
-    .unwrap();
-    assert!(saved.contains("daemon-key-1"));
 }
 
 #[tokio::test]
@@ -624,21 +601,6 @@ async fn revoke_daemon_subkey_authorization_is_idempotent_when_key_is_absent() {
         format!("{}#daemon-key-1", identity.did)
     );
     assert!(server.join().is_empty());
-}
-
-#[test]
-fn ensure_daemon_subkey_package_fails_closed_when_document_has_daemon_key_without_private_package()
-{
-    let fixture = Fixture::new();
-    fixture.write_generated_identity_with_daemon_key_without_package("stale");
-    let core = fixture.core();
-
-    let err = core
-        .identities()
-        .ensure_daemon_subkey_package(IdentitySelector::LocalAlias("stale".to_string()))
-        .unwrap_err();
-
-    assert!(err.to_string().contains("daemon_subkey_private_missing"));
 }
 
 #[tokio::test]
@@ -949,13 +911,6 @@ impl Fixture {
             false,
         );
         generated
-    }
-
-    fn write_generated_identity_with_daemon_key_without_package(
-        &self,
-        alias: &str,
-    ) -> GeneratedTestIdentity {
-        self.write_generated_identity_with_daemon_key(alias, false, false)
     }
 
     fn write_generated_identity_with_daemon_key(

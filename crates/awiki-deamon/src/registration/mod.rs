@@ -1397,11 +1397,7 @@ pub(crate) fn store_mock_vnext_device_identity(
         device_signing_private_key_pem: generated.device_signing_private_key_pem,
         device_e2ee_key_id: generated.device_e2ee_key_id,
         device_e2ee_private_key_pem: generated.device_e2ee_private_key_pem,
-        daemon_subkey_package_json: generated
-            .daemon_subkey_package
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()?,
+        daemon_subkey_package_json: None,
         authorization_status: "active".to_owned(),
         role: "admin".to_owned(),
         management_ready: true,

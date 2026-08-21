@@ -386,20 +386,14 @@ Future<DartDeleteLocalIdentityResult> deleteLocalIdentityData({
   selector: selector,
 );
 
-Future<DartDaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage({
+Future<DartDaemonSubkeyPublicPackage> authorizeDaemonSubkey({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
-}) => RustLib.instance.api.crateApiIdentityLoadDaemonSubkeyPackage(
+  required DartDaemonSubkeyPublicProposal proposal,
+}) => RustLib.instance.api.crateApiIdentityAuthorizeDaemonSubkey(
   core: core,
   selector: selector,
-);
-
-Future<DartDaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage({
-  required ArcDartImCore core,
-  required DartIdentitySelector selector,
-}) => RustLib.instance.api.crateApiIdentityEnsureDaemonSubkeyPackage(
-  core: core,
-  selector: selector,
+  proposal: proposal,
 );
 
 Future<DartDaemonSubkeyAuthorizationRevokeResult>

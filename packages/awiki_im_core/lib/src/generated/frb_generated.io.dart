@@ -216,6 +216,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDaemonSubkeyPublicProposal
+  dco_decode_box_autoadd_dart_daemon_subkey_public_proposal(dynamic raw);
+
+  @protected
   DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(
     dynamic raw,
   );
@@ -522,7 +526,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_dart_daemon_subkey_authorization_revoke_result(dynamic raw);
 
   @protected
-  DartDaemonSubkeyPrivatePackage dco_decode_dart_daemon_subkey_private_package(
+  DartDaemonSubkeyPublicPackage dco_decode_dart_daemon_subkey_public_package(
+    dynamic raw,
+  );
+
+  @protected
+  DartDaemonSubkeyPublicProposal dco_decode_dart_daemon_subkey_public_proposal(
     dynamic raw,
   );
 
@@ -1541,6 +1550,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDaemonSubkeyPublicProposal
+  sse_decode_box_autoadd_dart_daemon_subkey_public_proposal(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(
     SseDeserializer deserializer,
   );
@@ -1923,7 +1938,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartDaemonSubkeyPrivatePackage sse_decode_dart_daemon_subkey_private_package(
+  DartDaemonSubkeyPublicPackage sse_decode_dart_daemon_subkey_public_package(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDaemonSubkeyPublicProposal sse_decode_dart_daemon_subkey_public_proposal(
     SseDeserializer deserializer,
   );
 
@@ -3189,6 +3209,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_daemon_subkey_public_proposal(
+    DartDaemonSubkeyPublicProposal self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_default_identity_change(
     DartDefaultIdentityChange self,
     SseSerializer serializer,
@@ -3634,8 +3660,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_dart_daemon_subkey_private_package(
-    DartDaemonSubkeyPrivatePackage self,
+  void sse_encode_dart_daemon_subkey_public_package(
+    DartDaemonSubkeyPublicPackage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_daemon_subkey_public_proposal(
+    DartDaemonSubkeyPublicProposal self,
     SseSerializer serializer,
   );
 

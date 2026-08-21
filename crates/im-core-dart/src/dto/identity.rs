@@ -466,16 +466,20 @@ pub struct DartInitialProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartDaemonSubkeyPrivatePackage {
+pub struct DartDaemonSubkeyPublicProposal {
+    pub user_did: String,
+    pub verification_method: String,
+    pub public_key_multibase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDaemonSubkeyPublicPackage {
     pub schema: String,
     pub user_did: String,
     pub verification_method: String,
     pub key_type: String,
-    pub key_algorithm: Option<String>,
+    pub key_algorithm: String,
     pub public_key_multibase: String,
-    pub private_key_encoding: String,
-    pub private_key_pem: String,
-    pub private_key_multibase: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

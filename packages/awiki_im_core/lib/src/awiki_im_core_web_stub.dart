@@ -279,15 +279,10 @@ class AwikiImCore {
     throw _unsupported();
   }
 
-  Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
-    IdentitySelector selector,
-  ) async {
-    throw _unsupported();
-  }
-
-  Future<DaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage(
-    IdentitySelector selector,
-  ) async {
+  Future<DaemonSubkeyPublicPackage> authorizeDaemonSubkey({
+    required IdentitySelector selector,
+    required DaemonSubkeyPublicProposal proposal,
+  }) async {
     throw _unsupported();
   }
 

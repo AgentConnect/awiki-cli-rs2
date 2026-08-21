@@ -375,6 +375,212 @@ impl<'a> IdentityRegistry<'a> {
         })?
     }
 
+    pub fn identity_document(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<serde_json::Value> {
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        let dir_name = entry
+            .identity_dir_name()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .load_did_document(&dir_name)
+    }
+
+    pub async fn identity_document_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<serde_json::Value> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).identity_document(selector)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
+    pub async fn authorize_daemon_subkey_async(
+        &self,
+        selector: super::IdentitySelector,
+        proposal: super::DaemonSubkeyPublicProposal,
+    ) -> crate::ImResult<super::DaemonSubkeyPublicPackage> {
+        let registry = self.load_registry_async().await?;
+        let entry = registry.find_entry(selector.clone())?.clone();
+        if proposal.user_did != entry.summary.did
+            || proposal.verification_method
+                != format!("{}#daemon-key-1", proposal.user_did.as_str())
+            || proposal.public_key_multibase.trim().is_empty()
+            || entry.identity_custody_backend.as_deref() != Some("anp_identity")
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let dir_name = entry
+            .identity_dir_name()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let store = crate::internal::identity_custody::open_controller_store(self.core)?;
+        if entry.anp_identity_store_id.as_deref() != Some(store.manifest().store_id.as_str()) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let mut identity = store
+            .open_identity(proposal.user_did.as_str())
+            .map_err(crate::internal::identity_custody::map_error)?;
+        if entry.anp_identity_id.as_deref() != Some(identity.identity_id())
+            || identity.state() != anp_identity::IdentityState::Active
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if anp::authentication::find_verification_method(
+            identity.document(),
+            &proposal.verification_method,
+        )
+        .is_some()
+        {
+            require_daemon_proposal_document_binding(&proposal, identity.document())?;
+            let document = identity.document().clone();
+            drop(identity);
+            drop(store);
+            save_identity_document_projection(self.core, &dir_name, &document)?;
+            return daemon_public_package(proposal);
+        }
+
+        let mut pending_reconciliation = false;
+        if let Some(pending) = identity.pending_revision() {
+            require_daemon_proposal_document_binding(&proposal, &pending.candidate_document)?;
+            match pending.state {
+                anp_identity::PublicationState::Prepared => {}
+                anp_identity::PublicationState::PublicationInFlight => {
+                    identity
+                        .mark_publication_uncertain(&pending.revision_id)
+                        .map_err(crate::internal::identity_custody::map_error)?;
+                    pending_reconciliation = true;
+                }
+                anp_identity::PublicationState::PublicationUncertain => {
+                    pending_reconciliation = true;
+                }
+                anp_identity::PublicationState::Published => {
+                    identity
+                        .commit_update(&pending.revision_id)
+                        .map_err(crate::internal::identity_custody::map_error)?;
+                    let document = identity.document().clone();
+                    drop(identity);
+                    drop(store);
+                    save_identity_document_projection(self.core, &dir_name, &document)?;
+                    return daemon_public_package(proposal);
+                }
+            }
+        }
+        drop(identity);
+        drop(store);
+
+        let client = self.core.client_async(selector.clone()).await?;
+        if pending_reconciliation {
+            let mut directory_transport =
+                crate::internal::transport::CoreHttpTransport::new(&client);
+            let remote_document =
+                crate::internal::discovery::did_document::resolve_did_document_async(
+                    &mut directory_transport,
+                    proposal.user_did.as_str(),
+                )
+                .await?;
+            let store = crate::internal::identity_custody::open_controller_store(self.core)?;
+            let mut identity = store
+                .open_identity(proposal.user_did.as_str())
+                .map_err(crate::internal::identity_custody::map_error)?;
+            let pending = identity
+                .pending_revision()
+                .ok_or(crate::ImError::PermissionDenied)?;
+            let outcome = identity
+                .reconcile_update(&pending.revision_id, &remote_document)
+                .map_err(crate::internal::identity_custody::map_error)?;
+            if outcome == anp_identity::ReconcileOutcome::Committed {
+                require_daemon_proposal_document_binding(&proposal, identity.document())?;
+                let document = identity.document().clone();
+                drop(identity);
+                drop(store);
+                save_identity_document_projection(self.core, &dir_name, &document)?;
+                return daemon_public_package(proposal);
+            }
+        }
+
+        let store = crate::internal::identity_custody::open_controller_store(self.core)?;
+        let mut identity = store
+            .open_identity(proposal.user_did.as_str())
+            .map_err(crate::internal::identity_custody::map_error)?;
+        let (candidate, revision_id) = if let Some(pending) = identity.pending_revision() {
+            if pending.state != anp_identity::PublicationState::Prepared {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            require_daemon_proposal_document_binding(&proposal, &pending.candidate_document)?;
+            (pending.candidate_document, pending.revision_id)
+        } else {
+            let prepared = identity
+                .prepare_update(anp_identity::DocumentUpdateSpec {
+                    request_signing_rotation: None,
+                    request_signing_mutations: vec![
+                        anp_identity::RequestSigningMutationSpec::Add {
+                            key: anp_identity::RequestSigningPublicKeySpec {
+                                kid: proposal.verification_method.clone(),
+                                public_key_multibase: proposal.public_key_multibase.clone(),
+                            },
+                        },
+                    ],
+                    device_mutations: Vec::new(),
+                    services: None,
+                })
+                .map_err(crate::internal::identity_custody::map_error)?;
+            (prepared.candidate_document, prepared.revision_id)
+        };
+        identity
+            .begin_publication(&revision_id)
+            .map_err(crate::internal::identity_custody::map_error)?;
+        drop(identity);
+        drop(store);
+
+        let call = crate::internal::identity_wire::update_document::build_update_document_rpc_call(
+            crate::internal::identity_wire::UpdateDocumentRpcParams {
+                did_document: candidate.clone(),
+                is_public: None,
+                is_agent: None,
+                role: None,
+                endpoint_url: None,
+            },
+        );
+        use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+        if let Err(error) = crate::internal::transport::CoreHttpTransport::new(&client)
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await
+        {
+            let store = crate::internal::identity_custody::open_controller_store(self.core)?;
+            let mut identity = store
+                .open_identity(proposal.user_did.as_str())
+                .map_err(crate::internal::identity_custody::map_error)?;
+            identity
+                .mark_publication_uncertain(&revision_id)
+                .map_err(crate::internal::identity_custody::map_error)?;
+            return Err(error);
+        }
+
+        let store = crate::internal::identity_custody::open_controller_store(self.core)?;
+        let mut identity = store
+            .open_identity(proposal.user_did.as_str())
+            .map_err(crate::internal::identity_custody::map_error)?;
+        identity
+            .mark_published(&revision_id)
+            .map_err(crate::internal::identity_custody::map_error)?;
+        identity
+            .commit_update(&revision_id)
+            .map_err(crate::internal::identity_custody::map_error)?;
+        drop(identity);
+        drop(store);
+        save_identity_document_projection(self.core, &dir_name, &candidate)?;
+        daemon_public_package(proposal)
+    }
+
     pub fn vault_status(
         &self,
         selector: super::IdentitySelector,
@@ -511,179 +717,6 @@ impl<'a> IdentityRegistry<'a> {
     ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
         let status = self.vault_status_async(selector).await?;
         self.verify_identity_vault_status(status, true)
-    }
-
-    pub fn load_daemon_subkey_package(
-        &self,
-        selector: super::IdentitySelector,
-    ) -> crate::ImResult<super::DaemonSubkeyPrivatePackage> {
-        let registry = self.load_registry()?;
-        let entry = registry.find_entry(selector)?;
-        let dir_name =
-            entry
-                .identity_dir_name()
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: entry.summary.id.as_str().to_string(),
-                })?;
-        crate::internal::identity_store::IdentityStore::new(
-            &self.core.inner().sdk_paths().identities,
-        )
-        .load_daemon_subkey_package_vault_aware(
-            &dir_name,
-            &entry.summary.did,
-            entry.vault_migration.as_ref(),
-            self.core.inner().identity_vault(),
-            self.core.inner().identity_secret_storage_policy(),
-        )
-    }
-
-    pub async fn load_daemon_subkey_package_async(
-        &self,
-        selector: super::IdentitySelector,
-    ) -> crate::ImResult<super::DaemonSubkeyPrivatePackage> {
-        let registry = self.load_registry_async().await?;
-        let entry = registry.find_entry(selector)?;
-        let dir_name =
-            entry
-                .identity_dir_name()
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: entry.summary.id.as_str().to_string(),
-                })?;
-        let paths = self.core.inner().sdk_paths().identities.clone();
-        let did = entry.summary.did.clone();
-        let metadata = entry.vault_migration.clone();
-        let context = self.core.inner().identity_vault().cloned();
-        let policy = self.core.inner().identity_secret_storage_policy();
-        crate::internal::runtime::worker::run_blocking(move || {
-            crate::internal::identity_store::IdentityStore::new(&paths)
-                .load_daemon_subkey_package_vault_aware(
-                    &dir_name,
-                    &did,
-                    metadata.as_ref(),
-                    context.as_ref(),
-                    policy,
-                )
-        })
-        .await
-        .map_err(|err| crate::ImError::Internal {
-            message: err.to_string(),
-        })?
-    }
-
-    pub fn ensure_daemon_subkey_package(
-        &self,
-        selector: super::IdentitySelector,
-    ) -> crate::ImResult<super::DaemonSubkeyPrivatePackage> {
-        let registry = self.load_registry()?;
-        let entry = registry.find_entry(selector)?;
-        let prepared = self.prepare_daemon_subkey_ensure(entry)?;
-        match prepared {
-            EnsureDaemonSubkeyPrepared::Ready { package } => Ok(package),
-            EnsureDaemonSubkeyPrepared::UpdateRequired {
-                dir_name,
-                identity_id,
-                did_document,
-                package,
-                selector,
-            } => {
-                let client = self.core.client(selector)?;
-                let call =
-                    crate::internal::identity_wire::update_document::build_update_document_rpc_call(
-                        crate::internal::identity_wire::UpdateDocumentRpcParams {
-                            did_document: did_document.clone(),
-                            is_public: None,
-                            is_agent: None,
-                            role: None,
-                            endpoint_url: None,
-                        },
-                    );
-                use crate::internal::transport::AuthenticatedRpcTransport;
-                let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
-                transport.authenticated_rpc(call.endpoint, call.method, call.params)?;
-                crate::internal::identity_store::IdentityStore::new(
-                    &self.core.inner().sdk_paths().identities,
-                )
-                .save_did_document(&dir_name, &did_document)?;
-                crate::internal::identity_store::IdentityStore::new(
-                    &self.core.inner().sdk_paths().identities,
-                )
-                .save_daemon_subkey_package_with_secret_storage(
-                    &dir_name,
-                    &identity_id,
-                    &package,
-                    crate::internal::identity_store::SaveIdentitySecretStorage::from_core(
-                        self.core,
-                    )?,
-                )?;
-                Ok(package)
-            }
-        }
-    }
-
-    pub async fn ensure_daemon_subkey_package_async(
-        &self,
-        selector: super::IdentitySelector,
-    ) -> crate::ImResult<super::DaemonSubkeyPrivatePackage> {
-        let registry = self.load_registry_async().await?;
-        let entry = registry.find_entry(selector)?;
-        let core = (*self.core).clone();
-        let entry = entry.clone();
-        let prepared = crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).prepare_daemon_subkey_ensure(&entry)
-        })
-        .await
-        .map_err(|err| crate::ImError::Internal {
-            message: err.to_string(),
-        })??;
-        match prepared {
-            EnsureDaemonSubkeyPrepared::Ready { package } => Ok(package),
-            EnsureDaemonSubkeyPrepared::UpdateRequired {
-                dir_name,
-                identity_id,
-                did_document,
-                package,
-                selector,
-            } => {
-                let client = self.core.client_async(selector).await?;
-                let call =
-                    crate::internal::identity_wire::update_document::build_update_document_rpc_call(
-                        crate::internal::identity_wire::UpdateDocumentRpcParams {
-                            did_document: did_document.clone(),
-                            is_public: None,
-                            is_agent: None,
-                            role: None,
-                            endpoint_url: None,
-                        },
-                    );
-                use crate::internal::transport::AsyncAuthenticatedRpcTransport;
-                let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
-                transport
-                    .authenticated_rpc(call.endpoint, call.method, call.params)
-                    .await?;
-                let paths = self.core.inner().sdk_paths().identities.clone();
-                let package_to_save = package.clone();
-                let secret_storage =
-                    crate::internal::identity_store::SaveIdentitySecretStorage::from_core(
-                        self.core,
-                    )?;
-                crate::internal::runtime::worker::run_blocking(move || {
-                    let store = crate::internal::identity_store::IdentityStore::new(&paths);
-                    store.save_did_document(&dir_name, &did_document)?;
-                    store.save_daemon_subkey_package_with_secret_storage(
-                        &dir_name,
-                        &identity_id,
-                        &package_to_save,
-                        secret_storage,
-                    )?;
-                    Ok::<(), crate::ImError>(())
-                })
-                .await
-                .map_err(|err| crate::ImError::Internal {
-                    message: err.to_string(),
-                })??;
-                Ok(package)
-            }
-        }
     }
 
     pub fn revoke_daemon_subkey_authorization(
@@ -885,107 +918,6 @@ impl<'a> IdentityRegistry<'a> {
                 })
             }
         }
-    }
-
-    fn prepare_daemon_subkey_ensure(
-        &self,
-        entry: &RegistryEntry,
-    ) -> crate::ImResult<EnsureDaemonSubkeyPrepared> {
-        let dir_name =
-            entry
-                .identity_dir_name()
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: entry.summary.id.as_str().to_string(),
-                })?;
-        let store = crate::internal::identity_store::IdentityStore::new(
-            &self.core.inner().sdk_paths().identities,
-        );
-        let did = entry.summary.did.clone();
-        let mut did_document = store.load_did_document(&dir_name)?;
-        let document_id = did_document
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if document_id != did.as_str() {
-            return Err(crate::ImError::IdentityNotReady {
-                identity: did.as_str().to_string(),
-                missing: vec!["did_document_identity_mismatch".to_string()],
-            });
-        }
-        if let Some(package) = match store.load_daemon_subkey_package_vault_aware(
-            &dir_name,
-            &did,
-            entry.vault_migration.as_ref(),
-            self.core.inner().identity_vault(),
-            self.core.inner().identity_secret_storage_policy(),
-        ) {
-            Ok(package) => Some(package),
-            Err(crate::ImError::IdentityNotFound { .. })
-                if !matches!(
-                    self.core.inner().identity_secret_storage_policy(),
-                    crate::core::IdentitySecretStoragePolicy::VaultRequired
-                ) =>
-            {
-                store.load_daemon_subkey_package_or_legacy(&dir_name, &did, &did_document)?
-            }
-            Err(crate::ImError::IdentityNotFound { .. }) => None,
-            Err(err) => return Err(err),
-        } {
-            if package.user_did != did {
-                return Err(crate::ImError::IdentityNotReady {
-                    identity: did.as_str().to_string(),
-                    missing: vec!["daemon_subkey_did_mismatch".to_string()],
-                });
-            }
-            crate::internal::identity_daemon_subkey::validate_package_against_did_document(
-                &package,
-                &did_document,
-            )?;
-            return Ok(EnsureDaemonSubkeyPrepared::Ready { package });
-        }
-        if crate::internal::identity_daemon_subkey::did_document_references_daemon_subkey(
-            &did_document,
-            &did,
-        ) {
-            return Err(crate::ImError::IdentityNotReady {
-                identity: did.as_str().to_string(),
-                missing: vec!["daemon_subkey_private_missing".to_string()],
-            });
-        }
-        let signer = self.key_provider_for_entry(
-            self.core
-                .inner()
-                .sdk_paths()
-                .identities
-                .identity_root_dir
-                .join(&dir_name),
-            Some(entry),
-            &entry.summary,
-        )?;
-        let subkey = crate::internal::identity_daemon_subkey::generate_for_did(&did);
-        crate::internal::identity_daemon_subkey::apply_to_did_document(
-            &mut did_document,
-            &did,
-            &subkey,
-        )?;
-        crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
-            &mut did_document,
-            &did,
-            signer.as_ref(),
-        )?;
-        let package = crate::internal::identity_daemon_subkey::package_from_parts(
-            did.clone(),
-            subkey.verification_method,
-            subkey.public_key_multibase,
-            subkey.private_key_pem,
-        );
-        Ok(EnsureDaemonSubkeyPrepared::UpdateRequired {
-            dir_name,
-            identity_id: entry.summary.id.as_str().to_string(),
-            did_document,
-            package,
-            selector: super::IdentitySelector::Did(did),
-        })
     }
 
     fn prepare_daemon_subkey_revoke(
@@ -1849,6 +1781,53 @@ fn identity_vault_failure_from_status(
     }
 }
 
+fn daemon_public_package(
+    proposal: super::DaemonSubkeyPublicProposal,
+) -> crate::ImResult<super::DaemonSubkeyPublicPackage> {
+    Ok(super::DaemonSubkeyPublicPackage {
+        schema: super::DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3.to_owned(),
+        user_did: proposal.user_did,
+        verification_method: proposal.verification_method,
+        key_type: "Multikey/Ed25519".to_owned(),
+        key_algorithm: "Ed25519".to_owned(),
+        public_key_multibase: proposal.public_key_multibase,
+    })
+}
+
+fn require_daemon_proposal_document_binding(
+    proposal: &super::DaemonSubkeyPublicProposal,
+    document: &serde_json::Value,
+) -> crate::ImResult<()> {
+    let method =
+        anp::authentication::find_verification_method(document, &proposal.verification_method)
+            .ok_or(crate::ImError::PermissionDenied)?;
+    if method
+        .get("publicKeyMultibase")
+        .and_then(serde_json::Value::as_str)
+        != Some(proposal.public_key_multibase.as_str())
+        || !anp::authentication::is_authentication_authorized(
+            document,
+            &proposal.verification_method,
+        )
+        || anp::authentication::is_assertion_method_authorized(
+            document,
+            &proposal.verification_method,
+        )
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn save_identity_document_projection(
+    core: &crate::core::ImCore,
+    dir_name: &str,
+    document: &serde_json::Value,
+) -> crate::ImResult<()> {
+    crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+        .save_did_document(dir_name, document)
+}
+
 fn first_existing_path(identity_dir: &Path, names: &[&str]) -> std::path::PathBuf {
     names
         .iter()
@@ -2069,20 +2048,6 @@ struct RegistryEntry {
     anp_identity_id: Option<String>,
     anp_identity_auth_ref: Option<crate::internal::secret_vault::record::SecretRef>,
     device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
-}
-
-#[derive(Debug, Clone)]
-enum EnsureDaemonSubkeyPrepared {
-    Ready {
-        package: super::DaemonSubkeyPrivatePackage,
-    },
-    UpdateRequired {
-        dir_name: String,
-        identity_id: String,
-        did_document: Value,
-        package: super::DaemonSubkeyPrivatePackage,
-        selector: super::IdentitySelector,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -3732,6 +3697,82 @@ mod tests {
         ] {
             assert!(!identity_dir.join(name).exists());
         }
+    }
+
+    #[tokio::test]
+    async fn existing_daemon_public_authorization_returns_a_v3_public_only_package() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        std::fs::create_dir_all(paths.identities.identity_root_dir.join("alice-id")).unwrap();
+        let mut custody = anp_identity::DidStore::initialize_local_file(
+            paths.identities.identity_root_dir.join(".anp-identity"),
+        )
+        .unwrap();
+        let mut identity = custody
+            .create_identity(anp_identity_spec("daemon-public"))
+            .unwrap();
+        let daemon_private = ed25519_dalek::SigningKey::from_bytes(&[104_u8; 32]);
+        let mut multikey = vec![0xed, 0x01];
+        multikey.extend_from_slice(&daemon_private.verifying_key().to_bytes());
+        let public_key_multibase = format!("z{}", bs58::encode(multikey).into_string());
+        let verification_method = format!("{}#daemon-key-1", identity.did());
+        let update = identity
+            .prepare_update(anp_identity::DocumentUpdateSpec {
+                request_signing_rotation: None,
+                request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
+                    key: anp_identity::RequestSigningPublicKeySpec {
+                        kid: verification_method.clone(),
+                        public_key_multibase: public_key_multibase.clone(),
+                    },
+                }],
+                device_mutations: Vec::new(),
+                services: None,
+            })
+            .unwrap();
+        identity.begin_publication(&update.revision_id).unwrap();
+        identity.mark_published(&update.revision_id).unwrap();
+        identity.commit_update(&update.revision_id).unwrap();
+        let did = identity.did().to_owned();
+        let store_id = custody.manifest().store_id.clone();
+        let identity_id = identity.identity_id().to_owned();
+        crate::internal::auth::state::persist_jwt_token(
+            &paths
+                .identities
+                .identity_root_dir
+                .join("alice-id/auth.json"),
+            "file-anp-token",
+        )
+        .unwrap();
+        write_anp_identity_registry(
+            &paths.identities.registry_path,
+            &did,
+            &store_id,
+            &identity_id,
+            None,
+        );
+        let core = crate::ImCore::new(test_config(), paths).unwrap();
+
+        let package = core
+            .identities()
+            .authorize_daemon_subkey_async(
+                crate::identity::IdentitySelector::Default,
+                crate::identity::DaemonSubkeyPublicProposal {
+                    user_did: crate::ids::Did::parse(&did).unwrap(),
+                    verification_method,
+                    public_key_multibase,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            package.schema,
+            crate::identity::DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3
+        );
+        let encoded = serde_json::to_string(&package).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains("store_id"));
+        assert!(!encoded.contains("identity_id"));
     }
 
     #[test]
