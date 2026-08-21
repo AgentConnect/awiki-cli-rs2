@@ -321,7 +321,7 @@ async fn register_handle_async_returns_identity_and_default_change() {
 }
 
 #[tokio::test]
-async fn register_handle_generates_and_saves_daemon_subkey_package() {
+async fn register_handle_leaves_daemon_subkey_provisioning_to_the_daemon() {
     let server = TestServer::spawn(vec![
         ExpectedHttp::registration_result(),
         ExpectedHttp::prekey_publication_result(),
@@ -349,54 +349,33 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
         .unwrap();
 
     let identity = result.identity.unwrap();
-    let package = core
+    let package_error = core
         .identities()
         .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("daemon".to_string()))
         .await
-        .unwrap();
-    assert_eq!(package.schema, "awiki.daemon.user_subkey_package.v2");
-    assert_eq!(package.key_type, "Multikey/Ed25519");
-    assert_eq!(package.key_algorithm.as_deref(), Some("Ed25519"));
-    assert_eq!(package.private_key_encoding, "pem");
-    assert_eq!(package.user_did, identity.did);
-    assert_eq!(
-        package.verification_method,
-        format!("{}#daemon-key-1", package.user_did.as_str())
-    );
-    assert!(package.public_key_multibase.starts_with('z'));
-    assert!(package
-        .private_key_pem
-        .starts_with("-----BEGIN PRIVATE KEY-----"));
+        .unwrap_err();
+    assert!(matches!(package_error, ImError::IdentityNotFound { .. }));
 
     let requests = server.join();
     let body = requests[0].json_body();
     let did_document = &body["params"]["did_document"];
-    assert_eq!(did_document["id"].as_str(), Some(package.user_did.as_str()));
-    let method = did_document["verificationMethod"]
+    assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
+    let daemon_method = format!("{}#daemon-key-1", identity.did.as_str());
+    assert!(did_document["verificationMethod"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|item| item["id"].as_str() == Some(package.verification_method.as_str()))
-        .expect("daemon verification method");
-    assert_eq!(method["type"].as_str(), Some("Multikey"));
-    assert_eq!(
-        method["controller"].as_str(),
-        Some(package.user_did.as_str())
-    );
-    assert_eq!(
-        method["publicKeyMultibase"].as_str(),
-        Some(package.public_key_multibase.as_str())
-    );
+        .all(|item| item["id"].as_str() != Some(daemon_method.as_str())));
     assert!(did_document["authentication"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
+        .all(|item| item.as_str() != Some(daemon_method.as_str())));
 
     let proof_method = did_document["proof"]["verificationMethod"]
         .as_str()
         .expect("did document proof verification method");
-    assert_eq!(proof_method, format!("{}#key-1", package.user_did.as_str()));
+    assert_eq!(proof_method, format!("{}#key-1", identity.did.as_str()));
     let proof_public_key = did_document["verificationMethod"]
         .as_array()
         .unwrap()
@@ -410,7 +389,7 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
             &proof_public_key,
             ProofVerificationOptions::default()
         ),
-        "DID Document proof must remain valid after APP-side daemon subkey registration"
+        "DID Document proof must remain valid without controller-side daemon provisioning"
     );
     assert_prekey_publication_request(&requests[1]);
 }
@@ -454,15 +433,12 @@ async fn register_handle_vault_required_persists_identity_without_plaintext() {
     assert_eq!(status.plaintext_compat_retained, Some(false));
     assert!(status.missing.is_empty(), "{:?}", status.missing);
 
-    let package = core
+    let package_error = core
         .identities()
         .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("secure".to_string()))
         .await
-        .unwrap();
-    assert_eq!(package.user_did, identity.did);
-    assert!(package
-        .private_key_pem
-        .starts_with("-----BEGIN PRIVATE KEY-----"));
+        .unwrap_err();
+    assert!(matches!(package_error, ImError::IdentityNotFound { .. }));
     assert_secure_identity_dir_has_no_plaintext(
         &fixture.root.join("identities").join(identity.id.as_str()),
         "phase1c-secure-access-token",
