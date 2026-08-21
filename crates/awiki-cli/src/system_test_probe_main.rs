@@ -313,7 +313,13 @@ enum DaemonFixturePrepareFailureStage {
     RuntimeToken,
     ControllerDocument,
     SubkeyPrepare,
-    SubkeyAuthorize,
+    SubkeyAuthorizeLocalPermission,
+    SubkeyAuthorizeServiceDocument,
+    SubkeyAuthorizeServiceProof,
+    SubkeyAuthorizeServiceCheckpoint,
+    SubkeyAuthorizeServiceAuthorization,
+    SubkeyAuthorizeServiceOther,
+    SubkeyAuthorizeLocalOther,
     SubkeyContract,
     BootstrapEncrypt,
     RuntimeMaterial,
@@ -336,7 +342,13 @@ impl DaemonFixturePrepareFailureStage {
             Self::RuntimeToken => "runtime_token",
             Self::ControllerDocument => "controller_document",
             Self::SubkeyPrepare => "subkey_prepare",
-            Self::SubkeyAuthorize => "subkey_authorize",
+            Self::SubkeyAuthorizeLocalPermission => "subkey_authorize_local_permission",
+            Self::SubkeyAuthorizeServiceDocument => "subkey_authorize_service_document",
+            Self::SubkeyAuthorizeServiceProof => "subkey_authorize_service_proof",
+            Self::SubkeyAuthorizeServiceCheckpoint => "subkey_authorize_service_checkpoint",
+            Self::SubkeyAuthorizeServiceAuthorization => "subkey_authorize_service_authorization",
+            Self::SubkeyAuthorizeServiceOther => "subkey_authorize_service_other",
+            Self::SubkeyAuthorizeLocalOther => "subkey_authorize_local_other",
             Self::SubkeyContract => "subkey_contract",
             Self::BootstrapEncrypt => "bootstrap_encrypt",
             Self::RuntimeMaterial => "runtime_material",
@@ -351,6 +363,45 @@ impl DaemonFixturePrepareFailureStage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage);
+
+fn daemon_subkey_authorize_failure_stage(
+    error: &im_core::ImError,
+) -> DaemonFixturePrepareFailureStage {
+    match error {
+        im_core::ImError::PermissionDenied => {
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeLocalPermission
+        }
+        im_core::ImError::Service { data, .. } => {
+            let code = data
+                .as_ref()
+                .and_then(|value| value.get("awiki_code"))
+                .and_then(Value::as_str);
+            match code {
+                Some("device.document_invalid" | "device.manifest_binding_invalid") => {
+                    DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocument
+                }
+                Some(code) if code.contains("proof") => {
+                    DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceProof
+                }
+                Some(
+                    "device.document_version_conflict"
+                    | "device.document_hash_conflict"
+                    | "device.registry_version_conflict"
+                    | "device.idempotency_conflict",
+                ) => DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceCheckpoint,
+                Some(
+                    "device.forbidden"
+                    | "device.inactive"
+                    | "device.admin_required"
+                    | "device.management_not_ready"
+                    | "device.auth_generation_stale",
+                ) => DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceAuthorization,
+                _ => DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceOther,
+            }
+        }
+        _ => DaemonFixturePrepareFailureStage::SubkeyAuthorizeLocalOther,
+    }
+}
 
 impl From<ProbeFailure> for DaemonFixturePrepareFailure {
     fn from(_failure: ProbeFailure) -> Self {
@@ -1904,8 +1955,8 @@ impl Probe {
                     },
                 )
                 .await
-                .map_err(|_| {
-                    DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SubkeyAuthorize)
+                .map_err(|error| {
+                    DaemonFixturePrepareFailure(daemon_subkey_authorize_failure_stage(&error))
                 })?;
             if subkey.user_did.as_str() != self.local_did
                 || !subkey.verification_method.ends_with("#daemon-key-1")
@@ -5118,6 +5169,30 @@ mod tests {
                 }),
             );
         }
+    }
+
+    #[test]
+    fn daemon_subkey_authorize_errors_map_to_closed_safe_stages() {
+        let service = im_core::ImError::Service {
+            status_code: Some(200),
+            code: Some("-32010".to_owned()),
+            message: "redacted".to_owned(),
+            data: Some(json!({"awiki_code": "device.document_invalid"})),
+        };
+        assert_eq!(
+            daemon_subkey_authorize_failure_stage(&service),
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeServiceDocument
+        );
+        assert_eq!(
+            daemon_subkey_authorize_failure_stage(&im_core::ImError::PermissionDenied),
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeLocalPermission
+        );
+        assert_eq!(
+            daemon_subkey_authorize_failure_stage(&im_core::ImError::Serialization {
+                detail: "redacted".to_owned(),
+            }),
+            DaemonFixturePrepareFailureStage::SubkeyAuthorizeLocalOther
+        );
     }
 
     #[test]
