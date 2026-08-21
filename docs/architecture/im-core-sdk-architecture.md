@@ -704,6 +704,13 @@ and old identity vault kinds remain receive-only migration inputs. Hosted
 daemon/runtime Agent device identities are the existing trusted-native-host
 exception and remain sealed by the daemon's own SecretVault.
 
+The daemon has no independent Registry version source for delegated user DID
+documents. `adopt_daemon_document` therefore increments its local evidence
+version only when the canonical digest changes. That synthesized counter is a
+local monotonicity input, not proof of global Registry freshness or rollback
+resistance; authorization relies on the controller/bootstrap path supplying an
+already accepted document and on the upstream resolver/service validation.
+
 Direct E2EE session/prekey state, Group MLS state, JWTs, pairing keys and runtime
 secrets remain outside ANP Identity and continue using their owning stores.
 Root-key provider rotation/backup and external key-agent IPC are outside this
