@@ -331,6 +331,50 @@ impl<'a> IdentityRegistry<'a> {
         })
     }
 
+    /// Inspects all local identities for ANP Identity migration eligibility
+    /// without creating a store, changing the index, or deleting old keys.
+    pub fn inspect_identity_custody_migration(
+        &self,
+    ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
+        crate::internal::identity_custody_migration::inspect(self.core)
+    }
+
+    /// Async variant of [`Self::inspect_identity_custody_migration`].
+    pub async fn inspect_identity_custody_migration_async(
+        &self,
+    ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_custody_migration::inspect(&core)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
+    /// Copies and verifies every eligible identity before one atomic workspace
+    /// cutover, then performs idempotent post-marker cleanup.
+    pub fn migrate_identity_custody(
+        &self,
+    ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
+        crate::internal::identity_custody_migration::migrate(self.core)
+    }
+
+    /// Async variant of [`Self::migrate_identity_custody`].
+    pub async fn migrate_identity_custody_async(
+        &self,
+    ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
+        let core = (*self.core).clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_custody_migration::migrate(&core)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
     pub fn vault_status(
         &self,
         selector: super::IdentitySelector,

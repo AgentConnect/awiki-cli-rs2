@@ -11,6 +11,8 @@ use time::OffsetDateTime;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const INDEX_SCHEMA_VERSION: i64 = 5;
+pub(crate) const IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION: i64 = 6;
+pub(crate) const IDENTITY_CUSTODY_CUTOVER_MARKER_SCHEMA_VERSION: u32 = 1;
 const IDENTITY_FILE_NAME: &str = "identity.json";
 const AUTH_FILE_NAME: &str = "auth.json";
 const DID_DOCUMENT_FILE_NAME: &str = "did_document.json";
@@ -588,6 +590,9 @@ impl<'a> IdentityStore<'a> {
         input.full_handle = full_handle;
 
         let mut index = self.load_index()?;
+        if index.identity_custody_cutover.is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
         if index
             .credentials
             .get(&local_alias)
@@ -1040,7 +1045,7 @@ impl<'a> IdentityStore<'a> {
         state
             .validate_for_did(&did)
             .map_err(|_| crate::ImError::PermissionDenied)?;
-        index.schema_version = INDEX_SCHEMA_VERSION;
+        refresh_index_schema(&mut index);
         self.save_index_locked(&lock, index)?;
         Ok(RootImportPromotionResult {
             active_root_ref,
@@ -1165,6 +1170,9 @@ impl<'a> IdentityStore<'a> {
         package: &crate::identity::DaemonSubkeyPrivatePackage,
         secret_storage: SaveIdentitySecretStorage,
     ) -> crate::ImResult<()> {
+        if self.load_index()?.identity_custody_cutover.is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
         match secret_storage {
             SaveIdentitySecretStorage::FileCompat => {
                 self.save_daemon_subkey_package(identity_dir_name, package)
@@ -1706,7 +1714,7 @@ impl<'a> IdentityStore<'a> {
             },
         );
         let dir_name = entry.dir_name.clone();
-        index.schema_version = INDEX_SCHEMA_VERSION;
+        refresh_index_schema(&mut index);
         self.save_index_locked(&lock, index)?;
         self.save_did_document(&dir_name, &input.generated.target_document)
     }
@@ -1877,7 +1885,7 @@ impl<'a> IdentityStore<'a> {
         let did = crate::ids::Did::parse(&entry.did)?;
         state.validate_for_did(&did)?;
         entry.device_state = Some(state);
-        index.schema_version = INDEX_SCHEMA_VERSION;
+        refresh_index_schema(&mut index);
         self.save_index_locked(&lock, index)
     }
 
@@ -2403,6 +2411,8 @@ pub(crate) struct IdentityVaultSecretRefs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct IndexPayload {
     pub(crate) schema_version: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) identity_custody_cutover: Option<IdentityCustodyCutoverMarker>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) default_credential_name: String,
     #[serde(default)]
@@ -2413,10 +2423,21 @@ impl Default for IndexPayload {
     fn default() -> Self {
         Self {
             schema_version: INDEX_SCHEMA_VERSION,
+            identity_custody_cutover: None,
             default_credential_name: String::new(),
             credentials: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IdentityCustodyCutoverMarker {
+    pub(crate) schema_version: u32,
+    pub(crate) backend: String,
+    pub(crate) store_id: String,
+    pub(crate) cutover_at: String,
+    pub(crate) cleanup_complete: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -2531,7 +2552,10 @@ fn sdk_registry_to_index(file: SdkRegistryFile) -> IndexPayload {
 }
 
 fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPayload> {
-    if !matches!(payload.schema_version, 0 | 2 | 3 | 4 | INDEX_SCHEMA_VERSION) {
+    if !matches!(
+        payload.schema_version,
+        0 | 2 | 3 | 4 | INDEX_SCHEMA_VERSION | IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION
+    ) {
         return Err(crate::ImError::invalid_input(
             Some("identity_registry.schema_version".to_string()),
             format!(
@@ -2542,6 +2566,28 @@ fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPa
     }
     if payload.schema_version == 0 {
         payload.schema_version = INDEX_SCHEMA_VERSION;
+    }
+    match (
+        payload.schema_version,
+        payload.identity_custody_cutover.as_ref(),
+    ) {
+        (IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION, Some(marker))
+            if marker.schema_version == IDENTITY_CUSTODY_CUTOVER_MARKER_SCHEMA_VERSION
+                && marker.backend == "anp_identity"
+                && !marker.store_id.trim().is_empty() => {}
+        (IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION, _) => {
+            return Err(crate::ImError::invalid_input(
+                Some("identity_registry.identity_custody_cutover".to_owned()),
+                "schema-v6 identity index requires a valid ANP Identity cutover marker",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(crate::ImError::invalid_input(
+                Some("identity_registry.schema_version".to_owned()),
+                "ANP Identity cutover marker requires identity index schema version 6",
+            ));
+        }
+        _ => {}
     }
     if payload.default_credential_name.is_empty() && payload.credentials.contains_key("default") {
         payload.default_credential_name = "default".to_string();
@@ -2564,7 +2610,31 @@ fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPa
             }
         }
     }
+    if let Some(marker) = payload.identity_custody_cutover.as_ref() {
+        let all_cut_over = payload.credentials.values().all(|entry| {
+            entry.identity_custody_backend.as_deref() == Some("anp_identity")
+                && entry.anp_identity_store_id.as_deref() == Some(marker.store_id.as_str())
+                && entry
+                    .anp_identity_id
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        });
+        if !all_cut_over {
+            return Err(crate::ImError::invalid_input(
+                Some("identity_registry.credentials".to_owned()),
+                "schema-v6 identity index requires every identity to use the marked ANP Identity store",
+            ));
+        }
+    }
     Ok(payload)
+}
+
+fn refresh_index_schema(index: &mut IndexPayload) {
+    index.schema_version = if index.identity_custody_cutover.is_some() {
+        IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION
+    } else {
+        INDEX_SCHEMA_VERSION
+    };
 }
 
 fn merge_identity_binding_generation(

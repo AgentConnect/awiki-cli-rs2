@@ -43,6 +43,9 @@ pub struct ImCoreAdapter {
 impl ImCoreAdapter {
     pub fn open(config: &DaemonConfig) -> Result<Self> {
         let core = ImCore::new(config.im_core_config()?, config.im_core_paths())?;
+        core.identities()
+            .migrate_identity_custody()
+            .context("migrate daemon im-core identity custody")?;
         Ok(Self { core })
     }
 

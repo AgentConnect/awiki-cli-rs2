@@ -73,6 +73,11 @@ async fn open_core_inner(
             .await
             .map_err(DartImError::from)?
     };
+    inner
+        .identities()
+        .migrate_identity_custody_async()
+        .await
+        .map_err(DartImError::from)?;
     Ok(Arc::new(DartImCore {
         state: Arc::new(RwLock::new(DartImCoreState { inner: Some(inner) })),
     }))

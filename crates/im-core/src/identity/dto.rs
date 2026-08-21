@@ -132,6 +132,42 @@ pub struct IdentityVaultVerificationReport {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityCustodyMigrationPhase {
+    NotRequired,
+    Blocked,
+    Eligible,
+    Copied,
+    Verified,
+    Cutover,
+    Cleaned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityCustodyMigrationIdentityReport {
+    pub identity_name: String,
+    pub did: String,
+    pub eligible: bool,
+    pub already_managed: bool,
+    pub root_capability_present: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityCustodyMigrationReport {
+    pub dry_run: bool,
+    pub phase: IdentityCustodyMigrationPhase,
+    pub store_id: Option<String>,
+    pub marker_written: bool,
+    pub cleanup_complete: bool,
+    pub copied_count: usize,
+    pub verified_count: usize,
+    pub identities: Vec<IdentityCustodyMigrationIdentityReport>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct HostedIdentityMaterial {
     pub identity_id: String,
