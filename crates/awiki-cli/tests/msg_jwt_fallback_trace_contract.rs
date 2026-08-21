@@ -292,9 +292,14 @@ fn assert_vault_auth_token_is_used(
         .join("identities")
         .join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(index_path).unwrap()).unwrap();
+    let entry = &index["credentials"][identity_name];
     assert!(
-        index["credentials"][identity_name]["vault_migration"]["refs"]["auth_jwt"].is_object(),
-        "refreshed token should remain stored behind the vault auth_jwt ref"
+        if entry["identity_custody_backend"] == "anp_identity" {
+            entry["anp_identity_auth_ref"].is_object()
+        } else {
+            entry["vault_migration"]["refs"]["auth_jwt"].is_object()
+        },
+        "refreshed token should remain stored behind the active auth_jwt ref: {entry:?}"
     );
 }
 
