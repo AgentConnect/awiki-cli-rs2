@@ -4,7 +4,7 @@ mod file;
 mod hosted;
 pub(crate) mod vault;
 
-pub(crate) use self::anp_identity::AnpIdentitySigner;
+pub(crate) use self::anp_identity::{AnpIdentitySigner, PendingAnpEnrollmentSigner};
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedIdentitySigner;
 pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};

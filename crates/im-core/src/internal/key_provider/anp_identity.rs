@@ -15,6 +15,15 @@ pub(crate) struct AnpIdentitySigner {
     auth: AnpIdentityAuth,
 }
 
+pub(crate) struct PendingAnpEnrollmentSigner {
+    identity: DidIdentity,
+    enrollment_id: String,
+    document: serde_json::Value,
+    signing_key_id: String,
+    e2ee_key_id: String,
+    auth: RwLock<crate::internal::auth::state::AuthStateSnapshot>,
+}
+
 enum AnpIdentityAuth {
     Ephemeral {
         state: RwLock<crate::internal::auth::state::AuthStateSnapshot>,
@@ -124,6 +133,107 @@ impl AnpIdentitySigner {
         validate_auth_ref(&auth_ref)?;
         let secret = vault.open(&auth_ref)?;
         crate::internal::auth::state::parse_auth_state(secret.expose_secret())
+    }
+}
+
+impl PendingAnpEnrollmentSigner {
+    pub(crate) fn new(
+        identity: DidIdentity,
+        enrollment_id: impl Into<String>,
+        document: serde_json::Value,
+        signing_key_id: impl Into<String>,
+        e2ee_key_id: impl Into<String>,
+    ) -> crate::ImResult<Self> {
+        let enrollment_id = enrollment_id.into();
+        let signing_key_id = signing_key_id.into();
+        let e2ee_key_id = e2ee_key_id.into();
+        let pending = identity
+            .pending_enrollment()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if pending.enrollment_id != enrollment_id
+            || pending.device_signing_key.kid != signing_key_id
+            || pending.device_e2ee_key.kid != e2ee_key_id
+            || document.get("id").and_then(serde_json::Value::as_str) != Some(identity.did())
+            || !anp::authentication::is_authentication_authorized(&document, &signing_key_id)
+            || !anp::authentication::is_assertion_method_authorized(&document, &signing_key_id)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(Self {
+            identity,
+            enrollment_id,
+            document,
+            signing_key_id,
+            e2ee_key_id,
+            auth: RwLock::new(Default::default()),
+        })
+    }
+}
+
+impl super::IdentitySigner for PendingAnpEnrollmentSigner {
+    fn did_document(&self) -> crate::ImResult<serde_json::Value> {
+        Ok(self.document.clone())
+    }
+
+    fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>> {
+        Ok(Some(self.document.clone()))
+    }
+
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        Ok(self.signing_key_id.clone())
+    }
+
+    fn agreement_key_id(&self) -> crate::ImResult<String> {
+        Ok(self.e2ee_key_id.clone())
+    }
+
+    fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        self.identity
+            .sign_pending_enrollment(&self.enrollment_id, kid, message)
+            .map_err(map_identity_error)
+    }
+
+    fn sign_device_assertion(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        self.sign(kid, message)
+    }
+
+    fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
+    fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        self.identity
+            .ecdh_pending_enrollment(&self.enrollment_id, kid, peer_public)
+            .map(|shared| zeroize::Zeroizing::new(*shared.as_bytes()))
+            .map_err(map_identity_error)
+    }
+
+    fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+        self.auth.read().map(|state| state.clone()).map_err(|_| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "pending enrollment auth state lock poisoned".to_owned(),
+            }
+        })
+    }
+
+    fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+        let state = self.auth_state()?;
+        Ok(state
+            .has_valid_token
+            .then_some(state.bearer_token)
+            .flatten())
+    }
+
+    fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
+        let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
+        let snapshot = crate::internal::auth::state::parse_auth_state(&raw)?;
+        *self
+            .auth
+            .write()
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "pending enrollment auth state lock poisoned".to_owned(),
+            })? = snapshot;
+        Ok(())
     }
 }
 

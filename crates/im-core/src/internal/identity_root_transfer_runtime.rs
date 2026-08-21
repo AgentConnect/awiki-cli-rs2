@@ -1002,7 +1002,7 @@ fn validate_root_private_matches_document(
     Ok(())
 }
 
-fn canonical_ed25519_pkcs8_der(private_pem: &str) -> crate::ImResult<Vec<u8>> {
+pub(crate) fn canonical_ed25519_pkcs8_der(private_pem: &str) -> crate::ImResult<Vec<u8>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     let mut lines = private_pem.lines();
