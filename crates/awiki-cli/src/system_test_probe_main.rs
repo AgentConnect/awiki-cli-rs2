@@ -334,7 +334,11 @@ enum DaemonFixturePrepareFailureStage {
     SyncInitializeRecoveryRequired,
     SyncInitializeRetryableFailure,
     SyncInitializeAuthRevoked,
-    BootstrapSend,
+    BootstrapSendTransport,
+    BootstrapSendService,
+    BootstrapSendAuthorization,
+    BootstrapSendDeliveryFailed,
+    BootstrapSendLocalOther,
 }
 
 impl DaemonFixturePrepareFailureStage {
@@ -382,7 +386,11 @@ impl DaemonFixturePrepareFailureStage {
             Self::SyncInitializeRecoveryRequired => "sync_initialize_recovery_required",
             Self::SyncInitializeRetryableFailure => "sync_initialize_retryable_failure",
             Self::SyncInitializeAuthRevoked => "sync_initialize_auth_revoked",
-            Self::BootstrapSend => "bootstrap_send",
+            Self::BootstrapSendTransport => "bootstrap_send_transport",
+            Self::BootstrapSendService => "bootstrap_send_service",
+            Self::BootstrapSendAuthorization => "bootstrap_send_authorization",
+            Self::BootstrapSendDeliveryFailed => "bootstrap_send_delivery_failed",
+            Self::BootstrapSendLocalOther => "bootstrap_send_local_other",
         }
     }
 }
@@ -515,7 +523,7 @@ where
     SyncFuture:
         std::future::Future<Output = Result<im_core::messages::MessageSyncStatus, ProbeFailure>>,
     Send: FnOnce() -> SendFuture,
-    SendFuture: std::future::Future<Output = Result<(), ProbeFailure>>,
+    SendFuture: std::future::Future<Output = Result<(), DaemonFixturePrepareFailure>>,
 {
     let status = sync().await.map_err(|_| {
         DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SyncInitializeCallFailed)
@@ -539,9 +547,24 @@ where
             ))
         }
     }
-    send()
-        .await
-        .map_err(|_| DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::BootstrapSend))
+    send().await
+}
+
+fn daemon_bootstrap_send_failure_stage(
+    error: &im_core::ImError,
+) -> DaemonFixturePrepareFailureStage {
+    match error {
+        im_core::ImError::TransportUnavailable { .. } => {
+            DaemonFixturePrepareFailureStage::BootstrapSendTransport
+        }
+        im_core::ImError::Service { .. } => DaemonFixturePrepareFailureStage::BootstrapSendService,
+        im_core::ImError::AuthRequired
+        | im_core::ImError::SessionExpired
+        | im_core::ImError::PermissionDenied => {
+            DaemonFixturePrepareFailureStage::BootstrapSendAuthorization
+        }
+        _ => DaemonFixturePrepareFailureStage::BootstrapSendLocalOther,
+    }
 }
 
 fn daemon_token_issue_or_root_receipt(
@@ -2115,16 +2138,23 @@ impl Probe {
                     Ok(outcome.status)
                 },
                 move || async move {
-                    let send = client
-                        .messages()
-                        .send_async(send_request)
-                        .await
-                        .map_err(|_| ProbeFailure::Transport)?;
+                    let send =
+                        client
+                            .messages()
+                            .send_async(send_request)
+                            .await
+                            .map_err(|error| {
+                                DaemonFixturePrepareFailure(daemon_bootstrap_send_failure_stage(
+                                    &error,
+                                ))
+                            })?;
                     if matches!(
                         send.delivery,
                         im_core::messages::DeliveryState::Failed { .. }
                     ) {
-                        return Err(ProbeFailure::Transport);
+                        return Err(DaemonFixturePrepareFailure(
+                            DaemonFixturePrepareFailureStage::BootstrapSendDeliveryFailed,
+                        ));
                     }
                     Ok(())
                 },
@@ -5159,7 +5189,10 @@ mod tests {
                 "preflight-sync",
                 DaemonFixturePrepareFailureStage::SyncInitializeCallFailed,
             ),
-            ("send", DaemonFixturePrepareFailureStage::BootstrapSend),
+            (
+                "send",
+                DaemonFixturePrepareFailureStage::BootstrapSendTransport,
+            ),
         ] {
             let result = daemon_fixture_prepare_result_after_boundary(
                 daemon_agent_did,
@@ -5258,6 +5291,29 @@ mod tests {
     }
 
     #[test]
+    fn daemon_bootstrap_send_errors_map_to_closed_safe_stages() {
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::TransportUnavailable {
+                detail: "redacted".to_owned(),
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendTransport
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::Service {
+                status_code: Some(200),
+                code: Some("-32010".to_owned()),
+                message: "redacted".to_owned(),
+                data: None,
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendService
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::PermissionDenied),
+            DaemonFixturePrepareFailureStage::BootstrapSendAuthorization
+        );
+    }
+
+    #[test]
     fn daemon_continuity_accepts_only_the_persisted_bootstrap_status() {
         assert!(daemon_continuity_delegated_status_ready(
             awiki_deamon::app_bridge::bootstrap::DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED,
@@ -5287,7 +5343,7 @@ mod tests {
                         ["sync"]
                     );
                     send_observed.lock().expect("send observation").push("send");
-                    std::future::ready(Ok(()))
+                    std::future::ready(Ok::<(), DaemonFixturePrepareFailure>(()))
                 },
             )
             .await;
