@@ -6,6 +6,7 @@
 
 use anp::direct_e2ee::{V2SecretJsonPayload, V2SessionBinding, MTI_DIRECT_E2EE_SUITE_V2};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -24,6 +25,7 @@ use crate::internal::secure_direct::v2_store::{SqliteV2DirectStateStore, V2Owner
 const ROOT_TRANSFER_PREFLIGHT_DEADLINE_SECONDS: u64 = 10;
 const ROOT_TRANSFER_HANDLE_TTL_SECONDS: i64 = 60;
 const ROOT_TRANSFER_ENVELOPE_TTL_SECONDS: i64 = 600;
+const ROOT_KEY_ENVELOPE_V1: &str = "awiki.device.root-key-envelope.v1";
 pub(crate) const ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX: &str = "msg-root-key-";
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
@@ -128,6 +130,26 @@ impl RootKeyTransferAuthorizationStore {
     }
 }
 
+#[derive(Serialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+struct RootKeyEnvelopeV1 {
+    system_type: String,
+    message_id: String,
+    did: String,
+    root_key_id: String,
+    root_public_key_fingerprint: String,
+    root_private_key_pkcs8_b64u: String,
+    sender_device_id: String,
+    sender_e2ee_key_id: String,
+    recipient_device_id: String,
+    recipient_e2ee_key_id: String,
+    document_version: u64,
+    document_hash: String,
+    registry_version: u64,
+    issued_at: String,
+    expires_at: String,
+}
+
 pub(crate) async fn prepare_root_key_transfer(
     client: &crate::core::ImClient,
     request: crate::identity::RootKeyTransferPrepareRequest,
@@ -143,7 +165,7 @@ pub(crate) async fn prepare_root_key_transfer(
         .authorization
         .as_ref()
         .ok_or_else(|| root_error(RootTransferErrorCode::SenderNotEligible))?;
-    precheck_active_root(&core, &local_entry)
+    active_root_key_id(&core, &local_entry)
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
 
     recover_pending_root_key_transfers(client)
@@ -181,9 +203,9 @@ pub(crate) async fn prepare_root_key_transfer(
                 &registry,
                 &recipient_device_id,
             )?;
-            let root_ref = active_root_ref(&local_entry)
+            let root_key_id = active_root_key_id(&core, &local_entry)
                 .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
-            let fingerprint = validate_root_public(&document, client.did(), &root_ref.key_id)
+            let fingerprint = validate_root_public(&document, client.did(), &root_key_id)
                 .map_err(|_| root_error(RootTransferErrorCode::SenderNotEligible))?;
             let binding = same_did_binding(client.did().as_str(), sender, recipient);
             let scope = V2OwnerScope::from_identity_state(
@@ -218,7 +240,7 @@ pub(crate) async fn prepare_root_key_transfer(
             Ok::<_, RootTransferError>((
                 sender.clone(),
                 recipient.clone(),
-                root_ref.key_id.clone(),
+                root_key_id,
                 fingerprint,
                 transport,
                 registry,
@@ -384,29 +406,41 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
     {
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
-    let recipient_method =
-        anp::authentication::find_verification_method(&document, &recipient.e2ee_key_id)
-            .ok_or_else(|| root_error(RootTransferErrorCode::RecipientNotEligible))?;
-    let recipient_public = anp::authentication::extract_public_key(&recipient_method)
-        .map_err(|_| root_error(RootTransferErrorCode::RecipientNotEligible))?;
-    let anp::PublicKeyMaterial::X25519(recipient_agreement_public) = recipient_public else {
-        return Err(root_error(RootTransferErrorCode::RecipientNotEligible));
-    };
-    let envelope = custody_identity
-        .export_wrapped_root(anp_identity::RootTransferExportSpec {
-            target_did: state.did.as_str().to_owned(),
-            sender_device_id: sender.device_id.clone(),
-            recipient_device_id: recipient.device_id.clone(),
-            recipient_agreement_kid: recipient.e2ee_key_id.clone(),
-            recipient_agreement_public,
-            root_kid: state.root_key_id,
-            ttl_seconds: ROOT_TRANSFER_ENVELOPE_TTL_SECONDS as u32,
-        })
+    let exported_root = custody_identity
+        .export_root_private_key(&state.root_key_id)
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
+    validate_root_private_der_matches_document(
+        exported_root.as_pkcs8_der(),
+        &document,
+        &state.root_key_id,
+    )
+    .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     let issued_at = whole_second(OffsetDateTime::now_utc())
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    let envelope_expires_at = issued_at + Duration::seconds(ROOT_TRANSFER_ENVELOPE_TTL_SECONDS);
+    let root_private_key_pkcs8_b64u =
+        zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(exported_root.as_pkcs8_der()));
+    let envelope = zeroize::Zeroizing::new(RootKeyEnvelopeV1 {
+        system_type: ROOT_KEY_ENVELOPE_V1.to_owned(),
+        message_id: state.message_id.as_str().to_owned(),
+        did: state.did.as_str().to_owned(),
+        root_key_id: state.root_key_id,
+        root_public_key_fingerprint: state.root_public_key_fingerprint,
+        root_private_key_pkcs8_b64u: root_private_key_pkcs8_b64u.to_string(),
+        sender_device_id: sender.device_id.clone(),
+        sender_e2ee_key_id: sender.e2ee_key_id.clone(),
+        recipient_device_id: recipient.device_id.clone(),
+        recipient_e2ee_key_id: recipient.e2ee_key_id.clone(),
+        document_version: registry.checkpoint.document_version,
+        document_hash: registry.checkpoint.document_hash.clone(),
+        registry_version: registry.checkpoint.registry_version,
+        issued_at: format_time(issued_at)
+            .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
+        expires_at: format_time(envelope_expires_at)
+            .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
+    });
     let canonical = zeroize::Zeroizing::new(
-        serde_json_canonicalizer::to_vec(&envelope)
+        serde_json_canonicalizer::to_vec(&*envelope)
             .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
     );
     let plaintext = V2SecretJsonPayload::from_canonical_json_object(canonical.to_vec())
@@ -536,7 +570,7 @@ fn persist_sender_delivery_pending_tx(
             r#"INSERT INTO identity_root_transfer_sender_v1 (
 owner_identity_id, owner_did, local_device_id, message_id,
 recipient_device_id, envelope_format, phase, created_at, updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, 'wrapped_v1', 'pending_delivery', ?6, ?6)
+) VALUES (?1, ?2, ?3, ?4, ?5, 'legacy_v1', 'pending_delivery', ?6, ?6)
 ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             rusqlite::params![
                 owner_identity_id,
@@ -553,7 +587,7 @@ ON CONFLICT(owner_identity_id, local_device_id, message_id) DO NOTHING"#,
             r#"SELECT COUNT(*) FROM identity_root_transfer_sender_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND message_id = ?4 AND recipient_device_id = ?5
-  AND envelope_format = 'wrapped_v1'
+  AND envelope_format = 'legacy_v1'
   AND phase IN ('pending_delivery', 'sent')"#,
             rusqlite::params![
                 owner_identity_id,
@@ -673,10 +707,10 @@ fn load_pending_sender_deliveries(
     let retired = connection
         .execute(
             r#"UPDATE identity_root_transfer_sender_v1
-SET phase = 'terminal_failed', failure_code = 'legacy_plaintext_retry_forbidden',
+SET phase = 'terminal_failed', failure_code = 'wrapped_retry_forbidden',
     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
-  AND phase = 'pending_delivery' AND envelope_format = 'legacy_v1'"#,
+  AND phase = 'pending_delivery' AND envelope_format = 'wrapped_v1'"#,
             rusqlite::params![
                 client.current_identity().id.as_str(),
                 client.did().as_str(),
@@ -686,7 +720,7 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if retired > 0 {
         return Err(crate::ImError::unsupported(
-            "legacy-root-transfer-retry-forbidden-restart-with-encrypted-transfer",
+            "wrapped-root-transfer-retry-forbidden-restart-with-legacy-transfer",
         ));
     }
     let mut statement = connection
@@ -695,7 +729,7 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
 FROM identity_root_transfer_sender_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND phase = 'pending_delivery'
-  AND envelope_format = 'wrapped_v1'
+  AND envelope_format = 'legacy_v1'
 ORDER BY created_at, message_id"#,
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -834,40 +868,37 @@ fn format_time(value: OffsetDateTime) -> crate::ImResult<String> {
         })
 }
 
-fn active_root_ref(
-    entry: &crate::internal::identity_store::IndexEntry,
-) -> crate::ImResult<&crate::internal::secret_vault::record::SecretRef> {
-    entry
-        .vault_migration
-        .as_ref()
-        .and_then(|metadata| metadata.vnext_refs.as_ref())
-        .and_then(|refs| refs.did_document_root_private.as_ref())
-        .filter(|secret_ref| {
-            secret_ref.kind
-                == crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
-                && secret_ref.key_version == 1
-        })
-        .ok_or(crate::ImError::PermissionDenied)
-}
-
-fn precheck_active_root(
+fn active_root_key_id(
     core: &crate::core::ImCore,
     entry: &crate::internal::identity_store::IndexEntry,
-) -> crate::ImResult<()> {
-    let root_ref = active_root_ref(entry)?;
-    let vault = core
-        .inner()
-        .identity_vault()
-        .ok_or(crate::ImError::IdentityVault {
-            failure: crate::IdentityVaultFailure::Unavailable,
-        })?
-        .vault();
-    if !vault.list()?.iter().any(|candidate| candidate == root_ref) {
-        return Err(crate::ImError::IdentityVault {
-            failure: crate::IdentityVaultFailure::MetadataMissing,
-        });
+) -> crate::ImResult<String> {
+    if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+        return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    let store = crate::internal::identity_custody::open_controller_store(core)?;
+    if entry.anp_identity_store_id.as_deref() != Some(store.manifest().store_id.as_str()) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let identity = store
+        .open_identity(entry.did.as_str())
+        .map_err(crate::internal::identity_custody::map_error)?;
+    if entry.anp_identity_id.as_deref() != Some(identity.identity_id())
+        || identity.state() != anp_identity::IdentityState::Active
+        || identity.root_capability() != anp_identity::RootCapabilityState::Active
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    identity
+        .keys()
+        .iter()
+        .find(|key| {
+            key.role == anp_identity::KeyRole::RootControl
+                && key.origin == anp_identity::KeyOrigin::Managed
+                && key.state == anp_identity::KeyState::Active
+                && !key.material_erased
+        })
+        .map(|key| key.kid.clone())
+        .ok_or(crate::ImError::PermissionDenied)
 }
 
 fn validate_v1_transfer_route<'a>(
@@ -1020,8 +1051,29 @@ fn validate_root_public(
     Ok(fingerprint)
 }
 
-/// Legacy Upgrade receive/migration ingress only. Root Transfer sending never
-/// calls this parser and has no plaintext fallback.
+fn validate_root_private_der_matches_document(
+    private_der: &[u8],
+    document: &Value,
+    root_key_id: &str,
+) -> crate::ImResult<()> {
+    let private = anp::PrivateKeyMaterial::from_pkcs8_der(private_der)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if !matches!(&private, anp::PrivateKeyMaterial::Ed25519(_)) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let method = anp::authentication::find_verification_method(document, root_key_id)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let public = anp::authentication::extract_public_key(&method)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let challenge = b"awiki:root-transfer:export-binding:v1";
+    let signature = private
+        .sign_message(challenge)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    public
+        .verify_message(challenge, &signature)
+        .map_err(|_| crate::ImError::PermissionDenied)
+}
+
 pub(crate) fn canonical_ed25519_pkcs8_der(private_pem: &str) -> crate::ImResult<Vec<u8>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -1168,5 +1220,50 @@ mod tests {
         assert!(!is_root_key_transfer_message_id(
             ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX
         ));
+    }
+
+    #[test]
+    fn sender_ledger_records_legacy_format_without_secret_material() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"CREATE TABLE identity_root_transfer_sender_v1 (
+owner_identity_id TEXT NOT NULL,
+owner_did TEXT NOT NULL,
+local_device_id TEXT NOT NULL,
+message_id TEXT NOT NULL,
+recipient_device_id TEXT NOT NULL,
+envelope_format TEXT NOT NULL,
+phase TEXT NOT NULL,
+failure_code TEXT,
+accepted_at TEXT,
+created_at TEXT NOT NULL,
+updated_at TEXT NOT NULL,
+PRIMARY KEY (owner_identity_id, local_device_id, message_id)
+);"#,
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        persist_sender_delivery_pending_tx(
+            &transaction,
+            "identity-1",
+            "did:example:alice",
+            "device-admin",
+            "msg-root-key-1",
+            "device-member",
+            "2026-08-21T00:00:00Z",
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let (format, phase): (String, String) = connection
+            .query_row(
+                "SELECT envelope_format, phase FROM identity_root_transfer_sender_v1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(format, "legacy_v1");
+        assert_eq!(phase, "pending_delivery");
     }
 }

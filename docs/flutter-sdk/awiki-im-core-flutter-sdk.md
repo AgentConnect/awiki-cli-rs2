@@ -390,6 +390,10 @@ secret-free recipient summary and expiry. The handle must only be passed back
 to the same client's `confirmAndSend`; its string projection is redacted.
 Core generates the message ID. The host cannot provide a root key, PreKey,
 session, checkpoint, proof, nonce, ciphertext, completion proof, or timeout.
+When `userPresenceConfirmed` is false, native Core fails before requesting the
+root key from ANP Identity. When it is true, Core uses ANP Identity's Rust root
+export to build the legacy `RootKeyEnvelopeV1`; Flutter never receives the key
+or envelope and the existing confirmation interaction remains unchanged.
 
 `RootKeyTransferSendResult` contains only DID, sender/recipient device IDs,
 Core-generated message ID, and accepted time. Acceptance means that encrypted
@@ -397,8 +401,8 @@ delivery was accepted; it does not claim that recipient import or management
 readiness completed. Sender-side list, import status, and retry APIs are not
 public.
 
-RootKeyEnvelope, P5 state, imported completion, Vault state, and transport
-recovery remain entirely inside native Core. Public failures are the typed
+RootKeyEnvelopeV1, P5 state, imported completion, ANP Identity custody, and
+transport recovery remain entirely inside native Core. Public failures are the typed
 `RootKeyTransferException(code:, retryable:)` closed union. Flutter Web returns
 `root_transfer.unsupported` and has no plaintext or JavaScript fallback.
 

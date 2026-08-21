@@ -433,16 +433,18 @@ implementation. After eligibility and PreKey/session checks, one explicit user
 confirmation authorizes one target and message ID; V1 does not add a system
 PIN/biometric step to this transfer. An existing session sends a standard
 Cipher; when no session exists, the first standard Init carries the same
-RootKeyEnvelope as its first application plaintext. Core never sends an empty
-Init and never asks for a second confirmation.
+`RootKeyEnvelopeV1` as its first application plaintext. Only after the host
+passes `user_presence_confirmed=true` does Core call ANP Identity's public Rust
+root export and construct that envelope in zeroizing memory. Core never sends
+an empty Init and never asks for a second confirmation.
 
 The sender persists ratchet state and byte-identical retry ciphertext before
 network I/O. The receiver processes the control JSON before ordinary message
 projection, revalidates the current Manifest/Registry and root fingerprint, and
-atomically seals the root as a `pending` Vault capability together with the
-consumed message and exact completion state. Root plaintext and control JSON
-never reach History, conversation, notification preview, search, Dart, CLI, or
-ordinary backup surfaces.
+atomically imports the root as a pending ANP Identity capability together with
+the consumed message and exact completion state. Root plaintext and control
+JSON never reach History, conversation, notification preview, search, Dart,
+CLI, or ordinary backup surfaces.
 
 The receiver then submits one HTTPS `device_root_import_complete` request with
 an outer importing-device Object Proof and an inner root-possession Object
