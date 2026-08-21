@@ -1576,7 +1576,7 @@ version/cursor 的首尾空白不会被规范化接受。stale 最多重启三�
 `group.local_cursor_invalid`、`group.local_cursor_stale`、
 `group.local_inventory_incomplete`、`group.local_inventory_too_large`。
 
-Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
+Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。Node facade 的 `createGroup()` 与 `joinGroup()` 不接受调用方传入成员 Handle；它们从当前 identity-bound `ImClient` 读取完整 Handle 并分别写入 `creator_handle` / `member_handle`。无 Handle 的明确 DID-only identity 仍保持字段缺失，最终 Group Host 对存在的 Handle 执行 fresh resolve 与 DID 精确匹配。
 
 Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string，旧成员 DID 来自当前 owner 的 previous DID history，或来自同一 state root 下已完成且 Handle/current DID/generation 精确一致的 Recovery receipt。fresh owner 没有旧 roster 时，只接受 reliable sync 写入、subject 为当前 DID 的 active Group projection 作为候选；最终仍由 Group Host 对旧 Handle/DID/generation 和 transport-only policy 做权威校验。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
 
@@ -1584,7 +1584,7 @@ Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async
 `handle` / `did` / `status` / `binding_generation`；公共响应中的域内 `user_id` /
 `subject_id` 不参与群成员换绑、Persona 或 scope 判断。
 
-补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。Manifest Handle Recovery V4.0 只为权威策略明确为 `transport-protected`、且权威完整 roster 精确显示旧 DID/旧 generation 的 Handle-backed member 创建修复任务；发送 P4 前必须重新读取 `group.get + group.get_info` 与版本一致的分页 roster。DID-only、Group E2EE、缺失、畸形或冲突状态一律 fail closed，并计入不支持影响项；Recovery operation ID 即使遇到缓存漂移也绝不进入 P6。身份 Recovery 在 receipt 落盘后即为 `applied`，Group 修复的 pending/blocked 只属于 Group journal，不得把 Recovery 改回 blocked。App 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL；CLI/Daemon 的 Recovery 产品入口留待后续版本。
+补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。Manifest Handle Recovery V4.0 只为权威策略明确为 `transport-protected`、且权威完整 roster 精确显示旧 DID/旧 generation 的 Handle-backed member 创建修复任务；发送 P4 前必须重新读取 `group.get + group.get_info` 与版本一致的分页 roster。DID-only、Group E2EE、缺失、畸形或冲突状态一律 fail closed，并计入不支持影响项；Recovery operation ID 即使遇到缓存漂移也绝不进入 P6。身份 Recovery 在 receipt 落盘后即为 `applied`，Group 修复的 pending/blocked 只属于 Group journal，不得把 Recovery 改回 blocked。App 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL；Node facade 的 summary 保留 `group_did`、`layer`、`phase`、`blocked` 和发送暂停群列表，但不得把 warnings 或底层错误详情转发给 Browser；CLI/Daemon 的 Recovery 产品入口留待后续版本。
 
 P4 被 Group Host 接受后，high-level resume 会先把本地稳定 Handle member 投影原子推进到返回请求对应的 `new_member_did` 与 generation，再把 durable P4 job 标记为 `complete` 或 `awaiting_p6`。若该本地投影未能完成，job 保持重试状态；下一次恢复仍使用相同稳定 `operation_id`。因此连续 Handle recovery 的下一代任务必须以前一代已接受并已投影的 DID 为 `previous_member_did`，不能重新从最早历史 DID 建链。
 

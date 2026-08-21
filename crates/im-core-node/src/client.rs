@@ -897,11 +897,11 @@ impl NativeImCoreNodeClient {
     }
 
     async fn create_group_inner(&self, input: NodeCreateGroupInput) -> SafeResult<NodeGroup> {
-        let request = crate::dto::group_create_request(input)?;
-        let fallback_title = request.name.clone();
         let _mutation = self.inner.mutation.lock().await;
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
+        let request = crate::dto::group_create_request(input, client.handle())?;
+        let fallback_title = request.name.clone();
         let result = self
             .inner
             .wait_im(
@@ -1001,21 +1001,15 @@ impl NativeImCoreNodeClient {
     }
 
     async fn join_group_inner(&self, input: NodeGroupInput) -> SafeResult<NodeGroup> {
-        let group = im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?;
-        let fallback = group.as_str().to_owned();
         let _mutation = self.inner.mutation.lock().await;
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
+        let request = crate::dto::group_join_request(input, client.handle())?;
+        let fallback = request.group.as_str().to_owned();
         let result = self
             .inner
             .wait_im(
-                client
-                    .groups()
-                    .join_async(im_core::groups::GroupJoinRequest {
-                        group,
-                        member_handle: None,
-                        reason_text: None,
-                    }),
+                client.groups().join_async(request),
                 self.inner.operation_timeout,
             )
             .await?;

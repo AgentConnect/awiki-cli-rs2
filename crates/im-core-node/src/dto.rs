@@ -377,7 +377,18 @@ pub struct NodeGroupRebindRecoverySummary {
     pub completed: u32,
     pub pending: u32,
     pub blocked: u32,
+    pub send_paused_groups: Vec<String>,
+    pub items: Vec<NodeGroupRebindRecoveryItem>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeGroupRebindRecoveryItem {
+    pub group_did: String,
+    pub layer: String,
+    pub phase: String,
+    pub blocked: bool,
 }
 
 #[napi(object)]
@@ -1049,6 +1060,7 @@ pub(crate) fn display_profiles(
 
 pub(crate) fn group_create_request(
     input: NodeCreateGroupInput,
+    creator_handle: Option<&im_core::ids::Handle>,
 ) -> SafeResult<im_core::groups::GroupCreateRequest> {
     let name = input.name.trim().to_owned();
     if name.is_empty() {
@@ -1059,6 +1071,7 @@ pub(crate) fn group_create_request(
         ));
     }
     let mut request = im_core::groups::GroupCreateRequest::new(name);
+    request.creator_handle = creator_handle.cloned();
     request.description = input
         .description
         .map(|description| description.trim().to_owned())
@@ -1068,6 +1081,17 @@ pub(crate) fn group_create_request(
     request.message_security_profile =
         Some(im_core::groups::GroupMessageSecurityProfile::TransportProtected);
     Ok(request)
+}
+
+pub(crate) fn group_join_request(
+    input: NodeGroupInput,
+    member_handle: Option<&im_core::ids::Handle>,
+) -> SafeResult<im_core::groups::GroupJoinRequest> {
+    Ok(im_core::groups::GroupJoinRequest {
+        group: im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?,
+        member_handle: member_handle.cloned(),
+        reason_text: None,
+    })
 }
 
 pub(crate) fn created_group(
@@ -1183,6 +1207,21 @@ pub(crate) fn rebind_recovery_summary(
         completed: value.completed,
         pending: value.pending,
         blocked: value.blocked,
+        send_paused_groups: value
+            .send_paused_groups
+            .into_iter()
+            .map(|group| group.as_str().to_owned())
+            .collect(),
+        items: value
+            .items
+            .into_iter()
+            .map(|item| NodeGroupRebindRecoveryItem {
+                group_did: item.group.as_str().to_owned(),
+                layer: item.layer,
+                phase: item.phase,
+                blocked: item.blocked,
+            })
+            .collect(),
         warnings: value.warnings,
     }
 }

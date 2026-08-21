@@ -1,14 +1,19 @@
 use crate::dto::{
-    created_group_from_snapshot, group_create_request, group_member, group_member_mutation_request,
-    NodeAddGroupMemberInput, NodeCreateGroupInput,
+    created_group_from_snapshot, group_create_request, group_join_request, group_member,
+    group_member_mutation_request, rebind_recovery_summary, NodeAddGroupMemberInput,
+    NodeCreateGroupInput, NodeGroupInput,
 };
 
 #[test]
 fn group_create_contract_trims_input_and_pins_safe_mvp_defaults() {
-    let request = group_create_request(NodeCreateGroupInput {
-        name: "  Release Crew  ".to_owned(),
-        description: Some("  ships together  ".to_owned()),
-    })
+    let handle = im_core::ids::Handle::parse("alice.awiki.info", "").unwrap();
+    let request = group_create_request(
+        NodeCreateGroupInput {
+            name: "  Release Crew  ".to_owned(),
+            description: Some("  ships together  ".to_owned()),
+        },
+        Some(&handle),
+    )
     .unwrap();
 
     assert_eq!(request.name, "Release Crew");
@@ -20,17 +25,66 @@ fn group_create_contract_trims_input_and_pins_safe_mvp_defaults() {
         "transport-protected"
     );
     assert!(!request.e2ee);
+    assert_eq!(request.creator_handle.as_ref(), Some(&handle));
 }
 
 #[test]
 fn group_create_contract_rejects_blank_name() {
-    let error = group_create_request(NodeCreateGroupInput {
-        name: " \n ".to_owned(),
-        description: None,
-    })
+    let error = group_create_request(
+        NodeCreateGroupInput {
+            name: " \n ".to_owned(),
+            description: None,
+        },
+        None,
+    )
     .unwrap_err();
 
     assert_eq!(error.code, "invalid_input");
+}
+
+#[test]
+fn group_join_contract_attaches_the_current_handle_without_public_input() {
+    let handle = im_core::ids::Handle::parse("alice.awiki.info", "").unwrap();
+    let request = group_join_request(
+        NodeGroupInput {
+            group_did: "did:wba:awiki.info:groups:release-crew".to_owned(),
+        },
+        Some(&handle),
+    )
+    .unwrap();
+
+    assert_eq!(request.member_handle.as_ref(), Some(&handle));
+    assert_eq!(
+        request.group.as_str(),
+        "did:wba:awiki.info:groups:release-crew"
+    );
+}
+
+#[test]
+fn group_rebind_summary_exposes_only_product_safe_journal_fields() {
+    let value = rebind_recovery_summary(im_core::groups::GroupRebindRecoverySummary {
+        processed: 2,
+        completed: 1,
+        pending: 1,
+        blocked: 0,
+        send_paused_groups: vec![im_core::ids::GroupRef::parse(
+            "did:wba:awiki.info:groups:release-crew",
+        )
+        .unwrap()],
+        items: vec![im_core::groups::GroupRebindRecoveryItem {
+            group: im_core::ids::GroupRef::parse("did:wba:awiki.info:groups:release-crew").unwrap(),
+            layer: "p4".to_owned(),
+            phase: "pending".to_owned(),
+            blocked: false,
+        }],
+        warnings: vec!["private transport detail".to_owned()],
+    });
+
+    assert_eq!(value.send_paused_groups.len(), 1);
+    assert_eq!(value.items.len(), 1);
+    assert_eq!(value.items[0].group_did, value.send_paused_groups[0]);
+    assert_eq!(value.items[0].layer, "p4");
+    assert_eq!(value.items[0].phase, "pending");
 }
 
 #[test]

@@ -237,7 +237,17 @@ export interface GroupRebindRecoverySummary {
   readonly completed: number
   readonly pending: number
   readonly blocked: number
+  readonly sendPausedGroups: readonly string[]
+  readonly items: readonly GroupRebindRecoveryItem[]
   readonly warnings: readonly string[]
+}
+
+/** Secret-free durable state for one group's membership convergence. */
+export interface GroupRebindRecoveryItem {
+  readonly groupDid: string
+  readonly layer: string
+  readonly phase: string
+  readonly blocked: boolean
 }
 
 /** Local-only batch lookup used to hydrate message sender labels without network I/O. */
