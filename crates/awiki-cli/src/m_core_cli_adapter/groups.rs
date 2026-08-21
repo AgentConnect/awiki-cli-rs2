@@ -187,11 +187,7 @@ pub fn join_group_via_im_core(
     let requested_group = request.group.clone();
     let result = client
         .groups()
-        .join(SdkGroupJoinRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member_handle: None,
-            reason_text: optional_string(&request.reason_text),
-        })
+        .join(group_join_request(request, client.handle().cloned())?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or(requested_group);
@@ -220,11 +216,7 @@ pub async fn join_group_via_im_core_async(
     let requested_group = request.group.clone();
     let result = client
         .groups()
-        .join_async(SdkGroupJoinRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member_handle: None,
-            reason_text: optional_string(&request.reason_text),
-        })
+        .join_async(group_join_request(request, client.handle().cloned())?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -1180,6 +1172,17 @@ fn group_create_request(
     })
 }
 
+fn group_join_request(
+    request: GroupJoinRequest,
+    member_handle: Option<Handle>,
+) -> Result<SdkGroupJoinRequest, MessageAdapterError> {
+    Ok(SdkGroupJoinRequest {
+        group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+        member_handle,
+        reason_text: optional_string(&request.reason_text),
+    })
+}
+
 fn group_security_requirement(required: bool) -> GroupSecurityRequirement {
     if required {
         GroupSecurityRequirement::Required
@@ -1864,8 +1867,9 @@ mod group_message_projection_tests {
     use serde_json::json;
 
     use super::{
-        group_create_request, im_error_to_message_error, is_attachment_manifest_payload,
-        normalize_group_snapshot, required_group_member_page_binding, GroupCreateRequest,
+        group_create_request, group_join_request, im_error_to_message_error,
+        is_attachment_manifest_payload, normalize_group_snapshot,
+        required_group_member_page_binding, GroupCreateRequest, GroupJoinRequest,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
 
@@ -1885,6 +1889,27 @@ mod group_message_projection_tests {
         );
         assert_eq!(
             group_create_request(request, None).unwrap().creator_handle,
+            None
+        );
+    }
+
+    #[test]
+    fn group_join_request_preserves_selected_handle_mode_and_none_compatibility() {
+        let request = GroupJoinRequest {
+            group: "did:example:group".to_owned(),
+            reason_text: "join".to_owned(),
+            ..GroupJoinRequest::default()
+        };
+        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
+
+        assert_eq!(
+            group_join_request(request.clone(), Some(handle.clone()))
+                .unwrap()
+                .member_handle,
+            Some(handle)
+        );
+        assert_eq!(
+            group_join_request(request, None).unwrap().member_handle,
             None
         );
     }
