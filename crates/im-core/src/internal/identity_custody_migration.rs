@@ -17,7 +17,7 @@ use crate::internal::identity_store::{
     IdentityCustodyCutoverMarker, IdentityStore, IndexEntry,
     IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION, IDENTITY_CUSTODY_CUTOVER_MARKER_SCHEMA_VERSION,
 };
-use crate::internal::secret_vault::record::{SecretKind, SecretRef};
+use crate::internal::secret_vault::record::SecretRef;
 
 const BACKEND: &str = "anp_identity";
 const ROOT_PRIVATE_FILES: &[&str] = &["key-1-private.pem", "private.key"];
@@ -125,7 +125,9 @@ fn run(
         }
     }
 
-    let mut blockers = pending_blockers(core)?;
+    let pending = crate::internal::identity_pending_upgrade::converge(core, dry_run)?;
+    let mut blockers = pending.blockers;
+    let pending_warnings = pending.warnings;
     blockers.extend(
         reports
             .iter()
@@ -151,7 +153,7 @@ fn run(
             verified_count: existing_bindings.len(),
             identities: reports,
             blockers,
-            warnings: Vec::new(),
+            warnings: pending_warnings,
         });
     }
     if dry_run || !blockers.is_empty() {
@@ -169,10 +171,13 @@ fn run(
             verified_count: existing_bindings.len(),
             identities: reports,
             blockers,
-            warnings: vec![
-                "dry-run and pre-cutover inspection never remove legacy identity records"
-                    .to_owned(),
-            ],
+            warnings: pending_warnings
+                .into_iter()
+                .chain(std::iter::once(
+                    "dry-run and pre-cutover inspection never remove legacy identity records"
+                        .to_owned(),
+                ))
+                .collect(),
         });
     }
 
@@ -214,10 +219,13 @@ fn run(
         verified_count,
         identities: reports,
         blockers: Vec::new(),
-        warnings: vec![
-            "legacy identity keys were removed only after the schema-v6 cutover marker committed"
-                .to_owned(),
-        ],
+        warnings: pending_warnings
+            .into_iter()
+            .chain(std::iter::once(
+                "legacy identity keys were removed only after the schema-v6 cutover marker committed"
+                    .to_owned(),
+            ))
+            .collect(),
     })
 }
 
@@ -657,40 +665,6 @@ fn cleanup_after_cutover(
         .cleanup_complete = true;
     index.schema_version = IDENTITY_CUSTODY_CUTOVER_INDEX_SCHEMA_VERSION;
     store.save_index_locked(&lock, index)
-}
-
-fn pending_blockers(core: &crate::core::ImCore) -> crate::ImResult<Vec<String>> {
-    let Some(context) = core.inner().identity_vault() else {
-        return Ok(Vec::new());
-    };
-    let mut kinds = context
-        .vault()
-        .list()?
-        .into_iter()
-        .filter(|reference| is_pending_identity_kind(&reference.kind))
-        .map(|reference| reference.kind.as_str().to_owned())
-        .collect::<Vec<_>>();
-    kinds.sort();
-    kinds.dedup();
-    Ok(kinds
-        .into_iter()
-        .map(|kind| format!("unresolved identity pending record: {kind}"))
-        .collect())
-}
-
-fn is_pending_identity_kind(kind: &SecretKind) -> bool {
-    matches!(
-        kind,
-        SecretKind::IdentityJoinPairingPrivate
-            | SecretKind::IdentityJoinSessionToken
-            | SecretKind::IdentityJoinActivationPending
-            | SecretKind::IdentityRegistrationPending
-            | SecretKind::IdentityHandleRecoveryPending
-            | SecretKind::IdentityLegacyUpgradePending
-            | SecretKind::IdentityRootImportPending
-            | SecretKind::IdentityAuthCommitPending
-            | SecretKind::IdentityDeviceRevokePending
-    )
 }
 
 fn report_for_cutover_index(

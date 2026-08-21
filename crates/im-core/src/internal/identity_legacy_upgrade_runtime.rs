@@ -208,15 +208,22 @@ async fn upgrade_inner(
             &pending.identity.did,
             &pending.identity.custody,
         )?;
-        let provider: Arc<dyn crate::internal::key_provider::IdentitySigner> = Arc::new(
-            crate::internal::key_provider::PendingAnpEnrollmentSigner::new(
-                managed,
-                pending.identity.custody.enrollment_id.clone(),
-                pending.identity.target_document.clone(),
-                pending.identity.signing_key_id.clone(),
-                pending.identity.e2ee_key_id.clone(),
-            )?,
-        );
+        let provider: Arc<dyn crate::internal::key_provider::IdentitySigner> =
+            if pending.identity.custody.enrollment_id
+                == crate::internal::identity_custody::LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID
+            {
+                Arc::new(crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(managed))
+            } else {
+                Arc::new(
+                    crate::internal::key_provider::PendingAnpEnrollmentSigner::new(
+                        managed,
+                        pending.identity.custody.enrollment_id.clone(),
+                        pending.identity.target_document.clone(),
+                        pending.identity.signing_key_id.clone(),
+                        pending.identity.e2ee_key_id.clone(),
+                    )?,
+                )
+            };
         let mut device_transport =
             crate::internal::transport::CoreHttpTransport::new_pending_device(
                 &client,

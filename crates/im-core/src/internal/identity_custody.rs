@@ -5,6 +5,8 @@ use anp_identity::{
     PublicationState, VerifiedDocumentEvidence,
 };
 
+pub(crate) const LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID: &str = "legacy-imported-active-v1";
+
 pub(crate) fn open_controller_store(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<anp_identity::DidStore> {
@@ -93,6 +95,7 @@ pub(crate) fn provision_registration_identity(
         root_key_id,
         device_signing_key_id: device.signing_key_id.clone(),
         device_e2ee_key_id: device.e2ee_key_id.clone(),
+        legacy_daemon_authorization: false,
         controller_revision_id: None,
     };
     identity.validate()?;
@@ -331,9 +334,14 @@ pub(crate) fn sign_join_enrollment(
     kid: &str,
     message: &[u8],
 ) -> crate::ImResult<Vec<u8>> {
-    open_join_identity(core, did, custody)?
-        .sign_pending_enrollment(&custody.enrollment_id, kid, message)
-        .map_err(map_error)
+    let identity = open_join_identity(core, did, custody)?;
+    if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        identity.sign(kid, message).map_err(map_error)
+    } else {
+        identity
+            .sign_pending_enrollment(&custody.enrollment_id, kid, message)
+            .map_err(map_error)
+    }
 }
 
 pub(crate) fn ecdh_join_enrollment(
@@ -343,10 +351,14 @@ pub(crate) fn ecdh_join_enrollment(
     kid: &str,
     peer_public: &[u8],
 ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
-    open_join_identity(core, did, custody)?
-        .ecdh_pending_enrollment(&custody.enrollment_id, kid, peer_public)
-        .map(|shared| zeroize::Zeroizing::new(*shared.as_bytes()))
-        .map_err(map_error)
+    let identity = open_join_identity(core, did, custody)?;
+    let shared = if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        identity.ecdh(kid, peer_public)
+    } else {
+        identity.ecdh_pending_enrollment(&custody.enrollment_id, kid, peer_public)
+    }
+    .map_err(map_error)?;
+    Ok(zeroize::Zeroizing::new(*shared.as_bytes()))
 }
 
 pub(crate) fn adopt_join_identity(
@@ -357,6 +369,15 @@ pub(crate) fn adopt_join_identity(
     checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
     let mut identity = open_join_identity(core, did, custody)?;
+    if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        if identity.state() != IdentityState::Active
+            || anp_identity::canonical_document_digest(identity.document()).map_err(map_error)?
+                != anp_identity::canonical_document_digest(document).map_err(map_error)?
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        return Ok(());
+    }
     let outcome = identity
         .adopt_verified_document(AdoptVerifiedDocumentSpec {
             document: document.clone(),
@@ -411,6 +432,11 @@ pub(crate) fn pending_join_identity(
     custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
 ) -> crate::ImResult<anp_identity::DidIdentity> {
     let identity = open_join_identity(core, did, custody)?;
+    if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        return (identity.state() == IdentityState::Active)
+            .then_some(identity)
+            .ok_or(crate::ImError::PermissionDenied);
+    }
     if identity.state() != IdentityState::Enrolling
         || identity
             .pending_enrollment()

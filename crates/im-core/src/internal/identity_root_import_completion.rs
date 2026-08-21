@@ -24,6 +24,8 @@ use crate::internal::identity_device_join_runtime::{
 use crate::internal::identity_device_state::{
     DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityDeviceMode,
 };
+use crate::internal::secret_vault::policy::SecretAccessPolicy;
+use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secure_direct::v2_runtime::{
     V2EstablishedDirectRuntime, V2ValidatedSecretInboundOutcome,
 };
@@ -645,6 +647,7 @@ async fn drive_root_import_completion(
     client: &crate::core::ImClient,
     message_id: &str,
 ) -> crate::ImResult<()> {
+    upgrade_legacy_root_completion(core, client, message_id)?;
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
@@ -678,6 +681,190 @@ async fn drive_root_import_completion(
         }
         Err(error) => Err(error),
     }
+}
+
+#[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+struct LegacyPendingRootSecretV1 {
+    schema_version: u8,
+    did: String,
+    message_id: String,
+    root_key_id: String,
+    root_public_key_fingerprint: String,
+    sender_device_id: String,
+    recipient_device_id: String,
+    sender_e2ee_key_id: String,
+    recipient_e2ee_key_id: String,
+    envelope_expires_at: String,
+    root_private_key_pkcs8_pem: String,
+}
+
+fn upgrade_legacy_root_completion(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> crate::ImResult<()> {
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let row = connection
+        .query_row(
+            r#"SELECT owner_did, local_device_id, sender_device_id,
+recipient_device_id, sender_e2ee_key_id, recipient_e2ee_key_id,
+imported_at, envelope_expires_at, pending_root_ref_json, root_key_id,
+root_fingerprint, document_version, document_hash, registry_version
+FROM identity_root_import_completion_v1
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3"#,
+            rusqlite::params![
+                client.current_identity().id.as_str(),
+                client.exact_protocol_device_id()?,
+                message_id,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, u64>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, u64>(13)?,
+                ))
+            },
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if serde_json::from_str::<RootImportCustodyRef>(&row.8).is_ok() {
+        cleanup_legacy_root_pending_orphan(core, client, message_id)?;
+        return Ok(());
+    }
+    let legacy_ref: SecretRef = serde_json::from_str(&row.8).map_err(redacted_serialization)?;
+    if legacy_ref.kind != SecretKind::IdentityRootImportPending {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let vault = core
+        .inner()
+        .identity_vault()
+        .ok_or(crate::ImError::IdentityVault {
+            failure: crate::IdentityVaultFailure::Unavailable,
+        })?
+        .vault();
+    let opened = vault.open(&legacy_ref)?;
+    let pending: Zeroizing<LegacyPendingRootSecretV1> = Zeroizing::new(
+        serde_json::from_slice(opened.expose_secret()).map_err(redacted_serialization)?,
+    );
+    if pending.schema_version != 1
+        || pending.did != row.0
+        || pending.message_id != message_id
+        || pending.root_key_id != row.9
+        || pending.root_public_key_fingerprint != row.10
+        || pending.sender_device_id != row.2
+        || pending.recipient_device_id != row.3
+        || pending.sender_e2ee_key_id != row.4
+        || pending.recipient_e2ee_key_id != row.5
+        || pending.envelope_expires_at != row.7
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let entry = local_device_entry(core, client)?;
+    if entry.identity_custody_backend.as_deref() != Some("anp_identity") || entry.did != row.0 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let pending_ref = RootImportCustodyRef {
+        store_id: entry
+            .anp_identity_store_id
+            .ok_or(crate::ImError::PermissionDenied)?,
+        identity_id: entry
+            .anp_identity_id
+            .ok_or(crate::ImError::PermissionDenied)?,
+        did: row.0.clone(),
+    };
+    let private = anp::PrivateKeyMaterial::from_pem(&pending.root_private_key_pkcs8_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let anp::PrivateKeyMaterial::Ed25519(private) = private else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    let mut root_der = Zeroizing::new(ED25519_PKCS8_PREFIX.to_vec());
+    root_der.extend_from_slice(&private.to_bytes());
+    crate::internal::identity_custody::import_legacy_completion_root(
+        core,
+        &pending_ref,
+        anp_identity::LegacyRootTransferEvidence {
+            transfer_id: message_id.to_owned(),
+            source_did: row.0.clone(),
+            target_did: row.0.clone(),
+            sender_device_id: row.2.clone(),
+            recipient_device_id: row.3.clone(),
+            recipient_agreement_kid: row.5.clone(),
+            root_kid: row.9.clone(),
+            checkpoint: anp_identity::DocumentCheckpoint {
+                document_version: row.11,
+                registry_version: row.13,
+                document_digest: row.12.clone(),
+            },
+            accepted_at: row.6.clone(),
+        },
+        root_der,
+    )?;
+    let pending_ref_json = serde_json::to_string(&pending_ref).map_err(redacted_serialization)?;
+    let changed = connection
+        .execute(
+            r#"UPDATE identity_root_import_completion_v1
+SET pending_root_ref_json = ?1, updated_at = ?2
+WHERE owner_identity_id = ?3 AND local_device_id = ?4 AND message_id = ?5
+  AND pending_root_ref_json = ?6"#,
+            rusqlite::params![
+                pending_ref_json,
+                format_time(OffsetDateTime::now_utc())?,
+                client.current_identity().id.as_str(),
+                row.1,
+                message_id,
+                row.8,
+            ],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if changed != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    vault.delete(&legacy_ref)?;
+    Ok(())
+}
+
+fn cleanup_legacy_root_pending_orphan(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> crate::ImResult<()> {
+    let Some(context) = core.inner().identity_vault() else {
+        return Ok(());
+    };
+    let entry = local_device_entry(core, client)?;
+    let mut hasher = Sha256::new();
+    hasher.update(client.did().as_str().as_bytes());
+    hasher.update([0]);
+    hasher.update(message_id.as_bytes());
+    let legacy_ref = SecretMetadata {
+        workspace_id: context.workspace_id().to_owned(),
+        device_id: context.vault_context_device_id().as_str().to_owned(),
+        identity_id: Some(entry.unique_id),
+        did: Some(entry.did),
+        kind: SecretKind::IdentityRootImportPending,
+        key_id: format!("root-import-pending:{}", hex_lower(&hasher.finalize())),
+        key_version: 1,
+        policy: SecretAccessPolicy::no_prompt_local_secret(),
+    }
+    .secret_ref();
+    let vault = context.vault();
+    if vault.open(&legacy_ref).is_ok() {
+        vault.delete(&legacy_ref)?;
+    }
+    Ok(())
 }
 
 /// Resumes every durable receiver-side coordinator for the selected identity.
@@ -1901,6 +2088,19 @@ fn redacted_serialization(error: impl std::fmt::Display) -> crate::ImError {
 mod tests {
     use super::*;
     use anp::direct_e2ee::{V2Target, DIRECT_E2EE_SECURITY_PROFILE};
+    use std::sync::Arc;
+
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationProjection, IdentityDeviceState, IdentityInternalCheckpoint,
+        IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+    };
+    use crate::internal::identity_store::{
+        IdentityStore, SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
+    };
+    use crate::vault::{
+        DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
+        SecretAccessPolicy, SecretBytes, SecretMetadata, SecretVault,
+    };
 
     fn envelope() -> RootKeyEnvelope {
         let digest = URL_SAFE_NO_PAD.encode([7_u8; 32]);
@@ -1968,6 +2168,211 @@ mod tests {
         )
         .unwrap();
         assert!(decode_root_secret_payload(&unknown).is_err());
+    }
+
+    #[test]
+    fn legacy_pending_root_moves_into_anp_after_workspace_cutover() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::ImCorePaths {
+            identities: crate::paths::IdentityRegistryPaths {
+                identity_root_dir: root.path().join("identities"),
+                registry_path: root.path().join("identities/index.json"),
+                default_identity_path: Some(root.path().join("identities/default")),
+            },
+            local_state: crate::paths::LocalStatePaths {
+                sqlite_path: root.path().join("local/im.sqlite"),
+            },
+            runtime: crate::paths::RuntimePaths {
+                cache_dir: root.path().join("cache"),
+                temp_dir: root.path().join("tmp"),
+            },
+        };
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.test",
+            "root-pending-upgrade",
+            None,
+            None,
+        )
+        .unwrap();
+        let document_hash =
+            crate::internal::identity_wire::document::document_hash(&generated.did_document)
+                .unwrap();
+        let vault_dir = root.path().join("vault");
+        let vault_key = [102_u8; 32];
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes(vault_key),
+            FileSecretVaultStore::new(&vault_dir),
+        ));
+        IdentityStore::new(&paths.identities)
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: generated.did.clone(),
+                    unique_id: generated.unique_id.clone(),
+                    user_id: "user-alice".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    handle: "alice".to_owned(),
+                    full_handle: "alice.awiki.test".to_owned(),
+                    binding_generation: Some("1".to_owned()),
+                    jwt_token: "member-token".to_owned(),
+                    did_document: Some(generated.did_document.clone()),
+                    key_mode: SaveIdentityKeyMode::VNext {
+                        root_key_id: generated.root_key_id.clone(),
+                        device_signing_key_id: generated.device_signing_key_id.clone(),
+                        device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                    },
+                    device_state: Some(IdentityDeviceState {
+                        schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: IdentityDeviceMode::VNext,
+                        authorization: Some(DeviceAuthorizationProjection {
+                            protocol_device_id: generated.protocol_device_id.clone(),
+                            signing_key_id: generated.device_signing_key_id.clone(),
+                            e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                            status: DeviceAuthorizationStatus::Active,
+                            role: DeviceAuthorizationRole::Member,
+                            management_ready: false,
+                            auth_generation: 1,
+                        }),
+                        checkpoint: Some(IdentityInternalCheckpoint {
+                            document_version: 4,
+                            document_hash,
+                            registry_version: 7,
+                        }),
+                    }),
+                    key1_private_pem: String::new(),
+                    key1_public_pem: generated.root_public_pem.clone(),
+                    e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
+                    e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
+                    daemon_subkey_package: None,
+                    make_default: true,
+                },
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id: "root-pending-workspace".to_owned(),
+                    device_id: "root-pending-device".to_owned(),
+                    vault: vault.clone(),
+                },
+            )
+            .unwrap();
+        let message_id = "legacy-root-pending-message";
+        let root_fingerprint = "legacy-root-fingerprint";
+        let legacy_ref = vault
+            .seal(SealSecretRequest {
+                metadata: SecretMetadata {
+                    workspace_id: "root-pending-workspace".to_owned(),
+                    device_id: "root-pending-device".to_owned(),
+                    identity_id: Some(generated.unique_id.clone()),
+                    did: Some(generated.did.as_str().to_owned()),
+                    kind: SecretKind::IdentityRootImportPending,
+                    key_id: format!("root-import-{message_id}"),
+                    key_version: 1,
+                    policy: SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: SecretBytes::from_vec(
+                    serde_json_canonicalizer::to_vec(&LegacyPendingRootSecretV1 {
+                        schema_version: 1,
+                        did: generated.did.as_str().to_owned(),
+                        message_id: message_id.to_owned(),
+                        root_key_id: generated.root_key_id.clone(),
+                        root_public_key_fingerprint: root_fingerprint.to_owned(),
+                        sender_device_id: "sender-device".to_owned(),
+                        recipient_device_id: generated.protocol_device_id.as_str().to_owned(),
+                        sender_e2ee_key_id: format!("{}#sender-e2ee", generated.did.as_str()),
+                        recipient_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                        envelope_expires_at: "2026-08-21T00:10:00Z".to_owned(),
+                        root_private_key_pkcs8_pem: generated.root_private_pem.clone(),
+                    })
+                    .unwrap(),
+                ),
+            })
+            .unwrap();
+        let core = crate::ImCore::new_with_options(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                client_version_info: None,
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            paths.clone(),
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes(vault_key),
+                    vault_dir,
+                    "root-pending-workspace",
+                    "root-pending-device",
+                ),
+            ),
+        )
+        .unwrap();
+        core.bootstrap().initialize_local_state().unwrap();
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        connection
+            .execute(
+                r#"INSERT INTO identity_root_import_completion_v1 (
+owner_identity_id, owner_did, local_device_id, message_id,
+sender_device_id, recipient_device_id, sender_e2ee_key_id,
+recipient_e2ee_key_id, accepted_at, imported_at, envelope_expires_at,
+pending_root_ref_json, root_key_id, root_fingerprint, document_version,
+document_hash, registry_version, phase, created_at, updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?3, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12,
+?13, ?14, ?15, 'import_sealed', ?8, ?8)"#,
+                rusqlite::params![
+                    generated.unique_id,
+                    generated.did.as_str(),
+                    generated.protocol_device_id.as_str(),
+                    message_id,
+                    "sender-device",
+                    format!("{}#sender-e2ee", generated.did.as_str()),
+                    generated.device_e2ee_key_id,
+                    "2026-08-21T00:00:00Z",
+                    "2026-08-21T00:10:00Z",
+                    serde_json::to_string(&legacy_ref).unwrap(),
+                    generated.root_key_id,
+                    root_fingerprint,
+                    4_u64,
+                    anp_identity::canonical_document_digest(&generated.did_document).unwrap(),
+                    7_u64,
+                ],
+            )
+            .unwrap();
+        drop(connection);
+        let migration = core.identities().migrate_identity_custody().unwrap();
+        assert_eq!(
+            migration.phase,
+            crate::IdentityCustodyMigrationPhase::Cleaned
+        );
+        let client = core
+            .client(crate::identity::IdentitySelector::Default)
+            .unwrap();
+
+        upgrade_legacy_root_completion(&core, &client, message_id).unwrap();
+
+        assert!(vault.open(&legacy_ref).is_err());
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        let current_ref_json: String = connection
+            .query_row(
+                "SELECT pending_root_ref_json FROM identity_root_import_completion_v1 WHERE message_id = ?1",
+                [message_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(serde_json::from_str::<RootImportCustodyRef>(&current_ref_json).is_ok());
+        let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
+        assert_eq!(
+            store
+                .open_identity(generated.did.as_str())
+                .unwrap()
+                .root_capability(),
+            anp_identity::RootCapabilityState::Pending
+        );
     }
 
     #[test]

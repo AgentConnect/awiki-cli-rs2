@@ -1025,6 +1025,7 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
         root_key_id: format!("{}#key-1", generated.did()),
         device_signing_key_id: device.signing_key_id.clone(),
         device_e2ee_key_id: device.e2ee_key_id.clone(),
+        legacy_daemon_authorization: false,
         controller_revision_id: Some("revision-1".to_owned()),
     };
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(

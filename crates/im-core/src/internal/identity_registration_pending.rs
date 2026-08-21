@@ -59,6 +59,8 @@ pub(crate) struct PendingRegistrationIdentity {
     pub(crate) root_key_id: String,
     pub(crate) device_signing_key_id: String,
     pub(crate) device_e2ee_key_id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) legacy_daemon_authorization: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) controller_revision_id: Option<String>,
 }
@@ -195,6 +197,19 @@ impl PendingRegistration {
 
 impl PendingRegistrationIdentity {
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        let daemon_kid = format!("{}#daemon-key-1", self.did.as_str());
+        let daemon_method_present =
+            anp::authentication::find_verification_method(&self.did_document, &daemon_kid)
+                .is_some();
+        let daemon_authenticated =
+            anp::authentication::is_authentication_authorized(&self.did_document, &daemon_kid);
+        let daemon_assertion =
+            anp::authentication::is_assertion_method_authorized(&self.did_document, &daemon_kid);
+        let daemon_authorization_valid = if self.legacy_daemon_authorization {
+            daemon_method_present && daemon_authenticated && !daemon_assertion
+        } else {
+            !daemon_method_present && !daemon_authenticated && !daemon_assertion
+        };
         if self.controller_store_id.trim().is_empty()
             || self.controller_identity_id.trim().is_empty()
             || self
@@ -229,15 +244,7 @@ impl PendingRegistrationIdentity {
             || manifest.devices[0].device_id != self.protocol_device_id.as_str()
             || manifest.devices[0].signing_key_id != self.device_signing_key_id
             || manifest.devices[0].e2ee_key_id != self.device_e2ee_key_id
-            || self.did_document["authentication"]
-                .as_array()
-                .is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        entry
-                            .as_str()
-                            .is_some_and(|kid| kid.ends_with("#daemon-key-1"))
-                    })
-                })
+            || !daemon_authorization_valid
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -349,6 +356,10 @@ fn pending_key_id(handle: &str, domain: &str) -> String {
     format!("registration-{}", URL_SAFE_NO_PAD.encode(digest))
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +451,7 @@ mod tests {
             root_key_id: format!("{}#key-1", generated.did()),
             device_signing_key_id: device.signing_key_id.clone(),
             device_e2ee_key_id: device.e2ee_key_id.clone(),
+            legacy_daemon_authorization: false,
             controller_revision_id: Some("revision-1".to_owned()),
         }
     }

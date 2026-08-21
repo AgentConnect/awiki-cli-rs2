@@ -9,6 +9,7 @@ use crate::internal::identity_device_state::{
 use crate::internal::identity_store::{
     SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
 };
+use crate::internal::secret_vault::record::SecretKind;
 use crate::vault::{
     DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
     SecretAccessPolicy, SecretBytes, SecretMetadata, SecretVault,
