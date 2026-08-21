@@ -1668,6 +1668,48 @@ impl IdentityRegistry<'_> {
     ) -> super::IdentityVaultStatus {
         let policy = self.core.inner().identity_secret_storage_policy();
         let context = self.core.inner().identity_vault();
+        if entry.is_some_and(|entry| {
+            entry.identity_custody_backend.as_deref() == Some("anp_identity")
+                && entry.anp_identity_store_id.is_some()
+                && entry.anp_identity_id.is_some()
+        }) {
+            let vault_selected = context.is_some()
+                && !matches!(policy, crate::core::IdentitySecretStoragePolicy::FileCompat);
+            let mut missing = Vec::new();
+            let mut warnings = vec![
+                "identity_vault_status reports the deprecated AWiki vault view of ANP Identity custody"
+                    .to_owned(),
+            ];
+            if !vault_selected
+                && matches!(
+                    policy,
+                    crate::core::IdentitySecretStoragePolicy::VaultRequired
+                )
+            {
+                missing.push("identity_secret_vault".to_owned());
+            }
+            if matches!(policy, crate::core::IdentitySecretStoragePolicy::FileCompat) {
+                warnings.push("identity secret storage policy is file_compat".to_owned());
+            }
+            return super::IdentityVaultStatus {
+                identity: summary.clone(),
+                storage_policy: policy,
+                selected_backend: if vault_selected {
+                    super::IdentitySecretStorageBackend::Vault
+                } else {
+                    super::IdentitySecretStorageBackend::FileCompat
+                },
+                vault_available: context.is_some(),
+                vault_metadata_present: true,
+                vault_metadata_verified: true,
+                workspace_id: context.map(|context| context.workspace_id().to_owned()),
+                device_id: context
+                    .map(|context| context.vault_context_device_id().as_str().to_owned()),
+                plaintext_compat_retained: Some(false),
+                missing,
+                warnings,
+            };
+        }
         let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
         let vault_metadata_present = metadata.is_some();
         let vault_metadata_verified = metadata.map(vault_metadata_is_verified).unwrap_or(false);
