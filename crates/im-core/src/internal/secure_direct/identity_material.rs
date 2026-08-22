@@ -35,6 +35,8 @@ impl DirectSecureIdentityMaterial {
 pub(crate) struct DirectSecureAgreementMaterial {
     pub(crate) agreement_key_id: String,
     pub(crate) identity_signer: Arc<dyn crate::internal::key_provider::IdentitySigner>,
+    pub(crate) identity_session:
+        Option<Arc<dyn crate::internal::identity_provider::IdentitySession>>,
 }
 
 pub(crate) fn local_identity_material(
@@ -69,6 +71,7 @@ pub(crate) fn agreement_material(
     Ok(DirectSecureAgreementMaterial {
         agreement_key_id,
         identity_signer: Arc::clone(&client.runtime().key_provider),
+        identity_session: client.runtime().identity_session.clone(),
     })
 }
 
