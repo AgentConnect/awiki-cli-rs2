@@ -903,47 +903,61 @@ impl PendingHandleRecoveryStore {
                 result.checkpoint.registry_version,
             )
         });
-        let mut store = crate::internal::identity_custody::open_controller_store(core)?;
-        let identity = match store.open_identity(generated.did.as_str()) {
-            Ok(identity) => identity,
-            Err(anp_identity::DidError::IdentityNotFound) => store
-                .import_identity(anp_identity::IdentityImportSpec {
-                    verified_document: generated.did_document.clone(),
-                    evidence: anp_identity::VerifiedDocumentEvidence {
-                        document_version: checkpoint.0,
-                        registry_version: checkpoint.1,
-                        document_digest: anp_identity::canonical_document_digest(
-                            &generated.did_document,
-                        )
-                        .map_err(crate::internal::identity_custody::map_error)?,
+        use anp_identity::host::MigrationPort;
+        let mut manager = crate::internal::identity_custody::open_controller_manager(core)?;
+        let existing = manager
+            .list()
+            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .into_iter()
+            .find(|descriptor| descriptor.reference.did == generated.did.as_str());
+        let identity = match existing {
+            Some(descriptor) => manager
+                .get(&descriptor.reference)
+                .map_err(crate::internal::identity_custody::map_facade_error)?,
+            None => manager
+                .import_full_identity(anp_identity::host::FullIdentityImportRequest {
+                    remote: anp_identity::VerifiedRemoteDocument {
+                        document: anp_identity::DidDocument::from_value(
+                            generated.did_document.clone(),
+                        ),
+                        evidence: anp_identity::VerifiedPublicationEvidence {
+                            document_version: checkpoint.0,
+                            registry_version: checkpoint.1,
+                            document_digest: anp_identity::canonical_document_digest(
+                                &generated.did_document,
+                            )
+                            .map_err(crate::internal::identity_custody::map_error)?,
+                        },
                     },
-                    capabilities: anp_identity::Capabilities { did_wba: true },
+                    did_wba: true,
                     private_keys: vec![
                         imported_recovery_key(
                             &generated.did_document,
                             &generated.root_key_id,
-                            anp_identity::KeyRole::RootControl,
+                            anp_identity::host::MigrationKeyPurpose::RootControl,
                             &generated.root_private_pem,
                         )?,
                         imported_recovery_key(
                             &generated.did_document,
                             &generated.device_signing_key_id,
-                            anp_identity::KeyRole::DeviceSigning,
+                            anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
                             &generated.device_signing_private_pem,
                         )?,
                         imported_recovery_key(
                             &generated.did_document,
                             &generated.device_e2ee_key_id,
-                            anp_identity::KeyRole::E2eeAgreement,
+                            anp_identity::host::MigrationKeyPurpose::KeyAgreement,
                             &generated.device_e2ee_private_pem,
                         )?,
                     ],
                 })
-                .map_err(crate::internal::identity_custody::map_error)?,
-            Err(error) => return Err(crate::internal::identity_custody::map_error(error)),
+                .map_err(crate::internal::identity_custody::map_facade_error)?,
         };
-        if identity.state() != anp_identity::IdentityState::Active
-            || anp_identity::canonical_document_digest(identity.document())
+        let public = identity
+            .public_identity()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        if public.state != anp_identity::PublicIdentityState::Active
+            || anp_identity::canonical_document_digest(public.document.as_value())
                 .map_err(crate::internal::identity_custody::map_error)?
                 != anp_identity::canonical_document_digest(&generated.did_document)
                     .map_err(crate::internal::identity_custody::map_error)?
@@ -964,8 +978,8 @@ impl PendingHandleRecoveryStore {
             full_handle: legacy.full_handle,
             local_previous_did: legacy.local_previous_did,
             identity: HandleRecoveryIdentityRef {
-                store_id: store.manifest().store_id.clone(),
-                identity_id: identity.identity_id().to_owned(),
+                store_id: public.reference.store_id,
+                identity_id: public.reference.identity_id,
                 did: generated.did,
                 did_document: generated.did_document,
                 protocol_device_id: generated.protocol_device_id,
@@ -1156,9 +1170,9 @@ fn serialize_v4(pending: &PendingHandleRecoveryV4) -> crate::ImResult<SecretByte
 fn imported_recovery_key(
     document: &serde_json::Value,
     kid: &str,
-    role: anp_identity::KeyRole,
+    purpose: anp_identity::host::MigrationKeyPurpose,
     pem: &str,
-) -> crate::ImResult<anp_identity::ImportedPrivateKey> {
+) -> crate::ImResult<anp_identity::host::MigrationPrivateKey> {
     let material =
         anp::PrivateKeyMaterial::from_pem(pem).map_err(|_| crate::ImError::PermissionDenied)?;
     let expected = anp::authentication::find_verification_method(document, kid)
@@ -1167,22 +1181,24 @@ fn imported_recovery_key(
     if material.public_key().to_pem() != expected.to_pem() {
         return Err(crate::ImError::PermissionDenied);
     }
-    let raw = match (role, material) {
+    let raw = match (purpose, material) {
         (
-            anp_identity::KeyRole::RootControl | anp_identity::KeyRole::DeviceSigning,
+            anp_identity::host::MigrationKeyPurpose::RootControl
+            | anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
             anp::PrivateKeyMaterial::Ed25519(key),
         ) => key.to_bytes().to_vec(),
-        (anp_identity::KeyRole::E2eeAgreement, anp::PrivateKeyMaterial::X25519(key)) => {
-            key.to_bytes().to_vec()
-        }
+        (
+            anp_identity::host::MigrationKeyPurpose::KeyAgreement,
+            anp::PrivateKeyMaterial::X25519(key),
+        ) => key.to_bytes().to_vec(),
         _ => return Err(crate::ImError::PermissionDenied),
     };
-    Ok(anp_identity::ImportedPrivateKey::new(
-        kid,
-        role,
-        anp_identity::PrivateKeyEncoding::Raw32,
-        zeroize::Zeroizing::new(raw),
-    ))
+    Ok(anp_identity::host::MigrationPrivateKey {
+        kid: kid.to_owned(),
+        purpose,
+        encoding: anp_identity::host::MigrationPrivateKeyEncoding::Raw32,
+        secret: zeroize::Zeroizing::new(raw),
+    })
 }
 
 pub(crate) fn pending_v4_key_id(operation_id: &str) -> String {
