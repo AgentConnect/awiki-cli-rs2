@@ -45,6 +45,53 @@ pub(crate) fn open_controller_store(
     }
 }
 
+pub(crate) fn open_controller_manager(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<anp_identity::IdentityManager> {
+    let root = core
+        .inner()
+        .sdk_paths()
+        .identities
+        .identity_root_dir
+        .join(".anp-identity");
+    if let Some(context) = core.inner().identity_vault() {
+        let key_id = format!("awiki-workspace-vault:{}", context.workspace_id());
+        let config = || anp_identity::IdentityManagerConfig {
+            state_root: root.clone(),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                key_id.clone(),
+                context.anp_identity_root_key(),
+            )),
+        };
+        open_or_initialize_manager(config)
+    } else {
+        let config = || anp_identity::IdentityManagerConfig {
+            state_root: root.clone(),
+            root_key: anp_identity::RootKeySource::LocalPrivateFile,
+        };
+        open_or_initialize_manager(config)
+    }
+}
+
+fn open_or_initialize_manager(
+    config: impl Fn() -> anp_identity::IdentityManagerConfig,
+) -> crate::ImResult<anp_identity::IdentityManager> {
+    match anp_identity::IdentityManager::open(config()) {
+        Ok(manager) => Ok(manager),
+        Err(anp_identity::IdentityError::StoreNotFound) => {
+            match anp_identity::IdentityManager::initialize(config()) {
+                Ok(manager) => Ok(manager),
+                Err(anp_identity::IdentityError::Conflict)
+                | Err(anp_identity::IdentityError::IdentityAlreadyExists) => {
+                    anp_identity::IdentityManager::open(config()).map_err(map_facade_error)
+                }
+                Err(error) => Err(map_facade_error(error)),
+            }
+        }
+        Err(error) => Err(map_facade_error(error)),
+    }
+}
+
 pub(crate) fn provision_registration_identity(
     core: &crate::core::ImCore,
     domain: &str,
@@ -467,6 +514,35 @@ pub(crate) fn active_join_identity(
     Ok(identity)
 }
 
+pub(crate) fn active_join_managed_identity(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    signing_kid: &str,
+    e2ee_kid: &str,
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    let identity =
+        open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?;
+    let public = identity.public_identity().map_err(map_facade_error)?;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || !public.active_keys.iter().any(|key| {
+            key.kid == signing_kid
+                && key
+                    .purposes
+                    .contains(&anp_identity::KeyPurpose::DeviceAssertion)
+        })
+        || !public.active_keys.iter().any(|key| {
+            key.kid == e2ee_kid
+                && key
+                    .purposes
+                    .contains(&anp_identity::KeyPurpose::KeyAgreement)
+        })
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(identity)
+}
+
 pub(crate) fn pending_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -482,6 +558,24 @@ pub(crate) fn pending_join_identity(
         || identity
             .pending_enrollment()
             .is_none_or(|pending| pending.enrollment_id != custody.enrollment_id)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(identity)
+}
+
+pub(crate) fn imported_active_join_managed_identity(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    if custody.enrollment_id != LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let identity =
+        open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?;
+    if identity.public_identity().map_err(map_facade_error)?.state
+        != anp_identity::PublicIdentityState::Active
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -841,6 +935,55 @@ pub(crate) fn registration_controller_signing_identity(
         }
     }
     Ok(controller)
+}
+
+pub(crate) fn registration_controller_signing_managed_identity(
+    core: &crate::core::ImCore,
+    identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    let controller = open_managed_identity(
+        core,
+        &identity.controller_store_id,
+        &identity.controller_identity_id,
+        identity.did.as_str(),
+    )?;
+    let public = controller.public_identity().map_err(map_facade_error)?;
+    for (kid, purpose) in [
+        (&identity.root_key_id, anp_identity::KeyPurpose::RootControl),
+        (
+            &identity.device_signing_key_id,
+            anp_identity::KeyPurpose::DeviceAssertion,
+        ),
+        (
+            &identity.device_e2ee_key_id,
+            anp_identity::KeyPurpose::KeyAgreement,
+        ),
+    ] {
+        if !public
+            .active_keys
+            .iter()
+            .any(|key| key.kid == *kid && key.purposes.contains(&purpose))
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    Ok(controller)
+}
+
+fn open_managed_identity(
+    core: &crate::core::ImCore,
+    store_id: &str,
+    identity_id: &str,
+    did: &str,
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    let manager = open_controller_manager(core)?;
+    manager
+        .get(&anp_identity::IdentityRef {
+            store_id: store_id.to_owned(),
+            identity_id: identity_id.to_owned(),
+            did: did.to_owned(),
+        })
+        .map_err(map_facade_error)
 }
 
 fn find_unprojected_registration_identity(
@@ -1358,6 +1501,22 @@ pub(crate) fn map_error(error: anp_identity::DidError) -> crate::ImError {
         }
         error => crate::ImError::LocalStateUnavailable {
             detail: format!("anp identity store operation failed: {error}"),
+        },
+    }
+}
+
+pub(crate) fn map_facade_error(error: anp_identity::IdentityError) -> crate::ImError {
+    match error {
+        anp_identity::IdentityError::IdentityNotFound => crate::ImError::IdentityNotFound {
+            selector: "anp-identity".to_owned(),
+        },
+        anp_identity::IdentityError::Conflict => crate::ImError::LocalStateUnavailable {
+            detail: "anp identity store generation changed; recovery is required".to_owned(),
+        },
+        anp_identity::IdentityError::RootKeyMismatch
+        | anp_identity::IdentityError::ProviderUnavailable => crate::ImError::PermissionDenied,
+        error => crate::ImError::LocalStateUnavailable {
+            detail: format!("anp identity facade operation failed: {error}"),
         },
     }
 }

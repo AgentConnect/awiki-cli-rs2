@@ -644,7 +644,7 @@ async fn refresh_join_device_access(
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
 ) -> crate::ImResult<DeviceJoinAccessResult> {
     pending.validate()?;
-    let identity = crate::internal::identity_custody::active_join_identity(
+    let identity = crate::internal::identity_custody::active_join_managed_identity(
         core,
         &pending.did,
         &pending.custody,

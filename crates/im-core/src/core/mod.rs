@@ -407,12 +407,15 @@ impl ImCore {
 
     pub(crate) fn client_with_pending_anp_identity(
         &self,
-        identity: anp_identity::DidIdentity,
+        identity: anp_identity::ManagedIdentity,
         handle: Option<&str>,
         display_name: &str,
         protocol_device_id: &crate::ids::ProtocolDeviceId,
     ) -> crate::ImResult<ImClient> {
-        let did = crate::ids::Did::parse(identity.did())?;
+        let public = identity
+            .public_identity()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        let did = crate::ids::Did::parse(&public.reference.did)?;
         let identity_id = crate::ids::IdentityId::parse(
             did.as_str()
                 .rsplit(':')
@@ -459,12 +462,15 @@ impl ImCore {
     #[doc(hidden)]
     pub fn client_with_anp_delegated_identity(
         &self,
-        identity: anp_identity::DidIdentity,
+        identity: anp_identity::ManagedIdentity,
     ) -> crate::ImResult<ImClient> {
-        if identity.state() != anp_identity::IdentityState::Active {
+        let public = identity
+            .public_identity()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        if public.state != anp_identity::PublicIdentityState::Active {
             return Err(crate::ImError::PermissionDenied);
         }
-        let did = crate::ids::Did::parse(identity.did())?;
+        let did = crate::ids::Did::parse(&public.reference.did)?;
         let identity_id = crate::ids::IdentityId::parse(
             did.as_str()
                 .rsplit(':')

@@ -10,9 +10,16 @@ use crate::internal::key_provider::IdentitySigner;
 #[test]
 fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports() {
     let root = tempfile::tempdir().unwrap();
-    let mut store =
-        DidStore::initialize_injected(root.path().join("store"), "host", [41_u8; 32]).unwrap();
-    let identity = store.create_identity(spec()).unwrap();
+    let mut manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: root.path().join("store"),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "host",
+                [41_u8; 32],
+            )),
+        })
+        .unwrap();
+    let identity = manager.create(spec()).unwrap();
     let auth_path = root.path().join("identity/auth.json");
     crate::internal::auth::state::persist_jwt_token(&auth_path, "test-token").unwrap();
     let signer = AnpIdentitySigner::new_file(identity, auth_path);
@@ -103,6 +110,20 @@ fn anp_identity_signer_reloads_once_after_external_generation_advance() {
         DidStore::initialize_injected(root.path().join("store"), "host", [42_u8; 32]).unwrap();
     let identity = store.create_identity(spec()).unwrap();
     let did = identity.did().to_owned();
+    let reference = anp_identity::IdentityRef {
+        store_id: store.manifest().store_id.clone(),
+        identity_id: identity.identity_id().to_owned(),
+        did: did.clone(),
+    };
+    let manager = anp_identity::IdentityManager::open(anp_identity::IdentityManagerConfig {
+        state_root: root.path().join("store"),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "host",
+            [42_u8; 32],
+        )),
+    })
+    .unwrap();
+    let identity = manager.get(&reference).unwrap();
     let request_kid = format!("{did}#request");
     let signer = AnpIdentitySigner::new_ephemeral(identity);
     let mut external = store.open_identity(&did).unwrap();

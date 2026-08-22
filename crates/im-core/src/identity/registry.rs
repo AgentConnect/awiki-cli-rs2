@@ -1525,16 +1525,15 @@ impl IdentityRegistry<'_> {
                         missing: vec!["anp_identity_id".to_owned()],
                     }
                 })?;
-                let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-                if store.manifest().store_id != expected_store_id {
-                    return Err(crate::ImError::PermissionDenied);
-                }
-                let identity = store
-                    .open_identity(summary.did.as_str())
-                    .map_err(crate::internal::identity_custody::map_error)?;
-                if identity.identity_id() != expected_identity_id {
-                    return Err(crate::ImError::PermissionDenied);
-                }
+                let manager =
+                    crate::internal::identity_custody::open_controller_manager(self.core)?;
+                let identity = manager
+                    .get(&anp_identity::IdentityRef {
+                        store_id: expected_store_id.to_owned(),
+                        identity_id: expected_identity_id.to_owned(),
+                        did: summary.did.as_str().to_owned(),
+                    })
+                    .map_err(crate::internal::identity_custody::map_facade_error)?;
                 let provider = if let Some(auth_ref) = entry.anp_identity_auth_ref.clone() {
                     let context = self.core.inner().identity_vault().ok_or_else(|| {
                         crate::ImError::IdentityNotReady {

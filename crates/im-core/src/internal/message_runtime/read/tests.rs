@@ -357,6 +357,20 @@ fn messages_read_runtime_uses_the_current_anp_request_signer() {
         .unwrap();
     let user_did = source.did().to_owned();
     let verification_method = prepared.request_signing_key.kid;
+    let daemon_reference = anp_identity::IdentityRef {
+        store_id: daemon_store.manifest().store_id.clone(),
+        identity_id: daemon_identity.identity_id().to_owned(),
+        did: daemon_identity.did().to_owned(),
+    };
+    drop(daemon_identity);
+    let daemon_manager = anp_identity::IdentityManager::open(anp_identity::IdentityManagerConfig {
+        state_root: daemon_root.path().to_owned(),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "daemon", [96; 32],
+        )),
+    })
+    .unwrap();
+    let daemon_identity = daemon_manager.get(&daemon_reference).unwrap();
     let client = fixture
         .core()
         .client_with_anp_delegated_identity(daemon_identity)

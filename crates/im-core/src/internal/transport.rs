@@ -2309,10 +2309,11 @@ fn pending_registration_client(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<crate::core::ImClient> {
-    let identity = crate::internal::identity_custody::registration_controller_signing_identity(
-        core,
-        &pending.identity,
-    )?;
+    let identity =
+        crate::internal::identity_custody::registration_controller_signing_managed_identity(
+            core,
+            &pending.identity,
+        )?;
     core.client_with_pending_anp_identity(
         identity,
         Some(&format!(

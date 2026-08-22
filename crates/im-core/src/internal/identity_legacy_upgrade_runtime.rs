@@ -203,17 +203,23 @@ async fn upgrade_inner(
                 .err()
         };
 
-        let managed = crate::internal::identity_custody::pending_join_identity(
-            core,
-            &pending.identity.did,
-            &pending.identity.custody,
-        )?;
         let provider: Arc<dyn crate::internal::key_provider::IdentitySigner> =
             if pending.identity.custody.enrollment_id
                 == crate::internal::identity_custody::LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID
             {
+                let managed =
+                    crate::internal::identity_custody::imported_active_join_managed_identity(
+                        core,
+                        &pending.identity.did,
+                        &pending.identity.custody,
+                    )?;
                 Arc::new(crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(managed))
             } else {
+                let managed = crate::internal::identity_custody::pending_join_identity(
+                    core,
+                    &pending.identity.did,
+                    &pending.identity.custody,
+                )?;
                 Arc::new(
                     crate::internal::key_provider::PendingAnpEnrollmentSigner::new(
                         managed,
