@@ -1230,7 +1230,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
     )
     .unwrap();
     assert!(matches!(
-        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
         Err(crate::ImError::Service {
             status_code: None,
             code: Some(code),
@@ -1293,7 +1293,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
     .unwrap();
     drop(db);
     assert!(matches!(
-        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
         Err(crate::ImError::PermissionDenied)
     ));
     assert_eq!(
@@ -1340,7 +1340,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
 
     FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(matches!(
-        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
         Err(crate::ImError::Internal { message })
             if message == "injected crash after recovery Join identity save"
     ));
@@ -1377,7 +1377,9 @@ VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
     drop(db);
 
     let reopened = reopen_join_test_core(candidate_root.path());
-    finalize_new_device_activation(&reopened, &started.session.join_session_id).unwrap();
+    finalize_new_device_activation_async(&reopened, &started.session.join_session_id)
+        .await
+        .unwrap();
     let marker = crate::internal::identity_transition_pending::load_joined_device(
         &candidate_paths.local_state.sqlite_path,
         &started.session.join_session_id,

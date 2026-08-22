@@ -1654,6 +1654,7 @@ pub(crate) fn record_new_device_access_result(
     Ok(pending)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn finalize_new_device_activation(
     core: &crate::core::ImCore,
     join_session_id: &str,
@@ -1694,6 +1695,92 @@ pub(crate) fn finalize_new_device_activation(
     summary(&stored)
 }
 
+pub(crate) async fn finalize_new_device_activation_async(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let (snapshot, pending, did) = {
+        let _guard = lock_join_state(core)?;
+        let state_store = JoinStateStore::new(core);
+        let mut stored = state_store
+            .load(&join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.clone(),
+            })?;
+        if stored.phase == DeviceJoinLocalPhase::Authorized {
+            finish_authorized_new_device_cleanup(core, &state_store, &mut stored)?;
+            return summary(&stored);
+        }
+        if !stored.activation_pending || stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
+            return Err(invalid_state("new-device activation is not ready"));
+        }
+        let did = crate::ids::Did::parse(&stored.join_request.did)?;
+        let pending_store = crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(core)?;
+        let (_, pending) = pending_store
+            .load(&join_session_id, &did)?
+            .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
+        if pending.access_result.is_none() {
+            return Err(invalid_state("new-device access result is missing"));
+        }
+        validate_remote_authorization(&stored, &pending.authorization, &pending.resolved_document)?;
+        (stored, pending, did)
+    };
+
+    let (custody_public, _) = crate::internal::identity_custody::active_join_provider_identity(
+        core,
+        &did,
+        &pending.custody,
+        &pending.authorization.device.signing_key_id,
+        &pending.authorization.device.e2ee_key_id,
+    )
+    .await?;
+
+    let _guard = lock_join_state(core)?;
+    let state_store = JoinStateStore::new(core);
+    let mut stored = state_store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if stored.phase == DeviceJoinLocalPhase::Authorized {
+        finish_authorized_new_device_cleanup(core, &state_store, &mut stored)?;
+        return summary(&stored);
+    }
+    if stored != snapshot {
+        return Err(invalid_state(
+            "new-device Join state changed during custody validation",
+        ));
+    }
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    let (_, current_pending) = pending_store
+        .load(&join_session_id, &did)?
+        .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
+    if current_pending != pending {
+        return Err(invalid_state(
+            "new-device activation changed during custody validation",
+        ));
+    }
+    let access = current_pending
+        .access_result
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device access result is missing"))?;
+    promote_join_identity_local(
+        core,
+        &stored,
+        &current_pending,
+        access,
+        &custody_public.document,
+    )?;
+    stored.phase = DeviceJoinLocalPhase::Authorized;
+    state_store.save(&stored)?;
+    finish_authorized_new_device_cleanup(core, &state_store, &mut stored)?;
+    summary(&stored)
+}
+
 fn finish_authorized_new_device_cleanup(
     core: &crate::core::ImCore,
     state_store: &JoinStateStore<'_>,
@@ -1725,11 +1812,43 @@ fn finish_authorized_new_device_cleanup(
     state_store.save(stored)
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn promote_join_identity(
     core: &crate::core::ImCore,
     stored: &StoredJoinSession,
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
     access: &crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
+) -> crate::ImResult<()> {
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    let custody = stored
+        .join_custody
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device custody reference is missing"))?;
+    let custody_identity = crate::internal::identity_custody::active_join_identity(
+        core,
+        &did,
+        custody,
+        &pending.authorization.device.signing_key_id,
+        &pending.authorization.device.e2ee_key_id,
+    )?;
+    let custody_public = custody_identity
+        .public_identity()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    promote_join_identity_local(
+        core,
+        stored,
+        pending,
+        access,
+        custody_public.document.as_value(),
+    )
+}
+
+fn promote_join_identity_local(
+    core: &crate::core::ImCore,
+    stored: &StoredJoinSession,
+    pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    access: &crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
+    custody_document: &Value,
 ) -> crate::ImResult<()> {
     if pending.authorization.device.role
         != crate::internal::identity_device_state::DeviceAuthorizationRole::Member
@@ -1766,27 +1885,15 @@ fn promote_join_identity(
     if custody != &pending.custody {
         return Err(crate::ImError::PermissionDenied);
     }
-    let custody_identity = crate::internal::identity_custody::active_join_identity(
-        core,
-        &did,
-        custody,
-        &pending.authorization.device.signing_key_id,
-        &pending.authorization.device.e2ee_key_id,
-    )?;
     let expected_signing_public =
         extract_identity_public_key(&stored.join_request.signing_public_key)?;
     let expected_e2ee_public = extract_identity_public_key(&stored.join_request.e2ee_public_key)?;
-    let custody_public = custody_identity
-        .public_identity()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
     if document_public_key_bytes(
-        custody_public.document.as_value(),
+        custody_document,
         &pending.authorization.device.signing_key_id,
     )? != public_key_bytes(&expected_signing_public)?
-        || document_public_key_bytes(
-            custody_public.document.as_value(),
-            &pending.authorization.device.e2ee_key_id,
-        )? != public_key_bytes(&expected_e2ee_public)?
+        || document_public_key_bytes(custody_document, &pending.authorization.device.e2ee_key_id)?
+            != public_key_bytes(&expected_e2ee_public)?
     {
         return Err(crate::ImError::PermissionDenied);
     }

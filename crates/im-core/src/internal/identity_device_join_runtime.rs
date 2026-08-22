@@ -922,10 +922,11 @@ where
             .device_join()
             .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?;
         if local.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
-            local = crate::internal::identity_device_join::finalize_new_device_activation(
+            local = crate::internal::identity_device_join::finalize_new_device_activation_async(
                 self.core,
                 join_session_id,
-            )?;
+            )
+            .await?;
             publish_v2_messaging_material_after_activation(self.core, &local).await?;
             return Ok(DeviceJoinAdvanceResult {
                 session: local,
@@ -1077,10 +1078,11 @@ where
             )?;
         }
         let authorization = pending.authorization.clone();
-        let session = crate::internal::identity_device_join::finalize_new_device_activation(
+        let session = crate::internal::identity_device_join::finalize_new_device_activation_async(
             self.core,
             &pending.join_session_id,
-        )?;
+        )
+        .await?;
         publish_v2_messaging_material_after_activation(self.core, &session).await?;
         Ok(DeviceJoinAdvanceResult {
             session,
