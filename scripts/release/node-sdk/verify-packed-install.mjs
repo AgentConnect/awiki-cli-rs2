@@ -74,8 +74,9 @@ try {
       }
       if (typeof client.completeRegistrationWithOutcome !== 'function'
         || typeof client.beginPreparedRegistrationJoin !== 'function'
-        || typeof client.resumePreparedRegistrationJoin !== 'function') {
-        throw new Error('expected native API v8 prepared registration facade')
+        || typeof client.resumePreparedRegistrationJoin !== 'function'
+        || typeof client.issueHandleRecoveryAttestation !== 'function') {
+        throw new Error('expected native API v9 recovery facade')
       }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()

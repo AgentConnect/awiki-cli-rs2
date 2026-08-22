@@ -771,11 +771,18 @@ Manifest Handle Recovery V4.0 是 host-neutral、默认关闭的 Core 能力。H
 `ImCoreOpenOptions.multi_device_handle_recovery_enabled` 显式开启后，使用
 `ImCore::handle_recovery()` 的 typed 操作：`request_handle_recovery_otp`、
 `prepare_handle_recovery`、`activate_handle_recovery`、`resume_handle_recovery`、
-`handle_recovery_status`、`list_handle_recovery_operations`、
+`issue_handle_recovery_attestation`、`handle_recovery_status`、`list_handle_recovery_operations`、
 `discard_handle_recovery_pre_attempt`、`quarantine_handle_recovery_key_unavailable`、
 `authorized_handle_recovery_receipt`、`activate_authorized_join` 和
 `resume_authorized_join_activation`；metrics 另有只读快照。`status` 和 list 只读；
 activate/resume 才能推进持久化状态机。
+`issue_handle_recovery_attestation` 是 DSH Host-only 的短时对账边界：只有本机 operation 已为
+`applied`、reset reference 来自同一 initiator operation，且 account、稳定 owner、完整 Handle、
+previous/current DID、binding generation 与当前已安装 client 全部精确一致时，Core 才用 current
+DID 的 authenticated RPC 获取不透明 token 与过期时间。token 由 zeroizing memory 承载，Debug
+始终 redacted；Host 只可立即转交固定受众的 Model Proxy，不得持久化、记录日志、进入 Browser/
+Agent schema 或模型上下文。joined-device reset、待续跑 operation、旧 client 与任何 epoch mismatch
+全部 fail closed。
 OTP、Recovery Grant、proof、私钥与 JWT 不进入公开进度 DTO 或 SQLite transition marker。
 OTP request 接受规范化 full Handle、phone 与 optional identity：提供 selector 时必须与 Handle
 精确闭合；省略时 Core 只按 Handle 查找本地身份，本机不存在则创建新的本地 owner，绝不回退到

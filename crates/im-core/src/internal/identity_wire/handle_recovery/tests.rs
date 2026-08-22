@@ -37,6 +37,37 @@ fn otp_send_uses_closed_canonical_inputs() {
 }
 
 #[test]
+fn attestation_issue_wire_contract_is_closed_and_secret_safe() {
+    let call = build_attestation_issue_call_v1("recover-v4-001").unwrap();
+    assert_eq!(call.endpoint, super::super::DID_AUTH_RPC_ENDPOINT);
+    assert_eq!(call.method, HANDLE_RECOVERY_ATTESTATION_ISSUE_V1_METHOD);
+    assert_eq!(call.params, json!({"operation_id": "recover-v4-001"}));
+    assert!(build_attestation_issue_call_v1("bad operation").is_err());
+
+    let value = parse_attestation_issue_result_v1(json!({
+        "attestation": "headerheader.payloadpayload.signaturesignature",
+        "expires_at": "2026-08-22T12:00:00Z",
+    }))
+    .unwrap();
+    assert_eq!(
+        value.expose_attestation(),
+        "headerheader.payloadpayload.signaturesignature"
+    );
+    assert!(!format!("{value:?}").contains("headerheader.payloadpayload.signaturesignature"));
+    assert!(parse_attestation_issue_result_v1(json!({
+        "attestation": "headerheader.payloadpayload.signaturesignature",
+        "expires_at": "2026-08-22T12:00:00Z",
+        "claims": {"previous_did": "must-not-cross"},
+    }))
+    .is_err());
+    assert!(parse_attestation_issue_result_v1(json!({
+        "attestation": "not a jwt",
+        "expires_at": "2026-08-22T12:00:00Z",
+    }))
+    .is_err());
+}
+
+#[test]
 fn join_transition_response_is_closed_and_secret_safe() {
     let transition = parse_account_verification_result(json!({
         "account_verification_token": "join-secret",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7
+
+- Add a Host-only opaque recovery-attestation method for post-recovery service reconciliation; the SDK never logs or persists the token.
+- Add stable `recovery_reconciliation_unavailable` and `recovery_reconciliation_invalid` errors without exposing the remote response.
+- Raise the native API contract to v9 so wrappers reject v8 binaries that do not provide the recovery-attestation method.
+
 ## 0.1.6
 
 - Add `completeRegistrationWithOutcome` so an existing Handle remains a structured, secret-free continuation instead of being collapsed into an error.

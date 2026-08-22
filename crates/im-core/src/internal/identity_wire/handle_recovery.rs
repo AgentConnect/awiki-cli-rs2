@@ -18,6 +18,8 @@ pub(crate) const HANDLE_RECOVERY_V4_EXCHANGE_ENDPOINT: &str =
     "/user-service/v1/auth/handle-recovery/v4/exchange";
 pub(crate) const HANDLE_RECOVERY_COMMIT_V4_METHOD: &str = "handle_recovery_commit_v4";
 pub(crate) const HANDLE_RECOVERY_RESULT_GET_V4_METHOD: &str = "handle_recovery_result_get_v4";
+pub(crate) const HANDLE_RECOVERY_ATTESTATION_ISSUE_V1_METHOD: &str =
+    "handle_recovery_attestation_issue_v1";
 pub(crate) const HANDLE_RECOVERY_COMMIT_V4_PURPOSE: &str =
     "awiki.identity.handle-recovery.commit.v4";
 pub(crate) const HANDLE_RECOVERY_RESULT_GET_V4_PURPOSE: &str =
@@ -630,6 +632,66 @@ pub(crate) fn prepare_result_get_v4(
         intent_hash: computed_intent_hash,
         signed_object,
     })
+}
+
+pub(crate) fn build_attestation_issue_call_v1(
+    operation_id: &str,
+) -> crate::ImResult<super::RpcCall> {
+    validate_operation_id(operation_id)?;
+    Ok(super::rpc_call(
+        super::DID_AUTH_RPC_ENDPOINT,
+        HANDLE_RECOVERY_ATTESTATION_ISSUE_V1_METHOD,
+        super::TransportProfile::RpcDefault,
+        json!({"operation_id": operation_id}),
+    ))
+}
+
+pub(crate) fn parse_attestation_issue_result_v1(
+    value: Value,
+) -> crate::ImResult<crate::identity::HandleRecoveryAttestation> {
+    let object = value.as_object().ok_or_else(|| {
+        invalid(
+            "result",
+            "Handle Recovery attestation response must be an object",
+        )
+    })?;
+    if object.len() != 2
+        || !object.contains_key("attestation")
+        || !object.contains_key("expires_at")
+    {
+        return Err(invalid(
+            "result",
+            "Handle Recovery attestation response is not closed",
+        ));
+    }
+    let attestation = object
+        .get("attestation")
+        .and_then(Value::as_str)
+        .filter(|value| valid_compact_jwt(value))
+        .ok_or_else(|| invalid("attestation", "Recovery attestation is invalid"))?;
+    let expires_at = object
+        .get("expires_at")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("expires_at", "Recovery attestation expiry is invalid"))?;
+    parse_timestamp_v4("expires_at", expires_at)?;
+    Ok(crate::identity::HandleRecoveryAttestation::new(
+        attestation.to_owned(),
+        expires_at.to_owned(),
+    ))
+}
+
+fn valid_compact_jwt(value: &str) -> bool {
+    if value.len() < 32 || value.len() > 16 * 1024 {
+        return false;
+    }
+    let segments = value.split('.').collect::<Vec<_>>();
+    segments.len() == 3
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
 }
 
 pub(crate) fn parse_commit_result_v4(
