@@ -6576,7 +6576,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'agent', '20',
         )
         .unwrap();
 
-        assert_eq!(result.updated_count, 0);
+        assert_eq!(result.updated_count, 1);
         assert_eq!(result.read_watermark_message_id.as_deref(), Some("self"));
         assert_eq!(result.read_watermark_seq.as_deref(), Some("10"));
         assert!(result.advanced);

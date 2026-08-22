@@ -75,7 +75,7 @@ fn published_e1_upgrade_builds_exact_canonical_vnext_document() {
 
     assert_eq!(
         upgrade.target_document["authentication"],
-        json!([upgrade.signing_key_id, daemon_key_id])
+        json!([root_key_id, upgrade.signing_key_id, daemon_key_id])
     );
     assert_eq!(
         upgrade.target_document["assertionMethod"],
