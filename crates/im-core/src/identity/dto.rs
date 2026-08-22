@@ -609,6 +609,14 @@ pub struct HandleRegistrationResult {
     pub state: HandleRegistrationState,
     pub join_required: Option<HandleRegistrationJoinRequiredPreparation>,
     pub default_identity_change: Option<DefaultIdentityChange>,
+    /// Retry guidance returned by the registration OTP endpoint.
+    /// Present only when `state` is `OtpSent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u32>,
+    /// RFC 3339 retry timestamp returned by the registration OTP endpoint.
+    /// Present only when `state` is `OtpSent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
     pub warnings: Vec<String>,
 }
 

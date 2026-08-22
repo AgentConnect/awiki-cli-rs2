@@ -86,7 +86,14 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
         handle: crate::ids::Handle,
         method: crate::identity::RegistrationMethod,
         state: crate::identity::HandleRegistrationState,
+        raw_response: Option<&serde_json::Value>,
     ) -> crate::identity::HandleRegistrationResult {
+        let (retry_after_seconds, retry_at) =
+            if state == crate::identity::HandleRegistrationState::OtpSent {
+                registration_otp_retry(raw_response)
+            } else {
+                (None, None)
+            };
         crate::identity::HandleRegistrationResult {
             identity: None,
             account_id: None,
@@ -95,6 +102,8 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
             state,
             join_required: None,
             default_identity_change: None,
+            retry_after_seconds,
+            retry_at,
             warnings: warnings_for_request(&request),
         }
     }
@@ -133,6 +142,7 @@ where
                             target.full_handle,
                             method,
                             crate::identity::HandleRegistrationState::OtpSent,
+                            Some(&raw),
                         ),
                         raw: Some(raw),
                     });
@@ -160,6 +170,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailSent,
+                                Some(&raw),
                             ),
                             raw: Some(raw),
                         });
@@ -171,6 +182,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailPending,
+                                None,
                             ),
                             raw: Some(raw),
                         });
@@ -296,6 +308,7 @@ where
                             target.full_handle,
                             method,
                             crate::identity::HandleRegistrationState::OtpSent,
+                            Some(&raw),
                         ),
                         raw: Some(raw),
                     });
@@ -326,6 +339,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailSent,
+                                Some(&raw),
                             ),
                             raw: Some(raw),
                         });
@@ -340,6 +354,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailPending,
+                                None,
                             ),
                             raw: Some(raw),
                         });
@@ -979,6 +994,26 @@ fn require_exact_fields(raw: &Value, expected: &[&str]) -> crate::ImResult<()> {
     Ok(())
 }
 
+fn registration_otp_retry(
+    raw_response: Option<&serde_json::Value>,
+) -> (Option<u32>, Option<String>) {
+    let Some(raw) = raw_response else {
+        return (None, None);
+    };
+    let value = raw.get("result").unwrap_or(raw);
+    let retry_after_seconds = value
+        .get("retry_after_seconds")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let retry_at = value
+        .get("retry_at")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    (retry_after_seconds, retry_at)
+}
+
 fn join_required_result(
     request: &crate::identity::RegisterHandleRequest,
     handle: crate::ids::Handle,
@@ -993,6 +1028,8 @@ fn join_required_result(
             state: crate::identity::HandleRegistrationState::JoinRequired,
             join_required: Some(join_required),
             default_identity_change: None,
+            retry_after_seconds: None,
+            retry_at: None,
             warnings: warnings_for_request(request),
         },
         raw: None,
@@ -1380,6 +1417,8 @@ fn registration_result(
                     warnings: Vec::new(),
                 }
             }),
+            retry_after_seconds: None,
+            retry_at: None,
             warnings: Vec::new(),
         },
         raw: None,
@@ -1700,6 +1739,29 @@ mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use time::OffsetDateTime;
+
+    #[test]
+    fn registration_otp_retry_preserves_server_guidance() {
+        let raw = serde_json::json!({
+            "result": {
+                "ok": true,
+                "retry_after_seconds": 60,
+                "retry_at": "2099-08-20T12:00:00Z"
+            }
+        });
+        assert_eq!(
+            registration_otp_retry(Some(&raw)),
+            (Some(60), Some("2099-08-20T12:00:00Z".to_owned()))
+        );
+        assert_eq!(registration_otp_retry(None), (None, None));
+        assert_eq!(
+            registration_otp_retry(Some(&serde_json::json!({
+                "retry_after_seconds": -1,
+                "retry_at": " "
+            }))),
+            (None, None)
+        );
+    }
 
     #[derive(Clone, Copy)]
     enum RpcBehavior {
