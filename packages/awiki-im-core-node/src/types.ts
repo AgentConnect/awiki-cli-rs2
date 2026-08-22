@@ -17,6 +17,62 @@ export interface ImCoreNodeOpenOptions {
   readonly multiDeviceHandleRecoveryEnabled?: boolean
   /** Exact User Service audience required when Handle recovery is enabled. */
   readonly multiDeviceAudience?: string
+  /** Trusted Host-only ANP Identity Provider lease used by DSH External mode. */
+  readonly identityProvider?: ImCoreIdentityProvider
+}
+
+export interface ImCoreIdentityReference {
+  readonly storeId: string
+  readonly identityId: string
+  readonly did: string
+}
+
+export interface ImCoreIdentityProvider {
+  readonly protocol: 'anp-identity-provider-ts/1'
+  readonly capabilities: readonly string[]
+  info(): Promise<unknown>
+  recover(): Promise<unknown>
+  list(): Promise<readonly unknown[]>
+  publicIdentity(reference: ImCoreIdentityReference): Promise<unknown>
+  recoverIdentity(reference: ImCoreIdentityReference): Promise<void>
+  sign(
+    reference: ImCoreIdentityReference,
+    request:
+      | { readonly purpose: 'authentication'; readonly kid?: string; readonly payload: Buffer }
+      | { readonly purpose: 'device_assertion'; readonly kid?: string; readonly payload: Buffer }
+      | {
+          readonly purpose: 'application_assertion'
+          readonly domain: string
+          readonly kid?: string
+          readonly payload: Buffer
+        },
+  ): Promise<{ readonly kid: string; readonly algorithm: 'ed25519'; readonly bytes: Buffer }>
+  signOriginProof(
+    reference: ImCoreIdentityReference,
+    request: {
+      readonly method: string
+      readonly meta: unknown
+      readonly body: unknown
+      readonly kid?: string
+      readonly options?: {
+        readonly created?: number
+        readonly expires?: number
+        readonly nonce?: string
+      }
+    },
+  ): Promise<unknown>
+  prepareHttpSignature(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly kid?: string
+    readonly url: string
+    readonly method: string
+    readonly headers: readonly { readonly name: string; readonly value: string }[]
+    readonly body?: Buffer
+    readonly nonce?: string
+    readonly created?: number
+    readonly expires?: number
+    readonly coveredComponents?: readonly string[]
+  }): Promise<unknown>
 }
 
 /** Public identity projection. No token, private key, or local path is exposed. */

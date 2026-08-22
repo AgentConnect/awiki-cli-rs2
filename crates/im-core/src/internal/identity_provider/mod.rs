@@ -122,7 +122,7 @@ pub async fn derive_shared_secret_or_fallback(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderIdentityRef {
     pub store_id: String,
     pub identity_id: String,

@@ -56,6 +56,7 @@ struct ClientInner {
     operation_timeout: Duration,
     sync_timeout: Duration,
     options: NodeOpenOptions,
+    identity_provider: std::sync::Mutex<Option<crate::external_identity::ExternalIdentityCustody>>,
     realtime: tokio::sync::Mutex<Option<RealtimeSlot>>,
     next_realtime_id: AtomicU64,
     #[cfg(test)]
@@ -186,6 +187,10 @@ impl ClientInner {
             }
             if let Ok(mut environment) = self.environment.try_write() {
                 environment.take();
+                self.identity_provider
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
                 self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
                 self.closed.notify_waiters();
             }
@@ -195,6 +200,10 @@ impl ClientInner {
     async fn complete_close(&self, realtime_result: SafeResult<()>) -> SafeResult<()> {
         let mut environment = self.environment.write().await;
         environment.take();
+        self.identity_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
         self.closed.notify_waiters();
         realtime_result
@@ -1701,7 +1710,21 @@ impl NativeImCoreNodeClient {
                 self.inner.operation_timeout,
             )
             .await?;
-        *slot = Some(initialize_environment(self.inner.options.clone(), state).await?);
+        let identity_provider = self
+            .inner
+            .identity_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        *slot = Some(
+            initialize_environment(
+                self.inner.options.clone(),
+                state,
+                identity_provider,
+                self.inner.operation_timeout,
+            )
+            .await?,
+        );
         Ok(NodeClearLocalDataResult { cleared })
     }
 }
@@ -1712,7 +1735,10 @@ impl Drop for NativeImCoreNodeClient {
     }
 }
 
-pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNodeClient> {
+pub(crate) async fn open(
+    options: NodeOpenOptions,
+    identity_provider_dispatch: Option<crate::external_identity::IdentityProviderDispatch>,
+) -> SafeResult<NativeImCoreNodeClient> {
     let operation_timeout = optional_timeout(
         options.operation_timeout_ms,
         Duration::from_millis(u64::from(DEFAULT_OPERATION_TIMEOUT_MS)),
@@ -1725,7 +1751,15 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
     let state = tokio::task::spawn_blocking(move || StateRoot::open(PathBuf::from(state_root)))
         .await
         .map_err(|_| SafeError::internal())??;
-    let environment = initialize_environment(options.clone(), state).await?;
+    let identity_provider =
+        identity_provider_dispatch.map(crate::external_identity::ExternalIdentityCustody::new);
+    let environment = initialize_environment(
+        options.clone(),
+        state,
+        identity_provider.clone(),
+        operation_timeout,
+    )
+    .await?;
     Ok(NativeImCoreNodeClient {
         inner: Arc::new(ClientInner {
             lifecycle: AtomicU8::new(LIFECYCLE_OPEN),
@@ -1736,6 +1770,7 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
             operation_timeout,
             sync_timeout,
             options,
+            identity_provider: std::sync::Mutex::new(identity_provider),
             realtime: tokio::sync::Mutex::new(None),
             next_realtime_id: AtomicU64::new(1),
             #[cfg(test)]
@@ -1747,13 +1782,23 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
 async fn initialize_environment(
     options: NodeOpenOptions,
     state: StateRoot,
+    identity_provider: Option<crate::external_identity::ExternalIdentityCustody>,
+    operation_timeout: Duration,
 ) -> SafeResult<Environment> {
+    if let Some(provider) = identity_provider.as_ref() {
+        tokio::time::timeout(operation_timeout, provider.handshake())
+            .await
+            .map_err(|_| SafeError::timeout())??;
+    }
     let paths = state.paths();
     let config = core_config(&options)?;
-    let core =
-        im_core::ImCore::open_with_options(config, paths, core_open_options(&options, &state)?)
-            .await
-            .map_err(SafeError::from_im)?;
+    let core = im_core::ImCore::open_with_options(
+        config,
+        paths,
+        core_open_options(&options, &state, identity_provider)?,
+    )
+    .await
+    .map_err(SafeError::from_im)?;
     core.bootstrap()
         .initialize_local_state_async()
         .await
@@ -1785,6 +1830,7 @@ async fn initialize_environment(
 fn core_open_options(
     options: &NodeOpenOptions,
     state: &StateRoot,
+    identity_provider: Option<crate::external_identity::ExternalIdentityCustody>,
 ) -> SafeResult<im_core::ImCoreOpenOptions> {
     let core_options = im_core::ImCoreOpenOptions::default()
         .with_identity_secret_vault(
@@ -1796,8 +1842,12 @@ fn core_open_options(
                 .multi_device_handle_recovery_enabled
                 .unwrap_or(false),
         );
-    Ok(match &options.multi_device_audience {
+    let core_options = match &options.multi_device_audience {
         Some(audience) => core_options.with_multi_device_audience(audience.clone()),
+        None => core_options,
+    };
+    Ok(match identity_provider {
+        Some(provider) => core_options.with_identity_custody_provider(Arc::new(provider)),
         None => core_options,
     })
 }
@@ -2241,7 +2291,7 @@ mod tests {
     #[tokio::test]
     async fn close_is_idempotent_rejects_new_work_and_releases_the_state_lock() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         client.inner.close().await.unwrap();
         client.inner.close().await.unwrap();
         assert_eq!(
@@ -2260,13 +2310,13 @@ mod tests {
                 .code,
             "client_closed"
         );
-        open(options(directory.path())).await.unwrap();
+        open(options(directory.path()), None).await.unwrap();
     }
 
     #[tokio::test]
     async fn close_cancels_an_inflight_operation_before_releasing_state() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         let operation = client.inner.operation().await.unwrap();
         let inner = client.inner.clone();
         let close = tokio::spawn(async move { inner.close().await });
@@ -2274,13 +2324,13 @@ mod tests {
         assert!(!close.is_finished());
         drop(operation);
         close.await.unwrap().unwrap();
-        open(options(directory.path())).await.unwrap();
+        open(options(directory.path()), None).await.unwrap();
     }
 
     #[tokio::test]
     async fn close_error_still_reaches_closed_notifies_waiters_and_releases_state_lock() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         let expected = SafeError::new(
             "realtime_join_failed",
             "The realtime session failed while closing.",
@@ -2299,13 +2349,13 @@ mod tests {
             .await
             .expect("a second close must not wait in closing")
             .unwrap();
-        open(options(directory.path())).await.unwrap();
+        open(options(directory.path()), None).await.unwrap();
     }
 
     #[tokio::test]
     async fn clear_local_data_removes_owned_state_and_keeps_the_client_open() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         std::fs::write(directory.path().join("cache/owned.bin"), b"private").unwrap();
         std::fs::write(directory.path().join("vault/owned.bin"), b"private").unwrap();
         std::fs::write(directory.path().join("compatibility.json"), b"{}").unwrap();
@@ -2317,7 +2367,11 @@ mod tests {
         assert_eq!(client.get_default_identity_inner().await.unwrap(), None);
         assert!(client.clear_local_data_inner().await.unwrap().cleared);
         assert_eq!(
-            open(options(directory.path())).await.err().unwrap().code,
+            open(options(directory.path()), None)
+                .await
+                .err()
+                .unwrap()
+                .code,
             "state_in_use"
         );
     }

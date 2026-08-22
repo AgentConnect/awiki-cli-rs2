@@ -12,9 +12,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 fs2.workspace = true
-im-core = { package = "awiki-im-core", path = "../im-core" }
+im-core = { package = "awiki-im-core", path = "../im-core", features = ["provider-traits"] }
 napi.workspace = true
 napi-derive.workspace = true
 rand.workspace = true

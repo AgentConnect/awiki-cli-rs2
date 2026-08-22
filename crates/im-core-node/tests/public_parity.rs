@@ -254,3 +254,32 @@ fn node_facade_source_is_host_neutral_and_uses_no_private_storage_api() {
         );
     }
 }
+
+#[test]
+fn external_provider_bridge_is_async_binary_explicit_and_has_no_raw_secret_fallback() {
+    let rust = include_str!("../src/external_identity.rs");
+    assert!(rust.contains("ThreadsafeFunction"));
+    assert!(rust.contains("call_async_catch"));
+    for forbidden in ["block_on", "block_in_place", "shared_secret.to_vec()"] {
+        assert!(
+            !rust.contains(forbidden),
+            "External Provider bridge must not use {forbidden}"
+        );
+    }
+
+    let start = rust
+        .find("async fn derive_shared_secret")
+        .expect("External ECDH method");
+    let method = &rust[start
+        ..rust[start..]
+            .find("async fn recover")
+            .expect("next provider method")
+            + start];
+    assert!(method.contains("CapabilityUnavailable"));
+    assert!(!method.contains("call("));
+
+    let typescript = include_str!("../../../packages/awiki-im-core-node/src/provider-bridge.ts");
+    assert!(typescript.contains("singleBuffer(request.buffers)"));
+    assert!(!typescript.contains("ecdhSealed"));
+    assert!(!typescript.contains("exportRootKeySealed"));
+}

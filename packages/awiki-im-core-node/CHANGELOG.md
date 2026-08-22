@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- Add the Host-only `anp-identity-provider-ts/1` External Provider bridge with readiness handshake,
+  structured error mapping, bounded Promise calls, public snapshot caching, and explicit Buffer slots.
+- Keep sealed ECDH fail closed until the Provider delivery includes the authorization/AAD context
+  required for authenticated HPKE open; no raw shared-secret fallback is exposed.
+- Raise the native API contract to v9 and release the ThreadsafeFunction during explicit client close.
+
 ## 0.1.6
 
 - Add `completeRegistrationWithOutcome` so an existing Handle remains a structured, secret-free continuation instead of being collapsed into an error.

@@ -70,6 +70,19 @@ finally {
 DSH Host 必须通过受限 Provider lease 的 `authenticatedHttp.dispatch` 完成签名和发送，普通
 插件只能提交精确请求并接收响应。
 
+## DSH External Identity Provider
+
+DSH Host 将 `ctx.anpIdentity.acquireProvider(...)` 返回的 Host-only lease 作为
+`identityProvider` 传给 `openImCoreNodeClient()`。打开时会校验
+`anp-identity-provider-ts/1`、必需 capability、Provider readiness 与 Store schema；任一项不匹配
+都 fail closed，不会隐式改用另一个身份 Store。
+
+Provider 回调全部是异步 Promise。签名 payload、签名结果和 HTTP body 使用独立 Buffer 槽，不经
+JSON/base64；公开 DID 快照在 Rust session 内缓存，普通签名和 Origin Proof 各只跨 TS 一次。
+Host teardown 必须先 `await client.close()`，再 dispose Provider lease。当前 External bridge 在
+sealed ECDH 响应携带可验证 AAD 上下文之前明确返回 capability unavailable，不会降级为把 raw
+shared secret 交给 JavaScript。
+
 ## 生命周期与线程
 
 - 一个 client 对应一个环境级 `ImCore` 和一个 default identity-bound `ImClient`，不会为
@@ -110,10 +123,12 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.1.6` 源码 candidate 的 Native contract version 为 `8`，增加 prepared registration
+- 当前 `0.2.0` 源码 candidate 的 Native contract version 为 `9`，增加 Host-only External
+  Identity Provider Promise bridge；同时保留 prepared registration
   Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send。registry `0.1.5` 是
   v5，包含 external HTTP auth、local timeline、群管理展示、realtime 与 mail facade；`0.1.6`
-  必须同步发布 v8 wrapper 与全部平台 addon，wrapper 拒绝其他版本的 addon。
+  是上一版 v8 candidate。`0.2.0` 必须同步发布 v9 wrapper 与全部平台 addon，wrapper 拒绝其他
+  版本的 addon。
 
 ## 邮件
 

@@ -446,6 +446,7 @@ name = "awiki-im-core-node"
 version = "0.1.6"
 dependencies = [
  "anp",
+ "async-trait",
  "awiki-im-core",
  "base64",
  "chrono",

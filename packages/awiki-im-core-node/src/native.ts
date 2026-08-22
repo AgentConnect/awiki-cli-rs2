@@ -128,5 +128,26 @@ export interface NativeImCoreNodeClient {
 
 export interface NativeBinding {
   readonly nativeApiVersion: () => number
-  readonly openNativeClient: (options: ImCoreNodeOpenOptions) => Promise<NativeImCoreNodeClient>
+  readonly openNativeClient: (
+    options: Omit<ImCoreNodeOpenOptions, 'identityProvider'>,
+    identityProviderDispatch?: NativeIdentityProviderDispatch,
+  ) => Promise<NativeImCoreNodeClient>
 }
+
+export interface NativeIdentityProviderCall {
+  readonly operation: string
+  readonly payloadJson: string
+  readonly buffers: readonly Buffer[]
+}
+
+export interface NativeIdentityProviderReply {
+  readonly ok: boolean
+  readonly payloadJson: string
+  readonly buffers: readonly Buffer[]
+  readonly errorCode?: string
+  readonly retryable?: boolean
+}
+
+export type NativeIdentityProviderDispatch = (
+  call: readonly [NativeIdentityProviderCall],
+) => Promise<NativeIdentityProviderReply>
