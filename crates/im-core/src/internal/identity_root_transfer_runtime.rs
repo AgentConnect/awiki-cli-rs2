@@ -378,24 +378,36 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
 
-    let custody_store = crate::internal::identity_custody::open_controller_store(&core)
+    let custody_manager = crate::internal::identity_custody::open_controller_manager(&core)
+        .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
+    let custody_info = custody_manager
+        .info()
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
-        || local_entry.anp_identity_store_id.as_deref()
-            != Some(custody_store.manifest().store_id.as_str())
+        || local_entry.anp_identity_store_id.as_deref() != Some(custody_info.store_id.as_str())
     {
         return Err(root_error(RootTransferErrorCode::RootVaultUnavailable));
     }
-    let custody_identity = custody_store
-        .open_identity(client.did().as_str())
+    let identity_id = local_entry
+        .anp_identity_id
+        .as_deref()
+        .ok_or_else(|| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
+    let custody_identity = custody_manager
+        .get(&anp_identity::IdentityRef {
+            store_id: custody_info.store_id,
+            identity_id: identity_id.to_owned(),
+            did: client.did().as_str().to_owned(),
+        })
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
-    if local_entry.anp_identity_id.as_deref() != Some(custody_identity.identity_id())
-        || custody_identity.root_capability() != anp_identity::RootCapabilityState::Active
-    {
+    use anp_identity::host::{IdentityStatusPort, RootExportPort};
+    let host_status = custody_identity
+        .host_status()
+        .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
+    if host_status.root_capability != anp_identity::host::HostRootCapability::Active {
         return Err(root_error(RootTransferErrorCode::RootVaultUnavailable));
     }
-    let checkpoint = custody_identity
-        .checkpoint()
+    let checkpoint = host_status
+        .checkpoint
         .ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
     let document_digest = anp_identity::canonical_document_digest(&document)
         .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
@@ -407,7 +419,10 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
     let exported_root = custody_identity
-        .export_root_private_key(&state.root_key_id)
+        .export_root_for_legacy_envelope(anp_identity::host::UserConfirmedRootExportRequest {
+            key: anp_identity::KeySelector::Kid(state.root_key_id.clone()),
+            user_presence_confirmed: true,
+        })
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     validate_root_private_der_matches_document(
         exported_root.as_pkcs8_der(),
@@ -875,27 +890,43 @@ fn active_root_key_id(
     if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
         return Err(crate::ImError::PermissionDenied);
     }
-    let store = crate::internal::identity_custody::open_controller_store(core)?;
-    if entry.anp_identity_store_id.as_deref() != Some(store.manifest().store_id.as_str()) {
+    let manager = crate::internal::identity_custody::open_controller_manager(core)?;
+    let info = manager
+        .info()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    if entry.anp_identity_store_id.as_deref() != Some(info.store_id.as_str()) {
         return Err(crate::ImError::PermissionDenied);
     }
-    let identity = store
-        .open_identity(entry.did.as_str())
-        .map_err(crate::internal::identity_custody::map_error)?;
-    if entry.anp_identity_id.as_deref() != Some(identity.identity_id())
-        || identity.state() != anp_identity::IdentityState::Active
-        || identity.root_capability() != anp_identity::RootCapabilityState::Active
+    let identity_id = entry
+        .anp_identity_id
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let identity = manager
+        .get(&anp_identity::IdentityRef {
+            store_id: info.store_id,
+            identity_id: identity_id.to_owned(),
+            did: entry.did.clone(),
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    let public = identity
+        .public_identity()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    use anp_identity::host::IdentityStatusPort;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || identity
+            .host_status()
+            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .root_capability
+            != anp_identity::host::HostRootCapability::Active
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    identity
-        .keys()
+    public
+        .active_keys
         .iter()
         .find(|key| {
-            key.role == anp_identity::KeyRole::RootControl
-                && key.origin == anp_identity::KeyOrigin::Managed
-                && key.state == anp_identity::KeyState::Active
-                && !key.material_erased
+            key.purposes
+                .contains(&anp_identity::KeyPurpose::RootControl)
         })
         .map(|key| key.kid.clone())
         .ok_or(crate::ImError::PermissionDenied)
