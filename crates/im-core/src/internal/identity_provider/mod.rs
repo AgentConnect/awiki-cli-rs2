@@ -7,6 +7,8 @@ use std::fmt;
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
+pub(crate) use direct::DirectAnpIdentitySession;
+
 pub(crate) const IDENTITY_PROVIDER_PROTOCOL: &str = "anp-identity-provider-ts/1";
 pub(crate) const CAP_STORE_READ: &str = "store.read";
 pub(crate) const CAP_IDENTITY_SIGN: &str = "identity.sign";
@@ -60,6 +62,45 @@ impl fmt::Display for IdentityProviderError {
 }
 
 impl std::error::Error for IdentityProviderError {}
+
+pub(crate) fn map_provider_error(error: IdentityProviderError) -> crate::ImError {
+    use IdentityProviderErrorCode as Code;
+    match error.code {
+        Code::InvalidRequest => crate::ImError::invalid_input(
+            Some("identity_provider".to_owned()),
+            "identity provider rejected the request",
+        ),
+        Code::IdentityNotFound | Code::KeyNotFound => crate::ImError::IdentityUnresolved {
+            detail: "identity provider reference was not found".to_owned(),
+        },
+        Code::KeyUnavailable
+        | Code::KeyPurposeViolation
+        | Code::AmbiguousKey
+        | Code::VerificationFailed
+        | Code::CapabilityUnavailable
+        | Code::RootKeyMismatch => crate::ImError::PermissionDenied,
+        Code::ProviderUnavailable
+        | Code::ProviderDisposed
+        | Code::RequestTimeout
+        | Code::Storage => crate::ImError::LocalStateUnavailable {
+            detail: "identity provider is temporarily unavailable".to_owned(),
+        },
+        Code::ProviderIncompatible | Code::CorruptState => crate::ImError::LocalStateUnavailable {
+            detail: "identity provider state is incompatible".to_owned(),
+        },
+        Code::Conflict => crate::ImError::IdentityBindingConflict {
+            detail: "identity provider changed concurrently".to_owned(),
+        },
+        Code::RequestCancelled => crate::ImError::LocalStateUnavailable {
+            detail: "identity provider request was cancelled".to_owned(),
+        },
+        Code::StoreNotFound | Code::IdentityAlreadyExists | Code::Internal => {
+            crate::ImError::LocalStateUnavailable {
+                detail: "identity provider operation failed".to_owned(),
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]

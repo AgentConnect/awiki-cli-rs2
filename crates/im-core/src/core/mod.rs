@@ -430,6 +430,7 @@ impl ImCore {
             std::sync::Arc::new(
                 crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
             );
+        let identity_session = provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -450,6 +451,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider: provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -483,6 +485,7 @@ impl ImCore {
                 crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
             );
         provider.ensure_request_signing_available()?;
+        let identity_session = provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -503,6 +506,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider: provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -560,12 +564,13 @@ impl ImCore {
         let device_signing_key_id = material.device_signing_key_id.clone();
         let device_e2ee_key_id = material.device_e2ee_key_id.clone();
         let display_name = material.display_name.clone();
-        let key_provider = std::sync::Arc::new(
+        let key_provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> = std::sync::Arc::new(
             crate::internal::key_provider::HostBackedDeviceIdentitySigner::new_with_auth_token_persistence(
                 &material,
                 auth_token_persistence,
             )?,
         );
+        let identity_session = key_provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -586,6 +591,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -624,7 +630,7 @@ impl ImCore {
             .as_deref()
             .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
             .transpose()?;
-        let key_provider = std::sync::Arc::new(match request_signing_key_id {
+        let key_provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> = std::sync::Arc::new(match request_signing_key_id {
             Some(key_id) => {
                 crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
                     &material, key_id,
@@ -632,6 +638,7 @@ impl ImCore {
             }
             None => crate::internal::key_provider::HostedIdentitySigner::new(&material)?,
         });
+        let identity_session = key_provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -652,6 +659,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,

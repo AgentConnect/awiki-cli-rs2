@@ -73,6 +73,7 @@ impl ClientFixture {
                 key_provider: Arc::new(
                     crate::internal::key_provider::FileBackedIdentitySigner::new(identity_dir),
                 ),
+                identity_session: None,
                 owner: LocalOwnerContext {
                     identity_id: crate::ids::IdentityId::parse(spec.owner_identity_id).unwrap(),
                     current_did: did,

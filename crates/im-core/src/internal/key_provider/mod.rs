@@ -11,6 +11,12 @@ pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySign
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
 pub(crate) trait IdentitySigner: Send + Sync {
+    fn async_session(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+        None
+    }
+
     fn did_document(&self) -> crate::ImResult<serde_json::Value>;
 
     fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>>;

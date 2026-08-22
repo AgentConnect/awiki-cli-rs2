@@ -153,7 +153,7 @@ where
             &input.request,
             self.wire_created_at.as_deref(),
         );
-        let origin_proof = crate::internal::proof::origin::build_origin_proof(
+        let origin_proof = crate::internal::proof::origin::build_origin_proof_async(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
@@ -161,7 +161,8 @@ where
                 verification_method: credentials.verification_method,
             },
             &payload,
-        )?;
+        )
+        .await?;
         let params = serde_json::json!({
             "meta": payload.meta.clone(),
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
@@ -220,12 +221,18 @@ async fn load_credentials_async(
         return delegated_credentials_async(client, delegated, did_document).await;
     }
     let key_id = runtime.key_provider.request_signing_key_id()?;
+    let signer = match runtime.identity_session.as_ref() {
+        Some(session) => crate::internal::proof::origin::OriginProofSigner::Provider(
+            std::sync::Arc::clone(session),
+        ),
+        None => crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+            &runtime.key_provider,
+        )),
+    };
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
-            &runtime.key_provider,
-        )),
+        signer,
         verification_method: Some(key_id),
         logical_sender_did: None,
     })
@@ -1000,6 +1007,84 @@ mod tests {
             calls[0].params["body"],
             json!({"text": "hello async direct"})
         );
+    }
+
+    #[tokio::test]
+    async fn anp_identity_async_send_uses_provider_neutral_session() {
+        let fixture = Fixture::new();
+        let identity_root = unique_temp_root();
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: identity_root,
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("async-send", [0x71; 32]),
+                ),
+            })
+            .unwrap();
+        let identity = manager
+            .create(anp_identity::CreateIdentityRequest {
+                profile: anp_identity::DidProfile::E1,
+                domain: "example.com".to_owned(),
+                port: None,
+                path_segments: vec!["async-send".to_owned()],
+                capabilities: anp_identity::Capabilities { did_wba: true },
+                managed_keys: vec![
+                    anp_identity::ManagedKeySpec {
+                        fragment: "root".to_owned(),
+                        role: anp_identity::KeyRole::RootControl,
+                    },
+                    anp_identity::ManagedKeySpec {
+                        fragment: "request".to_owned(),
+                        role: anp_identity::KeyRole::RequestSigning,
+                    },
+                ],
+                external_keys: Vec::new(),
+                services: Vec::new(),
+                agent_description_url: None,
+                extensions: Vec::new(),
+            })
+            .unwrap();
+        let client = fixture
+            .core()
+            .client_with_anp_delegated_identity(identity)
+            .unwrap();
+        assert!(client.runtime().identity_session.is_some());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-provider-direct",
+                    "operation_id": "op-provider-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-08-22T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        )
+        .send_async(DirectTextSend {
+            request: direct_text_request(
+                "did:example:bob",
+                "hello through provider seam",
+                crate::messages::MessageKind::Text,
+            ),
+            resolved_target_did: None,
+            credentials: None,
+        })
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].params["meta"]["sender_did"], client.did().as_str());
+        assert!(calls[0].params["auth"]["origin_proof"]["signature"]
+            .as_str()
+            .unwrap()
+            .starts_with("sig1=:"));
     }
 
     #[tokio::test]

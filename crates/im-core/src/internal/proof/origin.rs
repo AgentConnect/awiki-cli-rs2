@@ -12,6 +12,7 @@ pub(crate) const ORIGIN_PROOF_SCHEME: &str = "anp-rfc9421-origin-proof-v1";
 #[derive(Clone)]
 pub(crate) enum OriginProofSigner {
     Identity(Arc<dyn crate::internal::key_provider::IdentitySigner>),
+    Provider(Arc<dyn crate::internal::identity_provider::IdentitySession>),
     PrivateKeyPem(String),
 }
 
@@ -19,6 +20,7 @@ impl std::fmt::Debug for OriginProofSigner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Identity(_) => formatter.write_str("OriginProofSigner::Identity(..)"),
+            Self::Provider(_) => formatter.write_str("OriginProofSigner::Provider(..)"),
             Self::PrivateKeyPem(_) => formatter.write_str("OriginProofSigner::PrivateKeyPem(..)"),
         }
     }
@@ -28,6 +30,7 @@ impl PartialEq for OriginProofSigner {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Identity(left), Self::Identity(right)) => Arc::ptr_eq(left, right),
+            (Self::Provider(left), Self::Provider(right)) => Arc::ptr_eq(left, right),
             (Self::PrivateKeyPem(left), Self::PrivateKeyPem(right)) => left == right,
             _ => false,
         }
@@ -45,6 +48,9 @@ impl OriginProofSigner {
     ) -> crate::ImResult<Rfc9421OriginProof> {
         match self {
             Self::Identity(signer) => signer.sign_origin_proof(method, meta, body, key_id, options),
+            Self::Provider(_) => Err(crate::ImError::LocalStateUnavailable {
+                detail: "asynchronous identity provider requires an async send path".to_owned(),
+            }),
             Self::PrivateKeyPem(private_key_pem) => {
                 let private_key = load_private_key_material(private_key_pem)?;
                 generate_rfc9421_origin_proof(method, meta, body, &private_key, key_id, options)
@@ -52,6 +58,45 @@ impl OriginProofSigner {
                         detail: format!("generate origin proof: {err}"),
                     })
             }
+        }
+    }
+
+    pub(crate) async fn sign_origin_proof_async(
+        &self,
+        method: &str,
+        meta: &Value,
+        body: &Value,
+        key_id: &str,
+        options: Rfc9421OriginProofGenerationOptions,
+    ) -> crate::ImResult<Rfc9421OriginProof> {
+        match self {
+            Self::Provider(session) => {
+                let proof = session
+                    .sign_origin_proof(
+                        crate::internal::identity_provider::ProviderOriginProofRequest {
+                            method: method.to_owned(),
+                            meta: meta.clone(),
+                            body: body.clone(),
+                            key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                                key_id.to_owned(),
+                            ),
+                            options:
+                                crate::internal::identity_provider::ProviderOriginProofOptions {
+                                    created: options.created,
+                                    expires: options.expires,
+                                    nonce: options.nonce,
+                                },
+                        },
+                    )
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
+                Ok(Rfc9421OriginProof {
+                    content_digest: proof.content_digest,
+                    signature_input: proof.signature_input,
+                    signature: proof.signature,
+                })
+            }
+            _ => self.sign_origin_proof(method, meta, body, key_id, options),
         }
     }
 
@@ -66,6 +111,9 @@ impl OriginProofSigner {
             Self::Identity(signer) => {
                 signer.sign_object_proof(key_id, document, issuer_did, created)
             }
+            Self::Provider(_) => Err(crate::ImError::LocalStateUnavailable {
+                detail: "asynchronous identity provider requires an async proof path".to_owned(),
+            }),
             Self::PrivateKeyPem(private_key_pem) => {
                 let private_key = load_private_key_material(private_key_pem)?;
                 anp::proof::generate_object_proof(
@@ -146,6 +194,42 @@ pub(crate) fn build_origin_proof(
         &key_id,
         Rfc9421OriginProofGenerationOptions::default(),
     )
+}
+
+pub(crate) async fn build_origin_proof_async(
+    identity: &OriginProofIdentity,
+    payload: &DirectPayload,
+) -> crate::ImResult<Rfc9421OriginProof> {
+    let did_document = identity
+        .did_document
+        .as_ref()
+        .ok_or_else(|| missing_verification_method_error(identity))?;
+    let key_id = match identity
+        .verification_method
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(method) => {
+            validate_verification_method_in_document(did_document, method, identity)?;
+            method.to_string()
+        }
+        None => verification_method_id_from_document(did_document)
+            .ok_or_else(|| missing_verification_method_error(identity))?,
+    };
+    if key_id.is_empty() {
+        return Err(missing_verification_method_error(identity));
+    }
+    identity
+        .signer
+        .sign_origin_proof_async(
+            &payload.method,
+            &payload.meta,
+            &payload.body,
+            &key_id,
+            Rfc9421OriginProofGenerationOptions::default(),
+        )
+        .await
 }
 
 pub(crate) fn validate_verification_method_in_document(

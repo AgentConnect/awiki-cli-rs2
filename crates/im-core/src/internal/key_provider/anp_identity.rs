@@ -19,7 +19,7 @@ use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRe
 use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
 pub(crate) struct AnpIdentitySigner {
-    identity: ManagedIdentity,
+    identity: Arc<ManagedIdentity>,
     auth: AnpIdentityAuth,
 }
 
@@ -70,7 +70,7 @@ impl fmt::Debug for AnpIdentityAuth {
 impl AnpIdentitySigner {
     pub(crate) fn new_ephemeral(identity: ManagedIdentity) -> Self {
         Self {
-            identity,
+            identity: Arc::new(identity),
             auth: AnpIdentityAuth::Ephemeral {
                 state: RwLock::new(Default::default()),
             },
@@ -79,7 +79,7 @@ impl AnpIdentitySigner {
 
     pub(crate) fn new_file(identity: ManagedIdentity, auth_state_path: PathBuf) -> Self {
         Self {
-            identity,
+            identity: Arc::new(identity),
             auth: AnpIdentityAuth::File { auth_state_path },
         }
     }
@@ -91,7 +91,7 @@ impl AnpIdentitySigner {
     ) -> crate::ImResult<Self> {
         validate_auth_ref(&auth_ref)?;
         Ok(Self {
-            identity,
+            identity: Arc::new(identity),
             auth: AnpIdentityAuth::Vault {
                 vault,
                 auth_ref: RwLock::new(auth_ref),
@@ -103,6 +103,16 @@ impl AnpIdentitySigner {
         self.identity
             .recover_identity()
             .map_err(map_facade_identity_error)
+    }
+
+    pub(crate) fn provider_session(
+        &self,
+    ) -> Arc<dyn crate::internal::identity_provider::IdentitySession> {
+        Arc::new(
+            crate::internal::identity_provider::DirectAnpIdentitySession::from_shared(
+                self.identity.clone(),
+            ),
+        )
     }
 
     fn identity_operation<T>(
@@ -294,6 +304,12 @@ impl super::IdentitySigner for PendingAnpEnrollmentSigner {
 }
 
 impl super::IdentitySigner for AnpIdentitySigner {
+    fn async_session(
+        &self,
+    ) -> Option<Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+        Some(self.provider_session())
+    }
+
     fn did_document(&self) -> crate::ImResult<serde_json::Value> {
         self.identity
             .public_identity()

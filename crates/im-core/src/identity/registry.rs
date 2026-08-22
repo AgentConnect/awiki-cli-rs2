@@ -1373,6 +1373,7 @@ impl IdentityRegistry<'_> {
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
         let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
+        let identity_session = key_provider.async_session();
         let sync_account = sync_account_seed(entry)?;
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
@@ -1390,6 +1391,7 @@ impl IdentityRegistry<'_> {
             ),
             auth_state_path: identity_dir.join("auth.json"),
             key_provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
@@ -1416,6 +1418,7 @@ impl IdentityRegistry<'_> {
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
         let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
+        let identity_session = key_provider.async_session();
         let sync_account = sync_account_seed(entry)?;
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
@@ -1436,6 +1439,7 @@ impl IdentityRegistry<'_> {
             .await,
             auth_state_path: identity_dir.join("auth.json"),
             key_provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,

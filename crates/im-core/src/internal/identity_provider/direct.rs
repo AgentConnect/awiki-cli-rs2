@@ -37,6 +37,10 @@ impl DirectAnpIdentitySession {
             identity: Arc::new(identity),
         }
     }
+
+    pub(crate) fn from_shared(identity: Arc<anp_identity::ManagedIdentity>) -> Self {
+        Self { identity }
+    }
 }
 
 #[async_trait]
