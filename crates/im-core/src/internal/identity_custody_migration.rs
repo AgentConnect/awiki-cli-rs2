@@ -181,8 +181,11 @@ fn run(
         });
     }
 
-    let mut custody = crate::internal::identity_custody::open_controller_store(core)?;
-    let store_id = custody.manifest().store_id.clone();
+    let mut custody = crate::internal::identity_custody::open_controller_manager(core)?;
+    let store_id = custody
+        .info()
+        .map_err(crate::internal::identity_custody::map_facade_error)?
+        .store_id;
     for binding in &existing_bindings {
         if binding.store_id != store_id {
             return Err(crate::ImError::PermissionDenied);
@@ -236,10 +239,10 @@ struct LegacyIdentityMaterial {
     source_dir_name: String,
     did: crate::ids::Did,
     document: serde_json::Value,
-    evidence: anp_identity::VerifiedDocumentEvidence,
-    root_key: Option<anp_identity::ImportedPrivateKey>,
-    signing_key: anp_identity::ImportedPrivateKey,
-    e2ee_key: anp_identity::ImportedPrivateKey,
+    evidence: anp_identity::VerifiedPublicationEvidence,
+    root_key: Option<anp_identity::host::MigrationPrivateKey>,
+    signing_key: anp_identity::host::MigrationPrivateKey,
+    e2ee_key: anp_identity::host::MigrationPrivateKey,
     auth_ref: Option<SecretRef>,
 }
 
@@ -320,7 +323,7 @@ fn prepare_legacy_identity(
             imported_key(
                 &document,
                 &root_kid,
-                anp_identity::KeyRole::RootControl,
+                anp_identity::host::MigrationKeyPurpose::RootControl,
                 pem,
             )
         })
@@ -328,13 +331,13 @@ fn prepare_legacy_identity(
     let signing_key = imported_key(
         &document,
         &authorization.signing_key_id,
-        anp_identity::KeyRole::DeviceSigning,
+        anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
         signing_pem,
     )?;
     let e2ee_key = imported_key(
         &document,
         &authorization.e2ee_key_id,
-        anp_identity::KeyRole::E2eeAgreement,
+        anp_identity::host::MigrationKeyPurpose::KeyAgreement,
         e2ee_pem,
     )?;
     let digest = anp_identity::canonical_document_digest(&document)
@@ -353,7 +356,7 @@ fn prepare_legacy_identity(
         source_dir_name: entry.dir_name.clone(),
         did,
         document,
-        evidence: anp_identity::VerifiedDocumentEvidence {
+        evidence: anp_identity::VerifiedPublicationEvidence {
             document_version: checkpoint.document_version,
             registry_version: checkpoint.registry_version,
             document_digest: digest,
@@ -426,9 +429,9 @@ fn load_legacy_key_material(
 fn imported_key(
     document: &serde_json::Value,
     kid: &str,
-    role: anp_identity::KeyRole,
+    purpose: anp_identity::host::MigrationKeyPurpose,
     pem: Zeroizing<String>,
-) -> crate::ImResult<anp_identity::ImportedPrivateKey> {
+) -> crate::ImResult<anp_identity::host::MigrationPrivateKey> {
     let material = anp::PrivateKeyMaterial::from_pem(&pem).map_err(|_| {
         crate::ImError::CredentialFileUnreadable {
             path_kind: "identity_private_key".to_owned(),
@@ -442,56 +445,72 @@ fn imported_key(
     if material.public_key().to_pem() != expected.to_pem() {
         return Err(crate::ImError::PermissionDenied);
     }
-    let raw = match (role, material) {
+    let raw = match (purpose, material) {
         (
-            anp_identity::KeyRole::RootControl | anp_identity::KeyRole::DeviceSigning,
+            anp_identity::host::MigrationKeyPurpose::RootControl
+            | anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
             anp::PrivateKeyMaterial::Ed25519(key),
         ) => key.to_bytes().to_vec(),
-        (anp_identity::KeyRole::E2eeAgreement, anp::PrivateKeyMaterial::X25519(key)) => {
-            key.to_bytes().to_vec()
-        }
+        (
+            anp_identity::host::MigrationKeyPurpose::KeyAgreement,
+            anp::PrivateKeyMaterial::X25519(key),
+        ) => key.to_bytes().to_vec(),
         _ => return Err(crate::ImError::PermissionDenied),
     };
-    Ok(anp_identity::ImportedPrivateKey::new(
-        kid,
-        role,
-        anp_identity::PrivateKeyEncoding::Raw32,
-        Zeroizing::new(raw),
-    ))
+    Ok(anp_identity::host::MigrationPrivateKey {
+        kid: kid.to_owned(),
+        purpose,
+        encoding: anp_identity::host::MigrationPrivateKeyEncoding::Raw32,
+        secret: Zeroizing::new(raw),
+    })
 }
 
 fn copy_one_identity(
-    custody: &mut anp_identity::DidStore,
+    custody: &mut anp_identity::IdentityManager,
     material: LegacyIdentityMaterial,
 ) -> crate::ImResult<CutoverBinding> {
+    use anp_identity::host::MigrationPort;
     let did = material.did.as_str().to_owned();
     let expected_document_digest = material.evidence.document_digest.clone();
     let root_capability_present = material.root_key.is_some();
-    let identity = match custody.open_identity(&did) {
-        Ok(identity) => identity,
-        Err(anp_identity::DidError::IdentityNotFound) => match material.root_key {
+    let existing = custody
+        .list()
+        .map_err(crate::internal::identity_custody::map_facade_error)?
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == did);
+    let identity = match existing {
+        Some(descriptor) => custody
+            .get(&descriptor.reference)
+            .map_err(crate::internal::identity_custody::map_facade_error)?,
+        None => match material.root_key {
             Some(root_key) => custody
-                .import_identity(anp_identity::IdentityImportSpec {
-                    verified_document: material.document,
-                    evidence: material.evidence,
-                    capabilities: anp_identity::Capabilities { did_wba: true },
+                .import_full_identity(anp_identity::host::FullIdentityImportRequest {
+                    remote: anp_identity::VerifiedRemoteDocument {
+                        document: anp_identity::DidDocument::from_value(material.document),
+                        evidence: material.evidence,
+                    },
+                    did_wba: true,
                     private_keys: vec![root_key, material.signing_key, material.e2ee_key],
                 })
-                .map_err(crate::internal::identity_custody::map_error)?,
+                .map_err(crate::internal::identity_custody::map_facade_error)?,
             None => custody
-                .import_device_identity(anp_identity::DeviceIdentityImportSpec {
-                    verified_document: material.document,
-                    evidence: material.evidence,
-                    capabilities: anp_identity::Capabilities { did_wba: true },
+                .import_device_identity(anp_identity::host::DeviceIdentityImportRequest {
+                    remote: anp_identity::VerifiedRemoteDocument {
+                        document: anp_identity::DidDocument::from_value(material.document),
+                        evidence: material.evidence,
+                    },
+                    did_wba: true,
                     signing_key: material.signing_key,
-                    e2ee_key: material.e2ee_key,
+                    agreement_key: material.e2ee_key,
                 })
-                .map_err(crate::internal::identity_custody::map_error)?,
+                .map_err(crate::internal::identity_custody::map_facade_error)?,
         },
-        Err(error) => return Err(crate::internal::identity_custody::map_error(error)),
     };
-    if identity.state() != anp_identity::IdentityState::Active
-        || anp_identity::canonical_document_digest(identity.document())
+    let public = identity
+        .public_identity()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || anp_identity::canonical_document_digest(public.document.as_value())
             .map_err(crate::internal::identity_custody::map_error)?
             != expected_document_digest
     {
@@ -502,8 +521,8 @@ fn copy_one_identity(
         did,
         source_unique_id: material.source_unique_id,
         source_dir_name: material.source_dir_name,
-        store_id: custody.manifest().store_id.clone(),
-        identity_id: identity.identity_id().to_owned(),
+        store_id: public.reference.store_id,
+        identity_id: public.reference.identity_id,
         auth_ref: material.auth_ref,
         document_digest: expected_document_digest,
         root_capability_present,
@@ -511,58 +530,76 @@ fn copy_one_identity(
 }
 
 fn verify_binding(
-    custody: &anp_identity::DidStore,
+    custody: &anp_identity::IdentityManager,
     binding: &CutoverBinding,
 ) -> crate::ImResult<()> {
-    if custody.manifest().store_id != binding.store_id {
+    let info = custody
+        .info()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    if info.store_id != binding.store_id {
         return Err(crate::ImError::PermissionDenied);
     }
-    let identity = custody
-        .open_identity(&binding.did)
-        .map_err(crate::internal::identity_custody::map_error)?;
-    if identity.identity_id() != binding.identity_id
-        || identity.state() != anp_identity::IdentityState::Active
-        || identity.pending_revision().is_some()
-        || anp_identity::canonical_document_digest(identity.document())
+    let mut identity = custody
+        .get(&anp_identity::IdentityRef {
+            store_id: binding.store_id.clone(),
+            identity_id: binding.identity_id.clone(),
+            did: binding.did.clone(),
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    let public = identity
+        .public_identity()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    use anp_identity::host::{IdentityStatusPort, KeyAgreementPort};
+    let status = identity
+        .host_status()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || identity
+            .resume_document_change()
+            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .is_some()
+        || anp_identity::canonical_document_digest(public.document.as_value())
             .map_err(crate::internal::identity_custody::map_error)?
             != binding.document_digest
-        || identity.root_capability()
+        || status.root_capability
             != if binding.root_capability_present {
-                anp_identity::RootCapabilityState::Active
+                anp_identity::host::HostRootCapability::Active
             } else {
-                anp_identity::RootCapabilityState::Absent
+                anp_identity::host::HostRootCapability::Absent
             }
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let signing = identity
-        .keys()
+    let signing = public
+        .active_keys
         .iter()
         .find(|key| {
-            key.role == anp_identity::KeyRole::DeviceSigning
-                && key.origin == anp_identity::KeyOrigin::Managed
-                && key.state == anp_identity::KeyState::Active
+            key.purposes
+                .contains(&anp_identity::KeyPurpose::DeviceAssertion)
         })
         .ok_or(crate::ImError::PermissionDenied)?;
-    let agreement = identity
-        .keys()
+    let agreement = public
+        .active_keys
         .iter()
         .find(|key| {
-            key.role == anp_identity::KeyRole::E2eeAgreement
-                && key.origin == anp_identity::KeyOrigin::Managed
-                && key.state == anp_identity::KeyState::Active
+            key.purposes
+                .contains(&anp_identity::KeyPurpose::KeyAgreement)
         })
         .ok_or(crate::ImError::PermissionDenied)?;
     identity
-        .sign_device_assertion(&signing.kid, b"awiki identity custody migration verify")
-        .map_err(crate::internal::identity_custody::map_error)?;
+        .sign(anp_identity::SignRequest {
+            purpose: anp_identity::SigningPurpose::DeviceAssertion,
+            key: anp_identity::KeySelector::Kid(signing.kid.clone()),
+            payload: b"awiki identity custody migration verify".to_vec(),
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
     let peer = x25519_dalek::StaticSecret::from([97_u8; 32]);
     identity
-        .ecdh(
-            &agreement.kid,
-            &x25519_dalek::PublicKey::from(&peer).to_bytes(),
-        )
-        .map_err(crate::internal::identity_custody::map_error)?;
+        .derive_shared_secret(anp_identity::host::KeyAgreementRequest {
+            key: anp_identity::KeySelector::Kid(agreement.kid.clone()),
+            peer_public: x25519_dalek::PublicKey::from(&peer).to_bytes(),
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
     Ok(())
 }
 
