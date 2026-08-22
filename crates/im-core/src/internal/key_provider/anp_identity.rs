@@ -9,7 +9,7 @@ use anp_identity::host::{
     KeyAgreementRequest, LegacyDidWbaPort, ObjectProofRequest, TypedProofPort,
 };
 use anp_identity::{
-    DidIdentity, KeyPurpose, KeySelector, ManagedIdentity, OriginProofOptions, OriginProofRequest,
+    KeyPurpose, KeySelector, ManagedIdentity, OriginProofOptions, OriginProofRequest,
     PublicIdentityState, SignRequest, SigningPurpose,
 };
 
@@ -24,8 +24,7 @@ pub(crate) struct AnpIdentitySigner {
 }
 
 pub(crate) struct PendingAnpEnrollmentSigner {
-    identity: DidIdentity,
-    enrollment_id: String,
+    session: anp_identity::host::EnrollmentSession,
     document: serde_json::Value,
     signing_key_id: String,
     e2ee_key_id: String,
@@ -183,30 +182,33 @@ impl AnpIdentitySigner {
 
 impl PendingAnpEnrollmentSigner {
     pub(crate) fn new(
-        identity: DidIdentity,
-        enrollment_id: impl Into<String>,
+        session: anp_identity::host::EnrollmentSession,
         document: serde_json::Value,
         signing_key_id: impl Into<String>,
         e2ee_key_id: impl Into<String>,
     ) -> crate::ImResult<Self> {
-        let enrollment_id = enrollment_id.into();
         let signing_key_id = signing_key_id.into();
         let e2ee_key_id = e2ee_key_id.into();
-        let pending = identity
-            .pending_enrollment()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if pending.enrollment_id != enrollment_id
-            || pending.device_signing_key.kid != signing_key_id
-            || pending.device_e2ee_key.kid != e2ee_key_id
-            || document.get("id").and_then(serde_json::Value::as_str) != Some(identity.did())
+        let proposal = session.proposal();
+        let anp_identity::host::EnrollmentProposalKind::Device {
+            signing_key,
+            agreement_key,
+            ..
+        } = &proposal.kind
+        else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        if signing_key.kid != signing_key_id
+            || agreement_key.kid != e2ee_key_id
+            || document.get("id").and_then(serde_json::Value::as_str)
+                != Some(proposal.identity.did.as_str())
             || !anp::authentication::is_authentication_authorized(&document, &signing_key_id)
             || !anp::authentication::is_assertion_method_authorized(&document, &signing_key_id)
         {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(Self {
-            identity,
-            enrollment_id,
+            session,
             document,
             signing_key_id,
             e2ee_key_id,
@@ -233,9 +235,12 @@ impl super::IdentitySigner for PendingAnpEnrollmentSigner {
     }
 
     fn sign(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
-        self.identity
-            .sign_pending_enrollment(&self.enrollment_id, kid, message)
-            .map_err(map_identity_error)
+        if kid != self.signing_key_id {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.session
+            .sign_device_assertion(message)
+            .map_err(map_facade_identity_error)
     }
 
     fn sign_device_assertion(&self, kid: &str, message: &[u8]) -> crate::ImResult<Vec<u8>> {
@@ -247,10 +252,16 @@ impl super::IdentitySigner for PendingAnpEnrollmentSigner {
     }
 
     fn ecdh(&self, kid: &str, peer_public: &[u8]) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
-        self.identity
-            .ecdh_pending_enrollment(&self.enrollment_id, kid, peer_public)
+        if kid != self.e2ee_key_id {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let peer_public: [u8; 32] = peer_public
+            .try_into()
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        self.session
+            .derive_device_shared_secret(peer_public)
             .map(|shared| zeroize::Zeroizing::new(*shared.as_bytes()))
-            .map_err(map_identity_error)
+            .map_err(map_facade_identity_error)
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
@@ -650,23 +661,6 @@ fn metadata_from_ref(secret_ref: &SecretRef) -> SecretMetadata {
         key_id: secret_ref.key_id.clone(),
         key_version: secret_ref.key_version,
         policy: SecretAccessPolicy::no_prompt_local_secret(),
-    }
-}
-
-fn map_identity_error(error: anp_identity::DidError) -> crate::ImError {
-    match error {
-        anp_identity::DidError::KeyNotFound
-        | anp_identity::DidError::ExternalKeyOperation
-        | anp_identity::DidError::KeyRoleViolation
-        | anp_identity::DidError::KeyNotUsable
-        | anp_identity::DidError::KeyMaterialErased
-        | anp_identity::DidError::RootCapabilityUnavailable => crate::ImError::PermissionDenied,
-        anp_identity::DidError::Conflict => crate::ImError::LocalStateUnavailable {
-            detail: "anp identity handle requires reload after a generation conflict".to_string(),
-        },
-        error => crate::ImError::LocalStateUnavailable {
-            detail: format!("anp identity operation failed: {error}"),
-        },
     }
 }
 

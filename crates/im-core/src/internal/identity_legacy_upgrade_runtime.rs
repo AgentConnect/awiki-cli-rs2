@@ -215,15 +215,14 @@ async fn upgrade_inner(
                     )?;
                 Arc::new(crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(managed))
             } else {
-                let managed = crate::internal::identity_custody::pending_join_identity(
+                let session = crate::internal::identity_custody::pending_join_enrollment_session(
                     core,
                     &pending.identity.did,
                     &pending.identity.custody,
                 )?;
                 Arc::new(
                     crate::internal::key_provider::PendingAnpEnrollmentSigner::new(
-                        managed,
-                        pending.identity.custody.enrollment_id.clone(),
+                        session,
                         pending.identity.target_document.clone(),
                         pending.identity.signing_key_id.clone(),
                         pending.identity.e2ee_key_id.clone(),

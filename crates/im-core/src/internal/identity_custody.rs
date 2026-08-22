@@ -564,6 +564,29 @@ pub(crate) fn pending_join_identity(
     Ok(identity)
 }
 
+pub(crate) fn pending_join_enrollment_session(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+) -> crate::ImResult<anp_identity::host::EnrollmentSession> {
+    if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let manager = open_controller_manager(core)?;
+    let reference = anp_identity::IdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    let session = anp_identity::host::EnrollmentWorkflow::resume_enrollment(&manager, &reference)
+        .map_err(map_facade_error)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if session.proposal().enrollment_id != custody.enrollment_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(session)
+}
+
 pub(crate) fn imported_active_join_managed_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
