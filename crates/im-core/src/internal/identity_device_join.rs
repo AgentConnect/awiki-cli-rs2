@@ -1075,6 +1075,179 @@ pub(crate) fn load_prepared_admin_approval(
         .transpose()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdminProjectionBinding {
+    store_id: String,
+    identity_id: String,
+}
+
+struct AdminProjectionContext {
+    did: crate::ids::Did,
+    local_alias: String,
+    state: crate::internal::identity_device_state::IdentityDeviceState,
+    document_path: std::path::PathBuf,
+    binding: Option<AdminProjectionBinding>,
+}
+
+pub(crate) async fn mark_join_authorized_async(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+    resolved_document: &Value,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let (snapshot, admin_identity) = {
+        let _guard = lock_join_state(core)?;
+        let store = JoinStateStore::new(core);
+        let stored = store
+            .load(&join_session_id, DeviceJoinSide::Admin)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.clone(),
+            })?;
+        if stored.phase != DeviceJoinLocalPhase::Authorized {
+            ensure_not_expired(&stored)?;
+            if stored.phase != DeviceJoinLocalPhase::ApprovalPrepared {
+                return Err(invalid_state("admin approval is not prepared"));
+            }
+        }
+        validate_remote_authorization(&stored, authorization, resolved_document)?;
+        let admin_identity = stored
+            .admin_identity
+            .clone()
+            .ok_or_else(|| invalid_state("admin identity missing"))?;
+        (stored, admin_identity)
+    };
+
+    let prepared =
+        prepare_admin_projection_context(core, &admin_identity, &authorization.checkpoint)?;
+    if let Some(binding) = prepared.binding.as_ref() {
+        crate::internal::identity_custody::adopt_controller_document_async(
+            core,
+            &prepared.did,
+            &binding.store_id,
+            &binding.identity_id,
+            resolved_document,
+            &authorization.checkpoint,
+        )
+        .await?;
+    }
+
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(&join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if stored != snapshot {
+        if stored.phase != DeviceJoinLocalPhase::Authorized {
+            return Err(invalid_state(
+                "admin Join state changed during custody adoption",
+            ));
+        }
+        validate_remote_authorization(&stored, authorization, resolved_document)?;
+    }
+    let current =
+        prepare_admin_projection_context(core, &admin_identity, &authorization.checkpoint)?;
+    if current.binding != prepared.binding || current.did != prepared.did {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    commit_admin_projection_local(core, current, resolved_document)?;
+    if stored.phase != DeviceJoinLocalPhase::Authorized {
+        stored.phase = DeviceJoinLocalPhase::Authorized;
+        store.save(&stored)?;
+    }
+    cleanup_consumed_join_secrets(core, &stored)?;
+    summary(&stored)
+}
+
+fn prepare_admin_projection_context(
+    core: &crate::core::ImCore,
+    admin_identity: &crate::identity::IdentitySelector,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<AdminProjectionContext> {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityDeviceMode,
+    };
+
+    let client = core.client(admin_identity.clone())?;
+    let local_alias = client
+        .current_identity()
+        .local_alias
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let identity_store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let index = identity_store.load_index()?;
+    let entry = index
+        .credentials
+        .get(&local_alias)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut state = entry
+        .device_state
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let local_authorization = state
+        .authorization
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if state.mode != IdentityDeviceMode::VNext
+        || local_authorization.status != DeviceAuthorizationStatus::Active
+        || local_authorization.role != DeviceAuthorizationRole::Admin
+        || !local_authorization.management_ready
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if let Some(current) = state.checkpoint.as_ref() {
+        if checkpoint.document_version < current.document_version
+            || checkpoint.registry_version < current.registry_version
+            || (checkpoint.document_version == current.document_version
+                && checkpoint.document_hash != current.document_hash)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    state.checkpoint = Some(checkpoint.clone());
+    state.validate_for_did(client.did())?;
+    let binding = if entry.identity_custody_backend.as_deref() == Some("anp_identity") {
+        Some(AdminProjectionBinding {
+            store_id: entry
+                .anp_identity_store_id
+                .clone()
+                .ok_or(crate::ImError::PermissionDenied)?,
+            identity_id: entry
+                .anp_identity_id
+                .clone()
+                .ok_or(crate::ImError::PermissionDenied)?,
+        })
+    } else {
+        None
+    };
+    Ok(AdminProjectionContext {
+        did: client.did().clone(),
+        local_alias,
+        state,
+        document_path: client.runtime().did_document_path.clone(),
+        binding,
+    })
+}
+
+fn commit_admin_projection_local(
+    core: &crate::core::ImCore,
+    context: AdminProjectionContext,
+    resolved_document: &Value,
+) -> crate::ImResult<()> {
+    let raw = serde_json::to_vec_pretty(resolved_document).map_err(|error| {
+        crate::ImError::Serialization {
+            detail: error.to_string(),
+        }
+    })?;
+    write_private_atomic(&context.document_path, &raw)?;
+    crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+        .save_device_state(&context.local_alias, context.state)
+}
+
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn mark_join_authorized(
     core: &crate::core::ImCore,
     join_session_id: &str,
@@ -1140,6 +1313,7 @@ pub(crate) fn mark_join_authorized(
     summary(&stored)
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn commit_admin_join_projection(
     core: &crate::core::ImCore,
     admin_identity: &crate::identity::IdentitySelector,
@@ -1240,6 +1414,7 @@ pub(crate) fn load_pending_new_device_activation(
         .map(|pending| pending.map(|(_, record)| record))
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn prepare_new_device_activation(
     core: &crate::core::ImCore,
     join_session_id: &str,
@@ -1319,6 +1494,128 @@ pub(crate) fn prepare_new_device_activation(
         state_store.save(&stored)?;
     }
     Ok(pending)
+}
+
+pub(crate) async fn prepare_new_device_activation_async(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+    resolved_document: &Value,
+) -> crate::ImResult<crate::internal::identity_join_activation_pending::PendingJoinActivation> {
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let (snapshot, did, custody) = {
+        let _guard = lock_join_state(core)?;
+        let state_store = JoinStateStore::new(core);
+        let mut stored = state_store
+            .load(&join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.clone(),
+            })?;
+        if stored.phase == DeviceJoinLocalPhase::Authorized && !stored.activation_pending {
+            return Err(invalid_state("new-device Join is already activated"));
+        }
+        if !stored.activation_pending {
+            ensure_not_expired(&stored)?;
+            if stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
+                return Err(invalid_state("new-device response is not prepared"));
+            }
+            validate_remote_authorization(&stored, authorization, resolved_document)?;
+        }
+        let did = crate::ids::Did::parse(&stored.join_request.did)?;
+        let pending_store = crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(core)?;
+        if let Some((_, pending)) = pending_store.load(&join_session_id, &did)? {
+            validate_existing_join_activation(&stored, &pending, authorization, resolved_document)?;
+            if !stored.activation_pending {
+                stored.activation_pending = true;
+                state_store.save(&stored)?;
+            }
+            return Ok(pending);
+        }
+        validate_remote_authorization(&stored, authorization, resolved_document)?;
+        let custody = stored
+            .join_custody
+            .clone()
+            .ok_or_else(|| invalid_state("new-device custody reference is missing"))?;
+        let domain =
+            crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?;
+        if domain
+            != core
+                .inner()
+                .sdk_config()
+                .did_domain
+                .trim()
+                .to_ascii_lowercase()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        (stored, did, custody)
+    };
+
+    crate::internal::identity_custody::adopt_join_identity_async(
+        core,
+        &did,
+        &custody,
+        resolved_document,
+        &authorization.checkpoint,
+    )
+    .await?;
+
+    let _guard = lock_join_state(core)?;
+    let state_store = JoinStateStore::new(core);
+    let mut stored = state_store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    if let Some((_, pending)) = pending_store.load(&join_session_id, &did)? {
+        validate_existing_join_activation(&stored, &pending, authorization, resolved_document)?;
+        if !stored.activation_pending {
+            stored.activation_pending = true;
+            state_store.save(&stored)?;
+        }
+        return Ok(pending);
+    }
+    if stored != snapshot {
+        return Err(invalid_state(
+            "new-device Join state changed during custody adoption",
+        ));
+    }
+    validate_remote_authorization(&stored, authorization, resolved_document)?;
+    if stored.join_custody.as_ref() != Some(&custody) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let pending = crate::internal::identity_join_activation_pending::PendingJoinActivation::new(
+        join_session_id,
+        did,
+        resolved_document.clone(),
+        authorization.clone(),
+        custody,
+    )?;
+    pending_store.save(&pending)?;
+    if !stored.activation_pending {
+        stored.activation_pending = true;
+        state_store.save(&stored)?;
+    }
+    Ok(pending)
+}
+
+fn validate_existing_join_activation(
+    stored: &StoredJoinSession,
+    pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+    resolved_document: &Value,
+) -> crate::ImResult<()> {
+    if pending.authorization != *authorization
+        || pending.resolved_document != *resolved_document
+        || Some(&pending.custody) != stored.join_custody.as_ref()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 pub(crate) fn record_new_device_access_result(

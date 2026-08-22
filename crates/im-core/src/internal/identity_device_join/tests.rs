@@ -1177,12 +1177,21 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
                 auth_generation: 1,
             },
         };
-    prepare_new_device_activation(
+    mark_join_authorized_async(
+        &admin,
+        &started.session.join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .await
+    .unwrap();
+    prepare_new_device_activation_async(
         &candidate,
         &started.session.join_session_id,
         &authorization,
         &approval.new_document,
     )
+    .await
     .unwrap();
     record_new_device_access_result(
         &candidate,

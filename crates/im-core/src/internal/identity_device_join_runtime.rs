@@ -1038,12 +1038,14 @@ where
                     .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?
                     .did;
                 let document = self.resolver.resolve(&did).await?;
-                let pending = crate::internal::identity_device_join::prepare_new_device_activation(
-                    self.core,
-                    join_session_id,
-                    &authorization,
-                    &document,
-                )?;
+                let pending =
+                    crate::internal::identity_device_join::prepare_new_device_activation_async(
+                        self.core,
+                        join_session_id,
+                        &authorization,
+                        &document,
+                    )
+                    .await?;
                 self.complete_new_device_activation(pending).await
             }
             DeviceJoinRemoteState::Pending => Ok(DeviceJoinAdvanceResult {
@@ -1577,13 +1579,13 @@ where
             checkpoint: approved.checkpoint,
             device: approved.device,
         };
-        let session = crate::internal::identity_device_join::mark_join_authorized(
+        let session = crate::internal::identity_device_join::mark_join_authorized_async(
             self.core,
             join_session_id,
-            crate::identity::DeviceJoinSide::Admin,
             &authorization,
             &prepared.new_document,
-        )?;
+        )
+        .await?;
         Ok(DeviceJoinAdvanceResult {
             session,
             remote_state: approved.state,

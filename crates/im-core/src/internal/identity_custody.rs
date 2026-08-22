@@ -918,6 +918,110 @@ pub(crate) fn adopt_join_identity(
     Ok(())
 }
 
+pub(crate) async fn adopt_join_identity_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_provider::ProviderIdentityState;
+
+    if crate::internal::identity_wire::document::document_hash(document)?
+        != checkpoint.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let provider = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if public.state == ProviderIdentityState::Active {
+        return validate_adopted_provider_identity(&public, document);
+    }
+    if public.state != ProviderIdentityState::Enrolling
+        || custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let enrollment = provider
+        .resume_enrollment(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let proposal = enrollment
+        .proposal()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if proposal.identity != reference
+        || proposal.enrollment_id != custody.enrollment_id
+        || !matches!(
+            proposal.kind,
+            crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device { .. }
+        )
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    enrollment
+        .activate(provider_verified_document(document, checkpoint))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    validate_adopted_provider_identity(&public, document)
+}
+
+fn validate_adopted_provider_identity(
+    public: &crate::internal::identity_provider::ProviderPublicIdentity,
+    document: &serde_json::Value,
+) -> crate::ImResult<()> {
+    if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || crate::internal::identity_wire::document::document_hash(&public.document)?
+            != crate::internal::identity_wire::document::document_hash(document)?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn provider_verified_document(
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+    crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+        document: document.clone(),
+        evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
+            document_version: checkpoint.document_version,
+            registry_version: checkpoint.registry_version,
+            document_digest: checkpoint.document_hash.clone(),
+        },
+    }
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn adopt_controller_document(
     core: &crate::core::ImCore,
@@ -959,6 +1063,48 @@ pub(crate) fn adopt_controller_document(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+pub(crate) async fn adopt_controller_document_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    store_id: &str,
+    identity_id: &str,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    if crate::internal::identity_wire::document::document_hash(document)?
+        != checkpoint.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let provider = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: store_id.to_owned(),
+        identity_id: identity_id.to_owned(),
+        did: did.as_str().to_owned(),
+    };
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let before = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if before.reference != reference
+        || before.state != crate::internal::identity_provider::ProviderIdentityState::Active
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let adopted = identity
+        .adopt_verified_document(provider_verified_document(document, checkpoint))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if adopted.reference != reference {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    validate_adopted_provider_identity(&adopted, document)
 }
 
 #[cfg(feature = "identity-native-anp")]
