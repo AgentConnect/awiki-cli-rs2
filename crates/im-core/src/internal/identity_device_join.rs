@@ -1479,14 +1479,17 @@ fn promote_join_identity(
     let expected_signing_public =
         extract_identity_public_key(&stored.join_request.signing_public_key)?;
     let expected_e2ee_public = extract_identity_public_key(&stored.join_request.e2ee_public_key)?;
-    if custody_identity
-        .public_key_bytes(&pending.authorization.device.signing_key_id)
-        .map_err(crate::internal::identity_custody::map_error)?
-        != public_key_bytes(&expected_signing_public)?
-        || custody_identity
-            .public_key_bytes(&pending.authorization.device.e2ee_key_id)
-            .map_err(crate::internal::identity_custody::map_error)?
-            != public_key_bytes(&expected_e2ee_public)?
+    let custody_public = custody_identity
+        .public_identity()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    if document_public_key_bytes(
+        custody_public.document.as_value(),
+        &pending.authorization.device.signing_key_id,
+    )? != public_key_bytes(&expected_signing_public)?
+        || document_public_key_bytes(
+            custody_public.document.as_value(),
+            &pending.authorization.device.e2ee_key_id,
+        )? != public_key_bytes(&expected_e2ee_public)?
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -3014,6 +3017,20 @@ fn public_key_bytes(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<Vec<
         anp::PublicKeyMaterial::X25519(key) => Ok(key.to_vec()),
         _ => Err(crate::ImError::PermissionDenied),
     }
+}
+
+fn document_public_key_bytes(document: &Value, kid: &str) -> crate::ImResult<Vec<u8>> {
+    let mut matches = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|method| method.get("id").and_then(Value::as_str) == Some(kid));
+    let method = matches.next().ok_or(crate::ImError::PermissionDenied)?;
+    if matches.next().is_some() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    public_key_bytes(&extract_identity_public_key(method)?)
 }
 
 fn decode_x25519_b64u(field: &str, value: &str) -> crate::ImResult<[u8; 32]> {

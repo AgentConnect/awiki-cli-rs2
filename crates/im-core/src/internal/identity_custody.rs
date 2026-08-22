@@ -1,8 +1,7 @@
 use std::path::Path;
 
 use anp_identity::{
-    AdoptVerifiedDocumentSpec, DocumentUpdateSpec, IdentityState, KeyOrigin, KeyRole, KeyState,
-    PublicationState, VerifiedDocumentEvidence,
+    DocumentUpdateSpec, IdentityState, KeyOrigin, KeyRole, KeyState, PublicationState,
 };
 
 pub(crate) const LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID: &str = "legacy-imported-active-v1";
@@ -398,14 +397,28 @@ pub(crate) fn sign_join_enrollment(
     kid: &str,
     message: &[u8],
 ) -> crate::ImResult<Vec<u8>> {
-    let identity = open_join_identity(core, did, custody)?;
     if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
-        identity.sign(kid, message).map_err(map_error)
-    } else {
-        identity
-            .sign_pending_enrollment(&custody.enrollment_id, kid, message)
-            .map_err(map_error)
+        return open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::DeviceAssertion,
+                key: anp_identity::KeySelector::Kid(kid.to_owned()),
+                payload: message.to_vec(),
+            })
+            .map(|signature| signature.bytes)
+            .map_err(map_facade_error);
     }
+    let session = pending_join_enrollment_session(core, did, custody)?;
+    let anp_identity::host::EnrollmentProposalKind::Device { signing_key, .. } =
+        &session.proposal().kind
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    if signing_key.kid != kid {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    session
+        .sign_device_assertion(message)
+        .map_err(map_facade_error)
 }
 
 pub(crate) fn ecdh_join_enrollment(
@@ -415,13 +428,31 @@ pub(crate) fn ecdh_join_enrollment(
     kid: &str,
     peer_public: &[u8],
 ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
-    let identity = open_join_identity(core, did, custody)?;
+    let peer_public: [u8; 32] = peer_public
+        .try_into()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
     let shared = if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
-        identity.ecdh(kid, peer_public)
+        use anp_identity::host::KeyAgreementPort;
+        open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?
+            .derive_shared_secret(anp_identity::host::KeyAgreementRequest {
+                key: anp_identity::KeySelector::Kid(kid.to_owned()),
+                peer_public,
+            })
+            .map_err(map_facade_error)?
     } else {
-        identity.ecdh_pending_enrollment(&custody.enrollment_id, kid, peer_public)
-    }
-    .map_err(map_error)?;
+        let session = pending_join_enrollment_session(core, did, custody)?;
+        let anp_identity::host::EnrollmentProposalKind::Device { agreement_key, .. } =
+            &session.proposal().kind
+        else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        if agreement_key.kid != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        session
+            .derive_device_shared_secret(peer_public)
+            .map_err(map_facade_error)?
+    };
     Ok(zeroize::Zeroizing::new(*shared.as_bytes()))
 }
 
@@ -432,32 +463,31 @@ pub(crate) fn adopt_join_identity(
     document: &serde_json::Value,
     checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
-    let mut identity = open_join_identity(core, did, custody)?;
     if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
-        if identity.state() != IdentityState::Active
-            || anp_identity::canonical_document_digest(identity.document()).map_err(map_error)?
+        let identity =
+            open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?;
+        let public = identity.public_identity().map_err(map_facade_error)?;
+        if public.state != anp_identity::PublicIdentityState::Active
+            || anp_identity::canonical_document_digest(public.document.as_value())
+                .map_err(map_error)?
                 != anp_identity::canonical_document_digest(document).map_err(map_error)?
         {
             return Err(crate::ImError::PermissionDenied);
         }
         return Ok(());
     }
-    let outcome = identity
-        .adopt_verified_document(AdoptVerifiedDocumentSpec {
-            document: document.clone(),
-            evidence: VerifiedDocumentEvidence {
+    let mut session = pending_join_enrollment_session(core, did, custody)?;
+    let outcome = session
+        .activate(anp_identity::VerifiedRemoteDocument {
+            document: anp_identity::DidDocument::from_value(document.clone()),
+            evidence: anp_identity::VerifiedPublicationEvidence {
                 document_version: checkpoint.document_version,
                 registry_version: checkpoint.registry_version,
                 document_digest: checkpoint.document_hash.clone(),
             },
         })
-        .map_err(map_error)?;
-    if !matches!(
-        outcome,
-        anp_identity::AdoptDocumentOutcome::Activated
-            | anp_identity::AdoptDocumentOutcome::Unchanged
-    ) || identity.state() != IdentityState::Active
-    {
+        .map_err(map_facade_error)?;
+    if outcome != anp_identity::host::ConvergenceOutcome::Activated {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
@@ -476,28 +506,29 @@ pub(crate) fn adopt_controller_document(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let store = open_controller_store(core)?;
-    if store.manifest().store_id != store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let mut identity = store.open_identity(did.as_str()).map_err(map_error)?;
-    if identity.identity_id() != identity_id || identity.state() != IdentityState::Active {
+    use anp_identity::host::ConvergenceWorkflow;
+    let mut identity = open_managed_identity(core, store_id, identity_id, did.as_str())?;
+    if identity.public_identity().map_err(map_facade_error)?.state
+        != anp_identity::PublicIdentityState::Active
+    {
         return Err(crate::ImError::PermissionDenied);
     }
     let outcome = identity
-        .adopt_verified_document(AdoptVerifiedDocumentSpec {
-            document: document.clone(),
-            evidence: VerifiedDocumentEvidence {
+        .adopt_verified_document(anp_identity::VerifiedRemoteDocument {
+            document: anp_identity::DidDocument::from_value(document.clone()),
+            evidence: anp_identity::VerifiedPublicationEvidence {
                 document_version: checkpoint.document_version,
                 registry_version: checkpoint.registry_version,
                 document_digest: checkpoint.document_hash.clone(),
             },
         })
-        .map_err(map_error)?;
+        .map_err(map_facade_error)?;
     if !matches!(
         outcome,
-        anp_identity::AdoptDocumentOutcome::Updated | anp_identity::AdoptDocumentOutcome::Unchanged
-    ) || identity.state() != IdentityState::Active
+        anp_identity::host::ConvergenceOutcome::Updated
+            | anp_identity::host::ConvergenceOutcome::Unchanged
+    ) || identity.public_identity().map_err(map_facade_error)?.state
+        != anp_identity::PublicIdentityState::Active
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -510,25 +541,8 @@ pub(crate) fn active_join_identity(
     custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
     signing_kid: &str,
     e2ee_kid: &str,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let identity = open_join_identity(core, did, custody)?;
-    if identity.state() != IdentityState::Active {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    for (kid, role) in [
-        (signing_kid, KeyRole::DeviceSigning),
-        (e2ee_kid, KeyRole::E2eeAgreement),
-    ] {
-        let key = identity.key_metadata(kid).map_err(map_error)?;
-        if key.role != role
-            || key.origin != KeyOrigin::Managed
-            || key.state != KeyState::Active
-            || key.material_erased
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-    }
-    Ok(identity)
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    active_join_managed_identity(core, did, custody, signing_kid, e2ee_kid)
 }
 
 pub(crate) fn active_join_managed_identity(
@@ -564,17 +578,21 @@ pub(crate) fn pending_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
     custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let identity = open_join_identity(core, did, custody)?;
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    let identity =
+        open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?;
     if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
-        return (identity.state() == IdentityState::Active)
+        return (identity.public_identity().map_err(map_facade_error)?.state
+            == anp_identity::PublicIdentityState::Active)
             .then_some(identity)
             .ok_or(crate::ImError::PermissionDenied);
     }
-    if identity.state() != IdentityState::Enrolling
-        || identity
-            .pending_enrollment()
-            .is_none_or(|pending| pending.enrollment_id != custody.enrollment_id)
+    if identity.public_identity().map_err(map_facade_error)?.state
+        != anp_identity::PublicIdentityState::Enrolling
+        || pending_join_enrollment_session(core, did, custody)?
+            .proposal()
+            .enrollment_id
+            != custody.enrollment_id
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -627,27 +645,20 @@ pub(crate) fn discard_join_enrollment(
     did: &crate::ids::Did,
     custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
 ) -> crate::ImResult<()> {
-    let mut store = open_controller_store(core)?;
-    if store.manifest().store_id != custody.store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    match store.open_identity(did.as_str()) {
-        Ok(identity) => {
-            if identity.identity_id() != custody.identity_id
-                || identity.state() != IdentityState::Enrolling
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-            store
-                .discard_unpublished_enrollment(
-                    did.as_str(),
-                    &custody.identity_id,
-                    store.generation(),
-                )
-                .map_err(map_error)
+    use anp_identity::host::EnrollmentWorkflow;
+    let mut manager = open_controller_manager(core)?;
+    let reference = anp_identity::IdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    match manager.resume_enrollment(&reference) {
+        Ok(Some(session)) if session.proposal().enrollment_id == custody.enrollment_id => {
+            session.cancel(&mut manager).map_err(map_facade_error)
         }
-        Err(anp_identity::DidError::IdentityNotFound) => Ok(()),
-        Err(error) => Err(map_error(error)),
+        Ok(Some(_)) => Err(crate::ImError::PermissionDenied),
+        Ok(None) | Err(anp_identity::IdentityError::IdentityNotFound) => Ok(()),
+        Err(error) => Err(map_facade_error(error)),
     }
 }
 
