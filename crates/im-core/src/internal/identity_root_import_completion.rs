@@ -2442,8 +2442,8 @@ mod tests {
         assert!(decode_root_secret_payload(&ambiguous).is_err());
     }
 
-    #[test]
-    fn legacy_pending_root_moves_into_anp_after_workspace_cutover() {
+    #[tokio::test]
+    async fn legacy_pending_root_moves_into_anp_after_workspace_cutover() {
         let root = tempfile::tempdir().unwrap();
         let paths = crate::ImCorePaths {
             identities: crate::paths::IdentityRegistryPaths {
@@ -2582,7 +2582,7 @@ mod tests {
             ),
         )
         .unwrap();
-        core.bootstrap().initialize_local_state().unwrap();
+        core.bootstrap().initialize_local_state_async().await.unwrap();
         let connection =
             crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
         connection
