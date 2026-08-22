@@ -137,7 +137,7 @@ fn provider_contract_dtos_are_versioned_and_secret_free() {
 
     let source = include_str!("mod.rs");
     let secret = source
-        .split("pub(crate) struct ProviderSharedSecret")
+        .split("pub struct ProviderSharedSecret")
         .nth(1)
         .unwrap()
         .split("#[async_trait]")

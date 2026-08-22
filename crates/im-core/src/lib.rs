@@ -20,6 +20,8 @@ pub mod messages;
 pub mod onboarding;
 pub mod paths;
 pub mod prelude;
+#[cfg(feature = "provider-traits")]
+pub mod provider;
 pub mod realtime;
 pub mod secure;
 pub mod site;
@@ -36,6 +38,8 @@ pub use self::config::{
 };
 pub use crate::attachments::AttachmentService;
 pub use crate::content::ContentService;
+#[cfg(feature = "provider-traits")]
+pub use crate::core::IdentityCustodyProvider;
 pub use crate::core::{
     CoreBootstrap, IdentitySecretStoragePolicy, ImClient, ImCore, ImCoreOpenOptions,
     ImCoreSecretVaultOptions,

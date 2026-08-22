@@ -9,18 +9,18 @@ use zeroize::Zeroizing;
 
 pub(crate) use direct::DirectAnpIdentitySession;
 
-pub(crate) const IDENTITY_PROVIDER_PROTOCOL: &str = "anp-identity-provider-ts/1";
-pub(crate) const CAP_STORE_READ: &str = "store.read";
-pub(crate) const CAP_IDENTITY_SIGN: &str = "identity.sign";
-pub(crate) const CAP_ORIGIN_PROOF: &str = "identity.origin-proof";
-pub(crate) const CAP_HTTP_SIGN: &str = "host.http-sign";
-pub(crate) const CAP_KEY_AGREEMENT: &str = "host.key-agreement";
+pub const IDENTITY_PROVIDER_PROTOCOL: &str = "anp-identity-provider-ts/1";
+pub const CAP_STORE_READ: &str = "store.read";
+pub const CAP_IDENTITY_SIGN: &str = "identity.sign";
+pub const CAP_ORIGIN_PROOF: &str = "identity.origin-proof";
+pub const CAP_HTTP_SIGN: &str = "host.http-sign";
+pub const CAP_KEY_AGREEMENT: &str = "host.key-agreement";
 
-pub(crate) type ProviderResult<T> = Result<T, IdentityProviderError>;
+pub type ProviderResult<T> = Result<T, IdentityProviderError>;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum IdentityProviderErrorCode {
+pub enum IdentityProviderErrorCode {
     InvalidRequest,
     StoreNotFound,
     ProviderUnavailable,
@@ -44,13 +44,13 @@ pub(crate) enum IdentityProviderErrorCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct IdentityProviderError {
-    pub(crate) code: IdentityProviderErrorCode,
-    pub(crate) retryable: bool,
+pub struct IdentityProviderError {
+    pub code: IdentityProviderErrorCode,
+    pub retryable: bool,
 }
 
 impl IdentityProviderError {
-    pub(crate) fn new(code: IdentityProviderErrorCode, retryable: bool) -> Self {
+    pub fn new(code: IdentityProviderErrorCode, retryable: bool) -> Self {
         Self { code, retryable }
     }
 }
@@ -63,7 +63,7 @@ impl fmt::Display for IdentityProviderError {
 
 impl std::error::Error for IdentityProviderError {}
 
-pub(crate) fn map_provider_error(error: IdentityProviderError) -> crate::ImError {
+pub fn map_provider_error(error: IdentityProviderError) -> crate::ImError {
     use IdentityProviderErrorCode as Code;
     match error.code {
         Code::InvalidRequest => crate::ImError::invalid_input(
@@ -102,7 +102,7 @@ pub(crate) fn map_provider_error(error: IdentityProviderError) -> crate::ImError
     }
 }
 
-pub(crate) async fn derive_shared_secret_or_fallback(
+pub async fn derive_shared_secret_or_fallback(
     session: Option<&Arc<dyn IdentitySession>>,
     fallback: &Arc<dyn crate::internal::key_provider::IdentitySigner>,
     kid: &str,
@@ -123,15 +123,15 @@ pub(crate) async fn derive_shared_secret_or_fallback(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderIdentityRef {
-    pub(crate) store_id: String,
-    pub(crate) identity_id: String,
-    pub(crate) did: String,
+pub struct ProviderIdentityRef {
+    pub store_id: String,
+    pub identity_id: String,
+    pub did: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderIdentityState {
+pub enum ProviderIdentityState {
     Enrolling,
     Active,
     Revoked,
@@ -139,14 +139,14 @@ pub(crate) enum ProviderIdentityState {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderKeyAlgorithm {
+pub enum ProviderKeyAlgorithm {
     Ed25519,
     X25519,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderKeyPurpose {
+pub enum ProviderKeyPurpose {
     RootControl,
     Authentication,
     DeviceAssertion,
@@ -156,48 +156,48 @@ pub(crate) enum ProviderKeyPurpose {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderPublicKey {
-    pub(crate) kid: String,
-    pub(crate) algorithm: ProviderKeyAlgorithm,
-    pub(crate) purposes: Vec<ProviderKeyPurpose>,
+pub struct ProviderPublicKey {
+    pub kid: String,
+    pub algorithm: ProviderKeyAlgorithm,
+    pub purposes: Vec<ProviderKeyPurpose>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderPublicIdentity {
-    pub(crate) reference: ProviderIdentityRef,
-    pub(crate) state: ProviderIdentityState,
-    pub(crate) revision: u64,
-    pub(crate) document: Value,
-    pub(crate) active_keys: Vec<ProviderPublicKey>,
-    pub(crate) did_wba: bool,
+pub struct ProviderPublicIdentity {
+    pub reference: ProviderIdentityRef,
+    pub state: ProviderIdentityState,
+    pub revision: u64,
+    pub document: Value,
+    pub active_keys: Vec<ProviderPublicKey>,
+    pub did_wba: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderStoreInfo {
-    pub(crate) store_id: String,
-    pub(crate) schema_compatible: bool,
-    pub(crate) identity_count: usize,
+pub struct ProviderStoreInfo {
+    pub store_id: String,
+    pub schema_compatible: bool,
+    pub identity_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderIdentityDescriptor {
-    pub(crate) reference: ProviderIdentityRef,
-    pub(crate) state: ProviderIdentityState,
+pub struct ProviderIdentityDescriptor {
+    pub reference: ProviderIdentityRef,
+    pub state: ProviderIdentityState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderKeySelector {
+pub enum ProviderKeySelector {
     Default,
     Kid(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "purpose", rename_all = "snake_case")]
-pub(crate) enum ProviderSigningPurpose {
+pub enum ProviderSigningPurpose {
     Authentication,
     DeviceAssertion,
     ApplicationAssertion { domain: String },
@@ -205,107 +205,107 @@ pub(crate) enum ProviderSigningPurpose {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderSignRequest {
-    pub(crate) purpose: ProviderSigningPurpose,
-    pub(crate) key: ProviderKeySelector,
-    pub(crate) payload: Vec<u8>,
+pub struct ProviderSignRequest {
+    pub purpose: ProviderSigningPurpose,
+    pub key: ProviderKeySelector,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderSignature {
-    pub(crate) kid: String,
-    pub(crate) algorithm: ProviderKeyAlgorithm,
-    pub(crate) bytes: Vec<u8>,
+pub struct ProviderSignature {
+    pub kid: String,
+    pub algorithm: ProviderKeyAlgorithm,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderOriginProofOptions {
-    pub(crate) created: Option<i64>,
-    pub(crate) expires: Option<i64>,
-    pub(crate) nonce: Option<String>,
+pub struct ProviderOriginProofOptions {
+    pub created: Option<i64>,
+    pub expires: Option<i64>,
+    pub nonce: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderOriginProofRequest {
-    pub(crate) method: String,
-    pub(crate) meta: Value,
-    pub(crate) body: Value,
-    pub(crate) key: ProviderKeySelector,
+pub struct ProviderOriginProofRequest {
+    pub method: String,
+    pub meta: Value,
+    pub body: Value,
+    pub key: ProviderKeySelector,
     #[serde(default)]
-    pub(crate) options: ProviderOriginProofOptions,
+    pub options: ProviderOriginProofOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(crate) struct ProviderSignedOriginProof {
-    pub(crate) content_digest: String,
-    pub(crate) signature_input: String,
-    pub(crate) signature: String,
+pub struct ProviderSignedOriginProof {
+    pub content_digest: String,
+    pub signature_input: String,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderHttpHeader {
-    pub(crate) name: String,
-    pub(crate) value: String,
+pub struct ProviderHttpHeader {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderHttpSigningOptions {
-    pub(crate) nonce: Option<String>,
-    pub(crate) created: Option<i64>,
-    pub(crate) expires: Option<i64>,
-    pub(crate) covered_components: Option<Vec<String>>,
+pub struct ProviderHttpSigningOptions {
+    pub nonce: Option<String>,
+    pub created: Option<i64>,
+    pub expires: Option<i64>,
+    pub covered_components: Option<Vec<String>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderExactHttpRequest {
-    pub(crate) key: ProviderKeySelector,
-    pub(crate) url: String,
-    pub(crate) method: String,
-    pub(crate) headers: Vec<ProviderHttpHeader>,
-    pub(crate) body: Option<Vec<u8>>,
+pub struct ProviderExactHttpRequest {
+    pub key: ProviderKeySelector,
+    pub url: String,
+    pub method: String,
+    pub headers: Vec<ProviderHttpHeader>,
+    pub body: Option<Vec<u8>>,
     #[serde(default)]
-    pub(crate) options: ProviderHttpSigningOptions,
+    pub options: ProviderHttpSigningOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderPreparedHttpSignature {
-    pub(crate) binding_digest: String,
-    pub(crate) kid: String,
-    pub(crate) header_patch: Vec<ProviderHttpHeader>,
+pub struct ProviderPreparedHttpSignature {
+    pub binding_digest: String,
+    pub kid: String,
+    pub header_patch: Vec<ProviderHttpHeader>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ProviderKeyAgreementRequest {
-    pub(crate) key: ProviderKeySelector,
-    pub(crate) peer_public: [u8; 32],
+pub struct ProviderKeyAgreementRequest {
+    pub key: ProviderKeySelector,
+    pub peer_public: [u8; 32],
 }
 
-pub(crate) struct ProviderSharedSecret {
+pub struct ProviderSharedSecret {
     bytes: Zeroizing<[u8; 32]>,
 }
 
 impl ProviderSharedSecret {
-    pub(crate) fn new(bytes: [u8; 32]) -> Self {
+    pub fn new(bytes: [u8; 32]) -> Self {
         Self {
             bytes: Zeroizing::new(bytes),
         }
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 }
 
 #[async_trait]
-pub(crate) trait IdentityCustody: Send + Sync {
+pub trait IdentityCustody: Send + Sync {
     async fn store_info(&self) -> ProviderResult<ProviderStoreInfo>;
 
     async fn list_identities(&self) -> ProviderResult<Vec<ProviderIdentityDescriptor>>;
@@ -319,7 +319,7 @@ pub(crate) trait IdentityCustody: Send + Sync {
 }
 
 #[async_trait]
-pub(crate) trait IdentitySession: Send + Sync {
+pub trait IdentitySession: Send + Sync {
     async fn public_identity(&self) -> ProviderResult<ProviderPublicIdentity>;
 
     async fn sign(&self, request: ProviderSignRequest) -> ProviderResult<ProviderSignature>;

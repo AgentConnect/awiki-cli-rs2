@@ -11,6 +11,8 @@ pub use self::bootstrap::{
     CoreBootstrap, LocalStateStatus, MigrationReport, PathCheck, PathValidationReport,
 };
 pub use self::client::ImClient;
+#[cfg(feature = "provider-traits")]
+pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
@@ -25,6 +27,8 @@ pub(crate) struct ImCoreInner {
     pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) handle_recovery_enabled: bool,
     pub(crate) multi_device_audience: Option<String>,
+    #[cfg(feature = "provider-traits")]
+    pub(crate) identity_custody_provider: Option<IdentityCustodyProvider>,
     pub(crate) handle_recovery_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
@@ -97,6 +101,8 @@ impl ImCore {
         let multi_device_audience = options.multi_device_audience.filter(|audience| {
             !audience.is_empty() && audience == audience.trim() && audience.chars().count() <= 255
         });
+        #[cfg(feature = "provider-traits")]
+        let identity_custody_provider = options.identity_custody_provider;
         if options.multi_device_handle_recovery_enabled && multi_device_audience.is_none() {
             return Err(crate::ImError::invalid_input(
                 Some("multi_device_audience".to_owned()),
@@ -116,6 +122,8 @@ impl ImCore {
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
                 multi_device_audience,
+                #[cfg(feature = "provider-traits")]
+                identity_custody_provider,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 direct_rebind_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 device_join_approvals: Default::default(),
@@ -982,6 +990,15 @@ impl ImCoreInner {
 
     pub(crate) fn multi_device_audience(&self) -> Option<&str> {
         self.multi_device_audience.as_deref()
+    }
+
+    #[cfg(feature = "provider-traits")]
+    pub(crate) fn identity_custody_provider(
+        &self,
+    ) -> Option<&Arc<dyn crate::provider::IdentityCustody>> {
+        self.identity_custody_provider
+            .as_ref()
+            .map(|provider| &provider.inner)
     }
 
     pub(crate) fn handle_recovery_lock(

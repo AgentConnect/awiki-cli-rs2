@@ -1449,6 +1449,50 @@ impl IdentityRegistry<'_> {
             .or(summary.local_alias.as_deref())
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
+        #[cfg(feature = "provider-traits")]
+        let key_provider = if let (Some(custody), Some(entry)) =
+            (self.core.inner().identity_custody_provider(), entry)
+        {
+            let store_id = entry.anp_identity_store_id.as_deref().ok_or_else(|| {
+                crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["anp_identity_store_id".to_owned()],
+                }
+            })?;
+            let identity_id = entry.anp_identity_id.as_deref().ok_or_else(|| {
+                crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["anp_identity_id".to_owned()],
+                }
+            })?;
+            let reference = crate::provider::ProviderIdentityRef {
+                store_id: store_id.to_owned(),
+                identity_id: identity_id.to_owned(),
+                did: summary.did.as_str().to_owned(),
+            };
+            let session = custody
+                .open_identity(&reference)
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            let public = session
+                .public_identity()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if public.reference != reference {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "external identity provider returned a different identity reference"
+                        .to_owned(),
+                });
+            }
+            Arc::new(crate::internal::key_provider::ProviderIdentitySigner::new(
+                public,
+                session,
+                identity_dir.join("auth.json"),
+            )?) as Arc<dyn crate::internal::key_provider::IdentitySigner>
+        } else {
+            self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?
+        };
+        #[cfg(not(feature = "provider-traits"))]
         let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
         let identity_session = key_provider.async_session();
         let sync_account = sync_account_seed(entry)?;
@@ -3754,6 +3798,8 @@ mod tests {
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
                 multi_device_audience: None,
+                #[cfg(feature = "provider-traits")]
+                identity_custody_provider: None,
             },
         )
         .unwrap();
@@ -4446,6 +4492,8 @@ mod tests {
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
                 multi_device_audience: None,
+                #[cfg(feature = "provider-traits")]
+                identity_custody_provider: None,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

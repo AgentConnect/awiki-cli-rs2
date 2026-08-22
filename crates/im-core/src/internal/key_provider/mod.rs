@@ -2,12 +2,16 @@ mod anp_identity;
 mod did_auth;
 mod file;
 mod hosted;
+#[cfg(feature = "provider-traits")]
+mod provider;
 pub(crate) mod vault;
 
 pub(crate) use self::anp_identity::{AnpIdentitySigner, PendingAnpEnrollmentSigner};
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedIdentitySigner;
 pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};
+#[cfg(feature = "provider-traits")]
+pub(crate) use self::provider::ProviderIdentitySigner;
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
 pub(crate) trait IdentitySigner: Send + Sync {
