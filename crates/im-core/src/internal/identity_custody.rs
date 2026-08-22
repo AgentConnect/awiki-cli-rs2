@@ -1,9 +1,5 @@
 use std::path::Path;
 
-use anp_identity::{
-    DocumentUpdateSpec, IdentityState, KeyOrigin, KeyRole, KeyState, PublicationState,
-};
-
 pub(crate) const LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID: &str = "legacy-imported-active-v1";
 
 pub(crate) fn open_controller_store(
@@ -96,28 +92,23 @@ pub(crate) fn provision_registration_identity(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
-    let mut controller_store = open_controller_store(core)?;
-    let controller = match find_unprojected_registration_identity(
-        core,
-        &controller_store,
-        domain,
-        local_part,
-    )? {
-        Some(identity) => identity,
-        None => {
-            let create =
-                crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
-                    domain,
-                    local_part,
-                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                    core.inner().sdk_config().anp_service_did.as_ref(),
-                )?;
-            controller_store
-                .create_identity(create.spec)
-                .map_err(map_error)?
-        }
-    };
-    let manifest = anp::authentication::validate_device_manifest(controller.document())
+    let mut manager = open_controller_manager(core)?;
+    let controller =
+        match find_unprojected_registration_identity(core, &manager, domain, local_part)? {
+            Some(identity) => identity,
+            None => {
+                let create =
+                    crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+                        domain,
+                        local_part,
+                        core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                        core.inner().sdk_config().anp_service_did.as_ref(),
+                    )?;
+                manager.create(create.spec).map_err(map_facade_error)?
+            }
+        };
+    let public = controller.public_identity().map_err(map_facade_error)?;
+    let manifest = anp::authentication::validate_device_manifest(public.document.as_value())
         .map_err(|_| crate::ImError::PermissionDenied)?
         .ok_or(crate::ImError::PermissionDenied)?;
     if manifest.devices.len() != 1 {
@@ -125,18 +116,21 @@ pub(crate) fn provision_registration_identity(
     }
     let device = &manifest.devices[0];
     let protocol_device_id = crate::ids::ProtocolDeviceId::parse(&device.device_id)?;
-    let root_key_id = controller
-        .keys()
+    let root_key_id = public
+        .active_keys
         .iter()
-        .find(|key| key.role == KeyRole::RootControl && key.origin == KeyOrigin::Managed)
+        .find(|key| {
+            key.purposes
+                .contains(&anp_identity::KeyPurpose::RootControl)
+        })
         .map(|key| key.kid.clone())
         .ok_or(crate::ImError::PermissionDenied)?;
-    let did = crate::ids::Did::parse(controller.did())?;
+    let did = crate::ids::Did::parse(&public.reference.did)?;
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
-        controller_store_id: controller_store.manifest().store_id.clone(),
-        controller_identity_id: controller.identity_id().to_owned(),
+        controller_store_id: public.reference.store_id,
+        controller_identity_id: public.reference.identity_id,
         did,
-        did_document: controller.document().clone(),
+        did_document: public.document.into_value(),
         protocol_device_id,
         root_key_id,
         device_signing_key_id: device.signing_key_id.clone(),
@@ -855,14 +849,15 @@ pub(crate) fn begin_registration_publication(
     let Some(revision_id) = identity.controller_revision_id.as_deref() else {
         return Ok(());
     };
-    let mut controller = open_registration_controller(core, identity)?;
-    let pending = controller
-        .pending_revision()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if pending.revision_id != revision_id || pending.state != PublicationState::Prepared {
+    let mut session =
+        registration_change_session(core, identity)?.ok_or(crate::ImError::PermissionDenied)?;
+    if session.candidate().operation_id != revision_id {
         return Err(crate::ImError::PermissionDenied);
     }
-    controller.begin_publication(revision_id).map_err(map_error)
+    session
+        .begin_publication()
+        .map(|_| ())
+        .map_err(map_facade_error)
 }
 
 pub(crate) fn reconcile_registration_publication(
@@ -874,35 +869,47 @@ pub(crate) fn reconcile_registration_publication(
         return ensure_controller_document(core, identity);
     };
     let mut controller = open_registration_controller(core, identity)?;
-    let Some(pending) = controller.pending_revision() else {
-        return ensure_document_matches(controller.document(), &identity.did_document);
+    let current = controller.public_identity().map_err(map_facade_error)?;
+    let Some(mut session) = controller
+        .resume_document_change()
+        .map_err(map_facade_error)?
+    else {
+        return ensure_document_matches(current.document.as_value(), &identity.did_document);
     };
-    if pending.revision_id != revision_id {
+    if session.candidate().operation_id != revision_id {
         return Err(crate::ImError::PermissionDenied);
     }
-    match pending.state {
-        PublicationState::PublicationInFlight => controller
-            .mark_publication_uncertain(revision_id)
-            .map_err(map_error)?,
-        PublicationState::PublicationUncertain => {}
-        PublicationState::Published if remote_committed => {
-            controller.commit_update(revision_id).map_err(map_error)?;
-            return ensure_document_matches(controller.document(), &identity.did_document);
-        }
-        PublicationState::Prepared if !remote_committed => return Ok(()),
-        _ => return Err(crate::ImError::PermissionDenied),
-    }
-    let observed = if remote_committed {
-        identity.did_document.clone()
+    let observed_document = if remote_committed {
+        anp_identity::DidDocument::from_value(identity.did_document.clone())
     } else {
-        controller.document().clone()
+        current.document
     };
-    let outcome = controller
-        .reconcile_update(revision_id, &observed)
-        .map_err(map_error)?;
+    let observation = verified_remote(observed_document)?;
+    let outcome = match session.reconcile(observation.clone()) {
+        Ok(outcome) => outcome,
+        Err(anp_identity::IdentityError::InvalidDocumentChangeState) => {
+            let attempt = session.begin_publication().map_err(map_facade_error)?;
+            if remote_committed {
+                session
+                    .complete(
+                        attempt,
+                        anp_identity::PublicationResult::Confirmed {
+                            evidence: observation.evidence,
+                        },
+                    )
+                    .map_err(map_facade_error)?
+            } else {
+                session
+                    .complete(attempt, anp_identity::PublicationResult::Unknown)
+                    .map_err(map_facade_error)?;
+                session.reconcile(observation).map_err(map_facade_error)?
+            }
+        }
+        Err(error) => return Err(map_facade_error(error)),
+    };
     match (remote_committed, outcome) {
-        (true, anp_identity::ReconcileOutcome::Committed)
-        | (false, anp_identity::ReconcileOutcome::RemoteOld) => Ok(()),
+        (true, anp_identity::DocumentChangeOutcome::Committed { .. })
+        | (false, anp_identity::DocumentChangeOutcome::ReadyForPublication) => Ok(()),
         _ => Err(crate::ImError::PermissionDenied),
     }
 }
@@ -914,30 +921,37 @@ pub(crate) fn commit_registration_publication(
     let Some(revision_id) = identity.controller_revision_id.as_deref() else {
         return ensure_controller_document(core, identity);
     };
-    let mut controller = open_registration_controller(core, identity)?;
-    let Some(pending) = controller.pending_revision() else {
-        return ensure_document_matches(controller.document(), &identity.did_document);
+    let Some(mut session) = registration_change_session(core, identity)? else {
+        return ensure_controller_document(core, identity);
     };
-    if pending.revision_id != revision_id {
+    if session.candidate().operation_id != revision_id {
         return Err(crate::ImError::PermissionDenied);
     }
-    match pending.state {
-        PublicationState::PublicationInFlight => {
-            controller.mark_published(revision_id).map_err(map_error)?;
-            controller.commit_update(revision_id).map_err(map_error)?;
+    let remote = verified_remote(anp_identity::DidDocument::from_value(
+        identity.did_document.clone(),
+    ))?;
+    let outcome = match session.reconcile(remote.clone()) {
+        Ok(outcome) => outcome,
+        Err(anp_identity::IdentityError::InvalidDocumentChangeState) => {
+            let attempt = session.begin_publication().map_err(map_facade_error)?;
+            session
+                .complete(
+                    attempt,
+                    anp_identity::PublicationResult::Confirmed {
+                        evidence: remote.evidence,
+                    },
+                )
+                .map_err(map_facade_error)?
         }
-        PublicationState::Published => controller.commit_update(revision_id).map_err(map_error)?,
-        PublicationState::PublicationUncertain => {
-            let outcome = controller
-                .reconcile_update(revision_id, &identity.did_document)
-                .map_err(map_error)?;
-            if outcome != anp_identity::ReconcileOutcome::Committed {
-                return Err(crate::ImError::PermissionDenied);
-            }
-        }
-        PublicationState::Prepared => return Err(crate::ImError::PermissionDenied),
+        Err(error) => return Err(map_facade_error(error)),
+    };
+    if !matches!(
+        outcome,
+        anp_identity::DocumentChangeOutcome::Committed { .. }
+    ) {
+        return Err(crate::ImError::PermissionDenied);
     }
-    ensure_document_matches(controller.document(), &identity.did_document)
+    ensure_controller_document(core, identity)
 }
 
 pub(crate) fn refresh_registration_document(
@@ -946,88 +960,77 @@ pub(crate) fn refresh_registration_document(
 ) -> crate::ImResult<(serde_json::Value, String)> {
     let mut controller = open_registration_controller(core, identity)?;
     if let Some(revision_id) = identity.controller_revision_id.as_deref() {
-        let pending = controller
-            .pending_revision()
+        let mut session = controller
+            .resume_document_change()
+            .map_err(map_facade_error)?
             .ok_or(crate::ImError::PermissionDenied)?;
-        if pending.revision_id != revision_id || pending.state != PublicationState::Prepared {
+        if session.candidate().operation_id != revision_id {
             return Err(crate::ImError::PermissionDenied);
         }
-        controller.abort_update(revision_id).map_err(map_error)?;
+        let attempt = session.begin_publication().map_err(map_facade_error)?;
+        if session
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::RejectedBeforeAcceptance,
+            )
+            .map_err(map_facade_error)?
+            != anp_identity::DocumentChangeOutcome::Aborted
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
     }
-    let services = service_specs(controller.document())?;
+    let public = controller.public_identity().map_err(map_facade_error)?;
+    let services = identity_services(public.document.as_value())?;
     let prepared = controller
-        .prepare_update(DocumentUpdateSpec {
-            request_signing_rotation: None,
-            request_signing_mutations: Vec::new(),
-            device_mutations: Vec::new(),
-            services: Some(services),
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![anp_identity::DocumentChange::ReplaceServices { services }],
         })
-        .map_err(map_error)?;
-    Ok((prepared.candidate_document, prepared.revision_id))
+        .map_err(map_facade_error)?;
+    Ok((
+        prepared.candidate().candidate_document.clone().into_value(),
+        prepared.candidate().operation_id.clone(),
+    ))
 }
 
 pub(crate) fn discard_unpublished_registration(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
 ) -> crate::ImResult<()> {
-    let mut controller_store = open_controller_store(core)?;
-    if controller_store.manifest().store_id != identity.controller_store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    match controller_store.open_identity(identity.did.as_str()) {
-        Ok(mut controller) => {
-            if controller.identity_id() != identity.controller_identity_id {
-                return Err(crate::ImError::PermissionDenied);
-            }
-            if let Some(pending) = controller.pending_revision() {
-                if Some(pending.revision_id.as_str()) != identity.controller_revision_id.as_deref()
-                    || pending.state != PublicationState::Prepared
-                {
-                    return Err(crate::ImError::PermissionDenied);
-                }
-                controller
-                    .abort_update(&pending.revision_id)
-                    .map_err(map_error)?;
-            }
-            controller_store
-                .delete_identity_namespace(identity.did.as_str(), controller_store.generation())
-                .map_err(map_error)?;
+    let mut manager = open_controller_manager(core)?;
+    let reference = anp_identity::IdentityRef {
+        store_id: identity.controller_store_id.clone(),
+        identity_id: identity.controller_identity_id.clone(),
+        did: identity.did.as_str().to_owned(),
+    };
+    let mut controller = match manager.get(&reference) {
+        Ok(controller) => controller,
+        Err(anp_identity::IdentityError::IdentityNotFound) => return Ok(()),
+        Err(error) => return Err(map_facade_error(error)),
+    };
+    if let Some(mut session) = controller
+        .resume_document_change()
+        .map_err(map_facade_error)?
+    {
+        if Some(session.candidate().operation_id.as_str())
+            != identity.controller_revision_id.as_deref()
+        {
+            return Err(crate::ImError::PermissionDenied);
         }
-        Err(anp_identity::DidError::IdentityNotFound) => {}
-        Err(error) => return Err(map_error(error)),
-    }
-    Ok(())
-}
-
-pub(crate) fn registration_controller_identity(
-    core: &crate::core::ImCore,
-    identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let controller = open_registration_controller(core, identity)?;
-    ensure_document_matches(controller.document(), &identity.did_document)?;
-    Ok(controller)
-}
-
-pub(crate) fn registration_controller_signing_identity(
-    core: &crate::core::ImCore,
-    identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let controller = open_registration_controller(core, identity)?;
-    for (kid, role) in [
-        (&identity.root_key_id, KeyRole::RootControl),
-        (&identity.device_signing_key_id, KeyRole::DeviceSigning),
-        (&identity.device_e2ee_key_id, KeyRole::E2eeAgreement),
-    ] {
-        let metadata = controller.key_metadata(kid).map_err(map_error)?;
-        if metadata.role != role
-            || metadata.origin != KeyOrigin::Managed
-            || metadata.state != KeyState::Active
-            || metadata.material_erased
+        let attempt = session.begin_publication().map_err(map_facade_error)?;
+        if session
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::RejectedBeforeAcceptance,
+            )
+            .map_err(map_facade_error)?
+            != anp_identity::DocumentChangeOutcome::Aborted
         {
             return Err(crate::ImError::PermissionDenied);
         }
     }
-    Ok(controller)
+    manager
+        .delete(&reference, anp_identity::DeleteIdentityRequest::default())
+        .map_err(map_facade_error)
 }
 
 pub(crate) fn registration_controller_signing_managed_identity(
@@ -1081,10 +1084,10 @@ fn open_managed_identity(
 
 fn find_unprojected_registration_identity(
     core: &crate::core::ImCore,
-    store: &anp_identity::DidStore,
+    manager: &anp_identity::IdentityManager,
     domain: &str,
     local_part: &str,
-) -> crate::ImResult<Option<anp_identity::DidIdentity>> {
+) -> crate::ImResult<Option<anp_identity::ManagedIdentity>> {
     let index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .load_index()?;
@@ -1096,16 +1099,20 @@ fn find_unprojected_registration_identity(
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
-    for summary in store.list_identities().map_err(map_error)? {
-        if summary.state != IdentityState::Active
-            || projected.contains(summary.identity_id.as_str())
-            || !summary.did.starts_with(&did_prefix)
+    for descriptor in manager.list().map_err(map_facade_error)? {
+        if descriptor.state != anp_identity::PublicIdentityState::Active
+            || projected.contains(descriptor.reference.identity_id.as_str())
+            || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
         }
-        let identity = store.open_identity(&summary.did).map_err(map_error)?;
-        let handle_matches = identity
-            .document()
+        let mut identity = manager
+            .get(&descriptor.reference)
+            .map_err(map_facade_error)?;
+        let public = identity.public_identity().map_err(map_facade_error)?;
+        let handle_matches = public
+            .document
+            .as_value()
             .get("service")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|services| {
@@ -1118,7 +1125,12 @@ fn find_unprojected_registration_identity(
                             == Some(endpoint.as_str())
                 })
             });
-        if handle_matches {
+        if handle_matches
+            && identity
+                .resume_document_change()
+                .map_err(map_facade_error)?
+                .is_none()
+        {
             matches.push(identity);
         }
     }
@@ -1131,18 +1143,38 @@ fn find_unprojected_registration_identity(
 fn open_registration_controller(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let store = open_controller_store(core)?;
-    if store.manifest().store_id != expected.controller_store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let identity = store
-        .open_identity(expected.did.as_str())
-        .map_err(map_error)?;
-    if identity.identity_id() != expected.controller_identity_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(identity)
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    open_managed_identity(
+        core,
+        &expected.controller_store_id,
+        &expected.controller_identity_id,
+        expected.did.as_str(),
+    )
+}
+
+fn registration_change_session(
+    core: &crate::core::ImCore,
+    expected: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
+) -> crate::ImResult<Option<anp_identity::DocumentChangeSession>> {
+    let mut controller = open_registration_controller(core, expected)?;
+    controller
+        .resume_document_change()
+        .map_err(map_facade_error)
+}
+
+fn verified_remote(
+    document: anp_identity::DidDocument,
+) -> crate::ImResult<anp_identity::VerifiedRemoteDocument> {
+    let document_digest =
+        crate::internal::identity_wire::document::document_hash(document.as_value())?;
+    Ok(anp_identity::VerifiedRemoteDocument {
+        document,
+        evidence: anp_identity::VerifiedPublicationEvidence {
+            document_version: 1,
+            registry_version: 1,
+            document_digest,
+        },
+    })
 }
 
 fn ensure_controller_document(
@@ -1150,7 +1182,14 @@ fn ensure_controller_document(
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
 ) -> crate::ImResult<()> {
     let controller = open_registration_controller(core, identity)?;
-    ensure_document_matches(controller.document(), &identity.did_document)
+    ensure_document_matches(
+        controller
+            .public_identity()
+            .map_err(map_facade_error)?
+            .document
+            .as_value(),
+        &identity.did_document,
+    )
 }
 
 fn ensure_document_matches(
@@ -1165,7 +1204,9 @@ fn ensure_document_matches(
     Ok(())
 }
 
-fn service_specs(document: &serde_json::Value) -> crate::ImResult<Vec<anp_identity::ServiceSpec>> {
+fn identity_services(
+    document: &serde_json::Value,
+) -> crate::ImResult<Vec<anp_identity::IdentityService>> {
     document
         .get("service")
         .and_then(serde_json::Value::as_array)
@@ -1194,7 +1235,7 @@ fn service_specs(document: &serde_json::Value) -> crate::ImResult<Vec<anp_identi
                     })
                     .collect::<crate::ImResult<Vec<_>>>()
             };
-            Ok(anp_identity::ServiceSpec {
+            Ok(anp_identity::IdentityService {
                 id: id.to_owned(),
                 service_type: service
                     .get("type")
