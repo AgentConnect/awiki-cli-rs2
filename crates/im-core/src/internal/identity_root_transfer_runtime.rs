@@ -468,6 +468,26 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
     ensure_sender_envelope_format_column(&core)
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    let prekey_local_static_dh = match &state.transport {
+        PreparedRootTransport::Prekey(prekey) => {
+            let recipient_signed_prekey: [u8; 32] = URL_SAFE_NO_PAD
+                .decode(&prekey.prekey_bundle.signed_prekey.public_key_b64u)
+                .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?
+                .try_into()
+                .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+            Some(
+                crate::internal::identity_provider::derive_shared_secret_or_fallback(
+                    client.runtime().identity_session.as_ref(),
+                    &client.runtime().key_provider,
+                    &sender.e2ee_key_id,
+                    recipient_signed_prekey,
+                )
+                .await
+                .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?,
+            )
+        }
+        PreparedRootTransport::EstablishedSession => None,
+    };
     let prepared = with_v2_runtime(&core, &scope, |direct| match &state.transport {
         PreparedRootTransport::EstablishedSession => direct
             .prepare_outbound_secret_json_with_commit(
@@ -493,21 +513,14 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                     &document,
                     &recipient.e2ee_key_id,
                 )?;
-            let recipient_signed_prekey: [u8; 32] = URL_SAFE_NO_PAD
-                .decode(&prekey.prekey_bundle.signed_prekey.public_key_b64u)
-                .map_err(|_| crate::ImError::PermissionDenied)?
-                .try_into()
-                .map_err(|_| crate::ImError::PermissionDenied)?;
-            let local_static_dh = client
-                .runtime()
-                .key_provider
-                .ecdh(&sender.e2ee_key_id, &recipient_signed_prekey)
-                .map_err(|_| crate::ImError::PermissionDenied)?;
+            let local_static_dh = prekey_local_static_dh
+                .as_ref()
+                .ok_or(crate::ImError::PermissionDenied)?;
             direct.prepare_session_init_secret_json_with_commit(
                 &binding,
                 state.message_id.as_str(),
                 &plaintext,
-                &local_static_dh,
+                local_static_dh,
                 prekey,
                 &recipient_static,
                 &now,

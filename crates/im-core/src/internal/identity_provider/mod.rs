@@ -102,6 +102,25 @@ pub(crate) fn map_provider_error(error: IdentityProviderError) -> crate::ImError
     }
 }
 
+pub(crate) async fn derive_shared_secret_or_fallback(
+    session: Option<&Arc<dyn IdentitySession>>,
+    fallback: &Arc<dyn crate::internal::key_provider::IdentitySigner>,
+    kid: &str,
+    peer_public: [u8; 32],
+) -> crate::ImResult<Zeroizing<[u8; 32]>> {
+    if let Some(session) = session {
+        let shared = session
+            .derive_shared_secret(ProviderKeyAgreementRequest {
+                key: ProviderKeySelector::Kid(kid.to_owned()),
+                peer_public,
+            })
+            .await
+            .map_err(map_provider_error)?;
+        return Ok(Zeroizing::new(*shared.as_bytes()));
+    }
+    fallback.ecdh(kid, &peer_public)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderIdentityRef {

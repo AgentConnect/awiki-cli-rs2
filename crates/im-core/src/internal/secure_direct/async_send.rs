@@ -664,13 +664,14 @@ where
         &prekey.bundle.signed_prekey.public_key_b64u,
         "signed_prekey.public_key_b64u",
     )?;
-    let static_to_signed_prekey_dh = derive_shared_secret_async(
-        local_material.identity_session.as_ref(),
-        &local_material.identity_signer,
-        &local_material.agreement_key_id,
-        recipient_signed_prekey_public,
-    )
-    .await?;
+    let static_to_signed_prekey_dh =
+        crate::internal::identity_provider::derive_shared_secret_or_fallback(
+            local_material.identity_session.as_ref(),
+            &local_material.identity_signer,
+            &local_material.agreement_key_id,
+            recipient_signed_prekey_public,
+        )
+        .await?;
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
@@ -782,13 +783,14 @@ where
         &prekey.bundle.signed_prekey.public_key_b64u,
         "signed_prekey.public_key_b64u",
     )?;
-    let static_to_signed_prekey_dh = derive_shared_secret_async(
-        local_material.identity_session.as_ref(),
-        &local_material.identity_signer,
-        &local_material.agreement_key_id,
-        recipient_signed_prekey_public,
-    )
-    .await?;
+    let static_to_signed_prekey_dh =
+        crate::internal::identity_provider::derive_shared_secret_or_fallback(
+            local_material.identity_session.as_ref(),
+            &local_material.identity_signer,
+            &local_material.agreement_key_id,
+            recipient_signed_prekey_public,
+        )
+        .await?;
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
@@ -1011,29 +1013,6 @@ async fn async_init_local_material(
         identity_signer: material.identity_signer,
         identity_session: material.identity_session,
     })
-}
-
-async fn derive_shared_secret_async(
-    session: Option<&std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>>,
-    fallback: &std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner>,
-    kid: &str,
-    peer_public: [u8; 32],
-) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
-    if let Some(session) = session {
-        let shared = session
-            .derive_shared_secret(
-                crate::internal::identity_provider::ProviderKeyAgreementRequest {
-                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
-                        kid.to_owned(),
-                    ),
-                    peer_public,
-                },
-            )
-            .await
-            .map_err(crate::internal::identity_provider::map_provider_error)?;
-        return Ok(zeroize::Zeroizing::new(*shared.as_bytes()));
-    }
-    fallback.ecdh(kid, &peer_public)
 }
 
 async fn fetch_verified_prekey_bundle_async<M, D>(

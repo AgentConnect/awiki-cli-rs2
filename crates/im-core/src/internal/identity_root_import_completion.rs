@@ -394,10 +394,13 @@ pub(crate) async fn receive_root_envelope_candidate(
                 .try_into()
                 .map_err(|_| crate::ImError::PermissionDenied)?;
             Some(
-                client
-                    .runtime()
-                    .key_provider
-                    .ecdh(&local_authorization.e2ee_key_id, &sender_ephemeral)?,
+                crate::internal::identity_provider::derive_shared_secret_or_fallback(
+                    client.runtime().identity_session.as_ref(),
+                    &client.runtime().key_provider,
+                    &local_authorization.e2ee_key_id,
+                    sender_ephemeral,
+                )
+                .await?,
             )
         }
         V2DirectBody::Cipher(_) => None,
