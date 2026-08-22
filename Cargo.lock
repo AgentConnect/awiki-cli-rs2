@@ -119,6 +119,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "fs2",
+ "hpke",
  "jsonwebtoken",
  "k256",
  "num-bigint",
@@ -131,6 +132,7 @@ dependencies = [
  "percent-encoding",
  "pkcs8",
  "rand 0.8.6",
+ "rand 0.9.4",
  "regex",
  "ring",
  "rusqlite",
@@ -1442,6 +1444,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest",
+]
+
+[[package]]
+name = "hpke"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "chacha20poly1305",
+ "digest",
+ "generic-array",
+ "hkdf",
+ "hmac",
+ "rand_core 0.9.5",
+ "sha2",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
