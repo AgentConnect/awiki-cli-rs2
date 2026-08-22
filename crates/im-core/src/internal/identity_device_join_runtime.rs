@@ -644,14 +644,16 @@ async fn refresh_join_device_access(
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
 ) -> crate::ImResult<DeviceJoinAccessResult> {
     pending.validate()?;
-    let identity = crate::internal::identity_custody::active_join_managed_identity(
+    let (public, identity) = crate::internal::identity_custody::active_join_provider_identity(
         core,
         &pending.did,
         &pending.custody,
         &pending.authorization.device.signing_key_id,
         &pending.authorization.device.e2ee_key_id,
-    )?;
-    let client = core.client_with_pending_anp_identity(
+    )
+    .await?;
+    let client = core.client_with_pending_provider_identity(
+        public,
         identity,
         None,
         pending.did.as_str(),

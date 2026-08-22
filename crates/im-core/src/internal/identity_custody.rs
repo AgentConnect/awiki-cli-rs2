@@ -1002,6 +1002,46 @@ pub(crate) fn active_join_managed_identity(
     Ok(identity)
 }
 
+pub(crate) async fn active_join_provider_identity(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    signing_kid: &str,
+    e2ee_kid: &str,
+) -> crate::ImResult<(
+    crate::internal::identity_provider::ProviderPublicIdentity,
+    std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
+)> {
+    use crate::internal::identity_provider::{ProviderIdentityState, ProviderKeyPurpose};
+
+    let provider = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    let identity = provider
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference
+        || public.state != ProviderIdentityState::Active
+        || !public.active_keys.iter().any(|key| {
+            key.kid == signing_kid && key.purposes.contains(&ProviderKeyPurpose::DeviceAssertion)
+        })
+        || !public.active_keys.iter().any(|key| {
+            key.kid == e2ee_kid && key.purposes.contains(&ProviderKeyPurpose::KeyAgreement)
+        })
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok((public, identity))
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn pending_join_identity(
     core: &crate::core::ImCore,
