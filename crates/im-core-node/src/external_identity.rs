@@ -7,11 +7,12 @@ use im_core::provider::{
     ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderHostStatus, ProviderHttpHeader,
     ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
-    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
-    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
-    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
-    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
+    ProviderObjectProofRequest, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
+    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
+    ProviderPublicationAttempt, ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest,
+    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -160,6 +161,24 @@ struct RootPromotionPayload<'a> {
 #[serde(rename_all = "camelCase")]
 struct RootPromotionRequestPayload<'a> {
     remote: &'a ProviderVerifiedRemoteDocument,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingRootProofPayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    request: PendingRootProofRequestWire<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingRootProofRequestWire<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kid: Option<&'a str>,
+    document: &'a serde_json::Value,
+    issuer_did: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -360,6 +379,28 @@ impl IdentityCustody for ExternalIdentityCustody {
             &RootPromotionPayload {
                 identity,
                 request: RootPromotionRequestPayload { remote: &remote },
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn sign_pending_root_object_proof(
+        &self,
+        identity: &ProviderIdentityRef,
+        request: ProviderObjectProofRequest,
+    ) -> ProviderResult<serde_json::Value> {
+        call_json(
+            &self.dispatch,
+            "signPendingRootObjectProof",
+            &PendingRootProofPayload {
+                identity,
+                request: PendingRootProofRequestWire {
+                    kid: selector_kid(&request.key),
+                    document: &request.document,
+                    issuer_did: &request.issuer_did,
+                    created: request.created.as_deref(),
+                },
             },
             Vec::new(),
         )
@@ -936,6 +977,42 @@ impl TryFrom<WirePublicIdentity> for ProviderPublicIdentity {
                 .collect(),
             did_wba: value.capabilities.did_wba,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_root_proof_wire_uses_the_provider_kid_shape() {
+        let identity = ProviderIdentityRef {
+            store_id: "store-1".to_owned(),
+            identity_id: "identity-1".to_owned(),
+            did: "did:wba:example.test:alice".to_owned(),
+        };
+        let document = serde_json::json!({"type": "root-possession"});
+        let payload = serde_json::to_value(PendingRootProofPayload {
+            identity: &identity,
+            request: PendingRootProofRequestWire {
+                kid: Some("did:wba:example.test:alice#root"),
+                document: &document,
+                issuer_did: &identity.did,
+                created: Some("2026-08-23T00:00:00Z"),
+            },
+        })
+        .unwrap();
+
+        assert_eq!(
+            payload["request"],
+            serde_json::json!({
+                "kid": "did:wba:example.test:alice#root",
+                "document": document,
+                "issuerDid": identity.did,
+                "created": "2026-08-23T00:00:00Z",
+            })
+        );
+        assert!(payload["request"].get("key").is_none());
     }
 }
 

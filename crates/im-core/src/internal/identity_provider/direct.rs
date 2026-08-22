@@ -14,9 +14,9 @@ use super::{
     ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderHostStatus, ProviderHttpHeader,
     ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
-    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
-    ProviderPublicationEvidence, ProviderPublicationResult,
+    ProviderObjectProofRequest, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
+    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
+    ProviderPublicationAttempt, ProviderPublicationEvidence, ProviderPublicationResult,
     ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
     ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
     ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
@@ -268,6 +268,31 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                 ));
             }
             Ok(())
+        })
+        .await
+    }
+
+    async fn sign_pending_root_object_proof(
+        &self,
+        identity: &ProviderIdentityRef,
+        request: ProviderObjectProofRequest,
+    ) -> ProviderResult<serde_json::Value> {
+        let manager = self.manager.clone();
+        let identity = identity.clone();
+        run_blocking(move || {
+            let managed = manager
+                .lock()
+                .map_err(|_| internal())?
+                .get(&identity.into())
+                .map_err(map_identity_error)?;
+            managed
+                .sign_pending_root_object_proof(anp_identity::host::PendingRootObjectProofRequest {
+                    key: request.key.into(),
+                    document: request.document,
+                    issuer_did: request.issuer_did,
+                    created: request.created,
+                })
+                .map_err(map_identity_error)
         })
         .await
     }

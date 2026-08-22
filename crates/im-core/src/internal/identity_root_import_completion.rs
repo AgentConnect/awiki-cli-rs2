@@ -700,7 +700,7 @@ async fn drive_root_import_completion(
         validate_completion_success(core, client, &existing, &success)?;
         return converge_completed_root_import(core, client, &success, None).await;
     }
-    let (params, request_hash) = prepare_completion_params(core, client, message_id)?;
+    let (params, request_hash) = prepare_completion_params(core, client, message_id).await?;
     let current_token = client.runtime().key_provider.valid_auth_token()?;
     let result = match current_token {
         Some(token) => call_root_import_completion(client, &token, params.clone())
@@ -1377,7 +1377,7 @@ WHERE owner_identity_id = ?3 AND local_device_id = ?4 AND message_id = ?5
     Ok(())
 }
 
-fn prepare_completion_params(
+async fn prepare_completion_params(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     message_id: &str,
@@ -1424,13 +1424,15 @@ fn prepare_completion_params(
         "expires_at": record.expires_at.clone(),
         "nonce": nonce,
     });
-    let signed_statement = crate::internal::identity_custody::sign_pending_completion_root_proof(
-        core,
-        &record.pending_root_ref,
-        &record.root_key_id,
-        &statement,
-        Some(record.imported_at.clone()),
-    )?;
+    let signed_statement =
+        crate::internal::identity_custody::sign_pending_completion_root_proof_async(
+            core,
+            &record.pending_root_ref,
+            &record.root_key_id,
+            &statement,
+            Some(record.imported_at.clone()),
+        )
+        .await?;
 
     let device_key_id = local_device_entry(core, client)?
         .device_state

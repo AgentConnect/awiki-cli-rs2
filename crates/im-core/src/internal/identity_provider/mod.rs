@@ -513,6 +513,15 @@ pub struct ProviderOriginProofRequest {
     pub options: ProviderOriginProofOptions,
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderObjectProofRequest {
+    pub key: ProviderKeySelector,
+    pub document: Value,
+    pub issuer_did: String,
+    pub created: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderSignedOriginProof {
@@ -617,6 +626,12 @@ pub trait IdentityCustody: Send + Sync {
         identity: &ProviderIdentityRef,
         remote: ProviderVerifiedRemoteDocument,
     ) -> ProviderResult<()>;
+
+    async fn sign_pending_root_object_proof(
+        &self,
+        identity: &ProviderIdentityRef,
+        request: ProviderObjectProofRequest,
+    ) -> ProviderResult<Value>;
 
     async fn recover(&self) -> ProviderResult<()>;
 }

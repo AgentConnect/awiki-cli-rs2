@@ -104,6 +104,15 @@ export interface ImCoreIdentityProvider {
     reference: ImCoreIdentityReference,
     request: { readonly remote: unknown },
   ): Promise<void>
+  signPendingRootObjectProof?(
+    reference: ImCoreIdentityReference,
+    request: {
+      readonly kid?: string
+      readonly document: unknown
+      readonly issuerDid: string
+      readonly created?: string
+    },
+  ): Promise<unknown>
 }
 
 /** Host-only opaque workflow retained inside the provider bridge. */

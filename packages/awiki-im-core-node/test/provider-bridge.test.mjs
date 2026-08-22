@@ -276,6 +276,10 @@ test('External Provider gates root promotion on the dedicated capability', async
       'AWIKI_LEGACY_ROOT_TRANSFER_V1',
     ],
     confirmRootPromotion: async (reference, value) => calls.push({ reference, value }),
+    signPendingRootObjectProof: async (reference, value) => {
+      calls.push({ reference, value })
+      return { ...value.document, proof: { verificationMethod: value.kid } }
+    },
   })
   const accepted = await createIdentityProviderDispatch(enabled)([{
     operation: 'confirmRootPromotion',
@@ -284,6 +288,24 @@ test('External Provider gates root promotion on the dedicated capability', async
   }])
   assert.equal(accepted.ok, true)
   assert.deepEqual(calls, [{ reference: identity, value: request }])
+
+  const proofRequest = {
+    kid: `${identity.did}#root`,
+    document: { type: 'root-possession' },
+    issuerDid: identity.did,
+    created: '2026-08-23T00:00:00Z',
+  }
+  const proof = await createIdentityProviderDispatch(enabled)([{
+    operation: 'signPendingRootObjectProof',
+    payloadJson: JSON.stringify({ identity, request: proofRequest }),
+    buffers: [],
+  }])
+  assert.equal(proof.ok, true)
+  assert.deepEqual(JSON.parse(proof.payloadJson), {
+    ...proofRequest.document,
+    proof: { verificationMethod: proofRequest.kid },
+  })
+  assert.deepEqual(calls[1], { reference: identity, value: proofRequest })
 })
 
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {

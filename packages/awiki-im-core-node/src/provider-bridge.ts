@@ -134,6 +134,19 @@ export function createIdentityProviderDispatch(
           )
           return success(null)
         }
+        case 'signPendingRootObjectProof': {
+          if (!capabilities.has('AWIKI_LEGACY_ROOT_TRANSFER_V1')
+            || typeof provider.signPendingRootObjectProof !== 'function') throw unavailable()
+          return success(await provider.signPendingRootObjectProof(
+            reference(payload.identity),
+            object(payload.request) as {
+              readonly kid?: string
+              readonly document: unknown
+              readonly issuerDid: string
+              readonly created?: string
+            },
+          ))
+        }
         case 'documentChangeBeginPublication':
           return success(await documentSession(documentSessions, payload.sessionId).beginPublication())
         case 'documentChangeHostPhase':

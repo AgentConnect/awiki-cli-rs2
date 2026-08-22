@@ -1261,6 +1261,34 @@ pub(crate) fn sign_pending_completion_root_proof(
         .map_err(map_facade_error)
 }
 
+pub(crate) async fn sign_pending_completion_root_proof_async(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+    root_key_id: &str,
+    statement: &serde_json::Value,
+    created: Option<String>,
+) -> crate::ImResult<serde_json::Value> {
+    let custody = controller_custody_provider(core).await?;
+    custody
+        .sign_pending_root_object_proof(
+            &crate::internal::identity_provider::ProviderIdentityRef {
+                store_id: reference.store_id.clone(),
+                identity_id: reference.identity_id.clone(),
+                did: reference.did.clone(),
+            },
+            crate::internal::identity_provider::ProviderObjectProofRequest {
+                key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                    root_key_id.to_owned(),
+                ),
+                document: statement.clone(),
+                issuer_did: reference.did.clone(),
+                created,
+            },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn confirm_completion_root(
     core: &crate::core::ImCore,
@@ -2731,13 +2759,14 @@ mod tests {
         )
         .unwrap();
         let statement = serde_json::json!({"type": "root-possession"});
-        let proof = sign_pending_completion_root_proof(
+        let proof = sign_pending_completion_root_proof_async(
             &core,
             &reference,
             &format!("{}#key-1", target.did.as_str()),
             &statement,
             Some("2026-08-21T00:00:00Z".to_owned()),
         )
+        .await
         .unwrap();
         anp::proof::verify_object_proof(&proof, target.did.as_str(), &target.target_document)
             .unwrap();
