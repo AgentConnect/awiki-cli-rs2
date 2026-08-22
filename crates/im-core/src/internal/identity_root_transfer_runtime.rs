@@ -166,6 +166,7 @@ pub(crate) async fn prepare_root_key_transfer(
         .as_ref()
         .ok_or_else(|| root_error(RootTransferErrorCode::SenderNotEligible))?;
     active_root_key_id(&core, &local_entry)
+        .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
 
     recover_pending_root_key_transfers(client)
@@ -204,6 +205,7 @@ pub(crate) async fn prepare_root_key_transfer(
                 &recipient_device_id,
             )?;
             let root_key_id = active_root_key_id(&core, &local_entry)
+                .await
                 .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
             let fingerprint = validate_root_public(&document, client.did(), &root_key_id)
                 .map_err(|_| root_error(RootTransferErrorCode::SenderNotEligible))?;
@@ -896,17 +898,18 @@ fn format_time(value: OffsetDateTime) -> crate::ImResult<String> {
         })
 }
 
-fn active_root_key_id(
+async fn active_root_key_id(
     core: &crate::core::ImCore,
     entry: &crate::internal::identity_store::IndexEntry,
 ) -> crate::ImResult<String> {
     if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
         return Err(crate::ImError::PermissionDenied);
     }
-    let manager = crate::internal::identity_custody::open_controller_manager(core)?;
+    let manager = crate::internal::identity_custody::controller_custody_provider(core).await?;
     let info = manager
-        .info()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+        .store_info()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     if entry.anp_identity_store_id.as_deref() != Some(info.store_id.as_str()) {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -914,23 +917,27 @@ fn active_root_key_id(
         .anp_identity_id
         .as_deref()
         .ok_or(crate::ImError::PermissionDenied)?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: info.store_id,
+        identity_id: identity_id.to_owned(),
+        did: entry.did.clone(),
+    };
     let identity = manager
-        .get(&anp_identity::IdentityRef {
-            store_id: info.store_id,
-            identity_id: identity_id.to_owned(),
-            did: entry.did.clone(),
-        })
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     let public = identity
         .public_identity()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
-    use anp_identity::host::IdentityStatusPort;
-    if public.state != anp_identity::PublicIdentityState::Active
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference
+        || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
         || identity
             .host_status()
-            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
             .root_capability
-            != anp_identity::host::HostRootCapability::Active
+            != crate::internal::identity_provider::ProviderRootCapability::Active
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -939,7 +946,7 @@ fn active_root_key_id(
         .iter()
         .find(|key| {
             key.purposes
-                .contains(&anp_identity::KeyPurpose::RootControl)
+                .contains(&crate::internal::identity_provider::ProviderKeyPurpose::RootControl)
         })
         .map(|key| key.kid.clone())
         .ok_or(crate::ImError::PermissionDenied)
