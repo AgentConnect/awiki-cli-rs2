@@ -2002,39 +2002,51 @@ impl IdentityRegistry<'_> {
             status.missing.push("anp_identity_id".to_owned());
             return status;
         };
-        let Ok(store) = crate::internal::identity_custody::open_controller_store(self.core) else {
+        let Ok(manager) = crate::internal::identity_custody::open_controller_manager(self.core)
+        else {
             status.missing.push("anp_identity_store".to_owned());
             return status;
         };
-        if store.manifest().store_id != expected_store_id {
+        let Ok(info) = manager.info() else {
+            status.missing.push("anp_identity_store".to_owned());
+            return status;
+        };
+        if info.store_id != expected_store_id {
             status.missing.push("anp_identity_store_binding".to_owned());
             return status;
         }
-        let Ok(identity) = store.open_identity(summary.did.as_str()) else {
+        let Ok(mut identity) = manager.get(&anp_identity::IdentityRef {
+            store_id: expected_store_id.to_owned(),
+            identity_id: expected_identity_id.to_owned(),
+            did: summary.did.as_str().to_owned(),
+        }) else {
             status.missing.push("anp_identity_record".to_owned());
             return status;
         };
-        if identity.identity_id() != expected_identity_id {
-            status
-                .missing
-                .push("anp_identity_record_binding".to_owned());
+        let Ok(public) = identity.public_identity() else {
+            status.missing.push("anp_identity_record".to_owned());
             return status;
-        }
-        status.state = match identity.state() {
-            anp_identity::IdentityState::Creating => super::IdentityCustodyState::Creating,
-            anp_identity::IdentityState::Active => super::IdentityCustodyState::Active,
-            anp_identity::IdentityState::Enrolling => super::IdentityCustodyState::Enrolling,
-            anp_identity::IdentityState::Revoked => super::IdentityCustodyState::Revoked,
         };
-        status.ready = identity.state() == anp_identity::IdentityState::Active;
-        status.root_control_available = identity.keys().iter().any(|key| {
-            key.role == anp_identity::KeyRole::RootControl
-                && key.origin == anp_identity::KeyOrigin::Managed
-                && key.state == anp_identity::KeyState::Active
-                && !key.material_erased
+        status.state = match public.state {
+            anp_identity::PublicIdentityState::Active => super::IdentityCustodyState::Active,
+            anp_identity::PublicIdentityState::Enrolling => super::IdentityCustodyState::Enrolling,
+            anp_identity::PublicIdentityState::Revoked => super::IdentityCustodyState::Revoked,
+        };
+        status.ready = public.state == anp_identity::PublicIdentityState::Active;
+        status.root_control_available = public.active_keys.iter().any(|key| {
+            key.purposes
+                .contains(&anp_identity::KeyPurpose::RootControl)
         });
-        status.pending_operation = identity.pending_revision().is_some()
-            || identity.root_capability() == anp_identity::RootCapabilityState::Pending;
+        use anp_identity::host::IdentityStatusPort;
+        let pending_document_change = identity
+            .resume_document_change()
+            .map(|pending| pending.is_some())
+            .unwrap_or(true);
+        let pending_root = identity
+            .host_status()
+            .map(|host| host.root_capability == anp_identity::host::HostRootCapability::Pending)
+            .unwrap_or(true);
+        status.pending_operation = pending_document_change || pending_root;
         if !status.ready {
             status.missing.push("anp_identity_active".to_owned());
         }
