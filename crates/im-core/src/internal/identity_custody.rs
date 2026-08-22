@@ -1472,7 +1472,7 @@ pub(crate) fn discard_unpublished_registration(
 }
 
 #[cfg(feature = "provider-traits")]
-async fn provider_registration_session(
+pub(crate) async fn provider_registration_session(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
 ) -> crate::ImResult<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>> {
@@ -2356,13 +2356,30 @@ mod tests {
             .await
             .unwrap();
 
-        let public = provider_registration_session(&core, &identity)
-            .await
-            .unwrap()
-            .public_identity()
+        let session = provider_registration_session(&core, &identity)
             .await
             .unwrap();
+        let public = session.public_identity().await.unwrap();
         ensure_document_matches(&public.document, &identity.did_document).unwrap();
+
+        let client = core
+            .client_with_pending_provider_identity(
+                public,
+                session,
+                Some("external.example.test"),
+                "External",
+                &identity.protocol_device_id,
+            )
+            .unwrap();
+        client
+            .runtime()
+            .key_provider
+            .persist_auth_token("registration-access-token")
+            .unwrap();
+        assert_eq!(
+            client.runtime().key_provider.valid_auth_token().unwrap(),
+            Some("registration-access-token".to_owned())
+        );
     }
 
     #[test]

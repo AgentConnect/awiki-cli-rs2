@@ -470,6 +470,63 @@ impl ImCore {
         Ok(ImClient::new(self.inner.clone(), runtime))
     }
 
+    #[cfg(feature = "provider-traits")]
+    pub(crate) fn client_with_pending_provider_identity(
+        &self,
+        public: crate::internal::identity_provider::ProviderPublicIdentity,
+        session: std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
+        handle: Option<&str>,
+        display_name: &str,
+        protocol_device_id: &crate::ids::ProtocolDeviceId,
+    ) -> crate::ImResult<ImClient> {
+        let did = crate::ids::Did::parse(&public.reference.did)?;
+        let identity_id = crate::ids::IdentityId::parse(
+            did.as_str()
+                .rsplit(':')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )?;
+        let handle = handle
+            .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
+            .transpose()?;
+        let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
+            std::sync::Arc::new(
+                crate::internal::key_provider::ProviderIdentitySigner::new_ephemeral(
+                    public, session,
+                )?,
+            );
+        let identity_session = provider.async_session();
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle,
+                display_name: Some(display_name.to_owned()),
+                local_alias: None,
+                device_id: Some(protocol_device_id.as_str().to_owned()),
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: false,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider: provider,
+            identity_session,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+                sync_account: None,
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
     #[cfg(feature = "identity-native-anp")]
     #[doc(hidden)]
     pub fn client_with_anp_delegated_identity(

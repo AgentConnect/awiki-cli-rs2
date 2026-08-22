@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use crate::internal::identity_provider::{
     IdentitySession, ProviderKeyPurpose, ProviderPublicIdentity,
@@ -13,7 +14,12 @@ use crate::internal::identity_provider::{
 pub(crate) struct ProviderIdentitySigner {
     public: ProviderPublicIdentity,
     session: Arc<dyn IdentitySession>,
-    auth_state_path: PathBuf,
+    auth: ProviderIdentityAuth,
+}
+
+enum ProviderIdentityAuth {
+    Ephemeral(RwLock<crate::internal::auth::state::AuthStateSnapshot>),
+    File(PathBuf),
 }
 
 impl ProviderIdentitySigner {
@@ -28,7 +34,21 @@ impl ProviderIdentitySigner {
         Ok(Self {
             public,
             session,
-            auth_state_path,
+            auth: ProviderIdentityAuth::File(auth_state_path),
+        })
+    }
+
+    pub(crate) fn new_ephemeral(
+        public: ProviderPublicIdentity,
+        session: Arc<dyn IdentitySession>,
+    ) -> crate::ImResult<Self> {
+        if public.state != crate::internal::identity_provider::ProviderIdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(Self {
+            public,
+            session,
+            auth: ProviderIdentityAuth::Ephemeral(RwLock::new(Default::default())),
         })
     }
 
@@ -85,15 +105,41 @@ impl super::IdentitySigner for ProviderIdentitySigner {
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
-        crate::internal::auth::state::read_auth_state(&self.auth_state_path)
+        match &self.auth {
+            ProviderIdentityAuth::Ephemeral(state) => state
+                .read()
+                .map(|state| state.clone())
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "ephemeral provider auth state lock poisoned".to_owned(),
+                }),
+            ProviderIdentityAuth::File(path) => crate::internal::auth::state::read_auth_state(path),
+        }
     }
 
     fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
-        crate::internal::auth::state::read_jwt_token(&self.auth_state_path)
+        let state = self.auth_state()?;
+        Ok(state
+            .has_valid_token
+            .then_some(state.bearer_token)
+            .flatten())
     }
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
-        crate::internal::auth::state::persist_jwt_token(&self.auth_state_path, token)
+        match &self.auth {
+            ProviderIdentityAuth::Ephemeral(state) => {
+                let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
+                let snapshot = crate::internal::auth::state::parse_auth_state(&raw)?;
+                *state
+                    .write()
+                    .map_err(|_| crate::ImError::LocalStateUnavailable {
+                        detail: "ephemeral provider auth state lock poisoned".to_owned(),
+                    })? = snapshot;
+                Ok(())
+            }
+            ProviderIdentityAuth::File(path) => {
+                crate::internal::auth::state::persist_jwt_token(path, token)
+            }
+        }
     }
 
     fn reload_custody(&self) -> crate::ImResult<()> {

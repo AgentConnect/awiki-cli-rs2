@@ -1914,7 +1914,16 @@ impl RpcTransport for CorePlainTransport<'_> {
         &mut self,
         pending: &crate::internal::identity_registration_pending::PendingRegistration,
     ) -> crate::ImResult<PendingRegistrationReconciliation> {
-        reconcile_pending_registration(self.core, pending)
+        #[cfg(feature = "identity-native-anp")]
+        return reconcile_pending_registration(self.core, pending);
+
+        #[cfg(not(feature = "identity-native-anp"))]
+        {
+            let _ = pending;
+            Err(crate::ImError::unsupported(
+                "synchronous-external-identity-provider",
+            ))
+        }
     }
 }
 
@@ -2295,6 +2304,7 @@ fn service_error_from_http(status_code: u16, body: &[u8]) -> crate::ImError {
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn reconcile_pending_registration(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
@@ -2330,7 +2340,7 @@ async fn reconcile_pending_registration_async(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<PendingRegistrationReconciliation> {
-    let client = pending_registration_client(core, pending)?;
+    let client = pending_registration_client_async(core, pending).await?;
     let mut transport = pending_registration_transport(&client, pending);
     let access_token = match transport.refresh_jwt_async().await {
         Ok(token) => token,
@@ -2358,6 +2368,7 @@ async fn reconcile_pending_registration_async(
     })
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn pending_registration_client(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
@@ -2376,6 +2387,43 @@ fn pending_registration_client(
         &pending.display_name,
         &pending.identity.protocol_device_id,
     )
+}
+
+async fn pending_registration_client_async(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_registration_pending::PendingRegistration,
+) -> crate::ImResult<crate::core::ImClient> {
+    #[cfg(feature = "provider-traits")]
+    if core.inner().identity_custody_provider().is_some() {
+        let session = crate::internal::identity_custody::provider_registration_session(
+            core,
+            &pending.identity,
+        )
+        .await?;
+        let public = session
+            .public_identity()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        return core.client_with_pending_provider_identity(
+            public,
+            session,
+            Some(&format!(
+                "{}.{}",
+                pending.target_handle, pending.target_domain
+            )),
+            &pending.display_name,
+            &pending.identity.protocol_device_id,
+        );
+    }
+
+    #[cfg(feature = "identity-native-anp")]
+    return pending_registration_client(core, pending);
+
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(crate::ImError::IdentityNotReady {
+        identity: pending.identity.did.as_str().to_owned(),
+        missing: vec!["external_identity_provider".to_owned()],
+    })
 }
 
 fn pending_registration_transport<'a>(
