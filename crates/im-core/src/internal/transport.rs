@@ -894,7 +894,8 @@ impl<'a> CoreHttpTransport<'a> {
         self.retry_pending_auth_commit();
         let auth_headers = self
             .auth
-            .get_auth_header(url, force_new_auth, method, Some(&headers), Some(&body))
+            .get_auth_header_async(url, force_new_auth, method, Some(&headers), Some(&body))
+            .await
             .map_err(|err| crate::ImError::TransportUnavailable {
                 detail: err.to_string(),
             })?;
@@ -910,11 +911,13 @@ impl<'a> CoreHttpTransport<'a> {
         if response.status_code == 401 && !self.ephemeral_bearer && !self.last_auth_retry_consumed {
             self.last_auth_retry_consumed = true;
             let headers = if self.auth.should_retry_after_401(&response.headers) {
-                self.challenge_headers(url, method, &response.headers, body.as_slice())?
+                self.challenge_headers_async(url, method, &response.headers, body.as_slice())
+                    .await?
             } else {
                 self.auth.clear_token(url);
                 self.jwt_token = None;
-                self.auth_headers(url, method, body.as_slice(), true)?
+                self.auth_headers_async(url, method, body.as_slice(), true)
+                    .await?
             };
             let mut headers = headers;
             append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
@@ -964,6 +967,56 @@ impl<'a> CoreHttpTransport<'a> {
         let auth_headers = self
             .auth
             .get_challenge_auth_header(url, response_headers, method, Some(&headers), Some(body))
+            .map_err(|err| crate::ImError::TransportUnavailable {
+                detail: err.to_string(),
+            })?;
+        headers.extend(auth_headers);
+        Ok(headers)
+    }
+
+    async fn auth_headers_async(
+        &mut self,
+        url: &str,
+        method: &str,
+        body: &[u8],
+        force_new: bool,
+    ) -> crate::ImResult<BTreeMap<String, String>> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        let auth_headers = self
+            .auth
+            .get_auth_header_async(url, force_new, method, Some(&headers), Some(body))
+            .await
+            .map_err(|err| crate::ImError::TransportUnavailable {
+                detail: err.to_string(),
+            })?;
+        headers.extend(auth_headers);
+        Ok(headers)
+    }
+
+    async fn challenge_headers_async(
+        &mut self,
+        url: &str,
+        method: &str,
+        response_headers: &BTreeMap<String, String>,
+        body: &[u8],
+    ) -> crate::ImResult<BTreeMap<String, String>> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        let auth_headers = self
+            .auth
+            .get_challenge_auth_header_async(
+                url,
+                response_headers,
+                method,
+                Some(&headers),
+                Some(body),
+            )
+            .await
             .map_err(|err| crate::ImError::TransportUnavailable {
                 detail: err.to_string(),
             })?;
