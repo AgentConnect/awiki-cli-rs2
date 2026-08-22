@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anp_identity::host::{
     ConvergenceWorkflow, HttpRequestSigningPort, IdentityStatusPort, KeyAgreementPort,
-    KeyAgreementRequest,
+    KeyAgreementRequest, RootPromotionPort,
 };
 
 use super::{
@@ -234,6 +234,40 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                         }) as Arc<dyn ProviderEnrollmentSession>
                     })
                 })
+        })
+        .await
+    }
+
+    async fn confirm_root_promotion(
+        &self,
+        identity: &ProviderIdentityRef,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<()> {
+        let manager = self.manager.clone();
+        let identity = identity.clone();
+        run_blocking(move || {
+            let mut managed = manager
+                .lock()
+                .map_err(|_| internal())?
+                .get(&identity.into())
+                .map_err(map_identity_error)?;
+            managed
+                .confirm_root_promotion(anp_identity::host::RootPromotionRequest {
+                    remote: remote.into(),
+                })
+                .map_err(map_identity_error)?;
+            if managed
+                .host_status()
+                .map_err(map_identity_error)?
+                .root_capability
+                != anp_identity::host::HostRootCapability::Active
+            {
+                return Err(IdentityProviderError::new(
+                    IdentityProviderErrorCode::InvalidState,
+                    false,
+                ));
+            }
+            Ok(())
         })
         .await
     }

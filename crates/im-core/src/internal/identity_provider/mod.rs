@@ -612,6 +612,12 @@ pub trait IdentityCustody: Send + Sync {
         identity: &ProviderIdentityRef,
     ) -> ProviderResult<Option<Arc<dyn ProviderEnrollmentSession>>>;
 
+    async fn confirm_root_promotion(
+        &self,
+        identity: &ProviderIdentityRef,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<()>;
+
     async fn recover(&self) -> ProviderResult<()>;
 }
 

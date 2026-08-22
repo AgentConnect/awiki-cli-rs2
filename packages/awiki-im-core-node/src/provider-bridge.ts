@@ -125,6 +125,15 @@ export function createIdentityProviderDispatch(
           enrollmentSessions.set(sessionId, session)
           return success({ sessionId, proposal: await session.proposal() })
         }
+        case 'confirmRootPromotion': {
+          if (!capabilities.has('AWIKI_LEGACY_ROOT_TRANSFER_V1')
+            || typeof provider.confirmRootPromotion !== 'function') throw unavailable()
+          await provider.confirmRootPromotion(
+            reference(payload.identity),
+            object(payload.request) as { readonly remote: unknown },
+          )
+          return success(null)
+        }
         case 'documentChangeBeginPublication':
           return success(await documentSession(documentSessions, payload.sessionId).beginPublication())
         case 'documentChangeHostPhase':
@@ -207,6 +216,14 @@ function isFinalDocumentOutcome(value: unknown): boolean {
 
 function incompatible(): ImCoreNodeError {
   return new ImCoreNodeError('provider_incompatible', 'The identity provider is incompatible.', false)
+}
+
+function unavailable(): ImCoreNodeError {
+  return new ImCoreNodeError(
+    'capability_unavailable',
+    'The identity provider capability is unavailable.',
+    false,
+  )
 }
 
 function success(value: unknown, buffers: readonly Buffer[] = []): NativeIdentityProviderReply {

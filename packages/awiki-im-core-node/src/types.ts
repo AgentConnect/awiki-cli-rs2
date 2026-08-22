@@ -100,6 +100,10 @@ export interface ImCoreIdentityProvider {
   resumeEnrollment(
     reference: ImCoreIdentityReference,
   ): Promise<ImCoreProviderEnrollmentSession | undefined>
+  confirmRootPromotion?(
+    reference: ImCoreIdentityReference,
+    request: { readonly remote: unknown },
+  ): Promise<void>
 }
 
 /** Host-only opaque workflow retained inside the provider bridge. */

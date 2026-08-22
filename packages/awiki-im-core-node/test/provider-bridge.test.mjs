@@ -252,6 +252,40 @@ test('External Provider keeps enrollment handles and private operations inside t
   assert.equal(stale.errorCode, 'invalid_request')
 })
 
+test('External Provider gates root promotion on the dedicated capability', async () => {
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const request = {
+    remote: {
+      document: { id: identity.did },
+      evidence: { documentVersion: 2, registryVersion: 3, documentDigest: 'sha256:document' },
+    },
+  }
+  const unavailable = createIdentityProviderDispatch(provider())
+  const rejected = await unavailable([{
+    operation: 'confirmRootPromotion',
+    payloadJson: JSON.stringify({ identity, request }),
+    buffers: [],
+  }])
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.errorCode, 'capability_unavailable')
+
+  const calls = []
+  const enabled = provider({
+    capabilities: [
+      ...provider().capabilities,
+      'AWIKI_LEGACY_ROOT_TRANSFER_V1',
+    ],
+    confirmRootPromotion: async (reference, value) => calls.push({ reference, value }),
+  })
+  const accepted = await createIdentityProviderDispatch(enabled)([{
+    operation: 'confirmRootPromotion',
+    payloadJson: JSON.stringify({ identity, request }),
+    buffers: [],
+  }])
+  assert.equal(accepted.ok, true)
+  assert.deepEqual(calls, [{ reference: identity, value: request }])
+})
+
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-error-'))
   t.after(() => rm(root, { recursive: true, force: true }))

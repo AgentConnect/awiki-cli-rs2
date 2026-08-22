@@ -1180,7 +1180,8 @@ async fn converge_completed_root_import(
             root_key_id: confirmed.root_key_id,
             root_public_key_fingerprint: confirmed.root_fingerprint,
         },
-    )?;
+    )
+    .await?;
 
     // The new bearer becomes durable only after the active Root ref, local
     // Admin projection and crash coordinator have converged.

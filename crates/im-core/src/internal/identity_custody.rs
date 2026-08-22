@@ -1293,6 +1293,39 @@ pub(crate) fn confirm_completion_root(
     Ok(())
 }
 
+pub(crate) async fn confirm_completion_root_async(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    if crate::internal::identity_wire::document::document_hash(document)?
+        != checkpoint.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let custody = controller_custody_provider(core).await?;
+    let identity = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: reference.store_id.clone(),
+        identity_id: reference.identity_id.clone(),
+        did: reference.did.clone(),
+    };
+    custody
+        .confirm_root_promotion(
+            &identity,
+            crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+                document: document.clone(),
+                evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
+                    document_version: checkpoint.document_version,
+                    registry_version: checkpoint.registry_version,
+                    document_digest: checkpoint.document_hash.clone(),
+                },
+            },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)
+}
+
 #[cfg(feature = "identity-native-anp")]
 fn open_root_import_identity(
     core: &crate::core::ImCore,
@@ -2623,8 +2656,8 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn completion_root_import_keeps_proof_and_promotion_inside_custody() {
+    #[tokio::test]
+    async fn completion_root_import_keeps_proof_and_promotion_inside_custody() {
         let root = tempfile::tempdir().unwrap();
         let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
         let legacy = crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
@@ -2708,7 +2741,9 @@ mod tests {
         .unwrap();
         anp::proof::verify_object_proof(&proof, target.did.as_str(), &target.target_document)
             .unwrap();
-        confirm_completion_root(&core, &reference, &target.target_document, &checkpoint).unwrap();
+        confirm_completion_root_async(&core, &reference, &target.target_document, &checkpoint)
+            .await
+            .unwrap();
         assert_eq!(
             open_controller_store(&core)
                 .unwrap()

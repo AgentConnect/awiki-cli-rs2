@@ -151,6 +151,19 @@ struct ActivateEnrollmentPayload<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RootPromotionPayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    request: RootPromotionRequestPayload<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RootPromotionRequestPayload<'a> {
+    remote: &'a ProviderVerifiedRemoteDocument,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SignPayload<'a> {
     identity: &'a ProviderIdentityRef,
     purpose: &'static str,
@@ -334,6 +347,23 @@ impl IdentityCustody for ExternalIdentityCustody {
                 proposal: wire.proposal,
             }) as Arc<dyn ProviderEnrollmentSession>
         }))
+    }
+
+    async fn confirm_root_promotion(
+        &self,
+        identity: &ProviderIdentityRef,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<()> {
+        call_json::<()>(
+            &self.dispatch,
+            "confirmRootPromotion",
+            &RootPromotionPayload {
+                identity,
+                request: RootPromotionRequestPayload { remote: &remote },
+            },
+            Vec::new(),
+        )
+        .await
     }
 
     async fn recover(&self) -> ProviderResult<()> {
