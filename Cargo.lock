@@ -408,6 +408,7 @@ version = "0.1.0"
 dependencies = [
  "anp",
  "anp-identity",
+ "async-trait",
  "base64",
  "bs58",
  "chacha20poly1305",
