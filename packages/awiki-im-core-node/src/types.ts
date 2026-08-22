@@ -95,6 +95,11 @@ export interface ImCoreIdentityProvider {
     reference: ImCoreIdentityReference,
     remote: unknown,
   ): Promise<string>
+  beginDeviceEnrollment(request: unknown): Promise<ImCoreProviderEnrollmentSession>
+  beginRequestSigningEnrollment(request: unknown): Promise<ImCoreProviderEnrollmentSession>
+  resumeEnrollment(
+    reference: ImCoreIdentityReference,
+  ): Promise<ImCoreProviderEnrollmentSession | undefined>
 }
 
 /** Host-only opaque workflow retained inside the provider bridge. */
@@ -104,6 +109,14 @@ export interface ImCoreProviderDocumentChangeSession {
   beginPublication(): Promise<unknown>
   complete(attempt: unknown, result: unknown): Promise<unknown>
   reconcile(observation: unknown): Promise<unknown>
+}
+
+/** Host-only enrollment workflow retained inside the provider bridge. */
+export interface ImCoreProviderEnrollmentSession {
+  proposal(): Promise<unknown>
+  signDeviceAssertion(payload: Buffer): Promise<Buffer>
+  activate(remote: unknown): Promise<'activated'>
+  cancel(): Promise<void>
 }
 
 /** Public identity projection. No token, private key, or local path is exposed. */

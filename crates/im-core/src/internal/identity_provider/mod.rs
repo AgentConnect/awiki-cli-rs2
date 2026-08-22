@@ -27,6 +27,7 @@ pub type ProviderResult<T> = Result<T, IdentityProviderError>;
 #[serde(rename_all = "snake_case")]
 pub enum IdentityProviderErrorCode {
     InvalidRequest,
+    InvalidState,
     StoreNotFound,
     ProviderUnavailable,
     ProviderIncompatible,
@@ -81,7 +82,8 @@ pub fn map_provider_error(error: IdentityProviderError) -> crate::ImError {
         Code::IdentityNotFound | Code::KeyNotFound => crate::ImError::IdentityUnresolved {
             detail: "identity provider reference was not found".to_owned(),
         },
-        Code::KeyUnavailable
+        Code::InvalidState
+        | Code::KeyUnavailable
         | Code::KeyPurposeViolation
         | Code::AmbiguousKey
         | Code::VerificationFailed
@@ -363,6 +365,85 @@ pub struct ProviderHostStatus {
     pub checkpoint: Option<ProviderDocumentCheckpoint>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderEnrollmentCapabilities {
+    pub did_wba: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderDeviceEnrollmentRequest {
+    pub remote: ProviderVerifiedRemoteDocument,
+    pub device_id: String,
+    pub device_signing_fragment: String,
+    pub device_agreement_fragment: String,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub capabilities: ProviderEnrollmentCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderRequestSigningEnrollmentRequest {
+    pub remote: ProviderVerifiedRemoteDocument,
+    pub fragment: String,
+    #[serde(default)]
+    pub capabilities: ProviderEnrollmentCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderEnrollmentPublicKey {
+    pub kid: String,
+    pub public_key_multibase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProviderEnrollmentProposalKind {
+    Device {
+        device_id: String,
+        signing_key: ProviderEnrollmentPublicKey,
+        agreement_key: ProviderEnrollmentPublicKey,
+        profiles: Vec<String>,
+    },
+    RequestSigning {
+        signing_key: ProviderEnrollmentPublicKey,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderEnrollmentProposal {
+    pub enrollment_id: String,
+    pub identity: ProviderIdentityRef,
+    pub kind: ProviderEnrollmentProposalKind,
+    pub root_key_fingerprint: String,
+    pub checkpoint: ProviderDocumentCheckpoint,
+}
+
+#[async_trait]
+pub trait ProviderEnrollmentSession: Send + Sync {
+    async fn proposal(&self) -> ProviderResult<ProviderEnrollmentProposal>;
+
+    async fn sign_device_assertion(&self, payload: Vec<u8>) -> ProviderResult<Vec<u8>>;
+
+    async fn derive_device_shared_secret(
+        &self,
+        peer_public: [u8; 32],
+    ) -> ProviderResult<ProviderSharedSecret>;
+
+    async fn activate(&self, remote: ProviderVerifiedRemoteDocument) -> ProviderResult<()>;
+
+    async fn cancel(&self) -> ProviderResult<()>;
+}
+
 #[async_trait]
 pub trait ProviderDocumentChangeSession: Send + Sync {
     async fn candidate(&self) -> ProviderResult<ProviderPreparedDocumentChange>;
@@ -516,6 +597,21 @@ pub trait IdentityCustody: Send + Sync {
     ) -> ProviderResult<Arc<dyn IdentitySession>>;
 
     async fn delete_identity(&self, identity: &ProviderIdentityRef) -> ProviderResult<()>;
+
+    async fn begin_device_enrollment(
+        &self,
+        request: ProviderDeviceEnrollmentRequest,
+    ) -> ProviderResult<Arc<dyn ProviderEnrollmentSession>>;
+
+    async fn begin_request_signing_enrollment(
+        &self,
+        request: ProviderRequestSigningEnrollmentRequest,
+    ) -> ProviderResult<Arc<dyn ProviderEnrollmentSession>>;
+
+    async fn resume_enrollment(
+        &self,
+        identity: &ProviderIdentityRef,
+    ) -> ProviderResult<Option<Arc<dyn ProviderEnrollmentSession>>>;
 
     async fn recover(&self) -> ProviderResult<()>;
 }

@@ -146,6 +146,67 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
             .unwrap(),
         ProviderDocumentChangeOutcome::Aborted
     );
+
+    let enrollment_root = tempfile::tempdir().unwrap();
+    let enrollment_manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: enrollment_root.path().to_path_buf(),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "provider-enrollment",
+                [0x62; 32],
+            )),
+        })
+        .unwrap();
+    let enrollment_custody = direct::DirectAnpIdentityCustody::new(enrollment_manager);
+    let enrollment = enrollment_custody
+        .begin_device_enrollment(ProviderDeviceEnrollmentRequest {
+            remote: ProviderVerifiedRemoteDocument {
+                evidence: ProviderPublicationEvidence {
+                    document_version: 1,
+                    registry_version: 1,
+                    document_digest: crate::internal::identity_wire::document::document_hash(
+                        &snapshot.document,
+                    )
+                    .unwrap(),
+                },
+                document: snapshot.document,
+            },
+            device_id: "provider-device".to_owned(),
+            device_signing_fragment: "provider-device-sign".to_owned(),
+            device_agreement_fragment: "provider-device-agreement".to_owned(),
+            profiles: vec!["https://anp.example/profiles/device/v1".to_owned()],
+            capabilities: ProviderEnrollmentCapabilities { did_wba: true },
+        })
+        .await
+        .unwrap();
+    let proposal = enrollment.proposal().await.unwrap();
+    let ProviderEnrollmentProposalKind::Device {
+        signing_key,
+        agreement_key,
+        ..
+    } = proposal.kind
+    else {
+        panic!("expected device enrollment proposal")
+    };
+    assert_eq!(
+        enrollment
+            .sign_device_assertion(b"provider enrollment".to_vec())
+            .await
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_ne!(
+        enrollment
+            .derive_device_shared_secret(x25519_dalek::X25519_BASEPOINT_BYTES)
+            .await
+            .unwrap()
+            .as_bytes(),
+        &[0; 32]
+    );
+    assert!(signing_key.kid.ends_with("#provider-device-sign"));
+    assert!(agreement_key.kid.ends_with("#provider-device-agreement"));
+    enrollment.cancel().await.unwrap();
 }
 
 #[test]

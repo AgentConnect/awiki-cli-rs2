@@ -2,15 +2,16 @@ use std::sync::Arc;
 
 use im_core::provider::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
-    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangePhase,
-    ProviderDocumentChangeSession, ProviderExactHttpRequest, ProviderHostStatus,
-    ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
+    ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
+    ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderEnrollmentProposal,
+    ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderHostStatus, ProviderHttpHeader,
+    ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
     ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
     ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
-    ProviderPublicationResult, ProviderResult, ProviderSharedSecret, ProviderSignRequest,
-    ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
-    ProviderVerifiedRemoteDocument,
+    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
+    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
+    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -57,6 +58,12 @@ struct ExternalDocumentChangeSession {
     session_id: String,
     candidate: ProviderPreparedDocumentChange,
     public_cache: Arc<tokio::sync::RwLock<Option<ProviderPublicIdentity>>>,
+}
+
+struct ExternalEnrollmentSession {
+    dispatch: Arc<IdentityProviderDispatch>,
+    session_id: String,
+    proposal: ProviderEnrollmentProposal,
 }
 
 impl ExternalIdentityCustody {
@@ -120,6 +127,26 @@ struct ReconcileDocumentChangePayload<'a> {
 struct DocumentSessionWire {
     session_id: String,
     candidate: ProviderPreparedDocumentChange,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EnrollmentSessionWire {
+    session_id: String,
+    proposal: ProviderEnrollmentProposal,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollmentSessionPayload<'a> {
+    session_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivateEnrollmentPayload<'a> {
+    session_id: &'a str,
+    remote: &'a ProviderVerifiedRemoteDocument,
 }
 
 #[derive(Serialize)]
@@ -251,6 +278,62 @@ impl IdentityCustody for ExternalIdentityCustody {
             Vec::new(),
         )
         .await
+    }
+
+    async fn begin_device_enrollment(
+        &self,
+        request: ProviderDeviceEnrollmentRequest,
+    ) -> ProviderResult<Arc<dyn ProviderEnrollmentSession>> {
+        let wire: EnrollmentSessionWire = call_json(
+            &self.dispatch,
+            "beginDeviceEnrollment",
+            &request,
+            Vec::new(),
+        )
+        .await?;
+        Ok(Arc::new(ExternalEnrollmentSession {
+            dispatch: self.dispatch.clone(),
+            session_id: wire.session_id,
+            proposal: wire.proposal,
+        }))
+    }
+
+    async fn begin_request_signing_enrollment(
+        &self,
+        request: ProviderRequestSigningEnrollmentRequest,
+    ) -> ProviderResult<Arc<dyn ProviderEnrollmentSession>> {
+        let wire: EnrollmentSessionWire = call_json(
+            &self.dispatch,
+            "beginRequestSigningEnrollment",
+            &request,
+            Vec::new(),
+        )
+        .await?;
+        Ok(Arc::new(ExternalEnrollmentSession {
+            dispatch: self.dispatch.clone(),
+            session_id: wire.session_id,
+            proposal: wire.proposal,
+        }))
+    }
+
+    async fn resume_enrollment(
+        &self,
+        identity: &ProviderIdentityRef,
+    ) -> ProviderResult<Option<Arc<dyn ProviderEnrollmentSession>>> {
+        let wire: Option<EnrollmentSessionWire> = call_json(
+            &self.dispatch,
+            "resumeEnrollment",
+            &IdentityPayload { identity },
+            Vec::new(),
+        )
+        .await?;
+        Ok(wire.map(|wire| {
+            Arc::new(ExternalEnrollmentSession {
+                dispatch: self.dispatch.clone(),
+                session_id: wire.session_id,
+                proposal: wire.proposal,
+            }) as Arc<dyn ProviderEnrollmentSession>
+        }))
     }
 
     async fn recover(&self) -> ProviderResult<()> {
@@ -572,6 +655,71 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
     }
 }
 
+#[async_trait::async_trait]
+impl ProviderEnrollmentSession for ExternalEnrollmentSession {
+    async fn proposal(&self) -> ProviderResult<ProviderEnrollmentProposal> {
+        Ok(self.proposal.clone())
+    }
+
+    async fn sign_device_assertion(&self, payload: Vec<u8>) -> ProviderResult<Vec<u8>> {
+        let reply = call(
+            &self.dispatch,
+            "enrollmentSignDeviceAssertion",
+            &EnrollmentSessionPayload {
+                session_id: &self.session_id,
+            },
+            vec![Buffer::from(payload)],
+        )
+        .await?;
+        if reply.payload_json != "null" {
+            return Err(provider_error(
+                IdentityProviderErrorCode::ProviderIncompatible,
+                false,
+            ));
+        }
+        exactly_one_buffer(reply.buffers)
+    }
+
+    async fn derive_device_shared_secret(
+        &self,
+        _peer_public: [u8; 32],
+    ) -> ProviderResult<ProviderSharedSecret> {
+        // The sealed enrollment response has the same unresolved AAD delivery
+        // requirement as active-identity ECDH. Keep it unavailable instead of
+        // accepting a raw shared secret through TypeScript.
+        Err(provider_error(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
+    async fn activate(&self, remote: ProviderVerifiedRemoteDocument) -> ProviderResult<()> {
+        call_json::<serde_json::Value>(
+            &self.dispatch,
+            "enrollmentActivate",
+            &ActivateEnrollmentPayload {
+                session_id: &self.session_id,
+                remote: &remote,
+            },
+            Vec::new(),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn cancel(&self) -> ProviderResult<()> {
+        call_json::<()>(
+            &self.dispatch,
+            "enrollmentCancel",
+            &EnrollmentSessionPayload {
+                session_id: &self.session_id,
+            },
+            Vec::new(),
+        )
+        .await
+    }
+}
+
 async fn call_json<T: for<'de> Deserialize<'de>>(
     dispatch: &IdentityProviderDispatch,
     operation: &str,
@@ -648,6 +796,7 @@ fn provider_error(code: IdentityProviderErrorCode, retryable: bool) -> IdentityP
 fn map_error_code(code: Option<&str>) -> IdentityProviderErrorCode {
     match code.unwrap_or_default() {
         "invalid_request" => IdentityProviderErrorCode::InvalidRequest,
+        "invalid_state" => IdentityProviderErrorCode::InvalidState,
         "store_not_found" => IdentityProviderErrorCode::StoreNotFound,
         "provider_unavailable" => IdentityProviderErrorCode::ProviderUnavailable,
         "provider_incompatible" => IdentityProviderErrorCode::ProviderIncompatible,

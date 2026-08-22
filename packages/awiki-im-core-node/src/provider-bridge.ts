@@ -8,6 +8,7 @@ import {
   type ImCoreIdentityProvider,
   type ImCoreIdentityReference,
   type ImCoreProviderDocumentChangeSession,
+  type ImCoreProviderEnrollmentSession,
 } from './types.js'
 
 const IDENTITY_PROVIDER_PROTOCOL = 'anp-identity-provider-ts/1'
@@ -30,12 +31,15 @@ export function createIdentityProviderDispatch(
     'info', 'recover', 'list', 'publicIdentity', 'hostStatus', 'create', 'delete', 'recoverIdentity',
     'sign', 'signOriginProof', 'prepareHttpSignature',
     'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
+    'beginDeviceEnrollment', 'beginRequestSigningEnrollment', 'resumeEnrollment',
   ] as const) {
     if (typeof provider[method] !== 'function') throw incompatible()
   }
 
   const documentSessions = new Map<string, ImCoreProviderDocumentChangeSession>()
+  const enrollmentSessions = new Map<string, ImCoreProviderEnrollmentSession>()
   let nextDocumentSession = 1
+  let nextEnrollmentSession = 1
 
   return async (calls: readonly [NativeIdentityProviderCall]): Promise<NativeIdentityProviderReply> => {
     try {
@@ -102,6 +106,25 @@ export function createIdentityProviderDispatch(
             reference(payload.identity),
             object(payload.remote),
           ))
+        case 'beginDeviceEnrollment': {
+          const session = await provider.beginDeviceEnrollment(payload)
+          const sessionId = `enrollment-${nextEnrollmentSession++}`
+          enrollmentSessions.set(sessionId, session)
+          return success({ sessionId, proposal: await session.proposal() })
+        }
+        case 'beginRequestSigningEnrollment': {
+          const session = await provider.beginRequestSigningEnrollment(payload)
+          const sessionId = `enrollment-${nextEnrollmentSession++}`
+          enrollmentSessions.set(sessionId, session)
+          return success({ sessionId, proposal: await session.proposal() })
+        }
+        case 'resumeEnrollment': {
+          const session = await provider.resumeEnrollment(reference(payload.identity))
+          if (session === undefined) return success(null)
+          const sessionId = `enrollment-${nextEnrollmentSession++}`
+          enrollmentSessions.set(sessionId, session)
+          return success({ sessionId, proposal: await session.proposal() })
+        }
         case 'documentChangeBeginPublication':
           return success(await documentSession(documentSessions, payload.sessionId).beginPublication())
         case 'documentChangeHostPhase':
@@ -123,6 +146,26 @@ export function createIdentityProviderDispatch(
           if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
           return success(outcome)
         }
+        case 'enrollmentSignDeviceAssertion': {
+          const signature = await enrollmentSession(
+            enrollmentSessions,
+            payload.sessionId,
+          ).signDeviceAssertion(singleBuffer(request.buffers))
+          return success(null, [Buffer.from(signature)])
+        }
+        case 'enrollmentActivate': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await enrollmentSession(enrollmentSessions, sessionId)
+            .activate(object(payload.remote))
+          enrollmentSessions.delete(sessionId)
+          return success(outcome)
+        }
+        case 'enrollmentCancel': {
+          const sessionId = requiredString(payload.sessionId)
+          await enrollmentSession(enrollmentSessions, sessionId).cancel()
+          enrollmentSessions.delete(sessionId)
+          return success(null)
+        }
         default: return failure('provider_incompatible', false)
       }
     }
@@ -138,6 +181,15 @@ function documentSession(
 ): ImCoreProviderDocumentChangeSession {
   const session = sessions.get(requiredString(value))
   if (session === undefined) throw new TypeError('identity provider document session is invalid')
+  return session
+}
+
+function enrollmentSession(
+  sessions: ReadonlyMap<string, ImCoreProviderEnrollmentSession>,
+  sessionId: unknown,
+): ImCoreProviderEnrollmentSession {
+  const session = sessions.get(requiredString(sessionId))
+  if (session === undefined) throw new TypeError('identity enrollment session is invalid')
   return session
 }
 

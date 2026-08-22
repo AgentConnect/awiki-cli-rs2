@@ -8,16 +8,18 @@ use anp_identity::host::{
 
 use super::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
-    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangePhase,
-    ProviderDocumentChangeSession, ProviderDocumentCheckpoint, ProviderExactHttpRequest,
-    ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
-    ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
-    ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
-    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
-    ProviderPublicationAttempt, ProviderPublicationEvidence, ProviderPublicationResult,
-    ProviderResult, ProviderRootCapability, ProviderSharedSecret, ProviderSignRequest,
-    ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
-    ProviderVerifiedRemoteDocument,
+    ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
+    ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderDocumentCheckpoint,
+    ProviderEnrollmentProposal, ProviderEnrollmentProposalKind, ProviderEnrollmentPublicKey,
+    ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderHostStatus, ProviderHttpHeader,
+    ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
+    ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
+    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
+    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
+    ProviderPublicationEvidence, ProviderPublicationResult,
+    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
+    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
+    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
 };
 
 pub(crate) struct DirectAnpIdentityCustody {
@@ -36,6 +38,11 @@ enum DirectIdentityHandle {
 
 struct DirectDocumentChangeSession {
     session: Arc<Mutex<anp_identity::DocumentChangeSession>>,
+}
+
+struct DirectEnrollmentSession {
+    session: Arc<Mutex<Option<anp_identity::host::EnrollmentSession>>>,
+    manager: Arc<Mutex<anp_identity::IdentityManager>>,
 }
 
 impl DirectAnpIdentityCustody {
@@ -145,6 +152,88 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                     anp_identity::DeleteIdentityRequest::default(),
                 )
                 .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn begin_device_enrollment(
+        &self,
+        request: ProviderDeviceEnrollmentRequest,
+    ) -> ProviderResult<Arc<dyn ProviderEnrollmentSession>> {
+        use anp_identity::host::EnrollmentWorkflow;
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let session = manager
+                .lock()
+                .map_err(|_| internal())?
+                .begin_device_enrollment(anp_identity::host::DeviceEnrollmentRequest {
+                    remote: request.remote.into(),
+                    device_id: request.device_id,
+                    device_signing_fragment: request.device_signing_fragment,
+                    device_agreement_fragment: request.device_agreement_fragment,
+                    profiles: request.profiles,
+                    capabilities: anp_identity::host::EnrollmentCapabilities {
+                        did_wba: request.capabilities.did_wba,
+                    },
+                })
+                .map_err(map_identity_error)?;
+            Ok(Arc::new(DirectEnrollmentSession {
+                session: Arc::new(Mutex::new(Some(session))),
+                manager: manager.clone(),
+            }) as Arc<dyn ProviderEnrollmentSession>)
+        })
+        .await
+    }
+
+    async fn begin_request_signing_enrollment(
+        &self,
+        request: ProviderRequestSigningEnrollmentRequest,
+    ) -> ProviderResult<Arc<dyn ProviderEnrollmentSession>> {
+        use anp_identity::host::EnrollmentWorkflow;
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let session = manager
+                .lock()
+                .map_err(|_| internal())?
+                .begin_request_signing_enrollment(
+                    anp_identity::host::RequestSigningEnrollmentRequest {
+                        remote: request.remote.into(),
+                        fragment: request.fragment,
+                        capabilities: anp_identity::host::EnrollmentCapabilities {
+                            did_wba: request.capabilities.did_wba,
+                        },
+                    },
+                )
+                .map_err(map_identity_error)?;
+            Ok(Arc::new(DirectEnrollmentSession {
+                session: Arc::new(Mutex::new(Some(session))),
+                manager: manager.clone(),
+            }) as Arc<dyn ProviderEnrollmentSession>)
+        })
+        .await
+    }
+
+    async fn resume_enrollment(
+        &self,
+        identity: &ProviderIdentityRef,
+    ) -> ProviderResult<Option<Arc<dyn ProviderEnrollmentSession>>> {
+        use anp_identity::host::EnrollmentWorkflow;
+        let manager = self.manager.clone();
+        let identity = identity.clone();
+        run_blocking(move || {
+            manager
+                .lock()
+                .map_err(|_| internal())?
+                .resume_enrollment(&identity.into())
+                .map_err(map_identity_error)
+                .map(|session| {
+                    session.map(|session| {
+                        Arc::new(DirectEnrollmentSession {
+                            session: Arc::new(Mutex::new(Some(session))),
+                            manager: manager.clone(),
+                        }) as Arc<dyn ProviderEnrollmentSession>
+                    })
+                })
         })
         .await
     }
@@ -476,6 +565,84 @@ impl ProviderDocumentChangeSession for DirectDocumentChangeSession {
     }
 }
 
+#[async_trait]
+impl ProviderEnrollmentSession for DirectEnrollmentSession {
+    async fn proposal(&self) -> ProviderResult<ProviderEnrollmentProposal> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let session = session.lock().map_err(|_| internal())?;
+            let session = session.as_ref().ok_or_else(invalid_state)?;
+            Ok(session.proposal().clone().into())
+        })
+        .await
+    }
+
+    async fn sign_device_assertion(&self, payload: Vec<u8>) -> ProviderResult<Vec<u8>> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            session
+                .lock()
+                .map_err(|_| internal())?
+                .as_ref()
+                .ok_or_else(invalid_state)?
+                .sign_device_assertion(&payload)
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn derive_device_shared_secret(
+        &self,
+        peer_public: [u8; 32],
+    ) -> ProviderResult<ProviderSharedSecret> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            session
+                .lock()
+                .map_err(|_| internal())?
+                .as_ref()
+                .ok_or_else(invalid_state)?
+                .derive_device_shared_secret(peer_public)
+                .map(|shared| ProviderSharedSecret::new(*shared.as_bytes()))
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn activate(&self, remote: ProviderVerifiedRemoteDocument) -> ProviderResult<()> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let outcome = session
+                .lock()
+                .map_err(|_| internal())?
+                .as_mut()
+                .ok_or_else(invalid_state)?
+                .activate(remote.into())
+                .map_err(map_identity_error)?;
+            if outcome != anp_identity::host::ConvergenceOutcome::Activated {
+                return Err(invalid_state());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn cancel(&self) -> ProviderResult<()> {
+        let session = self.session.clone();
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let session = session
+                .lock()
+                .map_err(|_| internal())?
+                .take()
+                .ok_or_else(invalid_state)?;
+            let mut manager = manager.lock().map_err(|_| internal())?;
+            session.cancel(&mut manager).map_err(map_identity_error)
+        })
+        .await
+    }
+}
+
 async fn run_blocking<T>(
     operation: impl FnOnce() -> ProviderResult<T> + Send + 'static,
 ) -> ProviderResult<T>
@@ -489,6 +656,10 @@ where
 
 fn internal() -> IdentityProviderError {
     IdentityProviderError::new(IdentityProviderErrorCode::Internal, false)
+}
+
+fn invalid_state() -> IdentityProviderError {
+    IdentityProviderError::new(IdentityProviderErrorCode::InvalidState, false)
 }
 
 fn map_identity_error(error: anp_identity::IdentityError) -> IdentityProviderError {
@@ -752,6 +923,48 @@ impl From<anp_identity::DocumentChangeOutcome> for ProviderDocumentChangeOutcome
                 identity: identity.into(),
             },
             anp_identity::DocumentChangeOutcome::Aborted => Self::Aborted,
+        }
+    }
+}
+
+impl From<anp_identity::host::EnrollmentProposal> for ProviderEnrollmentProposal {
+    fn from(value: anp_identity::host::EnrollmentProposal) -> Self {
+        Self {
+            enrollment_id: value.enrollment_id,
+            identity: value.identity.into(),
+            kind: match value.kind {
+                anp_identity::host::EnrollmentProposalKind::Device {
+                    device_id,
+                    signing_key,
+                    agreement_key,
+                    profiles,
+                } => ProviderEnrollmentProposalKind::Device {
+                    device_id,
+                    signing_key: ProviderEnrollmentPublicKey {
+                        kid: signing_key.kid,
+                        public_key_multibase: signing_key.public_key_multibase,
+                    },
+                    agreement_key: ProviderEnrollmentPublicKey {
+                        kid: agreement_key.kid,
+                        public_key_multibase: agreement_key.public_key_multibase,
+                    },
+                    profiles,
+                },
+                anp_identity::host::EnrollmentProposalKind::RequestSigning { signing_key } => {
+                    ProviderEnrollmentProposalKind::RequestSigning {
+                        signing_key: ProviderEnrollmentPublicKey {
+                            kid: signing_key.kid,
+                            public_key_multibase: signing_key.public_key_multibase,
+                        },
+                    }
+                }
+            },
+            root_key_fingerprint: value.root_key_fingerprint,
+            checkpoint: ProviderDocumentCheckpoint {
+                document_version: value.checkpoint.document_version,
+                registry_version: value.checkpoint.registry_version,
+                document_digest: value.checkpoint.document_digest,
+            },
         }
     }
 }

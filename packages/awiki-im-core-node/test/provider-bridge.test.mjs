@@ -61,6 +61,13 @@ function provider(overrides = {}) {
     },
     resumeDocumentChange: async () => undefined,
     adoptVerifiedDocument: async () => 'unchanged',
+    beginDeviceEnrollment: async () => {
+      throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
+    },
+    beginRequestSigningEnrollment: async () => {
+      throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
+    },
+    resumeEnrollment: async () => undefined,
     ...overrides,
   }
 }
@@ -173,6 +180,71 @@ test('External Provider keeps document workflow handles inside the bridge', asyn
 
   const stale = await dispatch([{
     operation: 'documentChangeBeginPublication',
+    payloadJson: JSON.stringify({ sessionId }),
+    buffers: [],
+  }])
+  assert.equal(stale.ok, false)
+  assert.equal(stale.errorCode, 'invalid_request')
+})
+
+test('External Provider keeps enrollment handles and private operations inside the bridge', async () => {
+  const calls = []
+  const session = {
+    proposal: async () => ({
+      enrollmentId: 'enrollment-1',
+      identity: {
+        storeId: 'store-1',
+        identityId: 'identity-1',
+        did: 'did:wba:example.test:alice',
+      },
+      kind: {
+        kind: 'device',
+        deviceId: 'device-1',
+        signingKey: { kid: 'signing', publicKeyMultibase: 'zSigning' },
+        agreementKey: { kid: 'agreement', publicKeyMultibase: 'zAgreement' },
+        profiles: [],
+      },
+      rootKeyFingerprint: 'sha256:root',
+      checkpoint: { documentVersion: 1, registryVersion: 1, documentDigest: 'sha256:doc' },
+    }),
+    signDeviceAssertion: async payload => {
+      calls.push(Buffer.from(payload))
+      return Buffer.from('signed')
+    },
+    activate: async remote => {
+      calls.push(remote)
+      return 'activated'
+    },
+    cancel: async () => calls.push('cancel'),
+  }
+  const dispatch = createIdentityProviderDispatch(provider({
+    beginDeviceEnrollment: async () => session,
+  }))
+  const begun = await dispatch([{
+    operation: 'beginDeviceEnrollment',
+    payloadJson: JSON.stringify({ remote: { document: { id: 'did:wba:example.test:alice' } } }),
+    buffers: [],
+  }])
+  const { sessionId, proposal } = JSON.parse(begun.payloadJson)
+  assert.equal(proposal.enrollmentId, 'enrollment-1')
+
+  const signed = await dispatch([{
+    operation: 'enrollmentSignDeviceAssertion',
+    payloadJson: JSON.stringify({ sessionId }),
+    buffers: [Buffer.from('payload')],
+  }])
+  assert.deepEqual(signed.buffers, [Buffer.from('signed')])
+
+  const activated = await dispatch([{
+    operation: 'enrollmentActivate',
+    payloadJson: JSON.stringify({ sessionId, remote: { document: { id: proposal.identity.did } } }),
+    buffers: [],
+  }])
+  assert.equal(JSON.parse(activated.payloadJson), 'activated')
+  assert.equal(calls.length, 2)
+
+  const stale = await dispatch([{
+    operation: 'enrollmentCancel',
     payloadJson: JSON.stringify({ sessionId }),
     buffers: [],
   }])
