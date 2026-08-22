@@ -155,7 +155,7 @@ pub(crate) fn prepare_join_enrollment(
     resolved_document: &serde_json::Value,
 ) -> crate::ImResult<(
     crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
-    anp_identity::PreparedEnrollment,
+    anp_identity::host::EnrollmentProposal,
 )> {
     if resolved_document
         .get("id")
@@ -165,56 +165,73 @@ pub(crate) fn prepare_join_enrollment(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let mut store = open_controller_store(core)?;
-    let (identity, prepared) = match store.open_identity(did.as_str()) {
-        Ok(identity) => {
-            if identity.state() != IdentityState::Enrolling
-                || anp_identity::canonical_document_digest(identity.document())
+    use anp_identity::host::EnrollmentWorkflow;
+
+    let mut manager = open_controller_manager(core)?;
+    let existing = manager
+        .list()
+        .map_err(map_facade_error)?
+        .into_iter()
+        .find(|item| item.reference.did == did.as_str());
+    let proposal = match existing {
+        Some(descriptor) => {
+            let identity = manager
+                .get(&descriptor.reference)
+                .map_err(map_facade_error)?;
+            let public = identity.public_identity().map_err(map_facade_error)?;
+            if public.state != anp_identity::PublicIdentityState::Enrolling
+                || anp_identity::canonical_document_digest(public.document.as_value())
                     .map_err(map_error)?
                     != anp_identity::canonical_document_digest(resolved_document)
                         .map_err(map_error)?
             {
                 return Err(crate::ImError::PermissionDenied);
             }
-            let prepared = identity
-                .pending_enrollment()
-                .ok_or(crate::ImError::PermissionDenied)?;
-            (identity, prepared)
+            manager
+                .resume_enrollment(&descriptor.reference)
+                .map_err(map_facade_error)?
+                .ok_or(crate::ImError::PermissionDenied)?
+                .proposal()
+                .clone()
         }
-        Err(anp_identity::DidError::IdentityNotFound) => {
+        None => {
             let device_id = crate::ids::ProtocolDeviceId::generate()?;
             let signing_fragment = format!("{}-sign", device_id.as_str());
             let e2ee_fragment = format!("{}-e2ee", device_id.as_str());
-            store
-                .prepare_enrollment(anp_identity::EnrollmentSpec {
-                    verified_document: resolved_document.clone(),
-                    evidence: VerifiedDocumentEvidence {
-                        document_version: 1,
-                        registry_version: 1,
-                        document_digest: crate::internal::identity_wire::document::document_hash(
-                            resolved_document,
-                        )?,
+            manager
+                .begin_device_enrollment(anp_identity::host::DeviceEnrollmentRequest {
+                    remote: anp_identity::VerifiedRemoteDocument {
+                        document: anp_identity::DidDocument::from_value(resolved_document.clone()),
+                        evidence: anp_identity::VerifiedPublicationEvidence {
+                            document_version: 1,
+                            registry_version: 1,
+                            document_digest:
+                                crate::internal::identity_wire::document::document_hash(
+                                    resolved_document,
+                                )?,
+                        },
                     },
                     device_id: device_id.as_str().to_owned(),
                     device_signing_fragment: signing_fragment,
-                    device_e2ee_fragment: e2ee_fragment,
+                    device_agreement_fragment: e2ee_fragment,
                     profiles: crate::internal::identity_generation::vnext_device_profiles(),
-                    capabilities: anp_identity::Capabilities { did_wba: true },
+                    capabilities: anp_identity::host::EnrollmentCapabilities { did_wba: true },
                 })
-                .map_err(map_error)?
+                .map_err(map_facade_error)?
+                .proposal()
+                .clone()
         }
-        Err(error) => return Err(map_error(error)),
     };
-    if prepared.did != did.as_str() || prepared.identity_id != identity.identity_id() {
+    if proposal.identity.did != did.as_str() {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok((
         crate::internal::identity_join_activation_pending::JoinEnrollmentRef {
-            store_id: store.manifest().store_id.clone(),
-            identity_id: prepared.identity_id.clone(),
-            enrollment_id: prepared.enrollment_id.clone(),
+            store_id: proposal.identity.store_id.clone(),
+            identity_id: proposal.identity.identity_id.clone(),
+            enrollment_id: proposal.enrollment_id.clone(),
         },
-        prepared,
+        proposal,
     ))
 }
 

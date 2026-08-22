@@ -200,21 +200,30 @@ pub(crate) fn start(
         &request.did,
         resolved_document,
     )?;
-    let protocol_device_id = crate::ids::ProtocolDeviceId::parse(&enrollment.device_id)?;
-    let signing_key_id = enrollment.device_signing_key.kid.clone();
-    let e2ee_key_id = enrollment.device_e2ee_key.kid.clone();
+    let anp_identity::host::EnrollmentProposalKind::Device {
+        device_id,
+        signing_key,
+        agreement_key,
+        ..
+    } = &enrollment.kind
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    let protocol_device_id = crate::ids::ProtocolDeviceId::parse(device_id)?;
+    let signing_key_id = signing_key.kid.clone();
+    let e2ee_key_id = agreement_key.kid.clone();
     let pairing_private =
         anp::PrivateKeyMaterial::X25519(X25519StaticSecret::random_from_rng(rand::rngs::OsRng));
     let signing_method = verification_method_from_multibase(
         request.did.as_str(),
         &signing_key_id,
-        &enrollment.device_signing_key.public_key_multibase,
+        &signing_key.public_key_multibase,
         "Multikey",
     )?;
     let e2ee_method = verification_method_from_multibase(
         request.did.as_str(),
         &e2ee_key_id,
-        &enrollment.device_e2ee_key.public_key_multibase,
+        &agreement_key.public_key_multibase,
         "X25519KeyAgreementKey2019",
     )?;
     let pairing_public_key = x25519_public_b64u(&pairing_private.public_key())?;
