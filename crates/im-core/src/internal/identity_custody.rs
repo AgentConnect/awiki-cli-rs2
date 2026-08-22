@@ -1,7 +1,9 @@
+#[cfg(test)]
 use std::path::Path;
 
 pub(crate) const LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID: &str = "legacy-imported-active-v1";
 
+#[cfg(test)]
 pub(crate) fn open_controller_store(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<anp_identity::DidStore> {
@@ -1610,6 +1612,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 fn open_or_initialize_local_file(root: &Path) -> crate::ImResult<anp_identity::DidStore> {
     match anp_identity::DidStore::open_local_file(root) {
         Ok(store) => Ok(store),
