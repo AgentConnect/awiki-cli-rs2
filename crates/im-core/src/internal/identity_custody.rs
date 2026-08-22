@@ -266,6 +266,38 @@ pub(crate) async fn provision_registration_identity_async(
     })
 }
 
+pub(crate) async fn controller_custody_provider(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody>> {
+    #[cfg(feature = "provider-traits")]
+    if let Some(custody) = core.inner().identity_custody_provider() {
+        return Ok(custody.clone());
+    }
+
+    #[cfg(feature = "identity-native-anp")]
+    {
+        let core = core.clone();
+        return crate::internal::runtime::worker::run_blocking(move || {
+            open_controller_manager(&core).map(|manager| {
+                std::sync::Arc::new(
+                    crate::internal::identity_provider::DirectAnpIdentityCustody::new(manager),
+                )
+                    as std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody>
+            })
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?;
+    }
+
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(crate::ImError::IdentityNotReady {
+        identity: "anp-identity-controller".to_owned(),
+        missing: vec!["external_identity_provider".to_owned()],
+    })
+}
+
 #[cfg(feature = "provider-traits")]
 fn pending_registration_from_provider(
     public: crate::internal::identity_provider::ProviderPublicIdentity,
@@ -450,6 +482,213 @@ pub(crate) fn provision_handle_recovery_identity(
     };
     reference.validate()?;
     Ok(reference)
+}
+
+pub(crate) async fn provision_handle_recovery_identity_async(
+    core: &crate::core::ImCore,
+    domain: &str,
+    local_part: &str,
+) -> crate::ImResult<crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef> {
+    use crate::internal::identity_provider::{ProviderIdentityState, ProviderKeyPurpose};
+
+    let paths = core.inner().sdk_paths().identities.clone();
+    let projected = crate::internal::runtime::worker::run_blocking(move || {
+        crate::internal::identity_store::IdentityStore::new(&paths)
+            .load_index()
+            .map(|index| {
+                index
+                    .credentials
+                    .into_values()
+                    .filter_map(|entry| entry.anp_identity_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+    })
+    .await
+    .map_err(|error| crate::ImError::Internal {
+        message: error.to_string(),
+    })??;
+    let custody = controller_custody_provider(core).await?;
+    let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+    let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
+    let mut matches = Vec::new();
+    for descriptor in custody
+        .list_identities()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+    {
+        if descriptor.state != ProviderIdentityState::Active
+            || projected.contains(&descriptor.reference.identity_id)
+            || !descriptor.reference.did.starts_with(&did_prefix)
+        {
+            continue;
+        }
+        let identity = custody
+            .open_identity(&descriptor.reference)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        let public = identity
+            .public_identity()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        let handle_matches = public
+            .document
+            .get("service")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|services| {
+                services.iter().any(|service| {
+                    service.get("type").and_then(serde_json::Value::as_str)
+                        == Some("ANPHandleService")
+                        && service
+                            .get("serviceEndpoint")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(endpoint.as_str())
+                })
+            });
+        let has_daemon = public.document["authentication"]
+            .as_array()
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry
+                        .as_str()
+                        .is_some_and(|kid| kid.ends_with("#daemon-key-1"))
+                })
+            });
+        if handle_matches
+            && !has_daemon
+            && identity
+                .resume_document_change()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
+                .is_none()
+        {
+            matches.push(identity);
+        }
+    }
+    if matches.len() > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let identity = match matches.pop() {
+        Some(identity) => identity,
+        None => {
+            let create =
+                crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+                    domain,
+                    local_part,
+                    core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                    core.inner().sdk_config().anp_service_did.as_ref(),
+                )?;
+            custody
+                .create_identity(create.spec)
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
+        }
+    };
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.state != ProviderIdentityState::Active
+        || identity
+            .resume_document_change()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .is_some()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let manifest = anp::authentication::validate_device_manifest(&public.document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if manifest.devices.len() != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let device = &manifest.devices[0];
+    let root_key_id = public
+        .active_keys
+        .iter()
+        .find(|key| key.purposes.contains(&ProviderKeyPurpose::RootControl))
+        .map(|key| key.kid.clone())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let reference = crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef {
+        store_id: public.reference.store_id,
+        identity_id: public.reference.identity_id,
+        did: crate::ids::Did::parse(&public.reference.did)?,
+        did_document: public.document,
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id)?,
+        root_key_id,
+        device_signing_key_id: device.signing_key_id.clone(),
+        device_e2ee_key_id: device.e2ee_key_id.clone(),
+    };
+    reference.validate()?;
+    Ok(reference)
+}
+
+pub(crate) async fn handle_recovery_identity_async(
+    core: &crate::core::ImCore,
+    expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
+) -> crate::ImResult<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+    let custody = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: expected.store_id.clone(),
+        identity_id: expected.identity_id.clone(),
+        did: expected.did.as_str().to_owned(),
+    };
+    let identity = custody
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference
+        || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || crate::internal::identity_wire::document::document_hash(&public.document)?
+            != crate::internal::identity_wire::document::document_hash(&expected.did_document)?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(identity)
+}
+
+pub(crate) async fn discard_unpublished_handle_recovery_async(
+    core: &crate::core::ImCore,
+    expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
+) -> crate::ImResult<()> {
+    let custody = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: expected.store_id.clone(),
+        identity_id: expected.identity_id.clone(),
+        did: expected.did.as_str().to_owned(),
+    };
+    let identity = match custody.open_identity(&reference).await {
+        Ok(identity) => identity,
+        Err(error)
+            if error.code
+                == crate::internal::identity_provider::IdentityProviderErrorCode::IdentityNotFound =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(crate::internal::identity_provider::map_provider_error(error)),
+    };
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference
+        || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || identity
+            .resume_document_change()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .is_some()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    custody
+        .delete_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)
 }
 
 #[cfg(feature = "identity-native-anp")]
@@ -2198,6 +2437,62 @@ mod tests {
             .list_identities()
             .unwrap()
             .is_empty());
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[tokio::test]
+    async fn external_handle_recovery_provider_reuses_signs_and_discards_identity() {
+        use crate::internal::identity_provider::{
+            IdentityCustody as _, ProviderKeySelector, ProviderSignRequest, ProviderSigningPurpose,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let provider_root = tempfile::tempdir().unwrap();
+        let manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: provider_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("external-handle-recovery", [0x73; 32]),
+                ),
+            })
+            .unwrap();
+        let provider = std::sync::Arc::new(
+            crate::internal::identity_provider::DirectAnpIdentityCustody::new(manager),
+        );
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions::default().with_identity_custody_provider(provider.clone()),
+        )
+        .unwrap();
+
+        let first = provision_handle_recovery_identity_async(&core, "example.test", "recovered")
+            .await
+            .unwrap();
+        let recovered =
+            provision_handle_recovery_identity_async(&core, "example.test", "recovered")
+                .await
+                .unwrap();
+        assert_eq!(recovered, first);
+
+        handle_recovery_identity_async(&core, &first)
+            .await
+            .unwrap()
+            .sign(ProviderSignRequest {
+                purpose: ProviderSigningPurpose::DeviceAssertion,
+                key: ProviderKeySelector::Kid(first.device_signing_key_id.clone()),
+                payload: b"recovery proof".to_vec(),
+            })
+            .await
+            .unwrap();
+
+        discard_unpublished_handle_recovery_async(&core, &first)
+            .await
+            .unwrap();
+        discard_unpublished_handle_recovery_async(&core, &first)
+            .await
+            .unwrap();
+        assert!(provider.list_identities().await.unwrap().is_empty());
     }
 
     #[test]

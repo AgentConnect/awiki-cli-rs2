@@ -9,7 +9,6 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 #[cfg(feature = "identity-native-anp")]
-#[cfg(test)]
 pub(crate) use direct::DirectAnpIdentityCustody;
 #[cfg(feature = "identity-native-anp")]
 pub(crate) use direct::DirectAnpIdentitySession;
