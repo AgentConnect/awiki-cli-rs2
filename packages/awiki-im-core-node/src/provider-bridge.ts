@@ -7,6 +7,7 @@ import {
   ImCoreNodeError,
   type ImCoreIdentityProvider,
   type ImCoreIdentityReference,
+  type ImCoreProviderDocumentChangeSession,
 } from './types.js'
 
 const IDENTITY_PROVIDER_PROTOCOL = 'anp-identity-provider-ts/1'
@@ -14,6 +15,8 @@ const REQUIRED_CAPABILITIES = [
   'IDENTITY_READ',
   'IDENTITY_SIGN',
   'IDENTITY_HTTP_SIGNATURE',
+  'IDENTITY_CREATE',
+  'IDENTITY_DOCUMENT_UPDATE',
 ] as const
 
 /** @internal Host-only bridge; this file is not exported by the package. */
@@ -24,11 +27,15 @@ export function createIdentityProviderDispatch(
   const capabilities = new Set(provider.capabilities)
   if (REQUIRED_CAPABILITIES.some(capability => !capabilities.has(capability))) throw incompatible()
   for (const method of [
-    'info', 'recover', 'list', 'publicIdentity', 'recoverIdentity',
+    'info', 'recover', 'list', 'publicIdentity', 'create', 'delete', 'recoverIdentity',
     'sign', 'signOriginProof', 'prepareHttpSignature',
+    'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
   ] as const) {
     if (typeof provider[method] !== 'function') throw incompatible()
   }
+
+  const documentSessions = new Map<string, ImCoreProviderDocumentChangeSession>()
+  let nextDocumentSession = 1
 
   return async (calls: readonly [NativeIdentityProviderCall]): Promise<NativeIdentityProviderReply> => {
     try {
@@ -42,6 +49,10 @@ export function createIdentityProviderDispatch(
         case 'list': return success(await provider.list())
         case 'publicIdentity':
           return success(await provider.publicIdentity(reference(payload.identity)))
+        case 'create': return success(await provider.create(payload))
+        case 'delete':
+          await provider.delete(reference(payload.identity))
+          return success(null)
         case 'recoverIdentity':
           await provider.recoverIdentity(reference(payload.identity))
           return success(null)
@@ -68,6 +79,46 @@ export function createIdentityProviderDispatch(
             body,
           } as never))
         }
+        case 'prepareDocumentChange': {
+          const session = await provider.prepareDocumentChange(
+            reference(payload.identity),
+            object(payload.request),
+          )
+          const sessionId = `document-change-${nextDocumentSession++}`
+          documentSessions.set(sessionId, session)
+          return success({ sessionId, candidate: await session.candidate() })
+        }
+        case 'resumeDocumentChange': {
+          const session = await provider.resumeDocumentChange(reference(payload.identity))
+          if (session === undefined) return success(null)
+          const sessionId = `document-change-${nextDocumentSession++}`
+          documentSessions.set(sessionId, session)
+          return success({ sessionId, candidate: await session.candidate() })
+        }
+        case 'adoptVerifiedDocument':
+          return success(await provider.adoptVerifiedDocument(
+            reference(payload.identity),
+            object(payload.remote),
+          ))
+        case 'documentChangeBeginPublication':
+          return success(await documentSession(documentSessions, payload.sessionId).beginPublication())
+        case 'documentChangeComplete': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await documentSession(documentSessions, sessionId).complete(
+            object(payload.attempt),
+            object(payload.result),
+          )
+          if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
+          return success(outcome)
+        }
+        case 'documentChangeReconcile': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await documentSession(documentSessions, sessionId).reconcile(
+            object(payload.observation),
+          )
+          if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
+          return success(outcome)
+        }
         default: return failure('provider_incompatible', false)
       }
     }
@@ -75,6 +126,27 @@ export function createIdentityProviderDispatch(
       return failure(errorCode(error), errorRetryable(error))
     }
   }
+}
+
+function documentSession(
+  sessions: ReadonlyMap<string, ImCoreProviderDocumentChangeSession>,
+  value: unknown,
+): ImCoreProviderDocumentChangeSession {
+  const session = sessions.get(requiredString(value))
+  if (session === undefined) throw new TypeError('identity provider document session is invalid')
+  return session
+}
+
+function requiredString(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError('identity provider string value is invalid')
+  }
+  return value
+}
+
+function isFinalDocumentOutcome(value: unknown): boolean {
+  const outcome = object(value).outcome
+  return outcome === 'committed' || outcome === 'aborted'
 }
 
 function incompatible(): ImCoreNodeError {

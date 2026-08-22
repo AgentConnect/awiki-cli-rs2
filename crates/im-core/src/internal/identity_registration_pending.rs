@@ -437,7 +437,11 @@ mod tests {
         .unwrap();
         let root = tempfile::tempdir().unwrap();
         let mut store = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
-        let generated = store.create_identity(create.spec).unwrap();
+        let generated = store
+            .create_identity(crate::internal::identity_custody::native_create_spec(
+                create.spec,
+            ))
+            .unwrap();
         let manifest = anp::authentication::validate_device_manifest(generated.document())
             .unwrap()
             .unwrap();

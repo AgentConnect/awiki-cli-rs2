@@ -1,3 +1,4 @@
+#[cfg(feature = "identity-native-anp")]
 mod direct;
 
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) use direct::DirectAnpIdentitySession;
 
 pub const IDENTITY_PROVIDER_PROTOCOL: &str = "anp-identity-provider-ts/1";
@@ -190,6 +192,150 @@ pub struct ProviderIdentityDescriptor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ProviderManagedKeyRole {
+    RootControl,
+    DeviceSigning,
+    RequestSigning,
+    E2eeSigning,
+    E2eeAgreement,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderManagedKeySpec {
+    pub fragment: String,
+    pub role: ProviderManagedKeyRole,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderIdentityService {
+    pub id: String,
+    pub service_type: String,
+    pub service_endpoint: String,
+    pub service_did: Option<String>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub security_profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderDeviceManifestEntry {
+    pub device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ProviderIdentityExtension {
+    DeviceManifest {
+        devices: Vec<ProviderDeviceManifestEntry>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderCreateIdentityRequest {
+    pub profile: ProviderDidProfile,
+    pub domain: String,
+    pub port: Option<u16>,
+    pub path_segments: Vec<String>,
+    pub capabilities: ProviderCapabilities,
+    pub managed_keys: Vec<ProviderManagedKeySpec>,
+    #[serde(default)]
+    pub services: Vec<ProviderIdentityService>,
+    pub agent_description_url: Option<String>,
+    #[serde(default)]
+    pub extensions: Vec<ProviderIdentityExtension>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDidProfile {
+    E1,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderCapabilities {
+    pub did_wba: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderPublicationEvidence {
+    pub document_version: u64,
+    pub registry_version: u64,
+    pub document_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderVerifiedRemoteDocument {
+    pub document: Value,
+    pub evidence: ProviderPublicationEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderPreparedDocumentChange {
+    pub operation_id: String,
+    pub candidate_document: Value,
+    pub candidate_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderPublicationAttempt {
+    pub operation_id: String,
+    pub candidate_digest: String,
+    pub publication_generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ProviderPublicationResult {
+    Confirmed {
+        evidence: ProviderPublicationEvidence,
+    },
+    RejectedBeforeAcceptance,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ProviderDocumentChangeOutcome {
+    ReadyForPublication,
+    PublicationUncertain,
+    Committed { identity: ProviderPublicIdentity },
+    Aborted,
+}
+
+#[async_trait]
+pub trait ProviderDocumentChangeSession: Send + Sync {
+    async fn candidate(&self) -> ProviderResult<ProviderPreparedDocumentChange>;
+
+    async fn begin_publication(&self) -> ProviderResult<ProviderPublicationAttempt>;
+
+    async fn complete(
+        &self,
+        attempt: ProviderPublicationAttempt,
+        result: ProviderPublicationResult,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome>;
+
+    async fn reconcile(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKeySelector {
     Default,
     Kid(String),
@@ -315,6 +461,13 @@ pub trait IdentityCustody: Send + Sync {
         identity: &ProviderIdentityRef,
     ) -> ProviderResult<Arc<dyn IdentitySession>>;
 
+    async fn create_identity(
+        &self,
+        request: ProviderCreateIdentityRequest,
+    ) -> ProviderResult<Arc<dyn IdentitySession>>;
+
+    async fn delete_identity(&self, identity: &ProviderIdentityRef) -> ProviderResult<()>;
+
     async fn recover(&self) -> ProviderResult<()>;
 }
 
@@ -333,6 +486,20 @@ pub trait IdentitySession: Send + Sync {
         &self,
         request: ProviderExactHttpRequest,
     ) -> ProviderResult<ProviderPreparedHttpSignature>;
+
+    async fn prepare_document_change(
+        &self,
+        request: Value,
+    ) -> ProviderResult<Arc<dyn ProviderDocumentChangeSession>>;
+
+    async fn resume_document_change(
+        &self,
+    ) -> ProviderResult<Option<Arc<dyn ProviderDocumentChangeSession>>>;
+
+    async fn adopt_verified_document(
+        &self,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderPublicIdentity>;
 
     async fn derive_shared_secret(
         &self,

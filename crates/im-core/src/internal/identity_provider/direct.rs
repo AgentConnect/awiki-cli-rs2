@@ -2,17 +2,21 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
 use anp_identity::host::{
-    HttpRequestSigningPort, IdentityStatusPort, KeyAgreementPort, KeyAgreementRequest,
+    ConvergenceWorkflow, HttpRequestSigningPort, IdentityStatusPort, KeyAgreementPort,
+    KeyAgreementRequest,
 };
 
 use super::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
+    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangeSession,
     ProviderExactHttpRequest, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
     ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
-    ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedHttpSignature,
-    ProviderPublicIdentity, ProviderPublicKey, ProviderResult, ProviderSharedSecret,
-    ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose,
-    ProviderStoreInfo,
+    ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
+    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
+    ProviderPublicationAttempt, ProviderPublicationEvidence, ProviderPublicationResult,
+    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument,
 };
 
 pub(crate) struct DirectAnpIdentityCustody {
@@ -20,7 +24,17 @@ pub(crate) struct DirectAnpIdentityCustody {
 }
 
 pub(crate) struct DirectAnpIdentitySession {
-    identity: Arc<anp_identity::ManagedIdentity>,
+    identity: DirectIdentityHandle,
+}
+
+#[derive(Clone)]
+enum DirectIdentityHandle {
+    Owned(Arc<Mutex<anp_identity::ManagedIdentity>>),
+    Shared(Arc<anp_identity::ManagedIdentity>),
+}
+
+struct DirectDocumentChangeSession {
+    session: Arc<Mutex<anp_identity::DocumentChangeSession>>,
 }
 
 impl DirectAnpIdentityCustody {
@@ -34,12 +48,14 @@ impl DirectAnpIdentityCustody {
 impl DirectAnpIdentitySession {
     pub(crate) fn new(identity: anp_identity::ManagedIdentity) -> Self {
         Self {
-            identity: Arc::new(identity),
+            identity: DirectIdentityHandle::Owned(Arc::new(Mutex::new(identity))),
         }
     }
 
     pub(crate) fn from_shared(identity: Arc<anp_identity::ManagedIdentity>) -> Self {
-        Self { identity }
+        Self {
+            identity: DirectIdentityHandle::Shared(identity),
+        }
     }
 }
 
@@ -99,6 +115,39 @@ impl IdentityCustody for DirectAnpIdentityCustody {
         .await
     }
 
+    async fn create_identity(
+        &self,
+        request: ProviderCreateIdentityRequest,
+    ) -> ProviderResult<Arc<dyn IdentitySession>> {
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let request = crate::internal::identity_custody::native_create_spec(request);
+            let managed = manager
+                .lock()
+                .map_err(|_| internal())?
+                .create(request)
+                .map_err(map_identity_error)?;
+            Ok(Arc::new(DirectAnpIdentitySession::new(managed)) as Arc<dyn IdentitySession>)
+        })
+        .await
+    }
+
+    async fn delete_identity(&self, identity: &ProviderIdentityRef) -> ProviderResult<()> {
+        let manager = self.manager.clone();
+        let identity = identity.clone();
+        run_blocking(move || {
+            manager
+                .lock()
+                .map_err(|_| internal())?
+                .delete(
+                    &identity.into(),
+                    anp_identity::DeleteIdentityRequest::default(),
+                )
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
     async fn recover(&self) -> ProviderResult<()> {
         let manager = self.manager.clone();
         run_blocking(move || {
@@ -118,10 +167,7 @@ impl IdentitySession for DirectAnpIdentitySession {
     async fn public_identity(&self) -> ProviderResult<ProviderPublicIdentity> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            identity
-                .public_identity()
-                .map(Into::into)
-                .map_err(map_identity_error)
+            with_identity(&identity, |identity| identity.public_identity()).map(Into::into)
         })
         .await
     }
@@ -129,10 +175,8 @@ impl IdentitySession for DirectAnpIdentitySession {
     async fn sign(&self, request: ProviderSignRequest) -> ProviderResult<ProviderSignature> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            identity
-                .sign(request.into())
+            with_identity(&identity, |identity| identity.sign(request.clone().into()))
                 .map(Into::into)
-                .map_err(map_identity_error)
         })
         .await
     }
@@ -143,10 +187,10 @@ impl IdentitySession for DirectAnpIdentitySession {
     ) -> ProviderResult<ProviderSignedOriginProof> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            identity
-                .sign_origin_proof(request.into())
-                .map(Into::into)
-                .map_err(map_identity_error)
+            with_identity(&identity, |identity| {
+                identity.sign_origin_proof(request.clone().into())
+            })
+            .map(Into::into)
         })
         .await
     }
@@ -157,10 +201,62 @@ impl IdentitySession for DirectAnpIdentitySession {
     ) -> ProviderResult<ProviderPreparedHttpSignature> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            identity
-                .prepare_http_signature(request.into())
-                .map(Into::into)
-                .map_err(map_identity_error)
+            with_identity(&identity, |identity| {
+                identity.prepare_http_signature(request.clone().into())
+            })
+            .map(Into::into)
+        })
+        .await
+    }
+
+    async fn prepare_document_change(
+        &self,
+        request: serde_json::Value,
+    ) -> ProviderResult<Arc<dyn ProviderDocumentChangeSession>> {
+        let identity = self.identity.clone();
+        run_blocking(move || {
+            let request = serde_json::from_value(request).map_err(|_| {
+                IdentityProviderError::new(IdentityProviderErrorCode::InvalidRequest, false)
+            })?;
+            let session = with_owned_identity(&identity, |identity| {
+                identity.prepare_document_change(request)
+            })?;
+            Ok(Arc::new(DirectDocumentChangeSession {
+                session: Arc::new(Mutex::new(session)),
+            }) as Arc<dyn ProviderDocumentChangeSession>)
+        })
+        .await
+    }
+
+    async fn resume_document_change(
+        &self,
+    ) -> ProviderResult<Option<Arc<dyn ProviderDocumentChangeSession>>> {
+        let identity = self.identity.clone();
+        run_blocking(move || {
+            with_owned_identity(&identity, |identity| identity.resume_document_change()).map(
+                |session| {
+                    session.map(|session| {
+                        Arc::new(DirectDocumentChangeSession {
+                            session: Arc::new(Mutex::new(session)),
+                        }) as Arc<dyn ProviderDocumentChangeSession>
+                    })
+                },
+            )
+        })
+        .await
+    }
+
+    async fn adopt_verified_document(
+        &self,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderPublicIdentity> {
+        let identity = self.identity.clone();
+        run_blocking(move || {
+            with_owned_identity(&identity, |identity| {
+                identity.adopt_verified_document(remote.clone().into())?;
+                identity.public_identity()
+            })
+            .map(Into::into)
         })
         .await
     }
@@ -171,20 +267,126 @@ impl IdentitySession for DirectAnpIdentitySession {
     ) -> ProviderResult<ProviderSharedSecret> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            identity
-                .derive_shared_secret(KeyAgreementRequest {
+            with_identity(&identity, |identity| {
+                identity.derive_shared_secret(KeyAgreementRequest {
                     key: request.key.into(),
                     peer_public: request.peer_public,
                 })
-                .map(|secret| ProviderSharedSecret::new(*secret.as_bytes()))
-                .map_err(map_identity_error)
+            })
+            .map(|secret| ProviderSharedSecret::new(*secret.as_bytes()))
         })
         .await
     }
 
     async fn recover(&self) -> ProviderResult<()> {
         let identity = self.identity.clone();
-        run_blocking(move || identity.recover_identity().map_err(map_identity_error)).await
+        run_blocking(move || with_identity(&identity, |identity| identity.recover_identity())).await
+    }
+}
+
+fn with_identity<T>(
+    handle: &DirectIdentityHandle,
+    operation: impl FnOnce(&anp_identity::ManagedIdentity) -> anp_identity::IdentityResult<T>,
+) -> ProviderResult<T> {
+    match handle {
+        DirectIdentityHandle::Owned(identity) => {
+            let identity = identity.lock().map_err(|_| internal())?;
+            operation(&identity)
+        }
+        DirectIdentityHandle::Shared(identity) => operation(identity),
+    }
+    .map_err(map_identity_error)
+}
+
+fn with_owned_identity<T>(
+    handle: &DirectIdentityHandle,
+    operation: impl FnOnce(&mut anp_identity::ManagedIdentity) -> anp_identity::IdentityResult<T>,
+) -> ProviderResult<T> {
+    let DirectIdentityHandle::Owned(identity) = handle else {
+        return Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ));
+    };
+    let mut identity = identity.lock().map_err(|_| internal())?;
+    operation(&mut identity).map_err(map_identity_error)
+}
+
+#[async_trait]
+impl ProviderDocumentChangeSession for DirectDocumentChangeSession {
+    async fn candidate(&self) -> ProviderResult<ProviderPreparedDocumentChange> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let session = session.lock().map_err(|_| internal())?;
+            Ok(session.candidate().clone().into())
+        })
+        .await
+    }
+
+    async fn begin_publication(&self) -> ProviderResult<ProviderPublicationAttempt> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let attempt = session
+                .lock()
+                .map_err(|_| internal())?
+                .begin_publication()
+                .map_err(map_identity_error)?;
+            let publication_generation = serde_json::to_value(&attempt)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("publication_generation")
+                        .and_then(|value| value.as_u64())
+                })
+                .ok_or_else(internal)?;
+            Ok(ProviderPublicationAttempt {
+                operation_id: attempt.operation_id().to_owned(),
+                candidate_digest: attempt.candidate_digest().to_owned(),
+                publication_generation,
+            })
+        })
+        .await
+    }
+
+    async fn complete(
+        &self,
+        attempt: ProviderPublicationAttempt,
+        result: ProviderPublicationResult,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            session
+                .lock()
+                .map_err(|_| internal())?
+                .complete(
+                    serde_json::from_value(serde_json::json!({
+                        "operation_id": attempt.operation_id,
+                        "candidate_digest": attempt.candidate_digest,
+                        "publication_generation": attempt.publication_generation,
+                    }))
+                    .map_err(|_| internal())?,
+                    result.into(),
+                )
+                .map(Into::into)
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn reconcile(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            session
+                .lock()
+                .map_err(|_| internal())?
+                .reconcile(observation.into())
+                .map(Into::into)
+                .map_err(map_identity_error)
+        })
+        .await
     }
 }
 
@@ -410,6 +612,60 @@ impl From<anp_identity::host::PreparedHttpSignatureAttempt> for ProviderPrepared
                     value: header.value,
                 })
                 .collect(),
+        }
+    }
+}
+
+impl From<ProviderPublicationEvidence> for anp_identity::VerifiedPublicationEvidence {
+    fn from(value: ProviderPublicationEvidence) -> Self {
+        Self {
+            document_version: value.document_version,
+            registry_version: value.registry_version,
+            document_digest: value.document_digest,
+        }
+    }
+}
+
+impl From<ProviderVerifiedRemoteDocument> for anp_identity::VerifiedRemoteDocument {
+    fn from(value: ProviderVerifiedRemoteDocument) -> Self {
+        Self {
+            document: anp_identity::DidDocument::from_value(value.document),
+            evidence: value.evidence.into(),
+        }
+    }
+}
+
+impl From<anp_identity::PreparedDocumentChange> for ProviderPreparedDocumentChange {
+    fn from(value: anp_identity::PreparedDocumentChange) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            candidate_document: value.candidate_document.into_value(),
+            candidate_digest: value.candidate_digest,
+        }
+    }
+}
+
+impl From<ProviderPublicationResult> for anp_identity::PublicationResult {
+    fn from(value: ProviderPublicationResult) -> Self {
+        match value {
+            ProviderPublicationResult::Confirmed { evidence } => Self::Confirmed {
+                evidence: evidence.into(),
+            },
+            ProviderPublicationResult::RejectedBeforeAcceptance => Self::RejectedBeforeAcceptance,
+            ProviderPublicationResult::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<anp_identity::DocumentChangeOutcome> for ProviderDocumentChangeOutcome {
+    fn from(value: anp_identity::DocumentChangeOutcome) -> Self {
+        match value {
+            anp_identity::DocumentChangeOutcome::ReadyForPublication => Self::ReadyForPublication,
+            anp_identity::DocumentChangeOutcome::PublicationUncertain => Self::PublicationUncertain,
+            anp_identity::DocumentChangeOutcome::Committed { identity } => Self::Committed {
+                identity: identity.into(),
+            },
+            anp_identity::DocumentChangeOutcome::Aborted => Self::Aborted,
         }
     }
 }

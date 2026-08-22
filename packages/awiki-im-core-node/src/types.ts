@@ -34,6 +34,8 @@ export interface ImCoreIdentityProvider {
   recover(): Promise<unknown>
   list(): Promise<readonly unknown[]>
   publicIdentity(reference: ImCoreIdentityReference): Promise<unknown>
+  create(request: unknown): Promise<unknown>
+  delete(reference: ImCoreIdentityReference): Promise<void>
   recoverIdentity(reference: ImCoreIdentityReference): Promise<void>
   sign(
     reference: ImCoreIdentityReference,
@@ -73,6 +75,25 @@ export interface ImCoreIdentityProvider {
     readonly expires?: number
     readonly coveredComponents?: readonly string[]
   }): Promise<unknown>
+  prepareDocumentChange(
+    reference: ImCoreIdentityReference,
+    request: unknown,
+  ): Promise<ImCoreProviderDocumentChangeSession>
+  resumeDocumentChange(
+    reference: ImCoreIdentityReference,
+  ): Promise<ImCoreProviderDocumentChangeSession | undefined>
+  adoptVerifiedDocument(
+    reference: ImCoreIdentityReference,
+    remote: unknown,
+  ): Promise<string>
+}
+
+/** Host-only opaque workflow retained inside the provider bridge. */
+export interface ImCoreProviderDocumentChangeSession {
+  candidate(): Promise<unknown>
+  beginPublication(): Promise<unknown>
+  complete(attempt: unknown, result: unknown): Promise<unknown>
+  reconcile(observation: unknown): Promise<unknown>
 }
 
 /** Public identity projection. No token, private key, or local path is exposed. */

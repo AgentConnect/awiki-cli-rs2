@@ -1592,47 +1592,56 @@ impl IdentityRegistry<'_> {
                         missing: vec!["anp_identity_backend_marker".to_owned()],
                     });
                 }
-                let expected_store_id =
-                    entry.anp_identity_store_id.as_deref().ok_or_else(|| {
-                        crate::ImError::IdentityNotReady {
-                            identity: summary.did.as_str().to_owned(),
-                            missing: vec!["anp_identity_store_id".to_owned()],
-                        }
-                    })?;
-                let expected_identity_id = entry.anp_identity_id.as_deref().ok_or_else(|| {
-                    crate::ImError::IdentityNotReady {
-                        identity: summary.did.as_str().to_owned(),
-                        missing: vec!["anp_identity_id".to_owned()],
-                    }
-                })?;
-                let manager =
-                    crate::internal::identity_custody::open_controller_manager(self.core)?;
-                let identity = manager
-                    .get(&anp_identity::IdentityRef {
-                        store_id: expected_store_id.to_owned(),
-                        identity_id: expected_identity_id.to_owned(),
-                        did: summary.did.as_str().to_owned(),
-                    })
-                    .map_err(crate::internal::identity_custody::map_facade_error)?;
-                let provider = if let Some(auth_ref) = entry.anp_identity_auth_ref.clone() {
-                    let context = self.core.inner().identity_vault().ok_or_else(|| {
-                        crate::ImError::IdentityNotReady {
-                            identity: summary.did.as_str().to_owned(),
-                            missing: vec!["identity_secret_vault".to_owned()],
-                        }
-                    })?;
-                    crate::internal::key_provider::AnpIdentitySigner::new_vault(
-                        identity,
-                        context.vault(),
-                        auth_ref,
-                    )?
-                } else {
-                    crate::internal::key_provider::AnpIdentitySigner::new_file(
-                        identity,
-                        identity_dir.join("auth.json"),
-                    )
-                };
-                return Ok(Arc::new(provider));
+                #[cfg(not(feature = "identity-native-anp"))]
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["external_identity_provider_async_context".to_owned()],
+                });
+                #[cfg(feature = "identity-native-anp")]
+                {
+                    let expected_store_id =
+                        entry.anp_identity_store_id.as_deref().ok_or_else(|| {
+                            crate::ImError::IdentityNotReady {
+                                identity: summary.did.as_str().to_owned(),
+                                missing: vec!["anp_identity_store_id".to_owned()],
+                            }
+                        })?;
+                    let expected_identity_id =
+                        entry.anp_identity_id.as_deref().ok_or_else(|| {
+                            crate::ImError::IdentityNotReady {
+                                identity: summary.did.as_str().to_owned(),
+                                missing: vec!["anp_identity_id".to_owned()],
+                            }
+                        })?;
+                    let manager =
+                        crate::internal::identity_custody::open_controller_manager(self.core)?;
+                    let identity = manager
+                        .get(&anp_identity::IdentityRef {
+                            store_id: expected_store_id.to_owned(),
+                            identity_id: expected_identity_id.to_owned(),
+                            did: summary.did.as_str().to_owned(),
+                        })
+                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                    let provider = if let Some(auth_ref) = entry.anp_identity_auth_ref.clone() {
+                        let context = self.core.inner().identity_vault().ok_or_else(|| {
+                            crate::ImError::IdentityNotReady {
+                                identity: summary.did.as_str().to_owned(),
+                                missing: vec!["identity_secret_vault".to_owned()],
+                            }
+                        })?;
+                        crate::internal::key_provider::AnpIdentitySigner::new_vault(
+                            identity,
+                            context.vault(),
+                            auth_ref,
+                        )?
+                    } else {
+                        crate::internal::key_provider::AnpIdentitySigner::new_file(
+                            identity,
+                            identity_dir.join("auth.json"),
+                        )
+                    };
+                    return Ok(Arc::new(provider));
+                }
             }
         }
         let policy = self.core.inner().identity_secret_storage_policy();

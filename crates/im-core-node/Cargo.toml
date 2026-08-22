@@ -15,7 +15,7 @@ base64.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 fs2.workspace = true
-im-core = { package = "awiki-im-core", path = "../im-core", features = ["provider-traits"] }
+im-core = { package = "awiki-im-core", path = "../im-core", features = ["identity-external-provider"] }
 napi.workspace = true
 napi-derive.workspace = true
 rand.workspace = true

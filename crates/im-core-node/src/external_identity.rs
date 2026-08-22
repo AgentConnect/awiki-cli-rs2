@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use im_core::provider::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
+    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangeSession,
     ProviderExactHttpRequest, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
     ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
-    ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedHttpSignature,
-    ProviderPublicIdentity, ProviderPublicKey, ProviderResult, ProviderSharedSecret,
+    ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
+    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
+    ProviderPublicationAttempt, ProviderPublicationResult, ProviderResult, ProviderSharedSecret,
     ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose,
-    ProviderStoreInfo,
+    ProviderStoreInfo, ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -49,6 +51,12 @@ struct ExternalIdentitySession {
     public_cache: tokio::sync::RwLock<Option<ProviderPublicIdentity>>,
 }
 
+struct ExternalDocumentChangeSession {
+    dispatch: Arc<IdentityProviderDispatch>,
+    session_id: String,
+    candidate: ProviderPreparedDocumentChange,
+}
+
 impl ExternalIdentityCustody {
     pub(crate) fn new(dispatch: IdentityProviderDispatch) -> Self {
         Self {
@@ -75,6 +83,41 @@ impl ExternalIdentityCustody {
 #[serde(rename_all = "camelCase")]
 struct IdentityPayload<'a> {
     identity: &'a ProviderIdentityRef,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentChangePayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    request: &'a serde_json::Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentSessionPayload<'a> {
+    session_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteDocumentChangePayload<'a> {
+    session_id: &'a str,
+    attempt: &'a ProviderPublicationAttempt,
+    result: &'a ProviderPublicationResult,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconcileDocumentChangePayload<'a> {
+    session_id: &'a str,
+    observation: &'a ProviderVerifiedRemoteDocument,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DocumentSessionWire {
+    session_id: String,
+    candidate: ProviderPreparedDocumentChange,
 }
 
 #[derive(Serialize)]
@@ -181,6 +224,31 @@ impl IdentityCustody for ExternalIdentityCustody {
             return Err(provider_error(IdentityProviderErrorCode::Conflict, false));
         }
         Ok(Arc::new(session))
+    }
+
+    async fn create_identity(
+        &self,
+        request: ProviderCreateIdentityRequest,
+    ) -> ProviderResult<Arc<dyn IdentitySession>> {
+        let public: WirePublicIdentity =
+            call_json(&self.dispatch, "create", &request, Vec::new()).await?;
+        let public = ProviderPublicIdentity::try_from(public)?;
+        let session = ExternalIdentitySession {
+            dispatch: self.dispatch.clone(),
+            identity: public.reference.clone(),
+            public_cache: tokio::sync::RwLock::new(Some(public)),
+        };
+        Ok(Arc::new(session))
+    }
+
+    async fn delete_identity(&self, identity: &ProviderIdentityRef) -> ProviderResult<()> {
+        call_json::<()>(
+            &self.dispatch,
+            "delete",
+            &IdentityPayload { identity },
+            Vec::new(),
+        )
+        .await
     }
 
     async fn recover(&self) -> ProviderResult<()> {
@@ -317,6 +385,72 @@ impl IdentitySession for ExternalIdentitySession {
         })
     }
 
+    async fn prepare_document_change(
+        &self,
+        request: serde_json::Value,
+    ) -> ProviderResult<Arc<dyn ProviderDocumentChangeSession>> {
+        let wire: DocumentSessionWire = call_json(
+            &self.dispatch,
+            "prepareDocumentChange",
+            &DocumentChangePayload {
+                identity: &self.identity,
+                request: &request,
+            },
+            Vec::new(),
+        )
+        .await?;
+        Ok(Arc::new(ExternalDocumentChangeSession {
+            dispatch: self.dispatch.clone(),
+            session_id: wire.session_id,
+            candidate: wire.candidate,
+        }))
+    }
+
+    async fn resume_document_change(
+        &self,
+    ) -> ProviderResult<Option<Arc<dyn ProviderDocumentChangeSession>>> {
+        let wire: Option<DocumentSessionWire> = call_json(
+            &self.dispatch,
+            "resumeDocumentChange",
+            &IdentityPayload {
+                identity: &self.identity,
+            },
+            Vec::new(),
+        )
+        .await?;
+        Ok(wire.map(|wire| {
+            Arc::new(ExternalDocumentChangeSession {
+                dispatch: self.dispatch.clone(),
+                session_id: wire.session_id,
+                candidate: wire.candidate,
+            }) as Arc<dyn ProviderDocumentChangeSession>
+        }))
+    }
+
+    async fn adopt_verified_document(
+        &self,
+        remote: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderPublicIdentity> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a> {
+            identity: &'a ProviderIdentityRef,
+            remote: &'a ProviderVerifiedRemoteDocument,
+        }
+        let _: String = call_json(
+            &self.dispatch,
+            "adoptVerifiedDocument",
+            &Payload {
+                identity: &self.identity,
+                remote: &remote,
+            },
+            Vec::new(),
+        )
+        .await?;
+        *self.public_cache.write().await = None;
+        self.public_identity().await
+    }
+
     async fn derive_shared_secret(
         &self,
         _request: ProviderKeyAgreementRequest,
@@ -342,6 +476,59 @@ impl IdentitySession for ExternalIdentitySession {
         .await?;
         *self.public_cache.write().await = None;
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
+    async fn candidate(&self) -> ProviderResult<ProviderPreparedDocumentChange> {
+        Ok(self.candidate.clone())
+    }
+
+    async fn begin_publication(&self) -> ProviderResult<ProviderPublicationAttempt> {
+        call_json(
+            &self.dispatch,
+            "documentChangeBeginPublication",
+            &DocumentSessionPayload {
+                session_id: &self.session_id,
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn complete(
+        &self,
+        attempt: ProviderPublicationAttempt,
+        result: ProviderPublicationResult,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        call_json(
+            &self.dispatch,
+            "documentChangeComplete",
+            &CompleteDocumentChangePayload {
+                session_id: &self.session_id,
+                attempt: &attempt,
+                result: &result,
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn reconcile(
+        &self,
+        observation: ProviderVerifiedRemoteDocument,
+    ) -> ProviderResult<ProviderDocumentChangeOutcome> {
+        call_json(
+            &self.dispatch,
+            "documentChangeReconcile",
+            &ReconcileDocumentChangePayload {
+                session_id: &self.session_id,
+                observation: &observation,
+            },
+            Vec::new(),
+        )
+        .await
     }
 }
 

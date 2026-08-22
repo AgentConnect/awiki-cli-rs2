@@ -1,27 +1,26 @@
 use super::*;
 
-fn create_spec() -> anp_identity::CreateIdentityRequest {
-    anp_identity::CreateIdentityRequest {
-        profile: anp_identity::DidProfile::E1,
+fn create_spec() -> ProviderCreateIdentityRequest {
+    ProviderCreateIdentityRequest {
+        profile: ProviderDidProfile::E1,
         domain: "example.com".to_owned(),
         port: None,
         path_segments: vec!["provider-contract".to_owned()],
-        capabilities: anp_identity::Capabilities { did_wba: true },
+        capabilities: ProviderCapabilities { did_wba: true },
         managed_keys: vec![
-            anp_identity::ManagedKeySpec {
+            ProviderManagedKeySpec {
                 fragment: "root".to_owned(),
-                role: anp_identity::KeyRole::RootControl,
+                role: ProviderManagedKeyRole::RootControl,
             },
-            anp_identity::ManagedKeySpec {
+            ProviderManagedKeySpec {
                 fragment: "request".to_owned(),
-                role: anp_identity::KeyRole::RequestSigning,
+                role: ProviderManagedKeyRole::RequestSigning,
             },
-            anp_identity::ManagedKeySpec {
+            ProviderManagedKeySpec {
                 fragment: "agreement".to_owned(),
-                role: anp_identity::KeyRole::E2eeAgreement,
+                role: ProviderManagedKeyRole::E2eeAgreement,
             },
         ],
-        external_keys: Vec::new(),
         services: Vec::new(),
         agent_description_url: None,
         extensions: Vec::new(),
@@ -31,25 +30,23 @@ fn create_spec() -> anp_identity::CreateIdentityRequest {
 #[tokio::test]
 async fn direct_session_runs_provider_neutral_hot_paths() {
     let root = tempfile::tempdir().unwrap();
-    let mut manager =
-        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
-            state_root: root.path().to_path_buf(),
-            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
-                "provider-contract",
-                [0x61; 32],
-            )),
-        })
-        .unwrap();
-    let identity = manager.create(create_spec()).unwrap();
-    let reference: ProviderIdentityRef = identity.reference().into();
+    let manager = anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+        state_root: root.path().to_path_buf(),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "provider-contract",
+            [0x61; 32],
+        )),
+    })
+    .unwrap();
     let custody = direct::DirectAnpIdentityCustody::new(manager);
 
-    assert_eq!(custody.store_info().await.unwrap().identity_count, 1);
-    assert_eq!(custody.list_identities().await.unwrap().len(), 1);
-    let session = custody.open_identity(&reference).await.unwrap();
+    let session = custody.create_identity(create_spec()).await.unwrap();
     let snapshot = session.public_identity().await.unwrap();
+    let reference = snapshot.reference.clone();
     assert_eq!(snapshot.reference, reference);
     assert_eq!(snapshot.state, ProviderIdentityState::Active);
+    assert_eq!(custody.store_info().await.unwrap().identity_count, 1);
+    assert_eq!(custody.list_identities().await.unwrap().len(), 1);
 
     let request_kid = snapshot
         .active_keys
@@ -124,6 +121,23 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
         .await
         .unwrap();
     assert_ne!(shared.as_bytes(), &[0; 32]);
+
+    let document_change = session
+        .prepare_document_change(serde_json::json!({
+            "changes": [{"change": "replace_services", "services": []}]
+        }))
+        .await
+        .unwrap();
+    let candidate = document_change.candidate().await.unwrap();
+    assert!(!candidate.operation_id.is_empty());
+    let attempt = document_change.begin_publication().await.unwrap();
+    assert_eq!(
+        document_change
+            .complete(attempt, ProviderPublicationResult::RejectedBeforeAcceptance,)
+            .await
+            .unwrap(),
+        ProviderDocumentChangeOutcome::Aborted
+    );
 }
 
 #[test]

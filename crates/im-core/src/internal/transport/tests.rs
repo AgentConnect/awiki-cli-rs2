@@ -1011,7 +1011,11 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
     .unwrap();
     let root = tempfile::tempdir().unwrap();
     let mut custody = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
-    let generated = custody.create_identity(create.spec).unwrap();
+    let generated = custody
+        .create_identity(crate::internal::identity_custody::native_create_spec(
+            create.spec,
+        ))
+        .unwrap();
     let manifest = anp::authentication::validate_device_manifest(generated.document())
         .unwrap()
         .unwrap();

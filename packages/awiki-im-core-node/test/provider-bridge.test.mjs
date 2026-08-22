@@ -21,7 +21,13 @@ function options(stateRoot, identityProvider) {
 function provider(overrides = {}) {
   return {
     protocol: 'anp-identity-provider-ts/1',
-    capabilities: ['IDENTITY_READ', 'IDENTITY_SIGN', 'IDENTITY_HTTP_SIGNATURE'],
+    capabilities: [
+      'IDENTITY_READ',
+      'IDENTITY_CREATE',
+      'IDENTITY_SIGN',
+      'IDENTITY_DOCUMENT_UPDATE',
+      'IDENTITY_HTTP_SIGNATURE',
+    ],
     info: async () => ({
       storeId: 'store_external_test',
       schemaCompatible: true,
@@ -33,6 +39,10 @@ function provider(overrides = {}) {
     publicIdentity: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
+    create: async () => {
+      throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
+    },
+    delete: async () => {},
     recoverIdentity: async () => {},
     sign: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
@@ -43,6 +53,11 @@ function provider(overrides = {}) {
     prepareHttpSignature: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
+    prepareDocumentChange: async () => {
+      throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
+    },
+    resumeDocumentChange: async () => undefined,
+    adoptVerifiedDocument: async () => 'unchanged',
     ...overrides,
   }
 }
@@ -84,6 +99,74 @@ test('External Provider protocol and capabilities fail closed before Core opens'
         && error.retryable === false,
     )
   }
+})
+
+test('External Provider keeps document workflow handles inside the bridge', async () => {
+  const calls = []
+  const session = {
+    candidate: async () => ({
+      operationId: 'operation-1',
+      candidateDocument: { id: 'did:wba:example.test:alice' },
+      candidateDigest: 'sha256:candidate',
+    }),
+    beginPublication: async () => {
+      calls.push('begin')
+      return {
+        operationId: 'operation-1',
+        candidateDigest: 'sha256:candidate',
+        publicationGeneration: 2,
+      }
+    },
+    complete: async (attempt, result) => {
+      calls.push({ attempt, result })
+      return { outcome: 'aborted' }
+    },
+    reconcile: async observation => {
+      calls.push({ observation })
+      return { outcome: 'ready_for_publication' }
+    },
+  }
+  const dispatch = createIdentityProviderDispatch(provider({
+    prepareDocumentChange: async () => session,
+  }))
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const prepared = await dispatch([{
+    operation: 'prepareDocumentChange',
+    payloadJson: JSON.stringify({
+      identity,
+      request: { changes: [{ change: 'replace_services', services: [] }] },
+    }),
+    buffers: [],
+  }])
+  assert.equal(prepared.ok, true)
+  const { sessionId, candidate } = JSON.parse(prepared.payloadJson)
+  assert.equal(candidate.operationId, 'operation-1')
+
+  const begun = await dispatch([{
+    operation: 'documentChangeBeginPublication',
+    payloadJson: JSON.stringify({ sessionId }),
+    buffers: [],
+  }])
+  const attempt = JSON.parse(begun.payloadJson)
+  const completed = await dispatch([{
+    operation: 'documentChangeComplete',
+    payloadJson: JSON.stringify({
+      sessionId,
+      attempt,
+      result: { result: 'rejected_before_acceptance' },
+    }),
+    buffers: [],
+  }])
+  assert.deepEqual(JSON.parse(completed.payloadJson), { outcome: 'aborted' })
+  assert.equal(calls.length, 2)
+
+  const stale = await dispatch([{
+    operation: 'documentChangeBeginPublication',
+    payloadJson: JSON.stringify({ sessionId }),
+    buffers: [],
+  }])
+  assert.equal(stale.ok, false)
+  assert.equal(stale.errorCode, 'invalid_request')
 })
 
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {

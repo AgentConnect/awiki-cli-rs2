@@ -106,7 +106,9 @@ pub(crate) fn provision_registration_identity(
                         core.inner().sdk_config().anp_service_endpoint.as_ref(),
                         core.inner().sdk_config().anp_service_did.as_ref(),
                     )?;
-                manager.create(create.spec).map_err(map_facade_error)?
+                manager
+                    .create(native_create_spec(create.spec))
+                    .map_err(map_facade_error)?
             }
         };
     let public = controller.public_identity().map_err(map_facade_error)?;
@@ -246,7 +248,9 @@ pub(crate) fn provision_handle_recovery_identity(
             core.inner().sdk_config().anp_service_endpoint.as_ref(),
             core.inner().sdk_config().anp_service_did.as_ref(),
         )?;
-        manager.create(create.spec).map_err(map_facade_error)?
+        manager
+            .create(native_create_spec(create.spec))
+            .map_err(map_facade_error)?
     };
     let public = identity.public_identity().map_err(map_facade_error)?;
     if public.state != anp_identity::PublicIdentityState::Active
@@ -1659,5 +1663,73 @@ pub(crate) fn map_facade_error(error: anp_identity::IdentityError) -> crate::ImE
         error => crate::ImError::LocalStateUnavailable {
             detail: format!("anp identity facade operation failed: {error}"),
         },
+    }
+}
+
+pub(crate) fn native_create_spec(
+    value: crate::internal::identity_provider::ProviderCreateIdentityRequest,
+) -> anp_identity::DidCreateSpec {
+    use crate::internal::identity_provider::{
+        ProviderDidProfile, ProviderIdentityExtension, ProviderManagedKeyRole,
+    };
+    anp_identity::DidCreateSpec {
+        profile: match value.profile {
+            ProviderDidProfile::E1 => anp_identity::DidProfile::E1,
+        },
+        domain: value.domain,
+        port: value.port,
+        path_segments: value.path_segments,
+        capabilities: anp_identity::Capabilities {
+            did_wba: value.capabilities.did_wba,
+        },
+        managed_keys: value
+            .managed_keys
+            .into_iter()
+            .map(|key| anp_identity::ManagedKeySpec {
+                fragment: key.fragment,
+                role: match key.role {
+                    ProviderManagedKeyRole::RootControl => anp_identity::KeyRole::RootControl,
+                    ProviderManagedKeyRole::DeviceSigning => anp_identity::KeyRole::DeviceSigning,
+                    ProviderManagedKeyRole::RequestSigning => anp_identity::KeyRole::RequestSigning,
+                    ProviderManagedKeyRole::E2eeSigning => anp_identity::KeyRole::E2eeSigning,
+                    ProviderManagedKeyRole::E2eeAgreement => anp_identity::KeyRole::E2eeAgreement,
+                },
+            })
+            .collect(),
+        external_keys: Vec::new(),
+        services: value
+            .services
+            .into_iter()
+            .map(|service| anp_identity::ServiceSpec {
+                id: service.id,
+                service_type: service.service_type,
+                service_endpoint: service.service_endpoint,
+                service_did: service.service_did,
+                profiles: service.profiles,
+                security_profiles: service.security_profiles,
+            })
+            .collect(),
+        agent_description_url: value.agent_description_url,
+        extensions: value
+            .extensions
+            .into_iter()
+            .map(|extension| match extension {
+                ProviderIdentityExtension::DeviceManifest { devices } => {
+                    anp_identity::DidExtensionSpec::DeviceManifest(
+                        anp_identity::DeviceManifestSpec {
+                            devices: devices
+                                .into_iter()
+                                .map(|device| anp_identity::DeviceManifestEntrySpec {
+                                    device_id: device.device_id,
+                                    signing_key_id: device.signing_key_id,
+                                    e2ee_key_id: device.e2ee_key_id,
+                                    profiles: device.profiles,
+                                })
+                                .collect(),
+                        },
+                    )
+                }
+            })
+            .collect(),
     }
 }

@@ -413,6 +413,7 @@ impl ImCore {
         self.client_with_device_identity_material_inner(material, None)
     }
 
+    #[cfg(feature = "identity-native-anp")]
     pub(crate) fn client_with_pending_anp_identity(
         &self,
         identity: anp_identity::ManagedIdentity,
@@ -469,6 +470,7 @@ impl ImCore {
         Ok(ImClient::new(self.inner.clone(), runtime))
     }
 
+    #[cfg(feature = "identity-native-anp")]
     #[doc(hidden)]
     pub fn client_with_anp_delegated_identity(
         &self,

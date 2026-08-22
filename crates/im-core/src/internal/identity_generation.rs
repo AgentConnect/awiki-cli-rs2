@@ -47,7 +47,7 @@ const VNEXT_SERVICE_SECURITY_PROFILES: &[&str] =
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VNextAnpIdentityCreateSpec {
-    pub(crate) spec: anp_identity::DidCreateSpec,
+    pub(crate) spec: crate::internal::identity_provider::ProviderCreateIdentityRequest,
     pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
     pub(crate) root_key_fragment: String,
     pub(crate) device_signing_fragment: String,
@@ -197,29 +197,30 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
     let device_signing_fragment = format!("{}-sign", protocol_device_id.as_str());
     let device_e2ee_fragment = format!("{}-e2ee", protocol_device_id.as_str());
     Ok(VNextAnpIdentityCreateSpec {
-        spec: anp_identity::DidCreateSpec {
-            profile: anp_identity::DidProfile::E1,
+        spec: crate::internal::identity_provider::ProviderCreateIdentityRequest {
+            profile: crate::internal::identity_provider::ProviderDidProfile::E1,
             domain: hostname.to_owned(),
             port: None,
             path_segments: vec!["user".to_owned(), local_part.clone()],
-            capabilities: anp_identity::Capabilities { did_wba: true },
+            capabilities: crate::internal::identity_provider::ProviderCapabilities {
+                did_wba: true,
+            },
             managed_keys: vec![
-                anp_identity::ManagedKeySpec {
+                crate::internal::identity_provider::ProviderManagedKeySpec {
                     fragment: root_key_fragment.clone(),
-                    role: anp_identity::KeyRole::RootControl,
+                    role: crate::internal::identity_provider::ProviderManagedKeyRole::RootControl,
                 },
-                anp_identity::ManagedKeySpec {
+                crate::internal::identity_provider::ProviderManagedKeySpec {
                     fragment: device_signing_fragment.clone(),
-                    role: anp_identity::KeyRole::DeviceSigning,
+                    role: crate::internal::identity_provider::ProviderManagedKeyRole::DeviceSigning,
                 },
-                anp_identity::ManagedKeySpec {
+                crate::internal::identity_provider::ProviderManagedKeySpec {
                     fragment: device_e2ee_fragment.clone(),
-                    role: anp_identity::KeyRole::E2eeAgreement,
+                    role: crate::internal::identity_provider::ProviderManagedKeyRole::E2eeAgreement,
                 },
             ],
-            external_keys: Vec::new(),
             services: vec![
-                anp_identity::ServiceSpec {
+                crate::internal::identity_provider::ProviderIdentityService {
                     id: "message".to_owned(),
                     service_type: "ANPMessageService".to_owned(),
                     service_endpoint: endpoint,
@@ -233,7 +234,7 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
                         .map(|profile| (*profile).to_owned())
                         .collect(),
                 },
-                anp_identity::ServiceSpec {
+                crate::internal::identity_provider::ProviderIdentityService {
                     id: "handle".to_owned(),
                     service_type: "ANPHandleService".to_owned(),
                     service_endpoint: format!("https://{hostname}/.well-known/handle/{local_part}"),
@@ -243,19 +244,21 @@ pub(crate) fn vnext_handle_anp_identity_create_spec(
                 },
             ],
             agent_description_url: None,
-            extensions: vec![anp_identity::DidExtensionSpec::DeviceManifest(
-                anp_identity::DeviceManifestSpec {
-                    devices: vec![anp_identity::DeviceManifestEntrySpec {
-                        device_id: protocol_device_id.as_str().to_owned(),
-                        signing_key_id: device_signing_fragment.clone(),
-                        e2ee_key_id: device_e2ee_fragment.clone(),
-                        profiles: VNEXT_DEVICE_PROFILES
-                            .iter()
-                            .map(|profile| (*profile).to_owned())
-                            .collect(),
-                    }],
+            extensions: vec![
+                crate::internal::identity_provider::ProviderIdentityExtension::DeviceManifest {
+                    devices: vec![
+                        crate::internal::identity_provider::ProviderDeviceManifestEntry {
+                            device_id: protocol_device_id.as_str().to_owned(),
+                            signing_key_id: device_signing_fragment.clone(),
+                            e2ee_key_id: device_e2ee_fragment.clone(),
+                            profiles: VNEXT_DEVICE_PROFILES
+                                .iter()
+                                .map(|profile| (*profile).to_owned())
+                                .collect(),
+                        },
+                    ],
                 },
-            )],
+            ],
         },
         protocol_device_id,
         root_key_fragment,

@@ -1,3 +1,4 @@
+#[cfg(feature = "identity-native-anp")]
 mod anp_identity;
 mod did_auth;
 mod file;
@@ -6,6 +7,7 @@ mod hosted;
 mod provider;
 pub(crate) mod vault;
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) use self::anp_identity::{AnpIdentitySigner, PendingAnpEnrollmentSigner};
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedIdentitySigner;
