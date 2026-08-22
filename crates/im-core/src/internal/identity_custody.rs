@@ -239,9 +239,9 @@ pub(crate) fn provision_handle_recovery_identity(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef> {
-    let mut store = open_controller_store(core)?;
-    let mut matches = find_unprojected_handle_identities(core, &store, domain, local_part)?;
-    let identity = if let Some(identity) = matches.pop() {
+    let mut manager = open_controller_manager(core)?;
+    let mut matches = find_unprojected_handle_identities(core, &manager, domain, local_part)?;
+    let mut identity = if let Some(identity) = matches.pop() {
         identity
     } else {
         let create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
@@ -250,33 +250,38 @@ pub(crate) fn provision_handle_recovery_identity(
             core.inner().sdk_config().anp_service_endpoint.as_ref(),
             core.inner().sdk_config().anp_service_did.as_ref(),
         )?;
-        store.create_identity(create.spec).map_err(map_error)?
+        manager.create(create.spec).map_err(map_facade_error)?
     };
-    if identity.state() != IdentityState::Active || identity.pending_revision().is_some() {
+    let public = identity.public_identity().map_err(map_facade_error)?;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || identity
+            .resume_document_change()
+            .map_err(map_facade_error)?
+            .is_some()
+    {
         return Err(crate::ImError::PermissionDenied);
     }
-    let manifest = anp::authentication::validate_device_manifest(identity.document())
+    let manifest = anp::authentication::validate_device_manifest(public.document.as_value())
         .map_err(|_| crate::ImError::PermissionDenied)?
         .ok_or(crate::ImError::PermissionDenied)?;
     if manifest.devices.len() != 1 {
         return Err(crate::ImError::PermissionDenied);
     }
     let device = &manifest.devices[0];
-    let root_key_id = identity
-        .keys()
+    let root_key_id = public
+        .active_keys
         .iter()
         .find(|key| {
-            key.role == KeyRole::RootControl
-                && key.origin == KeyOrigin::Managed
-                && key.state == KeyState::Active
+            key.purposes
+                .contains(&anp_identity::KeyPurpose::RootControl)
         })
         .map(|key| key.kid.clone())
         .ok_or(crate::ImError::PermissionDenied)?;
     let reference = crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef {
-        store_id: store.manifest().store_id.clone(),
-        identity_id: identity.identity_id().to_owned(),
-        did: crate::ids::Did::parse(identity.did())?,
-        did_document: identity.document().clone(),
+        store_id: public.reference.store_id.clone(),
+        identity_id: public.reference.identity_id.clone(),
+        did: crate::ids::Did::parse(&public.reference.did)?,
+        did_document: public.document.into_value(),
         protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id)?,
         root_key_id,
         device_signing_key_id: device.signing_key_id.clone(),
@@ -289,17 +294,16 @@ pub(crate) fn provision_handle_recovery_identity(
 pub(crate) fn handle_recovery_identity(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let store = open_controller_store(core)?;
-    if store.manifest().store_id != expected.store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let identity = store
-        .open_identity(expected.did.as_str())
-        .map_err(map_error)?;
-    if identity.identity_id() != expected.identity_id
-        || identity.state() != IdentityState::Active
-        || anp_identity::canonical_document_digest(identity.document()).map_err(map_error)?
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    let identity = open_managed_identity(
+        core,
+        &expected.store_id,
+        &expected.identity_id,
+        expected.did.as_str(),
+    )?;
+    let public = identity.public_identity().map_err(map_facade_error)?;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || anp_identity::canonical_document_digest(public.document.as_value()).map_err(map_error)?
             != anp_identity::canonical_document_digest(&expected.did_document).map_err(map_error)?
     {
         return Err(crate::ImError::PermissionDenied);
@@ -311,33 +315,38 @@ pub(crate) fn discard_unpublished_handle_recovery(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
 ) -> crate::ImResult<()> {
-    let mut store = open_controller_store(core)?;
-    if store.manifest().store_id != expected.store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    match store.open_identity(expected.did.as_str()) {
-        Ok(identity) => {
-            if identity.identity_id() != expected.identity_id
-                || identity.state() != IdentityState::Active
-                || identity.pending_revision().is_some()
+    let mut manager = open_controller_manager(core)?;
+    let reference = anp_identity::IdentityRef {
+        store_id: expected.store_id.clone(),
+        identity_id: expected.identity_id.clone(),
+        did: expected.did.as_str().to_owned(),
+    };
+    match manager.get(&reference) {
+        Ok(mut identity) => {
+            if identity.public_identity().map_err(map_facade_error)?.state
+                != anp_identity::PublicIdentityState::Active
+                || identity
+                    .resume_document_change()
+                    .map_err(map_facade_error)?
+                    .is_some()
             {
                 return Err(crate::ImError::PermissionDenied);
             }
-            store
-                .delete_identity_namespace(expected.did.as_str(), store.generation())
-                .map_err(map_error)
+            manager
+                .delete(&reference, anp_identity::DeleteIdentityRequest::default())
+                .map_err(map_facade_error)
         }
-        Err(anp_identity::DidError::IdentityNotFound) => Ok(()),
-        Err(error) => Err(map_error(error)),
+        Err(anp_identity::IdentityError::IdentityNotFound) => Ok(()),
+        Err(error) => Err(map_facade_error(error)),
     }
 }
 
 fn find_unprojected_handle_identities(
     core: &crate::core::ImCore,
-    store: &anp_identity::DidStore,
+    manager: &anp_identity::IdentityManager,
     domain: &str,
     local_part: &str,
-) -> crate::ImResult<Vec<anp_identity::DidIdentity>> {
+) -> crate::ImResult<Vec<anp_identity::ManagedIdentity>> {
     let index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .load_index()?;
@@ -349,16 +358,20 @@ fn find_unprojected_handle_identities(
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
-    for summary in store.list_identities().map_err(map_error)? {
-        if summary.state != IdentityState::Active
-            || projected.contains(summary.identity_id.as_str())
-            || !summary.did.starts_with(&did_prefix)
+    for descriptor in manager.list().map_err(map_facade_error)? {
+        if descriptor.state != anp_identity::PublicIdentityState::Active
+            || projected.contains(descriptor.reference.identity_id.as_str())
+            || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
         }
-        let identity = store.open_identity(&summary.did).map_err(map_error)?;
-        let handle_matches = identity
-            .document()
+        let mut identity = manager
+            .get(&descriptor.reference)
+            .map_err(map_facade_error)?;
+        let public = identity.public_identity().map_err(map_facade_error)?;
+        let handle_matches = public
+            .document
+            .as_value()
             .get("service")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|services| {
@@ -371,7 +384,7 @@ fn find_unprojected_handle_identities(
                             == Some(endpoint.as_str())
                 })
             });
-        let has_daemon = identity.document()["authentication"]
+        let has_daemon = public.document.as_value()["authentication"]
             .as_array()
             .is_some_and(|entries| {
                 entries.iter().any(|entry| {
@@ -380,7 +393,13 @@ fn find_unprojected_handle_identities(
                         .is_some_and(|kid| kid.ends_with("#daemon-key-1"))
                 })
             });
-        if handle_matches && !has_daemon && identity.pending_revision().is_none() {
+        if handle_matches
+            && !has_daemon
+            && identity
+                .resume_document_change()
+                .map_err(map_facade_error)?
+                .is_none()
+        {
             matches.push(identity);
         }
     }
@@ -1332,7 +1351,11 @@ mod tests {
         assert_eq!(recovered, first);
         handle_recovery_identity(&core, &first)
             .unwrap()
-            .sign_device_assertion(&first.device_signing_key_id, b"recovery proof")
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::DeviceAssertion,
+                key: anp_identity::KeySelector::Kid(first.device_signing_key_id.clone()),
+                payload: b"recovery proof".to_vec(),
+            })
             .unwrap();
         let encoded = serde_json::to_string(&first).unwrap();
         assert!(!encoded.contains("PRIVATE KEY"));

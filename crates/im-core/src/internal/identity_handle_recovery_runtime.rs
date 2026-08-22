@@ -1446,11 +1446,13 @@ async fn send_commit_v4(
     )?;
     let signature =
         crate::internal::identity_custody::handle_recovery_identity(core, &pending.identity)?
-            .sign_device_assertion(
-                &pending.identity.device_signing_key_id,
-                prepared.signing_input(),
-            )
-            .map_err(crate::internal::identity_custody::map_error)?;
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::DeviceAssertion,
+                key: anp_identity::KeySelector::Kid(pending.identity.device_signing_key_id.clone()),
+                payload: prepared.signing_input().to_vec(),
+            })
+            .map(|signature| signature.bytes)
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
     let prepared =
         crate::internal::identity_wire::handle_recovery::complete_commit_v4(prepared, &signature)?;
     if !pending.commit_attempted {
@@ -1564,11 +1566,13 @@ async fn reconcile_result_v4(
     )?;
     let signature =
         crate::internal::identity_custody::handle_recovery_identity(core, &pending.identity)?
-            .sign_device_assertion(
-                &pending.identity.device_signing_key_id,
-                prepared.signing_input(),
-            )
-            .map_err(crate::internal::identity_custody::map_error)?;
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::DeviceAssertion,
+                key: anp_identity::KeySelector::Kid(pending.identity.device_signing_key_id.clone()),
+                payload: prepared.signing_input().to_vec(),
+            })
+            .map(|signature| signature.bytes)
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
     let prepared = crate::internal::identity_wire::handle_recovery::complete_result_get_v4(
         prepared, &signature,
     )?;
