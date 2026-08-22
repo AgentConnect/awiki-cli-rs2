@@ -425,73 +425,85 @@ impl<'a> IdentityRegistry<'a> {
         let dir_name = entry
             .identity_dir_name()
             .ok_or(crate::ImError::PermissionDenied)?;
-        let mut identity = open_registry_managed_identity(self.core, &entry)?;
+        let identity = open_registry_provider_session(self.core, &entry).await?;
         let public = identity
             .public_identity()
-            .map_err(crate::internal::identity_custody::map_facade_error)?;
-        if public.state != anp_identity::PublicIdentityState::Active {
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        if public.state != crate::internal::identity_provider::ProviderIdentityState::Active {
             return Err(crate::ImError::PermissionDenied);
         }
         if anp::authentication::find_verification_method(
-            public.document.as_value(),
+            &public.document,
             &proposal.verification_method,
         )
         .is_some()
         {
-            require_daemon_proposal_document_binding(&proposal, public.document.as_value())?;
-            let document = public.document.into_value();
+            require_daemon_proposal_document_binding(&proposal, &public.document)?;
+            let document = public.document;
             save_identity_document_projection(self.core, &dir_name, &document)?;
             return daemon_public_package(proposal);
         }
 
         let mut pending_reconciliation = false;
-        use anp_identity::host::{DocumentChangeRecoveryPort, HostDocumentChangePhase};
-        if let Some(mut pending) = identity
+        use crate::internal::identity_provider::{
+            ProviderDocumentChangeOutcome, ProviderDocumentChangePhase, ProviderPublicationResult,
+            ProviderVerifiedRemoteDocument,
+        };
+        if let Some(pending) = identity
             .resume_document_change()
-            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
         {
+            let pending_candidate = pending
+                .candidate()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
             require_daemon_proposal_document_binding(
                 &proposal,
-                pending.candidate().candidate_document.as_value(),
+                &pending_candidate.candidate_document,
             )?;
             match pending
                 .host_phase()
-                .map_err(crate::internal::identity_custody::map_facade_error)?
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
             {
-                HostDocumentChangePhase::Prepared => {}
-                HostDocumentChangePhase::PublicationInFlight => {
+                ProviderDocumentChangePhase::Prepared => {}
+                ProviderDocumentChangePhase::PublicationInFlight => {
                     let attempt = pending
                         .begin_publication()
-                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                        .await
+                        .map_err(crate::internal::identity_provider::map_provider_error)?;
                     pending
-                        .complete(attempt, anp_identity::PublicationResult::Unknown)
-                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                        .complete(attempt, ProviderPublicationResult::Unknown)
+                        .await
+                        .map_err(crate::internal::identity_provider::map_provider_error)?;
                     pending_reconciliation = true;
                 }
-                HostDocumentChangePhase::PublicationUncertain => {
+                ProviderDocumentChangePhase::PublicationUncertain => {
                     pending_reconciliation = true;
                 }
-                HostDocumentChangePhase::Published => {
-                    let candidate = pending.candidate().clone();
+                ProviderDocumentChangePhase::Published => {
                     let attempt = pending
                         .begin_publication()
-                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                        .await
+                        .map_err(crate::internal::identity_provider::map_provider_error)?;
                     let outcome = pending
                         .complete(
                             attempt,
-                            anp_identity::PublicationResult::Confirmed {
-                                evidence: verified_publication_evidence(
-                                    candidate.candidate_document.as_value(),
+                            ProviderPublicationResult::Confirmed {
+                                evidence: provider_publication_evidence(
+                                    &pending_candidate.candidate_document,
                                     None,
                                 )?,
                             },
                         )
-                        .map_err(crate::internal::identity_custody::map_facade_error)?;
-                    let anp_identity::DocumentChangeOutcome::Committed { identity } = outcome
-                    else {
+                        .await
+                        .map_err(crate::internal::identity_provider::map_provider_error)?;
+                    let ProviderDocumentChangeOutcome::Committed { identity } = outcome else {
                         return Err(crate::ImError::PermissionDenied);
                     };
-                    let document = identity.document.into_value();
+                    let document = identity.document;
                     save_identity_document_projection(self.core, &dir_name, &document)?;
                     return daemon_public_package(proposal);
                 }
@@ -509,12 +521,17 @@ impl<'a> IdentityRegistry<'a> {
                     proposal.user_did.as_str(),
                 )
                 .await?;
-            let mut identity = open_registry_managed_identity(self.core, &entry)?;
-            let mut pending = identity
+            let identity = open_registry_provider_session(self.core, &entry).await?;
+            let pending = identity
                 .resume_document_change()
-                .map_err(crate::internal::identity_custody::map_facade_error)?
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
                 .ok_or(crate::ImError::PermissionDenied)?;
-            let pending_candidate = pending.candidate().candidate_document.clone().into_value();
+            let pending_candidate = pending
+                .candidate()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
+                .candidate_document;
             if remote_document == pending_candidate {
                 if let Some(mut state) = vnext_device_state.clone() {
                     advance_daemon_document_checkpoint(
@@ -537,58 +554,68 @@ impl<'a> IdentityRegistry<'a> {
                     })??;
                 }
             }
-            let remote_evidence = verified_publication_evidence(&remote_document, None)?;
+            let remote_evidence = provider_publication_evidence(&remote_document, None)?;
             let outcome = pending
-                .reconcile(anp_identity::VerifiedRemoteDocument {
-                    document: anp_identity::DidDocument::from_value(remote_document),
+                .reconcile(ProviderVerifiedRemoteDocument {
+                    document: remote_document,
                     evidence: remote_evidence,
                 })
-                .map_err(crate::internal::identity_custody::map_facade_error)?;
-            if let anp_identity::DocumentChangeOutcome::Committed { identity } = outcome {
-                require_daemon_proposal_document_binding(&proposal, identity.document.as_value())?;
-                let document = identity.document.into_value();
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if let ProviderDocumentChangeOutcome::Committed { identity } = outcome {
+                require_daemon_proposal_document_binding(&proposal, &identity.document)?;
+                let document = identity.document;
                 save_identity_document_projection(self.core, &dir_name, &document)?;
                 return daemon_public_package(proposal);
             }
         }
 
-        let mut identity = open_registry_managed_identity(self.core, &entry)?;
-        let mut publication = if let Some(pending) = identity
+        let identity = open_registry_provider_session(self.core, &entry).await?;
+        let publication = if let Some(pending) = identity
             .resume_document_change()
-            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
         {
             if pending
                 .host_phase()
-                .map_err(crate::internal::identity_custody::map_facade_error)?
-                != HostDocumentChangePhase::Prepared
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
+                != ProviderDocumentChangePhase::Prepared
             {
                 return Err(crate::ImError::PermissionDenied);
             }
+            let pending_candidate = pending
+                .candidate()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
             require_daemon_proposal_document_binding(
                 &proposal,
-                pending.candidate().candidate_document.as_value(),
+                &pending_candidate.candidate_document,
             )?;
             pending
         } else {
             identity
-                .prepare_document_change(anp_identity::DocumentChangeRequest {
-                    changes: vec![anp_identity::DocumentChange::AddAuthenticationKey {
-                        key: anp_identity::PublicKeyInput {
-                            kid: proposal.verification_method.clone(),
-                            public_key_multibase: proposal.public_key_multibase.clone(),
+                .prepare_document_change(serde_json::json!({
+                    "changes": [{
+                        "change": "add_authentication_key",
+                        "key": {
+                            "kid": proposal.verification_method.clone(),
+                            "publicKeyMultibase": proposal.public_key_multibase.clone(),
                         },
                     }],
-                })
-                .map_err(crate::internal::identity_custody::map_facade_error)?
+                }))
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
         };
         let candidate = publication
             .candidate()
-            .candidate_document
-            .clone()
-            .into_value();
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .candidate_document;
         let publication_attempt = publication
             .begin_publication()
-            .map_err(crate::internal::identity_custody::map_facade_error)?;
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
         drop(identity);
 
         let publication_result: crate::ImResult<
@@ -672,16 +699,14 @@ impl<'a> IdentityRegistry<'a> {
             Ok(state) => state,
             Err(error) => {
                 publication
-                    .complete(
-                        publication_attempt,
-                        anp_identity::PublicationResult::Unknown,
-                    )
-                    .map_err(crate::internal::identity_custody::map_facade_error)?;
+                    .complete(publication_attempt, ProviderPublicationResult::Unknown)
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
                 return Err(error);
             }
         };
 
-        let publication_evidence = verified_publication_evidence(
+        let publication_evidence = provider_publication_evidence(
             &candidate,
             updated_device_state
                 .as_ref()
@@ -703,15 +728,13 @@ impl<'a> IdentityRegistry<'a> {
         let outcome = publication
             .complete(
                 publication_attempt,
-                anp_identity::PublicationResult::Confirmed {
+                ProviderPublicationResult::Confirmed {
                     evidence: publication_evidence,
                 },
             )
-            .map_err(crate::internal::identity_custody::map_facade_error)?;
-        if !matches!(
-            outcome,
-            anp_identity::DocumentChangeOutcome::Committed { .. }
-        ) {
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        if !matches!(outcome, ProviderDocumentChangeOutcome::Committed { .. }) {
             return Err(crate::ImError::PermissionDenied);
         }
         save_identity_document_projection(self.core, &dir_name, &candidate)?;
@@ -735,14 +758,16 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::IdentityCustodyStatus> {
-        let core = (*self.core).clone();
-        crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).custody_status(selector)
-        })
-        .await
-        .map_err(|error| crate::ImError::Internal {
-            message: error.to_string(),
-        })?
+        let registry = self.load_registry_async().await?;
+        if registry.entries.is_empty() {
+            let summary = self.resolve_from_snapshot(&registry, selector)?;
+            return Ok(legacy_identity_custody_status(&summary, None));
+        }
+        let entry = registry.find_entry(selector)?;
+        if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+            return Ok(legacy_identity_custody_status(&entry.summary, Some(entry)));
+        }
+        Ok(provider_identity_custody_status(self.core, entry).await)
     }
 
     #[deprecated(note = "Use custody_status for identity custody state")]
@@ -2056,6 +2081,7 @@ impl IdentityRegistry<'_> {
         }
     }
 
+    #[cfg(feature = "identity-native-anp")]
     fn identity_custody_status(
         &self,
         summary: &super::IdentitySummary,
@@ -2138,8 +2164,176 @@ impl IdentityRegistry<'_> {
         }
         status
     }
+
+    #[cfg(not(feature = "identity-native-anp"))]
+    fn identity_custody_status(
+        &self,
+        summary: &super::IdentitySummary,
+        entry: Option<&RegistryEntry>,
+    ) -> super::IdentityCustodyStatus {
+        let Some(entry) = entry else {
+            return legacy_identity_custody_status(summary, None);
+        };
+        if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+            return legacy_identity_custody_status(summary, Some(entry));
+        }
+        super::IdentityCustodyStatus {
+            identity: summary.clone(),
+            backend: super::IdentityCustodyBackend::AnpIdentity,
+            state: super::IdentityCustodyState::Unavailable,
+            ready: false,
+            root_control_available: false,
+            pending_operation: true,
+            store_id: entry.anp_identity_store_id.clone(),
+            custody_identity_id: entry.anp_identity_id.clone(),
+            missing: vec!["external_identity_provider".to_owned()],
+            warnings: Vec::new(),
+        }
+    }
 }
 
+async fn provider_identity_custody_status(
+    core: &crate::core::ImCore,
+    entry: &RegistryEntry,
+) -> super::IdentityCustodyStatus {
+    let mut status = super::IdentityCustodyStatus {
+        identity: entry.summary.clone(),
+        backend: super::IdentityCustodyBackend::AnpIdentity,
+        state: super::IdentityCustodyState::Unavailable,
+        ready: false,
+        root_control_available: false,
+        pending_operation: true,
+        store_id: entry.anp_identity_store_id.clone(),
+        custody_identity_id: entry.anp_identity_id.clone(),
+        missing: Vec::new(),
+        warnings: Vec::new(),
+    };
+    if entry.anp_identity_store_id.is_none() {
+        status.missing.push("anp_identity_store_id".to_owned());
+        return status;
+    }
+    if entry.anp_identity_id.is_none() {
+        status.missing.push("anp_identity_id".to_owned());
+        return status;
+    }
+    let Ok(identity) = open_registry_provider_session(core, entry).await else {
+        status.missing.push("anp_identity_store".to_owned());
+        return status;
+    };
+    let Ok(public) = identity.public_identity().await else {
+        status.missing.push("anp_identity_record".to_owned());
+        return status;
+    };
+    status.state = match public.state {
+        crate::internal::identity_provider::ProviderIdentityState::Active => {
+            super::IdentityCustodyState::Active
+        }
+        crate::internal::identity_provider::ProviderIdentityState::Enrolling => {
+            super::IdentityCustodyState::Enrolling
+        }
+        crate::internal::identity_provider::ProviderIdentityState::Revoked => {
+            super::IdentityCustodyState::Revoked
+        }
+    };
+    status.ready =
+        public.state == crate::internal::identity_provider::ProviderIdentityState::Active;
+    status.root_control_available = public.active_keys.iter().any(|key| {
+        key.purposes
+            .contains(&crate::internal::identity_provider::ProviderKeyPurpose::RootControl)
+    });
+    let pending_document_change = identity
+        .resume_document_change()
+        .await
+        .map(|pending| pending.is_some())
+        .unwrap_or(true);
+    let pending_root = identity
+        .host_status()
+        .await
+        .map(|host| {
+            host.root_capability
+                == crate::internal::identity_provider::ProviderRootCapability::Pending
+        })
+        .unwrap_or(true);
+    status.pending_operation = pending_document_change || pending_root;
+    if !status.ready {
+        status.missing.push("anp_identity_active".to_owned());
+    }
+    status
+}
+
+async fn open_registry_provider_session(
+    core: &crate::core::ImCore,
+    entry: &RegistryEntry,
+) -> crate::ImResult<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+    let store_id = entry
+        .anp_identity_store_id
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let identity_id = entry
+        .anp_identity_id
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: store_id.to_owned(),
+        identity_id: identity_id.to_owned(),
+        did: entry.summary.did.as_str().to_owned(),
+    };
+
+    #[cfg(feature = "provider-traits")]
+    if let Some(custody) = core.inner().identity_custody_provider() {
+        let info = custody
+            .store_info()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        if info.store_id != store_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "external identity provider Store binding changed".to_owned(),
+            });
+        }
+        let session = custody
+            .open_identity(&reference)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        let public = session
+            .public_identity()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        if public.reference != reference {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "external identity provider returned a different identity reference"
+                    .to_owned(),
+            });
+        }
+        return Ok(session);
+    }
+
+    #[cfg(feature = "identity-native-anp")]
+    {
+        let core = core.clone();
+        let entry = entry.clone();
+        return crate::internal::runtime::worker::run_blocking(move || {
+            let identity = open_registry_managed_identity(&core, &entry)?;
+            Ok(std::sync::Arc::new(
+                crate::internal::identity_provider::DirectAnpIdentitySession::new(identity),
+            )
+                as std::sync::Arc<
+                    dyn crate::internal::identity_provider::IdentitySession,
+                >)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?;
+    }
+
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(crate::ImError::IdentityNotReady {
+        identity: reference.did,
+        missing: vec!["external_identity_provider".to_owned()],
+    })
+}
+
+#[cfg(feature = "identity-native-anp")]
 fn open_registry_managed_identity(
     core: &crate::core::ImCore,
     entry: &RegistryEntry,
@@ -2168,18 +2362,20 @@ fn open_registry_managed_identity(
         .map_err(crate::internal::identity_custody::map_facade_error)
 }
 
-fn verified_publication_evidence(
+fn provider_publication_evidence(
     document: &serde_json::Value,
     checkpoint: Option<&crate::internal::identity_device_state::IdentityInternalCheckpoint>,
-) -> crate::ImResult<anp_identity::VerifiedPublicationEvidence> {
+) -> crate::ImResult<crate::internal::identity_provider::ProviderPublicationEvidence> {
     let (document_version, registry_version) = checkpoint
         .map(|checkpoint| (checkpoint.document_version, checkpoint.registry_version))
         .unwrap_or((1, 1));
-    Ok(anp_identity::VerifiedPublicationEvidence {
-        document_version,
-        registry_version,
-        document_digest: crate::internal::identity_wire::document::document_hash(document)?,
-    })
+    Ok(
+        crate::internal::identity_provider::ProviderPublicationEvidence {
+            document_version,
+            registry_version,
+            document_digest: crate::internal::identity_wire::document::document_hash(document)?,
+        },
+    )
 }
 
 fn legacy_identity_custody_status(

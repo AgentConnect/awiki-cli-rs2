@@ -8,14 +8,15 @@ use anp_identity::host::{
 
 use super::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
-    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangeSession,
-    ProviderExactHttpRequest, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
+    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangePhase,
+    ProviderDocumentChangeSession, ProviderDocumentCheckpoint, ProviderExactHttpRequest,
+    ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
     ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
     ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
     ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
     ProviderPublicationAttempt, ProviderPublicationEvidence, ProviderPublicationResult,
-    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
-    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderResult, ProviderRootCapability, ProviderSharedSecret, ProviderSignRequest,
+    ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
     ProviderVerifiedRemoteDocument,
 };
 
@@ -168,6 +169,36 @@ impl IdentitySession for DirectAnpIdentitySession {
         let identity = self.identity.clone();
         run_blocking(move || {
             with_identity(&identity, |identity| identity.public_identity()).map(Into::into)
+        })
+        .await
+    }
+
+    async fn host_status(&self) -> ProviderResult<ProviderHostStatus> {
+        let identity = self.identity.clone();
+        run_blocking(move || {
+            with_identity(&identity, |identity| identity.host_status()).map(|status| {
+                ProviderHostStatus {
+                    root_capability: match status.root_capability {
+                        anp_identity::host::HostRootCapability::Absent => {
+                            ProviderRootCapability::Absent
+                        }
+                        anp_identity::host::HostRootCapability::Pending => {
+                            ProviderRootCapability::Pending
+                        }
+                        anp_identity::host::HostRootCapability::Active => {
+                            ProviderRootCapability::Active
+                        }
+                    },
+                    root_key_fingerprint: status.root_key_fingerprint,
+                    checkpoint: status
+                        .checkpoint
+                        .map(|checkpoint| ProviderDocumentCheckpoint {
+                            document_version: checkpoint.document_version,
+                            registry_version: checkpoint.registry_version,
+                            document_digest: checkpoint.document_digest,
+                        }),
+                }
+            })
         })
         .await
     }
@@ -347,6 +378,33 @@ impl ProviderDocumentChangeSession for DirectDocumentChangeSession {
         run_blocking(move || {
             let session = session.lock().map_err(|_| internal())?;
             Ok(session.candidate().clone().into())
+        })
+        .await
+    }
+
+    async fn host_phase(&self) -> ProviderResult<ProviderDocumentChangePhase> {
+        use anp_identity::host::DocumentChangeRecoveryPort;
+        let session = self.session.clone();
+        run_blocking(move || {
+            let phase = session
+                .lock()
+                .map_err(|_| internal())?
+                .host_phase()
+                .map_err(map_identity_error)?;
+            Ok(match phase {
+                anp_identity::host::HostDocumentChangePhase::Prepared => {
+                    ProviderDocumentChangePhase::Prepared
+                }
+                anp_identity::host::HostDocumentChangePhase::PublicationInFlight => {
+                    ProviderDocumentChangePhase::PublicationInFlight
+                }
+                anp_identity::host::HostDocumentChangePhase::PublicationUncertain => {
+                    ProviderDocumentChangePhase::PublicationUncertain
+                }
+                anp_identity::host::HostDocumentChangePhase::Published => {
+                    ProviderDocumentChangePhase::Published
+                }
+            })
         })
         .await
     }

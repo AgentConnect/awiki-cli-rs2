@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use im_core::provider::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
-    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangeSession,
-    ProviderExactHttpRequest, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
-    ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
-    ProviderKeySelector, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
-    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
-    ProviderPublicationAttempt, ProviderPublicationResult, ProviderResult, ProviderSharedSecret,
-    ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose,
-    ProviderStoreInfo, ProviderVerifiedRemoteDocument,
+    ProviderCreateIdentityRequest, ProviderDocumentChangeOutcome, ProviderDocumentChangePhase,
+    ProviderDocumentChangeSession, ProviderExactHttpRequest, ProviderHostStatus,
+    ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
+    ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
+    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
+    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
+    ProviderPublicationResult, ProviderResult, ProviderSharedSecret, ProviderSignRequest,
+    ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -287,6 +288,18 @@ impl IdentitySession for ExternalIdentitySession {
         Ok(public)
     }
 
+    async fn host_status(&self) -> ProviderResult<ProviderHostStatus> {
+        call_json(
+            &self.dispatch,
+            "hostStatus",
+            &IdentityPayload {
+                identity: &self.identity,
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
     async fn sign(&self, request: ProviderSignRequest) -> ProviderResult<ProviderSignature> {
         let (purpose, domain) = match &request.purpose {
             ProviderSigningPurpose::Authentication => ("authentication", None),
@@ -486,6 +499,18 @@ impl IdentitySession for ExternalIdentitySession {
 impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
     async fn candidate(&self) -> ProviderResult<ProviderPreparedDocumentChange> {
         Ok(self.candidate.clone())
+    }
+
+    async fn host_phase(&self) -> ProviderResult<ProviderDocumentChangePhase> {
+        call_json(
+            &self.dispatch,
+            "documentChangeHostPhase",
+            &DocumentSessionPayload {
+                session_id: &self.session_id,
+            },
+            Vec::new(),
+        )
+        .await
     }
 
     async fn begin_publication(&self) -> ProviderResult<ProviderPublicationAttempt> {

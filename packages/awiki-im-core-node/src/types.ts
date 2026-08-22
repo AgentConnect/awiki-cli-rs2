@@ -34,6 +34,15 @@ export interface ImCoreIdentityProvider {
   recover(): Promise<unknown>
   list(): Promise<readonly unknown[]>
   publicIdentity(reference: ImCoreIdentityReference): Promise<unknown>
+  hostStatus(reference: ImCoreIdentityReference): Promise<{
+    readonly rootCapability: 'absent' | 'pending' | 'active'
+    readonly rootKeyFingerprint: string
+    readonly checkpoint?: {
+      readonly documentVersion: number
+      readonly registryVersion: number
+      readonly documentDigest: string
+    }
+  }>
   create(request: unknown): Promise<unknown>
   delete(reference: ImCoreIdentityReference): Promise<void>
   recoverIdentity(reference: ImCoreIdentityReference): Promise<void>
@@ -91,6 +100,7 @@ export interface ImCoreIdentityProvider {
 /** Host-only opaque workflow retained inside the provider bridge. */
 export interface ImCoreProviderDocumentChangeSession {
   candidate(): Promise<unknown>
+  hostPhase(): Promise<'prepared' | 'publication_in_flight' | 'publication_uncertain' | 'published'>
   beginPublication(): Promise<unknown>
   complete(attempt: unknown, result: unknown): Promise<unknown>
   reconcile(observation: unknown): Promise<unknown>

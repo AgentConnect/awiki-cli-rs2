@@ -330,9 +330,44 @@ pub enum ProviderDocumentChangeOutcome {
     Aborted,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDocumentChangePhase {
+    Prepared,
+    PublicationInFlight,
+    PublicationUncertain,
+    Published,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRootCapability {
+    Absent,
+    Pending,
+    Active,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderDocumentCheckpoint {
+    pub document_version: u64,
+    pub registry_version: u64,
+    pub document_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderHostStatus {
+    pub root_capability: ProviderRootCapability,
+    pub root_key_fingerprint: String,
+    pub checkpoint: Option<ProviderDocumentCheckpoint>,
+}
+
 #[async_trait]
 pub trait ProviderDocumentChangeSession: Send + Sync {
     async fn candidate(&self) -> ProviderResult<ProviderPreparedDocumentChange>;
+
+    async fn host_phase(&self) -> ProviderResult<ProviderDocumentChangePhase>;
 
     async fn begin_publication(&self) -> ProviderResult<ProviderPublicationAttempt>;
 
@@ -488,6 +523,8 @@ pub trait IdentityCustody: Send + Sync {
 #[async_trait]
 pub trait IdentitySession: Send + Sync {
     async fn public_identity(&self) -> ProviderResult<ProviderPublicIdentity>;
+
+    async fn host_status(&self) -> ProviderResult<ProviderHostStatus>;
 
     async fn sign(&self, request: ProviderSignRequest) -> ProviderResult<ProviderSignature>;
 

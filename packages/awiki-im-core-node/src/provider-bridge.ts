@@ -27,7 +27,7 @@ export function createIdentityProviderDispatch(
   const capabilities = new Set(provider.capabilities)
   if (REQUIRED_CAPABILITIES.some(capability => !capabilities.has(capability))) throw incompatible()
   for (const method of [
-    'info', 'recover', 'list', 'publicIdentity', 'create', 'delete', 'recoverIdentity',
+    'info', 'recover', 'list', 'publicIdentity', 'hostStatus', 'create', 'delete', 'recoverIdentity',
     'sign', 'signOriginProof', 'prepareHttpSignature',
     'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
   ] as const) {
@@ -49,6 +49,8 @@ export function createIdentityProviderDispatch(
         case 'list': return success(await provider.list())
         case 'publicIdentity':
           return success(await provider.publicIdentity(reference(payload.identity)))
+        case 'hostStatus':
+          return success(await provider.hostStatus(reference(payload.identity)))
         case 'create': return success(await provider.create(payload))
         case 'delete':
           await provider.delete(reference(payload.identity))
@@ -102,6 +104,8 @@ export function createIdentityProviderDispatch(
           ))
         case 'documentChangeBeginPublication':
           return success(await documentSession(documentSessions, payload.sessionId).beginPublication())
+        case 'documentChangeHostPhase':
+          return success(await documentSession(documentSessions, payload.sessionId).hostPhase())
         case 'documentChangeComplete': {
           const sessionId = requiredString(payload.sessionId)
           const outcome = await documentSession(documentSessions, sessionId).complete(

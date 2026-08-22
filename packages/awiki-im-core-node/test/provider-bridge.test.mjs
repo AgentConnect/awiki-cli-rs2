@@ -39,6 +39,9 @@ function provider(overrides = {}) {
     publicIdentity: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
+    hostStatus: async () => {
+      throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
+    },
     create: async () => {
       throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
     },
@@ -109,6 +112,7 @@ test('External Provider keeps document workflow handles inside the bridge', asyn
       candidateDocument: { id: 'did:wba:example.test:alice' },
       candidateDigest: 'sha256:candidate',
     }),
+    hostPhase: async () => 'prepared',
     beginPublication: async () => {
       calls.push('begin')
       return {
@@ -141,6 +145,13 @@ test('External Provider keeps document workflow handles inside the bridge', asyn
   assert.equal(prepared.ok, true)
   const { sessionId, candidate } = JSON.parse(prepared.payloadJson)
   assert.equal(candidate.operationId, 'operation-1')
+
+  const phase = await dispatch([{
+    operation: 'documentChangeHostPhase',
+    payloadJson: JSON.stringify({ sessionId }),
+    buffers: [],
+  }])
+  assert.equal(JSON.parse(phase.payloadJson), 'prepared')
 
   const begun = await dispatch([{
     operation: 'documentChangeBeginPublication',

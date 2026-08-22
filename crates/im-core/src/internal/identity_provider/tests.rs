@@ -45,6 +45,10 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
     let reference = snapshot.reference.clone();
     assert_eq!(snapshot.reference, reference);
     assert_eq!(snapshot.state, ProviderIdentityState::Active);
+    assert_eq!(
+        session.host_status().await.unwrap().root_capability,
+        ProviderRootCapability::Active
+    );
     assert_eq!(custody.store_info().await.unwrap().identity_count, 1);
     assert_eq!(custody.list_identities().await.unwrap().len(), 1);
 
@@ -130,6 +134,10 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
         .unwrap();
     let candidate = document_change.candidate().await.unwrap();
     assert!(!candidate.operation_id.is_empty());
+    assert_eq!(
+        document_change.host_phase().await.unwrap(),
+        ProviderDocumentChangePhase::Prepared
+    );
     let attempt = document_change.begin_publication().await.unwrap();
     assert_eq!(
         document_change
