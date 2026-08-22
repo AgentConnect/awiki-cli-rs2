@@ -1,0 +1,21 @@
+[package]
+name = "identity-provider-bridge-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anp = { path = "../../../anp/anp/rust", default-features = false }
+ed25519-dalek = "=2.1.1"
+napi = { version = "3.9", features = ["async"] }
+napi-derive = "3.5"
+serde_json = "1"
+tokio = { version = "1.52.3", features = ["time"] }
+
+[build-dependencies]
+napi-build = "2.3"
+
+[workspace]
