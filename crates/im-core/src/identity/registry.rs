@@ -1476,9 +1476,17 @@ impl IdentityRegistry<'_> {
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
         #[cfg(feature = "provider-traits")]
-        let key_provider = if let (Some(custody), Some(entry)) =
-            (self.core.inner().identity_custody_provider(), entry)
-        {
+        let key_provider = if let Some(entry) = entry.filter(|entry| {
+            entry.identity_custody_backend.is_some()
+                || entry.anp_identity_store_id.is_some()
+                || entry.anp_identity_id.is_some()
+        }) {
+            if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["anp_identity_backend_marker".to_owned()],
+                });
+            }
             let store_id = entry.anp_identity_store_id.as_deref().ok_or_else(|| {
                 crate::ImError::IdentityNotReady {
                     identity: summary.did.as_str().to_owned(),
@@ -1491,6 +1499,17 @@ impl IdentityRegistry<'_> {
                     missing: vec!["anp_identity_id".to_owned()],
                 }
             })?;
+            let custody =
+                crate::internal::identity_custody::controller_custody_provider(self.core).await?;
+            let info = custody
+                .store_info()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if info.store_id != store_id {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "identity provider Store binding changed".to_owned(),
+                });
+            }
             let reference = crate::provider::ProviderIdentityRef {
                 store_id: store_id.to_owned(),
                 identity_id: identity_id.to_owned(),
@@ -4595,8 +4614,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn new_identity_creation_uses_anp_custody_then_commits_only_a_public_projection() {
+    #[tokio::test]
+    async fn new_identity_creation_uses_anp_custody_then_commits_only_a_public_projection() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
@@ -4663,13 +4682,23 @@ mod tests {
 
         let runtime = core
             .identities()
-            .load_runtime(crate::identity::IdentitySelector::Default)
+            .load_runtime_async(crate::identity::IdentitySelector::Default)
+            .await
             .unwrap();
+        let signing_kid = runtime.key_provider.request_signing_key_id().unwrap();
+        runtime.key_provider.agreement_key_id().unwrap();
         runtime
-            .key_provider
-            .ensure_request_signing_available()
+            .identity_session
+            .as_ref()
+            .unwrap()
+            .sign(crate::internal::identity_provider::ProviderSignRequest {
+                purpose:
+                    crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+                key: crate::internal::identity_provider::ProviderKeySelector::Kid(signing_kid),
+                payload: b"provider runtime".to_vec(),
+            })
+            .await
             .unwrap();
-        runtime.key_provider.ensure_agreement_available().unwrap();
         assert_eq!(runtime.summary.did, did);
         assert!(
             std::fs::read_dir(paths.identities.identity_root_dir.join("created-anp-id"))
