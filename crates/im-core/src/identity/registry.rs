@@ -425,60 +425,79 @@ impl<'a> IdentityRegistry<'a> {
         let dir_name = entry
             .identity_dir_name()
             .ok_or(crate::ImError::PermissionDenied)?;
-        let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-        if entry.anp_identity_store_id.as_deref() != Some(store.manifest().store_id.as_str()) {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let mut identity = store
-            .open_identity(proposal.user_did.as_str())
-            .map_err(crate::internal::identity_custody::map_error)?;
-        if entry.anp_identity_id.as_deref() != Some(identity.identity_id())
-            || identity.state() != anp_identity::IdentityState::Active
-        {
+        let mut identity = open_registry_managed_identity(self.core, &entry)?;
+        let public = identity
+            .public_identity()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        if public.state != anp_identity::PublicIdentityState::Active {
             return Err(crate::ImError::PermissionDenied);
         }
         if anp::authentication::find_verification_method(
-            identity.document(),
+            public.document.as_value(),
             &proposal.verification_method,
         )
         .is_some()
         {
-            require_daemon_proposal_document_binding(&proposal, identity.document())?;
-            let document = identity.document().clone();
-            drop(identity);
-            drop(store);
+            require_daemon_proposal_document_binding(&proposal, public.document.as_value())?;
+            let document = public.document.into_value();
             save_identity_document_projection(self.core, &dir_name, &document)?;
             return daemon_public_package(proposal);
         }
 
         let mut pending_reconciliation = false;
-        if let Some(pending) = identity.pending_revision() {
-            require_daemon_proposal_document_binding(&proposal, &pending.candidate_document)?;
-            match pending.state {
-                anp_identity::PublicationState::Prepared => {}
-                anp_identity::PublicationState::PublicationInFlight => {
-                    identity
-                        .mark_publication_uncertain(&pending.revision_id)
-                        .map_err(crate::internal::identity_custody::map_error)?;
+        use anp_identity::host::{DocumentChangeRecoveryPort, HostDocumentChangePhase};
+        if let Some(mut pending) = identity
+            .resume_document_change()
+            .map_err(crate::internal::identity_custody::map_facade_error)?
+        {
+            require_daemon_proposal_document_binding(
+                &proposal,
+                pending.candidate().candidate_document.as_value(),
+            )?;
+            match pending
+                .host_phase()
+                .map_err(crate::internal::identity_custody::map_facade_error)?
+            {
+                HostDocumentChangePhase::Prepared => {}
+                HostDocumentChangePhase::PublicationInFlight => {
+                    let attempt = pending
+                        .begin_publication()
+                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                    pending
+                        .complete(attempt, anp_identity::PublicationResult::Unknown)
+                        .map_err(crate::internal::identity_custody::map_facade_error)?;
                     pending_reconciliation = true;
                 }
-                anp_identity::PublicationState::PublicationUncertain => {
+                HostDocumentChangePhase::PublicationUncertain => {
                     pending_reconciliation = true;
                 }
-                anp_identity::PublicationState::Published => {
-                    identity
-                        .commit_update(&pending.revision_id)
-                        .map_err(crate::internal::identity_custody::map_error)?;
-                    let document = identity.document().clone();
-                    drop(identity);
-                    drop(store);
+                HostDocumentChangePhase::Published => {
+                    let candidate = pending.candidate().clone();
+                    let attempt = pending
+                        .begin_publication()
+                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                    let outcome = pending
+                        .complete(
+                            attempt,
+                            anp_identity::PublicationResult::Confirmed {
+                                evidence: verified_publication_evidence(
+                                    candidate.candidate_document.as_value(),
+                                    None,
+                                )?,
+                            },
+                        )
+                        .map_err(crate::internal::identity_custody::map_facade_error)?;
+                    let anp_identity::DocumentChangeOutcome::Committed { identity } = outcome
+                    else {
+                        return Err(crate::ImError::PermissionDenied);
+                    };
+                    let document = identity.document.into_value();
                     save_identity_document_projection(self.core, &dir_name, &document)?;
                     return daemon_public_package(proposal);
                 }
             }
         }
         drop(identity);
-        drop(store);
 
         let client = self.core.client_async(selector.clone()).await?;
         if pending_reconciliation {
@@ -490,14 +509,12 @@ impl<'a> IdentityRegistry<'a> {
                     proposal.user_did.as_str(),
                 )
                 .await?;
-            let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-            let mut identity = store
-                .open_identity(proposal.user_did.as_str())
-                .map_err(crate::internal::identity_custody::map_error)?;
-            let pending = identity
-                .pending_revision()
+            let mut identity = open_registry_managed_identity(self.core, &entry)?;
+            let mut pending = identity
+                .resume_document_change()
+                .map_err(crate::internal::identity_custody::map_facade_error)?
                 .ok_or(crate::ImError::PermissionDenied)?;
-            let pending_candidate = pending.candidate_document.clone();
+            let pending_candidate = pending.candidate().candidate_document.clone().into_value();
             if remote_document == pending_candidate {
                 if let Some(mut state) = vnext_device_state.clone() {
                     advance_daemon_document_checkpoint(
@@ -520,52 +537,59 @@ impl<'a> IdentityRegistry<'a> {
                     })??;
                 }
             }
-            let outcome = identity
-                .reconcile_update(&pending.revision_id, &remote_document)
-                .map_err(crate::internal::identity_custody::map_error)?;
-            if outcome == anp_identity::ReconcileOutcome::Committed {
-                require_daemon_proposal_document_binding(&proposal, identity.document())?;
-                let document = identity.document().clone();
-                drop(identity);
-                drop(store);
+            let remote_evidence = verified_publication_evidence(&remote_document, None)?;
+            let outcome = pending
+                .reconcile(anp_identity::VerifiedRemoteDocument {
+                    document: anp_identity::DidDocument::from_value(remote_document),
+                    evidence: remote_evidence,
+                })
+                .map_err(crate::internal::identity_custody::map_facade_error)?;
+            if let anp_identity::DocumentChangeOutcome::Committed { identity } = outcome {
+                require_daemon_proposal_document_binding(&proposal, identity.document.as_value())?;
+                let document = identity.document.into_value();
                 save_identity_document_projection(self.core, &dir_name, &document)?;
                 return daemon_public_package(proposal);
             }
         }
 
-        let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-        let mut identity = store
-            .open_identity(proposal.user_did.as_str())
-            .map_err(crate::internal::identity_custody::map_error)?;
-        let (candidate, revision_id) = if let Some(pending) = identity.pending_revision() {
-            if pending.state != anp_identity::PublicationState::Prepared {
+        let mut identity = open_registry_managed_identity(self.core, &entry)?;
+        let mut publication = if let Some(pending) = identity
+            .resume_document_change()
+            .map_err(crate::internal::identity_custody::map_facade_error)?
+        {
+            if pending
+                .host_phase()
+                .map_err(crate::internal::identity_custody::map_facade_error)?
+                != HostDocumentChangePhase::Prepared
+            {
                 return Err(crate::ImError::PermissionDenied);
             }
-            require_daemon_proposal_document_binding(&proposal, &pending.candidate_document)?;
-            (pending.candidate_document, pending.revision_id)
+            require_daemon_proposal_document_binding(
+                &proposal,
+                pending.candidate().candidate_document.as_value(),
+            )?;
+            pending
         } else {
-            let prepared = identity
-                .prepare_update(anp_identity::DocumentUpdateSpec {
-                    request_signing_rotation: None,
-                    request_signing_mutations: vec![
-                        anp_identity::RequestSigningMutationSpec::Add {
-                            key: anp_identity::RequestSigningPublicKeySpec {
-                                kid: proposal.verification_method.clone(),
-                                public_key_multibase: proposal.public_key_multibase.clone(),
-                            },
+            identity
+                .prepare_document_change(anp_identity::DocumentChangeRequest {
+                    changes: vec![anp_identity::DocumentChange::AddAuthenticationKey {
+                        key: anp_identity::PublicKeyInput {
+                            kid: proposal.verification_method.clone(),
+                            public_key_multibase: proposal.public_key_multibase.clone(),
                         },
-                    ],
-                    device_mutations: Vec::new(),
-                    services: None,
+                    }],
                 })
-                .map_err(crate::internal::identity_custody::map_error)?;
-            (prepared.candidate_document, prepared.revision_id)
+                .map_err(crate::internal::identity_custody::map_facade_error)?
         };
-        identity
-            .begin_publication(&revision_id)
-            .map_err(crate::internal::identity_custody::map_error)?;
+        let candidate = publication
+            .candidate()
+            .candidate_document
+            .clone()
+            .into_value();
+        let publication_attempt = publication
+            .begin_publication()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
         drop(identity);
-        drop(store);
 
         let publication_result: crate::ImResult<
             Option<(
@@ -647,16 +671,22 @@ impl<'a> IdentityRegistry<'a> {
         let updated_device_state = match publication_result {
             Ok(state) => state,
             Err(error) => {
-                let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-                let mut identity = store
-                    .open_identity(proposal.user_did.as_str())
-                    .map_err(crate::internal::identity_custody::map_error)?;
-                identity
-                    .mark_publication_uncertain(&revision_id)
-                    .map_err(crate::internal::identity_custody::map_error)?;
+                publication
+                    .complete(
+                        publication_attempt,
+                        anp_identity::PublicationResult::Unknown,
+                    )
+                    .map_err(crate::internal::identity_custody::map_facade_error)?;
                 return Err(error);
             }
         };
+
+        let publication_evidence = verified_publication_evidence(
+            &candidate,
+            updated_device_state
+                .as_ref()
+                .and_then(|(state, _)| state.checkpoint.as_ref()),
+        )?;
 
         if let Some((state, local_alias)) = updated_device_state {
             let paths = self.core.inner().sdk_paths().identities.clone();
@@ -670,18 +700,20 @@ impl<'a> IdentityRegistry<'a> {
             })??;
         }
 
-        let store = crate::internal::identity_custody::open_controller_store(self.core)?;
-        let mut identity = store
-            .open_identity(proposal.user_did.as_str())
-            .map_err(crate::internal::identity_custody::map_error)?;
-        identity
-            .mark_published(&revision_id)
-            .map_err(crate::internal::identity_custody::map_error)?;
-        identity
-            .commit_update(&revision_id)
-            .map_err(crate::internal::identity_custody::map_error)?;
-        drop(identity);
-        drop(store);
+        let outcome = publication
+            .complete(
+                publication_attempt,
+                anp_identity::PublicationResult::Confirmed {
+                    evidence: publication_evidence,
+                },
+            )
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        if !matches!(
+            outcome,
+            anp_identity::DocumentChangeOutcome::Committed { .. }
+        ) {
+            return Err(crate::ImError::PermissionDenied);
+        }
         save_identity_document_projection(self.core, &dir_name, &candidate)?;
         daemon_public_package(proposal)
     }
@@ -2052,6 +2084,48 @@ impl IdentityRegistry<'_> {
         }
         status
     }
+}
+
+fn open_registry_managed_identity(
+    core: &crate::core::ImCore,
+    entry: &RegistryEntry,
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    let manager = crate::internal::identity_custody::open_controller_manager(core)?;
+    let info = manager
+        .info()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    let store_id = entry
+        .anp_identity_store_id
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let identity_id = entry
+        .anp_identity_id
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if info.store_id != store_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    manager
+        .get(&anp_identity::IdentityRef {
+            store_id: store_id.to_owned(),
+            identity_id: identity_id.to_owned(),
+            did: entry.summary.did.as_str().to_owned(),
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)
+}
+
+fn verified_publication_evidence(
+    document: &serde_json::Value,
+    checkpoint: Option<&crate::internal::identity_device_state::IdentityInternalCheckpoint>,
+) -> crate::ImResult<anp_identity::VerifiedPublicationEvidence> {
+    let (document_version, registry_version) = checkpoint
+        .map(|checkpoint| (checkpoint.document_version, checkpoint.registry_version))
+        .unwrap_or((1, 1));
+    Ok(anp_identity::VerifiedPublicationEvidence {
+        document_version,
+        registry_version,
+        document_digest: crate::internal::identity_wire::document::document_hash(document)?,
+    })
 }
 
 fn legacy_identity_custody_status(
