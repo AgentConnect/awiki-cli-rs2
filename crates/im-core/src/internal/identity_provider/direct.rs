@@ -215,7 +215,7 @@ impl IdentitySession for DirectAnpIdentitySession {
     ) -> ProviderResult<Arc<dyn ProviderDocumentChangeSession>> {
         let identity = self.identity.clone();
         run_blocking(move || {
-            let request = serde_json::from_value(request).map_err(|_| {
+            let request = serde_json::from_value(snake_case_json(request)).map_err(|_| {
                 IdentityProviderError::new(IdentityProviderErrorCode::InvalidRequest, false)
             })?;
             let session = with_owned_identity(&identity, |identity| {
@@ -282,6 +282,34 @@ impl IdentitySession for DirectAnpIdentitySession {
         let identity = self.identity.clone();
         run_blocking(move || with_identity(&identity, |identity| identity.recover_identity())).await
     }
+}
+
+fn snake_case_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(snake_case_json).collect())
+        }
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (camel_to_snake(&key), snake_case_json(value)))
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn camel_to_snake(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_ascii_uppercase() {
+            output.push('_');
+            output.push(character.to_ascii_lowercase());
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 fn with_identity<T>(
@@ -425,9 +453,9 @@ fn map_identity_error(error: anp_identity::IdentityError) -> IdentityProviderErr
         Source::CapabilityUnavailable | Source::Unsupported => {
             (Target::CapabilityUnavailable, false)
         }
-        Source::PendingDocumentChange
-        | Source::DocumentChangeNotFound
-        | Source::InvalidDocumentChangeState => (Target::Conflict, false),
+        Source::PendingDocumentChange => (Target::PendingDocumentChange, false),
+        Source::DocumentChangeNotFound => (Target::DocumentChangeNotFound, false),
+        Source::InvalidDocumentChangeState => (Target::InvalidDocumentChangeState, false),
         Source::Storage => (Target::Storage, true),
         Source::Internal => (Target::Internal, false),
         _ => (Target::Internal, false),

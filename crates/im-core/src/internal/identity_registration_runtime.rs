@@ -377,7 +377,7 @@ where
                 self.core,
             )?;
         let (pending_ref, mut pending) =
-            load_or_create_pending_registration(self.core, &store, &request, &target)?;
+            load_or_create_pending_registration_async(self.core, &store, &request, &target).await?;
         verify_pending_matches_request(&pending, &request, &target)?;
         if pending.remote_result.is_none() && pending.remote_attempted {
             match self
@@ -386,18 +386,20 @@ where
                 .await?
             {
                 crate::internal::transport::PendingRegistrationReconciliation::Absent => {
-                    crate::internal::identity_custody::reconcile_registration_publication(
+                    crate::internal::identity_custody::reconcile_registration_publication_async(
                         self.core,
                         &pending.identity,
                         false,
-                    )?;
+                    )
+                    .await?;
                 }
                 committed => {
-                    crate::internal::identity_custody::reconcile_registration_publication(
+                    crate::internal::identity_custody::reconcile_registration_publication_async(
                         self.core,
                         &pending.identity,
                         true,
-                    )?;
+                    )
+                    .await?;
                     apply_registration_reconciliation(&mut pending, committed)?;
                     store.save(&pending)?;
                 }
@@ -406,10 +408,11 @@ where
         if pending.remote_result.is_none() {
             let mut refreshed_expired_proof = false;
             loop {
-                crate::internal::identity_custody::begin_registration_publication(
+                crate::internal::identity_custody::begin_registration_publication_async(
                     self.core,
                     &pending.identity,
-                )?;
+                )
+                .await?;
                 pending.remote_attempted = true;
                 store.save(&pending)?;
                 let call = register_call(&pending, &request)?;
@@ -420,24 +423,27 @@ where
                 {
                     Ok(raw) => match parse_register_outcome(&pending, raw)? {
                         RegistrationRemoteOutcome::Registered(result) => {
-                            crate::internal::identity_custody::commit_registration_publication(
+                            crate::internal::identity_custody::commit_registration_publication_async(
                                 self.core,
                                 &pending.identity,
-                            )?;
+                            )
+                            .await?;
                             pending.remote_result = Some(result);
                             pending.phase =
                                     crate::internal::identity_registration_pending::PendingRegistrationPhase::RemoteCommitted;
                         }
                         RegistrationRemoteOutcome::JoinRequired(join_required) => {
-                            crate::internal::identity_custody::reconcile_registration_publication(
+                            crate::internal::identity_custody::reconcile_registration_publication_async(
                                 self.core,
                                 &pending.identity,
                                 false,
-                            )?;
-                            crate::internal::identity_custody::discard_unpublished_registration(
+                            )
+                            .await?;
+                            crate::internal::identity_custody::discard_unpublished_registration_async(
                                 self.core,
                                 &pending.identity,
-                            )?;
+                            )
+                            .await?;
                             store.delete(&pending_ref)?;
                             let preparation = prepare_join_required(self.core, join_required)?;
                             return join_required_result(&request, target.full_handle, preparation);
@@ -450,19 +456,21 @@ where
                             .await?
                         {
                             crate::internal::transport::PendingRegistrationReconciliation::Absent => {
-                                crate::internal::identity_custody::reconcile_registration_publication(
+                                crate::internal::identity_custody::reconcile_registration_publication_async(
                                     self.core,
                                     &pending.identity,
                                     false,
-                                )?;
+                                )
+                                .await?;
                                 return Err(error);
                             }
                             committed => {
-                                crate::internal::identity_custody::reconcile_registration_publication(
+                                crate::internal::identity_custody::reconcile_registration_publication_async(
                                     self.core,
                                     &pending.identity,
                                     true,
-                                )?;
+                                )
+                                .await?;
                                 apply_registration_reconciliation(&mut pending, committed)?
                             }
                         }
@@ -470,16 +478,18 @@ where
                     Err(error)
                         if !refreshed_expired_proof && registration_proof_expired(&error) =>
                     {
-                        crate::internal::identity_custody::reconcile_registration_publication(
+                        crate::internal::identity_custody::reconcile_registration_publication_async(
                             self.core,
                             &pending.identity,
                             false,
-                        )?;
+                        )
+                        .await?;
                         let (document, revision_id) =
-                            crate::internal::identity_custody::refresh_registration_document(
+                            crate::internal::identity_custody::refresh_registration_document_async(
                                 self.core,
                                 &pending.identity,
-                            )?;
+                            )
+                            .await?;
                         pending.replace_prepared_document(document, Some(revision_id))?;
                         store.save(&pending)?;
                         refreshed_expired_proof = true;
@@ -597,6 +607,43 @@ fn load_or_create_pending_registration(
         &target.effective_domain,
         &target.local_part,
     )?;
+    let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
+        target.local_part.clone(),
+        target.effective_domain.clone(),
+        local_alias(request, target),
+        request
+            .profile
+            .display_name
+            .clone()
+            .unwrap_or_else(|| target.local_part.clone()),
+        request.make_default,
+        pending_verification_kind(&request.verification).to_owned(),
+        pending_verification_target(&request.verification),
+        request.invite_code.clone(),
+        identity,
+    )?;
+    let secret_ref = store.save(&pending)?;
+    Ok((secret_ref, pending))
+}
+
+async fn load_or_create_pending_registration_async(
+    core: &crate::core::ImCore,
+    store: &crate::internal::identity_registration_pending::PendingRegistrationStore,
+    request: &crate::identity::RegisterHandleRequest,
+    target: &RegistrationTarget,
+) -> crate::ImResult<(
+    crate::internal::secret_vault::record::SecretRef,
+    crate::internal::identity_registration_pending::PendingRegistration,
+)> {
+    if let Some(existing) = store.load(&target.local_part, &target.effective_domain)? {
+        return Ok(existing);
+    }
+    let identity = crate::internal::identity_custody::provision_registration_identity_async(
+        core,
+        &target.effective_domain,
+        &target.local_part,
+    )
+    .await?;
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         target.local_part.clone(),
         target.effective_domain.clone(),

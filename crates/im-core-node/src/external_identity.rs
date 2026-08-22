@@ -48,13 +48,14 @@ pub(crate) struct ExternalIdentityCustody {
 struct ExternalIdentitySession {
     dispatch: Arc<IdentityProviderDispatch>,
     identity: ProviderIdentityRef,
-    public_cache: tokio::sync::RwLock<Option<ProviderPublicIdentity>>,
+    public_cache: Arc<tokio::sync::RwLock<Option<ProviderPublicIdentity>>>,
 }
 
 struct ExternalDocumentChangeSession {
     dispatch: Arc<IdentityProviderDispatch>,
     session_id: String,
     candidate: ProviderPreparedDocumentChange,
+    public_cache: Arc<tokio::sync::RwLock<Option<ProviderPublicIdentity>>>,
 }
 
 impl ExternalIdentityCustody {
@@ -217,7 +218,7 @@ impl IdentityCustody for ExternalIdentityCustody {
         let session = ExternalIdentitySession {
             dispatch: self.dispatch.clone(),
             identity: identity.clone(),
-            public_cache: tokio::sync::RwLock::new(None),
+            public_cache: Arc::new(tokio::sync::RwLock::new(None)),
         };
         let public = session.public_identity().await?;
         if public.reference != *identity {
@@ -236,7 +237,7 @@ impl IdentityCustody for ExternalIdentityCustody {
         let session = ExternalIdentitySession {
             dispatch: self.dispatch.clone(),
             identity: public.reference.clone(),
-            public_cache: tokio::sync::RwLock::new(Some(public)),
+            public_cache: Arc::new(tokio::sync::RwLock::new(Some(public))),
         };
         Ok(Arc::new(session))
     }
@@ -403,6 +404,7 @@ impl IdentitySession for ExternalIdentitySession {
             dispatch: self.dispatch.clone(),
             session_id: wire.session_id,
             candidate: wire.candidate,
+            public_cache: self.public_cache.clone(),
         }))
     }
 
@@ -423,6 +425,7 @@ impl IdentitySession for ExternalIdentitySession {
                 dispatch: self.dispatch.clone(),
                 session_id: wire.session_id,
                 candidate: wire.candidate,
+                public_cache: self.public_cache.clone(),
             }) as Arc<dyn ProviderDocumentChangeSession>
         }))
     }
@@ -502,7 +505,7 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
         attempt: ProviderPublicationAttempt,
         result: ProviderPublicationResult,
     ) -> ProviderResult<ProviderDocumentChangeOutcome> {
-        call_json(
+        let outcome = call_json(
             &self.dispatch,
             "documentChangeComplete",
             &CompleteDocumentChangePayload {
@@ -512,14 +515,22 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
             },
             Vec::new(),
         )
-        .await
+        .await?;
+        if matches!(
+            outcome,
+            ProviderDocumentChangeOutcome::Committed { .. }
+                | ProviderDocumentChangeOutcome::Aborted
+        ) {
+            *self.public_cache.write().await = None;
+        }
+        Ok(outcome)
     }
 
     async fn reconcile(
         &self,
         observation: ProviderVerifiedRemoteDocument,
     ) -> ProviderResult<ProviderDocumentChangeOutcome> {
-        call_json(
+        let outcome = call_json(
             &self.dispatch,
             "documentChangeReconcile",
             &ReconcileDocumentChangePayload {
@@ -528,7 +539,11 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
             },
             Vec::new(),
         )
-        .await
+        .await?;
+        if matches!(outcome, ProviderDocumentChangeOutcome::Committed { .. }) {
+            *self.public_cache.write().await = None;
+        }
+        Ok(outcome)
     }
 }
 
@@ -621,6 +636,9 @@ fn map_error_code(code: Option<&str>) -> IdentityProviderErrorCode {
         "key_purpose_violation" => IdentityProviderErrorCode::KeyPurposeViolation,
         "ambiguous_key" => IdentityProviderErrorCode::AmbiguousKey,
         "verification_failed" => IdentityProviderErrorCode::VerificationFailed,
+        "pending_document_change" => IdentityProviderErrorCode::PendingDocumentChange,
+        "document_change_not_found" => IdentityProviderErrorCode::DocumentChangeNotFound,
+        "invalid_document_change_state" => IdentityProviderErrorCode::InvalidDocumentChangeState,
         "conflict" => IdentityProviderErrorCode::Conflict,
         "capability_unavailable" | "capability_forbidden" => {
             IdentityProviderErrorCode::CapabilityUnavailable

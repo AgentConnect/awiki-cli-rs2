@@ -9,6 +9,9 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 #[cfg(feature = "identity-native-anp")]
+#[cfg(test)]
+pub(crate) use direct::DirectAnpIdentityCustody;
+#[cfg(feature = "identity-native-anp")]
 pub(crate) use direct::DirectAnpIdentitySession;
 
 pub const IDENTITY_PROVIDER_PROTOCOL: &str = "anp-identity-provider-ts/1";
@@ -37,6 +40,9 @@ pub enum IdentityProviderErrorCode {
     KeyPurposeViolation,
     AmbiguousKey,
     VerificationFailed,
+    PendingDocumentChange,
+    DocumentChangeNotFound,
+    InvalidDocumentChangeState,
     Conflict,
     CapabilityUnavailable,
     RequestCancelled,
@@ -81,6 +87,11 @@ pub fn map_provider_error(error: IdentityProviderError) -> crate::ImError {
         | Code::VerificationFailed
         | Code::CapabilityUnavailable
         | Code::RootKeyMismatch => crate::ImError::PermissionDenied,
+        Code::PendingDocumentChange
+        | Code::DocumentChangeNotFound
+        | Code::InvalidDocumentChangeState => crate::ImError::IdentityBindingConflict {
+            detail: "identity provider document workflow state changed".to_owned(),
+        },
         Code::ProviderUnavailable
         | Code::ProviderDisposed
         | Code::RequestTimeout
@@ -213,6 +224,7 @@ pub struct ProviderIdentityService {
     pub id: String,
     pub service_type: String,
     pub service_endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub service_did: Option<String>,
     #[serde(default)]
     pub profiles: Vec<String>,
@@ -243,12 +255,14 @@ pub enum ProviderIdentityExtension {
 pub struct ProviderCreateIdentityRequest {
     pub profile: ProviderDidProfile,
     pub domain: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     pub path_segments: Vec<String>,
     pub capabilities: ProviderCapabilities,
     pub managed_keys: Vec<ProviderManagedKeySpec>,
     #[serde(default)]
     pub services: Vec<ProviderIdentityService>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_description_url: Option<String>,
     #[serde(default)]
     pub extensions: Vec<ProviderIdentityExtension>,
