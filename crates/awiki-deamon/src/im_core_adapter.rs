@@ -235,7 +235,7 @@ impl ImCoreAdapter {
 
     pub fn client_for_anp_delegated_identity(
         &self,
-        identity: anp_identity::DidIdentity,
+        identity: anp_identity::ManagedIdentity,
     ) -> Result<im_core::ImClient> {
         Ok(self.core.client_with_anp_delegated_identity(identity)?)
     }

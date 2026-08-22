@@ -1,3 +1,9 @@
+use anp_identity::host::{
+    ConvergenceOutcome, ConvergenceWorkflow, EnrollmentProposalKind, EnrollmentWorkflow,
+    IdentityStatusPort, MigrationKeyPurpose, MigrationPort, MigrationPrivateKey,
+    MigrationPrivateKeyEncoding, RequestSigningEnrollmentRequest,
+    RequestSigningIdentityImportRequest,
+};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,46 +56,64 @@ pub(crate) fn prepare_daemon_subkey_custody(
 ) -> Result<PreparedDaemonSubkeyCustody> {
     validate_document(verified_document)?;
     let did = document_did(verified_document)?;
-    let mut store = open_store(state)?;
-    let (identity, key_id, public_key_multibase) = match store.open_identity(&did) {
-        Ok(identity) => match identity.state() {
-            anp_identity::IdentityState::Enrolling => {
-                let pending = identity
-                    .pending_request_signing_enrollment()
-                    .context("daemon request-signing enrollment is incomplete")?;
-                (
-                    identity,
-                    pending.request_signing_key.kid,
-                    pending.request_signing_key.public_key_multibase,
-                )
+    let mut manager = open_manager(state)?;
+    let existing = find_identity_ref(&manager, &did)?;
+    let (identity_ref, key_id, public_key_multibase) = match existing {
+        Some(identity_ref) => {
+            let identity = manager
+                .get(&identity_ref)
+                .context("open daemon identity custody")?;
+            match identity.public_identity()?.state {
+                anp_identity::PublicIdentityState::Enrolling => {
+                    let session = manager
+                        .resume_enrollment(&identity_ref)?
+                        .context("daemon request-signing enrollment is incomplete")?;
+                    let EnrollmentProposalKind::RequestSigning { signing_key } =
+                        &session.proposal().kind
+                    else {
+                        bail!("daemon enrollment kind changed");
+                    };
+                    (
+                        identity_ref,
+                        signing_key.kid.clone(),
+                        signing_key.public_key_multibase.clone(),
+                    )
+                }
+                anp_identity::PublicIdentityState::Active => {
+                    let public = identity.public_identity()?;
+                    let key = active_request_key(&public)?;
+                    (
+                        identity_ref,
+                        key.kid.clone(),
+                        public_key_multibase(public.document.as_value(), &key.kid)?,
+                    )
+                }
+                anp_identity::PublicIdentityState::Revoked => {
+                    bail!("daemon identity is revoked")
+                }
             }
-            anp_identity::IdentityState::Active => {
-                let key = active_request_key(&identity)?;
-                let key_id = key.kid.clone();
-                let public_key_multibase = key.public_key_multibase.clone();
-                (identity, key_id, public_key_multibase)
-            }
-            _ => bail!("daemon identity is revoked"),
-        },
-        Err(anp_identity::DidError::IdentityNotFound) => {
-            let (identity, prepared) = store
-                .prepare_request_signing_enrollment(anp_identity::RequestSigningEnrollmentSpec {
-                    verified_document: verified_document.clone(),
-                    evidence: evidence(verified_document, 1, 1)?,
+        }
+        None => {
+            let session = manager
+                .begin_request_signing_enrollment(RequestSigningEnrollmentRequest {
+                    remote: verified_remote_document(verified_document, 1, 1)?,
                     fragment: "daemon-key-1".to_owned(),
-                    capabilities: anp_identity::Capabilities { did_wba: true },
+                    capabilities: anp_identity::host::EnrollmentCapabilities { did_wba: true },
                 })
                 .context("prepare daemon request-signing enrollment")?;
+            let proposal = session.proposal();
+            let EnrollmentProposalKind::RequestSigning { signing_key } = &proposal.kind else {
+                bail!("daemon enrollment kind changed");
+            };
             (
-                identity,
-                prepared.request_signing_key.kid,
-                prepared.request_signing_key.public_key_multibase,
+                proposal.identity.clone(),
+                signing_key.kid.clone(),
+                signing_key.public_key_multibase.clone(),
             )
         }
-        Err(error) => return Err(error).context("open daemon identity custody"),
     };
     Ok(PreparedDaemonSubkeyCustody {
-        reference: reference(&store, &identity, key_id),
+        reference: reference(identity_ref, key_id),
         public_key_multibase,
     })
 }
@@ -102,42 +126,41 @@ pub(crate) fn import_existing_daemon_subkey(
 ) -> Result<DaemonIdentityRef> {
     validate_document(verified_document)?;
     let did = document_did(verified_document)?;
-    let mut store = open_store(state)?;
-    match store.open_identity(&did) {
-        Ok(identity) => {
-            let key = active_request_key(&identity)?;
-            if key.kid != key_id {
-                bail!("daemon identity key binding changed");
-            }
-            let reference = reference(&store, &identity, key.kid.clone());
-            drop(identity);
-            drop(store);
-            adopt_daemon_document(state, &reference, verified_document)?;
-            return Ok(reference);
+    let mut manager = open_manager(state)?;
+    if let Some(identity_ref) = find_identity_ref(&manager, &did)? {
+        let identity = manager
+            .get(&identity_ref)
+            .context("open daemon identity custody")?;
+        let public = identity.public_identity()?;
+        let key = active_request_key(&public)?;
+        if key.kid != key_id {
+            bail!("daemon identity key binding changed");
         }
-        Err(anp_identity::DidError::IdentityNotFound) => {}
-        Err(error) => return Err(error).context("open daemon identity custody"),
+        let reference = reference(identity_ref, key.kid.clone());
+        drop(identity);
+        drop(manager);
+        adopt_daemon_document(state, &reference, verified_document)?;
+        return Ok(reference);
     }
     let private = anp::PrivateKeyMaterial::from_pem(&private_key_pem)
         .context("parse imported daemon request-signing key")?;
     let anp::PrivateKeyMaterial::Ed25519(private) = private else {
         bail!("daemon request-signing key must be Ed25519");
     };
-    let identity = store
-        .import_request_signing_identity(anp_identity::RequestSigningIdentityImportSpec {
-            verified_document: verified_document.clone(),
-            evidence: evidence(verified_document, 1, 1)?,
-            capabilities: anp_identity::Capabilities { did_wba: true },
-            private_key: anp_identity::ImportedPrivateKey::new(
-                key_id,
-                anp_identity::KeyRole::RequestSigning,
-                anp_identity::PrivateKeyEncoding::Raw32,
-                Zeroizing::new(private.to_bytes().to_vec()),
-            ),
+    let identity = manager
+        .import_request_signing_identity(RequestSigningIdentityImportRequest {
+            remote: verified_remote_document(verified_document, 1, 1)?,
+            did_wba: true,
+            signing_key: MigrationPrivateKey {
+                kid: key_id.to_owned(),
+                purpose: MigrationKeyPurpose::Authentication,
+                encoding: MigrationPrivateKeyEncoding::Raw32,
+                secret: Zeroizing::new(private.to_bytes().to_vec()),
+            },
         })
         .context("import daemon request-signing identity")?;
-    active_request_key(&identity)?;
-    Ok(reference(&store, &identity, key_id.to_owned()))
+    active_request_key(&identity.public_identity()?)?;
+    Ok(reference(identity.reference(), key_id.to_owned()))
 }
 
 pub(crate) fn adopt_daemon_document(
@@ -150,34 +173,31 @@ pub(crate) fn adopt_daemon_document(
     if document_did(verified_document)? != reference.did {
         bail!("daemon identity DID changed");
     }
-    let store = open_store(state)?;
-    require_store(&store, reference)?;
-    let mut identity = store
-        .open_identity(&reference.did)
+    let manager = open_manager(state)?;
+    require_store(&manager, reference)?;
+    let mut identity = manager
+        .get(&identity_reference(reference))
         .context("open daemon identity")?;
-    if identity.identity_id() != reference.identity_id {
-        bail!("daemon identity namespace changed");
-    }
     let current = identity
-        .checkpoint()
-        .cloned()
+        .host_status()?
+        .checkpoint
         .context("daemon identity checkpoint missing")?;
     let digest = anp_identity::canonical_document_digest(verified_document)?;
     let changed = digest != current.document_digest;
-    let outcome = identity.adopt_verified_document(anp_identity::AdoptVerifiedDocumentSpec {
-        document: verified_document.clone(),
-        evidence: anp_identity::VerifiedDocumentEvidence {
-            document_version: current.document_version + u64::from(changed),
-            registry_version: current.registry_version + u64::from(changed),
-            document_digest: digest,
-        },
-    })?;
-    if outcome == anp_identity::AdoptDocumentOutcome::Revoked
-        || identity.state() != anp_identity::IdentityState::Active
+    let outcome = identity.adopt_verified_document(verified_remote_document(
+        verified_document,
+        current.document_version + u64::from(changed),
+        current.registry_version + u64::from(changed),
+    )?)?;
+    let public = identity.public_identity()?;
+    if outcome == ConvergenceOutcome::Revoked
+        || public.state != anp_identity::PublicIdentityState::Active
     {
         bail!("daemon request-signing authorization was revoked");
     }
-    active_request_key(&identity)?;
+    if active_request_key(&public)?.kid != reference.key_id {
+        bail!("daemon identity key binding changed");
+    }
     Ok(())
 }
 
@@ -185,7 +205,7 @@ pub(crate) fn ensure_record_custody(
     state: &DaemonState,
     record: &UserDelegatedIdentityRecord,
     verified_document: &Value,
-) -> Result<(DaemonIdentityRef, anp_identity::DidIdentity)> {
+) -> Result<(DaemonIdentityRef, anp_identity::ManagedIdentity)> {
     let encoded = record
         .private_key_ref_json
         .as_deref()
@@ -227,16 +247,16 @@ pub(crate) fn ensure_record_custody(
 pub(crate) fn open_referenced_identity(
     state: &DaemonState,
     reference: &DaemonIdentityRef,
-) -> Result<anp_identity::DidIdentity> {
+) -> Result<anp_identity::ManagedIdentity> {
     validate_reference(reference)?;
-    let store = open_store(state)?;
-    require_store(&store, reference)?;
-    let identity = store
-        .open_identity(&reference.did)
+    let manager = open_manager(state)?;
+    require_store(&manager, reference)?;
+    let identity = manager
+        .get(&identity_reference(reference))
         .context("open referenced daemon identity")?;
-    if identity.identity_id() != reference.identity_id
-        || identity.state() != anp_identity::IdentityState::Active
-        || active_request_key(&identity)?.kid != reference.key_id
+    let public = identity.public_identity()?;
+    if public.state != anp_identity::PublicIdentityState::Active
+        || active_request_key(&public)?.kid != reference.key_id
     {
         bail!("daemon identity reference is not active");
     }
@@ -249,24 +269,27 @@ pub(crate) fn verify_reference(state: &DaemonState, encoded: &str) -> Result<()>
     open_referenced_identity(state, &reference).map(|_| ())
 }
 
-fn open_store(state: &DaemonState) -> Result<anp_identity::DidStore> {
+fn open_manager(state: &DaemonState) -> Result<anp_identity::IdentityManager> {
     let root = state.identity_custody_root()?;
-    let key = state.identity_custody_root_key()?;
-    match anp_identity::DidStore::open_injected(&root, PROVIDER_KEY_ID, key) {
-        Ok(store) => Ok(store),
-        Err(anp_identity::DidError::StoreNotFound) => {
-            match anp_identity::DidStore::initialize_injected(
-                &root,
+    let config = || -> Result<anp_identity::IdentityManagerConfig> {
+        Ok(anp_identity::IdentityManagerConfig {
+            state_root: root.clone(),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
                 PROVIDER_KEY_ID,
                 state.identity_custody_root_key()?,
-            ) {
-                Ok(store) => Ok(store),
-                Err(anp_identity::DidError::Conflict) => anp_identity::DidStore::open_injected(
-                    root,
-                    PROVIDER_KEY_ID,
-                    state.identity_custody_root_key()?,
-                )
-                .context("open concurrently initialized daemon identity store"),
+            )),
+        })
+    };
+    match anp_identity::IdentityManager::open(config()?) {
+        Ok(manager) => Ok(manager),
+        Err(anp_identity::IdentityError::StoreNotFound) => {
+            match anp_identity::IdentityManager::initialize(config()?) {
+                Ok(manager) => Ok(manager),
+                Err(anp_identity::IdentityError::Conflict)
+                | Err(anp_identity::IdentityError::IdentityAlreadyExists) => {
+                    anp_identity::IdentityManager::open(config()?)
+                        .context("open concurrently initialized daemon identity store")
+                }
                 Err(error) => Err(error).context("initialize daemon identity store"),
             }
         }
@@ -274,15 +297,19 @@ fn open_store(state: &DaemonState) -> Result<anp_identity::DidStore> {
     }
 }
 
-fn evidence(
+fn verified_remote_document(
     document: &Value,
     document_version: u64,
     registry_version: u64,
-) -> Result<anp_identity::VerifiedDocumentEvidence> {
-    Ok(anp_identity::VerifiedDocumentEvidence {
-        document_version,
-        registry_version,
-        document_digest: anp_identity::canonical_document_digest(document)?,
+) -> Result<anp_identity::VerifiedRemoteDocument> {
+    Ok(anp_identity::VerifiedRemoteDocument {
+        document: serde_json::from_value(document.clone())
+            .context("project verified daemon DID document")?,
+        evidence: anp_identity::VerifiedPublicationEvidence {
+            document_version,
+            registry_version,
+            document_digest: anp_identity::canonical_document_digest(document)?,
+        },
     })
 }
 
@@ -301,29 +328,30 @@ fn document_did(document: &Value) -> Result<String> {
         .context("daemon identity document is missing id")
 }
 
-fn active_request_key(identity: &anp_identity::DidIdentity) -> Result<&anp_identity::KeyMetadata> {
+fn active_request_key(
+    identity: &anp_identity::PublicIdentity,
+) -> Result<&anp_identity::PublicKeyDescriptor> {
     identity
-        .keys()
+        .active_keys
         .iter()
         .find(|key| {
-            key.role == anp_identity::KeyRole::RequestSigning
-                && key.origin == anp_identity::KeyOrigin::Managed
-                && key.state == anp_identity::KeyState::Active
-                && !key.material_erased
+            key.algorithm == anp_identity::KeyAlgorithm::Ed25519
+                && key
+                    .purposes
+                    .contains(&anp_identity::KeyPurpose::Authentication)
+                && key
+                    .purposes
+                    .contains(&anp_identity::KeyPurpose::ApplicationAssertion)
         })
         .context("active daemon request-signing key is missing")
 }
 
-fn reference(
-    store: &anp_identity::DidStore,
-    identity: &anp_identity::DidIdentity,
-    key_id: String,
-) -> DaemonIdentityRef {
+fn reference(identity: anp_identity::IdentityRef, key_id: String) -> DaemonIdentityRef {
     DaemonIdentityRef {
         kind: REFERENCE_KIND.to_owned(),
-        store_id: store.manifest().store_id.clone(),
-        identity_id: identity.identity_id().to_owned(),
-        did: identity.did().to_owned(),
+        store_id: identity.store_id,
+        identity_id: identity.identity_id,
+        did: identity.did,
         key_id,
     }
 }
@@ -340,16 +368,73 @@ fn validate_reference(reference: &DaemonIdentityRef) -> Result<()> {
     Ok(())
 }
 
-fn require_store(store: &anp_identity::DidStore, reference: &DaemonIdentityRef) -> Result<()> {
-    if store.manifest().store_id != reference.store_id {
+fn require_store(
+    manager: &anp_identity::IdentityManager,
+    reference: &DaemonIdentityRef,
+) -> Result<()> {
+    if manager.info()?.store_id != reference.store_id {
         bail!("daemon identity store binding changed");
     }
     Ok(())
 }
 
+fn identity_reference(reference: &DaemonIdentityRef) -> anp_identity::IdentityRef {
+    anp_identity::IdentityRef {
+        store_id: reference.store_id.clone(),
+        identity_id: reference.identity_id.clone(),
+        did: reference.did.clone(),
+    }
+}
+
+fn find_identity_ref(
+    manager: &anp_identity::IdentityManager,
+    did: &str,
+) -> Result<Option<anp_identity::IdentityRef>> {
+    Ok(manager
+        .list()?
+        .into_iter()
+        .find(|identity| identity.reference.did == did)
+        .map(|identity| identity.reference))
+}
+
+fn public_key_multibase(document: &Value, kid: &str) -> Result<String> {
+    let method = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods
+                .iter()
+                .find(|method| method.get("id").and_then(Value::as_str) == Some(kid))
+        })
+        .context("daemon request-signing verification method is missing")?;
+    if let Some(value) = method.get("publicKeyMultibase").and_then(Value::as_str) {
+        return Ok(value.to_owned());
+    }
+    let anp::PublicKeyMaterial::Ed25519(public) =
+        anp::authentication::extract_public_key(method)
+            .context("parse daemon request-signing public key")?
+    else {
+        bail!("daemon request-signing public key must be Ed25519");
+    };
+    let mut multicodec = Vec::with_capacity(34);
+    multicodec.extend_from_slice(&[0xed, 0x01]);
+    multicodec.extend_from_slice(&public.to_bytes());
+    Ok(format!("z{}", bs58::encode(multicodec).into_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sign(identity: &anp_identity::ManagedIdentity, kid: &str, payload: &[u8]) {
+        identity
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::Authentication,
+                key: anp_identity::KeySelector::Kid(kid.to_owned()),
+                payload: payload.to_vec(),
+            })
+            .unwrap();
+    }
 
     #[test]
     fn daemon_enrollment_restarts_and_revocation_stops_signing() {
@@ -407,19 +492,21 @@ mod tests {
         source.mark_published(&update.revision_id).unwrap();
         source.commit_update(&update.revision_id).unwrap();
         adopt_daemon_document(&state, &prepared.reference, source.document()).unwrap();
-        open_referenced_identity(&state, &prepared.reference)
-            .unwrap()
-            .sign(&prepared.reference.key_id, b"before restart")
-            .unwrap();
+        sign(
+            &open_referenced_identity(&state, &prepared.reference).unwrap(),
+            &prepared.reference.key_id,
+            b"before restart",
+        );
 
         drop(state);
         let restarted = DaemonState::open(&config).unwrap();
-        let mut restarted_identity =
-            open_referenced_identity(&restarted, &prepared.reference).unwrap();
-        restarted_identity.reload().unwrap();
-        restarted_identity
-            .sign(&prepared.reference.key_id, b"after restart and reload")
-            .unwrap();
+        let restarted_identity = open_referenced_identity(&restarted, &prepared.reference).unwrap();
+        restarted_identity.recover_identity().unwrap();
+        sign(
+            &restarted_identity,
+            &prepared.reference.key_id,
+            b"after restart and reload",
+        );
 
         let removal = source
             .prepare_update(anp_identity::DocumentUpdateSpec {
@@ -527,7 +614,7 @@ mod tests {
 
         let (reference, identity) =
             ensure_record_custody(&state, &legacy, source.document()).unwrap();
-        identity.sign(&key_id, b"after migration").unwrap();
+        sign(&identity, &key_id, b"after migration");
         let migrated = state
             .load_user_delegated_identity(&key_id)
             .unwrap()

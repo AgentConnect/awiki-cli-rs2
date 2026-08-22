@@ -1877,7 +1877,11 @@ mod tests {
         assert_eq!(stored_reference.key_id, prepared.verification_method);
         crate::identity_custody::open_referenced_identity(&state, &stored_reference)
             .unwrap()
-            .sign(&stored_reference.key_id, b"public-only bootstrap")
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::Authentication,
+                key: anp_identity::KeySelector::Kid(stored_reference.key_id.clone()),
+                payload: b"public-only bootstrap".to_vec(),
+            })
             .unwrap();
     }
 
