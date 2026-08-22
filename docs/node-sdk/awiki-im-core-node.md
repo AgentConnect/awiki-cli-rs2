@@ -210,11 +210,17 @@ bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 调用 high-level `resumeGroupRebindRecovery()`；不得解析原始服务消息、拼接底层 group RPC，或把
 summary 的 `warnings` 暴露给浏览器。
 
-当前 `0.1.6` 源码 candidate 的 Native contract version 为 `8`，增加 prepared registration
-Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send；wrapper 在加载时必须拒绝
-其他版本的 addon，避免旧二进制缺少对应方法却被静默当作兼容实现。registry `0.1.5` 是 v5，
-包含 external HTTP auth、local conversation timeline、群管理展示、realtime 与 mail facade；
-`0.1.6` 必须把 v8 wrapper 和全部 Tier 1 addon 一起发布。
+`issueHandleRecoveryAttestation({ operationId })` 仅供受信 Host 在恢复状态已 `applied` 后执行
+Model Proxy 对账。Node facade 不允许 caller 提供 claims/audience，只返回短时 opaque attestation
+与 `expiresAt`；Host 必须立即使用并丢弃，不得写入文件、数据库、日志、diagnostic DTO、Browser
+remote 或 Agent 工具。临时服务故障映射为可重试 `recovery_reconciliation_unavailable`；operation
+不匹配映射为不可重试 `recovery_reconciliation_invalid`，原始服务正文和 token 均不会进入 JS 错误。
+
+当前 `0.1.7` 源码 candidate 的 Native contract version 为 `9`，在 registry `0.1.6` 的
+prepared registration Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send
+之上增加 Host-only opaque recovery attestation；wrapper 在加载时必须拒绝其他版本的 addon，
+避免 native API v8 二进制缺少对应方法却被静默当作兼容实现。`0.1.7` 必须把 v9 wrapper 和全部
+Tier 1 addon 一起发布。
 
 ## 构建与验证
 
@@ -233,7 +239,7 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-`0.1.6` 本地 candidate 使用 native API v8，由同一个 committed source OID 构建 wrapper 和当前
+`0.1.7` 本地 candidate 使用 native API v9，由同一个 committed source OID 构建 wrapper 和当前
 平台包，并通过
 `stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
 registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。

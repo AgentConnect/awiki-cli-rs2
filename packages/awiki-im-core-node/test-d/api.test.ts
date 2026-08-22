@@ -126,6 +126,11 @@ void opened.then(async client => {
     bodyText: 'Plain-text body',
   })
   sent.accepted satisfies boolean
+  const recoveryAttestation = await client.issueHandleRecoveryAttestation({
+    operationId: 'recover-v4-type-test',
+  })
+  recoveryAttestation.attestation satisfies string
+  recoveryAttestation.expiresAt satisfies string
   await client.close()
 })
 

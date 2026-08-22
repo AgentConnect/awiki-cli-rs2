@@ -38,14 +38,14 @@ pub async fn open_native_client(options: NodeOpenOptions) -> napi::Result<Native
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    8
+    9
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn prepared_registration_join_uses_native_api_v8() {
-        assert_eq!(super::native_api_version(), 8);
+    fn recovery_attestation_uses_native_api_v9() {
+        assert_eq!(super::native_api_version(), 9);
     }
 
     #[test]
