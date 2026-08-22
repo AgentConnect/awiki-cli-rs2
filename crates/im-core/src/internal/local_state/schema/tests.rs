@@ -2361,6 +2361,22 @@ PRAGMA user_version=35;
 }
 
 #[test]
+fn current_schema_with_missing_recovery_index_fails_closed_without_repair() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    set_schema_version(&db, SCHEMA_VERSION).unwrap();
+    db.execute_batch("DROP INDEX idx_handle_recovery_operations_active_owner")
+        .unwrap();
+
+    let error = ensure_schema(&db).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { .. }
+    ));
+    assert!(!has_index(&db, "idx_handle_recovery_operations_active_owner").unwrap());
+}
+
+#[test]
 fn v35_to_v36_adds_handle_recovery_receipt_fields_and_operation_index() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("state.sqlite");

@@ -110,9 +110,14 @@ pub(crate) fn configure(connection: &rusqlite::Connection) -> crate::ImResult<()
     connection
         .pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)
         .map_err(local_state_unavailable)?;
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
+    let journal_mode: String = connection
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
         .map_err(local_state_unavailable)?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(local_state_unavailable)?;
+    }
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(local_state_unavailable)?;
@@ -137,31 +142,20 @@ fn unsupported_operation(name: &str) -> crate::ImError {
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
-    use std::time::Duration;
-
     #[test]
-    fn open_writable_waits_for_a_concurrent_writer_during_configuration() {
+    fn open_writable_reuses_current_schema_while_another_writer_is_active() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("im.sqlite");
         drop(super::open_writable(&path).unwrap());
 
         let holder = rusqlite::Connection::open(&path).unwrap();
         holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let opened_path = path.clone();
-        let opener = std::thread::spawn(move || super::open_writable(&opened_path));
-
-        std::thread::sleep(Duration::from_millis(100));
-        holder.execute_batch("COMMIT").unwrap();
-
-        opener
-            .join()
-            .unwrap()
-            .expect("a competing writer should be retried during connection configuration");
-
-        let opened = super::open_writable(&path).unwrap();
+        let opened = super::open_writable(&path)
+            .expect("opening a current WAL schema must not require the writer lock");
         let busy_timeout: i64 = opened
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .unwrap();
         assert_eq!(busy_timeout, 30_000);
+        holder.execute_batch("COMMIT").unwrap();
     }
 }

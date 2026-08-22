@@ -1035,7 +1035,14 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         return migrate_v35_to_v36(connection);
     }
     if version == HANDLE_RECOVERY_V4_SCHEMA_VERSION {
-        return create_schema(connection, false);
+        if current_schema_shape_is_complete(connection)? {
+            return Ok(());
+        }
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete Handle Recovery v4 shape"
+            ),
+        });
     }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
@@ -1301,6 +1308,43 @@ fn merged_v35_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
             "inbound_resolution_thread_bindings",
             "updated_at",
         )?)
+}
+
+fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    if !merged_v35_shape_is_complete(connection)?
+        || !has_table(connection, "identity_transition_pending")?
+        || !has_table(connection, "handle_recovery_operations_v4")?
+    {
+        return Ok(false);
+    }
+    for column in [
+        "current_device_id",
+        "device_auth_generation",
+        "registry_version",
+        "applied_at",
+        "metadata_json",
+    ] {
+        if !has_column(connection, "identity_transition_pending", column)? {
+            return Ok(false);
+        }
+    }
+    for index in [
+        "idx_identity_transition_source",
+        "idx_identity_transition_active_owner",
+        "idx_identity_transition_owner_phase",
+        "idx_identity_transition_account_generation",
+        "idx_identity_transition_handle_epoch",
+        "idx_handle_recovery_operations_owner_lifecycle",
+        "idx_handle_recovery_operations_handle_lifecycle",
+        "idx_handle_recovery_operations_account_lifecycle",
+        "idx_handle_recovery_operations_superseded_by",
+        "idx_handle_recovery_operations_active_owner",
+    ] {
+        if !has_index(connection, index)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {
