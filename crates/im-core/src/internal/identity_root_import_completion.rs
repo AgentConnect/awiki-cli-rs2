@@ -2582,7 +2582,10 @@ mod tests {
             ),
         )
         .unwrap();
-        core.bootstrap().initialize_local_state_async().await.unwrap();
+        core.bootstrap()
+            .initialize_local_state_async()
+            .await
+            .unwrap();
         let connection =
             crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
         connection
