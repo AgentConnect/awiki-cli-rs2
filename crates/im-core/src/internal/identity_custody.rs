@@ -670,8 +670,14 @@ pub(crate) fn promote_legacy_upgrade_root(
     accepted_at: &str,
     root_key: zeroize::Zeroizing<Vec<u8>>,
 ) -> crate::ImResult<()> {
-    let mut managed = open_join_identity(core, &identity.did, &identity.custody)?;
-    let evidence = anp_identity::LegacyRootTransferEvidence {
+    use anp_identity::host::{IdentityStatusPort, RootImportPort, RootPromotionPort};
+    let mut managed = open_managed_identity(
+        core,
+        &identity.custody.store_id,
+        &identity.custody.identity_id,
+        identity.did.as_str(),
+    )?;
+    let evidence = anp_identity::host::LegacyRootImportEvidence {
         transfer_id: transfer_id.to_owned(),
         source_did: identity.did.as_str().to_owned(),
         target_did: identity.did.as_str().to_owned(),
@@ -679,7 +685,7 @@ pub(crate) fn promote_legacy_upgrade_root(
         recipient_device_id: identity.protocol_device_id.as_str().to_owned(),
         recipient_agreement_kid: identity.e2ee_key_id.clone(),
         root_kid: format!("{}#key-1", identity.did.as_str()),
-        checkpoint: anp_identity::DocumentCheckpoint {
+        checkpoint: anp_identity::host::HostDocumentCheckpoint {
             document_version: checkpoint.document_version,
             registry_version: checkpoint.registry_version,
             document_digest: checkpoint.document_hash.clone(),
@@ -687,30 +693,37 @@ pub(crate) fn promote_legacy_upgrade_root(
         accepted_at: accepted_at.to_owned(),
     };
     let outcome = managed
-        .import_legacy_root_transfer(anp_identity::LegacyRootTransferImportSpec {
-            evidence: evidence.clone(),
-            encoding: anp_identity::PrivateKeyEncoding::Pkcs8Der,
+        .import_legacy_root(anp_identity::host::LegacyRootImportRequest {
+            evidence,
+            encoding: anp_identity::host::RootPrivateKeyEncoding::Pkcs8Der,
             root_key,
         })
-        .map_err(map_error)?;
+        .map_err(map_facade_error)?;
     if !matches!(
         outcome,
-        anp_identity::RootTransferImportOutcome::Pending
-            | anp_identity::RootTransferImportOutcome::Active
+        anp_identity::host::LegacyRootImportOutcome::Pending
+            | anp_identity::host::LegacyRootImportOutcome::Active
     ) {
         return Err(crate::ImError::PermissionDenied);
     }
     managed
-        .confirm_root_promotion(anp_identity::RootPromotionSpec {
-            document: identity.target_document.clone(),
-            evidence: anp_identity::VerifiedDocumentEvidence {
-                document_version: checkpoint.document_version,
-                registry_version: checkpoint.registry_version,
-                document_digest: checkpoint.document_hash.clone(),
+        .confirm_root_promotion(anp_identity::host::RootPromotionRequest {
+            remote: anp_identity::VerifiedRemoteDocument {
+                document: anp_identity::DidDocument::from_value(identity.target_document.clone()),
+                evidence: anp_identity::VerifiedPublicationEvidence {
+                    document_version: checkpoint.document_version,
+                    registry_version: checkpoint.registry_version,
+                    document_digest: checkpoint.document_hash.clone(),
+                },
             },
         })
-        .map_err(map_error)?;
-    if managed.root_capability() != anp_identity::RootCapabilityState::Active {
+        .map_err(map_facade_error)?;
+    if managed
+        .host_status()
+        .map_err(map_facade_error)?
+        .root_capability
+        != anp_identity::host::HostRootCapability::Active
+    {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
@@ -722,18 +735,33 @@ pub(crate) fn import_legacy_completion_root(
     evidence: anp_identity::LegacyRootTransferEvidence,
     root_key: zeroize::Zeroizing<Vec<u8>>,
 ) -> crate::ImResult<()> {
+    use anp_identity::host::RootImportPort;
     let mut identity = open_root_import_identity(core, reference)?;
     let outcome = identity
-        .import_legacy_root_transfer(anp_identity::LegacyRootTransferImportSpec {
-            evidence,
-            encoding: anp_identity::PrivateKeyEncoding::Pkcs8Der,
+        .import_legacy_root(anp_identity::host::LegacyRootImportRequest {
+            evidence: anp_identity::host::LegacyRootImportEvidence {
+                transfer_id: evidence.transfer_id,
+                source_did: evidence.source_did,
+                target_did: evidence.target_did,
+                sender_device_id: evidence.sender_device_id,
+                recipient_device_id: evidence.recipient_device_id,
+                recipient_agreement_kid: evidence.recipient_agreement_kid,
+                root_kid: evidence.root_kid,
+                checkpoint: anp_identity::host::HostDocumentCheckpoint {
+                    document_version: evidence.checkpoint.document_version,
+                    registry_version: evidence.checkpoint.registry_version,
+                    document_digest: evidence.checkpoint.document_digest,
+                },
+                accepted_at: evidence.accepted_at,
+            },
+            encoding: anp_identity::host::RootPrivateKeyEncoding::Pkcs8Der,
             root_key,
         })
-        .map_err(map_error)?;
+        .map_err(map_facade_error)?;
     if !matches!(
         outcome,
-        anp_identity::RootTransferImportOutcome::Pending
-            | anp_identity::RootTransferImportOutcome::Active
+        anp_identity::host::LegacyRootImportOutcome::Pending
+            | anp_identity::host::LegacyRootImportOutcome::Active
     ) {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -747,9 +775,15 @@ pub(crate) fn sign_pending_completion_root_proof(
     statement: &serde_json::Value,
     created: Option<String>,
 ) -> crate::ImResult<serde_json::Value> {
+    use anp_identity::host::RootPromotionPort;
     open_root_import_identity(core, reference)?
-        .sign_pending_root_object_proof(root_key_id, statement, &reference.did, created)
-        .map_err(map_error)
+        .sign_pending_root_object_proof(anp_identity::host::PendingRootObjectProofRequest {
+            key: anp_identity::KeySelector::Kid(root_key_id.to_owned()),
+            document: statement.clone(),
+            issuer_did: reference.did.clone(),
+            created,
+        })
+        .map_err(map_facade_error)
 }
 
 pub(crate) fn confirm_completion_root(
@@ -758,18 +792,26 @@ pub(crate) fn confirm_completion_root(
     document: &serde_json::Value,
     checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
+    use anp_identity::host::{IdentityStatusPort, RootPromotionPort};
     let mut identity = open_root_import_identity(core, reference)?;
     identity
-        .confirm_root_promotion(anp_identity::RootPromotionSpec {
-            document: document.clone(),
-            evidence: anp_identity::VerifiedDocumentEvidence {
-                document_version: checkpoint.document_version,
-                registry_version: checkpoint.registry_version,
-                document_digest: checkpoint.document_hash.clone(),
+        .confirm_root_promotion(anp_identity::host::RootPromotionRequest {
+            remote: anp_identity::VerifiedRemoteDocument {
+                document: anp_identity::DidDocument::from_value(document.clone()),
+                evidence: anp_identity::VerifiedPublicationEvidence {
+                    document_version: checkpoint.document_version,
+                    registry_version: checkpoint.registry_version,
+                    document_digest: checkpoint.document_hash.clone(),
+                },
             },
         })
-        .map_err(map_error)?;
-    if identity.root_capability() != anp_identity::RootCapabilityState::Active {
+        .map_err(map_facade_error)?;
+    if identity
+        .host_status()
+        .map_err(map_facade_error)?
+        .root_capability
+        != anp_identity::host::HostRootCapability::Active
+    {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
@@ -778,32 +820,13 @@ pub(crate) fn confirm_completion_root(
 fn open_root_import_identity(
     core: &crate::core::ImCore,
     reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let store = open_controller_store(core)?;
-    if store.manifest().store_id != reference.store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let identity = store.open_identity(&reference.did).map_err(map_error)?;
-    if identity.identity_id() != reference.identity_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(identity)
-}
-
-fn open_join_identity(
-    core: &crate::core::ImCore,
-    did: &crate::ids::Did,
-    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
-) -> crate::ImResult<anp_identity::DidIdentity> {
-    let store = open_controller_store(core)?;
-    if store.manifest().store_id != custody.store_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let identity = store.open_identity(did.as_str()).map_err(map_error)?;
-    if identity.identity_id() != custody.identity_id {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(identity)
+) -> crate::ImResult<anp_identity::ManagedIdentity> {
+    open_managed_identity(
+        core,
+        &reference.store_id,
+        &reference.identity_id,
+        &reference.did,
+    )
 }
 
 pub(crate) fn begin_registration_publication(
