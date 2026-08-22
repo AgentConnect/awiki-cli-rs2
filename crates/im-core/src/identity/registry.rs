@@ -1314,6 +1314,7 @@ impl<'a> IdentityRegistry<'a> {
         })
     }
 
+    #[cfg(feature = "identity-native-anp")]
     pub fn register_handle(
         &self,
         request: super::RegisterHandleRequest,

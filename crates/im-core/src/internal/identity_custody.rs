@@ -4,6 +4,7 @@ use std::path::Path;
 pub(crate) const LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID: &str = "legacy-imported-active-v1";
 
 #[cfg(test)]
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn open_controller_store(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<anp_identity::DidStore> {
@@ -42,6 +43,7 @@ pub(crate) fn open_controller_store(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn open_controller_manager(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<anp_identity::IdentityManager> {
@@ -70,6 +72,7 @@ pub(crate) fn open_controller_manager(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn open_or_initialize_manager(
     config: impl Fn() -> anp_identity::IdentityManagerConfig,
 ) -> crate::ImResult<anp_identity::IdentityManager> {
@@ -89,6 +92,7 @@ fn open_or_initialize_manager(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn provision_registration_identity(
     core: &crate::core::ImCore,
     domain: &str,
@@ -301,6 +305,7 @@ fn pending_registration_from_provider(
     Ok(identity)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn prepare_join_enrollment(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -387,6 +392,7 @@ pub(crate) fn prepare_join_enrollment(
     ))
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn provision_handle_recovery_identity(
     core: &crate::core::ImCore,
     domain: &str,
@@ -446,6 +452,7 @@ pub(crate) fn provision_handle_recovery_identity(
     Ok(reference)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn handle_recovery_identity(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
@@ -466,6 +473,7 @@ pub(crate) fn handle_recovery_identity(
     Ok(identity)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn discard_unpublished_handle_recovery(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
@@ -496,6 +504,7 @@ pub(crate) fn discard_unpublished_handle_recovery(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn find_unprojected_handle_identities(
     core: &crate::core::ImCore,
     manager: &anp_identity::IdentityManager,
@@ -564,6 +573,7 @@ fn find_unprojected_handle_identities(
     Ok(matches)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn sign_join_enrollment(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -595,6 +605,7 @@ pub(crate) fn sign_join_enrollment(
         .map_err(map_facade_error)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn ecdh_join_enrollment(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -630,6 +641,7 @@ pub(crate) fn ecdh_join_enrollment(
     Ok(zeroize::Zeroizing::new(*shared.as_bytes()))
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn adopt_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -667,6 +679,7 @@ pub(crate) fn adopt_join_identity(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn adopt_controller_document(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -709,6 +722,7 @@ pub(crate) fn adopt_controller_document(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn active_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -719,6 +733,7 @@ pub(crate) fn active_join_identity(
     active_join_managed_identity(core, did, custody, signing_kid, e2ee_kid)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn active_join_managed_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -748,6 +763,7 @@ pub(crate) fn active_join_managed_identity(
     Ok(identity)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn pending_join_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -773,6 +789,7 @@ pub(crate) fn pending_join_identity(
     Ok(identity)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn pending_join_enrollment_session(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -796,6 +813,7 @@ pub(crate) fn pending_join_enrollment_session(
     Ok(session)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn imported_active_join_managed_identity(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -814,6 +832,7 @@ pub(crate) fn imported_active_join_managed_identity(
     Ok(identity)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn discard_join_enrollment(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
@@ -836,6 +855,7 @@ pub(crate) fn discard_join_enrollment(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn promote_legacy_upgrade_root(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef,
@@ -903,6 +923,7 @@ pub(crate) fn promote_legacy_upgrade_root(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn import_legacy_completion_root(
     core: &crate::core::ImCore,
     reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
@@ -942,6 +963,7 @@ pub(crate) fn import_legacy_completion_root(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn sign_pending_completion_root_proof(
     core: &crate::core::ImCore,
     reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
@@ -960,6 +982,7 @@ pub(crate) fn sign_pending_completion_root_proof(
         .map_err(map_facade_error)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn confirm_completion_root(
     core: &crate::core::ImCore,
     reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
@@ -991,6 +1014,7 @@ pub(crate) fn confirm_completion_root(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn open_root_import_identity(
     core: &crate::core::ImCore,
     reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
@@ -1003,6 +1027,7 @@ fn open_root_import_identity(
     )
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn begin_registration_publication(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1022,6 +1047,7 @@ pub(crate) fn begin_registration_publication(
         .map_err(map_facade_error)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn reconcile_registration_publication(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1080,6 +1106,7 @@ pub(crate) fn reconcile_registration_publication(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn commit_registration_publication(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1124,6 +1151,7 @@ pub(crate) fn commit_registration_publication(
     ensure_controller_document(core, identity)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn refresh_registration_document(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1162,6 +1190,7 @@ pub(crate) fn refresh_registration_document(
     ))
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn discard_unpublished_registration(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1329,16 +1358,16 @@ pub(crate) async fn begin_registration_publication_async(
         if candidate.operation_id != revision_id {
             return Err(crate::ImError::PermissionDenied);
         }
-        change
+        return change
             .begin_publication()
             .await
             .map(|_| ())
-            .map_err(crate::internal::identity_provider::map_provider_error)
-    } else {
-        run_native_registration_operation(core, identity, begin_registration_publication).await
+            .map_err(crate::internal::identity_provider::map_provider_error);
     }
-    #[cfg(not(feature = "provider-traits"))]
-    run_native_registration_operation(core, identity, begin_registration_publication).await
+    #[cfg(feature = "identity-native-anp")]
+    return run_native_registration_operation(core, identity, begin_registration_publication).await;
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(missing_external_provider(identity))
 }
 
 pub(crate) async fn reconcile_registration_publication_async(
@@ -1510,7 +1539,11 @@ pub(crate) async fn commit_registration_publication_async(
             .map_err(crate::internal::identity_provider::map_provider_error)?;
         return ensure_document_matches(&public.document, &identity.did_document);
     }
-    run_native_registration_operation(core, identity, commit_registration_publication).await
+    #[cfg(feature = "identity-native-anp")]
+    return run_native_registration_operation(core, identity, commit_registration_publication)
+        .await;
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(missing_external_provider(identity))
 }
 
 pub(crate) async fn refresh_registration_document_async(
@@ -1631,7 +1664,20 @@ pub(crate) async fn discard_unpublished_registration_async(
             .await
             .map_err(crate::internal::identity_provider::map_provider_error);
     }
-    run_native_registration_operation(core, identity, discard_unpublished_registration).await
+    #[cfg(feature = "identity-native-anp")]
+    return run_native_registration_operation(core, identity, discard_unpublished_registration)
+        .await;
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(missing_external_provider(identity))
+}
+
+fn missing_external_provider(
+    identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
+) -> crate::ImError {
+    crate::ImError::IdentityNotReady {
+        identity: identity.did.as_str().to_owned(),
+        missing: vec!["external_identity_provider".to_owned()],
+    }
 }
 
 async fn run_native_registration_operation(
@@ -1715,6 +1761,7 @@ async fn run_native_registration_refresh(
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn registration_controller_signing_managed_identity(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1748,6 +1795,7 @@ pub(crate) fn registration_controller_signing_managed_identity(
     Ok(controller)
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn open_managed_identity(
     core: &crate::core::ImCore,
     store_id: &str,
@@ -1764,6 +1812,7 @@ fn open_managed_identity(
         .map_err(map_facade_error)
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn find_unprojected_registration_identity(
     core: &crate::core::ImCore,
     manager: &anp_identity::IdentityManager,
@@ -1822,6 +1871,7 @@ fn find_unprojected_registration_identity(
     Ok(matches.pop())
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn open_registration_controller(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1834,6 +1884,7 @@ fn open_registration_controller(
     )
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn registration_change_session(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1844,6 +1895,7 @@ fn registration_change_session(
         .map_err(map_facade_error)
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn verified_remote(
     document: anp_identity::DidDocument,
 ) -> crate::ImResult<anp_identity::VerifiedRemoteDocument> {
@@ -1859,6 +1911,7 @@ fn verified_remote(
     })
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn ensure_controller_document(
     core: &crate::core::ImCore,
     identity: &crate::internal::identity_registration_pending::PendingRegistrationIdentity,
@@ -1886,6 +1939,7 @@ fn ensure_document_matches(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn identity_services(
     document: &serde_json::Value,
 ) -> crate::ImResult<Vec<anp_identity::IdentityService>> {
@@ -2347,6 +2401,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(feature = "identity-native-anp")]
 fn open_or_initialize_local_file(root: &Path) -> crate::ImResult<anp_identity::DidStore> {
     match anp_identity::DidStore::open_local_file(root) {
         Ok(store) => Ok(store),
@@ -2363,6 +2418,7 @@ fn open_or_initialize_local_file(root: &Path) -> crate::ImResult<anp_identity::D
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn map_error(error: anp_identity::DidError) -> crate::ImError {
     match error {
         anp_identity::DidError::IdentityNotFound => crate::ImError::IdentityNotFound {
@@ -2380,6 +2436,7 @@ pub(crate) fn map_error(error: anp_identity::DidError) -> crate::ImError {
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn map_facade_error(error: anp_identity::IdentityError) -> crate::ImError {
     match error {
         anp_identity::IdentityError::IdentityNotFound => crate::ImError::IdentityNotFound {
@@ -2396,6 +2453,7 @@ pub(crate) fn map_facade_error(error: anp_identity::IdentityError) -> crate::ImE
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn native_create_spec(
     value: crate::internal::identity_provider::ProviderCreateIdentityRequest,
 ) -> anp_identity::DidCreateSpec {

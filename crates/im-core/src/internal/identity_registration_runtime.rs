@@ -109,6 +109,7 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 impl<'a, T> IdentityRegistrationRuntime<'a, T>
 where
     T: RpcTransport + RestTransport,
@@ -590,6 +591,7 @@ fn ensure_registration_domain(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn load_or_create_pending_registration(
     core: &crate::core::ImCore,
     store: &crate::internal::identity_registration_pending::PendingRegistrationStore,
@@ -726,6 +728,7 @@ fn register_call(
     )
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn ensure_remote_registration<T, P>(
     core: &crate::core::ImCore,
     transport: &mut T,
