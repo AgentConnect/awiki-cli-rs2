@@ -1731,31 +1731,44 @@ fn validate_and_import_wrapped_root(
     .ok_or(crate::ImError::PermissionDenied)?;
     let _ = recipient_manifest;
     let imported_at = validate_wrapped_envelope_time(context, accepted_at, now)?;
-    let store = crate::internal::identity_custody::open_controller_store(core)?;
+    let manager = crate::internal::identity_custody::open_controller_manager(core)?;
+    let info = manager
+        .info()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
     if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
-        || local_entry.anp_identity_store_id.as_deref() != Some(store.manifest().store_id.as_str())
+        || local_entry.anp_identity_store_id.as_deref() != Some(info.store_id.as_str())
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let mut identity = store
-        .open_identity(client.did().as_str())
-        .map_err(crate::internal::identity_custody::map_error)?;
-    if local_entry.anp_identity_id.as_deref() != Some(identity.identity_id()) {
-        return Err(crate::ImError::PermissionDenied);
-    }
+    let identity_id = local_entry
+        .anp_identity_id
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut identity = manager
+        .get(&anp_identity::IdentityRef {
+            store_id: info.store_id.clone(),
+            identity_id: identity_id.to_owned(),
+            did: client.did().as_str().to_owned(),
+        })
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    use anp_identity::host::{IdentityStatusPort, WrappedRootImportPort};
     let outcome = identity
-        .import_wrapped_root(envelope)
-        .map_err(crate::internal::identity_custody::map_error)?;
+        .import_wrapped_root_envelope(envelope)
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
     if !matches!(
         outcome,
-        anp_identity::RootTransferImportOutcome::Pending
-            | anp_identity::RootTransferImportOutcome::Active
+        anp_identity::host::WrappedRootImportOutcome::Pending
+            | anp_identity::host::WrappedRootImportOutcome::Active
     ) {
         return Err(crate::ImError::PermissionDenied);
     }
+    let root_fingerprint = identity
+        .host_status()
+        .map_err(crate::internal::identity_custody::map_facade_error)?
+        .root_key_fingerprint;
     let pending_ref = RootImportCustodyRef {
-        store_id: store.manifest().store_id.clone(),
-        identity_id: identity.identity_id().to_owned(),
+        store_id: info.store_id,
+        identity_id: identity_id.to_owned(),
         did: client.did().as_str().to_owned(),
     };
     Ok(RootImportSealedPlan {
@@ -1773,7 +1786,7 @@ fn validate_and_import_wrapped_root(
         pending_root_ref_json: serde_json::to_string(&pending_ref)
             .map_err(redacted_serialization)?,
         root_key_id: context.root_kid.clone(),
-        root_fingerprint: identity.root_key_fingerprint().to_owned(),
+        root_fingerprint,
         document_version: context.checkpoint.document_version,
         document_hash: context.checkpoint.document_digest.clone(),
         registry_version: context.checkpoint.registry_version,
