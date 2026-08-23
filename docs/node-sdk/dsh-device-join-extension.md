@@ -1,6 +1,6 @@
 # DSH 新设备 Join 的 Node SDK 增量合同
 
-状态：planned，尚未进入当前公开 Node API
+状态：planned，尚未进入当前公开 Node API（2026-08-23 根据独立代码复核修订）
 
 跨仓导航：[Harness Feature](../../../awiki-harness/features/dsh-device-join.md) ·
 [DSH 产品设计](../../../dsh-awiki/docs/dsh-device-join-design.md) ·
@@ -29,6 +29,11 @@ resumePreparedRegistrationJoin(input): Promise<PreparedRegistrationJoinProgress>
 `RegistrationOutcome.status === 'existing_handle'` 仍返回 Host-only
 `ExistingHandleRegistration`。`continuationId` 是当前进程中 Core preparation 的一次性引用，
 不得进入 Browser、日志、配置或持久化；Host crash 后必须重新走真实 OTP。
+
+现有 `resumePreparedRegistrationJoin()` 对 ordinary Join 也会调用 Core
+`resume_authorized_join_activation()`，而该函数当前无条件执行 Handle Recovery gate。这是必须
+修复的实现缺口，不是 DSH 部署前置：只有存在 joined-device Recovery marker 的 rebind session
+才检查 recovery flag/audience；ordinary session 直接 poll。
 
 ## 3. 精确 API 增量
 
@@ -81,23 +86,49 @@ export interface PreparedRegistrationJoinProgress {
 - terminal cancelled/rejected/expired 不返回 identity，也不能回退为 pending；
 - `resumePreparedRegistrationJoin()` 只推进相同 `joinSessionId`，不重复 begin 或 OTP exchange。
 
-`did` 和 `joinSessionId` 只供可信 Host 绑定 journal；DSH Browser Remote 不转发它们。
+`did` 和 `joinSessionId` 只供可信 Host 绑定当前 Core session；DSH Browser Remote 不转发它们。
 
-### 3.3 显式取消
+### 3.3 Core-owned restart restore
+
+新增只读本地 session 投影：
+
+```ts
+export interface LocalDeviceJoinSession {
+  readonly joinSessionId: string
+  readonly side: 'new_device' | 'admin'
+  readonly localPhase: PreparedRegistrationJoinLocalPhase
+  readonly expiresAt: string
+}
+
+listLocalDeviceJoinSessions(): Promise<readonly LocalDeviceJoinSession[]>
+```
+
+它只映射 `ImCore::device_join().local_sessions()`，不读取网络、不返回 SAS、remote state、DID、
+protocol device ID、challenge、token、proof、hash 或私钥。可信 Host 用它做启动发现：0 条回
+onboarding，精确 1 条 new-device session 恢复，多条失败关闭。Host 不在 Node state root 内另写
+Join journal，因此 begin 已提交而 JS 尚未收到结果时，重启仍能发现同一 Core session。
+
+`expiresAt` 仅供展示，不能由 Node/Host 本地时钟把非终态 session 改写成 expired；poll 的远端
+terminal 或已提交的 Core local terminal phase 才是权威。
+
+### 3.4 显式取消
 
 新增：
 
 ```ts
 cancelPreparedRegistrationJoin(input: {
   readonly joinSessionId: string
-}): Promise<void>
+}): Promise<LocalDeviceJoinSession>
 ```
 
-实现只调用 `ImCore::device_join().cancel_new_device_join()`：
+实现通过 `ImCore::device_join().cancel_new_device_join()` 收敛远端和本地，并返回 typed local
+terminal summary：
 
-- 已取消的相同 session 幂等成功；
-- authorized/consumed、rejected、expired 或 ID 不匹配失败关闭；
-- transport outcome 不确定时返回 closed retryable error，Host 保留 journal，不得假装取消成功；
+- 第一次成功后 local token 会被清理；再次取消必须先读取 exact local session，只有同一 ID 且
+  `localPhase='cancelled'` 时幂等返回，不能再次打开已删除 token；
+- authorized/consumed、expired 或 ID 不匹配失败关闭；远端 rejected 在 Core 本地会收敛为
+  cancelled，Host 已知 rejected 时不得再调用 cancel；
+- transport outcome 不确定时返回 closed retryable error，Core session 保留，不得假装取消成功；
 - 不增加 admin-side cancel、role selector、raw RPC 或内部 state 读取。
 
 ## 4. N-API 与版本
@@ -110,22 +141,25 @@ cancelPreparedRegistrationJoin(input: {
 3. loader 拒绝 v9 addon，不能用 optional field 静默兼容缺少 cancel/SAS 的旧二进制；
 4. `stage-package.mjs`、pack audit、checksums、SBOM、provenance 和 packed-install gate 使用同一
    committed source OID；
-5. DSH 只固定依赖已经发布且六个平台 integrity 闭合的新版本，不使用 workspace link 作为
-   远端通过证据。
+5. DSH 只固定依赖已经发布且 root wrapper + 五个平台 addon integrity 闭合的新版本，不使用
+   workspace link 作为远端通过证据。
 
 ## 5. Rust/TypeScript 映射
 
 - `NodePreparedRegistrationJoinInput` 增加 `user_presence_confirmed: bool`；
 - `NodePreparedRegistrationJoinProgress` 增加 `expires_at` 与 `sas`；
+- 增加只读 local-session DTO/list；
 - `prepared_registration_join_progress()` 从 `AuthorizedJoinActivationProgress.join` 原样复制
   expiry/SAS，并在 native 边界验证 SAS 形状；
 - `refresh_prepared_registration_client()` 仍只在 authorized + consumed 后建立 identity-bound
-  `ImClient`；
+  `ImClient`，wrapper 还必须验证返回 identity 存在后才设置 `completed=true`；
+- `resume_authorized_join_activation()` 把 `require_enabled()` 移到 joined-device marker 分支；
+  ordinary Join 在 Recovery gate 关闭、无 audience 时仍可 poll/activate，rebind 语义不放宽；
 - cancel 在相同 mutation/write gate、operation timeout 和 state-root lock 下运行；
 - `clearLocalData()` / `close()` 的既有生命周期语义不变。
 
 不得把 Core private DTO、account verification token、candidate private key、challenge、proof、
-Registry hash、auth generation 或 raw service data加入 N-API。
+Registry hash、auth generation 或 raw service data 加入 N-API。
 
 ## 6. 错误闭集
 
@@ -135,6 +169,7 @@ Registry hash、auth generation 或 raw service data加入 N-API。
 |---|---|
 | continuation 缺失、已消费或跨进程 | `join_preparation_unavailable`，不可重试；重新请求 OTP |
 | rebind 未完成真实 user presence | `user_presence_required`，不可在 DSH 降级 |
+| 多条 resumable new-device local session | `join_local_state_conflict`，禁止选择 newest/first |
 | session 过期 | `join_expired`，不可恢复；重新请求 OTP |
 | 管理端拒绝或 SAS mismatch | `join_rejected`，不可自动重试 |
 | session 尚待管理端 | 正常 progress，不作为错误 |
@@ -149,10 +184,15 @@ Registry hash、auth generation 或 raw service data加入 N-API。
 
 - DTO shape：pending 无 SAS，verified 有脱敏 Debug 的 SAS，terminal 不泄漏；
 - begin 透传 `userPresenceConfirmed=false/true`，不再固定 true；
-- resume 同 session 推进并只在完成时安装 identity client；
-- cancel 成功、幂等、terminal 拒绝、outcome unknown 保留；
+- local list 只读且不含 SAS/remote/identity secret；begin 提交后在 JS 返回前 crash 仍能 exact-one
+  restore；
+- ordinary resume 在 Recovery gate off 时推进；rebind 仍要求正确 flag/audience；
+- resume 同 session 推进并只在 authorized + consumed + identity 时完成；
+- cancel 首次成功、exact-local cancelled 幂等、wrong ID/terminal 拒绝、outcome unknown 保留；
+- Direct/Group E2EE gates 默认关闭时，ordinary Join 后 PreKey publication 和 `default-plain`
+  Direct 可用，不为 Join 偷开 E2EE；
 - close/clear 与 in-flight status/cancel 的 gate；
-- `public_parity.rs` 增加 cancel，并确认未暴露 admin-only facade。
+- `public_parity.rs` 增加 local list/cancel，并确认未暴露 admin-only facade。
 
 ### TypeScript wrapper
 
@@ -174,5 +214,5 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-完整 workspace、五个平台制品和 `awiki.ai` E2E 属于后续实施/发布 gate；本文提交本身不代表
-API v10 或 npm patch 已经发布。
+完整 workspace、root + 五个平台制品和 `awiki-info-testing` E2E 属于后续实施/发布 gate；
+`production-awiki-ai` 只做无写只读 smoke。本文提交本身不代表 API v10 或 npm patch 已发布。
