@@ -104,12 +104,29 @@ listLocalDeviceJoinSessions(): Promise<readonly LocalDeviceJoinSession[]>
 ```
 
 它只映射 `ImCore::device_join().local_sessions()`，不读取网络、不返回 SAS、remote state、DID、
-protocol device ID、challenge、token、proof、hash 或私钥。可信 Host 用它做启动发现：0 条回
-onboarding，精确 1 条 new-device session 恢复，多条失败关闭。Host 不在 Node state root 内另写
-Join journal，因此 begin 已提交而 JS 尚未收到结果时，重启仍能发现同一 Core session。
+protocol device ID、challenge、token、proof、hash 或私钥。可信 Host 只在 session status 为
+`unregistered` 时计算：
+
+```text
+resumable = side == new_device
+  && localPhase in {
+       pending, challenge_prepared, response_prepared,
+       response_verified, approval_prepared, authorized
+     }
+```
+
+`cancelled/expired` 是历史终态，不计入 conflict，也不阻止新的 OTP/begin。0 条 resumable 回
+onboarding，精确 1 条恢复，多条返回 `join_local_state_conflict`。Host 不在 Node state root 内
+另写 Join journal，因此 begin 已提交而 JS 尚未收到结果时，重启仍能发现同一 Core session。
 
 `expiresAt` 仅供展示，不能由 Node/Host 本地时钟把非终态 session 改写成 expired；poll 的远端
 terminal 或已提交的 Core local terminal phase 才是权威。
+
+`resumePreparedRegistrationJoin()` 和 cancel 共享一个 local preflight。在打开 remote session
+token 前，如果 exact local phase 已是 `cancelled` 或 `expired`，resume 直接构造无 SAS/identity、
+`completed=false` 的通用 terminal progress，不调用 Core remote advance。这样 rejected 在当前
+poll 仍保留 `remoteState='rejected'`，重启后只剩 local cancelled 时安全降级为 cancelled；expired
+也不会因为 token 已清理而泄漏 `invalid_state`。
 
 ### 3.4 显式取消
 
@@ -169,8 +186,8 @@ Registry hash、auth generation 或 raw service data 加入 N-API。
 |---|---|
 | continuation 缺失、已消费或跨进程 | `join_preparation_unavailable`，不可重试；重新请求 OTP |
 | rebind 未完成真实 user presence | `user_presence_required`，不可在 DSH 降级 |
-| 多条 resumable new-device local session | `join_local_state_conflict`，禁止选择 newest/first |
-| session 过期 | `join_expired`，不可恢复；重新请求 OTP |
+| 多条 resumable new-device local session | DSH Host 返回 `join_local_state_conflict`，禁止选择 newest/first；raw Node list 本身成功返回 |
+| local session 已过期 | 由 local preflight 返回 typed expired progress，不打开已清理 token |
 | 管理端拒绝或 SAS mismatch | `join_rejected`，不可自动重试 |
 | session 尚待管理端 | 正常 progress，不作为错误 |
 | status/cancel 网络失败 | `network` 或 closed remote，按 Core retryable 标记 |
@@ -186,6 +203,8 @@ Registry hash、auth generation 或 raw service data 加入 N-API。
 - begin 透传 `userPresenceConfirmed=false/true`，不再固定 true；
 - local list 只读且不含 SAS/remote/identity secret；begin 提交后在 JS 返回前 crash 仍能 exact-one
   restore；
+- resumable 只统计允许的 new-device phase；cancelled/expired history 不产生 conflict；
+- resume 对 local cancelled/expired 在打开 token 前返回 typed terminal progress；
 - ordinary resume 在 Recovery gate off 时推进；rebind 仍要求正确 flag/audience；
 - resume 同 session 推进并只在 authorized + consumed + identity 时完成；
 - cancel 首次成功、exact-local cancelled 幂等、wrong ID/terminal 拒绝、outcome unknown 保留；
