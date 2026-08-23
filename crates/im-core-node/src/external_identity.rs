@@ -17,6 +17,7 @@ use im_core::provider::{
     ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
     ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
     ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
+    ProviderWrappedRootEnvelope,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -533,6 +534,25 @@ impl IdentityCustody for ExternalIdentityCustody {
         request: ProviderLegacyRootImportRequest,
     ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
         send_sealed_root_import(&self.dispatch, request).await
+    }
+
+    async fn import_wrapped_root(
+        &self,
+        identity: &ProviderIdentityRef,
+        envelope: ProviderWrappedRootEnvelope,
+    ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        let outcome: String = call_json(
+            &self.dispatch,
+            "importWrappedRoot",
+            &serde_json::json!({ "identity": identity, "envelope": envelope }),
+            Vec::new(),
+        )
+        .await?;
+        match outcome.as_str() {
+            "pending" => Ok(ProviderLegacyRootImportOutcome::Pending),
+            "active" => Ok(ProviderLegacyRootImportOutcome::Active),
+            _ => Err(provider_incompatible()),
+        }
     }
 
     async fn recover(&self) -> ProviderResult<()> {

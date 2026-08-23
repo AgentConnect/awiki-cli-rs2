@@ -86,6 +86,10 @@ export interface ImCoreIdentityProvider {
     readonly encoding: 'raw32' | 'pkcs8_der'
     readonly requestId: string
   }): Promise<ImCorePreparedRootImport>
+  importWrappedRoot?(
+    reference: ImCoreIdentityReference,
+    envelope: unknown,
+  ): Promise<'pending' | 'active'>
   sign(
     reference: ImCoreIdentityReference,
     request:

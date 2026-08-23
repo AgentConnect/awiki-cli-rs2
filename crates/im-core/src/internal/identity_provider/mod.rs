@@ -631,6 +631,33 @@ pub enum ProviderLegacyRootImportOutcome {
     Active,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderRootTransferContext {
+    pub source_did: String,
+    pub target_did: String,
+    pub sender_device_id: String,
+    pub recipient_device_id: String,
+    pub recipient_agreement_kid: String,
+    pub root_kid: String,
+    pub checkpoint: ProviderDocumentCheckpoint,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderWrappedRootEnvelope {
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub version: u32,
+    pub context: ProviderRootTransferContext,
+    pub ephemeral_public_b64u: String,
+    pub nonce_b64u: String,
+    pub ciphertext_b64u: String,
+    pub signature_b64u: String,
+}
+
 impl ProviderExportedRoot {
     pub fn new(pkcs8_der: Vec<u8>) -> Self {
         Self {
@@ -691,6 +718,17 @@ pub trait IdentityCustody: Send + Sync {
     async fn import_legacy_root(
         &self,
         _request: ProviderLegacyRootImportRequest,
+    ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
+    async fn import_wrapped_root(
+        &self,
+        _identity: &ProviderIdentityRef,
+        _envelope: ProviderWrappedRootEnvelope,
     ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
         Err(IdentityProviderError::new(
             IdentityProviderErrorCode::CapabilityUnavailable,

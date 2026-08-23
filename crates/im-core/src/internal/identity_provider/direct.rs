@@ -22,6 +22,7 @@ use super::{
     ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
     ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
     ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
+    ProviderWrappedRootEnvelope,
 };
 
 pub(crate) struct DirectAnpIdentityCustody {
@@ -343,6 +344,57 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                         ProviderLegacyRootImportOutcome::Pending
                     }
                     anp_identity::host::LegacyRootImportOutcome::Active => {
+                        ProviderLegacyRootImportOutcome::Active
+                    }
+                })
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn import_wrapped_root(
+        &self,
+        identity: &ProviderIdentityRef,
+        envelope: ProviderWrappedRootEnvelope,
+    ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        use anp_identity::host::WrappedRootImportPort;
+        let manager = self.manager.clone();
+        let identity = identity.clone();
+        run_blocking(move || {
+            let mut managed = manager
+                .lock()
+                .map_err(|_| internal())?
+                .get(&identity.into())
+                .map_err(map_identity_error)?;
+            managed
+                .import_wrapped_root_envelope(&anp_identity::WrappedRootEnvelope {
+                    envelope_type: envelope.envelope_type,
+                    version: envelope.version,
+                    context: anp_identity::RootTransferContext {
+                        source_did: envelope.context.source_did,
+                        target_did: envelope.context.target_did,
+                        sender_device_id: envelope.context.sender_device_id,
+                        recipient_device_id: envelope.context.recipient_device_id,
+                        recipient_agreement_kid: envelope.context.recipient_agreement_kid,
+                        root_kid: envelope.context.root_kid,
+                        checkpoint: anp_identity::DocumentCheckpoint {
+                            document_version: envelope.context.checkpoint.document_version,
+                            registry_version: envelope.context.checkpoint.registry_version,
+                            document_digest: envelope.context.checkpoint.document_digest,
+                        },
+                        created_at: envelope.context.created_at,
+                        expires_at: envelope.context.expires_at,
+                    },
+                    ephemeral_public_b64u: envelope.ephemeral_public_b64u,
+                    nonce_b64u: envelope.nonce_b64u,
+                    ciphertext_b64u: envelope.ciphertext_b64u,
+                    signature_b64u: envelope.signature_b64u,
+                })
+                .map(|outcome| match outcome {
+                    anp_identity::host::WrappedRootImportOutcome::Pending => {
+                        ProviderLegacyRootImportOutcome::Pending
+                    }
+                    anp_identity::host::WrappedRootImportOutcome::Active => {
                         ProviderLegacyRootImportOutcome::Active
                     }
                 })

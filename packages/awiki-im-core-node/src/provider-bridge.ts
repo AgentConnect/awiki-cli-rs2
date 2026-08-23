@@ -139,6 +139,15 @@ export function createIdentityProviderDispatch(
             rootImportSessions.delete(sessionId)
           }
         }
+        case 'importWrappedRoot': {
+          if (!capabilities.has('AWIKI_LEGACY_ROOT_TRANSFER_V1')
+            || typeof provider.importWrappedRoot !== 'function') throw unavailable()
+          exactBuffers(request.buffers, 0)
+          return success(await provider.importWrappedRoot(
+            reference(payload.identity),
+            object(payload.envelope),
+          ))
+        }
         case 'prepareHttpSignature': {
           const hasBody = payload.hasBody === true
           const body = hasBody ? singleBuffer(request.buffers) : undefined

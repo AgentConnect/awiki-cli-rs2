@@ -422,6 +422,46 @@ test('External Provider keeps legacy root plaintext outside TypeScript import wo
   assert.equal(replay.errorCode, 'invalid_request')
 })
 
+test('External Provider imports wrapped roots only through the legacy transfer capability', async () => {
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const envelope = {
+    type: 'anp.identity.root-transfer.wrapped.v1',
+    version: 1,
+    context: {
+      transfer_id: 'root-transfer-1',
+      source_did: identity.did,
+      target_did: identity.did,
+    },
+    ephemeral_public_key: 'ephemeral',
+    nonce: 'nonce',
+    ciphertext: 'ciphertext',
+  }
+  const unavailable = await createIdentityProviderDispatch(provider())([{
+    operation: 'importWrappedRoot',
+    payloadJson: JSON.stringify({ identity, envelope }),
+    buffers: [],
+  }])
+  assert.equal(unavailable.ok, false)
+  assert.equal(unavailable.errorCode, 'capability_unavailable')
+
+  const calls = []
+  const dispatch = createIdentityProviderDispatch(provider({
+    capabilities: [...provider().capabilities, 'AWIKI_LEGACY_ROOT_TRANSFER_V1'],
+    importWrappedRoot: async (reference, value) => {
+      calls.push({ reference, value })
+      return 'pending'
+    },
+  }))
+  const imported = await dispatch([{
+    operation: 'importWrappedRoot',
+    payloadJson: JSON.stringify({ identity, envelope }),
+    buffers: [],
+  }])
+  assert.equal(imported.ok, true)
+  assert.equal(JSON.parse(imported.payloadJson), 'pending')
+  assert.deepEqual(calls, [{ reference: identity, value: envelope }])
+})
+
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-error-'))
   t.after(() => rm(root, { recursive: true, force: true }))

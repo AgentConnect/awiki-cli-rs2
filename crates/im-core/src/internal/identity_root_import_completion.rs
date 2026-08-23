@@ -34,6 +34,8 @@ use crate::internal::transport::AsyncAuthenticatedRpcTransport;
 
 pub(crate) const ROOT_KEY_ENVELOPE_SYSTEM_TYPE: &str = "awiki.device.root-key-envelope.v1";
 const ROOT_ENVELOPE_MAX_WINDOW_SECONDS: i64 = 600;
+const WRAPPED_ROOT_ENVELOPE_TYPE: &str = "anp.identity.root-transfer.wrapped";
+const WRAPPED_ROOT_ENVELOPE_VERSION: u32 = 1;
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
 ];
@@ -190,6 +192,41 @@ pub(crate) struct RootKeyEnvelope {
     pub(crate) expires_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct DocumentCheckpointWire {
+    document_version: u64,
+    registry_version: u64,
+    document_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RootTransferContextWire {
+    source_did: String,
+    target_did: String,
+    sender_device_id: String,
+    recipient_device_id: String,
+    recipient_agreement_kid: String,
+    root_kid: String,
+    checkpoint: DocumentCheckpointWire,
+    created_at: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct WrappedRootEnvelopeWire {
+    #[serde(rename = "type")]
+    envelope_type: String,
+    version: u32,
+    context: RootTransferContextWire,
+    ephemeral_public_b64u: String,
+    nonce_b64u: String,
+    ciphertext_b64u: String,
+    signature_b64u: String,
+}
+
 impl std::fmt::Debug for RootKeyEnvelope {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -199,10 +236,10 @@ impl std::fmt::Debug for RootKeyEnvelope {
     }
 }
 
-pub(crate) enum RootSecretPayload {
+enum RootSecretPayload {
     NotRoot,
     Root(Zeroizing<RootKeyEnvelope>),
-    Wrapped(anp_identity::WrappedRootEnvelope),
+    Wrapped(WrappedRootEnvelopeWire),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,10 +257,28 @@ enum RootProbeOutcome {
     Replay,
 }
 
+#[derive(Clone)]
 enum RootInboundValidation {
     NotRoot,
     Root(RootImportSealedPlan),
     Terminal,
+}
+
+enum RootInboundPreparation {
+    NotRoot,
+    Root {
+        plan: RootImportSealedPlan,
+        action: RootImportAction,
+    },
+    Terminal,
+}
+
+enum RootImportAction {
+    Legacy(crate::internal::identity_provider::ProviderLegacyRootImportRequest),
+    Wrapped {
+        identity: crate::internal::identity_provider::ProviderIdentityRef,
+        envelope: crate::internal::identity_provider::ProviderWrappedRootEnvelope,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -264,7 +319,7 @@ struct RootTypeProbe {
     version: Option<u32>,
 }
 
-pub(crate) fn decode_root_secret_payload(
+fn decode_root_secret_payload(
     plaintext: &V2SecretJsonPayload,
 ) -> crate::ImResult<RootSecretPayload> {
     // This probe intentionally ignores payload bodies and never materializes
@@ -278,8 +333,8 @@ pub(crate) fn decode_root_secret_payload(
             require_canonical_root_payload(plaintext, &envelope)?;
             Ok(RootSecretPayload::Root(Zeroizing::new(envelope)))
         }
-        (None, Some(anp_identity::WRAPPED_ROOT_ENVELOPE_TYPE)) => {
-            let envelope: anp_identity::WrappedRootEnvelope =
+        (None, Some(WRAPPED_ROOT_ENVELOPE_TYPE)) => {
+            let envelope: WrappedRootEnvelopeWire =
                 serde_json::from_slice(plaintext.expose_secret())
                     .map_err(redacted_serialization)?;
             require_canonical_root_payload(plaintext, &envelope)?;
@@ -433,6 +488,30 @@ pub(crate) async fn receive_root_envelope_candidate(
     // never depend on this network read.
     let mut remote = DeviceJoinAdminHttpAdapter::production(client);
     let registry = remote.registry(client.did(), false).await?;
+    let prepared = prepare_root_candidate(
+        core,
+        client,
+        &scope,
+        &binding,
+        metadata,
+        body,
+        local_static_dh.as_deref(),
+        &sender_static,
+        &now_text,
+        delivery,
+        &document,
+        &registry,
+        now,
+    )?;
+    let expected_plan = match prepared {
+        RootInboundPreparation::NotRoot => {
+            return Ok(RootInboundInterceptOutcome::NotRoot);
+        }
+        RootInboundPreparation::Terminal => None,
+        RootInboundPreparation::Root { plan, action } => {
+            Some(complete_root_import_action(core, plan, action).await?)
+        }
+    };
     let rejected_non_root = std::cell::Cell::new(false);
 
     let result = with_v2_runtime(core, &scope, |direct| match body {
@@ -446,9 +525,18 @@ pub(crate) async fn receive_root_envelope_candidate(
             &sender_static,
             &now_text,
             |plaintext, session| {
-                classify_and_seal_root(
-                    core, client, metadata, body, session, delivery, plaintext, &document,
-                    &registry, now,
+                classify_root_for_commit(
+                    core,
+                    client,
+                    metadata,
+                    body,
+                    session,
+                    delivery,
+                    plaintext,
+                    &document,
+                    &registry,
+                    now,
+                    expected_plan.as_ref(),
                 )
             },
             |transaction, validated| match validated {
@@ -469,9 +557,18 @@ pub(crate) async fn receive_root_envelope_candidate(
                 if pre_session.status != V2_SESSION_STATUS_ESTABLISHED {
                     Ok(RootInboundValidation::Terminal)
                 } else {
-                    classify_and_seal_root(
-                        core, client, metadata, body, session, delivery, plaintext, &document,
-                        &registry, now,
+                    classify_root_for_commit(
+                        core,
+                        client,
+                        metadata,
+                        body,
+                        session,
+                        delivery,
+                        plaintext,
+                        &document,
+                        &registry,
+                        now,
+                        expected_plan.as_ref(),
                     )
                 }
             },
@@ -563,7 +660,128 @@ fn probe_root_candidate(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn classify_and_seal_root(
+fn prepare_root_candidate(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    scope: &V2OwnerScope,
+    binding: &anp::direct_e2ee::V2SessionBinding,
+    metadata: &V2DirectMetadata,
+    body: &V2DirectBody,
+    local_static_dh: Option<&[u8; 32]>,
+    sender_static: &[u8; 32],
+    now_text: &str,
+    delivery: &TrustedDirectDeliveryContext,
+    document: &Value,
+    registry: &DeviceJoinRemoteRegistry,
+    now: OffsetDateTime,
+) -> crate::ImResult<RootInboundPreparation> {
+    let validated = std::cell::RefCell::new(None);
+    let action = std::cell::RefCell::new(None);
+    let result = with_v2_runtime(core, scope, |direct| match body {
+        V2DirectBody::Init(init) => direct.decrypt_inbound_init_secret_json_validated_with_commit(
+            binding,
+            metadata,
+            init,
+            local_static_dh.ok_or(crate::ImError::PermissionDenied)?,
+            sender_static,
+            now_text,
+            |plaintext, session| {
+                let prepared = classify_and_prepare_root(
+                    core, client, metadata, body, session, delivery, plaintext, document, registry,
+                    now,
+                )?;
+                Ok(match prepared {
+                    RootInboundPreparation::NotRoot => RootInboundValidation::NotRoot,
+                    RootInboundPreparation::Terminal => RootInboundValidation::Terminal,
+                    RootInboundPreparation::Root {
+                        plan,
+                        action: prepared_action,
+                    } => {
+                        action.replace(Some(prepared_action));
+                        RootInboundValidation::Root(plan)
+                    }
+                })
+            },
+            |_, value| {
+                validated.replace(Some(value.clone()));
+                Err(crate::ImError::unsupported("p5-root-prepare-rollback"))
+            },
+        ),
+        V2DirectBody::Cipher(cipher) => direct.decrypt_inbound_secret_json_validated_with_commit(
+            binding,
+            metadata,
+            cipher,
+            now_text,
+            |plaintext, pre_session, session| {
+                if pre_session.status != V2_SESSION_STATUS_ESTABLISHED {
+                    Ok(RootInboundValidation::Terminal)
+                } else {
+                    let prepared = classify_and_prepare_root(
+                        core, client, metadata, body, session, delivery, plaintext, document,
+                        registry, now,
+                    )?;
+                    Ok(match prepared {
+                        RootInboundPreparation::NotRoot => RootInboundValidation::NotRoot,
+                        RootInboundPreparation::Terminal => RootInboundValidation::Terminal,
+                        RootInboundPreparation::Root {
+                            plan,
+                            action: prepared_action,
+                        } => {
+                            action.replace(Some(prepared_action));
+                            RootInboundValidation::Root(plan)
+                        }
+                    })
+                }
+            },
+            |_, value| {
+                validated.replace(Some(value.clone()));
+                Err(crate::ImError::unsupported("p5-root-prepare-rollback"))
+            },
+        ),
+    });
+    match (result, validated.into_inner(), action.into_inner()) {
+        (Err(_), Some(RootInboundValidation::NotRoot), None) => Ok(RootInboundPreparation::NotRoot),
+        (Err(_), Some(RootInboundValidation::Terminal), None) => {
+            Ok(RootInboundPreparation::Terminal)
+        }
+        (Err(_), Some(RootInboundValidation::Root(plan)), Some(action)) => {
+            Ok(RootInboundPreparation::Root { plan, action })
+        }
+        (Err(error), None, _) => Err(error),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
+async fn complete_root_import_action(
+    core: &crate::core::ImCore,
+    plan: RootImportSealedPlan,
+    action: RootImportAction,
+) -> crate::ImResult<RootImportSealedPlan> {
+    match action {
+        RootImportAction::Legacy(request) => {
+            let provider =
+                crate::internal::identity_custody::controller_custody_provider(core).await?;
+            let outcome = provider
+                .import_legacy_root(request)
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if !matches!(
+                outcome,
+                crate::internal::identity_provider::ProviderLegacyRootImportOutcome::Pending
+                    | crate::internal::identity_provider::ProviderLegacyRootImportOutcome::Active
+            ) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Ok(plan)
+        }
+        RootImportAction::Wrapped { identity, envelope } => {
+            complete_wrapped_root_import(core, identity, envelope, plan).await
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_and_prepare_root(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     metadata: &V2DirectMetadata,
@@ -574,35 +792,73 @@ fn classify_and_seal_root(
     document: &Value,
     registry: &DeviceJoinRemoteRegistry,
     now: OffsetDateTime,
-) -> crate::ImResult<RootInboundValidation> {
+) -> crate::ImResult<RootInboundPreparation> {
     let is_root = match root_system_type(plaintext) {
         Ok(value) => value,
-        Err(_) => return Ok(RootInboundValidation::NotRoot),
+        Err(_) => return Ok(RootInboundPreparation::NotRoot),
     };
     if !is_root {
-        return Ok(RootInboundValidation::NotRoot);
+        return Ok(RootInboundPreparation::NotRoot);
     }
     match decode_root_secret_payload(plaintext) {
-        Err(_) => Ok(RootInboundValidation::Terminal),
-        Ok(RootSecretPayload::NotRoot) => Ok(RootInboundValidation::NotRoot),
-        Ok(RootSecretPayload::Root(envelope)) => match validate_and_seal_pending_root(
+        Err(_) => Ok(RootInboundPreparation::Terminal),
+        Ok(RootSecretPayload::NotRoot) => Ok(RootInboundPreparation::NotRoot),
+        Ok(RootSecretPayload::Root(envelope)) => match validate_pending_root_candidate(
             core, client, metadata, body, session, delivery, &envelope, document, registry, now,
         ) {
-            Ok(plan) => Ok(RootInboundValidation::Root(plan)),
+            Ok((plan, request)) => Ok(RootInboundPreparation::Root {
+                plan,
+                action: RootImportAction::Legacy(request),
+            }),
             Err(crate::ImError::PermissionDenied)
             | Err(crate::ImError::InvalidInput { .. })
-            | Err(crate::ImError::Serialization { .. }) => Ok(RootInboundValidation::Terminal),
+            | Err(crate::ImError::Serialization { .. }) => Ok(RootInboundPreparation::Terminal),
             Err(error) => Err(error),
         },
-        Ok(RootSecretPayload::Wrapped(envelope)) => match validate_and_import_wrapped_root(
+        Ok(RootSecretPayload::Wrapped(envelope)) => match validate_wrapped_root_candidate(
             core, client, metadata, delivery, &envelope, document, registry, now,
         ) {
-            Ok(plan) => Ok(RootInboundValidation::Root(plan)),
+            Ok((plan, identity, envelope)) => Ok(RootInboundPreparation::Root {
+                plan,
+                action: RootImportAction::Wrapped { identity, envelope },
+            }),
             Err(crate::ImError::PermissionDenied)
             | Err(crate::ImError::InvalidInput { .. })
-            | Err(crate::ImError::Serialization { .. }) => Ok(RootInboundValidation::Terminal),
+            | Err(crate::ImError::Serialization { .. }) => Ok(RootInboundPreparation::Terminal),
             Err(error) => Err(error),
         },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_root_for_commit(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    metadata: &V2DirectMetadata,
+    body: &V2DirectBody,
+    session: &V2DirectSessionState,
+    delivery: &TrustedDirectDeliveryContext,
+    plaintext: &V2SecretJsonPayload,
+    document: &Value,
+    registry: &DeviceJoinRemoteRegistry,
+    now: OffsetDateTime,
+    expected: Option<&RootImportSealedPlan>,
+) -> crate::ImResult<RootInboundValidation> {
+    match classify_and_prepare_root(
+        core, client, metadata, body, session, delivery, plaintext, document, registry, now,
+    )? {
+        RootInboundPreparation::NotRoot => Ok(RootInboundValidation::NotRoot),
+        RootInboundPreparation::Terminal => Ok(RootInboundValidation::Terminal),
+        RootInboundPreparation::Root { mut plan, .. } => {
+            let expected = expected.ok_or(crate::ImError::PermissionDenied)?;
+            if plan.root_fingerprint.is_empty() {
+                plan.root_fingerprint = expected.root_fingerprint.clone();
+            }
+            if &plan != expected {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Ok(RootInboundValidation::Root(plan))
+        }
     }
 }
 
@@ -1567,7 +1823,7 @@ fn parse_completion_phase(value: &str) -> crate::ImResult<RootImportCompletionPh
     }
 }
 
-pub(crate) fn validate_and_seal_pending_root(
+fn validate_pending_root_candidate(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     metadata: &V2DirectMetadata,
@@ -1578,7 +1834,10 @@ pub(crate) fn validate_and_seal_pending_root(
     document: &Value,
     registry: &DeviceJoinRemoteRegistry,
     now: OffsetDateTime,
-) -> crate::ImResult<RootImportSealedPlan> {
+) -> crate::ImResult<(
+    RootImportSealedPlan,
+    crate::internal::identity_provider::ProviderLegacyRootImportRequest,
+)> {
     delivery.validate()?;
     validate_envelope_field_bounds(envelope)?;
     validate_outer_equality(metadata, body, session, delivery, envelope)?;
@@ -1605,10 +1864,13 @@ pub(crate) fn validate_and_seal_pending_root(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    crate::internal::identity_custody::import_legacy_completion_root(
-        core,
-        &pending_ref,
-        anp_identity::LegacyRootTransferEvidence {
+    let import = crate::internal::identity_provider::ProviderLegacyRootImportRequest {
+        identity: crate::internal::identity_provider::ProviderIdentityRef {
+            store_id: pending_ref.store_id.clone(),
+            identity_id: pending_ref.identity_id.clone(),
+            did: pending_ref.did.clone(),
+        },
+        evidence: crate::internal::identity_provider::ProviderLegacyRootImportEvidence {
             transfer_id: envelope.message_id.clone(),
             source_did: envelope.did.clone(),
             target_did: envelope.did.clone(),
@@ -1616,16 +1878,17 @@ pub(crate) fn validate_and_seal_pending_root(
             recipient_device_id: envelope.recipient_device_id.clone(),
             recipient_agreement_kid: envelope.recipient_e2ee_key_id.clone(),
             root_kid: envelope.root_key_id.clone(),
-            checkpoint: anp_identity::DocumentCheckpoint {
+            checkpoint: crate::internal::identity_provider::ProviderDocumentCheckpoint {
                 document_version: envelope.document_version,
                 registry_version: envelope.registry_version,
                 document_digest: envelope.document_hash.clone(),
             },
             accepted_at: imported_at.clone(),
         },
-        root_der,
-    )?;
-    Ok(RootImportSealedPlan {
+        encoding: crate::internal::identity_provider::ProviderPrivateKeyEncoding::Pkcs8Der,
+        root_key: root_der,
+    };
+    let plan = RootImportSealedPlan {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
         local_device_id: client.exact_protocol_device_id()?,
@@ -1645,25 +1908,30 @@ pub(crate) fn validate_and_seal_pending_root(
         document_hash: envelope.document_hash.clone(),
         registry_version: envelope.registry_version,
         now: format_time(now)?,
-    })
+    };
+    Ok((plan, import))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_and_import_wrapped_root(
+fn validate_wrapped_root_candidate(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     metadata: &V2DirectMetadata,
     delivery: &TrustedDirectDeliveryContext,
-    envelope: &anp_identity::WrappedRootEnvelope,
+    envelope: &WrappedRootEnvelopeWire,
     document: &Value,
     registry: &DeviceJoinRemoteRegistry,
     now: OffsetDateTime,
-) -> crate::ImResult<RootImportSealedPlan> {
+) -> crate::ImResult<(
+    RootImportSealedPlan,
+    crate::internal::identity_provider::ProviderIdentityRef,
+    crate::internal::identity_provider::ProviderWrappedRootEnvelope,
+)> {
     delivery.validate()?;
     let accepted_at = authoritative_root_accepted_at(delivery)?;
     let context = &envelope.context;
-    if envelope.envelope_type != anp_identity::WRAPPED_ROOT_ENVELOPE_TYPE
-        || envelope.version != anp_identity::WRAPPED_ROOT_ENVELOPE_VERSION
+    if envelope.envelope_type != WRAPPED_ROOT_ENVELOPE_TYPE
+        || envelope.version != WRAPPED_ROOT_ENVELOPE_VERSION
         || context.source_did != client.did().as_str()
         || context.target_did != client.did().as_str()
         || context.sender_device_id != metadata.sender_device_id
@@ -1673,8 +1941,7 @@ fn validate_and_import_wrapped_root(
         || context.checkpoint.document_version != registry.checkpoint.document_version
         || context.checkpoint.registry_version != registry.checkpoint.registry_version
         || context.checkpoint.document_digest
-            != anp_identity::canonical_document_digest(document)
-                .map_err(crate::internal::identity_custody::map_error)?
+            != crate::internal::identity_wire::document::document_hash(document)?
         || context.checkpoint.document_digest != registry.checkpoint.document_hash
     {
         return Err(crate::ImError::PermissionDenied);
@@ -1738,12 +2005,12 @@ fn validate_and_import_wrapped_root(
     .ok_or(crate::ImError::PermissionDenied)?;
     let _ = recipient_manifest;
     let imported_at = validate_wrapped_envelope_time(context, accepted_at, now)?;
-    let manager = crate::internal::identity_custody::open_controller_manager(core)?;
-    let info = manager
-        .info()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    let store_id = local_entry
+        .anp_identity_store_id
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
     if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
-        || local_entry.anp_identity_store_id.as_deref() != Some(info.store_id.as_str())
+        || store_id.trim().is_empty()
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1751,34 +2018,40 @@ fn validate_and_import_wrapped_root(
         .anp_identity_id
         .as_deref()
         .ok_or(crate::ImError::PermissionDenied)?;
-    let mut identity = manager
-        .get(&anp_identity::IdentityRef {
-            store_id: info.store_id.clone(),
-            identity_id: identity_id.to_owned(),
-            did: client.did().as_str().to_owned(),
-        })
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
-    use anp_identity::host::{IdentityStatusPort, WrappedRootImportPort};
-    let outcome = identity
-        .import_wrapped_root_envelope(envelope)
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
-    if !matches!(
-        outcome,
-        anp_identity::host::WrappedRootImportOutcome::Pending
-            | anp_identity::host::WrappedRootImportOutcome::Active
-    ) {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let root_fingerprint = identity
-        .host_status()
-        .map_err(crate::internal::identity_custody::map_facade_error)?
-        .root_key_fingerprint;
-    let pending_ref = RootImportCustodyRef {
-        store_id: info.store_id,
+    let identity_ref = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: store_id.clone(),
         identity_id: identity_id.to_owned(),
         did: client.did().as_str().to_owned(),
     };
-    Ok(RootImportSealedPlan {
+    let provider_envelope = crate::internal::identity_provider::ProviderWrappedRootEnvelope {
+        envelope_type: envelope.envelope_type.clone(),
+        version: envelope.version,
+        context: crate::internal::identity_provider::ProviderRootTransferContext {
+            source_did: context.source_did.clone(),
+            target_did: context.target_did.clone(),
+            sender_device_id: context.sender_device_id.clone(),
+            recipient_device_id: context.recipient_device_id.clone(),
+            recipient_agreement_kid: context.recipient_agreement_kid.clone(),
+            root_kid: context.root_kid.clone(),
+            checkpoint: crate::internal::identity_provider::ProviderDocumentCheckpoint {
+                document_version: context.checkpoint.document_version,
+                registry_version: context.checkpoint.registry_version,
+                document_digest: context.checkpoint.document_digest.clone(),
+            },
+            created_at: context.created_at.clone(),
+            expires_at: context.expires_at.clone(),
+        },
+        ephemeral_public_b64u: envelope.ephemeral_public_b64u.clone(),
+        nonce_b64u: envelope.nonce_b64u.clone(),
+        ciphertext_b64u: envelope.ciphertext_b64u.clone(),
+        signature_b64u: envelope.signature_b64u.clone(),
+    };
+    let pending_ref = RootImportCustodyRef {
+        store_id,
+        identity_id: identity_id.to_owned(),
+        did: client.did().as_str().to_owned(),
+    };
+    let plan = RootImportSealedPlan {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
         local_device_id: authorization.protocol_device_id.as_str().to_owned(),
@@ -1793,16 +2066,49 @@ fn validate_and_import_wrapped_root(
         pending_root_ref_json: serde_json::to_string(&pending_ref)
             .map_err(redacted_serialization)?,
         root_key_id: context.root_kid.clone(),
-        root_fingerprint,
+        root_fingerprint: String::new(),
         document_version: context.checkpoint.document_version,
         document_hash: context.checkpoint.document_digest.clone(),
         registry_version: context.checkpoint.registry_version,
         now: format_time(now)?,
-    })
+    };
+    Ok((plan, identity_ref, provider_envelope))
+}
+
+async fn complete_wrapped_root_import(
+    core: &crate::core::ImCore,
+    identity: crate::internal::identity_provider::ProviderIdentityRef,
+    envelope: crate::internal::identity_provider::ProviderWrappedRootEnvelope,
+    mut plan: RootImportSealedPlan,
+) -> crate::ImResult<RootImportSealedPlan> {
+    let provider = crate::internal::identity_custody::controller_custody_provider(core).await?;
+    let outcome = provider
+        .import_wrapped_root(&identity, envelope)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if !matches!(
+        outcome,
+        crate::internal::identity_provider::ProviderLegacyRootImportOutcome::Pending
+            | crate::internal::identity_provider::ProviderLegacyRootImportOutcome::Active
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    plan.root_fingerprint = provider
+        .open_identity(&identity)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .host_status()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .root_key_fingerprint;
+    if plan.root_fingerprint.trim().is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(plan)
 }
 
 fn validate_wrapped_envelope_time(
-    context: &anp_identity::RootTransferContext,
+    context: &RootTransferContextWire,
     accepted_at: &str,
     now: OffsetDateTime,
 ) -> crate::ImResult<String> {

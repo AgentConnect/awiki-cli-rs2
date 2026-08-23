@@ -22,8 +22,8 @@ pub use crate::internal::identity_provider::{
     ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
     ProviderPublicationEvidence, ProviderPublicationResult,
     ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
-    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
-    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument, CAP_HTTP_SIGN,
-    CAP_IDENTITY_SIGN, CAP_KEY_AGREEMENT, CAP_ORIGIN_PROOF, CAP_STORE_READ,
-    IDENTITY_PROVIDER_PROTOCOL,
+    ProviderRootTransferContext, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument, ProviderWrappedRootEnvelope, CAP_HTTP_SIGN, CAP_IDENTITY_SIGN,
+    CAP_KEY_AGREEMENT, CAP_ORIGIN_PROOF, CAP_STORE_READ, IDENTITY_PROVIDER_PROTOCOL,
 };
