@@ -4713,17 +4713,16 @@ async fn project_group_e2ee_messages_async_impl(
             message_from_value(client, &message, None).ok().flatten()
         })
         .collect::<Vec<_>>();
-    if !newly_decrypted.is_empty() {
-        if persist_newly_decrypted_p6_messages_async(
+    if !newly_decrypted.is_empty()
+        && persist_newly_decrypted_p6_messages_async(
             client,
             &newly_decrypted,
             "p6_history_decryption",
         )
         .await
         .is_err()
-        {
-            p6_warnings.push("P6 v2 group plaintext cache was not durably committed".to_owned());
-        }
+    {
+        p6_warnings.push("P6 v2 group plaintext cache was not durably committed".to_owned());
     }
     message_values = p6_projected;
     let _ = apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
