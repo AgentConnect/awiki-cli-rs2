@@ -28,12 +28,7 @@ export interface ImCoreIdentityReference {
 }
 
 export interface ImCoreSealedSecretDelivery {
-  readonly envelope: {
-    readonly protocol: 'anp-sealed-secret/1'
-    readonly suite: 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1'
-    readonly encappedKey: string
-    readonly ciphertext: string
-  }
+  readonly envelope: ImCoreSealedSecretEnvelope
   readonly authorization: {
     readonly providerInstanceId: string
     readonly parentLeaseId: string
@@ -43,6 +38,13 @@ export interface ImCoreSealedSecretDelivery {
     readonly expiresAt: number
   }
   readonly aad: string
+}
+
+export interface ImCoreSealedSecretEnvelope {
+  readonly protocol: 'anp-sealed-secret/1'
+  readonly suite: 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1'
+  readonly encappedKey: string
+  readonly ciphertext: string
 }
 
 export interface ImCoreIdentityProvider {
@@ -78,6 +80,12 @@ export interface ImCoreIdentityProvider {
     readonly requestId: string
     readonly userPresenceConfirmed: boolean
   }): Promise<ImCoreSealedSecretDelivery>
+  prepareLegacyRootImport?(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly evidence: unknown
+    readonly encoding: 'raw32' | 'pkcs8_der'
+    readonly requestId: string
+  }): Promise<ImCorePreparedRootImport>
   sign(
     reference: ImCoreIdentityReference,
     request:
@@ -145,6 +153,21 @@ export interface ImCoreIdentityProvider {
       readonly created?: string
     },
   ): Promise<unknown>
+}
+
+/** Host-only sealed import workflow retained inside the provider bridge. */
+export interface ImCorePreparedRootImport {
+  offer(): {
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+    readonly token: string
+    readonly authorization: ImCoreSealedSecretDelivery['authorization']
+    readonly aad: string
+  }
+  complete(
+    token: string,
+    envelope: ImCoreSealedSecretEnvelope,
+  ): Promise<'pending' | 'active'>
 }
 
 /** Host-only opaque workflow retained inside the provider bridge. */

@@ -1528,6 +1528,38 @@ pub(crate) fn import_legacy_completion_root(
     Ok(())
 }
 
+pub(crate) async fn import_legacy_completion_root_async(
+    core: &crate::core::ImCore,
+    reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
+    evidence: crate::internal::identity_provider::ProviderLegacyRootImportEvidence,
+    root_key: zeroize::Zeroizing<Vec<u8>>,
+) -> crate::ImResult<()> {
+    let custody = controller_custody_provider(core).await?;
+    let outcome = custody
+        .import_legacy_root(
+            crate::internal::identity_provider::ProviderLegacyRootImportRequest {
+                identity: crate::internal::identity_provider::ProviderIdentityRef {
+                    store_id: reference.store_id.clone(),
+                    identity_id: reference.identity_id.clone(),
+                    did: reference.did.clone(),
+                },
+                evidence,
+                encoding: crate::internal::identity_provider::ProviderPrivateKeyEncoding::Pkcs8Der,
+                root_key,
+            },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if !matches!(
+        outcome,
+        crate::internal::identity_provider::ProviderLegacyRootImportOutcome::Pending
+            | crate::internal::identity_provider::ProviderLegacyRootImportOutcome::Active
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn sign_pending_completion_root_proof(
     core: &crate::core::ImCore,

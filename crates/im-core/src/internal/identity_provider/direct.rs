@@ -14,13 +14,14 @@ use super::{
     ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderExportedRoot, ProviderHostStatus,
     ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderLegacyRootExportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
-    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPublicIdentity,
-    ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationEvidence,
-    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
-    ProviderRootCapability, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
-    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
-    ProviderVerifiedRemoteDocument,
+    ProviderLegacyRootExportRequest, ProviderLegacyRootImportOutcome,
+    ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
+    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPrivateKeyEncoding,
+    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
+    ProviderPublicationEvidence, ProviderPublicationResult,
+    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
+    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
+    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
 };
 
 pub(crate) struct DirectAnpIdentityCustody {
@@ -292,6 +293,58 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                     document: request.document,
                     issuer_did: request.issuer_did,
                     created: request.created,
+                })
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn import_legacy_root(
+        &self,
+        request: ProviderLegacyRootImportRequest,
+    ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        use anp_identity::host::RootImportPort;
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let mut managed = manager
+                .lock()
+                .map_err(|_| internal())?
+                .get(&request.identity.into())
+                .map_err(map_identity_error)?;
+            managed
+                .import_legacy_root(anp_identity::host::LegacyRootImportRequest {
+                    evidence: anp_identity::host::LegacyRootImportEvidence {
+                        transfer_id: request.evidence.transfer_id,
+                        source_did: request.evidence.source_did,
+                        target_did: request.evidence.target_did,
+                        sender_device_id: request.evidence.sender_device_id,
+                        recipient_device_id: request.evidence.recipient_device_id,
+                        recipient_agreement_kid: request.evidence.recipient_agreement_kid,
+                        root_kid: request.evidence.root_kid,
+                        checkpoint: anp_identity::host::HostDocumentCheckpoint {
+                            document_version: request.evidence.checkpoint.document_version,
+                            registry_version: request.evidence.checkpoint.registry_version,
+                            document_digest: request.evidence.checkpoint.document_digest,
+                        },
+                        accepted_at: request.evidence.accepted_at,
+                    },
+                    encoding: match request.encoding {
+                        ProviderPrivateKeyEncoding::Raw32 => {
+                            anp_identity::host::RootPrivateKeyEncoding::Raw32
+                        }
+                        ProviderPrivateKeyEncoding::Pkcs8Der => {
+                            anp_identity::host::RootPrivateKeyEncoding::Pkcs8Der
+                        }
+                    },
+                    root_key: request.root_key,
+                })
+                .map(|outcome| match outcome {
+                    anp_identity::host::LegacyRootImportOutcome::Pending => {
+                        ProviderLegacyRootImportOutcome::Pending
+                    }
+                    anp_identity::host::LegacyRootImportOutcome::Active => {
+                        ProviderLegacyRootImportOutcome::Active
+                    }
                 })
                 .map_err(map_identity_error)
         })

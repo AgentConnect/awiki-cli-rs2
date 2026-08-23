@@ -9,6 +9,7 @@ import {
   type ImCoreIdentityReference,
   type ImCoreProviderDocumentChangeSession,
   type ImCoreProviderEnrollmentSession,
+  type ImCorePreparedRootImport,
 } from './types.js'
 
 const IDENTITY_PROVIDER_PROTOCOL = 'anp-identity-provider-ts/1'
@@ -39,8 +40,10 @@ export function createIdentityProviderDispatch(
 
   const documentSessions = new Map<string, ImCoreProviderDocumentChangeSession>()
   const enrollmentSessions = new Map<string, ImCoreProviderEnrollmentSession>()
+  const rootImportSessions = new Map<string, ImCorePreparedRootImport>()
   let nextDocumentSession = 1
   let nextEnrollmentSession = 1
+  let nextRootImportSession = 1
 
   return async (calls: readonly [NativeIdentityProviderCall]): Promise<NativeIdentityProviderReply> => {
     try {
@@ -95,6 +98,46 @@ export function createIdentityProviderDispatch(
             requestId: requiredString(payload.requestId),
             userPresenceConfirmed: payload.userPresenceConfirmed === true,
           }))
+        }
+        case 'prepareLegacyRootImport': {
+          if (!capabilities.has('AWIKI_LEGACY_ROOT_TRANSFER_V1')
+            || typeof provider.prepareLegacyRootImport !== 'function') throw unavailable()
+          exactBuffers(request.buffers, 0)
+          const prepared = await provider.prepareLegacyRootImport({
+            identity: reference(payload.identity),
+            evidence: object(payload.evidence),
+            encoding: privateKeyEncoding(payload.encoding),
+            requestId: requiredString(payload.requestId),
+          })
+          const offer = prepared.offer()
+          if (!Buffer.isBuffer(offer.recipientPublicKey) || offer.recipientPublicKey.length !== 32) {
+            throw new TypeError('identity root import recipient key is invalid')
+          }
+          const sessionId = `root-import-${nextRootImportSession++}`
+          rootImportSessions.set(sessionId, prepared)
+          return success({
+            sessionId,
+            offer: {
+              requestId: offer.requestId,
+              token: offer.token,
+              authorization: offer.authorization,
+              aad: offer.aad,
+            },
+          }, [offer.recipientPublicKey])
+        }
+        case 'completeLegacyRootImport': {
+          exactBuffers(request.buffers, 0)
+          const sessionId = requiredString(payload.sessionId)
+          const prepared = rootImportSession(rootImportSessions, sessionId)
+          try {
+            return success(await prepared.complete(
+              requiredString(payload.token),
+              object(payload.envelope) as never,
+            ))
+          }
+          finally {
+            rootImportSessions.delete(sessionId)
+          }
         }
         case 'prepareHttpSignature': {
           const hasBody = payload.hasBody === true
@@ -246,6 +289,20 @@ function enrollmentSession(
   const session = sessions.get(requiredString(sessionId))
   if (session === undefined) throw new TypeError('identity enrollment session is invalid')
   return session
+}
+
+function rootImportSession(
+  sessions: ReadonlyMap<string, ImCorePreparedRootImport>,
+  sessionId: unknown,
+): ImCorePreparedRootImport {
+  const session = sessions.get(requiredString(sessionId))
+  if (session === undefined) throw new TypeError('identity root import session is invalid')
+  return session
+}
+
+function privateKeyEncoding(value: unknown): 'raw32' | 'pkcs8_der' {
+  if (value === 'raw32' || value === 'pkcs8_der') return value
+  throw new TypeError('identity private-key encoding is invalid')
 }
 
 function requiredString(value: unknown): string {

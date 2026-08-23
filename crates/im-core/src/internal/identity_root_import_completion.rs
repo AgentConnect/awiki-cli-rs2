@@ -688,7 +688,7 @@ async fn drive_root_import_completion(
     client: &crate::core::ImClient,
     message_id: &str,
 ) -> crate::ImResult<()> {
-    upgrade_legacy_root_completion(core, client, message_id)?;
+    upgrade_legacy_root_completion(core, client, message_id).await?;
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
@@ -740,7 +740,7 @@ struct LegacyPendingRootSecretV1 {
     root_private_key_pkcs8_pem: String,
 }
 
-fn upgrade_legacy_root_completion(
+async fn upgrade_legacy_root_completion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     message_id: &str,
@@ -833,10 +833,10 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3"#,
     };
     let mut root_der = Zeroizing::new(ED25519_PKCS8_PREFIX.to_vec());
     root_der.extend_from_slice(&private.to_bytes());
-    crate::internal::identity_custody::import_legacy_completion_root(
+    crate::internal::identity_custody::import_legacy_completion_root_async(
         core,
         &pending_ref,
-        anp_identity::LegacyRootTransferEvidence {
+        crate::internal::identity_provider::ProviderLegacyRootImportEvidence {
             transfer_id: message_id.to_owned(),
             source_did: row.0.clone(),
             target_did: row.0.clone(),
@@ -844,7 +844,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3"#,
             recipient_device_id: row.3.clone(),
             recipient_agreement_kid: row.5.clone(),
             root_kid: row.9.clone(),
-            checkpoint: anp_identity::DocumentCheckpoint {
+            checkpoint: crate::internal::identity_provider::ProviderDocumentCheckpoint {
                 document_version: row.11,
                 registry_version: row.13,
                 document_digest: row.12.clone(),
@@ -852,7 +852,8 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND message_id = ?3"#,
             accepted_at: row.6.clone(),
         },
         root_der,
-    )?;
+    )
+    .await?;
     let pending_ref_json = serde_json::to_string(&pending_ref).map_err(redacted_serialization)?;
     let changed = connection
         .execute(
@@ -2646,7 +2647,9 @@ document_hash, registry_version, phase, created_at, updated_at
             .client(crate::identity::IdentitySelector::Default)
             .unwrap();
 
-        upgrade_legacy_root_completion(&core, &client, message_id).unwrap();
+        upgrade_legacy_root_completion(&core, &client, message_id)
+            .await
+            .unwrap();
 
         assert!(vault.open(&legacy_ref).is_err());
         let connection =

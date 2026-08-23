@@ -597,6 +597,40 @@ pub struct ProviderExportedRoot {
     pkcs8_der: zeroize::Zeroizing<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderPrivateKeyEncoding {
+    Raw32,
+    Pkcs8Der,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderLegacyRootImportEvidence {
+    pub transfer_id: String,
+    pub source_did: String,
+    pub target_did: String,
+    pub sender_device_id: String,
+    pub recipient_device_id: String,
+    pub recipient_agreement_kid: String,
+    pub root_kid: String,
+    pub checkpoint: ProviderDocumentCheckpoint,
+    pub accepted_at: String,
+}
+
+pub struct ProviderLegacyRootImportRequest {
+    pub identity: ProviderIdentityRef,
+    pub evidence: ProviderLegacyRootImportEvidence,
+    pub encoding: ProviderPrivateKeyEncoding,
+    pub root_key: Zeroizing<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderLegacyRootImportOutcome {
+    Pending,
+    Active,
+}
+
 impl ProviderExportedRoot {
     pub fn new(pkcs8_der: Vec<u8>) -> Self {
         Self {
@@ -653,6 +687,16 @@ pub trait IdentityCustody: Send + Sync {
         identity: &ProviderIdentityRef,
         request: ProviderObjectProofRequest,
     ) -> ProviderResult<Value>;
+
+    async fn import_legacy_root(
+        &self,
+        _request: ProviderLegacyRootImportRequest,
+    ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
 
     async fn recover(&self) -> ProviderResult<()>;
 }

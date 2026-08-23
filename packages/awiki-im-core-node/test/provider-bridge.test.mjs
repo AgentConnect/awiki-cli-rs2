@@ -346,6 +346,82 @@ test('External Provider gates root promotion on the dedicated capability', async
   assert.equal(calls[2].recipientPublicKey, recipientPublicKey)
 })
 
+test('External Provider keeps legacy root plaintext outside TypeScript import workflow', async () => {
+  const calls = []
+  const recipientPublicKey = Buffer.alloc(32, 7)
+  const prepared = {
+    offer: () => ({
+      recipientPublicKey,
+      requestId: 'root-transfer-1',
+      token: 'one-time-token',
+      authorization: sealedDelivery('AWIKI_LEGACY_ROOT_TRANSFER_V1').authorization,
+      aad: 'bound-aad',
+    }),
+    complete: async (token, envelope) => {
+      calls.push({ token, envelope })
+      return 'pending'
+    },
+  }
+  const dispatch = createIdentityProviderDispatch(provider({
+    capabilities: [...provider().capabilities, 'AWIKI_LEGACY_ROOT_TRANSFER_V1'],
+    prepareLegacyRootImport: async request => {
+      calls.push(request)
+      return prepared
+    },
+  }))
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const evidence = {
+    transferId: 'root-transfer-1',
+    sourceDid: identity.did,
+    targetDid: identity.did,
+    senderDeviceId: 'sender-1',
+    recipientDeviceId: 'recipient-1',
+    recipientAgreementKid: `${identity.did}#agreement`,
+    rootKid: `${identity.did}#root`,
+    checkpoint: { documentVersion: 1, registryVersion: 2, documentDigest: 'sha256:doc' },
+    acceptedAt: '2026-08-23T00:00:00Z',
+  }
+  const offered = await dispatch([{
+    operation: 'prepareLegacyRootImport',
+    payloadJson: JSON.stringify({
+      identity,
+      evidence,
+      encoding: 'pkcs8_der',
+      requestId: evidence.transferId,
+    }),
+    buffers: [],
+  }])
+  assert.equal(offered.ok, true)
+  assert.deepEqual(offered.buffers, [recipientPublicKey])
+  const { sessionId, offer } = JSON.parse(offered.payloadJson)
+  assert.equal(offer.requestId, evidence.transferId)
+  assert.equal('recipientPublicKey' in offer, false)
+  assert.deepEqual(calls[0], {
+    identity,
+    evidence,
+    encoding: 'pkcs8_der',
+    requestId: evidence.transferId,
+  })
+
+  const envelope = sealedDelivery('AWIKI_LEGACY_ROOT_TRANSFER_V1').envelope
+  const completed = await dispatch([{
+    operation: 'completeLegacyRootImport',
+    payloadJson: JSON.stringify({ sessionId, token: 'one-time-token', envelope }),
+    buffers: [],
+  }])
+  assert.equal(completed.ok, true)
+  assert.equal(JSON.parse(completed.payloadJson), 'pending')
+  assert.deepEqual(calls[1], { token: 'one-time-token', envelope })
+
+  const replay = await dispatch([{
+    operation: 'completeLegacyRootImport',
+    payloadJson: JSON.stringify({ sessionId, token: 'one-time-token', envelope }),
+    buffers: [],
+  }])
+  assert.equal(replay.ok, false)
+  assert.equal(replay.errorCode, 'invalid_request')
+})
+
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-error-'))
   t.after(() => rm(root, { recursive: true, force: true }))

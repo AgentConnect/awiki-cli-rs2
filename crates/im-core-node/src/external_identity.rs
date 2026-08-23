@@ -10,12 +10,13 @@ use im_core::provider::{
     ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor,
     ProviderIdentityRef, ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm,
     ProviderKeyPurpose, ProviderKeySelector, ProviderLegacyRootExportRequest,
-    ProviderObjectProofRequest, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
-    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
-    ProviderPublicationAttempt, ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest,
-    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
-    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
-    ProviderVerifiedRemoteDocument,
+    ProviderLegacyRootImportEvidence, ProviderLegacyRootImportOutcome,
+    ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
+    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPrivateKeyEncoding,
+    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
+    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
+    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
+    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -202,6 +203,39 @@ struct SealedRootExportPayload<'a> {
     user_presence_confirmed: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedRootImportPreparationPayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    evidence: &'a ProviderLegacyRootImportEvidence,
+    encoding: ProviderPrivateKeyEncoding,
+    request_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreparedSealedImportWire {
+    session_id: String,
+    offer: SealedImportOfferWire,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedImportOfferWire {
+    request_id: String,
+    token: String,
+    authorization: AuthorizationContextWire,
+    aad: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteSealedImportPayload<'a> {
+    session_id: &'a str,
+    token: &'a str,
+    envelope: SealedSecretEnvelopeWire,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SealedSecretDeliveryWire {
@@ -210,7 +244,7 @@ struct SealedSecretDeliveryWire {
     aad: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SealedSecretEnvelopeWire {
     protocol: String,
@@ -492,6 +526,13 @@ impl IdentityCustody for ExternalIdentityCustody {
             Vec::new(),
         )
         .await
+    }
+
+    async fn import_legacy_root(
+        &self,
+        request: ProviderLegacyRootImportRequest,
+    ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        send_sealed_root_import(&self.dispatch, request).await
     }
 
     async fn recover(&self) -> ProviderResult<()> {
@@ -1033,6 +1074,102 @@ async fn receive_sealed_root(
     Ok(ProviderExportedRoot::new(plaintext.to_vec()))
 }
 
+async fn send_sealed_root_import(
+    dispatch: &IdentityProviderDispatch,
+    request: ProviderLegacyRootImportRequest,
+) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+    let ProviderLegacyRootImportRequest {
+        identity,
+        evidence,
+        encoding,
+        root_key,
+    } = request;
+    let request_id = evidence.transfer_id.clone();
+    let reply = call(
+        dispatch,
+        "prepareLegacyRootImport",
+        &SealedRootImportPreparationPayload {
+            identity: &identity,
+            evidence: &evidence,
+            encoding,
+            request_id: &request_id,
+        },
+        Vec::new(),
+    )
+    .await?;
+    let prepared: PreparedSealedImportWire = parse_json(&reply.payload_json)?;
+    let recipient_public: [u8; 32] = exactly_one_buffer(reply.buffers)?
+        .try_into()
+        .map_err(|_| provider_incompatible())?;
+    if prepared.offer.request_id != request_id {
+        return Err(provider_incompatible());
+    }
+    let identity_context = sealed_identity_context(&identity);
+    let shared_evidence = anp::sealed_handoff::SealedLegacyRootImportEvidence {
+        transfer_id: evidence.transfer_id,
+        source_did: evidence.source_did,
+        target_did: evidence.target_did,
+        sender_device_id: evidence.sender_device_id,
+        recipient_device_id: evidence.recipient_device_id,
+        recipient_agreement_kid: evidence.recipient_agreement_kid,
+        root_kid: evidence.root_kid,
+        checkpoint: anp::sealed_handoff::SealedDocumentCheckpoint {
+            document_version: evidence.checkpoint.document_version,
+            registry_version: evidence.checkpoint.registry_version,
+            document_digest: evidence.checkpoint.document_digest,
+        },
+        accepted_at: evidence.accepted_at,
+    };
+    let shared_encoding = match encoding {
+        ProviderPrivateKeyEncoding::Raw32 => anp::sealed_handoff::SealedPrivateKeyEncoding::Raw32,
+        ProviderPrivateKeyEncoding::Pkcs8Der => {
+            anp::sealed_handoff::SealedPrivateKeyEncoding::Pkcs8Der
+        }
+    };
+    let binding = anp::sealed_handoff::identity_root_import_binding(
+        &identity_context,
+        &shared_evidence,
+        shared_encoding,
+        &recipient_public,
+        &request_id,
+    )
+    .map_err(|_| provider_incompatible())?;
+    let aad = validate_authorized_aad(
+        &prepared.offer.authorization,
+        &prepared.offer.aad,
+        &binding,
+        &identity_context,
+    )?;
+    let sealed = anp::sealed_handoff::SealedHandoff::seal(
+        &recipient_public,
+        SEALED_SECRET_INFO,
+        &aad,
+        &root_key,
+    )
+    .map_err(|_| provider_incompatible())?;
+    let outcome: String = call_json(
+        dispatch,
+        "completeLegacyRootImport",
+        &CompleteSealedImportPayload {
+            session_id: &prepared.session_id,
+            token: &prepared.offer.token,
+            envelope: SealedSecretEnvelopeWire {
+                protocol: SEALED_SECRET_PROTOCOL.to_owned(),
+                suite: anp::sealed_handoff::SEALED_HANDOFF_SUITE.to_owned(),
+                encapped_key: URL_SAFE_NO_PAD.encode(sealed.encapped_key()),
+                ciphertext: URL_SAFE_NO_PAD.encode(sealed.ciphertext()),
+            },
+        },
+        Vec::new(),
+    )
+    .await?;
+    match outcome.as_str() {
+        "pending" => Ok(ProviderLegacyRootImportOutcome::Pending),
+        "active" => Ok(ProviderLegacyRootImportOutcome::Active),
+        _ => Err(provider_incompatible()),
+    }
+}
+
 impl SealedSecretEnvelopeWire {
     fn to_handoff(&self) -> ProviderResult<anp::sealed_handoff::SealedHandoff> {
         if self.protocol != SEALED_SECRET_PROTOCOL
@@ -1056,7 +1193,15 @@ fn validate_delivery(
     binding: &anp::sealed_handoff::SealedOperationBinding,
     identity: &anp::sealed_handoff::SealedIdentityContext,
 ) -> ProviderResult<Vec<u8>> {
-    let authorization = &delivery.authorization;
+    validate_authorized_aad(&delivery.authorization, &delivery.aad, binding, identity)
+}
+
+fn validate_authorized_aad(
+    authorization: &AuthorizationContextWire,
+    aad: &str,
+    binding: &anp::sealed_handoff::SealedOperationBinding,
+    identity: &anp::sealed_handoff::SealedIdentityContext,
+) -> ProviderResult<Vec<u8>> {
     let expected = anp::sealed_handoff::identity_operation_aad(
         &anp::sealed_handoff::SealedAuthorizationContext {
             provider_instance_id: authorization.provider_instance_id.clone(),
@@ -1071,7 +1216,7 @@ fn validate_delivery(
     )
     .map_err(|_| provider_incompatible())?;
     let delivered = URL_SAFE_NO_PAD
-        .decode(&delivery.aad)
+        .decode(aad)
         .map_err(|_| provider_incompatible())?;
     if delivered != expected {
         return Err(provider_incompatible());
