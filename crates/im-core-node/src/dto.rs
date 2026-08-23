@@ -593,6 +593,12 @@ pub struct NodeHandleRecoveryOperationInput {
     pub operation_id: String,
 }
 
+#[napi(object)]
+pub struct NodeHandleRecoveryAttestationResult {
+    pub attestation: String,
+    pub expires_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeHandleRecoveryImpact {
@@ -1261,6 +1267,16 @@ pub(crate) fn recovery_progress(
             unsupported_e2ee_group_count: value.impact.unsupported_e2ee_group_count,
             unsupported_did_only_group_count: value.impact.unsupported_did_only_group_count,
         },
+    }
+}
+
+pub(crate) fn recovery_attestation(
+    value: im_core::identity::HandleRecoveryAttestation,
+) -> NodeHandleRecoveryAttestationResult {
+    let attestation = value.expose_attestation().to_owned();
+    NodeHandleRecoveryAttestationResult {
+        attestation,
+        expires_at: value.expires_at,
     }
 }
 

@@ -22,6 +22,7 @@ import {
   type GroupRebindRecoverySummary,
   type HandleRecoveryOperationInput,
   type HandleRecoveryOperationSummary,
+  type HandleRecoveryAttestationResult,
   type HandleRecoveryOtpInput,
   type HandleRecoveryOtpResult,
   type HandleRecoveryPrepareInput,
@@ -288,6 +289,12 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress> {
     return call(async () => copyHandleRecoveryProgress(await this.native.resumeHandleRecovery(input)))
+  }
+
+  public issueHandleRecoveryAttestation(
+    input: HandleRecoveryOperationInput,
+  ): Promise<HandleRecoveryAttestationResult> {
+    return call(() => this.native.issueHandleRecoveryAttestation(input))
   }
 
   public discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary> {

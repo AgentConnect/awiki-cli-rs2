@@ -38,12 +38,13 @@ pub(crate) use self::dto::{
 pub use self::handle_recovery::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
     BeginPreparedRegistrationDeviceJoinRequest, HandleRecoveryAccountEpochReceipt,
-    HandleRecoveryActivateRequest, HandleRecoveryDiscardRequest, HandleRecoveryErrorCode,
-    HandleRecoveryImpact, HandleRecoveryKeyState, HandleRecoveryMetricsSnapshot,
-    HandleRecoveryOperationLifecycle, HandleRecoveryOperationSummary, HandleRecoveryOtpRequest,
-    HandleRecoveryOtpResult, HandleRecoveryPhase, HandleRecoveryPrepareRequest,
-    HandleRecoveryProgress, HandleRecoveryQuarantineRequest, HandleRecoveryResetReference,
-    HandleRecoveryResumeRequest, HandleRecoveryService, HandleRecoveryTransitionSourceKind,
+    HandleRecoveryActivateRequest, HandleRecoveryAttestation, HandleRecoveryAttestationRequest,
+    HandleRecoveryDiscardRequest, HandleRecoveryErrorCode, HandleRecoveryImpact,
+    HandleRecoveryKeyState, HandleRecoveryMetricsSnapshot, HandleRecoveryOperationLifecycle,
+    HandleRecoveryOperationSummary, HandleRecoveryOtpRequest, HandleRecoveryOtpResult,
+    HandleRecoveryPhase, HandleRecoveryPrepareRequest, HandleRecoveryProgress,
+    HandleRecoveryQuarantineRequest, HandleRecoveryResetReference, HandleRecoveryResumeRequest,
+    HandleRecoveryService, HandleRecoveryTransitionSourceKind,
 };
 pub use self::join::{
     DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus,

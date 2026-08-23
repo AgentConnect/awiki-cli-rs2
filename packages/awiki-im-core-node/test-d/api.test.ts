@@ -25,6 +25,9 @@ void opened.then(async client => {
   attempt.headerPatch satisfies readonly { readonly name: string, readonly value: string }[]
   const retry = await attempt.handleResponse({ statusCode: 200, headers: [] })
   retry satisfies import('../src/index.js').ExternalHttpAuthAttempt | null
+  const reconciliation = await client.issueHandleRecoveryAttestation({ operationId: 'recovery-1' })
+  reconciliation.attestation satisfies string
+  reconciliation.expiresAt satisfies string
   const registration = await client.completeRegistrationWithOutcome({
     handle: 'alice',
     phone: '+8613800000000',
