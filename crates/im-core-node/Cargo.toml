@@ -16,7 +16,7 @@ anp.workspace = true
 base64.workspace = true
 chrono.workspace = true
 fs2.workspace = true
-im-core = { package = "awiki-im-core", path = "../im-core", features = ["identity-external-provider"] }
+im-core = { package = "awiki-im-core", path = "../im-core", default-features = false, features = ["sqlite", "http", "identity-external-provider"] }
 napi.workspace = true
 napi-derive.workspace = true
 rand.workspace = true

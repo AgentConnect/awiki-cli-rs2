@@ -1681,8 +1681,8 @@ fn group_create_bridge_preserves_explicit_handle_mode_without_fallback() {
 fn android_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-android.sh");
     assert!(
-        script.contains("--features blocking,sqlite,http,android,group-e2ee"),
-        "the Android shared library must contain the feature-gated group E2EE implementation"
+        script.contains("--features blocking,sqlite,http,android,group-e2ee,identity-native-anp"),
+        "the Android shared library must contain group E2EE and Direct ANP Identity"
     );
 }
 
@@ -1691,10 +1691,10 @@ fn ios_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-apple.sh");
     assert_eq!(
         script
-            .matches("blocking,sqlite,http,ios,group-e2ee")
+            .matches("blocking,sqlite,http,ios,group-e2ee,identity-native-anp")
             .count(),
         2,
-        "the iOS XCFramework build and manifest must contain the feature-gated group E2EE implementation"
+        "the iOS XCFramework build and manifest must contain group E2EE and Direct ANP Identity"
     );
 }
 
@@ -1702,8 +1702,8 @@ fn ios_sdk_build_includes_group_e2ee_support() {
 fn macos_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-apple.sh");
     assert!(
-        script.contains("--features blocking,sqlite,http,macos,group-e2ee"),
-        "the macOS XCFramework must contain the feature-gated group E2EE implementation"
+        script.contains("--features blocking,sqlite,http,macos,group-e2ee,identity-native-anp"),
+        "the macOS XCFramework must contain group E2EE and Direct ANP Identity"
     );
 }
 
@@ -1711,8 +1711,9 @@ fn macos_sdk_build_includes_group_e2ee_support() {
 fn windows_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-windows.ps1");
     assert!(
-        script.contains("$Features = 'blocking,sqlite,http,windows,group-e2ee'"),
-        "the Windows DLL must contain the feature-gated group E2EE implementation"
+        script
+            .contains("$Features = 'blocking,sqlite,http,windows,group-e2ee,identity-native-anp'"),
+        "the Windows DLL must contain group E2EE and Direct ANP Identity"
     );
 }
 
@@ -1720,7 +1721,7 @@ fn windows_sdk_build_includes_group_e2ee_support() {
 fn linux_sdk_build_includes_group_e2ee_support() {
     let script = include_str!("../../../scripts/flutter/build-linux.sh");
     assert!(
-        script.contains("--features blocking,sqlite,http,linux,group-e2ee"),
-        "the Linux shared library must contain the feature-gated group E2EE implementation"
+        script.contains("--features blocking,sqlite,http,linux,group-e2ee,identity-native-anp"),
+        "the Linux shared library must contain group E2EE and Direct ANP Identity"
     );
 }

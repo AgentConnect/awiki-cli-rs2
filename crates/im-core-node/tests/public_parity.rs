@@ -275,11 +275,12 @@ fn external_provider_bridge_is_async_binary_explicit_and_has_no_raw_secret_fallb
             .find("async fn recover")
             .expect("next provider method")
             + start];
-    assert!(method.contains("CapabilityUnavailable"));
-    assert!(!method.contains("call("));
+    assert!(method.contains("receive_sealed_shared_secret"));
+    assert!(method.contains("ECDH_SEALED_OPERATION"));
+    assert!(!method.contains("shared_secret.to_vec()"));
 
     let typescript = include_str!("../../../packages/awiki-im-core-node/src/provider-bridge.ts");
     assert!(typescript.contains("singleBuffer(request.buffers)"));
-    assert!(!typescript.contains("ecdhSealed"));
-    assert!(!typescript.contains("exportRootKeySealed"));
+    assert!(typescript.contains("case 'ecdhSealed'"));
+    assert!(typescript.contains("case 'exportRootKeySealed'"));
 }

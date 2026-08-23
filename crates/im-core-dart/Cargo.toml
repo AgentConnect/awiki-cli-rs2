@@ -11,7 +11,7 @@ name = "awiki_im_core"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-default = ["sqlite", "http"]
+default = ["sqlite", "http", "identity-native-anp"]
 blocking = ["im-core/blocking"]
 sqlite = ["im-core/sqlite"]
 http = ["im-core/http"]
@@ -24,6 +24,7 @@ attachments = ["im-core/attachments"]
 realtime = ["im-core/realtime"]
 secure-direct = ["im-core/secure-direct"]
 group-e2ee = ["im-core/group-e2ee"]
+identity-native-anp = ["im-core/identity-native-anp"]
 
 [dependencies]
 anyhow.workspace = true

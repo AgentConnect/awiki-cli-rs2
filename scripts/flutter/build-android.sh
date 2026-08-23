@@ -93,4 +93,4 @@ cargo ndk \
   -p im-core-dart \
   --release \
   --no-default-features \
-  --features blocking,sqlite,http,android,group-e2ee
+  --features blocking,sqlite,http,android,group-e2ee,identity-native-anp
