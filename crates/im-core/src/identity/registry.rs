@@ -2436,7 +2436,9 @@ fn provider_publication_evidence(
     let document_digest = crate::internal::identity_wire::document::document_hash(document)?;
     let document_digest = document_digest
         .strip_prefix("sha256:")
-        .ok_or(crate::ImError::PermissionDenied)?
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "canonical document digest omitted the sha256 prefix".to_owned(),
+        })?
         .to_owned();
     Ok(
         crate::internal::identity_provider::ProviderPublicationEvidence {
@@ -3323,6 +3325,20 @@ mod tests {
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn provider_publication_evidence_uses_an_unprefixed_sha256_digest() {
+        let evidence = provider_publication_evidence(
+            &json!({"id": "did:wba:example.test:provider-evidence"}),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(evidence.document_version, 1);
+        assert_eq!(evidence.registry_version, 1);
+        assert!(!evidence.document_digest.starts_with("sha256:"));
+        assert_eq!(evidence.document_digest.len(), 43);
+    }
 
     #[test]
     fn identity_registry_rejects_duplicate_live_did() {
