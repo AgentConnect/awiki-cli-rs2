@@ -278,7 +278,7 @@ pub(crate) fn ecdh_private_pem(
     Ok(shared)
 }
 
-fn map_crypto_error(error: impl std::fmt::Display) -> crate::ImError {
+pub(crate) fn map_crypto_error(error: impl std::fmt::Display) -> crate::ImError {
     crate::ImError::LocalStateUnavailable {
         detail: format!("identity signing operation failed: {error}"),
     }

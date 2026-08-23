@@ -1691,6 +1691,15 @@ async fn prepare_completion_params(
         )
         .await?;
 
+    if let Some(session) = client.runtime().identity_session.as_ref() {
+        session
+            .recover()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+    } else {
+        client.runtime().key_provider.reload_custody()?;
+    }
+
     let device_key_id = local_device_entry(core, client)?
         .device_state
         .and_then(|state| state.authorization)
@@ -1702,12 +1711,14 @@ async fn prepare_completion_params(
         "type": "awiki.device.root-key-import-complete.v1",
         "statement": signed_statement,
     });
-    let params = client.runtime().key_provider.sign_object_proof(
+    let params = sign_device_object_proof_async(
+        client,
         &device_key_id,
         &unsigned_params,
         &record.did,
         Some(record.imported_at.clone()),
-    )?;
+    )
+    .await?;
     let canonical = serde_json_canonicalizer::to_vec(&params).map_err(redacted_serialization)?;
     let request_hash = format!(
         "sha256:{}",
@@ -1744,6 +1755,40 @@ WHERE owner_identity_id = ?4 AND local_device_id = ?5 AND message_id = ?6
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok((params, request_hash))
+}
+
+async fn sign_device_object_proof_async(
+    client: &crate::core::ImClient,
+    kid: &str,
+    document: &Value,
+    issuer_did: &str,
+    created: Option<String>,
+) -> crate::ImResult<Value> {
+    let Some(session) = client.runtime().identity_session.as_ref() else {
+        return client
+            .runtime()
+            .key_provider
+            .sign_object_proof(kid, document, issuer_did, created);
+    };
+    let public_key = client.runtime().key_provider.public_key(kid)?;
+    let prepared =
+        anp::proof::prepare_object_proof(document, &public_key, kid, issuer_did, created)
+            .map_err(crate::internal::key_provider::map_crypto_error)?;
+    let signature = session
+        .sign(crate::internal::identity_provider::ProviderSignRequest {
+            purpose: crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+            key: crate::internal::identity_provider::ProviderKeySelector::Kid(kid.to_owned()),
+            payload: prepared.signing_input().to_vec(),
+        })
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if signature.kid != kid
+        || signature.algorithm != crate::internal::identity_provider::ProviderKeyAlgorithm::Ed25519
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::proof::complete_object_proof(prepared, &signature.bytes)
+        .map_err(crate::internal::key_provider::map_crypto_error)
 }
 
 fn load_completion_record(
