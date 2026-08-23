@@ -461,6 +461,7 @@ async fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secr
         &started.session.join_session_id,
         DeviceJoinSide::NewDevice,
     )
+    .await
     .unwrap();
 
     assert_eq!(
@@ -788,6 +789,7 @@ async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
             document_version: 7,
             document_hash,
         })
+        .await
         .unwrap();
     let verified = core
         .device_join()
@@ -869,6 +871,7 @@ async fn admin_rejects_legacy_join_before_preparing_document_mutation() {
             document_version: 7,
             document_hash: document_hash.clone(),
         })
+        .await
         .unwrap();
     admin
         .device_join()
@@ -963,6 +966,7 @@ async fn local_new_device_sas_is_restart_safe_and_read_only() {
             document_version: 7,
             document_hash,
         })
+        .await
         .unwrap();
     drop(candidate);
 
@@ -1217,6 +1221,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
             document_version: 7,
             document_hash: admin_hash.clone(),
         })
+        .await
         .unwrap();
     admin
         .device_join()

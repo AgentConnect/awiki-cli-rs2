@@ -729,7 +729,7 @@ pub(crate) fn prepare_admin_challenge(
     })
 }
 
-pub(crate) fn respond_as_new_device(
+pub(crate) async fn respond_as_new_device(
     core: &crate::core::ImCore,
     request: DeviceJoinNewDeviceRespondRequest,
 ) -> crate::ImResult<DeviceJoinNewDeviceRespondResult> {
@@ -742,32 +742,35 @@ pub(crate) fn respond_as_new_device(
         request.admin_did_document,
         Some(expected_checkpoint),
     )
+    .await
 }
 
-pub(crate) fn respond_as_new_device_to_resolved_document(
+pub(crate) async fn respond_as_new_device_to_resolved_document(
     core: &crate::core::ImCore,
     operation_id: String,
     challenge: DeviceJoinChallenge,
     admin_did_document: Value,
 ) -> crate::ImResult<DeviceJoinNewDeviceRespondResult> {
-    respond_as_new_device_inner(core, operation_id, challenge, admin_did_document, None)
+    respond_as_new_device_inner(core, operation_id, challenge, admin_did_document, None).await
 }
 
-fn respond_as_new_device_inner(
+async fn respond_as_new_device_inner(
     core: &crate::core::ImCore,
     operation_id: String,
     challenge: DeviceJoinChallenge,
     admin_did_document: Value,
     expected_checkpoint: Option<InternalCheckpoint>,
 ) -> crate::ImResult<DeviceJoinNewDeviceRespondResult> {
-    let _guard = lock_join_state(core)?;
     validate_operation_id(&operation_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored = store
-        .load(&challenge.join_session_id, DeviceJoinSide::NewDevice)?
-        .ok_or_else(|| crate::ImError::IdentityNotFound {
-            selector: challenge.join_session_id.clone(),
-        })?;
+    let mut stored = {
+        let _guard = lock_join_state(core)?;
+        store
+            .load(&challenge.join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: challenge.join_session_id.clone(),
+            })?
+    };
     ensure_not_expired(&stored)?;
     if !matches!(
         stored.phase,
@@ -815,7 +818,11 @@ fn respond_as_new_device_inner(
         "challenge.admin_pairing_public_key",
         &challenge.admin_pairing_public_key,
     )?;
-    let shared = crate::internal::identity_custody::ecdh_join_enrollment(
+    let peer: [u8; 32] = peer
+        .as_slice()
+        .try_into()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let shared = crate::internal::identity_custody::ecdh_join_custody_async(
         core,
         &crate::ids::Did::parse(&stored.join_request.did)?,
         custody,
@@ -823,8 +830,9 @@ fn respond_as_new_device_inner(
             &stored.join_request.e2ee_public_key,
             "join_request.e2ee_public_key",
         )?,
-        &peer,
-    )?;
+        peer,
+    )
+    .await?;
     let decrypted_challenge = decrypt_challenge(
         &shared,
         &stored.join_request,
@@ -878,8 +886,8 @@ fn respond_as_new_device_inner(
         &stored.join_request_hash,
         &pairing_transcript_hash,
     );
-    let response_signature_b64u =
-        URL_SAFE_NO_PAD.encode(crate::internal::identity_custody::sign_join_enrollment(
+    let response_signature_b64u = URL_SAFE_NO_PAD.encode(
+        crate::internal::identity_custody::sign_join_custody_async(
             core,
             &crate::ids::Did::parse(&stored.join_request.did)?,
             custody,
@@ -887,8 +895,10 @@ fn respond_as_new_device_inner(
                 &stored.join_request.signing_public_key,
                 "join_request.signing_public_key",
             )?,
-            &canonical_bytes(&response_params)?,
-        )?);
+            canonical_bytes(&response_params)?,
+        )
+        .await?,
+    );
     let response = DeviceJoinChallengeResponse {
         operation_id: operation_id.clone(),
         join_session_id: stored.join_request.join_session_id.clone(),
@@ -898,6 +908,18 @@ fn respond_as_new_device_inner(
         pairing_transcript_hash,
         response_signature_b64u,
     };
+    let _guard = lock_join_state(core)?;
+    let current = store
+        .load(
+            &stored.join_request.join_session_id,
+            DeviceJoinSide::NewDevice,
+        )?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: stored.join_request.join_session_id.clone(),
+        })?;
+    if current != stored {
+        return Err(idempotency_conflict("respond_as_new_device"));
+    }
     stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
     stored.transition_operation_id = Some(operation_id);
     stored.transition_input_hash = Some(input_hash);
@@ -2419,53 +2441,59 @@ fn ensure_existing_join_identity_is_rootless(
     Ok(())
 }
 
-pub(crate) fn cancel_join(
+pub(crate) async fn cancel_join(
     core: &crate::core::ImCore,
     join_session_id: &str,
     side: DeviceJoinSide,
 ) -> crate::ImResult<DeviceJoinSessionSummary> {
-    let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored =
-        store
-            .load(&join_session_id, side)?
-            .ok_or(crate::ImError::IdentityNotFound {
-                selector: join_session_id,
-            })?;
-    if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
-        return Err(invalid_state("authorized Join cannot be cancelled"));
-    }
-    if stored.phase != DeviceJoinLocalPhase::Cancelled {
-        stored.phase = DeviceJoinLocalPhase::Cancelled;
-        store.save(&stored)?;
-    }
-    cleanup_cancelled_join_secrets(core, &stored)?;
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored =
+            store
+                .load(&join_session_id, side)?
+                .ok_or(crate::ImError::IdentityNotFound {
+                    selector: join_session_id,
+                })?;
+        if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
+            return Err(invalid_state("authorized Join cannot be cancelled"));
+        }
+        if stored.phase != DeviceJoinLocalPhase::Cancelled {
+            stored.phase = DeviceJoinLocalPhase::Cancelled;
+            store.save(&stored)?;
+        }
+        stored
+    };
+    cleanup_cancelled_join_secrets(core, &stored).await?;
     summary(&stored)
 }
 
-pub(crate) fn mark_join_expired(
+pub(crate) async fn mark_join_expired(
     core: &crate::core::ImCore,
     join_session_id: &str,
     side: DeviceJoinSide,
 ) -> crate::ImResult<DeviceJoinSessionSummary> {
-    let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored =
-        store
-            .load(&join_session_id, side)?
-            .ok_or(crate::ImError::IdentityNotFound {
-                selector: join_session_id,
-            })?;
-    if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
-        return Err(invalid_state("authorized Join cannot expire"));
-    }
-    if stored.phase != DeviceJoinLocalPhase::Expired {
-        stored.phase = DeviceJoinLocalPhase::Expired;
-        store.save(&stored)?;
-    }
-    cleanup_cancelled_join_secrets(core, &stored)?;
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored =
+            store
+                .load(&join_session_id, side)?
+                .ok_or(crate::ImError::IdentityNotFound {
+                    selector: join_session_id,
+                })?;
+        if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
+            return Err(invalid_state("authorized Join cannot expire"));
+        }
+        if stored.phase != DeviceJoinLocalPhase::Expired {
+            stored.phase = DeviceJoinLocalPhase::Expired;
+            store.save(&stored)?;
+        }
+        stored
+    };
+    cleanup_cancelled_join_secrets(core, &stored).await?;
     summary(&stored)
 }
 
@@ -2802,7 +2830,7 @@ fn cleanup_consumed_join_secrets(
     delete_secret_refs(&*vault, refs)
 }
 
-fn cleanup_cancelled_join_secrets(
+async fn cleanup_cancelled_join_secrets(
     core: &crate::core::ImCore,
     stored: &StoredJoinSession,
 ) -> crate::ImResult<()> {
@@ -2811,11 +2839,12 @@ fn cleanup_cancelled_join_secrets(
             .join_custody
             .as_ref()
             .ok_or_else(|| invalid_state("new-device custody reference missing"))?;
-        crate::internal::identity_custody::discard_join_enrollment(
+        crate::internal::identity_custody::discard_join_enrollment_async(
             core,
             &crate::ids::Did::parse(&stored.join_request.did)?,
             custody,
-        )?;
+        )
+        .await?;
     }
     let vault = required_vault(core)?;
     let mut refs = vec![&stored.pairing_private_ref];

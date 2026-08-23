@@ -4,6 +4,8 @@ use std::sync::Arc;
 pub(crate) struct ProviderBackedDidAuth {
     provider: Arc<dyn super::IdentitySigner>,
     identity_session: Option<Arc<dyn crate::internal::identity_provider::IdentitySession>>,
+    enrollment_session:
+        Option<Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>>,
     auth_mode: anp::authentication::AuthMode,
     tokens: HashMap<String, String>,
 }
@@ -14,9 +16,11 @@ impl ProviderBackedDidAuth {
         auth_mode: anp::authentication::AuthMode,
     ) -> Self {
         let identity_session = provider.async_session();
+        let enrollment_session = provider.async_enrollment_session();
         Self {
             provider,
             identity_session,
+            enrollment_session,
             auth_mode,
             tokens: HashMap::new(),
         }
@@ -38,6 +42,18 @@ impl ProviderBackedDidAuth {
                     format!("Bearer {token}"),
                 )]));
             }
+        }
+        if let Some(session) = self.enrollment_session.as_ref() {
+            return prepare_enrollment_http_signature_async(
+                self.provider.as_ref(),
+                session,
+                server_url,
+                method,
+                headers,
+                body,
+                anp::authentication::HttpSignatureOptions::default(),
+            )
+            .await;
         }
         let Some(session) = self.identity_session.as_ref() else {
             return self.get_auth_header(server_url, force_new, method, headers, body);
@@ -242,15 +258,6 @@ impl ProviderBackedDidAuth {
         headers: Option<&BTreeMap<String, String>>,
         body: Option<&[u8]>,
     ) -> crate::ImResult<BTreeMap<String, String>> {
-        let Some(session) = self.identity_session.as_ref() else {
-            return self.get_challenge_auth_header(
-                server_url,
-                response_headers,
-                method,
-                headers,
-                body,
-            );
-        };
         let www_authenticate = get_header_case_insensitive(response_headers, "WWW-Authenticate");
         let accept_signature = get_header_case_insensitive(response_headers, "Accept-Signature");
         let challenge = www_authenticate
@@ -265,19 +272,44 @@ impl ProviderBackedDidAuth {
         );
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
-                prepare_http_signature_async(
-                    session,
-                    server_url,
-                    method,
-                    headers,
-                    body,
-                    crate::internal::identity_provider::ProviderHttpSigningOptions {
-                        nonce: challenge.get("nonce").cloned(),
-                        covered_components,
-                        ..Default::default()
-                    },
-                )
-                .await
+                if let Some(session) = self.enrollment_session.as_ref() {
+                    prepare_enrollment_http_signature_async(
+                        self.provider.as_ref(),
+                        session,
+                        server_url,
+                        method,
+                        headers,
+                        body,
+                        anp::authentication::HttpSignatureOptions {
+                            nonce: challenge.get("nonce").cloned(),
+                            covered_components,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                } else if let Some(session) = self.identity_session.as_ref() {
+                    prepare_http_signature_async(
+                        session,
+                        server_url,
+                        method,
+                        headers,
+                        body,
+                        crate::internal::identity_provider::ProviderHttpSigningOptions {
+                            nonce: challenge.get("nonce").cloned(),
+                            covered_components,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                } else {
+                    self.get_challenge_auth_header(
+                        server_url,
+                        response_headers,
+                        method,
+                        headers,
+                        body,
+                    )
+                }
             }
             anp::authentication::AuthMode::LegacyDidWba => {
                 let key_id = self.provider.request_signing_key_id()?;
@@ -330,6 +362,39 @@ async fn prepare_http_signature_async(
         .into_iter()
         .map(|header| (header.name, header.value))
         .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_enrollment_http_signature_async(
+    provider: &dyn super::IdentitySigner,
+    session: &Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+    server_url: &str,
+    method: &str,
+    headers: Option<&BTreeMap<String, String>>,
+    body: Option<&[u8]>,
+    mut options: anp::authentication::HttpSignatureOptions,
+) -> crate::ImResult<BTreeMap<String, String>> {
+    let kid = provider.request_signing_key_id()?;
+    options.keyid = Some(kid);
+    let document = provider.did_document()?;
+    let prepared = anp::authentication::prepare_http_signature_headers(
+        &document, server_url, method, headers, body, options,
+    )
+    .map_err(|_| crate::ImError::TransportUnavailable {
+        detail: "pending enrollment HTTP signature preparation failed".to_owned(),
+    })?;
+    let signature = session
+        .sign_device_assertion(prepared.signing_input().to_vec())
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)
+        .map_err(|_| crate::ImError::TransportUnavailable {
+            detail: "pending enrollment HTTP signature failed".to_owned(),
+        })?;
+    anp::authentication::complete_http_signature_headers(prepared, &signature).map_err(|_| {
+        crate::ImError::TransportUnavailable {
+            detail: "pending enrollment HTTP signature completion failed".to_owned(),
+        }
+    })
 }
 
 fn extract_origin(server_url: &str) -> String {

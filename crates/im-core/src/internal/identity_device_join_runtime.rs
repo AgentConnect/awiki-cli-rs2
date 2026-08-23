@@ -960,7 +960,8 @@ where
                     self.core,
                     join_session_id,
                     crate::identity::DeviceJoinSide::NewDevice,
-                )?;
+                )
+                .await?;
                 Ok(DeviceJoinAdvanceResult {
                     session,
                     remote_state: status.state,
@@ -973,7 +974,8 @@ where
                     self.core,
                     join_session_id,
                     crate::identity::DeviceJoinSide::NewDevice,
-                )?;
+                )
+                .await?;
                 Ok(DeviceJoinAdvanceResult {
                     session,
                     remote_state: status.state,
@@ -997,7 +999,8 @@ where
                         format!("join-response:{}", challenge.challenge_id),
                         challenge,
                         document,
-                    )?;
+                    )
+                    .await?;
                 let transition = self
                     .remote
                     .submit_response(DeviceJoinRemoteResponseRequest {
@@ -1117,6 +1120,7 @@ where
             join_session_id,
             crate::identity::DeviceJoinSide::NewDevice,
         )
+        .await
     }
 }
 
@@ -1654,7 +1658,9 @@ where
             self.core,
             join_session_id,
             crate::identity::DeviceJoinSide::Admin,
-        ) {
+        )
+        .await
+        {
             Ok(session) => session,
             Err(crate::ImError::IdentityNotFound { .. }) => {
                 fallback_session.ok_or_else(|| crate::ImError::IdentityNotFound {

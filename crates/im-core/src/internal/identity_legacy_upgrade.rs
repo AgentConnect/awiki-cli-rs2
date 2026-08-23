@@ -100,6 +100,7 @@ pub(crate) fn build_legacy_upgrade(
     Ok(generated)
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn build_custodied_legacy_upgrade(
     legacy_document: &Value,
     custody: crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
@@ -119,6 +120,48 @@ pub(crate) fn build_custodied_legacy_upgrade(
         return Err(crate::ImError::PermissionDenied);
     }
     let anp_identity::host::EnrollmentProposalKind::Device {
+        device_id,
+        signing_key,
+        agreement_key,
+        ..
+    } = &enrollment.kind
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    let mut identity = crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef {
+        custody,
+        did,
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(device_id)?,
+        signing_key_id: signing_key.kid.clone(),
+        signing_public_key_multibase: signing_key.public_key_multibase.clone(),
+        e2ee_key_id: agreement_key.kid.clone(),
+        e2ee_public_key_multibase: agreement_key.public_key_multibase.clone(),
+        target_document: Value::Null,
+        target_document_hash: String::new(),
+    };
+    rebuild_custodied_legacy_upgrade_target(&mut identity, legacy_document, signer)?;
+    Ok(identity)
+}
+
+pub(crate) fn build_provider_custodied_legacy_upgrade(
+    legacy_document: &Value,
+    custody: crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    enrollment: &crate::internal::identity_provider::ProviderEnrollmentProposal,
+    signer: &dyn crate::internal::key_provider::IdentitySigner,
+) -> crate::ImResult<crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef> {
+    let did = crate::ids::Did::parse(
+        legacy_document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )?;
+    if enrollment.identity.did != did.as_str()
+        || enrollment.identity.identity_id != custody.identity_id
+        || enrollment.enrollment_id != custody.enrollment_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device {
         device_id,
         signing_key,
         agreement_key,

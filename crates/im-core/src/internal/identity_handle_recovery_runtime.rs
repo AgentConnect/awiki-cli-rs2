@@ -88,9 +88,11 @@ pub(crate) async fn request_otp(
             RecoveryLocalContext {
                 owner_identity_id: entry.unique_id.clone(),
                 local_alias: entry.credential_name.clone(),
-                display_name: (!entry.name.trim().is_empty())
-                    .then(|| entry.name.clone())
-                    .unwrap_or_else(|| canonical.local_part.clone()),
+                display_name: if entry.name.trim().is_empty() {
+                    canonical.local_part.clone()
+                } else {
+                    entry.name.clone()
+                },
                 make_default: entry.is_default,
                 local_previous_did: entry.did.clone(),
                 fresh_local_state: false,
@@ -147,11 +149,13 @@ pub(crate) async fn request_otp(
                     identity: None,
                 }
             } else {
-            let identity = crate::internal::identity_custody::provision_handle_recovery_identity(
-                core,
-                &canonical.domain,
-                &canonical.local_part,
-            )?;
+            let identity =
+                crate::internal::identity_custody::provision_handle_recovery_identity_async(
+                    core,
+                    &canonical.domain,
+                    &canonical.local_part,
+                )
+                .await?;
             let unique_id = identity.unique_id()?;
             RecoveryLocalContext {
                 owner_identity_id: unique_id.clone(),
@@ -187,11 +191,14 @@ pub(crate) async fn request_otp(
         let operation_id = random_reference("recover_v4")?;
         let identity = match context.identity.clone() {
             Some(identity) => identity,
-            None => crate::internal::identity_custody::provision_handle_recovery_identity(
-                core,
-                &canonical.domain,
-                &canonical.local_part,
-            )?,
+            None => {
+                crate::internal::identity_custody::provision_handle_recovery_identity_async(
+                    core,
+                    &canonical.domain,
+                    &canonical.local_part,
+                )
+                .await?
+            }
         };
         let pending = PendingHandleRecoveryV4::new_pre_otp(
             operation_id.clone(),
@@ -436,7 +443,7 @@ pub(crate) async fn list_operations(
     .collect()
 }
 
-pub(crate) fn discard_pre_attempt(
+pub(crate) async fn discard_pre_attempt(
     core: &crate::core::ImCore,
     request: HandleRecoveryDiscardRequest,
 ) -> crate::ImResult<HandleRecoveryOperationSummary> {
@@ -456,10 +463,11 @@ pub(crate) fn discard_pre_attempt(
             == crate::internal::identity_handle_recovery_operation::RecoveryKeyState::DestroyedPreAttempt
     {
         if let Some((_, pending)) = store.load_v4(&request.operation_id)? {
-            crate::internal::identity_custody::discard_unpublished_handle_recovery(
+            crate::internal::identity_custody::discard_unpublished_handle_recovery_async(
                 core,
                 &pending.identity,
-            )?;
+            )
+            .await?;
         }
         store.delete_v4_pre_attempt(&request.operation_id)?;
         return operation_summary(index);
@@ -486,10 +494,11 @@ pub(crate) fn discard_pre_attempt(
         &request.operation_id,
         &now_second_z()?,
     )?;
-    crate::internal::identity_custody::discard_unpublished_handle_recovery(
+    crate::internal::identity_custody::discard_unpublished_handle_recovery_async(
         core,
         &pending.identity,
-    )?;
+    )
+    .await?;
     store.delete_v4_pre_attempt(&request.operation_id)?;
     operation_summary(
         crate::internal::identity_handle_recovery_operation::load(
@@ -500,7 +509,7 @@ pub(crate) fn discard_pre_attempt(
     )
 }
 
-pub(crate) fn quarantine_key_unavailable(
+pub(crate) async fn quarantine_key_unavailable(
     core: &crate::core::ImCore,
     request: HandleRecoveryQuarantineRequest,
 ) -> crate::ImResult<HandleRecoveryOperationSummary> {
@@ -526,10 +535,12 @@ pub(crate) fn quarantine_key_unavailable(
     {
         if let Ok(store) = PendingHandleRecoveryStore::from_core(core) {
             if let Ok(Some((_, pending))) = store.load_v4(&request.operation_id) {
-                match crate::internal::identity_custody::handle_recovery_identity(
+                match crate::internal::identity_custody::handle_recovery_identity_async(
                     core,
                     &pending.identity,
-                ) {
+                )
+                .await
+                {
                     Ok(_) => {
                         return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
                     }
@@ -3017,8 +3028,8 @@ mod tests {
         store.save_v4_cas(pending, revision).unwrap();
     }
 
-    #[test]
-    fn discard_claims_sqlite_before_idempotent_vault_cleanup() {
+    #[tokio::test]
+    async fn discard_claims_sqlite_before_idempotent_vault_cleanup() {
         let root = tempfile::tempdir().unwrap();
         let core = recovery_test_core(root.path(), "https://example.invalid", [92_u8; 32]);
         let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
@@ -3040,6 +3051,7 @@ mod tests {
                 operation_id: operation_id.to_owned(),
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             recovered.lifecycle_class,
@@ -3061,6 +3073,7 @@ mod tests {
                 operation_id: attempted_id.to_owned(),
             },
         )
+        .await
         .unwrap_err();
         assert!(matches!(
             error,
@@ -4036,8 +4049,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn quarantine_requires_genuine_key_unavailability_and_preserves_attempt_audit() {
+    #[tokio::test]
+    async fn quarantine_requires_genuine_key_unavailability_and_preserves_attempt_audit() {
         let root = tempfile::tempdir().unwrap();
         let core = recovery_test_core(root.path(), "https://example.invalid", [82_u8; 32]);
         let readable_id = "recover-v4-readable-001";
@@ -4049,6 +4062,7 @@ mod tests {
                 user_presence_confirmed: true,
             },
         )
+        .await
         .unwrap_err();
         assert!(matches!(
             readable_error,
@@ -4072,6 +4086,7 @@ mod tests {
                 user_presence_confirmed: true,
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             missing.lifecycle_class,
@@ -4103,6 +4118,7 @@ mod tests {
                 user_presence_confirmed: true,
             },
         )
+        .await
         .unwrap();
         assert!(attempted.commit_attempted);
         assert_eq!(

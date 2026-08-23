@@ -1639,6 +1639,7 @@ impl NativeImCoreNodeClient {
             .discard_handle_recovery_pre_attempt(im_core::identity::HandleRecoveryDiscardRequest {
                 operation_id: input.operation_id,
             })
+            .await
             .map_err(SafeError::from_im)?;
         environment.state.harden_permissions()?;
         Ok(crate::dto::recovery_operation_summary(value))

@@ -536,6 +536,7 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
             document_version: 7,
             document_hash: current_document_hash.clone(),
         })
+        .await
         .unwrap();
     admin
         .device_join()
@@ -833,6 +834,7 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
             document_version: 7,
             document_hash,
         })
+        .await
         .unwrap();
     assert_eq!(
         core.device_join()

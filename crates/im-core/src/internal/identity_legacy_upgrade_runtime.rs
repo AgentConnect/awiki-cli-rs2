@@ -128,13 +128,16 @@ async fn upgrade_inner(
         Some((secret_ref, pending)) => (secret_ref, pending, true),
         None => {
             let did = crate::ids::Did::parse(&entry.did)?;
-            let (custody, enrollment) = crate::internal::identity_custody::prepare_join_enrollment(
-                core,
-                &did,
-                &legacy_document,
-            )?;
+            let (custody, enrollment, _session) =
+                crate::internal::identity_custody::prepare_join_enrollment_async(
+                    core,
+                    &did,
+                    &legacy_document,
+                    None,
+                )
+                .await?;
             let identity =
-                crate::internal::identity_legacy_upgrade::build_custodied_legacy_upgrade(
+                crate::internal::identity_legacy_upgrade::build_provider_custodied_legacy_upgrade(
                     &legacy_document,
                     custody,
                     &enrollment,
@@ -207,21 +210,37 @@ async fn upgrade_inner(
             if pending.identity.custody.enrollment_id
                 == crate::internal::identity_custody::LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID
             {
-                let managed =
-                    crate::internal::identity_custody::imported_active_join_managed_identity(
+                let custody =
+                    crate::internal::identity_custody::controller_custody_provider(core).await?;
+                let session = custody
+                    .open_identity(&crate::internal::identity_provider::ProviderIdentityRef {
+                        store_id: pending.identity.custody.store_id.clone(),
+                        identity_id: pending.identity.custody.identity_id.clone(),
+                        did: pending.identity.did.as_str().to_owned(),
+                    })
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
+                let public = session
+                    .public_identity()
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
+                Arc::new(
+                    crate::internal::key_provider::ProviderIdentitySigner::new_ephemeral(
+                        public, session,
+                    )?,
+                )
+            } else {
+                let (_custody, proposal, session) =
+                    crate::internal::identity_custody::prepare_join_enrollment_async(
                         core,
                         &pending.identity.did,
-                        &pending.identity.custody,
-                    )?;
-                Arc::new(crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(managed))
-            } else {
-                let session = crate::internal::identity_custody::pending_join_enrollment_session(
-                    core,
-                    &pending.identity.did,
-                    &pending.identity.custody,
-                )?;
+                        &legacy_document,
+                        Some(&pending.identity.custody),
+                    )
+                    .await?;
                 Arc::new(
-                    crate::internal::key_provider::PendingAnpEnrollmentSigner::new(
+                    crate::internal::key_provider::ProviderEnrollmentIdentitySigner::new(
+                        &proposal,
                         session,
                         pending.identity.target_document.clone(),
                         pending.identity.signing_key_id.clone(),
@@ -279,13 +298,14 @@ async fn upgrade_inner(
             })
             .ok_or(crate::ImError::PermissionDenied)?;
         let _ = device;
-        crate::internal::identity_custody::adopt_join_identity(
+        crate::internal::identity_custody::adopt_join_identity_async(
             core,
             &pending.identity.did,
             &pending.identity.custody,
             &pending.identity.target_document,
             &registry.checkpoint,
-        )?;
+        )
+        .await?;
         pending.phase =
             crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradePhase::RemoteCommitted;
         pending.checkpoint = Some(registry.checkpoint);
@@ -317,14 +337,15 @@ async fn upgrade_inner(
     let root_der = zeroize::Zeroizing::new(
         crate::internal::identity_root_transfer_runtime::canonical_ed25519_pkcs8_der(&root_pem)?,
     );
-    crate::internal::identity_custody::promote_legacy_upgrade_root(
+    crate::internal::identity_custody::promote_legacy_upgrade_root_async(
         core,
         &pending.identity,
         &checkpoint,
         &format!("legacy-upgrade:{}", pending.local_alias),
         &root_imported_at,
         root_der,
-    )?;
+    )
+    .await?;
     let projection_storage =
         crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
             core,

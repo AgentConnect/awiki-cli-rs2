@@ -17,6 +17,14 @@ pub(crate) struct ProviderIdentitySigner {
     auth: ProviderIdentityAuth,
 }
 
+pub(crate) struct ProviderEnrollmentIdentitySigner {
+    document: serde_json::Value,
+    signing_key_id: String,
+    agreement_key_id: String,
+    session: Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+    auth: RwLock<crate::internal::auth::state::AuthStateSnapshot>,
+}
+
 enum ProviderIdentityAuth {
     Ephemeral(RwLock<crate::internal::auth::state::AuthStateSnapshot>),
     File(PathBuf),
@@ -59,6 +67,41 @@ impl ProviderIdentitySigner {
             .find(|key| key.purposes.contains(&purpose))
             .map(|key| key.kid.clone())
             .ok_or(crate::ImError::PermissionDenied)
+    }
+}
+
+impl ProviderEnrollmentIdentitySigner {
+    pub(crate) fn new(
+        proposal: &crate::internal::identity_provider::ProviderEnrollmentProposal,
+        session: Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+        document: serde_json::Value,
+        signing_key_id: String,
+        agreement_key_id: String,
+    ) -> crate::ImResult<Self> {
+        let crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device {
+            signing_key,
+            agreement_key,
+            ..
+        } = &proposal.kind
+        else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        if signing_key.kid != signing_key_id
+            || agreement_key.kid != agreement_key_id
+            || document.get("id").and_then(serde_json::Value::as_str)
+                != Some(proposal.identity.did.as_str())
+            || !anp::authentication::is_authentication_authorized(&document, &signing_key_id)
+            || !anp::authentication::is_assertion_method_authorized(&document, &signing_key_id)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(Self {
+            document,
+            signing_key_id,
+            agreement_key_id,
+            session,
+            auth: RwLock::new(Default::default()),
+        })
     }
 }
 
@@ -146,5 +189,73 @@ impl super::IdentitySigner for ProviderIdentitySigner {
         // Recovery is asynchronous for an External Provider. Callers must use
         // the provider session rather than blocking a runtime worker here.
         Err(crate::ImError::PermissionDenied)
+    }
+}
+
+impl super::IdentitySigner for ProviderEnrollmentIdentitySigner {
+    fn async_enrollment_session(
+        &self,
+    ) -> Option<Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>> {
+        Some(self.session.clone())
+    }
+
+    fn did_document(&self) -> crate::ImResult<serde_json::Value> {
+        Ok(self.document.clone())
+    }
+
+    fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>> {
+        Ok(Some(self.document.clone()))
+    }
+
+    fn request_signing_key_id(&self) -> crate::ImResult<String> {
+        Ok(self.signing_key_id.clone())
+    }
+
+    fn agreement_key_id(&self) -> crate::ImResult<String> {
+        Ok(self.agreement_key_id.clone())
+    }
+
+    fn sign(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
+    fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
+    fn ecdh(
+        &self,
+        _kid: &str,
+        _peer_public: &[u8],
+    ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
+    fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+        self.auth.read().map(|state| state.clone()).map_err(|_| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "provider enrollment auth state lock poisoned".to_owned(),
+            }
+        })
+    }
+
+    fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+        let state = self.auth_state()?;
+        Ok(state
+            .has_valid_token
+            .then_some(state.bearer_token)
+            .flatten())
+    }
+
+    fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
+        let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
+        let snapshot = crate::internal::auth::state::parse_auth_state(&raw)?;
+        *self
+            .auth
+            .write()
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "provider enrollment auth state lock poisoned".to_owned(),
+            })? = snapshot;
+        Ok(())
     }
 }

@@ -8,18 +8,25 @@ mod provider;
 pub(crate) mod vault;
 
 #[cfg(feature = "identity-native-anp")]
-pub(crate) use self::anp_identity::{AnpIdentitySigner, PendingAnpEnrollmentSigner};
+pub(crate) use self::anp_identity::AnpIdentitySigner;
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedIdentitySigner;
 pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};
 #[cfg(feature = "provider-traits")]
-pub(crate) use self::provider::ProviderIdentitySigner;
+pub(crate) use self::provider::{ProviderEnrollmentIdentitySigner, ProviderIdentitySigner};
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
 pub(crate) trait IdentitySigner: Send + Sync {
     fn async_session(
         &self,
     ) -> Option<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+        None
+    }
+
+    fn async_enrollment_session(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>>
+    {
         None
     }
 

@@ -360,7 +360,7 @@ impl<'a> IdentityRegistry<'a> {
     ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
         #[cfg(feature = "identity-native-anp")]
         {
-            return crate::internal::identity_custody_migration::migrate(self.core);
+            crate::internal::identity_custody_migration::migrate(self.core)
         }
         #[cfg(not(feature = "identity-native-anp"))]
         Err(crate::ImError::IdentityNotReady {

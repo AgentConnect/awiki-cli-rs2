@@ -65,7 +65,7 @@ pub(crate) fn inspect(
 ) -> crate::ImResult<IdentityCustodyMigrationReport> {
     #[cfg(feature = "identity-native-anp")]
     {
-        return sync_run(core, true, None);
+        sync_run(core, true, None)
     }
     #[cfg(not(feature = "identity-native-anp"))]
     {

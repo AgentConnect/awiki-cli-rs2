@@ -14,11 +14,13 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 #[cfg(feature = "group-e2ee")]
 use sha2::{Digest as _, Sha256};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "identity-native-anp")]
+use std::time::Instant;
 
-use crate::internal::transport::{
-    AsyncRestTransport, AsyncRpcTransport, RestTransport, RpcTransport,
-};
+use crate::internal::transport::{AsyncRestTransport, AsyncRpcTransport};
+#[cfg(feature = "identity-native-anp")]
+use crate::internal::transport::{RestTransport, RpcTransport};
 
 const DEFAULT_EMAIL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_EMAIL_POLL_INTERVAL: Duration = Duration::from_secs(5);

@@ -144,7 +144,7 @@ struct LegacyRegistrationPending {
 
 async fn converge_registration(
     core: &crate::core::ImCore,
-    vault: &dyn crate::internal::secret_vault::SecretVault,
+    vault: &(dyn crate::internal::secret_vault::SecretVault + Send + Sync),
     reference: &SecretRef,
     raw: &[u8],
     dry_run: bool,
@@ -303,7 +303,7 @@ struct LegacyRecoveryProbe {
 
 async fn converge_handle_recovery(
     core: &crate::core::ImCore,
-    vault: &dyn crate::internal::secret_vault::SecretVault,
+    vault: &(dyn crate::internal::secret_vault::SecretVault + Send + Sync),
     reference: &SecretRef,
     raw: &[u8],
     dry_run: bool,

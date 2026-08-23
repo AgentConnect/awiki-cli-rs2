@@ -250,13 +250,13 @@ pub(crate) async fn provision_registration_identity_async(
         let core = core.clone();
         let domain = domain.to_owned();
         let local_part = local_part.to_owned();
-        return crate::internal::runtime::worker::run_blocking(move || {
+        crate::internal::runtime::worker::run_blocking(move || {
             provision_registration_identity(&core, &domain, &local_part)
         })
         .await
         .map_err(|error| crate::ImError::Internal {
             message: error.to_string(),
-        })?;
+        })?
     }
 
     #[cfg(not(feature = "identity-native-anp"))]
@@ -984,6 +984,106 @@ pub(crate) async fn sign_join_enrollment_async(
         .map_err(crate::internal::identity_provider::map_provider_error)
 }
 
+pub(crate) async fn sign_join_custody_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    kid: &str,
+    message: Vec<u8>,
+) -> crate::ImResult<Vec<u8>> {
+    use crate::internal::identity_provider::{
+        map_provider_error, ProviderIdentityRef, ProviderKeySelector, ProviderSignRequest,
+        ProviderSigningPurpose,
+    };
+
+    let provider = controller_custody_provider(core).await?;
+    let reference = ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        return provider
+            .open_identity(&reference)
+            .await
+            .map_err(map_provider_error)?
+            .sign(ProviderSignRequest {
+                purpose: ProviderSigningPurpose::DeviceAssertion,
+                key: ProviderKeySelector::Kid(kid.to_owned()),
+                payload: message,
+            })
+            .await
+            .map(|signature| signature.bytes)
+            .map_err(map_provider_error);
+    }
+    let session = provider
+        .resume_enrollment(&reference)
+        .await
+        .map_err(map_provider_error)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let proposal = session.proposal().await.map_err(map_provider_error)?;
+    if proposal.identity != reference || proposal.enrollment_id != custody.enrollment_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    sign_join_enrollment_async(&session, &proposal, kid, message).await
+}
+
+pub(crate) async fn ecdh_join_custody_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    kid: &str,
+    peer_public: [u8; 32],
+) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+    use crate::internal::identity_provider::{
+        map_provider_error, ProviderIdentityRef, ProviderKeyAgreementRequest, ProviderKeySelector,
+    };
+
+    let provider = controller_custody_provider(core).await?;
+    let reference = ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    let shared = if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        provider
+            .open_identity(&reference)
+            .await
+            .map_err(map_provider_error)?
+            .derive_shared_secret(ProviderKeyAgreementRequest {
+                key: ProviderKeySelector::Kid(kid.to_owned()),
+                peer_public,
+            })
+            .await
+            .map_err(map_provider_error)?
+    } else {
+        let session = provider
+            .resume_enrollment(&reference)
+            .await
+            .map_err(map_provider_error)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let proposal = session.proposal().await.map_err(map_provider_error)?;
+        if proposal.identity != reference || proposal.enrollment_id != custody.enrollment_id {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device {
+            agreement_key,
+            ..
+        } = &proposal.kind
+        else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        if agreement_key.kid != kid {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        session
+            .derive_device_shared_secret(peer_public)
+            .await
+            .map_err(map_provider_error)?
+    };
+    Ok(zeroize::Zeroizing::new(*shared.as_bytes()))
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn ecdh_join_enrollment(
     core: &crate::core::ImCore,
@@ -1420,6 +1520,41 @@ pub(crate) fn discard_join_enrollment(
     }
 }
 
+pub(crate) async fn discard_join_enrollment_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    custody: &crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_provider::{map_provider_error, ProviderIdentityRef};
+
+    if custody.enrollment_id == LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID {
+        return Ok(());
+    }
+    let provider = controller_custody_provider(core).await?;
+    let reference = ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: did.as_str().to_owned(),
+    };
+    match provider.resume_enrollment(&reference).await {
+        Ok(Some(session)) => {
+            let proposal = session.proposal().await.map_err(map_provider_error)?;
+            if proposal.identity != reference || proposal.enrollment_id != custody.enrollment_id {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            session.cancel().await.map_err(map_provider_error)
+        }
+        Ok(None) => Ok(()),
+        Err(error)
+            if error.code
+                == crate::internal::identity_provider::IdentityProviderErrorCode::IdentityNotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(map_provider_error(error)),
+    }
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn promote_legacy_upgrade_root(
     core: &crate::core::ImCore,
@@ -1482,6 +1617,78 @@ pub(crate) fn promote_legacy_upgrade_root(
         .map_err(map_facade_error)?
         .root_capability
         != anp_identity::host::HostRootCapability::Active
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+pub(crate) async fn promote_legacy_upgrade_root_async(
+    core: &crate::core::ImCore,
+    identity: &crate::internal::identity_legacy_upgrade_pending::LegacyUpgradeIdentityRef,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    transfer_id: &str,
+    accepted_at: &str,
+    root_key: zeroize::Zeroizing<Vec<u8>>,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_provider::{
+        map_provider_error, ProviderDocumentCheckpoint, ProviderIdentityRef,
+        ProviderLegacyRootImportEvidence, ProviderLegacyRootImportRequest,
+        ProviderPrivateKeyEncoding, ProviderRootCapability, ProviderVerifiedRemoteDocument,
+    };
+    let provider = controller_custody_provider(core).await?;
+    let reference = ProviderIdentityRef {
+        store_id: identity.custody.store_id.clone(),
+        identity_id: identity.custody.identity_id.clone(),
+        did: identity.did.as_str().to_owned(),
+    };
+    provider
+        .import_legacy_root(ProviderLegacyRootImportRequest {
+            identity: reference.clone(),
+            evidence: ProviderLegacyRootImportEvidence {
+                transfer_id: transfer_id.to_owned(),
+                source_did: identity.did.as_str().to_owned(),
+                target_did: identity.did.as_str().to_owned(),
+                sender_device_id: "legacy-upgrade".to_owned(),
+                recipient_device_id: identity.protocol_device_id.as_str().to_owned(),
+                recipient_agreement_kid: identity.e2ee_key_id.clone(),
+                root_kid: format!("{}#key-1", identity.did.as_str()),
+                checkpoint: ProviderDocumentCheckpoint {
+                    document_version: checkpoint.document_version,
+                    registry_version: checkpoint.registry_version,
+                    document_digest: checkpoint.document_hash.clone(),
+                },
+                accepted_at: accepted_at.to_owned(),
+            },
+            encoding: ProviderPrivateKeyEncoding::Pkcs8Der,
+            root_key,
+        })
+        .await
+        .map_err(map_provider_error)?;
+    provider
+        .confirm_root_promotion(
+            &reference,
+            ProviderVerifiedRemoteDocument {
+                document: identity.target_document.clone(),
+                evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
+                    document_version: checkpoint.document_version,
+                    registry_version: checkpoint.registry_version,
+                    document_digest: checkpoint.document_hash.clone(),
+                },
+            },
+        )
+        .await
+        .map_err(map_provider_error)?;
+    let session = provider
+        .open_identity(&reference)
+        .await
+        .map_err(map_provider_error)?;
+    if session
+        .host_status()
+        .await
+        .map_err(map_provider_error)?
+        .root_capability
+        != ProviderRootCapability::Active
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -2375,13 +2582,13 @@ async fn run_native_registration_reconcile(
     {
         let core = core.clone();
         let identity = identity.clone();
-        return crate::internal::runtime::worker::run_blocking(move || {
+        crate::internal::runtime::worker::run_blocking(move || {
             reconcile_registration_publication(&core, &identity, remote_committed)
         })
         .await
         .map_err(|error| crate::ImError::Internal {
             message: error.to_string(),
-        })?;
+        })?
     }
     #[cfg(not(feature = "identity-native-anp"))]
     {
@@ -2401,13 +2608,13 @@ async fn run_native_registration_refresh(
     {
         let core = core.clone();
         let identity = identity.clone();
-        return crate::internal::runtime::worker::run_blocking(move || {
+        crate::internal::runtime::worker::run_blocking(move || {
             refresh_registration_document(&core, &identity)
         })
         .await
         .map_err(|error| crate::ImError::Internal {
             message: error.to_string(),
-        })?;
+        })?
     }
     #[cfg(not(feature = "identity-native-anp"))]
     {
