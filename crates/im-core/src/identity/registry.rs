@@ -2433,11 +2433,16 @@ fn provider_publication_evidence(
     let (document_version, registry_version) = checkpoint
         .map(|checkpoint| (checkpoint.document_version, checkpoint.registry_version))
         .unwrap_or((1, 1));
+    let document_digest = crate::internal::identity_wire::document::document_hash(document)?;
+    let document_digest = document_digest
+        .strip_prefix("sha256:")
+        .ok_or(crate::ImError::PermissionDenied)?
+        .to_owned();
     Ok(
         crate::internal::identity_provider::ProviderPublicationEvidence {
             document_version,
             registry_version,
-            document_digest: crate::internal::identity_wire::document::document_hash(document)?,
+            document_digest,
         },
     )
 }
