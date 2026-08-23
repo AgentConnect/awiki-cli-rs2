@@ -9,6 +9,22 @@ importers:
   .: {}
 
   packages/awiki-im-core-node:
+    optionalDependencies:
+      '@awiki/im-core-node-darwin-arm64':
+        specifier: workspace:0.2.0
+        version: link:../awiki-im-core-node-platforms/darwin-arm64
+      '@awiki/im-core-node-darwin-x64':
+        specifier: workspace:0.2.0
+        version: link:../awiki-im-core-node-platforms/darwin-x64
+      '@awiki/im-core-node-linux-arm64-gnu':
+        specifier: workspace:0.2.0
+        version: link:../awiki-im-core-node-platforms/linux-arm64-gnu
+      '@awiki/im-core-node-linux-x64-gnu':
+        specifier: workspace:0.2.0
+        version: link:../awiki-im-core-node-platforms/linux-x64-gnu
+      '@awiki/im-core-node-win32-x64-msvc':
+        specifier: workspace:0.2.0
+        version: link:../awiki-im-core-node-platforms/win32-x64-msvc
     devDependencies:
       '@types/node':
         specifier: ^22.18.0
@@ -16,22 +32,6 @@ importers:
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
-    optionalDependencies:
-      '@awiki/im-core-node-darwin-arm64':
-        specifier: workspace:0.1.6
-        version: link:../awiki-im-core-node-platforms/darwin-arm64
-      '@awiki/im-core-node-darwin-x64':
-        specifier: workspace:0.1.6
-        version: link:../awiki-im-core-node-platforms/darwin-x64
-      '@awiki/im-core-node-linux-arm64-gnu':
-        specifier: workspace:0.1.6
-        version: link:../awiki-im-core-node-platforms/linux-arm64-gnu
-      '@awiki/im-core-node-linux-x64-gnu':
-        specifier: workspace:0.1.6
-        version: link:../awiki-im-core-node-platforms/linux-x64-gnu
-      '@awiki/im-core-node-win32-x64-msvc':
-        specifier: workspace:0.1.6
-        version: link:../awiki-im-core-node-platforms/win32-x64-msvc
 
   packages/awiki-im-core-node-platforms/darwin-arm64: {}
 

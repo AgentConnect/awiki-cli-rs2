@@ -123,11 +123,11 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.2.0` 源码 candidate 的 Native contract version 为 `9`，增加 Host-only External
+- 当前 `0.2.0` 源码 candidate 的 Native contract version 为 `10`，增加 Host-only External
   Identity Provider Promise bridge；同时保留 prepared registration
   Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send。registry `0.1.5` 是
   v5，包含 external HTTP auth、local timeline、群管理展示、realtime 与 mail facade；`0.1.6`
-  是上一版 v8 candidate。`0.2.0` 必须同步发布 v9 wrapper 与全部平台 addon，wrapper 拒绝其他
+  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.0` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他
   版本的 addon。
 
 ## 邮件

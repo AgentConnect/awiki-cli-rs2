@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "base64",
  "bs58",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anp",
  "async-trait",
