@@ -1,4 +1,4 @@
-# DSH 新设备 Join 的 Node SDK 增量合同
+# DSH 多设备 Join 与管理的 Node SDK 增量合同
 
 状态：planned，尚未进入当前公开 Node API（2026-08-23 根据独立代码复核修订）
 
@@ -9,12 +9,12 @@
 
 ## 1. 范围
 
-本文只定义 `@awiki/im-core-node` 为 DSH **新设备侧**补齐的最小能力。Core 继续拥有 OTP grant、
-prepared-registration continuation、Join 密码状态、SAS 派生、Vault 和身份激活；Node 只提供
-Promise-based typed facade。
+本文定义 `@awiki/im-core-node` 为 DSH 新设备侧和 ready-admin 管理侧补齐的最小能力。Core 继续
+拥有 OTP grant、Join 密码状态、SAS、Registry、approval handle、revoke、Vault 和身份激活；
+Node 只提供 Promise-based typed facade。
 
-管理设备的 notification inbox、verify、approve、Registry 和 revoke 已由 AWiki Me/CLI 承担，
-不为 DSH 第一阶段扩展 Node API。服务端协议、数据库和 ANP wire 均不修改。
+管理设备能力一对一映射现有 Core public facade，不在 Node 重写 notification、proof、SAS、
+Registry 或 revoke。服务端协议、数据库和 ANP wire 均不修改。
 
 ## 2. 复用的现有接口
 
@@ -148,6 +148,48 @@ terminal summary：
 - transport outcome 不确定时返回 closed retryable error，Core session 保留，不得假装取消成功；
 - 不增加 admin-side cancel、role selector、raw RPC 或内部 state 读取。
 
+### 3.5 Ready-admin 管理 facade
+
+新增默认身份的薄映射：
+
+```ts
+getCurrentDeviceSummary(): Promise<CurrentDeviceSummary>
+getDeviceRegistry(): Promise<DeviceRegistrySnapshot>
+listLocalDeviceJoinRequests(): Promise<readonly DeviceJoinRequestNotice[]>
+startDeviceJoinVerification(input: { joinSessionId: string }): Promise<AdminDeviceJoinProgress>
+getLocalDeviceJoinVerificationProgress(input: { joinSessionId: string }): Promise<AdminDeviceJoinProgress>
+prepareDeviceJoinApproval(input: {
+  joinSessionId: string
+  sasConfirmed: boolean
+}): Promise<DeviceJoinApprovalPrompt>
+confirmDeviceJoinApproval(input: {
+  approvalHandle: string
+  userPresenceConfirmed: boolean
+}): Promise<AdminDeviceJoinProgress>
+rejectDeviceJoin(input: {
+  joinSessionId: string
+  reason: 'user_rejected' | 'sas_mismatch'
+}): Promise<AdminDeviceJoinProgress>
+revokeDevice(input: {
+  targetDeviceId: string
+  userPresenceConfirmed: boolean
+}): Promise<DeviceRevokeResult>
+```
+
+约束：
+
+- current summary 直接映射 Core identity device summary；只有 active admin-ready 才能执行 mutation；
+- Registry/request/progress DTO 只保留 Core public 字段，不含 Document/Registry hash、auth generation、
+  proof、token、raw notification 或私钥；
+- local request list 不做网络 I/O；Host 先用既有 `syncNow()` 提交 system notification；
+- `start` 是唯一 claim/challenge mutation，读取请求或 Registry 不 claim；
+- SAS 只来自 local verification progress/prepare result，Debug/inspect 一律脱敏；
+- approval handle single-use、process-local，只能交给可信 Host，禁止持久化或转发 Browser；
+- approve 固定 member，不增加 role selector；
+- reject/revoke 复用 Core public facade，不在 Node 猜测 terminal outcome；
+- revoke open option `multiDeviceDeviceRevokeEnabled` 默认 false，DSH 必须显式开启；开关不替代
+  ready-admin、self/last-admin、CAS 和 user-presence 检查。
+
 ## 4. N-API 与版本
 
 该变更修改 native input、native output 并增加 native method，必须：
@@ -166,6 +208,7 @@ terminal summary：
 - `NodePreparedRegistrationJoinInput` 增加 `user_presence_confirmed: bool`；
 - `NodePreparedRegistrationJoinProgress` 增加 `expires_at` 与 `sas`；
 - 增加只读 local-session DTO/list；
+- 增加 current summary、Registry、local request/progress、split approval/reject 和 revoke DTO/method；
 - `prepared_registration_join_progress()` 从 `AuthorizedJoinActivationProgress.join` 原样复制
   expiry/SAS，并在 native 边界验证 SAS 形状；
 - `refresh_prepared_registration_client()` 仍只在 authorized + consumed 后建立 identity-bound
@@ -173,6 +216,8 @@ terminal summary：
 - `resume_authorized_join_activation()` 把 `require_enabled()` 移到 joined-device marker 分支；
   ordinary Join 在 Recovery gate 关闭、无 audience 时仍可 poll/activate，rebind 语义不放宽；
 - cancel 在相同 mutation/write gate、operation timeout 和 state-root lock 下运行；
+- `ImCoreNodeOpenOptions` 增加 `multiDeviceDeviceRevokeEnabled` 并映射 Core option，默认 false；
+- approval handle 不进入通用 serialization helper，confirm 后按 Core 结果 consume/release；
 - `clearLocalData()` / `close()` 的既有生命周期语义不变。
 
 不得把 Core private DTO、account verification token、candidate private key、challenge、proof、
@@ -192,6 +237,9 @@ Registry hash、auth generation 或 raw service data 加入 N-API。
 | session 尚待管理端 | 正常 progress，不作为错误 |
 | status/cancel 网络失败 | `network` 或 closed remote，按 Core retryable 标记 |
 | 授权后本地激活暂未完成 | 保留同一 session，并由 resume 精确续跑 |
+| current device 非 ready-admin | `device_management_not_ready`，不发远端 mutation |
+| approval handle 失效/重放 | `device_join_approval_expired` 或 closed invalid，不重新 prepare/approve |
+| self/last-admin revoke | 保留 Core 稳定拒绝语义，不降级为 generic success |
 
 错误消息不得包含 continuation、session ID、DID、SAS、手机号、OTP、token、路径或服务端原文。
 
@@ -210,8 +258,14 @@ Registry hash、auth generation 或 raw service data 加入 N-API。
 - cancel 首次成功、exact-local cancelled 幂等、wrong ID/terminal 拒绝、outcome unknown 保留；
 - Direct/Group E2EE gates 默认关闭时，ordinary Join 后 PreKey publication 和 `default-plain`
   Direct 可用，不为 Join 偷开 E2EE；
+- bootstrap admin-ready/member/blocked current summary 映射；
+- Registry/local request 读取无 mutation，start exact-once，response-verified SAS、prepare/confirm
+  single-use approval handle；
+- wrong SAS 由 Host 阻断，Node `sasConfirmed=false` / `userPresenceConfirmed=false` 不发 approve；
+- reject、handled-by-other-admin、self/last-admin revoke、revoke outcome unknown 与 resume；
+- JSON/Debug/error scan 不泄漏 SAS、approval handle、device ID/token/proof；
 - close/clear 与 in-flight status/cancel 的 gate；
-- `public_parity.rs` 增加 local list/cancel，并确认未暴露 admin-only facade。
+- `public_parity.rs` 增加 joining 和 admin management facade，并确认没有 raw/internal API。
 
 ### TypeScript wrapper
 
