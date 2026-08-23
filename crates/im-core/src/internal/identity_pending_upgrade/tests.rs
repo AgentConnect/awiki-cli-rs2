@@ -116,13 +116,20 @@ async fn attempted_registration_imports_exact_identity_for_reconciliation() {
     assert!(!serde_json::to_string(&current)
         .unwrap()
         .contains("PRIVATE KEY"));
-    let store = crate::internal::identity_custody::open_controller_store(&fixture.core).unwrap();
+    let manager =
+        crate::internal::identity_custody::open_controller_manager(&fixture.core).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == current.identity.did.as_str())
+        .unwrap();
+    let identity = manager.get(&descriptor.reference).unwrap();
     assert_eq!(
-        store
-            .open_identity(current.identity.did.as_str())
+        anp_identity::host::IdentityStatusPort::host_status(&identity)
             .unwrap()
-            .root_capability(),
-        anp_identity::RootCapabilityState::Active
+            .root_capability,
+        anp_identity::host::HostRootCapability::Active
     );
 }
 

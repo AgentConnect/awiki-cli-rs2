@@ -347,12 +347,19 @@ async fn join_start_emits_mixed_profiles() {
             SecretKind::IdentityDeviceSigningPrivate | SecretKind::IdentityE2eeAgreementPrivate
         )));
     let custody = stored.join_custody.unwrap();
-    let anp_store = crate::internal::identity_custody::open_controller_store(&candidate).unwrap();
-    let identity = anp_store
-        .open_identity(started.session.did.as_str())
+    let manager = crate::internal::identity_custody::open_controller_manager(&candidate).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == started.session.did.as_str())
         .unwrap();
-    assert_eq!(identity.identity_id(), custody.identity_id);
-    assert_eq!(identity.state(), anp_identity::IdentityState::Enrolling);
+    let identity = manager.get(&descriptor.reference).unwrap();
+    assert_eq!(identity.reference().identity_id, custody.identity_id);
+    assert_eq!(
+        identity.public_identity().unwrap().state,
+        anp_identity::PublicIdentityState::Enrolling
+    );
 }
 
 #[tokio::test]
@@ -464,12 +471,13 @@ async fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secr
     .await
     .unwrap();
 
-    assert_eq!(
-        crate::internal::identity_custody::open_controller_store(&core)
+    assert!(
+        crate::internal::identity_custody::open_controller_manager(&core)
             .unwrap()
-            .open_identity(generated.did.as_str())
-            .err(),
-        Some(anp_identity::DidError::IdentityNotFound)
+            .list()
+            .unwrap()
+            .into_iter()
+            .all(|descriptor| descriptor.reference.did != generated.did.as_str())
     );
     assert!(required_vault(&core)
         .unwrap()
@@ -1030,9 +1038,18 @@ fn admin_join_projection_advances_checkpoint_and_is_repeat_safe() {
 fn admin_join_projection_adopts_published_document_into_anp_identity() {
     let root = tempfile::tempdir().unwrap();
     let (core, projected) = open_anp_ready_admin_core(root.path());
-    let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
-    let mut identity = store.open_identity(projected.did.as_str()).unwrap();
-    let current = identity.checkpoint().unwrap().clone();
+    let manager = crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == projected.did.as_str())
+        .unwrap();
+    let mut identity = manager.get(&descriptor.reference).unwrap();
+    let current = anp_identity::host::IdentityStatusPort::host_status(&identity)
+        .unwrap()
+        .checkpoint
+        .unwrap();
     let signing_private = ed25519_dalek::SigningKey::from_bytes(&[91_u8; 32]);
     let mut signing_multikey = vec![0xed, 0x01];
     signing_multikey.extend_from_slice(&signing_private.verifying_key().to_bytes());
@@ -1040,21 +1057,19 @@ fn admin_join_projection_adopts_published_document_into_anp_identity() {
     let mut agreement_multikey = vec![0xec, 0x01];
     agreement_multikey
         .extend_from_slice(&x25519_dalek::PublicKey::from(&agreement_private).to_bytes());
-    let prepared = identity
-        .prepare_update(anp_identity::DocumentUpdateSpec {
-            request_signing_rotation: None,
-            request_signing_mutations: Vec::new(),
-            device_mutations: vec![anp_identity::DeviceMutationSpec::Add {
-                device: anp_identity::DeviceAddSpec {
+    let mut change = identity
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![anp_identity::DocumentChange::AddDevice {
+                device: anp_identity::DeviceInput {
                     device_id: "peer-device".to_owned(),
-                    signing_key: anp_identity::DevicePublicKeySpec {
+                    signing_key: anp_identity::PublicKeyInput {
                         kid: format!("{}#peer-sign", projected.did.as_str()),
                         public_key_multibase: format!(
                             "z{}",
                             bs58::encode(signing_multikey).into_string()
                         ),
                     },
-                    e2ee_key: anp_identity::DevicePublicKeySpec {
+                    agreement_key: anp_identity::PublicKeyInput {
                         kid: format!("{}#peer-e2ee", projected.did.as_str()),
                         public_key_multibase: format!(
                             "z{}",
@@ -1064,13 +1079,18 @@ fn admin_join_projection_adopts_published_document_into_anp_identity() {
                     profiles: crate::internal::identity_generation::vnext_device_profiles(),
                 },
             }],
-            services: None,
         })
         .unwrap();
-    let updated_document = prepared.candidate_document;
-    identity.abort_update(&prepared.revision_id).unwrap();
+    let updated_document = change.candidate().candidate_document.clone().into_value();
+    let attempt = change.begin_publication().unwrap();
+    change
+        .complete(
+            attempt,
+            anp_identity::PublicationResult::RejectedBeforeAcceptance,
+        )
+        .unwrap();
     drop(identity);
-    drop(store);
+    drop(manager);
     let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
         document_version: current.document_version + 1,
         document_hash: canonical_hash(&updated_document).unwrap(),
@@ -1092,11 +1112,24 @@ fn admin_join_projection_adopts_published_document_into_anp_identity() {
     )
     .unwrap();
 
-    let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
-    let identity = store.open_identity(projected.did.as_str()).unwrap();
-    assert_eq!(identity.document(), &updated_document);
+    let manager = crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == projected.did.as_str())
+        .unwrap();
+    let identity = manager.get(&descriptor.reference).unwrap();
     assert_eq!(
-        identity.checkpoint().unwrap().document_digest,
+        identity.public_identity().unwrap().document.as_value(),
+        &updated_document
+    );
+    assert_eq!(
+        anp_identity::host::IdentityStatusPort::host_status(&identity)
+            .unwrap()
+            .checkpoint
+            .unwrap()
+            .document_digest,
         checkpoint.document_hash
     );
 }

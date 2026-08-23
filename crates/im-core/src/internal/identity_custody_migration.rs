@@ -47,9 +47,12 @@ fn block_on_run(
     failure: Option<FailurePoint>,
 ) -> crate::ImResult<IdentityCustodyMigrationReport> {
     if tokio::runtime::Handle::try_current().is_ok() {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "synchronous identity migration cannot run inside an async runtime".to_owned(),
-        });
+        let core = core.clone();
+        return std::thread::spawn(move || block_on_run(&core, dry_run, failure))
+            .join()
+            .map_err(|_| crate::ImError::Internal {
+                message: "identity migration worker panicked".to_owned(),
+            })?;
     }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

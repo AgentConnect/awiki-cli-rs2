@@ -1,47 +1,4 @@
-#[cfg(test)]
-use std::path::Path;
-
 pub(crate) const LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID: &str = "legacy-imported-active-v1";
-
-#[cfg(test)]
-#[cfg(feature = "identity-native-anp")]
-pub(crate) fn open_controller_store(
-    core: &crate::core::ImCore,
-) -> crate::ImResult<anp_identity::DidStore> {
-    let root = core
-        .inner()
-        .sdk_paths()
-        .identities
-        .identity_root_dir
-        .join(".anp-identity");
-    if let Some(context) = core.inner().identity_vault() {
-        let key_id = format!("awiki-workspace-vault:{}", context.workspace_id());
-        let open = || {
-            anp_identity::DidStore::open_injected(
-                &root,
-                key_id.clone(),
-                context.anp_identity_root_key(),
-            )
-        };
-        match open() {
-            Ok(store) => Ok(store),
-            Err(anp_identity::DidError::StoreNotFound) => {
-                match anp_identity::DidStore::initialize_injected(
-                    &root,
-                    key_id.clone(),
-                    context.anp_identity_root_key(),
-                ) {
-                    Ok(store) => Ok(store),
-                    Err(anp_identity::DidError::Conflict) => open().map_err(map_error),
-                    Err(error) => Err(map_error(error)),
-                }
-            }
-            Err(error) => Err(map_error(error)),
-        }
-    } else {
-        open_or_initialize_local_file(&root)
-    }
-}
 
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn open_controller_manager(
@@ -369,10 +326,9 @@ pub(crate) fn prepare_join_enrollment(
                 .map_err(map_facade_error)?;
             let public = identity.public_identity().map_err(map_facade_error)?;
             if public.state != anp_identity::PublicIdentityState::Enrolling
-                || anp_identity::canonical_document_digest(public.document.as_value())
-                    .map_err(map_error)?
-                    != anp_identity::canonical_document_digest(resolved_document)
-                        .map_err(map_error)?
+                || canonical_document_digest(public.document.as_value())
+                    .map_err(map_facade_error)?
+                    != canonical_document_digest(resolved_document).map_err(map_facade_error)?
             {
                 return Err(crate::ImError::PermissionDenied);
             }
@@ -822,8 +778,8 @@ pub(crate) fn handle_recovery_identity(
     )?;
     let public = identity.public_identity().map_err(map_facade_error)?;
     if public.state != anp_identity::PublicIdentityState::Active
-        || anp_identity::canonical_document_digest(public.document.as_value()).map_err(map_error)?
-            != anp_identity::canonical_document_digest(&expected.did_document).map_err(map_error)?
+        || canonical_document_digest(public.document.as_value()).map_err(map_facade_error)?
+            != canonical_document_digest(&expected.did_document).map_err(map_facade_error)?
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1133,9 +1089,8 @@ pub(crate) fn adopt_join_identity(
             open_managed_identity(core, &custody.store_id, &custody.identity_id, did.as_str())?;
         let public = identity.public_identity().map_err(map_facade_error)?;
         if public.state != anp_identity::PublicIdentityState::Active
-            || anp_identity::canonical_document_digest(public.document.as_value())
-                .map_err(map_error)?
-                != anp_identity::canonical_document_digest(document).map_err(map_error)?
+            || canonical_document_digest(public.document.as_value()).map_err(map_facade_error)?
+                != canonical_document_digest(document).map_err(map_facade_error)?
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -1699,28 +1654,14 @@ pub(crate) async fn promote_legacy_upgrade_root_async(
 pub(crate) fn import_legacy_completion_root(
     core: &crate::core::ImCore,
     reference: &crate::internal::identity_root_import_completion::RootImportCustodyRef,
-    evidence: anp_identity::LegacyRootTransferEvidence,
+    evidence: anp_identity::host::LegacyRootImportEvidence,
     root_key: zeroize::Zeroizing<Vec<u8>>,
 ) -> crate::ImResult<()> {
     use anp_identity::host::RootImportPort;
     let mut identity = open_root_import_identity(core, reference)?;
     let outcome = identity
         .import_legacy_root(anp_identity::host::LegacyRootImportRequest {
-            evidence: anp_identity::host::LegacyRootImportEvidence {
-                transfer_id: evidence.transfer_id,
-                source_did: evidence.source_did,
-                target_did: evidence.target_did,
-                sender_device_id: evidence.sender_device_id,
-                recipient_device_id: evidence.recipient_device_id,
-                recipient_agreement_kid: evidence.recipient_agreement_kid,
-                root_kid: evidence.root_kid,
-                checkpoint: anp_identity::host::HostDocumentCheckpoint {
-                    document_version: evidence.checkpoint.document_version,
-                    registry_version: evidence.checkpoint.registry_version,
-                    document_digest: evidence.checkpoint.document_digest,
-                },
-                accepted_at: evidence.accepted_at,
-            },
+            evidence,
             encoding: anp_identity::host::RootPrivateKeyEncoding::Pkcs8Der,
             root_key,
         })
@@ -2859,9 +2800,111 @@ fn identity_services(
         .collect()
 }
 
+#[cfg(feature = "identity-native-anp")]
+pub(crate) fn map_facade_error(error: anp_identity::IdentityError) -> crate::ImError {
+    match error {
+        anp_identity::IdentityError::IdentityNotFound => crate::ImError::IdentityNotFound {
+            selector: "anp-identity".to_owned(),
+        },
+        anp_identity::IdentityError::Conflict => crate::ImError::LocalStateUnavailable {
+            detail: "anp identity store generation changed; recovery is required".to_owned(),
+        },
+        anp_identity::IdentityError::RootKeyMismatch
+        | anp_identity::IdentityError::ProviderUnavailable => crate::ImError::PermissionDenied,
+        error => crate::ImError::LocalStateUnavailable {
+            detail: format!("anp identity facade operation failed: {error}"),
+        },
+    }
+}
+
+#[cfg(feature = "identity-native-anp")]
+pub(crate) fn canonical_document_digest(
+    document: &serde_json::Value,
+) -> anp_identity::IdentityResult<String> {
+    anp_identity::DidDocument::from_value(document.clone()).canonical_digest()
+}
+
+#[cfg(feature = "identity-native-anp")]
+pub(crate) fn native_create_spec(
+    value: crate::internal::identity_provider::ProviderCreateIdentityRequest,
+) -> anp_identity::CreateIdentityRequest {
+    use crate::internal::identity_provider::{
+        ProviderDidProfile, ProviderIdentityExtension, ProviderManagedKeyRole,
+    };
+    anp_identity::CreateIdentityRequest {
+        profile: match value.profile {
+            ProviderDidProfile::E1 => anp_identity::CreateIdentityProfile::E1,
+        },
+        domain: value.domain,
+        port: value.port,
+        path_segments: value.path_segments,
+        capabilities: anp_identity::CreateIdentityCapabilities {
+            did_wba: value.capabilities.did_wba,
+        },
+        managed_keys: value
+            .managed_keys
+            .into_iter()
+            .map(|key| anp_identity::ManagedKeyInput {
+                fragment: key.fragment,
+                role: match key.role {
+                    ProviderManagedKeyRole::RootControl => {
+                        anp_identity::ManagedKeyRole::RootControl
+                    }
+                    ProviderManagedKeyRole::DeviceSigning => {
+                        anp_identity::ManagedKeyRole::DeviceSigning
+                    }
+                    ProviderManagedKeyRole::RequestSigning => {
+                        anp_identity::ManagedKeyRole::RequestSigning
+                    }
+                    ProviderManagedKeyRole::E2eeSigning => {
+                        anp_identity::ManagedKeyRole::E2eeSigning
+                    }
+                    ProviderManagedKeyRole::E2eeAgreement => {
+                        anp_identity::ManagedKeyRole::E2eeAgreement
+                    }
+                },
+            })
+            .collect(),
+        external_keys: Vec::new(),
+        services: value
+            .services
+            .into_iter()
+            .map(|service| anp_identity::IdentityService {
+                id: service.id,
+                service_type: service.service_type,
+                service_endpoint: service.service_endpoint,
+                service_did: service.service_did,
+                profiles: service.profiles,
+                security_profiles: service.security_profiles,
+            })
+            .collect(),
+        agent_description_url: value.agent_description_url,
+        extensions: value
+            .extensions
+            .into_iter()
+            .map(|extension| match extension {
+                ProviderIdentityExtension::DeviceManifest { devices } => {
+                    anp_identity::CreateIdentityExtension::DeviceManifest {
+                        devices: devices
+                            .into_iter()
+                            .map(|device| anp_identity::DeviceManifestEntryInput {
+                                device_id: device.device_id,
+                                signing_key_id: device.signing_key_id,
+                                e2ee_key_id: device.e2ee_key_id,
+                                profiles: device.profiles,
+                            })
+                            .collect(),
+                    }
+                }
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anp_identity::host::IdentityStatusPort as _;
 
     struct RootSigner {
         document: serde_json::Value,
@@ -2923,8 +2966,8 @@ mod tests {
         let recovered = provision_registration_identity(&core, "example.test", "alice").unwrap();
 
         assert_eq!(recovered, first);
-        let controller = open_controller_store(&core).unwrap();
-        assert_eq!(controller.list_identities().unwrap().len(), 1);
+        let controller = open_controller_manager(&core).unwrap();
+        assert_eq!(controller.list().unwrap().len(), 1);
         assert!(!first.did_document["authentication"]
             .as_array()
             .unwrap()
@@ -3017,9 +3060,9 @@ mod tests {
         discard_unpublished_registration(&core, &identity).unwrap();
         discard_unpublished_registration(&core, &identity).unwrap();
 
-        assert!(open_controller_store(&core)
+        assert!(open_controller_manager(&core)
             .unwrap()
-            .list_identities()
+            .list()
             .unwrap()
             .is_empty());
     }
@@ -3043,9 +3086,9 @@ mod tests {
 
         assert_eq!(recovered, first);
         assert_eq!(
-            open_controller_store(&core)
+            open_controller_manager(&core)
                 .unwrap()
-                .list_identities()
+                .list()
                 .unwrap()
                 .len(),
             1
@@ -3075,9 +3118,9 @@ mod tests {
         assert!(!encoded.contains("private_pem"));
         discard_unpublished_handle_recovery(&core, &first).unwrap();
         discard_unpublished_handle_recovery(&core, &first).unwrap();
-        assert!(open_controller_store(&core)
+        assert!(open_controller_manager(&core)
             .unwrap()
-            .list_identities()
+            .list()
             .unwrap()
             .is_empty());
     }
@@ -3196,16 +3239,23 @@ mod tests {
         )
         .unwrap();
 
-        let managed = open_controller_store(&core)
-            .unwrap()
-            .open_identity(identity.did.as_str())
-            .unwrap();
+        let managed = open_managed_identity(
+            &core,
+            &identity.custody.store_id,
+            &identity.custody.identity_id,
+            identity.did.as_str(),
+        )
+        .unwrap();
         assert_eq!(
-            managed.root_capability(),
-            anp_identity::RootCapabilityState::Active
+            managed.host_status().unwrap().root_capability,
+            anp_identity::host::HostRootCapability::Active
         );
         managed
-            .sign_device_assertion(&identity.signing_key_id, b"device")
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::DeviceAssertion,
+                key: anp_identity::KeySelector::Kid(identity.signing_key_id.clone()),
+                payload: b"device".to_vec(),
+            })
             .unwrap();
     }
 
@@ -3265,7 +3315,7 @@ mod tests {
         import_legacy_completion_root(
             &core,
             &reference,
-            anp_identity::LegacyRootTransferEvidence {
+            anp_identity::host::LegacyRootImportEvidence {
                 transfer_id: "completion-message".to_owned(),
                 source_did: target.did.as_str().to_owned(),
                 target_did: target.did.as_str().to_owned(),
@@ -3273,7 +3323,7 @@ mod tests {
                 recipient_device_id: target.protocol_device_id.as_str().to_owned(),
                 recipient_agreement_kid: target.e2ee_key_id.clone(),
                 root_kid: format!("{}#key-1", target.did.as_str()),
-                checkpoint: anp_identity::DocumentCheckpoint {
+                checkpoint: anp_identity::host::HostDocumentCheckpoint {
                     document_version: checkpoint.document_version,
                     registry_version: checkpoint.registry_version,
                     document_digest: checkpoint.document_hash.clone(),
@@ -3299,12 +3349,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            open_controller_store(&core)
+            open_root_import_identity(&core, &reference)
                 .unwrap()
-                .open_identity(target.did.as_str())
+                .host_status()
                 .unwrap()
-                .root_capability(),
-            anp_identity::RootCapabilityState::Active
+                .root_capability,
+            anp_identity::host::HostRootCapability::Active
         );
     }
 
@@ -3338,127 +3388,5 @@ mod tests {
                 temp_dir: root.join("tmp"),
             },
         }
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "identity-native-anp")]
-fn open_or_initialize_local_file(root: &Path) -> crate::ImResult<anp_identity::DidStore> {
-    match anp_identity::DidStore::open_local_file(root) {
-        Ok(store) => Ok(store),
-        Err(anp_identity::DidError::StoreNotFound) => {
-            match anp_identity::DidStore::initialize_local_file(root) {
-                Ok(store) => Ok(store),
-                Err(anp_identity::DidError::Conflict) => {
-                    anp_identity::DidStore::open_local_file(root).map_err(map_error)
-                }
-                Err(error) => Err(map_error(error)),
-            }
-        }
-        Err(error) => Err(map_error(error)),
-    }
-}
-
-#[cfg(feature = "identity-native-anp")]
-pub(crate) fn map_error(error: anp_identity::DidError) -> crate::ImError {
-    match error {
-        anp_identity::DidError::IdentityNotFound => crate::ImError::IdentityNotFound {
-            selector: "anp-identity".to_owned(),
-        },
-        anp_identity::DidError::Conflict => crate::ImError::LocalStateUnavailable {
-            detail: "anp identity store generation changed; reload is required".to_owned(),
-        },
-        anp_identity::DidError::RootKeyMismatch | anp_identity::DidError::ProviderUnavailable => {
-            crate::ImError::PermissionDenied
-        }
-        error => crate::ImError::LocalStateUnavailable {
-            detail: format!("anp identity store operation failed: {error}"),
-        },
-    }
-}
-
-#[cfg(feature = "identity-native-anp")]
-pub(crate) fn map_facade_error(error: anp_identity::IdentityError) -> crate::ImError {
-    match error {
-        anp_identity::IdentityError::IdentityNotFound => crate::ImError::IdentityNotFound {
-            selector: "anp-identity".to_owned(),
-        },
-        anp_identity::IdentityError::Conflict => crate::ImError::LocalStateUnavailable {
-            detail: "anp identity store generation changed; recovery is required".to_owned(),
-        },
-        anp_identity::IdentityError::RootKeyMismatch
-        | anp_identity::IdentityError::ProviderUnavailable => crate::ImError::PermissionDenied,
-        error => crate::ImError::LocalStateUnavailable {
-            detail: format!("anp identity facade operation failed: {error}"),
-        },
-    }
-}
-
-#[cfg(feature = "identity-native-anp")]
-pub(crate) fn native_create_spec(
-    value: crate::internal::identity_provider::ProviderCreateIdentityRequest,
-) -> anp_identity::DidCreateSpec {
-    use crate::internal::identity_provider::{
-        ProviderDidProfile, ProviderIdentityExtension, ProviderManagedKeyRole,
-    };
-    anp_identity::DidCreateSpec {
-        profile: match value.profile {
-            ProviderDidProfile::E1 => anp_identity::DidProfile::E1,
-        },
-        domain: value.domain,
-        port: value.port,
-        path_segments: value.path_segments,
-        capabilities: anp_identity::Capabilities {
-            did_wba: value.capabilities.did_wba,
-        },
-        managed_keys: value
-            .managed_keys
-            .into_iter()
-            .map(|key| anp_identity::ManagedKeySpec {
-                fragment: key.fragment,
-                role: match key.role {
-                    ProviderManagedKeyRole::RootControl => anp_identity::KeyRole::RootControl,
-                    ProviderManagedKeyRole::DeviceSigning => anp_identity::KeyRole::DeviceSigning,
-                    ProviderManagedKeyRole::RequestSigning => anp_identity::KeyRole::RequestSigning,
-                    ProviderManagedKeyRole::E2eeSigning => anp_identity::KeyRole::E2eeSigning,
-                    ProviderManagedKeyRole::E2eeAgreement => anp_identity::KeyRole::E2eeAgreement,
-                },
-            })
-            .collect(),
-        external_keys: Vec::new(),
-        services: value
-            .services
-            .into_iter()
-            .map(|service| anp_identity::ServiceSpec {
-                id: service.id,
-                service_type: service.service_type,
-                service_endpoint: service.service_endpoint,
-                service_did: service.service_did,
-                profiles: service.profiles,
-                security_profiles: service.security_profiles,
-            })
-            .collect(),
-        agent_description_url: value.agent_description_url,
-        extensions: value
-            .extensions
-            .into_iter()
-            .map(|extension| match extension {
-                ProviderIdentityExtension::DeviceManifest { devices } => {
-                    anp_identity::DidExtensionSpec::DeviceManifest(
-                        anp_identity::DeviceManifestSpec {
-                            devices: devices
-                                .into_iter()
-                                .map(|device| anp_identity::DeviceManifestEntrySpec {
-                                    device_id: device.device_id,
-                                    signing_key_id: device.signing_key_id,
-                                    e2ee_key_id: device.e2ee_key_id,
-                                    profiles: device.profiles,
-                                })
-                                .collect(),
-                        },
-                    )
-                }
-            })
-            .collect(),
     }
 }

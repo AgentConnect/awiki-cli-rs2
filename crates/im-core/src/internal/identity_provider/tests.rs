@@ -223,7 +223,7 @@ fn provider_contract_dtos_are_versioned_and_secret_free() {
         .split("pub struct ProviderSharedSecret")
         .nth(1)
         .unwrap()
-        .split("#[async_trait]")
+        .split("impl ProviderSharedSecret")
         .next()
         .unwrap();
     assert!(!secret.contains("Serialize"));

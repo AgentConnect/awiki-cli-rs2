@@ -1023,19 +1023,19 @@ mod tests {
             .unwrap();
         let identity = manager
             .create(anp_identity::CreateIdentityRequest {
-                profile: anp_identity::DidProfile::E1,
+                profile: anp_identity::CreateIdentityProfile::E1,
                 domain: "example.com".to_owned(),
                 port: None,
                 path_segments: vec!["async-send".to_owned()],
-                capabilities: anp_identity::Capabilities { did_wba: true },
+                capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
                 managed_keys: vec![
-                    anp_identity::ManagedKeySpec {
+                    anp_identity::ManagedKeyInput {
                         fragment: "root".to_owned(),
-                        role: anp_identity::KeyRole::RootControl,
+                        role: anp_identity::ManagedKeyRole::RootControl,
                     },
-                    anp_identity::ManagedKeySpec {
+                    anp_identity::ManagedKeyInput {
                         fragment: "request".to_owned(),
-                        role: anp_identity::KeyRole::RequestSigning,
+                        role: anp_identity::ManagedKeyRole::RequestSigning,
                     },
                 ],
                 external_keys: Vec::new(),

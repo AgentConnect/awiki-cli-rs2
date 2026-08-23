@@ -368,17 +368,17 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                 .get(&identity.into())
                 .map_err(map_identity_error)?;
             managed
-                .import_wrapped_root_envelope(&anp_identity::WrappedRootEnvelope {
+                .import_wrapped_root_envelope(&anp_identity::host::WrappedRootEnvelope {
                     envelope_type: envelope.envelope_type,
                     version: envelope.version,
-                    context: anp_identity::RootTransferContext {
+                    context: anp_identity::host::RootTransferContext {
                         source_did: envelope.context.source_did,
                         target_did: envelope.context.target_did,
                         sender_device_id: envelope.context.sender_device_id,
                         recipient_device_id: envelope.context.recipient_device_id,
                         recipient_agreement_kid: envelope.context.recipient_agreement_kid,
                         root_kid: envelope.context.root_kid,
-                        checkpoint: anp_identity::DocumentCheckpoint {
+                        checkpoint: anp_identity::host::DocumentCheckpoint {
                             document_version: envelope.context.checkpoint.document_version,
                             registry_version: envelope.context.checkpoint.registry_version,
                             document_digest: envelope.context.checkpoint.document_digest,

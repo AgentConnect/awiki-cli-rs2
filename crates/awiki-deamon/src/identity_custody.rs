@@ -182,7 +182,8 @@ pub(crate) fn adopt_daemon_document(
         .host_status()?
         .checkpoint
         .context("daemon identity checkpoint missing")?;
-    let digest = anp_identity::canonical_document_digest(verified_document)?;
+    let digest =
+        anp_identity::DidDocument::from_value(verified_document.clone()).canonical_digest()?;
     let changed = digest != current.document_digest;
     let outcome = identity.adopt_verified_document(verified_remote_document(
         verified_document,
@@ -308,7 +309,8 @@ fn verified_remote_document(
         evidence: anp_identity::VerifiedPublicationEvidence {
             document_version,
             registry_version,
-            document_digest: anp_identity::canonical_document_digest(document)?,
+            document_digest: anp_identity::DidDocument::from_value(document.clone())
+                .canonical_digest()?,
         },
     })
 }
@@ -426,6 +428,23 @@ fn public_key_multibase(document: &Value, kid: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn confirm_change(change: &mut anp_identity::DocumentChangeSession, version: u64) {
+        let candidate = change.candidate().clone();
+        let attempt = change.begin_publication().unwrap();
+        change
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::Confirmed {
+                    evidence: anp_identity::VerifiedPublicationEvidence {
+                        document_version: version,
+                        registry_version: version,
+                        document_digest: candidate.candidate_digest,
+                    },
+                },
+            )
+            .unwrap();
+    }
+
     fn sign(identity: &anp_identity::ManagedIdentity, kid: &str, payload: &[u8]) {
         identity
             .sign(anp_identity::SignRequest {
@@ -444,19 +463,24 @@ mod tests {
         let state = DaemonState::open(&config).unwrap();
         state.initialize().unwrap();
         let source_root = tempfile::tempdir().unwrap();
-        let mut source_store =
-            anp_identity::DidStore::initialize_injected(source_root.path(), "source", [91; 32])
-                .unwrap();
-        let mut source = source_store
-            .create_identity(anp_identity::DidCreateSpec {
-                profile: anp_identity::DidProfile::E1,
+        let mut source_manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: source_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("source", [91; 32]),
+                ),
+            })
+            .unwrap();
+        let mut source = source_manager
+            .create(anp_identity::CreateIdentityRequest {
+                profile: anp_identity::CreateIdentityProfile::E1,
                 domain: "example.com".to_owned(),
                 port: None,
                 path_segments: vec!["users".to_owned(), "daemon".to_owned()],
-                capabilities: anp_identity::Capabilities { did_wba: false },
-                managed_keys: vec![anp_identity::ManagedKeySpec {
+                capabilities: anp_identity::CreateIdentityCapabilities { did_wba: false },
+                managed_keys: vec![anp_identity::ManagedKeyInput {
                     fragment: "key-1".to_owned(),
-                    role: anp_identity::KeyRole::RootControl,
+                    role: anp_identity::ManagedKeyRole::RootControl,
                 }],
                 external_keys: Vec::new(),
                 services: Vec::new(),
@@ -465,33 +489,37 @@ mod tests {
             })
             .unwrap();
 
-        let prepared = prepare_daemon_subkey_custody(&state, source.document()).unwrap();
-        let repeated = prepare_daemon_subkey_custody(&state, source.document()).unwrap();
+        let source_public = source.public_identity().unwrap();
+        let prepared =
+            prepare_daemon_subkey_custody(&state, source_public.document.as_value()).unwrap();
+        let repeated =
+            prepare_daemon_subkey_custody(&state, source_public.document.as_value()).unwrap();
         assert_eq!(repeated, prepared);
-        let public = prepare_daemon_subkey(&state, source.document()).unwrap();
+        let public = prepare_daemon_subkey(&state, source_public.document.as_value()).unwrap();
         let public_json = serde_json::to_value(&public).unwrap();
-        assert_eq!(public.user_did, source.did());
+        assert_eq!(public.user_did, source.reference().did);
         assert_eq!(public.verification_method, prepared.reference.key_id);
         assert!(public_json.get("store_id").is_none());
         assert!(public_json.get("identity_id").is_none());
         assert!(public_json.get("enrollment_id").is_none());
-        let update = source
-            .prepare_update(anp_identity::DocumentUpdateSpec {
-                request_signing_rotation: None,
-                request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
-                    key: anp_identity::RequestSigningPublicKeySpec {
+        let mut update = source
+            .prepare_document_change(anp_identity::DocumentChangeRequest {
+                changes: vec![anp_identity::DocumentChange::AddAuthenticationKey {
+                    key: anp_identity::PublicKeyInput {
                         kid: prepared.reference.key_id.clone(),
                         public_key_multibase: prepared.public_key_multibase.clone(),
                     },
                 }],
-                device_mutations: Vec::new(),
-                services: None,
             })
             .unwrap();
-        source.begin_publication(&update.revision_id).unwrap();
-        source.mark_published(&update.revision_id).unwrap();
-        source.commit_update(&update.revision_id).unwrap();
-        adopt_daemon_document(&state, &prepared.reference, source.document()).unwrap();
+        confirm_change(&mut update, 2);
+        let source_public = source.public_identity().unwrap();
+        adopt_daemon_document(
+            &state,
+            &prepared.reference,
+            source_public.document.as_value(),
+        )
+        .unwrap();
         sign(
             &open_referenced_identity(&state, &prepared.reference).unwrap(),
             &prepared.reference.key_id,
@@ -508,20 +536,21 @@ mod tests {
             b"after restart and reload",
         );
 
-        let removal = source
-            .prepare_update(anp_identity::DocumentUpdateSpec {
-                request_signing_rotation: None,
-                request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Remove {
+        let mut removal = source
+            .prepare_document_change(anp_identity::DocumentChangeRequest {
+                changes: vec![anp_identity::DocumentChange::RemoveAuthenticationKey {
                     kid: prepared.reference.key_id.clone(),
                 }],
-                device_mutations: Vec::new(),
-                services: None,
             })
             .unwrap();
-        source.begin_publication(&removal.revision_id).unwrap();
-        source.mark_published(&removal.revision_id).unwrap();
-        source.commit_update(&removal.revision_id).unwrap();
-        assert!(adopt_daemon_document(&restarted, &prepared.reference, source.document()).is_err());
+        confirm_change(&mut removal, 3);
+        let source_public = source.public_identity().unwrap();
+        assert!(adopt_daemon_document(
+            &restarted,
+            &prepared.reference,
+            source_public.document.as_value()
+        )
+        .is_err());
         assert!(open_referenced_identity(&restarted, &prepared.reference).is_err());
     }
 
@@ -534,31 +563,36 @@ mod tests {
         state.initialize().unwrap();
         let private_key_pem =
             crate::app_bridge::secret_store::ed25519_private_key_pem_for_test(&[93_u8; 32]);
-        let public_key_multibase =
+        let daemon_public_key_multibase =
             crate::app_bridge::secret_store::public_key_multibase_from_private_material(
                 &private_key_pem,
             )
             .unwrap();
         let source_root = tempfile::tempdir().unwrap();
-        let mut source_store =
-            anp_identity::DidStore::initialize_injected(source_root.path(), "source", [94; 32])
-                .unwrap();
-        let source = source_store
-            .create_identity(anp_identity::DidCreateSpec {
-                profile: anp_identity::DidProfile::E1,
+        let mut source_manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: source_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("source", [94; 32]),
+                ),
+            })
+            .unwrap();
+        let source = source_manager
+            .create(anp_identity::CreateIdentityRequest {
+                profile: anp_identity::CreateIdentityProfile::E1,
                 domain: "example.com".to_owned(),
                 port: None,
                 path_segments: vec!["users".to_owned(), "daemon-migration".to_owned()],
-                capabilities: anp_identity::Capabilities { did_wba: false },
-                managed_keys: vec![anp_identity::ManagedKeySpec {
+                capabilities: anp_identity::CreateIdentityCapabilities { did_wba: false },
+                managed_keys: vec![anp_identity::ManagedKeyInput {
                     fragment: "key-1".to_owned(),
-                    role: anp_identity::KeyRole::RootControl,
+                    role: anp_identity::ManagedKeyRole::RootControl,
                 }],
-                external_keys: vec![anp_identity::ExternalPublicKeySpec {
+                external_keys: vec![anp_identity::ExternalPublicKeyInput {
                     kid: "#daemon-key-1".to_owned(),
-                    role: anp_identity::KeyRole::RequestSigning,
-                    material: anp_identity::ExternalPublicKeyMaterial::Multibase {
-                        value: public_key_multibase,
+                    role: anp_identity::ManagedKeyRole::RequestSigning,
+                    material: anp_identity::ExternalPublicKeyInputMaterial::Multibase {
+                        value: daemon_public_key_multibase,
                     },
                 }],
                 services: Vec::new(),
@@ -566,18 +600,16 @@ mod tests {
                 extensions: Vec::new(),
             })
             .unwrap();
-        let key_id = format!("{}#daemon-key-1", source.did());
+        let source_public = source.public_identity().unwrap();
+        let key_id = format!("{}#daemon-key-1", source_public.reference.did);
         let record = UserDelegatedIdentityRecord {
-            user_did: source.did().to_owned(),
+            user_did: source_public.reference.did.clone(),
             verification_method: key_id.clone(),
             app_instance_id: "app-1".to_owned(),
-            controller_did: source.did().to_owned(),
+            controller_did: source_public.reference.did.clone(),
             daemon_agent_did: "did:agent:daemon".to_owned(),
-            public_key_multibase: source
-                .key_metadata(&key_id)
-                .unwrap()
-                .public_key_multibase
-                .clone(),
+            public_key_multibase: public_key_multibase(source_public.document.as_value(), &key_id)
+                .unwrap(),
             private_key_material: private_key_pem,
             private_key_ref_json: None,
             allowed_scopes_json: serde_json::json!(["message.inbox.read.plain"]),
@@ -613,7 +645,7 @@ mod tests {
         );
 
         let (reference, identity) =
-            ensure_record_custody(&state, &legacy, source.document()).unwrap();
+            ensure_record_custody(&state, &legacy, source_public.document.as_value()).unwrap();
         sign(&identity, &key_id, b"after migration");
         let migrated = state
             .load_user_delegated_identity(&key_id)

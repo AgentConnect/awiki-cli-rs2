@@ -46,8 +46,8 @@ fn multi_identity_copy_failure_retries_before_atomic_cutover() {
     let fixture = Fixture::file(&[("alice", true), ("bob", false)]);
 
     assert!(sync_run(&fixture.core, false, Some(FailurePoint::AfterCopied(1))).is_err());
-    let staged = crate::internal::identity_custody::open_controller_store(&fixture.core).unwrap();
-    assert_eq!(staged.list_identities().unwrap().len(), 1);
+    let staged = crate::internal::identity_custody::open_controller_manager(&fixture.core).unwrap();
+    assert_eq!(staged.list().unwrap().len(), 1);
     let before_cutover = IdentityStore::new(&fixture.paths.identities)
         .load_index()
         .unwrap();

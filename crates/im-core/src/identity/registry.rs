@@ -4424,14 +4424,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         std::fs::create_dir_all(paths.identities.identity_root_dir.join("alice-id")).unwrap();
-        let mut custody = anp_identity::DidStore::initialize_local_file(
-            paths.identities.identity_root_dir.join(".anp-identity"),
-        )
-        .unwrap();
-        let identity = custody.create_identity(anp_identity_spec("file")).unwrap();
-        let did = identity.did().to_string();
-        let store_id = custody.manifest().store_id.clone();
-        let identity_id = identity.identity_id().to_string();
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: paths.identities.identity_root_dir.join(".anp-identity"),
+                root_key: anp_identity::RootKeySource::LocalPrivateFile,
+            })
+            .unwrap();
+        let identity = manager.create(anp_identity_spec("file")).unwrap();
+        let reference = identity.reference();
+        let did = reference.did;
+        let store_id = reference.store_id;
+        let identity_id = reference.identity_id;
         crate::internal::auth::state::persist_jwt_token(
             &paths
                 .identities
@@ -4481,37 +4484,46 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         std::fs::create_dir_all(paths.identities.identity_root_dir.join("alice-id")).unwrap();
-        let mut custody = anp_identity::DidStore::initialize_local_file(
-            paths.identities.identity_root_dir.join(".anp-identity"),
-        )
-        .unwrap();
-        let mut identity = custody
-            .create_identity(anp_identity_spec("daemon-public"))
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: paths.identities.identity_root_dir.join(".anp-identity"),
+                root_key: anp_identity::RootKeySource::LocalPrivateFile,
+            })
             .unwrap();
+        let mut identity = manager.create(anp_identity_spec("daemon-public")).unwrap();
         let daemon_private = ed25519_dalek::SigningKey::from_bytes(&[104_u8; 32]);
         let mut multikey = vec![0xed, 0x01];
         multikey.extend_from_slice(&daemon_private.verifying_key().to_bytes());
         let public_key_multibase = format!("z{}", bs58::encode(multikey).into_string());
-        let verification_method = format!("{}#daemon-key-1", identity.did());
-        let update = identity
-            .prepare_update(anp_identity::DocumentUpdateSpec {
-                request_signing_rotation: None,
-                request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
-                    key: anp_identity::RequestSigningPublicKeySpec {
+        let verification_method = format!("{}#daemon-key-1", identity.reference().did);
+        let mut change = identity
+            .prepare_document_change(anp_identity::DocumentChangeRequest {
+                changes: vec![anp_identity::DocumentChange::AddAuthenticationKey {
+                    key: anp_identity::PublicKeyInput {
                         kid: verification_method.clone(),
                         public_key_multibase: public_key_multibase.clone(),
                     },
                 }],
-                device_mutations: Vec::new(),
-                services: None,
             })
             .unwrap();
-        identity.begin_publication(&update.revision_id).unwrap();
-        identity.mark_published(&update.revision_id).unwrap();
-        identity.commit_update(&update.revision_id).unwrap();
-        let did = identity.did().to_owned();
-        let store_id = custody.manifest().store_id.clone();
-        let identity_id = identity.identity_id().to_owned();
+        let candidate = change.candidate().clone();
+        let attempt = change.begin_publication().unwrap();
+        change
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::Confirmed {
+                    evidence: anp_identity::VerifiedPublicationEvidence {
+                        document_version: 2,
+                        registry_version: 2,
+                        document_digest: candidate.candidate_digest,
+                    },
+                },
+            )
+            .unwrap();
+        let reference = identity.reference();
+        let did = reference.did;
+        let store_id = reference.store_id;
+        let identity_id = reference.identity_id;
         crate::internal::auth::state::persist_jwt_token(
             &paths
                 .identities
@@ -4577,16 +4589,22 @@ mod tests {
         let paths = test_paths(root.path());
         let vault_dir = root.path().join("vault");
         std::fs::create_dir_all(paths.identities.identity_root_dir.join("alice-id")).unwrap();
-        let mut custody = anp_identity::DidStore::initialize_injected(
-            paths.identities.identity_root_dir.join(".anp-identity"),
-            "awiki-workspace-vault:workspace-a",
-            [62_u8; 32],
-        )
-        .unwrap();
-        let identity = custody.create_identity(anp_identity_spec("vault")).unwrap();
-        let did = identity.did().to_string();
-        let store_id = custody.manifest().store_id.clone();
-        let identity_id = identity.identity_id().to_string();
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: paths.identities.identity_root_dir.join(".anp-identity"),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new(
+                        "awiki-workspace-vault:workspace-a",
+                        [62_u8; 32],
+                    ),
+                ),
+            })
+            .unwrap();
+        let identity = manager.create(anp_identity_spec("vault")).unwrap();
+        let reference = identity.reference();
+        let did = reference.did;
+        let store_id = reference.store_id;
+        let identity_id = reference.identity_id;
         let vault = FileSecretVault::new(
             DeviceVaultRootKey::from_bytes([62_u8; 32]),
             FileSecretVaultStore::new(&vault_dir),
@@ -4649,29 +4667,38 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
-        let mut custody = crate::internal::identity_custody::open_controller_store(&core).unwrap();
-        let identity = custody
-            .create_identity(anp_identity_spec("created"))
-            .unwrap();
-        let did = crate::ids::Did::parse(identity.did()).unwrap();
-        let root_kid = identity
-            .keys()
+        let mut manager =
+            crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+        let identity = manager.create(anp_identity_spec("created")).unwrap();
+        let public = identity.public_identity().unwrap();
+        let did = crate::ids::Did::parse(&public.reference.did).unwrap();
+        let root_kid = public
+            .active_keys
             .iter()
-            .find(|key| key.role == anp_identity::KeyRole::RootControl)
+            .find(|key| {
+                key.purposes
+                    .contains(&anp_identity::KeyPurpose::RootControl)
+            })
             .unwrap()
             .kid
             .clone();
-        let device_kid = identity
-            .keys()
+        let device_kid = public
+            .active_keys
             .iter()
-            .find(|key| key.role == anp_identity::KeyRole::DeviceSigning)
+            .find(|key| {
+                key.purposes
+                    .contains(&anp_identity::KeyPurpose::DeviceAssertion)
+            })
             .unwrap()
             .kid
             .clone();
-        let agreement_kid = identity
-            .keys()
+        let agreement_kid = public
+            .active_keys
             .iter()
-            .find(|key| key.role == anp_identity::KeyRole::E2eeAgreement)
+            .find(|key| {
+                key.purposes
+                    .contains(&anp_identity::KeyPurpose::KeyAgreement)
+            })
             .unwrap()
             .kid
             .clone();
@@ -4687,7 +4714,7 @@ mod tests {
                     full_handle: "alice.example.com".to_string(),
                     binding_generation: None,
                     jwt_token: "new-anp-token".to_string(),
-                    did_document: Some(identity.document().clone()),
+                    did_document: Some(public.document.into_value()),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
                         root_key_id: root_kid,
                         device_signing_key_id: device_kid,
@@ -4703,8 +4730,8 @@ mod tests {
                 },
                 crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
                     &core,
-                    custody.manifest().store_id.clone(),
-                    identity.identity_id().to_string(),
+                    public.reference.store_id,
+                    public.reference.identity_id,
                 )
                 .unwrap(),
             )
@@ -4806,40 +4833,38 @@ mod tests {
         .unwrap();
     }
 
-    fn anp_identity_spec(name: &str) -> anp_identity::DidCreateSpec {
-        anp_identity::DidCreateSpec {
-            profile: anp_identity::DidProfile::E1,
+    fn anp_identity_spec(name: &str) -> anp_identity::CreateIdentityRequest {
+        anp_identity::CreateIdentityRequest {
+            profile: anp_identity::CreateIdentityProfile::E1,
             domain: "example.com".to_string(),
             port: None,
             path_segments: vec!["awiki".to_string(), name.to_string()],
-            capabilities: anp_identity::Capabilities { did_wba: true },
+            capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
             managed_keys: vec![
-                anp_identity::ManagedKeySpec {
+                anp_identity::ManagedKeyInput {
                     fragment: "root".to_string(),
-                    role: anp_identity::KeyRole::RootControl,
+                    role: anp_identity::ManagedKeyRole::RootControl,
                 },
-                anp_identity::ManagedKeySpec {
+                anp_identity::ManagedKeyInput {
                     fragment: "device".to_string(),
-                    role: anp_identity::KeyRole::DeviceSigning,
+                    role: anp_identity::ManagedKeyRole::DeviceSigning,
                 },
-                anp_identity::ManagedKeySpec {
+                anp_identity::ManagedKeyInput {
                     fragment: "agreement".to_string(),
-                    role: anp_identity::KeyRole::E2eeAgreement,
+                    role: anp_identity::ManagedKeyRole::E2eeAgreement,
                 },
             ],
             external_keys: Vec::new(),
             services: Vec::new(),
             agent_description_url: None,
-            extensions: vec![anp_identity::DidExtensionSpec::DeviceManifest(
-                anp_identity::DeviceManifestSpec {
-                    devices: vec![anp_identity::DeviceManifestEntrySpec {
-                        device_id: "device-a".to_string(),
-                        signing_key_id: "#device".to_string(),
-                        e2ee_key_id: "#agreement".to_string(),
-                        profiles: vec!["anp.core.binding.v1".to_string()],
-                    }],
-                },
-            )],
+            extensions: vec![anp_identity::CreateIdentityExtension::DeviceManifest {
+                devices: vec![anp_identity::DeviceManifestEntryInput {
+                    device_id: "device-a".to_string(),
+                    signing_key_id: "#device".to_string(),
+                    e2ee_key_id: "#agreement".to_string(),
+                    profiles: vec!["anp.core.binding.v1".to_string()],
+                }],
+            }],
         }
     }
 

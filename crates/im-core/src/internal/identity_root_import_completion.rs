@@ -2707,10 +2707,10 @@ mod tests {
 
     #[test]
     fn wrapped_root_dispatch_is_explicit_and_never_falls_back_to_legacy() {
-        let wrapped = anp_identity::WrappedRootEnvelope {
-            envelope_type: anp_identity::WRAPPED_ROOT_ENVELOPE_TYPE.to_owned(),
-            version: anp_identity::WRAPPED_ROOT_ENVELOPE_VERSION,
-            context: anp_identity::RootTransferContext {
+        let wrapped = anp_identity::host::WrappedRootEnvelope {
+            envelope_type: anp_identity::host::WRAPPED_ROOT_ENVELOPE_TYPE.to_owned(),
+            version: anp_identity::host::WRAPPED_ROOT_ENVELOPE_VERSION,
+            context: anp_identity::host::RootTransferContext {
                 source_did: "did:wba:example.test:user:alice:e1_root".to_owned(),
                 target_did: "did:wba:example.test:user:alice:e1_root".to_owned(),
                 sender_device_id: "sender".to_owned(),
@@ -2718,7 +2718,7 @@ mod tests {
                 recipient_agreement_kid: "did:wba:example.test:user:alice:e1_root#recipient-e2ee"
                     .to_owned(),
                 root_kid: "did:wba:example.test:user:alice:e1_root#key-1".to_owned(),
-                checkpoint: anp_identity::DocumentCheckpoint {
+                checkpoint: anp_identity::host::DocumentCheckpoint {
                     document_version: 1,
                     registry_version: 1,
                     document_digest: "sha256:test".to_owned(),
@@ -2938,13 +2938,20 @@ document_hash, registry_version, phase, created_at, updated_at
                     generated.root_key_id,
                     root_fingerprint,
                     4_u64,
-                    anp_identity::canonical_document_digest(&generated.did_document).unwrap(),
+                    crate::internal::identity_custody::canonical_document_digest(
+                        &generated.did_document,
+                    )
+                    .unwrap(),
                     7_u64,
                 ],
             )
             .unwrap();
         drop(connection);
-        let migration = core.identities().migrate_identity_custody().unwrap();
+        let migration = core
+            .identities()
+            .migrate_identity_custody_async()
+            .await
+            .unwrap();
         assert_eq!(
             migration.phase,
             crate::IdentityCustodyMigrationPhase::Cleaned
@@ -2968,13 +2975,19 @@ document_hash, registry_version, phase, created_at, updated_at
             )
             .unwrap();
         assert!(serde_json::from_str::<RootImportCustodyRef>(&current_ref_json).is_ok());
-        let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
+        let manager = crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+        let descriptor = manager
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|descriptor| descriptor.reference.did == generated.did.as_str())
+            .unwrap();
+        let identity = manager.get(&descriptor.reference).unwrap();
         assert_eq!(
-            store
-                .open_identity(generated.did.as_str())
+            anp_identity::host::IdentityStatusPort::host_status(&identity)
                 .unwrap()
-                .root_capability(),
-            anp_identity::RootCapabilityState::Pending
+                .root_capability,
+            anp_identity::host::HostRootCapability::Pending
         );
     }
 

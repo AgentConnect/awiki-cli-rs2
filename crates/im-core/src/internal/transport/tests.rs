@@ -692,7 +692,7 @@ async fn ephemeral_bearer_401_does_not_retry_or_persist_response_token() {
     std::fs::write(identity_dir.join("private.key"), "unused\n").unwrap();
     let auth_path = identity_dir.join("auth.json");
     std::fs::write(&auth_path, r#"{"jwt_token":"persisted-old-token"}"#).unwrap();
-    let endpoint = crate::config::ServiceEndpoint::parse(&format!("http://{address}")).unwrap();
+    let endpoint = crate::config::ServiceEndpoint::parse(format!("http://{address}")).unwrap();
     let core = crate::core::ImCore::new(
         crate::config::ImCoreConfig {
             service_base_url: endpoint,
@@ -1010,23 +1010,29 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
     )
     .unwrap();
     let root = tempfile::tempdir().unwrap();
-    let mut custody = anp_identity::DidStore::initialize_local_file(root.path()).unwrap();
-    let generated = custody
-        .create_identity(crate::internal::identity_custody::native_create_spec(
+    let mut manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: root.path().to_path_buf(),
+            root_key: anp_identity::RootKeySource::LocalPrivateFile,
+        })
+        .unwrap();
+    let generated = manager
+        .create(crate::internal::identity_custody::native_create_spec(
             create.spec,
         ))
         .unwrap();
-    let manifest = anp::authentication::validate_device_manifest(generated.document())
+    let public = generated.public_identity().unwrap();
+    let manifest = anp::authentication::validate_device_manifest(public.document.as_value())
         .unwrap()
         .unwrap();
     let device = &manifest.devices[0];
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
         controller_store_id: "controller-store".to_owned(),
         controller_identity_id: "controller-identity".to_owned(),
-        did: crate::ids::Did::parse(generated.did()).unwrap(),
-        did_document: generated.document().clone(),
+        did: crate::ids::Did::parse(&public.reference.did).unwrap(),
+        did_document: public.document.into_value(),
         protocol_device_id: crate::ids::ProtocolDeviceId::parse(&device.device_id).unwrap(),
-        root_key_id: format!("{}#key-1", generated.did()),
+        root_key_id: format!("{}#key-1", public.reference.did),
         device_signing_key_id: device.signing_key_id.clone(),
         device_e2ee_key_id: device.e2ee_key_id.clone(),
         legacy_daemon_authorization: false,
