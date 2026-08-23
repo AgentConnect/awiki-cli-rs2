@@ -156,7 +156,11 @@ terminal summary：
 getCurrentDeviceSummary(): Promise<CurrentDeviceSummary>
 getDeviceRegistry(): Promise<DeviceRegistrySnapshot>
 listLocalDeviceJoinRequests(): Promise<readonly DeviceJoinRequestNotice[]>
-startDeviceJoinVerification(input: { joinSessionId: string }): Promise<AdminDeviceJoinProgress>
+startDeviceJoinVerification(input: {
+  joinSessionId: string
+  operationId: string
+  challengeTtlSeconds: number
+}): Promise<AdminDeviceJoinProgress>
 getLocalDeviceJoinVerificationProgress(input: { joinSessionId: string }): Promise<AdminDeviceJoinProgress>
 prepareDeviceJoinApproval(input: {
   joinSessionId: string
@@ -179,9 +183,13 @@ revokeDevice(input: {
 约束：
 
 - current summary 直接映射 Core identity device summary；只有 active admin-ready 才能执行 mutation；
-- Registry/request/progress DTO 只保留 Core public 字段，不含 Document/Registry hash、auth generation、
-  proof、token、raw notification 或私钥；
-- local request list 不做网络 I/O；Host 先用既有 `syncNow()` 提交 system notification；
+- 方法行为一对一映射 Core public facade；Node Host-only DTO 可保留 Core public
+  `did/joinSessionId/protocolDeviceId/registryVersion/authGeneration` 以维持精确绑定和 parity，但 Host
+  不得用 version/generation 自行授权；DSH Browser 层必须改成 opaque refs 并移除这些 raw 字段；
+- local request list 不做网络 I/O，也不 claim；但对本机已 claim 且已收到 ResponseVerified
+  notification 的 session，它会验证 challenge response 并幂等推进本地 phase，这是 SAS 可读的
+  必要 reducer step。Host 先用既有 `syncNow()` 提交 system notification，再 list requests，最后
+  读取 local verification progress；
 - `start` 是唯一 claim/challenge mutation，读取请求或 Registry 不 claim；
 - SAS 只来自 local verification progress/prepare result，Debug/inspect 一律脱敏；
 - approval handle single-use、process-local，只能交给可信 Host，禁止持久化或转发 Browser；
@@ -189,6 +197,12 @@ revokeDevice(input: {
 - reject/revoke 复用 Core public facade，不在 Node 猜测 terminal outcome；
 - revoke open option `multiDeviceDeviceRevokeEnabled` 默认 false，DSH 必须显式开启；开关不替代
   ready-admin、self/last-admin、CAS 和 user-presence 检查。
+
+Node 不替 Host 生成 operation ID 或 TTL。DSH Host 必须对同一 raw Join session 使用确定性的
+operation ID，并固定 `challengeTtlSeconds=240`（且不超过 Core public 上限）。如果 start 的传输
+结果未知，Host 不能用新 operation ID 盲重试：先 sync + list requests；若已由当前设备 claim，
+进入 local progress 等待，若被其他设备 claim 则只读，只有仍 `canStartVerification=true` 时才允许
+以同一 operation ID 重试。
 
 ## 4. N-API 与版本
 
@@ -240,6 +254,7 @@ Registry hash、auth generation 或 raw service data 加入 N-API。
 | current device 非 ready-admin | `device_management_not_ready`，不发远端 mutation |
 | approval handle 失效/重放 | `device_join_approval_expired` 或 closed invalid，不重新 prepare/approve |
 | self/last-admin revoke | 保留 Core 稳定拒绝语义，不降级为 generic success |
+| start verification 结果未知 | 不换 operation ID；Host sync/list 后按 can-start/current-claim/other-claim 收敛 |
 
 错误消息不得包含 continuation、session ID、DID、SAS、手机号、OTP、token、路径或服务端原文。
 
@@ -259,8 +274,10 @@ Registry hash、auth generation 或 raw service data 加入 N-API。
 - Direct/Group E2EE gates 默认关闭时，ordinary Join 后 PreKey publication 和 `default-plain`
   Direct 可用，不为 Join 偷开 E2EE；
 - bootstrap admin-ready/member/blocked current summary 映射；
-- Registry/local request 读取无 mutation，start exact-once，response-verified SAS、prepare/confirm
-  single-use approval handle；
+- Registry 读取无 Join mutation；local request list 对未 claim 请求只读，对 current-claimed 的
+  ResponseVerified notification 幂等推进本地验证；start 使用稳定 operation ID/240 秒 TTL；
+- start response-loss 后 sync/list 收敛，不用新 ID 重复 start；response-verified SAS、
+  prepare/confirm single-use approval handle；
 - wrong SAS 由 Host 阻断，Node `sasConfirmed=false` / `userPresenceConfirmed=false` 不发 approve；
 - reject、handled-by-other-admin、self/last-admin revoke、revoke outcome unknown 与 resume；
 - JSON/Debug/error scan 不泄漏 SAS、approval handle、device ID/token/proof；
