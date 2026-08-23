@@ -42,6 +42,7 @@ use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRe
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
 const JOIN_STATE_SCHEMA_VERSION: u32 = 2;
+const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
 const JOIN_STATE_LOCK_FILE: &str = ".awiki-device-join-state.lock";
 const JOIN_CHALLENGE_LEN: usize = 32;
@@ -51,6 +52,10 @@ const CHALLENGE_KDF_INFO: &[u8] = b"awiki-device-join-challenge-v1";
 const SAS_KDF_INFO: &[u8] = b"awiki-device-join-sas-v1";
 const JOIN_PROOF_ALGORITHM: &str = "Ed25519";
 const JOIN_CHALLENGE_PLAINTEXT_TYPE: &str = "awiki.device.join.challenge-plaintext.v1";
+
+#[cfg(test)]
+static FAIL_AFTER_JOIN_ENROLLMENT_PREPARED: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct InternalCheckpoint {
@@ -140,6 +145,61 @@ struct StoredJoinSession {
     admin_identity: Option<crate::identity::IdentitySelector>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceJoinCreationJournal {
+    schema_version: u32,
+    operation_id: String,
+    input_hash: String,
+    did: crate::ids::Did,
+    resolved_document_hash: String,
+    enrollment: Option<crate::internal::identity_provider::ProviderEnrollmentProposal>,
+    custody: Option<crate::internal::identity_join_activation_pending::JoinEnrollmentRef>,
+}
+
+impl DeviceJoinCreationJournal {
+    fn intent(
+        operation_id: String,
+        input_hash: String,
+        did: crate::ids::Did,
+        resolved_document_hash: String,
+    ) -> Self {
+        Self {
+            schema_version: JOIN_CREATION_JOURNAL_SCHEMA_VERSION,
+            operation_id,
+            input_hash,
+            did,
+            resolved_document_hash,
+            enrollment: None,
+            custody: None,
+        }
+    }
+
+    fn validate(&self) -> crate::ImResult<()> {
+        if self.schema_version != JOIN_CREATION_JOURNAL_SCHEMA_VERSION
+            || self.operation_id.trim().is_empty()
+            || self.input_hash.trim().is_empty()
+            || self.resolved_document_hash.trim().is_empty()
+            || self.enrollment.is_some() != self.custody.is_some()
+        {
+            return Err(invalid_state("device Join creation journal is invalid"));
+        }
+        if let (Some(enrollment), Some(custody)) = (&self.enrollment, &self.custody) {
+            if enrollment.identity.did != self.did.as_str()
+                || enrollment.identity.store_id != custody.store_id
+                || enrollment.identity.identity_id != custody.identity_id
+                || enrollment.enrollment_id != custody.enrollment_id
+                || enrollment.checkpoint.document_digest != self.resolved_document_hash
+            {
+                return Err(invalid_state(
+                    "device Join creation journal binding mismatch",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for StoredJoinSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StoredJoinSession")
@@ -167,40 +227,110 @@ impl std::fmt::Debug for StoredJoinSession {
     }
 }
 
-pub(crate) fn start(
+pub(crate) async fn start(
     core: &crate::core::ImCore,
     request: DeviceJoinStartRequest,
     resolved_document: &Value,
 ) -> crate::ImResult<DeviceJoinStartResult> {
-    let _guard = lock_join_state(core)?;
     validate_operation_id(&request.operation_id)?;
     validate_join_ttl(request.ttl_seconds)?;
     let input_hash = canonical_hash(&json!({
         "did": request.did.as_str(),
         "ttl_seconds": request.ttl_seconds,
     }))?;
-    let store = JoinStateStore::new(core);
-    if let Some(stored) = store.find_new_device_by_create_operation(&request.operation_id)? {
-        if stored.create_input_hash.as_deref() != Some(input_hash.as_str()) {
-            return Err(idempotency_conflict("start"));
+    let resolved_document_hash =
+        crate::internal::identity_wire::document::document_hash(resolved_document)?;
+    let mut journal = {
+        let _guard = lock_join_state(core)?;
+        let store = JoinStateStore::new(core);
+        if let Some(stored) = store.find_new_device_by_create_operation(&request.operation_id)? {
+            if stored.create_input_hash.as_deref() != Some(input_hash.as_str()) {
+                return Err(idempotency_conflict("start"));
+            }
+            ensure_not_expired(&stored)?;
+            DeviceJoinCreationJournalStore::new(core).delete(&request.operation_id)?;
+            return Ok(DeviceJoinStartResult {
+                session: summary(&stored)?,
+                join_request: stored.join_request,
+            });
         }
-        ensure_not_expired(&stored)?;
-        return Ok(DeviceJoinStartResult {
-            session: summary(&stored)?,
-            join_request: stored.join_request,
-        });
+        let journal_store = DeviceJoinCreationJournalStore::new(core);
+        match journal_store.load(&request.operation_id)? {
+            Some(journal) => {
+                if journal.input_hash != input_hash
+                    || journal.did != request.did
+                    || journal.resolved_document_hash != resolved_document_hash
+                {
+                    return Err(idempotency_conflict("start"));
+                }
+                journal
+            }
+            None => {
+                let journal = DeviceJoinCreationJournal::intent(
+                    request.operation_id.clone(),
+                    input_hash.clone(),
+                    request.did.clone(),
+                    resolved_document_hash.clone(),
+                );
+                journal_store.save(&journal)?;
+                journal
+            }
+        }
+    };
+
+    let (join_custody, enrollment, enrollment_session) =
+        crate::internal::identity_custody::prepare_join_enrollment_async(
+            core,
+            &request.did,
+            resolved_document,
+            journal.custody.as_ref(),
+        )
+        .await?;
+    {
+        let _guard = lock_join_state(core)?;
+        let store = JoinStateStore::new(core);
+        if let Some(stored) = store.find_new_device_by_create_operation(&request.operation_id)? {
+            if stored.create_input_hash.as_deref() != Some(input_hash.as_str()) {
+                return Err(idempotency_conflict("start"));
+            }
+            ensure_not_expired(&stored)?;
+            DeviceJoinCreationJournalStore::new(core).delete(&request.operation_id)?;
+            return Ok(DeviceJoinStartResult {
+                session: summary(&stored)?,
+                join_request: stored.join_request,
+            });
+        }
+        let journal_store = DeviceJoinCreationJournalStore::new(core);
+        let current = journal_store
+            .load(&request.operation_id)?
+            .ok_or_else(|| invalid_state("device Join creation journal is missing"))?;
+        if current != journal {
+            return Err(invalid_state(
+                "device Join creation changed during provider enrollment",
+            ));
+        }
+        journal.enrollment = Some(enrollment.clone());
+        journal.custody = Some(join_custody.clone());
+        journal_store.save(&journal)?;
+    }
+    #[cfg(test)]
+    {
+        let mut injected = FAIL_AFTER_JOIN_ENROLLMENT_PREPARED
+            .lock()
+            .map_err(|_| invalid_state("device Join creation fault lock is poisoned"))?;
+        if injected.as_deref() == Some(request.operation_id.as_str()) {
+            *injected = None;
+            return Err(crate::ImError::Internal {
+                message: "injected crash after device Join enrollment preparation".to_owned(),
+            });
+        }
     }
 
     let vault = required_vault(core)?;
     let now = OffsetDateTime::now_utc();
     let expires_at = now + Duration::seconds(request.ttl_seconds as i64);
     let join_session_id = random_id("join", JOIN_RANDOM_ID_LEN)?;
-    let (join_custody, enrollment) = crate::internal::identity_custody::prepare_join_enrollment(
-        core,
-        &request.did,
-        resolved_document,
-    )?;
-    let anp_identity::host::EnrollmentProposalKind::Device {
+    let crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device {
         device_id,
         signing_key,
         agreement_key,
@@ -250,14 +380,15 @@ pub(crate) fn start(
             proof_value_b64u: String::new(),
         },
     };
-    join_request.join_request_proof.proof_value_b64u =
-        URL_SAFE_NO_PAD.encode(crate::internal::identity_custody::sign_join_enrollment(
-            core,
-            &request.did,
-            &join_custody,
+    join_request.join_request_proof.proof_value_b64u = URL_SAFE_NO_PAD.encode(
+        crate::internal::identity_custody::sign_join_enrollment_async(
+            &enrollment_session,
+            &enrollment,
             &signing_key_id,
-            &join_request_proof_input_bytes(&join_request)?,
-        )?);
+            join_request_proof_input_bytes(&join_request)?,
+        )
+        .await?,
+    );
     validate_join_request(&join_request, now)?;
     let join_request_hash =
         canonical_hash(&serde_json::to_value(&join_request).map_err(|err| {
@@ -267,33 +398,41 @@ pub(crate) fn start(
         })?)?;
 
     let pairing_pem = Zeroizing::new(pairing_private.to_pem());
-    let mut sealed = Vec::new();
-    let pairing_ref = match seal_join_secret(
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    if let Some(stored) = store.find_new_device_by_create_operation(&request.operation_id)? {
+        if stored.create_input_hash.as_deref() != Some(input_hash.as_str()) {
+            return Err(idempotency_conflict("start"));
+        }
+        ensure_not_expired(&stored)?;
+        DeviceJoinCreationJournalStore::new(core).delete(&request.operation_id)?;
+        return Ok(DeviceJoinStartResult {
+            session: summary(&stored)?,
+            join_request: stored.join_request,
+        });
+    }
+    let journal_store = DeviceJoinCreationJournalStore::new(core);
+    let current = journal_store
+        .load(&request.operation_id)?
+        .ok_or_else(|| invalid_state("device Join creation journal is missing"))?;
+    if current != journal {
+        return Err(invalid_state(
+            "device Join creation changed during provider signing",
+        ));
+    }
+    let pairing_ref = seal_join_secret(
         core,
         &*vault,
         &request.did,
         SecretKind::IdentityJoinPairingPrivate,
         &format!("{join_session_id}:new-pairing"),
         pairing_pem.as_bytes(),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            cleanup_secrets(&*vault, &sealed);
-            let _ = crate::internal::identity_custody::discard_join_enrollment(
-                core,
-                &request.did,
-                &join_custody,
-            );
-            return Err(err);
-        }
-    };
-    sealed.push(pairing_ref.clone());
-
+    )?;
     let stored = StoredJoinSession {
         schema_version: JOIN_STATE_SCHEMA_VERSION,
         side: DeviceJoinSide::NewDevice,
         phase: DeviceJoinLocalPhase::Pending,
-        create_operation_id: Some(request.operation_id),
+        create_operation_id: Some(request.operation_id.clone()),
         create_input_hash: Some(input_hash),
         transition_operation_id: None,
         transition_input_hash: None,
@@ -308,19 +447,15 @@ pub(crate) fn start(
         join_session_token_ref: None,
         approval: None,
         activation_pending: false,
-        join_custody: Some(join_custody.clone()),
-        pairing_private_ref: pairing_ref,
+        join_custody: Some(join_custody),
+        pairing_private_ref: pairing_ref.clone(),
         admin_identity: None,
     };
     if let Err(err) = store.save(&stored) {
-        cleanup_secrets(&*vault, &sealed);
-        let _ = crate::internal::identity_custody::discard_join_enrollment(
-            core,
-            &request.did,
-            &join_custody,
-        );
+        cleanup_secrets(&*vault, &[pairing_ref]);
         return Err(err);
     }
+    journal_store.delete(&request.operation_id)?;
     Ok(DeviceJoinStartResult {
         session: summary(&stored)?,
         join_request,
@@ -3648,6 +3783,70 @@ fn idempotency_conflict(operation: &str) -> crate::ImError {
 
 struct JoinStateStore<'a> {
     paths: &'a crate::paths::IdentityRegistryPaths,
+}
+
+struct DeviceJoinCreationJournalStore<'a> {
+    paths: &'a crate::paths::IdentityRegistryPaths,
+}
+
+impl<'a> DeviceJoinCreationJournalStore<'a> {
+    fn new(core: &'a crate::core::ImCore) -> Self {
+        Self {
+            paths: &core.inner().sdk_paths().identities,
+        }
+    }
+
+    fn load(&self, operation_id: &str) -> crate::ImResult<Option<DeviceJoinCreationJournal>> {
+        let path = self.path(operation_id);
+        let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(crate::ImError::from(error)),
+        };
+        let journal: DeviceJoinCreationJournal = serde_json::from_slice(&raw)
+            .map_err(|_| invalid_state("device Join creation journal JSON is unreadable"))?;
+        journal.validate()?;
+        if journal.operation_id != operation_id {
+            return Err(invalid_state(
+                "device Join creation journal operation binding mismatch",
+            ));
+        }
+        Ok(Some(journal))
+    }
+
+    fn save(&self, journal: &DeviceJoinCreationJournal) -> crate::ImResult<()> {
+        journal.validate()?;
+        let raw =
+            serde_json::to_vec_pretty(journal).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })?;
+        write_private_atomic(&self.path(&journal.operation_id), &raw)
+    }
+
+    fn delete(&self, operation_id: &str) -> crate::ImResult<()> {
+        let path = self.path(operation_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(crate::ImError::Io {
+                detail: format!(
+                    "delete device Join creation journal {}: {error}",
+                    path.display()
+                ),
+            }),
+        }
+    }
+
+    fn path(&self, operation_id: &str) -> PathBuf {
+        let digest = Sha256::digest(operation_id.as_bytes());
+        self.paths
+            .identity_root_dir
+            .join(JOIN_STATE_DIR)
+            .join(format!(
+                "{}.creation-journal",
+                URL_SAFE_NO_PAD.encode(digest)
+            ))
+    }
 }
 
 impl<'a> JoinStateStore<'a> {

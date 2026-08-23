@@ -467,12 +467,12 @@ impl<'a> DeviceJoinService<'a> {
         Self { core }
     }
 
-    pub(crate) fn start(
+    pub(crate) async fn start(
         &self,
         request: DeviceJoinStartRequest,
         resolved_document: &serde_json::Value,
     ) -> crate::ImResult<DeviceJoinStartResult> {
-        crate::internal::identity_device_join::start(self.core, request, resolved_document)
+        crate::internal::identity_device_join::start(self.core, request, resolved_document).await
     }
 
     pub(crate) fn prepare_admin_challenge(

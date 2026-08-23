@@ -424,6 +424,124 @@ pub(crate) fn prepare_join_enrollment(
     ))
 }
 
+pub(crate) async fn prepare_join_enrollment_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+    resolved_document: &serde_json::Value,
+    expected: Option<&crate::internal::identity_join_activation_pending::JoinEnrollmentRef>,
+) -> crate::ImResult<(
+    crate::internal::identity_join_activation_pending::JoinEnrollmentRef,
+    crate::internal::identity_provider::ProviderEnrollmentProposal,
+    std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+)> {
+    use crate::internal::identity_provider::{
+        ProviderDeviceEnrollmentRequest, ProviderEnrollmentCapabilities,
+        ProviderEnrollmentProposalKind, ProviderIdentityRef, ProviderIdentityState,
+        ProviderPublicationEvidence, ProviderVerifiedRemoteDocument,
+    };
+
+    if resolved_document
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        != Some(did.as_str())
+        || !anp::authentication::validate_did_document_binding(resolved_document, true)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let document_digest =
+        crate::internal::identity_wire::document::document_hash(resolved_document)?;
+    let provider = controller_custody_provider(core).await?;
+    let session = if let Some(expected) = expected {
+        provider
+            .resume_enrollment(&ProviderIdentityRef {
+                store_id: expected.store_id.clone(),
+                identity_id: expected.identity_id.clone(),
+                did: did.as_str().to_owned(),
+            })
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .ok_or(crate::ImError::PermissionDenied)?
+    } else {
+        let mut matching = provider
+            .list_identities()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .into_iter()
+            .filter(|descriptor| descriptor.reference.did == did.as_str())
+            .collect::<Vec<_>>();
+        if matching.len() > 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        match matching.pop() {
+            Some(descriptor) => {
+                if descriptor.state != ProviderIdentityState::Enrolling {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                let identity = provider
+                    .open_identity(&descriptor.reference)
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
+                let public = identity
+                    .public_identity()
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
+                if public.reference != descriptor.reference
+                    || public.state != ProviderIdentityState::Enrolling
+                    || crate::internal::identity_wire::document::document_hash(&public.document)?
+                        != document_digest
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                provider
+                    .resume_enrollment(&descriptor.reference)
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?
+                    .ok_or(crate::ImError::PermissionDenied)?
+            }
+            None => {
+                let device_id = crate::ids::ProtocolDeviceId::generate()?;
+                provider
+                    .begin_device_enrollment(ProviderDeviceEnrollmentRequest {
+                        remote: ProviderVerifiedRemoteDocument {
+                            document: resolved_document.clone(),
+                            evidence: ProviderPublicationEvidence {
+                                document_version: 1,
+                                registry_version: 1,
+                                document_digest: document_digest.clone(),
+                            },
+                        },
+                        device_id: device_id.as_str().to_owned(),
+                        device_signing_fragment: format!("{}-sign", device_id.as_str()),
+                        device_agreement_fragment: format!("{}-e2ee", device_id.as_str()),
+                        profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                        capabilities: ProviderEnrollmentCapabilities { did_wba: true },
+                    })
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?
+            }
+        }
+    };
+    let proposal = session
+        .proposal()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if proposal.identity.did != did.as_str()
+        || proposal.checkpoint.document_digest != document_digest
+        || !matches!(proposal.kind, ProviderEnrollmentProposalKind::Device { .. })
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let custody = crate::internal::identity_join_activation_pending::JoinEnrollmentRef {
+        store_id: proposal.identity.store_id.clone(),
+        identity_id: proposal.identity.identity_id.clone(),
+        enrollment_id: proposal.enrollment_id.clone(),
+    };
+    if expected.is_some_and(|expected| expected != &custody) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok((custody, proposal, session))
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn provision_handle_recovery_identity(
     core: &crate::core::ImCore,
@@ -842,6 +960,28 @@ pub(crate) fn sign_join_enrollment(
     session
         .sign_device_assertion(message)
         .map_err(map_facade_error)
+}
+
+pub(crate) async fn sign_join_enrollment_async(
+    session: &std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+    proposal: &crate::internal::identity_provider::ProviderEnrollmentProposal,
+    kid: &str,
+    message: Vec<u8>,
+) -> crate::ImResult<Vec<u8>> {
+    let crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device {
+        signing_key,
+        ..
+    } = &proposal.kind
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    if signing_key.kid != kid {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    session
+        .sign_device_assertion(message)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)
 }
 
 #[cfg(feature = "identity-native-anp")]

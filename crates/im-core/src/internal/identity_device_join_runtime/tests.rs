@@ -512,6 +512,7 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
             },
             &current_document,
         )
+        .await
         .unwrap();
     let join_session_id = started.session.join_session_id.clone();
     let join_request = started.join_request;
@@ -809,6 +810,7 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
             },
             &document,
         )
+        .await
         .unwrap();
     let join_session_id = started.session.join_session_id.clone();
     let prepared = core

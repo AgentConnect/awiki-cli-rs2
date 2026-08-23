@@ -294,8 +294,8 @@ fn response_signature_input_is_closed_and_canonicalizable() {
     assert!(canonical_bytes(&value).is_ok());
 }
 
-#[test]
-fn join_start_emits_mixed_profiles() {
+#[tokio::test]
+async fn join_start_emits_mixed_profiles() {
     let candidate_root = tempfile::tempdir().unwrap();
     let candidate = open_empty_vault_core(candidate_root.path());
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
@@ -315,6 +315,7 @@ fn join_start_emits_mixed_profiles() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
 
     assert_eq!(
@@ -354,8 +355,81 @@ fn join_start_emits_mixed_profiles() {
     assert_eq!(identity.state(), anp_identity::IdentityState::Enrolling);
 }
 
-#[test]
-fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
+#[tokio::test]
+async fn join_start_resumes_enrollment_after_crash_before_local_session_commit() {
+    let candidate_root = tempfile::tempdir().unwrap();
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "example.com",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
+    let operation_id = "start-resume-after-provider-side-effect";
+    let request = DeviceJoinStartRequest {
+        operation_id: operation_id.to_owned(),
+        did: generated.did.clone(),
+        ttl_seconds: 300,
+    };
+    *FAIL_AFTER_JOIN_ENROLLMENT_PREPARED.lock().unwrap() = Some(operation_id.to_owned());
+
+    let error = candidate
+        .device_join()
+        .start(request.clone(), &generated.did_document)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::ImError::Internal { .. }));
+    let journal = DeviceJoinCreationJournalStore::new(&candidate)
+        .load(operation_id)
+        .unwrap()
+        .unwrap();
+    let custody = journal.custody.clone().unwrap();
+    assert!(journal.enrollment.is_some());
+    let identities = crate::internal::identity_custody::open_controller_manager(&candidate)
+        .unwrap()
+        .list()
+        .unwrap();
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|identity| identity.reference.did == generated.did.as_str())
+            .count(),
+        1
+    );
+
+    let started = candidate
+        .device_join()
+        .start(request, &generated.did_document)
+        .await
+        .unwrap();
+    assert_eq!(
+        JoinStateStore::new(&candidate)
+            .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+            .unwrap()
+            .unwrap()
+            .join_custody,
+        Some(custody)
+    );
+    assert!(DeviceJoinCreationJournalStore::new(&candidate)
+        .load(operation_id)
+        .unwrap()
+        .is_none());
+    let identities = crate::internal::identity_custody::open_controller_manager(&candidate)
+        .unwrap()
+        .list()
+        .unwrap();
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|identity| identity.reference.did == generated.did.as_str())
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
     let root = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(root.path());
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
@@ -375,6 +449,7 @@ fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
     let stored = JoinStateStore::new(&core)
         .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
@@ -419,8 +494,8 @@ fn join_profile_reader_accepts_only_canonical_or_legacy_complete_sets() {
     assert!(!join_profiles_are_supported(&hybrid));
 }
 
-#[test]
-fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
+#[tokio::test]
+async fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
     let root = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(root.path());
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey("awiki.test", "alice", None, None).unwrap();
@@ -437,6 +512,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
     let pending = core
         .device_join()
@@ -448,6 +524,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
     let other = core
         .device_join()
@@ -459,6 +536,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
             },
             &other_generated.did_document,
         )
+        .await
         .unwrap();
     let authorized_device_id = authorized.session.protocol_device_id.clone();
     let authorized_state = mark_new_device_join_authorized(
@@ -501,8 +579,8 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
         .is_err());
 }
 
-#[test]
-fn identity_retirement_replays_exact_join_cleanup_after_restart() {
+#[tokio::test]
+async fn identity_retirement_replays_exact_join_cleanup_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(root.path());
     let protocol_device_id = core
@@ -521,6 +599,7 @@ fn identity_retirement_replays_exact_join_cleanup_after_restart() {
             },
             &document,
         )
+        .await
         .unwrap();
     let pending = core
         .device_join()
@@ -532,6 +611,7 @@ fn identity_retirement_replays_exact_join_cleanup_after_restart() {
             },
             &document,
         )
+        .await
         .unwrap();
     let late_authorized = mark_new_device_join_authorized(
         &core,
@@ -660,8 +740,8 @@ fn request_role_is_member_only() {
     ));
 }
 
-#[test]
-fn local_admin_verification_progress_is_phase_gated_and_read_only() {
+#[tokio::test]
+async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(admin_root.path());
@@ -677,6 +757,7 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
             },
             &document,
         )
+        .await
         .unwrap();
     let prepared = core
         .device_join()
@@ -749,8 +830,8 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     assert!(progress.authorized_device.is_none());
 }
 
-#[test]
-fn admin_rejects_legacy_join_before_preparing_document_mutation() {
+#[tokio::test]
+async fn admin_rejects_legacy_join_before_preparing_document_mutation() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (admin, document, did) = open_ready_admin_core(admin_root.path());
@@ -766,6 +847,7 @@ fn admin_rejects_legacy_join_before_preparing_document_mutation() {
             },
             &document,
         )
+        .await
         .unwrap();
     let challenged = admin
         .device_join()
@@ -839,8 +921,8 @@ fn admin_rejects_legacy_join_before_preparing_document_mutation() {
     assert!(unchanged.approval.is_none());
 }
 
-#[test]
-fn local_new_device_sas_is_restart_safe_and_read_only() {
+#[tokio::test]
+async fn local_new_device_sas_is_restart_safe_and_read_only() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(admin_root.path());
@@ -856,6 +938,7 @@ fn local_new_device_sas_is_restart_safe_and_read_only() {
             },
             &document,
         )
+        .await
         .unwrap();
     assert!(
         local_new_device_verification_sas(&candidate, &started.session.join_session_id,).is_err()
@@ -1093,6 +1176,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
             },
             &admin_document,
         )
+        .await
         .unwrap();
     let join_request = started.join_request.clone();
     let marker =

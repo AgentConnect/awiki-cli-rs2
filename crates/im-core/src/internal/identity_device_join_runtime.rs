@@ -889,7 +889,7 @@ where
     {
         let operation_id = request.operation_id.clone();
         let document = self.resolver.resolve(&request.did).await?;
-        let local = self.core.device_join().start(request, &document)?;
+        let local = self.core.device_join().start(request, &document).await?;
         local_hook(&local.session)?;
         if local.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
             return Ok(local.session);
