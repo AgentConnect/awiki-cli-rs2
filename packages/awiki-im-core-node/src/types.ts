@@ -13,6 +13,8 @@ export interface ImCoreNodeOpenOptions {
   readonly operationTimeoutMs?: number
   /** Timeout for bounded synchronization before list reads. */
   readonly syncTimeoutMs?: number
+  /** Enables permanent revocation of another device. Defaults to false. */
+  readonly multiDeviceDeviceRevokeEnabled?: boolean
   /** Enables Core-owned durable phone recovery for an existing Handle. */
   readonly multiDeviceHandleRecoveryEnabled?: boolean
   /** Exact User Service audience required when Handle recovery is enabled. */
@@ -117,6 +119,7 @@ export interface PreparedRegistrationJoinInput {
   readonly continuationId: string
   readonly operationId: string
   readonly ttlSeconds?: number
+  readonly userPresenceConfirmed: boolean
 }
 
 /** Host-only continuation of an already-started prepared registration Join. */
@@ -149,8 +152,86 @@ export interface PreparedRegistrationJoinProgress {
   readonly did: string
   readonly localPhase: PreparedRegistrationJoinLocalPhase
   readonly remoteState: PreparedRegistrationJoinRemoteState
+  readonly expiresAt: string
+  readonly sas?: string
   readonly completed: boolean
   readonly identity?: NodeIdentity
+}
+
+export interface LocalDeviceJoinSession {
+  readonly joinSessionId: string
+  readonly side: 'new_device' | 'admin'
+  readonly localPhase: PreparedRegistrationJoinLocalPhase
+  readonly expiresAt: string
+}
+
+export interface CurrentDeviceSummary {
+  readonly identityId: string
+  readonly did: string
+  readonly mode: 'legacy' | 'v_next'
+  readonly protocolDeviceId?: string
+  readonly role?: 'member' | 'admin'
+  readonly readiness: 'legacy' | 'member_ready' | 'admin_awaiting_root' | 'admin_ready' | 'blocked'
+  readonly canManage: boolean
+}
+
+export interface RegistryDeviceSummary {
+  readonly protocolDeviceId: string
+  readonly signingKeyId: string
+  readonly e2eeKeyId: string
+  readonly status: 'active' | 'revoked'
+  readonly role: 'member' | 'admin'
+  readonly managementReady: boolean
+  readonly isCurrent: boolean
+  readonly authGeneration: string
+}
+
+export interface DeviceRegistrySnapshot {
+  readonly did: string
+  readonly registryVersion: string
+  readonly devices: readonly RegistryDeviceSummary[]
+}
+
+export interface DeviceJoinRequestNotice {
+  readonly eventId: string
+  readonly joinSessionId: string
+  readonly did: string
+  readonly protocolDeviceId: string
+  readonly candidateKeyFingerprint: string
+  readonly issuedAt: string
+  readonly expiresAt: string
+  readonly state: PreparedRegistrationJoinRemoteState
+  readonly claimedByCurrentDevice: boolean
+  readonly canStartVerification: boolean
+}
+
+export interface StartDeviceJoinVerificationInput {
+  readonly joinSessionId: string
+  readonly operationId: string
+  readonly challengeTtlSeconds: number
+}
+
+export interface AdminDeviceJoinProgress {
+  readonly joinSessionId: string
+  readonly did: string
+  readonly protocolDeviceId: string
+  readonly localPhase: PreparedRegistrationJoinLocalPhase
+  readonly remoteState: PreparedRegistrationJoinRemoteState
+  readonly expiresAt: string
+  readonly sas?: string
+}
+
+export interface DeviceJoinApprovalPrompt {
+  readonly approvalHandle: string
+  readonly joinSessionId: string
+  readonly sas: string
+  readonly expiresAt: string
+}
+
+export interface DeviceRevokeResult {
+  readonly did: string
+  readonly targetDeviceId: string
+  readonly status: 'revoked'
 }
 
 /** Server-issued retry boundary for a registration OTP. */
@@ -637,6 +718,17 @@ export interface ImCoreNodeClient {
   beginPreparedRegistrationJoin(input: PreparedRegistrationJoinInput): Promise<PreparedRegistrationJoinProgress>
   /** Advance an already-started prepared registration Join without repeating its mutation. */
   resumePreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<PreparedRegistrationJoinProgress>
+  listLocalDeviceJoinSessions(): Promise<readonly LocalDeviceJoinSession[]>
+  cancelPreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<LocalDeviceJoinSession>
+  getCurrentDeviceSummary(): Promise<CurrentDeviceSummary>
+  getDeviceRegistry(): Promise<DeviceRegistrySnapshot>
+  listLocalDeviceJoinRequests(): Promise<readonly DeviceJoinRequestNotice[]>
+  startDeviceJoinVerification(input: StartDeviceJoinVerificationInput): Promise<AdminDeviceJoinProgress>
+  getLocalDeviceJoinVerificationProgress(input: PreparedRegistrationJoinResumeInput): Promise<AdminDeviceJoinProgress>
+  prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt>
+  confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
+  rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
+  revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>

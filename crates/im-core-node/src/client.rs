@@ -639,7 +639,7 @@ impl NativeImCoreNodeClient {
                             preparation_id: input.continuation_id,
                             operation_id: input.operation_id,
                             ttl_seconds: u64::from(input.ttl_seconds.unwrap_or(600)),
-                            user_presence_confirmed: true,
+                            user_presence_confirmed: input.user_presence_confirmed,
                         },
                     ),
                 self.inner.operation_timeout,
@@ -669,6 +669,15 @@ impl NativeImCoreNodeClient {
         let _mutation = self.inner.mutation.lock().await;
         let mut operation = self.inner.write_operation().await?;
         let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        if let Some(session) = local_new_device_session(environment, &input.join_session_id)? {
+            if matches!(
+                session.phase,
+                im_core::identity::DeviceJoinLocalPhase::Cancelled
+                    | im_core::identity::DeviceJoinLocalPhase::Expired
+            ) {
+                return crate::dto::terminal_prepared_registration_join_progress(session);
+            }
+        }
         let value = self
             .inner
             .wait_im(
@@ -686,6 +695,60 @@ impl NativeImCoreNodeClient {
         Ok(crate::dto::prepared_registration_join_progress(
             value, identity,
         ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_local_device_join_sessions(
+        &self,
+    ) -> napi::Result<Vec<NodeLocalDeviceJoinSession>> {
+        napi_result(self.list_local_device_join_sessions_inner().await)
+    }
+
+    async fn list_local_device_join_sessions_inner(
+        &self,
+    ) -> SafeResult<Vec<NodeLocalDeviceJoinSession>> {
+        let operation = self.inner.operation().await?;
+        operation
+            .environment()?
+            .core
+            .device_join()
+            .local_sessions()
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .map(crate::dto::local_device_join_session)
+                    .collect()
+            })
+            .map_err(SafeError::from_im)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn cancel_prepared_registration_join(
+        &self,
+        input: NodePreparedRegistrationJoinCancelInput,
+    ) -> napi::Result<NodeLocalDeviceJoinSession> {
+        napi_result(self.cancel_prepared_registration_join_inner(input).await)
+    }
+
+    async fn cancel_prepared_registration_join_inner(
+        &self,
+        input: NodePreparedRegistrationJoinCancelInput,
+    ) -> SafeResult<NodeLocalDeviceJoinSession> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        let session = self
+            .inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .cancel_new_device_join(&input.join_session_id),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::local_device_join_session(session))
     }
 
     async fn refresh_prepared_registration_client(
@@ -728,6 +791,272 @@ impl NativeImCoreNodeClient {
             identity.display_name.clone(),
             registered_at_ms,
         )))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_current_device_summary(&self) -> napi::Result<NodeCurrentDeviceSummary> {
+        napi_result(self.get_current_device_summary_inner().await)
+    }
+
+    async fn get_current_device_summary_inner(&self) -> SafeResult<NodeCurrentDeviceSummary> {
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .identities()
+                    .device_summary_async(im_core::identity::IdentitySelector::Default),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::current_device_summary)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_device_registry(&self) -> napi::Result<NodeDeviceRegistrySnapshot> {
+        napi_result(self.get_device_registry_inner().await)
+    }
+
+    async fn get_device_registry_inner(&self) -> SafeResult<NodeDeviceRegistrySnapshot> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .registry(im_core::identity::IdentitySelector::Default),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::device_registry_snapshot)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_local_device_join_requests(
+        &self,
+    ) -> napi::Result<Vec<NodeDeviceJoinRequestNotice>> {
+        napi_result(self.list_local_device_join_requests_inner().await)
+    }
+
+    async fn list_local_device_join_requests_inner(
+        &self,
+    ) -> SafeResult<Vec<NodeDeviceJoinRequestNotice>> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .local_device_join_requests(im_core::identity::IdentitySelector::Default),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(crate::dto::device_join_request_notice)
+                    .collect()
+            })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn start_device_join_verification(
+        &self,
+        input: NodeStartDeviceJoinVerificationInput,
+    ) -> napi::Result<NodeAdminDeviceJoinProgress> {
+        napi_result(self.start_device_join_verification_inner(input).await)
+    }
+
+    async fn start_device_join_verification_inner(
+        &self,
+        input: NodeStartDeviceJoinVerificationInput,
+    ) -> SafeResult<NodeAdminDeviceJoinProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .start_device_join_verification(
+                        im_core::identity::IdentitySelector::Default,
+                        &input.join_session_id,
+                        &input.operation_id,
+                        u64::from(input.challenge_ttl_seconds),
+                    ),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::admin_device_join_progress)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_local_device_join_verification_progress(
+        &self,
+        input: NodeDeviceJoinSessionInput,
+    ) -> napi::Result<NodeAdminDeviceJoinProgress> {
+        napi_result(
+            self.get_local_device_join_verification_progress_inner(input)
+                .await,
+        )
+    }
+
+    async fn get_local_device_join_verification_progress_inner(
+        &self,
+        input: NodeDeviceJoinSessionInput,
+    ) -> SafeResult<NodeAdminDeviceJoinProgress> {
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        environment
+            .core
+            .device_join()
+            .local_device_join_verification_progress(
+                im_core::identity::IdentitySelector::Default,
+                &input.join_session_id,
+            )
+            .map(crate::dto::admin_device_join_progress)
+            .map_err(SafeError::from_im)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn prepare_device_join_approval(
+        &self,
+        input: NodePrepareDeviceJoinApprovalInput,
+    ) -> napi::Result<NodeDeviceJoinApprovalPrompt> {
+        napi_result(self.prepare_device_join_approval_inner(input).await)
+    }
+
+    async fn prepare_device_join_approval_inner(
+        &self,
+        input: NodePrepareDeviceJoinApprovalInput,
+    ) -> SafeResult<NodeDeviceJoinApprovalPrompt> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        environment
+            .core
+            .device_join()
+            .prepare_device_join_approval(
+                im_core::identity::IdentitySelector::Default,
+                &input.join_session_id,
+                input.sas_confirmed,
+            )
+            .map(crate::dto::device_join_approval_prompt)
+            .map_err(SafeError::from_im)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn confirm_device_join_approval(
+        &self,
+        input: NodeConfirmDeviceJoinApprovalInput,
+    ) -> napi::Result<NodeAdminDeviceJoinProgress> {
+        napi_result(self.confirm_device_join_approval_inner(input).await)
+    }
+
+    async fn confirm_device_join_approval_inner(
+        &self,
+        input: NodeConfirmDeviceJoinApprovalInput,
+    ) -> SafeResult<NodeAdminDeviceJoinProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment.core.device_join().confirm_device_join_approval(
+                    im_core::identity::DeviceJoinConfirmApprovalRequest {
+                        approval_handle: input.approval_handle,
+                        user_presence_confirmed: input.user_presence_confirmed,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::admin_device_join_progress)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn reject_device_join(
+        &self,
+        input: NodeRejectDeviceJoinInput,
+    ) -> napi::Result<NodeAdminDeviceJoinProgress> {
+        napi_result(self.reject_device_join_inner(input).await)
+    }
+
+    async fn reject_device_join_inner(
+        &self,
+        input: NodeRejectDeviceJoinInput,
+    ) -> SafeResult<NodeAdminDeviceJoinProgress> {
+        let reason = match input.reason.as_str() {
+            "user_rejected" => im_core::identity::DeviceJoinRejectReason::UserRejected,
+            "sas_mismatch" => im_core::identity::DeviceJoinRejectReason::SasMismatch,
+            _ => {
+                return Err(invalid_input(
+                    "The device Join rejection reason is invalid.",
+                ))
+            }
+        };
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment.core.device_join().reject_device_join(
+                    im_core::identity::IdentitySelector::Default,
+                    &input.join_session_id,
+                    reason,
+                ),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::admin_device_join_progress)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn revoke_device(
+        &self,
+        input: NodeRevokeDeviceInput,
+    ) -> napi::Result<NodeDeviceRevokeResult> {
+        napi_result(self.revoke_device_inner(input).await)
+    }
+
+    async fn revoke_device_inner(
+        &self,
+        input: NodeRevokeDeviceInput,
+    ) -> SafeResult<NodeDeviceRevokeResult> {
+        let target_device_id = im_core::ids::ProtocolDeviceId::parse(input.target_device_id)
+            .map_err(SafeError::from_im)?;
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let environment = operation.environment()?;
+        operation.client()?;
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .device_revoke()
+                    .revoke(im_core::identity::DeviceRevokeRequest {
+                        identity: im_core::identity::IdentitySelector::Default,
+                        target_device_id,
+                        user_presence_confirmed: input.user_presence_confirmed,
+                    }),
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::device_revoke_result)
     }
 
     #[napi(catch_unwind)]
@@ -1975,6 +2304,9 @@ fn core_open_options(
             im_core::IdentitySecretStoragePolicy::VaultRequired,
             state.identity_vault_options()?,
         )
+        .with_multi_device_device_revoke_enabled(
+            options.multi_device_device_revoke_enabled.unwrap_or(false),
+        )
         .with_multi_device_handle_recovery_enabled(
             options
                 .multi_device_handle_recovery_enabled
@@ -2202,6 +2534,23 @@ fn registration_request(
     })
 }
 
+fn local_new_device_session(
+    environment: &Environment,
+    join_session_id: &str,
+) -> SafeResult<Option<im_core::identity::DeviceJoinSessionView>> {
+    environment
+        .core
+        .device_join()
+        .local_sessions()
+        .map(|sessions| {
+            sessions.into_iter().find(|session| {
+                session.side == im_core::identity::DeviceJoinSide::NewDevice
+                    && session.join_session_id == join_session_id
+            })
+        })
+        .map_err(SafeError::from_im)
+}
+
 async fn ensure_unregistered(core: &im_core::ImCore, inner: &ClientInner) -> SafeResult<()> {
     if inner
         .wait_im(
@@ -2422,6 +2771,7 @@ mod tests {
             anp_service_did: None,
             operation_timeout_ms: Some(1_000),
             sync_timeout_ms: Some(100),
+            multi_device_device_revoke_enabled: None,
             multi_device_handle_recovery_enabled: None,
             multi_device_audience: None,
             external_http_allow_insecure_loopback_for_testing: None,

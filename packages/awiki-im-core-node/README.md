@@ -137,10 +137,9 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.1.7` 源码 candidate 的 Native contract version 为 `9`，在 registry `0.1.6` 的
-  prepared registration Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send
-  之上增加 Host-only opaque recovery attestation；`0.1.6` 使用 native API v8，`0.1.7`
-  必须同步发布 v9 wrapper 与全部平台 addon，wrapper 拒绝其他版本的 addon。
+- 当前 `0.1.8` 源码 candidate 的 Native contract version 为 `10`，在 `0.1.7` 的 recovery
+  attestation 之上增加可恢复的新设备 Join、SAS/expiry、设备 Registry、审批/拒绝和撤销；
+  `0.1.8` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他版本的 addon。
 
 `issueHandleRecoveryAttestation({ operationId })` 是 Host-only 恢复对账方法，只允许在本机恢复
 已 `applied` 后调用。返回的短时 opaque token 必须由 Host 立即转交固定 Model Proxy 受众并丢弃；

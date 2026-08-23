@@ -216,11 +216,10 @@ Model Proxy 对账。Node facade 不允许 caller 提供 claims/audience，只�
 remote 或 Agent 工具。临时服务故障映射为可重试 `recovery_reconciliation_unavailable`；operation
 不匹配映射为不可重试 `recovery_reconciliation_invalid`，原始服务正文和 token 均不会进入 JS 错误。
 
-当前 `0.1.7` 源码 candidate 的 Native contract version 为 `9`，在 registry `0.1.6` 的
-prepared registration Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send
-之上增加 Host-only opaque recovery attestation；wrapper 在加载时必须拒绝其他版本的 addon，
-避免 native API v8 二进制缺少对应方法却被静默当作兼容实现。`0.1.7` 必须把 v9 wrapper 和全部
-Tier 1 addon 一起发布。
+当前 `0.1.8` 源码 candidate 的 Native contract version 为 `10`，在 `0.1.7` 的 recovery
+attestation 之上增加 DSH 所需的新设备 Join 恢复/SAS/cancel，以及 ready-admin Registry、审批、
+拒绝和撤销 facade。wrapper 在加载时必须拒绝其他版本的 addon；`0.1.8` 必须把 v10 wrapper 和
+全部 Tier 1 addon 一起发布。增量合同见 [DSH Device Join 扩展](dsh-device-join-extension.md)。
 
 ## 构建与验证
 
@@ -239,7 +238,7 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-`0.1.7` 本地 candidate 使用 native API v9，由同一个 committed source OID 构建 wrapper 和当前
+`0.1.8` 本地 candidate 使用 native API v10，由同一个 committed source OID 构建 wrapper 和当前
 平台包，并通过
 `stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
 registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- Add restart-safe new-device Join listing, explicit cancellation, SAS, expiry, and user-presence input.
+- Add Host-only device registry, Join approval/rejection, and device revocation methods.
+- Raise the native API contract to v10 so wrappers reject addons without the device management facade.
+
 ## 0.1.7
 
 - Add a Host-only opaque recovery-attestation method for post-recovery service reconciliation; the SDK never logs or persists the token.

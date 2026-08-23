@@ -42,6 +42,7 @@ void opened.then(async client => {
       continuationId: registration.existingHandle.continuationId,
       operationId: 'registration-access-type-test',
       ttlSeconds: 600,
+      userPresenceConfirmed: false,
     })
     prepared.completed satisfies boolean
     if (!prepared.completed) {
@@ -49,6 +50,33 @@ void opened.then(async client => {
         joinSessionId: prepared.joinSessionId,
       })
       resumed.identity satisfies import('../src/index.js').NodeIdentity | undefined
+    }
+  }
+  const localJoins = await client.listLocalDeviceJoinSessions()
+  localJoins[0]?.side satisfies 'new_device' | 'admin' | undefined
+  const currentDevice = await client.getCurrentDeviceSummary()
+  currentDevice.canManage satisfies boolean
+  const registry = await client.getDeviceRegistry()
+  registry.devices[0]?.authGeneration satisfies string | undefined
+  const requests = await client.listLocalDeviceJoinRequests()
+  if (requests[0]?.canStartVerification) {
+    const verification = await client.startDeviceJoinVerification({
+      joinSessionId: requests[0].joinSessionId,
+      operationId: 'dsh-verify-type-test',
+      challengeTtlSeconds: 240,
+    })
+    const localVerification = await client.getLocalDeviceJoinVerificationProgress({
+      joinSessionId: verification.joinSessionId,
+    })
+    if (localVerification.sas !== undefined) {
+      const prompt = await client.prepareDeviceJoinApproval({
+        joinSessionId: localVerification.joinSessionId,
+        sasConfirmed: true,
+      })
+      await client.confirmDeviceJoinApproval({
+        approvalHandle: prompt.approvalHandle,
+        userPresenceConfirmed: true,
+      })
     }
   }
   registration.warnings satisfies readonly string[]

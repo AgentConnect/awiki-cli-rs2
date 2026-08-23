@@ -16,6 +16,7 @@ pub struct NodeOpenOptions {
     pub anp_service_did: Option<String>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
+    pub multi_device_device_revoke_enabled: Option<bool>,
     pub multi_device_handle_recovery_enabled: Option<bool>,
     pub multi_device_audience: Option<String>,
     pub external_http_allow_insecure_loopback_for_testing: Option<bool>,
@@ -34,6 +35,7 @@ impl Clone for NodeOpenOptions {
             anp_service_did: self.anp_service_did.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
             sync_timeout_ms: self.sync_timeout_ms,
+            multi_device_device_revoke_enabled: self.multi_device_device_revoke_enabled,
             multi_device_handle_recovery_enabled: self.multi_device_handle_recovery_enabled,
             multi_device_audience: self.multi_device_audience.clone(),
             external_http_allow_insecure_loopback_for_testing: self
@@ -143,6 +145,7 @@ pub struct NodePreparedRegistrationJoinInput {
     pub continuation_id: String,
     pub operation_id: String,
     pub ttl_seconds: Option<u32>,
+    pub user_presence_confirmed: bool,
 }
 
 #[napi(object)]
@@ -150,15 +153,46 @@ pub struct NodePreparedRegistrationJoinResumeInput {
     pub join_session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodePreparedRegistrationJoinCancelInput {
+    pub join_session_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodePreparedRegistrationJoinProgress {
     pub join_session_id: String,
     pub did: String,
     pub local_phase: String,
     pub remote_state: String,
+    pub expires_at: String,
+    pub sas: Option<String>,
     pub completed: bool,
     pub identity: Option<NodeIdentity>,
+}
+
+impl std::fmt::Debug for NodePreparedRegistrationJoinProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodePreparedRegistrationJoinProgress")
+            .field("join_session_id", &self.join_session_id)
+            .field("did", &self.did)
+            .field("local_phase", &self.local_phase)
+            .field("remote_state", &self.remote_state)
+            .field("expires_at", &self.expires_at)
+            .field("sas", &self.sas.as_ref().map(|_| "<redacted-sas>"))
+            .field("completed", &self.completed)
+            .field("identity", &self.identity)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeLocalDeviceJoinSession {
+    pub join_session_id: String,
+    pub side: String,
+    pub local_phase: String,
+    pub expires_at: String,
 }
 
 pub(crate) fn existing_handle_registration_outcome(
@@ -190,18 +224,61 @@ pub(crate) fn prepared_registration_join_progress(
     identity: Option<NodeIdentity>,
 ) -> NodePreparedRegistrationJoinProgress {
     let completed = value.join.session.phase == im_core::identity::DeviceJoinLocalPhase::Authorized
-        && value.join.remote_state == im_core::identity::DeviceJoinRemoteState::Consumed;
+        && value.join.remote_state == im_core::identity::DeviceJoinRemoteState::Consumed
+        && identity.is_some();
     NodePreparedRegistrationJoinProgress {
         join_session_id: value.join.session.join_session_id,
         did: value.join.session.did.as_str().to_owned(),
         local_phase: device_join_local_phase(value.join.session.phase).to_owned(),
         remote_state: device_join_remote_state(value.join.remote_state).to_owned(),
+        expires_at: value.join.session.expires_at,
+        sas: value.join.sas,
         completed,
         identity,
     }
 }
 
-fn device_join_local_phase(value: im_core::identity::DeviceJoinLocalPhase) -> &'static str {
+pub(crate) fn terminal_prepared_registration_join_progress(
+    session: im_core::identity::DeviceJoinSessionView,
+) -> SafeResult<NodePreparedRegistrationJoinProgress> {
+    let remote_state = match session.phase {
+        im_core::identity::DeviceJoinLocalPhase::Cancelled => "cancelled",
+        im_core::identity::DeviceJoinLocalPhase::Expired => "expired",
+        _ => return Err(SafeError::internal()),
+    };
+    Ok(NodePreparedRegistrationJoinProgress {
+        join_session_id: session.join_session_id,
+        did: session.did.as_str().to_owned(),
+        local_phase: device_join_local_phase(session.phase).to_owned(),
+        remote_state: remote_state.to_owned(),
+        expires_at: session.expires_at,
+        sas: None,
+        completed: false,
+        identity: None,
+    })
+}
+
+pub(crate) fn local_device_join_session(
+    value: im_core::identity::DeviceJoinSessionView,
+) -> NodeLocalDeviceJoinSession {
+    NodeLocalDeviceJoinSession {
+        join_session_id: value.join_session_id,
+        side: device_join_side(value.side).to_owned(),
+        local_phase: device_join_local_phase(value.phase).to_owned(),
+        expires_at: value.expires_at,
+    }
+}
+
+fn device_join_side(value: im_core::identity::DeviceJoinSide) -> &'static str {
+    match value {
+        im_core::identity::DeviceJoinSide::NewDevice => "new_device",
+        im_core::identity::DeviceJoinSide::Admin => "admin",
+    }
+}
+
+pub(crate) fn device_join_local_phase(
+    value: im_core::identity::DeviceJoinLocalPhase,
+) -> &'static str {
     use im_core::identity::DeviceJoinLocalPhase::*;
     match value {
         Pending => "pending",
@@ -215,7 +292,9 @@ fn device_join_local_phase(value: im_core::identity::DeviceJoinLocalPhase) -> &'
     }
 }
 
-fn device_join_remote_state(value: im_core::identity::DeviceJoinRemoteState) -> &'static str {
+pub(crate) fn device_join_remote_state(
+    value: im_core::identity::DeviceJoinRemoteState,
+) -> &'static str {
     use im_core::identity::DeviceJoinRemoteState::*;
     match value {
         Pending => "pending",
@@ -225,6 +304,277 @@ fn device_join_remote_state(value: im_core::identity::DeviceJoinRemoteState) -> 
         Cancelled => "cancelled",
         Rejected => "rejected",
         Expired => "expired",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeCurrentDeviceSummary {
+    pub identity_id: String,
+    pub did: String,
+    pub mode: String,
+    pub protocol_device_id: Option<String>,
+    pub role: Option<String>,
+    pub readiness: String,
+    pub can_manage: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRegistryDeviceSummary {
+    pub protocol_device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: String,
+    pub role: String,
+    pub management_ready: bool,
+    pub is_current: bool,
+    pub auth_generation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeDeviceRegistrySnapshot {
+    pub did: String,
+    pub registry_version: String,
+    pub devices: Vec<NodeRegistryDeviceSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeDeviceJoinRequestNotice {
+    pub event_id: String,
+    pub join_session_id: String,
+    pub did: String,
+    pub protocol_device_id: String,
+    pub candidate_key_fingerprint: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub state: String,
+    pub claimed_by_current_device: bool,
+    pub can_start_verification: bool,
+}
+
+#[napi(object)]
+pub struct NodeDeviceJoinSessionInput {
+    pub join_session_id: String,
+}
+
+#[napi(object)]
+pub struct NodeStartDeviceJoinVerificationInput {
+    pub join_session_id: String,
+    pub operation_id: String,
+    pub challenge_ttl_seconds: u32,
+}
+
+#[napi(object)]
+pub struct NodePrepareDeviceJoinApprovalInput {
+    pub join_session_id: String,
+    pub sas_confirmed: bool,
+}
+
+#[napi(object)]
+pub struct NodeConfirmDeviceJoinApprovalInput {
+    pub approval_handle: String,
+    pub user_presence_confirmed: bool,
+}
+
+#[napi(object)]
+pub struct NodeRejectDeviceJoinInput {
+    pub join_session_id: String,
+    pub reason: String,
+}
+
+#[napi(object)]
+pub struct NodeRevokeDeviceInput {
+    pub target_device_id: String,
+    pub user_presence_confirmed: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeAdminDeviceJoinProgress {
+    pub join_session_id: String,
+    pub did: String,
+    pub protocol_device_id: String,
+    pub local_phase: String,
+    pub remote_state: String,
+    pub expires_at: String,
+    pub sas: Option<String>,
+}
+
+impl std::fmt::Debug for NodeAdminDeviceJoinProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeAdminDeviceJoinProgress")
+            .field("join_session_id", &self.join_session_id)
+            .field("did", &self.did)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("local_phase", &self.local_phase)
+            .field("remote_state", &self.remote_state)
+            .field("expires_at", &self.expires_at)
+            .field("sas", &self.sas.as_ref().map(|_| "<redacted-sas>"))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeDeviceJoinApprovalPrompt {
+    pub approval_handle: String,
+    pub join_session_id: String,
+    pub sas: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for NodeDeviceJoinApprovalPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeDeviceJoinApprovalPrompt")
+            .field("approval_handle", &"<redacted-approval-handle>")
+            .field("join_session_id", &self.join_session_id)
+            .field("sas", &"<redacted-sas>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeDeviceRevokeResult {
+    pub did: String,
+    pub target_device_id: String,
+    pub status: String,
+}
+
+pub(crate) fn current_device_summary(
+    value: im_core::identity::IdentityDeviceSummary,
+) -> NodeCurrentDeviceSummary {
+    let readiness = identity_device_readiness(value.readiness);
+    let role = value.role.map(identity_device_role);
+    NodeCurrentDeviceSummary {
+        identity_id: value.identity.id.as_str().to_owned(),
+        did: value.identity.did.as_str().to_owned(),
+        mode: match value.mode {
+            im_core::identity::IdentityDeviceMode::Legacy => "legacy",
+            im_core::identity::IdentityDeviceMode::VNext => "v_next",
+        }
+        .to_owned(),
+        protocol_device_id: value
+            .protocol_device_id
+            .map(|device_id| device_id.as_str().to_owned()),
+        role: role.map(str::to_owned),
+        readiness: readiness.to_owned(),
+        can_manage: role == Some("admin") && readiness == "admin_ready",
+    }
+}
+
+pub(crate) fn device_registry_snapshot(
+    value: im_core::identity::DeviceJoinRegistrySnapshot,
+) -> NodeDeviceRegistrySnapshot {
+    NodeDeviceRegistrySnapshot {
+        did: value.did.as_str().to_owned(),
+        registry_version: value.registry_version,
+        devices: value
+            .devices
+            .into_iter()
+            .map(|device| NodeRegistryDeviceSummary {
+                protocol_device_id: device.protocol_device_id.as_str().to_owned(),
+                signing_key_id: device.signing_key_id,
+                e2ee_key_id: device.e2ee_key_id,
+                status: device_join_authorization_status(device.status).to_owned(),
+                role: device_join_role(device.role).to_owned(),
+                management_ready: device.management_ready,
+                is_current: device.is_current,
+                auth_generation: device.auth_generation,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn device_join_request_notice(
+    value: im_core::identity::DeviceJoinRequestNotice,
+) -> NodeDeviceJoinRequestNotice {
+    NodeDeviceJoinRequestNotice {
+        event_id: value.event_id,
+        join_session_id: value.join_session_id,
+        did: value.did.as_str().to_owned(),
+        protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+        candidate_key_fingerprint: value.candidate_key_fingerprint,
+        issued_at: value.issued_at,
+        expires_at: value.expires_at,
+        state: device_join_remote_state(value.state).to_owned(),
+        claimed_by_current_device: value.claimed_by_current_device,
+        can_start_verification: value.can_start_verification,
+    }
+}
+
+pub(crate) fn admin_device_join_progress(
+    value: im_core::identity::DeviceJoinProgress,
+) -> NodeAdminDeviceJoinProgress {
+    NodeAdminDeviceJoinProgress {
+        join_session_id: value.session.join_session_id,
+        did: value.session.did.as_str().to_owned(),
+        protocol_device_id: value.session.protocol_device_id.as_str().to_owned(),
+        local_phase: device_join_local_phase(value.session.phase).to_owned(),
+        remote_state: device_join_remote_state(value.remote_state).to_owned(),
+        expires_at: value.session.expires_at,
+        sas: value.sas,
+    }
+}
+
+pub(crate) fn device_join_approval_prompt(
+    value: im_core::identity::DeviceJoinApprovalPrompt,
+) -> NodeDeviceJoinApprovalPrompt {
+    NodeDeviceJoinApprovalPrompt {
+        approval_handle: value.approval_handle,
+        join_session_id: value.join_session_id,
+        sas: value.sas,
+        expires_at: value.expires_at,
+    }
+}
+
+pub(crate) fn device_revoke_result(
+    value: im_core::identity::DeviceRevokeResult,
+) -> NodeDeviceRevokeResult {
+    NodeDeviceRevokeResult {
+        did: value.did.as_str().to_owned(),
+        target_device_id: value.target_device_id.as_str().to_owned(),
+        status: match value.status {
+            im_core::identity::DeviceRevokeStatus::Revoked => "revoked",
+        }
+        .to_owned(),
+    }
+}
+
+fn identity_device_role(value: im_core::identity::IdentityDeviceRole) -> &'static str {
+    match value {
+        im_core::identity::IdentityDeviceRole::Member => "member",
+        im_core::identity::IdentityDeviceRole::Admin => "admin",
+    }
+}
+
+fn identity_device_readiness(value: im_core::identity::IdentityDeviceReadiness) -> &'static str {
+    match value {
+        im_core::identity::IdentityDeviceReadiness::Legacy => "legacy",
+        im_core::identity::IdentityDeviceReadiness::MemberReady => "member_ready",
+        im_core::identity::IdentityDeviceReadiness::AdminAwaitingRoot => "admin_awaiting_root",
+        im_core::identity::IdentityDeviceReadiness::AdminReady => "admin_ready",
+        im_core::identity::IdentityDeviceReadiness::Blocked => "blocked",
+    }
+}
+
+fn device_join_authorization_status(
+    value: im_core::identity::DeviceJoinAuthorizationStatus,
+) -> &'static str {
+    match value {
+        im_core::identity::DeviceJoinAuthorizationStatus::Active => "active",
+        im_core::identity::DeviceJoinAuthorizationStatus::Revoked => "revoked",
+    }
+}
+
+fn device_join_role(value: im_core::identity::DeviceJoinRole) -> &'static str {
+    match value {
+        im_core::identity::DeviceJoinRole::Member => "member",
+        im_core::identity::DeviceJoinRole::Admin => "admin",
     }
 }
 

@@ -1,7 +1,13 @@
 import type {
+  AdminDeviceJoinProgress,
   AddGroupMemberInput,
   CreateGroupInput,
+  CurrentDeviceSummary,
   DisplayProfileBatchInput,
+  DeviceJoinApprovalPrompt,
+  DeviceJoinRequestNotice,
+  DeviceRegistrySnapshot,
+  DeviceRevokeResult,
   DownloadAttachmentInput,
   ExternalHttpHeader,
   ExternalHttpRequest,
@@ -41,6 +47,7 @@ import type {
   PreparedRegistrationJoinInput,
   PreparedRegistrationJoinProgress,
   PreparedRegistrationJoinResumeInput,
+  LocalDeviceJoinSession,
   RegistrationInput,
   RegistrationOutcome,
   RegistrationWithOtp,
@@ -52,6 +59,7 @@ import type {
   SendPayloadInput,
   SyncOptions,
   SyncResult,
+  StartDeviceJoinVerificationInput,
   UpdateProfileInput,
   RealtimeEvent,
   RealtimeOptions,
@@ -105,6 +113,17 @@ export interface NativeImCoreNodeClient {
   completeRegistrationWithOutcome(input: RegistrationWithOtp): Promise<RegistrationOutcome>
   beginPreparedRegistrationJoin(input: PreparedRegistrationJoinInput): Promise<PreparedRegistrationJoinProgress>
   resumePreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<PreparedRegistrationJoinProgress>
+  listLocalDeviceJoinSessions(): Promise<LocalDeviceJoinSession[]>
+  cancelPreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<LocalDeviceJoinSession>
+  getCurrentDeviceSummary(): Promise<CurrentDeviceSummary>
+  getDeviceRegistry(): Promise<DeviceRegistrySnapshot>
+  listLocalDeviceJoinRequests(): Promise<DeviceJoinRequestNotice[]>
+  startDeviceJoinVerification(input: StartDeviceJoinVerificationInput): Promise<AdminDeviceJoinProgress>
+  getLocalDeviceJoinVerificationProgress(input: PreparedRegistrationJoinResumeInput): Promise<AdminDeviceJoinProgress>
+  prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt>
+  confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
+  rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
+  revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>

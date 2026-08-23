@@ -75,8 +75,12 @@ try {
       if (typeof client.completeRegistrationWithOutcome !== 'function'
         || typeof client.beginPreparedRegistrationJoin !== 'function'
         || typeof client.resumePreparedRegistrationJoin !== 'function'
-        || typeof client.issueHandleRecoveryAttestation !== 'function') {
-        throw new Error('expected native API v9 recovery facade')
+        || typeof client.issueHandleRecoveryAttestation !== 'function'
+        || typeof client.listLocalDeviceJoinSessions !== 'function'
+        || typeof client.getDeviceRegistry !== 'function'
+        || typeof client.startDeviceJoinVerification !== 'function'
+        || typeof client.revokeDevice !== 'function') {
+        throw new Error('expected native API v10 device Join and management facade')
       }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()

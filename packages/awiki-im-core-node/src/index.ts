@@ -7,9 +7,15 @@ import type {
 } from './native.js'
 import {
   ImCoreNodeError,
+  type AdminDeviceJoinProgress,
   type AddGroupMemberInput,
   type CreateGroupInput,
+  type CurrentDeviceSummary,
   type DisplayProfileBatchInput,
+  type DeviceJoinApprovalPrompt,
+  type DeviceJoinRequestNotice,
+  type DeviceRegistrySnapshot,
+  type DeviceRevokeResult,
   type DownloadAttachmentInput,
   type ExternalHttpAuthAttempt,
   type ExternalHttpHeader,
@@ -48,6 +54,7 @@ import {
   type OtpChallenge,
   type Page,
   type PageInput,
+  type LocalDeviceJoinSession,
   type PreparedRegistrationJoinInput,
   type PreparedRegistrationJoinProgress,
   type PreparedRegistrationJoinResumeInput,
@@ -62,6 +69,7 @@ import {
   type SendPayloadInput,
   type SyncOptions,
   type SyncResult,
+  type StartDeviceJoinVerificationInput,
   type RealtimeEvent,
   type RealtimeOptions,
   type RealtimeSession,
@@ -146,6 +154,53 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(async () => copyPreparedRegistrationJoinProgress(
       await this.native.resumePreparedRegistrationJoin(input),
     ))
+  }
+
+  public listLocalDeviceJoinSessions(): Promise<readonly LocalDeviceJoinSession[]> {
+    return call(async () => (await this.native.listLocalDeviceJoinSessions()).map(value => ({ ...value })))
+  }
+
+  public cancelPreparedRegistrationJoin(input: PreparedRegistrationJoinResumeInput): Promise<LocalDeviceJoinSession> {
+    return call(async () => ({ ...await this.native.cancelPreparedRegistrationJoin(input) }))
+  }
+
+  public getCurrentDeviceSummary(): Promise<CurrentDeviceSummary> {
+    return call(async () => ({ ...await this.native.getCurrentDeviceSummary() }))
+  }
+
+  public getDeviceRegistry(): Promise<DeviceRegistrySnapshot> {
+    return call(async () => {
+      const value = await this.native.getDeviceRegistry()
+      return { ...value, devices: value.devices.map(device => ({ ...device })) }
+    })
+  }
+
+  public listLocalDeviceJoinRequests(): Promise<readonly DeviceJoinRequestNotice[]> {
+    return call(async () => (await this.native.listLocalDeviceJoinRequests()).map(value => ({ ...value })))
+  }
+
+  public startDeviceJoinVerification(input: StartDeviceJoinVerificationInput): Promise<AdminDeviceJoinProgress> {
+    return call(async () => ({ ...await this.native.startDeviceJoinVerification(input) }))
+  }
+
+  public getLocalDeviceJoinVerificationProgress(input: PreparedRegistrationJoinResumeInput): Promise<AdminDeviceJoinProgress> {
+    return call(async () => ({ ...await this.native.getLocalDeviceJoinVerificationProgress(input) }))
+  }
+
+  public prepareDeviceJoinApproval(input: { readonly joinSessionId: string; readonly sasConfirmed: boolean }): Promise<DeviceJoinApprovalPrompt> {
+    return call(async () => ({ ...await this.native.prepareDeviceJoinApproval(input) }))
+  }
+
+  public confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress> {
+    return call(async () => ({ ...await this.native.confirmDeviceJoinApproval(input) }))
+  }
+
+  public rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress> {
+    return call(async () => ({ ...await this.native.rejectDeviceJoin(input) }))
+  }
+
+  public revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult> {
+    return call(async () => ({ ...await this.native.revokeDevice(input) }))
   }
 
   public updateDisplayName(displayName: string): Promise<NodeIdentity> {
@@ -350,6 +405,8 @@ function copyPreparedRegistrationJoinProgress(
     did: value.did,
     localPhase: value.localPhase,
     remoteState: value.remoteState,
+    expiresAt: value.expiresAt,
+    ...(value.sas === undefined ? {} : { sas: value.sas }),
     completed: value.completed,
     ...(value.identity === undefined ? {} : { identity: { ...value.identity } }),
   }

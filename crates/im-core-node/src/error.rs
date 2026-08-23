@@ -142,6 +142,23 @@ impl SafeError {
                 "The IM operation conflicts with the current state.",
                 false,
             ),
+            ImError::DeviceRevokeOutcome { category } => match category {
+                im_core::DeviceRevokeOutcomeCategory::CancelledBeforeSubmit => Self::new(
+                    "device_revoke_cancelled",
+                    "Device revocation was cancelled before submission.",
+                    false,
+                ),
+                im_core::DeviceRevokeOutcomeCategory::RejectedBeforeCommit => Self::new(
+                    "device_revoke_rejected",
+                    "Device revocation was rejected before commit.",
+                    false,
+                ),
+                im_core::DeviceRevokeOutcomeCategory::OutcomeUnknown => Self::new(
+                    "device_revoke_outcome_unknown",
+                    "The device revocation outcome is unknown.",
+                    true,
+                ),
+            },
             ImError::IdentityVault { .. }
             | ImError::LocalStateUnavailable { .. }
             | ImError::LocalStateUpgradeRequired { .. }
@@ -155,7 +172,6 @@ impl SafeError {
             | ImError::Internal { .. }
             | ImError::InventoryIncomplete
             | ImError::InventoryTooLarge
-            | ImError::DeviceRevokeOutcome { .. }
             | ImError::SkillOnboarding { .. } => Self::internal(),
         }
     }
@@ -400,6 +416,23 @@ mod tests {
             assert!(!payload.contains("secret-token"));
             assert!(!payload.contains("/private/attachment"));
             assert!(!payload.contains("256"));
+        }
+    }
+
+    #[test]
+    fn device_revoke_outcomes_remain_closed_and_retryable_only_when_unknown() {
+        use im_core::DeviceRevokeOutcomeCategory::*;
+
+        for (category, code, retryable) in [
+            (CancelledBeforeSubmit, "device_revoke_cancelled", false),
+            (RejectedBeforeCommit, "device_revoke_rejected", false),
+            (OutcomeUnknown, "device_revoke_outcome_unknown", true),
+        ] {
+            let safe = SafeError::from_im(im_core::ImError::DeviceRevokeOutcome { category });
+            assert_eq!(safe.code, code);
+            assert_eq!(safe.retryable, retryable);
+            assert!(!safe.safe_message.contains("proof"));
+            assert!(!safe.safe_message.contains("token"));
         }
     }
 }

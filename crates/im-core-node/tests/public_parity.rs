@@ -26,6 +26,21 @@ const PUBLIC_PARITY: &[PublicParity] = &[
         core_facade: "IdentityRegistry::register_handle_async",
     },
     PublicParity {
+        capability: "device_join_candidate",
+        node_method: "begin/resume/list/cancelPreparedRegistrationJoin",
+        core_facade: "DeviceJoinService candidate public facade",
+    },
+    PublicParity {
+        capability: "device_management",
+        node_method: "getDeviceRegistry/listLocalDeviceJoinRequests/start/approve/rejectDeviceJoin",
+        core_facade: "DeviceJoinService admin public facade",
+    },
+    PublicParity {
+        capability: "device_revoke",
+        node_method: "revokeDevice",
+        core_facade: "DeviceRevokeService::revoke",
+    },
+    PublicParity {
         capability: "profile",
         node_method: "getProfile/updateProfile",
         core_facade: "IdentityService::profile_async/update_profile_async",
@@ -169,6 +184,9 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "identity",
         "registration_otp",
         "registration",
+        "device_join_candidate",
+        "device_management",
+        "device_revoke",
         "profile",
         "directory",
         "display_profiles",

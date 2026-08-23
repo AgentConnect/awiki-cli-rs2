@@ -2405,12 +2405,20 @@ pub(crate) async fn resume_authorized_join_activation(
     core: &crate::core::ImCore,
     join_session_id: &str,
 ) -> crate::ImResult<AuthorizedJoinActivationProgress> {
-    require_enabled(core)?;
+    let recovery_marker = crate::internal::identity_transition_pending::load_joined_device(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        join_session_id,
+    )?;
+    if recovery_marker.is_some() {
+        require_enabled(core)?;
+    }
     let join = core
         .device_join()
         .poll_new_device_join(join_session_id)
         .await?;
-    advance_joined_rebind(core, join_session_id, &join.session.did).await?;
+    if recovery_marker.is_some() {
+        advance_joined_rebind(core, join_session_id, &join.session.did).await?;
+    }
     let reset_reference = crate::internal::identity_transition_pending::load_joined_device(
         &core.inner().sdk_paths().local_state.sqlite_path,
         join_session_id,
