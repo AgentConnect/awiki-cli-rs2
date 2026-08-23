@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anp::direct_e2ee::{
     ApplicationPlaintext, DirectE2eeError, DirectE2eeSession, DirectEnvelopeMetadata,
-    OneTimePrekey, PrekeyBundle, SignedPrekeyStore as _,
+    OneTimePrekey, PrekeyBundle, PreparedPrekeyBundle, SignedPrekeyStore as _,
 };
 use anp::{PrivateKeyMaterial, PublicKeyMaterial};
 use rusqlite::Connection;
@@ -28,6 +28,34 @@ pub(crate) type DirectSecureDidResolver<'a> = dyn FnMut(&str) -> crate::ImResult
 pub(crate) struct DirectSecurePrekeyPublishRequest {
     pub(crate) method: String,
     pub(crate) params: Map<String, Value>,
+}
+
+pub(crate) struct DirectSecurePrekeySigningPreparation {
+    prepared: PreparedPrekeyBundle,
+    owner_did: String,
+    local_service_did: String,
+    one_time_prekeys: Vec<OneTimePrekey>,
+}
+
+impl DirectSecurePrekeySigningPreparation {
+    pub(crate) fn signing_input(&self) -> &[u8] {
+        self.prepared.signing_input()
+    }
+
+    pub(crate) fn complete(
+        self,
+        signature: &[u8],
+    ) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
+        let bundle = anp::direct_e2ee::complete_prekey_bundle(self.prepared, signature)
+            .map_err(map_direct_error)?;
+        let request = super::prekey_lifecycle::prekey_bundle_publish_request(
+            &self.owner_did,
+            &self.local_service_did,
+            &bundle,
+            &self.one_time_prekeys,
+        )?;
+        direct_secure_request_method_params(request)
+    }
 }
 
 pub(crate) struct DirectSecureClientInput<'a> {
@@ -119,11 +147,33 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         self.prekey_bundle_publish_request(&bundle)
     }
 
+    pub(crate) fn prepare_prekey_bundle_signing(
+        &mut self,
+    ) -> crate::ImResult<DirectSecurePrekeySigningPreparation> {
+        let prepared = self.prepare_fresh_prekey_bundle()?;
+        let one_time_prekeys = self.one_time_prekey_store()?.list_one_time_prekeys()?;
+        Ok(DirectSecurePrekeySigningPreparation {
+            prepared,
+            owner_did: self.prepared.owner_did.clone(),
+            local_service_did: self.prepared.local_service_did.clone(),
+            one_time_prekeys,
+        })
+    }
+
     pub(crate) fn ensure_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
         self.build_fresh_prekey_bundle()
     }
 
     fn build_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
+        let prepared = self.prepare_fresh_prekey_bundle()?;
+        let signature = self
+            .prepared
+            .identity_signer
+            .sign(&self.prepared.signing_key_id, prepared.signing_input())?;
+        anp::direct_e2ee::complete_prekey_bundle(prepared, &signature).map_err(map_direct_error)
+    }
+
+    fn prepare_fresh_prekey_bundle(&mut self) -> crate::ImResult<PreparedPrekeyBundle> {
         self.ensure_fresh_one_time_prekeys(DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE)?;
         let signed_prekey = match self.signed_prekey_store()?.load_latest_signed_prekey()? {
             Some((_private_key, metadata))
@@ -140,7 +190,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
                 metadata
             }
         };
-        self.build_prekey_bundle(signed_prekey)
+        self.prepare_prekey_bundle(signed_prekey)
     }
 
     pub(crate) fn send_text(
@@ -554,17 +604,17 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         direct_secure_request_method_params(request)
     }
 
-    fn build_prekey_bundle(
+    fn prepare_prekey_bundle(
         &self,
         signed_prekey: anp::direct_e2ee::SignedPrekey,
-    ) -> crate::ImResult<PrekeyBundle> {
+    ) -> crate::ImResult<PreparedPrekeyBundle> {
         let bundle_id = super::prekey_lifecycle::bundle_id(&signed_prekey);
         let proof_created = super::prekey_lifecycle::bundle_proof_created(&signed_prekey)?;
         let public_key = self
             .prepared
             .identity_signer
             .public_key(&self.prepared.signing_key_id)?;
-        let prepared = anp::direct_e2ee::prepare_prekey_bundle(
+        anp::direct_e2ee::prepare_prekey_bundle(
             &bundle_id,
             &self.prepared.owner_did,
             &self.prepared.agreement_key_id,
@@ -573,12 +623,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             &self.prepared.signing_key_id,
             Some(&proof_created),
         )
-        .map_err(map_direct_error)?;
-        let signature = self
-            .prepared
-            .identity_signer
-            .sign(&self.prepared.signing_key_id, prepared.signing_input())?;
-        anp::direct_e2ee::complete_prekey_bundle(prepared, &signature).map_err(map_direct_error)
+        .map_err(map_direct_error)
     }
 
     fn ensure_fresh_one_time_prekeys(&mut self, min_count: usize) -> crate::ImResult<()> {

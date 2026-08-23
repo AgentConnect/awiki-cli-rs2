@@ -1168,9 +1168,14 @@ where
         .map_err(|_| crate::ImError::PermissionDenied)?
         .try_into()
         .map_err(|_| crate::ImError::PermissionDenied)?;
-    let local_static_dh = context
-        .identity_signer
-        .ecdh(&context.local_e2ee_key_id, &recipient_signed_prekey)?;
+    let identity_session = context.identity_signer.async_session();
+    let local_static_dh = crate::internal::identity_provider::derive_shared_secret_or_fallback(
+        identity_session.as_ref(),
+        &context.identity_signer,
+        &context.local_e2ee_key_id,
+        recipient_signed_prekey,
+    )
+    .await?;
     context.with_direct(|direct| {
         // The first logical business payload is the Init plaintext. Session
         // confirmation happens automatically on receive; the user never has
@@ -2384,9 +2389,15 @@ where
                 .map_err(|_| crate::ImError::PermissionDenied)?
                 .try_into()
                 .map_err(|_| crate::ImError::PermissionDenied)?;
-            let local_static_dh = context
-                .identity_signer
-                .ecdh(&context.local_e2ee_key_id, &sender_ephemeral)?;
+            let identity_session = context.identity_signer.async_session();
+            let local_static_dh =
+                crate::internal::identity_provider::derive_shared_secret_or_fallback(
+                    identity_session.as_ref(),
+                    &context.identity_signer,
+                    &context.local_e2ee_key_id,
+                    sender_ephemeral,
+                )
+                .await?;
             let decrypted = context.with_direct(|direct| {
                 direct.decrypt_inbound_init_validated(
                     &binding,

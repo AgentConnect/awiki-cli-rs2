@@ -35,6 +35,13 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
 
     assert_eq!(signer.request_signing_key_id().unwrap(), device_kid);
     assert_eq!(signer.agreement_key_id().unwrap(), agreement_kid);
+    assert_eq!(
+        signer
+            .sign_device_assertion(&device_kid, b"device assertion")
+            .unwrap()
+            .len(),
+        64
+    );
     let signature = signer.sign(&request_kid, b"request").unwrap();
     signer
         .public_key(&request_kid)
@@ -46,6 +53,23 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
         .sign_object_proof(&device_kid, &object, &did, None)
         .unwrap();
     anp::proof::verify_object_proof(&signed, &did, &signer.did_document().unwrap()).unwrap();
+    let origin = signer
+        .sign_origin_proof(
+            "message.send",
+            &json!({
+                "sender_did": did,
+                "timestamp": 1_787_403_600_i64,
+                "target": {"kind": "agent", "did": "did:wba:example.com:peer"},
+                "operation_id": "operation-1",
+                "message_id": "message-1",
+                "content_type": "application/json"
+            }),
+            &json!({"message": "device-signed"}),
+            &device_kid,
+            anp::proof::Rfc9421OriginProofGenerationOptions::default(),
+        )
+        .unwrap();
+    assert!(origin.signature.starts_with("sig1=:"));
     assert_eq!(
         signer.sign_object_proof(&request_kid, &object, &did, None),
         Err(crate::ImError::PermissionDenied)

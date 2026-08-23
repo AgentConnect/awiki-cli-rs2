@@ -356,7 +356,7 @@ where
             Some(credentials) => credentials,
             None => load_credentials_async(self.client).await?,
         };
-        let origin_proof = crate::internal::proof::origin::build_origin_proof(
+        let origin_proof = crate::internal::proof::origin::build_origin_proof_async(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
@@ -364,7 +364,8 @@ where
                 verification_method: credentials.verification_method,
             },
             &payload,
-        )?;
+        )
+        .await?;
         let params = serde_json::json!({
             "meta": payload.meta,
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
@@ -405,12 +406,19 @@ async fn load_credentials_async(
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
     let key_id = runtime.key_provider.request_signing_key_id()?;
+    let signer = runtime
+        .key_provider
+        .async_session()
+        .map(crate::internal::proof::origin::OriginProofSigner::Provider)
+        .unwrap_or_else(|| {
+            crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+                &runtime.key_provider,
+            ))
+        });
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
-            &runtime.key_provider,
-        )),
+        signer,
         verification_method: Some(key_id),
     })
 }

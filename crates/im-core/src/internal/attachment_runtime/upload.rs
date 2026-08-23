@@ -762,23 +762,25 @@ where
         let (method, params) = match target {
             ResolvedAttachmentTarget::Direct { target_did, .. } => (
                 "direct.send",
-                crate::internal::wire::attachment::build_direct_attachment_send_rpc_params(
+                crate::internal::wire::attachment::build_direct_attachment_send_rpc_params_async(
                     &identity,
                     target_did,
                     manifest,
                     client_message_id,
                     operation_id,
-                )?,
+                )
+                .await?,
             ),
             ResolvedAttachmentTarget::Group { group } => (
                 "group.send",
-                crate::internal::wire::attachment::build_group_attachment_send_rpc_params(
+                crate::internal::wire::attachment::build_group_attachment_send_rpc_params_async(
                     &identity,
                     group.as_str(),
                     manifest,
                     client_message_id,
                     operation_id,
-                )?,
+                )
+                .await?,
             ),
         };
         let meta = params.get("meta").cloned().unwrap_or(Value::Null);
@@ -1286,12 +1288,19 @@ async fn load_credentials_async(
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
     let key_id = runtime.key_provider.request_signing_key_id()?;
+    let signer = runtime
+        .key_provider
+        .async_session()
+        .map(crate::internal::proof::origin::OriginProofSigner::Provider)
+        .unwrap_or_else(|| {
+            crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+                &runtime.key_provider,
+            ))
+        });
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
-            &runtime.key_provider,
-        )),
+        signer,
         verification_method: Some(key_id),
     })
 }
