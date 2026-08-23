@@ -4054,6 +4054,7 @@ mod tests {
                 multi_device_audience: None,
                 #[cfg(feature = "provider-traits")]
                 identity_custody_provider: None,
+                external_http_allow_insecure_loopback_for_testing: false,
             },
         )
         .unwrap();
@@ -4758,6 +4759,7 @@ mod tests {
                 multi_device_audience: None,
                 #[cfg(feature = "provider-traits")]
                 identity_custody_provider: None,
+                external_http_allow_insecure_loopback_for_testing: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

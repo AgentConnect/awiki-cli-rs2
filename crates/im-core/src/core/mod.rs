@@ -29,6 +29,7 @@ pub(crate) struct ImCoreInner {
     pub(crate) multi_device_audience: Option<String>,
     #[cfg(feature = "provider-traits")]
     pub(crate) identity_custody_provider: Option<IdentityCustodyProvider>,
+    pub(crate) external_http_allow_insecure_loopback_for_testing: bool,
     pub(crate) handle_recovery_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
@@ -124,6 +125,8 @@ impl ImCore {
                 multi_device_audience,
                 #[cfg(feature = "provider-traits")]
                 identity_custody_provider,
+                external_http_allow_insecure_loopback_for_testing: options
+                    .external_http_allow_insecure_loopback_for_testing,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 direct_rebind_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 device_join_approvals: Default::default(),
@@ -1045,6 +1048,10 @@ impl ImCoreInner {
 
     pub(crate) fn handle_recovery_enabled(&self) -> bool {
         self.handle_recovery_enabled
+    }
+
+    pub(crate) fn external_http_allow_insecure_loopback_for_testing(&self) -> bool {
+        self.external_http_allow_insecure_loopback_for_testing
     }
 
     pub(crate) fn multi_device_audience(&self) -> Option<&str> {

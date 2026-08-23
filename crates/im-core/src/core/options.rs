@@ -85,6 +85,11 @@ pub struct ImCoreOpenOptions {
     pub multi_device_audience: Option<String>,
     #[cfg(feature = "provider-traits")]
     pub(crate) identity_custody_provider: Option<IdentityCustodyProvider>,
+    /// Allows ANP external HTTP authentication for literal loopback HTTP URLs.
+    ///
+    /// This is a test-only transport-policy exception. Remote HTTP remains
+    /// forbidden and callers still own the actual network transport.
+    pub external_http_allow_insecure_loopback_for_testing: bool,
 }
 
 /// Opaque trusted-host handle for an externally supplied identity provider.
@@ -151,6 +156,11 @@ impl ImCoreOpenOptions {
         provider: Arc<dyn crate::provider::IdentityCustody>,
     ) -> Self {
         self.identity_custody_provider = Some(IdentityCustodyProvider { inner: provider });
+        self
+    }
+
+    pub fn with_external_http_allow_insecure_loopback_for_testing(mut self, enabled: bool) -> Self {
+        self.external_http_allow_insecure_loopback_for_testing = enabled;
         self
     }
 }

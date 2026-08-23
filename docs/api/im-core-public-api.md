@@ -72,6 +72,7 @@ pub struct ImCoreOpenOptions {
     pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
     pub multi_device_handle_recovery_enabled: bool, // default false
+    pub external_http_allow_insecure_loopback_for_testing: bool, // default false
 }
 
 pub enum IdentitySecretStoragePolicy {
@@ -895,6 +896,100 @@ flows, so callers must treat those values as sensitive and avoid logging or
 persisting them. CLI/App 不应该直接从本地文件 / private state 读取 bearer
 token，也不应该把返回的 token 再保存到外部 credential/session store，除非
 Phase 7 明确引入该边界。
+
+### 7.1 Host-owned external HTTP transport authentication
+
+`external_http_auth()` allows a trusted host to authenticate one exact HTTP
+request while retaining ownership of the network transport. Core chooses an
+origin-scoped in-memory Bearer token when available; otherwise it signs the
+method, target URI, authority and optional body digest with the current device
+request-signing key. The host cannot choose the key, nonce, algorithm or auth
+mode.
+
+```rust
+pub const EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+impl ImClient {
+    pub fn external_http_auth(&self) -> ExternalHttpAuthService<'_>;
+}
+
+impl ExternalHttpHeader {
+    pub fn new(name: impl Into<String>, value: impl Into<String>)
+        -> ImResult<Self>;
+    pub fn name(&self) -> &str;
+    pub fn value(&self) -> &str;
+}
+
+impl ExternalHttpRequest {
+    pub fn new(
+        url: impl Into<String>,
+        method: impl Into<String>,
+        headers: Vec<ExternalHttpHeader>,
+        body: Option<Vec<u8>>,
+    ) -> ImResult<Self>;
+}
+
+impl ExternalHttpResponse {
+    pub fn new(status_code: u16, headers: Vec<ExternalHttpHeader>)
+        -> ImResult<Self>;
+}
+
+impl ExternalHttpAuthService<'_> {
+    pub fn prepare(&self, request: ExternalHttpRequest)
+        -> ImResult<ExternalHttpAuthAttempt>;
+    pub async fn prepare_async(&self, request: ExternalHttpRequest)
+        -> ImResult<ExternalHttpAuthAttempt>;
+    pub fn handle_response(
+        &self,
+        attempt: ExternalHttpAuthAttempt,
+        response: ExternalHttpResponse,
+    ) -> ImResult<ExternalHttpAuthDecision>;
+    pub async fn handle_response_async(
+        &self,
+        attempt: ExternalHttpAuthAttempt,
+        response: ExternalHttpResponse,
+    ) -> ImResult<ExternalHttpAuthDecision>;
+    pub fn clear_cached_tokens(&self) -> ImResult<()>;
+}
+
+impl ExternalHttpAuthAttempt {
+    pub fn header_patch(&self) -> &[ExternalHttpHeader];
+    pub fn target_url(&self) -> &str;
+    pub fn method(&self) -> &str;
+    pub fn retry_count(&self) -> u8;
+}
+
+pub enum ExternalHttpAuthDecision {
+    Complete,
+    Retry(ExternalHttpAuthAttempt),
+}
+```
+
+The request must be an absolute HTTPS URL without credentials or a fragment.
+Literal loopback HTTP is accepted only when the host explicitly enables
+`external_http_allow_insecure_loopback_for_testing`. Request methods are
+canonical uppercase tokens. Duplicate header names and caller-supplied
+`Authorization`, `Signature-Input`, `Signature` or `Content-Digest` fail before
+network I/O. `body: Some(Vec::new())` means an explicitly empty body and is
+still digest-bound; `None` means no body. Bodies above 4 MiB are rejected.
+
+`ExternalHttpAuthAttempt` is opaque, single-use and not cloneable. Its header
+patch is sensitive because it contains either an HTTP signature or Bearer
+token. A `401` can return only one retry attempt; a response for that retry can
+never request a third transport call. Only a `2xx` response
+`Authentication-Info` field can update the process-local token cache. Response
+`Authorization` is ignored. Cache keys bind the current owner identity, DID,
+request-signing key and normalized origin; a stale Bearer `401` uses
+fingerprint compare-and-clear so it cannot delete a concurrently replaced
+token. The cache is not persisted and disappears when the client lifecycle is
+released or explicitly cleared.
+
+Core does not send the request or read its response body. The language/host
+facade must send the canonical `attempt.target_url()` and `attempt.method()`,
+apply the returned patch to the exact original headers and body bytes, keep
+redirects manual, submit only response status and headers, and avoid logging
+the patch. Production hosts must not expose this service through browser RPC,
+model tools or an untrusted signing endpoint.
 
 ## 8. messages
 

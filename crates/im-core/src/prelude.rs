@@ -25,6 +25,10 @@ pub use crate::email::{
     EmailNotificationQuery, EmailService, SendEmailRequest, SendEmailResult,
 };
 pub use crate::error::{IdentityVaultFailure, ImError, ImResult};
+pub use crate::external_http_auth::{
+    ExternalHttpAuthAttempt, ExternalHttpAuthDecision, ExternalHttpAuthService, ExternalHttpHeader,
+    ExternalHttpRequest, ExternalHttpResponse, EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES,
+};
 pub use crate::groups::{
     GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupE2eeProcessLeaveRequest,
     GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupJoinRequest,
