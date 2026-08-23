@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anp_identity::host::{
     ConvergenceWorkflow, HttpRequestSigningPort, IdentityStatusPort, KeyAgreementPort,
-    KeyAgreementRequest, RootPromotionPort,
+    KeyAgreementRequest, RootExportPort, RootPromotionPort, UserConfirmedRootExportRequest,
 };
 
 use super::{
@@ -11,15 +11,16 @@ use super::{
     ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
     ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderDocumentCheckpoint,
     ProviderEnrollmentProposal, ProviderEnrollmentProposalKind, ProviderEnrollmentPublicKey,
-    ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderHostStatus, ProviderHttpHeader,
-    ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
+    ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderExportedRoot, ProviderHostStatus,
+    ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderObjectProofRequest, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
-    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
-    ProviderPublicationAttempt, ProviderPublicationEvidence, ProviderPublicationResult,
-    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
-    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
-    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
+    ProviderLegacyRootExportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
+    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPublicIdentity,
+    ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationEvidence,
+    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
+    ProviderRootCapability, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument,
 };
 
 pub(crate) struct DirectAnpIdentityCustody {
@@ -453,6 +454,23 @@ impl IdentitySession for DirectAnpIdentitySession {
                 })
             })
             .map(|secret| ProviderSharedSecret::new(*secret.as_bytes()))
+        })
+        .await
+    }
+
+    async fn export_root_for_legacy_envelope(
+        &self,
+        request: ProviderLegacyRootExportRequest,
+    ) -> ProviderResult<ProviderExportedRoot> {
+        let identity = self.identity.clone();
+        run_blocking(move || {
+            with_identity(&identity, |identity| {
+                identity.export_root_for_legacy_envelope(UserConfirmedRootExportRequest {
+                    key: request.key.into(),
+                    user_presence_confirmed: request.user_presence_confirmed,
+                })
+            })
+            .map(|root| ProviderExportedRoot::new(root.as_pkcs8_der().to_vec()))
         })
         .await
     }

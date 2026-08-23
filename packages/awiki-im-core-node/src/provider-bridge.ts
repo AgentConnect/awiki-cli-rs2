@@ -85,6 +85,17 @@ export function createIdentityProviderDispatch(
             requestId: requiredString(payload.requestId),
           }))
         }
+        case 'exportRootKeySealed': {
+          if (!capabilities.has('AWIKI_LEGACY_ROOT_TRANSFER_V1')
+            || typeof provider.exportRootKeySealed !== 'function') throw unavailable()
+          return success(await provider.exportRootKeySealed({
+            identity: reference(payload.identity),
+            kid: requiredString(payload.kid),
+            recipientPublicKey: singleBuffer(request.buffers),
+            requestId: requiredString(payload.requestId),
+            userPresenceConfirmed: payload.userPresenceConfirmed === true,
+          }))
+        }
         case 'prepareHttpSignature': {
           const hasBody = payload.hasBody === true
           const body = hasBody ? singleBuffer(request.buffers) : undefined

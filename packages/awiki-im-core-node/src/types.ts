@@ -71,6 +71,13 @@ export interface ImCoreIdentityProvider {
     readonly recipientPublicKey: Buffer
     readonly requestId: string
   }): Promise<ImCoreSealedSecretDelivery>
+  exportRootKeySealed?(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly kid: string
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+    readonly userPresenceConfirmed: boolean
+  }): Promise<ImCoreSealedSecretDelivery>
   sign(
     reference: ImCoreIdentityReference,
     request:

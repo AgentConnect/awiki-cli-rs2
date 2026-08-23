@@ -588,6 +588,27 @@ impl ProviderSharedSecret {
     }
 }
 
+pub struct ProviderLegacyRootExportRequest {
+    pub key: ProviderKeySelector,
+    pub user_presence_confirmed: bool,
+}
+
+pub struct ProviderExportedRoot {
+    pkcs8_der: zeroize::Zeroizing<Vec<u8>>,
+}
+
+impl ProviderExportedRoot {
+    pub fn new(pkcs8_der: Vec<u8>) -> Self {
+        Self {
+            pkcs8_der: zeroize::Zeroizing::new(pkcs8_der),
+        }
+    }
+
+    pub fn as_pkcs8_der(&self) -> &[u8] {
+        &self.pkcs8_der
+    }
+}
+
 #[async_trait]
 pub trait IdentityCustody: Send + Sync {
     async fn store_info(&self) -> ProviderResult<ProviderStoreInfo>;
@@ -672,6 +693,16 @@ pub trait IdentitySession: Send + Sync {
         &self,
         request: ProviderKeyAgreementRequest,
     ) -> ProviderResult<ProviderSharedSecret>;
+
+    async fn export_root_for_legacy_envelope(
+        &self,
+        _request: ProviderLegacyRootExportRequest,
+    ) -> ProviderResult<ProviderExportedRoot> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
 
     async fn recover(&self) -> ProviderResult<()>;
 }

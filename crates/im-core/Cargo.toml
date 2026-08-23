@@ -26,7 +26,7 @@ realtime = []
 secure-direct = []
 group-e2ee = ["sqlite", "anp/mls"]
 provider-traits = []
-identity-native-anp = ["dep:anp-identity"]
+identity-native-anp = ["dep:anp-identity", "provider-traits"]
 identity-external-provider = ["provider-traits"]
 
 [dependencies]

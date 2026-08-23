@@ -296,6 +296,10 @@ test('External Provider gates root promotion on the dedicated capability', async
       calls.push({ reference, value })
       return { ...value.document, proof: { verificationMethod: value.kid } }
     },
+    exportRootKeySealed: async value => {
+      calls.push(value)
+      return sealedDelivery('AWIKI_LEGACY_ROOT_TRANSFER_V1')
+    },
   })
   const accepted = await createIdentityProviderDispatch(enabled)([{
     operation: 'confirmRootPromotion',
@@ -322,6 +326,24 @@ test('External Provider gates root promotion on the dedicated capability', async
     proof: { verificationMethod: proofRequest.kid },
   })
   assert.deepEqual(calls[1], { reference: identity, value: proofRequest })
+
+  const recipientPublicKey = Buffer.alloc(32, 9)
+  const exported = await createIdentityProviderDispatch(enabled)([{
+    operation: 'exportRootKeySealed',
+    payloadJson: JSON.stringify({
+      identity,
+      kid: `${identity.did}#root`,
+      requestId: 'root-export-1',
+      userPresenceConfirmed: true,
+    }),
+    buffers: [recipientPublicKey],
+  }])
+  assert.equal(exported.ok, true)
+  assert.deepEqual(
+    JSON.parse(exported.payloadJson),
+    sealedDelivery('AWIKI_LEGACY_ROOT_TRANSFER_V1'),
+  )
+  assert.equal(calls[2].recipientPublicKey, recipientPublicKey)
 })
 
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {
@@ -439,7 +461,7 @@ test('External Provider hot paths make one call and keep binary values out of JS
   assert.equal(calls[3].request.recipientPublicKey, recipientPublicKey)
 })
 
-function sealedDelivery() {
+function sealedDelivery(capability = 'IDENTITY_ECDH_SEALED') {
   return {
     envelope: {
       protocol: 'anp-sealed-secret/1',
@@ -451,7 +473,7 @@ function sealedDelivery() {
       providerInstanceId: 'provider-1',
       parentLeaseId: 'lease-1',
       consumer: 'dsh-awiki',
-      capability: 'IDENTITY_ECDH_SEALED',
+      capability,
       storeId: 'store-1',
       expiresAt: 2_000_000_000,
     },

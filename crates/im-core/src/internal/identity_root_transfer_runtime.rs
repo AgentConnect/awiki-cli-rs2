@@ -380,10 +380,12 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
 
-    let custody_manager = crate::internal::identity_custody::open_controller_manager(&core)
+    let custody_manager = crate::internal::identity_custody::controller_custody_provider(&core)
+        .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     let custody_info = custody_manager
-        .info()
+        .store_info()
+        .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     if local_entry.identity_custody_backend.as_deref() != Some("anp_identity")
         || local_entry.anp_identity_store_id.as_deref() != Some(custody_info.store_id.as_str())
@@ -395,23 +397,26 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         .as_deref()
         .ok_or_else(|| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     let custody_identity = custody_manager
-        .get(&anp_identity::IdentityRef {
+        .open_identity(&crate::internal::identity_provider::ProviderIdentityRef {
             store_id: custody_info.store_id,
             identity_id: identity_id.to_owned(),
             did: client.did().as_str().to_owned(),
         })
+        .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
-    use anp_identity::host::{IdentityStatusPort, RootExportPort};
     let host_status = custody_identity
         .host_status()
+        .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
-    if host_status.root_capability != anp_identity::host::HostRootCapability::Active {
+    if host_status.root_capability
+        != crate::internal::identity_provider::ProviderRootCapability::Active
+    {
         return Err(root_error(RootTransferErrorCode::RootVaultUnavailable));
     }
     let checkpoint = host_status
         .checkpoint
         .ok_or_else(|| root_error(RootTransferErrorCode::StateChanged))?;
-    let document_digest = anp_identity::canonical_document_digest(&document)
+    let document_digest = crate::internal::identity_wire::document::document_hash(&document)
         .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     if checkpoint.document_version != registry.checkpoint.document_version
         || checkpoint.registry_version != registry.checkpoint.registry_version
@@ -421,10 +426,15 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
     let exported_root = custody_identity
-        .export_root_for_legacy_envelope(anp_identity::host::UserConfirmedRootExportRequest {
-            key: anp_identity::KeySelector::Kid(state.root_key_id.clone()),
-            user_presence_confirmed: true,
-        })
+        .export_root_for_legacy_envelope(
+            crate::internal::identity_provider::ProviderLegacyRootExportRequest {
+                key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                    state.root_key_id.clone(),
+                ),
+                user_presence_confirmed: true,
+            },
+        )
+        .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
     validate_root_private_der_matches_document(
         exported_root.as_pkcs8_der(),

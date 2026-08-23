@@ -7,14 +7,15 @@ use im_core::provider::{
     ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
     ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderEnrollmentProposal,
     ProviderEnrollmentProposalKind, ProviderEnrollmentSession, ProviderExactHttpRequest,
-    ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
-    ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
-    ProviderKeySelector, ProviderObjectProofRequest, ProviderOriginProofRequest,
-    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPublicIdentity,
-    ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationResult,
-    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderSharedSecret,
-    ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose,
-    ProviderStoreInfo, ProviderVerifiedRemoteDocument,
+    ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor,
+    ProviderIdentityRef, ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm,
+    ProviderKeyPurpose, ProviderKeySelector, ProviderLegacyRootExportRequest,
+    ProviderObjectProofRequest, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
+    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
+    ProviderPublicationAttempt, ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest,
+    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -28,6 +29,8 @@ const SEALED_SECRET_INFO: &[u8] = b"anp.identity.sealed-secret.v1";
 const IDENTITY_ECDH_CAPABILITY: &str = "IDENTITY_ECDH_SEALED";
 const ECDH_SEALED_OPERATION: &str = "ecdh_sealed";
 const ENROLLMENT_ECDH_SEALED_OPERATION: &str = "enrollment_ecdh_sealed";
+const ROOT_EXPORT_CAPABILITY: &str = "AWIKI_LEGACY_ROOT_TRANSFER_V1";
+const ROOT_EXPORT_SEALED_OPERATION: &str = "export_root_key_sealed";
 
 pub(crate) type IdentityProviderDispatch = ThreadsafeFunction<
     (NodeIdentityProviderCall,),
@@ -87,6 +90,16 @@ impl ExternalIdentitySession {
                 key.algorithm == ProviderKeyAlgorithm::X25519
                     && key.purposes.contains(&ProviderKeyPurpose::KeyAgreement)
             })
+            .map(|key| key.kid)
+            .ok_or_else(|| provider_error(IdentityProviderErrorCode::CapabilityUnavailable, false))
+    }
+
+    async fn default_root_kid(&self) -> ProviderResult<String> {
+        self.public_identity()
+            .await?
+            .active_keys
+            .into_iter()
+            .find(|key| key.purposes.contains(&ProviderKeyPurpose::RootControl))
             .map(|key| key.kid)
             .ok_or_else(|| provider_error(IdentityProviderErrorCode::CapabilityUnavailable, false))
     }
@@ -181,6 +194,15 @@ struct SealedKeyAgreementPayload<'a> {
 struct SealedEnrollmentKeyAgreementPayload<'a> {
     session_id: &'a str,
     request_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedRootExportPayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    kid: &'a str,
+    request_id: &'a str,
+    user_presence_confirmed: bool,
 }
 
 #[derive(Deserialize)]
@@ -708,6 +730,29 @@ impl IdentitySession for ExternalIdentitySession {
         .await
     }
 
+    async fn export_root_for_legacy_envelope(
+        &self,
+        request: ProviderLegacyRootExportRequest,
+    ) -> ProviderResult<ProviderExportedRoot> {
+        if !request.user_presence_confirmed {
+            return Err(provider_error(
+                IdentityProviderErrorCode::InvalidRequest,
+                false,
+            ));
+        }
+        let kid = match request.key {
+            ProviderKeySelector::Kid(kid) => kid,
+            ProviderKeySelector::Default => self.default_root_kid().await?,
+        };
+        receive_sealed_root(
+            &self.dispatch,
+            &self.identity,
+            &kid,
+            request.user_presence_confirmed,
+        )
+        .await
+    }
+
     async fn recover(&self) -> ProviderResult<()> {
         call_json::<()>(
             &self.dispatch,
@@ -936,6 +981,7 @@ async fn receive_sealed_shared_secret(
     let aad = validate_delivery(
         &delivery,
         operation,
+        IDENTITY_ECDH_CAPABILITY,
         identity,
         kid,
         &request_id,
@@ -951,6 +997,54 @@ async fn receive_sealed_shared_secret(
         .try_into()
         .map_err(|_| provider_incompatible())?;
     Ok(ProviderSharedSecret::new(bytes))
+}
+
+async fn receive_sealed_root(
+    dispatch: &IdentityProviderDispatch,
+    identity: &ProviderIdentityRef,
+    kid: &str,
+    user_presence_confirmed: bool,
+) -> ProviderResult<ProviderExportedRoot> {
+    let recipient = anp::sealed_handoff::SealedHandoffRecipient::generate();
+    let recipient_public = *recipient.public_key();
+    let request_id = random_id();
+    let delivery: SealedSecretDeliveryWire = call_json(
+        dispatch,
+        "exportRootKeySealed",
+        &SealedRootExportPayload {
+            identity,
+            kid,
+            request_id: &request_id,
+            user_presence_confirmed,
+        },
+        vec![Buffer::from(recipient_public.to_vec())],
+    )
+    .await?;
+    let operation_input_digest = sealed_root_export_operation_digest(
+        identity,
+        kid,
+        &recipient_public,
+        &request_id,
+        user_presence_confirmed,
+    )?;
+    let aad = validate_delivery(
+        &delivery,
+        ROOT_EXPORT_SEALED_OPERATION,
+        ROOT_EXPORT_CAPABILITY,
+        identity,
+        kid,
+        &request_id,
+        &operation_input_digest,
+        &recipient_public,
+    )?;
+    let handoff = delivery.envelope.to_handoff()?;
+    let plaintext = recipient
+        .open(&handoff, SEALED_SECRET_INFO, &aad)
+        .map_err(|_| provider_incompatible())?;
+    if plaintext.is_empty() {
+        return Err(provider_incompatible());
+    }
+    Ok(ProviderExportedRoot::new(plaintext.to_vec()))
 }
 
 impl SealedSecretEnvelopeWire {
@@ -975,6 +1069,7 @@ impl SealedSecretEnvelopeWire {
 fn validate_delivery(
     delivery: &SealedSecretDeliveryWire,
     operation: &str,
+    expected_capability: &str,
     identity: &ProviderIdentityRef,
     kid: &str,
     request_id: &str,
@@ -985,7 +1080,7 @@ fn validate_delivery(
     if authorization.provider_instance_id.trim().is_empty()
         || authorization.parent_lease_id.trim().is_empty()
         || authorization.consumer.trim().is_empty()
-        || authorization.capability != IDENTITY_ECDH_CAPABILITY
+        || authorization.capability != expected_capability
         || authorization.store_id != identity.store_id
         || authorization.expires_at <= 0
     {
@@ -1098,6 +1193,38 @@ fn sealed_enrollment_operation_digest(
         peer_public_b64u: URL_SAFE_NO_PAD.encode(peer_public),
         recipient_public_key_digest: recipient_public_key_digest(recipient_public_key),
         request_id,
+    })
+}
+
+fn sealed_root_export_operation_digest(
+    identity: &ProviderIdentityRef,
+    kid: &str,
+    recipient_public_key: &[u8; 32],
+    request_id: &str,
+    user_presence_confirmed: bool,
+) -> ProviderResult<String> {
+    #[derive(Serialize)]
+    struct DigestInput<'a> {
+        protocol: &'static str,
+        operation: &'static str,
+        store_id: &'a str,
+        identity_id: &'a str,
+        did: &'a str,
+        kid: &'a str,
+        recipient_public_key_digest: String,
+        request_id: &'a str,
+        user_presence_confirmed: bool,
+    }
+    sealed_operation_digest(&DigestInput {
+        protocol: SEALED_SECRET_PROTOCOL,
+        operation: ROOT_EXPORT_SEALED_OPERATION,
+        store_id: &identity.store_id,
+        identity_id: &identity.identity_id,
+        did: &identity.did,
+        kid,
+        recipient_public_key_digest: recipient_public_key_digest(recipient_public_key),
+        request_id,
+        user_presence_confirmed,
     })
 }
 
@@ -1395,6 +1522,7 @@ mod tests {
             validate_delivery(
                 &delivery,
                 ECDH_SEALED_OPERATION,
+                IDENTITY_ECDH_CAPABILITY,
                 &identity,
                 &kid,
                 request_id,
@@ -1410,6 +1538,7 @@ mod tests {
             validate_delivery(
                 &delivery,
                 ECDH_SEALED_OPERATION,
+                IDENTITY_ECDH_CAPABILITY,
                 &identity,
                 &kid,
                 request_id,
@@ -1419,6 +1548,83 @@ mod tests {
             .unwrap_err()
             .code,
             IdentityProviderErrorCode::ProviderIncompatible
+        );
+    }
+
+    #[test]
+    fn sealed_root_export_contract_matches_anp_identity() {
+        let identity = ProviderIdentityRef {
+            store_id: "store-1".to_owned(),
+            identity_id: "identity-1".to_owned(),
+            did: "did:wba:example.test:alice".to_owned(),
+        };
+        let anp_identity = anp_identity::IdentityRef {
+            store_id: identity.store_id.clone(),
+            identity_id: identity.identity_id.clone(),
+            did: identity.did.clone(),
+        };
+        let kid = format!("{}#root", identity.did);
+        let recipient = anp::sealed_handoff::SealedHandoffRecipient::generate();
+        let request_id = "root-export-1";
+        let binding = anp_identity::host::sealed_root_export_binding(
+            &anp_identity,
+            &kid,
+            recipient.public_key(),
+            request_id,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            sealed_root_export_operation_digest(
+                &identity,
+                &kid,
+                recipient.public_key(),
+                request_id,
+                true,
+            )
+            .unwrap(),
+            binding.operation_input_digest
+        );
+        let authorization = anp_identity::host::IssuedAuthorizationContext {
+            provider_instance_id: "provider-1".to_owned(),
+            parent_lease_id: "lease-1".to_owned(),
+            consumer: "dsh-awiki".to_owned(),
+            capability: ROOT_EXPORT_CAPABILITY.to_owned(),
+            store_id: identity.store_id.clone(),
+            expires_at: 2_000_000_000,
+        };
+        let aad = anp_identity::host::sealed_operation_aad(&authorization, &binding, &anp_identity)
+            .unwrap();
+        let delivery = SealedSecretDeliveryWire {
+            envelope: SealedSecretEnvelopeWire {
+                protocol: SEALED_SECRET_PROTOCOL.to_owned(),
+                suite: anp::sealed_handoff::SEALED_HANDOFF_SUITE.to_owned(),
+                encapped_key: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+                ciphertext: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+            },
+            authorization: AuthorizationContextWire {
+                provider_instance_id: authorization.provider_instance_id,
+                parent_lease_id: authorization.parent_lease_id,
+                consumer: authorization.consumer,
+                capability: authorization.capability,
+                store_id: authorization.store_id,
+                expires_at: authorization.expires_at,
+            },
+            aad: URL_SAFE_NO_PAD.encode(&aad),
+        };
+        assert_eq!(
+            validate_delivery(
+                &delivery,
+                ROOT_EXPORT_SEALED_OPERATION,
+                ROOT_EXPORT_CAPABILITY,
+                &identity,
+                &kid,
+                request_id,
+                &binding.operation_input_digest,
+                recipient.public_key(),
+            )
+            .unwrap(),
+            aad
         );
     }
 
