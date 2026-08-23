@@ -348,13 +348,14 @@ impl Fixture {
 
     fn credentials(&self) -> crate::internal::message_runtime::group::GroupTextCredentials {
         let key1_private_pem = self.did_bundle.private_key_pem("key-1").unwrap().to_owned();
+        let verification_method = format!("{}#key-1", self.did_bundle.did().unwrap());
         crate::internal::message_runtime::group::GroupTextCredentials {
             identity_name: "alice".to_owned(),
             did_document: Some(self.did_bundle.did_document.clone()),
             signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(
                 key1_private_pem,
             ),
-            verification_method: None,
+            verification_method: Some(verification_method),
         }
     }
 }

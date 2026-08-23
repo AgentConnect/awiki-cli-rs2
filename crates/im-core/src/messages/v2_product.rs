@@ -368,7 +368,7 @@ async fn persist_direct_projection_async(
 }
 
 #[cfg(feature = "group-e2ee")]
-pub(super) fn send_group(
+async fn send_group_async_impl(
     client: &crate::core::ImClient,
     mut request: crate::messages::SendMessageRequest,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
@@ -404,15 +404,24 @@ pub(super) fn send_group(
         .ok_or_else(|| crate::ImError::LocalStateUnavailable {
             detail: "P6 v2 requires the current DID Document".to_owned(),
         })?;
-    let group_state_ref = fetch_current_group_state_ref(client, group_did, &operation_id)?;
+    let group_state_ref =
+        fetch_current_group_state_ref_async(client, group_did, &operation_id).await?;
 
     let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
+    let signer = client
+        .runtime()
+        .key_provider
+        .async_session()
+        .map(crate::internal::proof::origin::OriginProofSigner::Provider)
+        .unwrap_or_else(|| {
+            crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
+                &client.runtime().key_provider,
+            ))
+        });
     let proof_identity = crate::internal::proof::origin::OriginProofIdentity {
         identity_name: client.current_identity().id.as_str().to_owned(),
         did_document: Some(did_document.clone()),
-        signer: crate::internal::proof::origin::OriginProofSigner::Identity(std::sync::Arc::clone(
-            &client.runtime().key_provider,
-        )),
+        signer,
         verification_method: Some(device.signing_key_id),
     };
     let connection = crate::internal::local_state::open_writable(
@@ -473,14 +482,15 @@ pub(super) fn send_group(
                     crate::internal::auth::session::FileSessionProvider::new(client),
                     crate::internal::transport::CoreHttpTransport::new(client),
                 )
-                .prepare_and_commit_object(
+                .prepare_and_commit_object_async(
                     crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
                         target: request.target.clone(),
                         request: attachment,
                         resolved_target_did: None,
                         message_security_profile: "group-e2ee",
                     },
-                )?;
+                )
+                .await?;
             let redacted = committed.redacted_manifest.clone();
             (
                 crate::internal::group_e2ee::v2_application::V2ProductApplication::committed_attachment(
@@ -500,21 +510,44 @@ pub(super) fn send_group(
         true,
         format!("p6-v2-encrypt-{operation_id}"),
     )?;
-    let accepted = product.submit_product_application_send(&prepared)?;
+    let accepted = product
+        .submit_product_application_send_async(&prepared)
+        .await?;
     let mut result = group_result(client, &request, &accepted, attachment_projection.as_ref())?;
-    match persist_group_projection(
+    match persist_group_projection_async(
         client,
         group_did,
         &request,
         attachment_projection.as_ref(),
         &result,
-    ) {
+    )
+    .await
+    {
         Ok(()) => client.emit_committed_local_message_projection("local_send"),
         Err(err) => result
             .warnings
             .push(format!("Failed to persist local P6 v2 message: {err}")),
     }
     Ok(result)
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(super) fn send_group(
+    client: &crate::core::ImClient,
+    request: crate::messages::SendMessageRequest,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(crate::ImError::unsupported(
+            "sync-p6-v2-send-inside-async-runtime",
+        ));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| crate::ImError::Internal {
+            message: format!("create P6 v2 sync runtime: {err}"),
+        })?;
+    runtime.block_on(send_group_async_impl(client, request))
 }
 
 #[cfg(not(feature = "group-e2ee"))]
@@ -531,12 +564,7 @@ pub(super) async fn send_group_async(
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     #[cfg(feature = "group-e2ee")]
     {
-        let client = client.clone();
-        crate::internal::runtime::worker::run_blocking(move || send_group(&client, request))
-            .await
-            .map_err(|err| crate::ImError::Internal {
-                message: err.to_string(),
-            })?
+        send_group_async_impl(client, request).await
     }
     #[cfg(not(feature = "group-e2ee"))]
     {
@@ -585,7 +613,7 @@ fn current_vnext_device(client: &crate::core::ImClient) -> crate::ImResult<Curre
 }
 
 #[cfg(feature = "group-e2ee")]
-fn fetch_current_group_state_ref(
+async fn fetch_current_group_state_ref_async(
     client: &crate::core::ImClient,
     group_did: &str,
     operation_id: &str,
@@ -597,12 +625,13 @@ fn fetch_current_group_state_ref(
         false,
     )?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let raw = crate::internal::transport::AuthenticatedRpcTransport::authenticated_rpc(
+    let raw = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
         &mut transport,
         crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
         "group.get_info",
         params,
-    )?;
+    )
+    .await?;
     let returned_group = raw
         .get("group_did")
         .and_then(Value::as_str)
@@ -696,7 +725,7 @@ fn group_result(
 }
 
 #[cfg(feature = "group-e2ee")]
-fn persist_group_projection(
+async fn persist_group_projection_async(
     client: &crate::core::ImClient,
     group_did: &str,
     request: &crate::messages::SendMessageRequest,
@@ -704,20 +733,23 @@ fn persist_group_projection(
     result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
     if let Some(manifest) = attachment_projection {
-        return crate::internal::message_runtime::local_projection::persist_group_e2ee_attachment_outgoing(
+        return crate::internal::message_runtime::local_projection::persist_group_e2ee_attachment_outgoing_async(
             client, group_did, manifest, result,
-        );
+        )
+        .await;
     }
     match &request.body {
         crate::messages::MessageBody::Text { text, kind } => {
-            crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing(
+            crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
                 client, group_did, text, kind, result,
             )
+            .await
         }
         crate::messages::MessageBody::Payload { payload } => {
-            crate::internal::message_runtime::local_projection::persist_group_e2ee_payload_outgoing(
+            crate::internal::message_runtime::local_projection::persist_group_e2ee_payload_outgoing_async(
                 client, group_did, payload, result,
             )
+            .await
         }
         crate::messages::MessageBody::Attachment { .. } => Err(crate::ImError::PermissionDenied),
     }

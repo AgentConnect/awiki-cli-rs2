@@ -65,11 +65,12 @@ impl GroupE2eeV2Runtime {
         identity_signer: &dyn crate::internal::key_provider::IdentitySigner,
     ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
         let key_id = input.verification_method.clone();
+        let public_key = identity_signer.public_key(&key_id)?;
         match v2::prepare_or_resume_key_package_publish_signing_v2(
             &self.store,
             input,
             did_document,
-            &identity_signer.public_key(&key_id)?,
+            &public_key,
         )
         .map_err(map_group_mls_error)?
         {
@@ -77,6 +78,45 @@ impl GroupE2eeV2Runtime {
             V2KeyPackagePublishPreparation::Signing(prepared) => {
                 let signature =
                     identity_signer.sign_device_assertion(&key_id, prepared.signing_input())?;
+                v2::complete_key_package_publish_signing_v2(&self.store, prepared, &signature)
+                    .map_err(map_group_mls_error)
+            }
+        }
+    }
+
+    pub(crate) async fn prepare_or_resume_key_package_publish_async(
+        &self,
+        input: V2PrepareKeyPackagePublishInput,
+        did_document: &Value,
+        identity_signer: &dyn crate::internal::key_provider::IdentitySigner,
+    ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
+        let key_id = input.verification_method.clone();
+        let public_key = identity_signer.public_key(&key_id)?;
+        match v2::prepare_or_resume_key_package_publish_signing_v2(
+            &self.store,
+            input,
+            did_document,
+            &public_key,
+        )
+        .map_err(map_group_mls_error)?
+        {
+            V2KeyPackagePublishPreparation::Ready(prepared) => Ok(prepared),
+            V2KeyPackagePublishPreparation::Signing(prepared) => {
+                let signature = if let Some(session) = identity_signer.async_session() {
+                    session
+                        .sign(crate::internal::identity_provider::ProviderSignRequest {
+                            purpose: crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+                            key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                                key_id,
+                            ),
+                            payload: prepared.signing_input().to_vec(),
+                        })
+                        .await
+                        .map(|signature| signature.bytes)
+                        .map_err(crate::internal::identity_provider::map_provider_error)?
+                } else {
+                    identity_signer.sign_device_assertion(&key_id, prepared.signing_input())?
+                };
                 v2::complete_key_package_publish_signing_v2(&self.store, prepared, &signature)
                     .map_err(map_group_mls_error)
             }

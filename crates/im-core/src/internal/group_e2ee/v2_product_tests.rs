@@ -187,8 +187,8 @@ impl crate::internal::transport::AsyncAuthenticatedRpcTransport for LoopbackTran
     }
 }
 
-#[test]
-fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
+#[tokio::test]
+async fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     let directory = TestDirectory::new("im-core-p6-v2-product");
     let fixture = make_did_fixture("alice-product", &["alice-a1", "alice-a2"]);
     let a1 = &fixture.devices[0];
@@ -281,7 +281,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         )
         .expect("A1 encrypts before A2 joins");
     a1_product
-        .submit_product_application_send(&before_welcome)
+        .submit_product_application_send_async(&before_welcome)
+        .await
         .expect("Host accepts pre-Welcome ciphertext");
     assert!(a2_product
         .decrypt_incoming_application(incoming_input(
@@ -321,7 +322,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         })
         .expect("prepare A2 Add");
     let added = a1_product
-        .submit_add(&add, "req-finalize-add-a2")
+        .submit_add_async(&add, "req-finalize-add-a2")
+        .await
         .expect("submit and finalize A2 Add");
     assert_eq!(added.finalized.epoch, "1");
 
@@ -439,7 +441,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         })
         .expect("encrypt one MLS application message");
     let sent = a1_product
-        .submit_application_send(&send)
+        .submit_application_send_async(&send)
+        .await
         .expect("submit exact prepared MLS ciphertext");
     assert_eq!(sent.message_id, send.meta.message_id);
     let decrypted = a2_product
@@ -483,7 +486,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         .expect("encrypt one attachment manifest");
     assert!(!format!("{attachment_send:?}").contains(&object_key));
     a1_product
-        .submit_product_application_send(&attachment_send)
+        .submit_product_application_send_async(&attachment_send)
+        .await
         .expect("submit one attachment MLS ciphertext");
     let send_calls_after = transport
         .calls()
@@ -541,7 +545,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         })
         .expect("prepare exact A2 Remove");
     let removed = a1_product
-        .submit_remove(&remove, "req-finalize-remove-a2")
+        .submit_remove_async(&remove, "req-finalize-remove-a2")
+        .await
         .expect("submit and finalize exact A2 Remove");
     assert_eq!(removed.finalized.epoch, "2");
     let remove_notice =
@@ -575,7 +580,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         })
         .expect("remaining A1 encrypts after exact A2 removal");
     a1_product
-        .submit_application_send(&after_remove)
+        .submit_application_send_async(&after_remove)
+        .await
         .expect("Host accepts post-removal ciphertext");
     assert!(a2_product
         .decrypt_incoming_application(incoming_input(
