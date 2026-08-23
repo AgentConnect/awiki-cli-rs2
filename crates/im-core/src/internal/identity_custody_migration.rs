@@ -6,6 +6,9 @@
 use std::fs;
 use std::path::Path;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::identity::{
@@ -25,16 +28,62 @@ const SIGNING_PRIVATE_FILE: &str = "e2ee-signing-private.pem";
 const AGREEMENT_PRIVATE_FILES: &[&str] = &["e2ee-agreement-private.pem", "key-3-private.pem"];
 const DAEMON_PRIVATE_FILES: &[&str] = &["daemon-key-1-private.pem", "daemon-subkey-package.json"];
 
+fn inspect_only(core: &crate::core::ImCore) -> crate::ImResult<IdentityCustodyMigrationReport> {
+    block_on_run(core, true, None)
+}
+
+#[cfg(feature = "identity-native-anp")]
+fn sync_run(
+    core: &crate::core::ImCore,
+    dry_run: bool,
+    failure: Option<FailurePoint>,
+) -> crate::ImResult<IdentityCustodyMigrationReport> {
+    block_on_run(core, dry_run, failure)
+}
+
+fn block_on_run(
+    core: &crate::core::ImCore,
+    dry_run: bool,
+    failure: Option<FailurePoint>,
+) -> crate::ImResult<IdentityCustodyMigrationReport> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "synchronous identity migration cannot run inside an async runtime".to_owned(),
+        });
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| crate::ImError::Internal {
+            message: format!("identity migration runtime failed: {error}"),
+        })?
+        .block_on(run(core, dry_run, failure))
+}
+
 pub(crate) fn inspect(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<IdentityCustodyMigrationReport> {
-    run(core, true, None)
+    #[cfg(feature = "identity-native-anp")]
+    {
+        return sync_run(core, true, None);
+    }
+    #[cfg(not(feature = "identity-native-anp"))]
+    {
+        inspect_only(core)
+    }
 }
 
+#[cfg(feature = "identity-native-anp")]
 pub(crate) fn migrate(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<IdentityCustodyMigrationReport> {
-    run(core, false, None)
+    sync_run(core, false, None)
+}
+
+pub(crate) async fn migrate_async(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<IdentityCustodyMigrationReport> {
+    run(core, false, None).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,11 +92,20 @@ enum FailurePoint {
     AfterCutover,
 }
 
-fn run(
+enum MigrationPreparation {
+    Complete(IdentityCustodyMigrationReport),
+    Ready {
+        reports: Vec<IdentityCustodyMigrationIdentityReport>,
+        materials: Vec<LegacyIdentityMaterial>,
+        existing_bindings: Vec<CutoverBinding>,
+        pending_warnings: Vec<String>,
+    },
+}
+
+fn prepare_migration(
     core: &crate::core::ImCore,
     dry_run: bool,
-    failure: Option<FailurePoint>,
-) -> crate::ImResult<IdentityCustodyMigrationReport> {
+) -> crate::ImResult<MigrationPreparation> {
     let paths = &core.inner().sdk_paths().identities;
     let legacy_store = IdentityStore::new(paths);
     let index = legacy_store.load_index()?;
@@ -58,7 +116,7 @@ fn run(
             report.phase = IdentityCustodyMigrationPhase::Cleaned;
             report.cleanup_complete = true;
         }
-        return Ok(report);
+        return Ok(MigrationPreparation::Complete(report));
     }
 
     let mut reports = Vec::new();
@@ -77,8 +135,7 @@ fn run(
             match (store_id, identity_id) {
                 (Some(store_id), Some(identity_id)) => {
                     let document = legacy_store.load_did_document(&entry.dir_name)?;
-                    let document_digest = anp_identity::canonical_document_digest(&document)
-                        .map_err(crate::internal::identity_custody::map_error)?;
+                    let document_digest = canonical_document_digest(&document)?;
                     reports.push(IdentityCustodyMigrationIdentityReport {
                         identity_name: identity_name.clone(),
                         did: entry.did.clone(),
@@ -143,48 +200,83 @@ fn run(
     if index.credentials.is_empty()
         || (materials.is_empty() && existing_bindings.len() == reports.len())
     {
-        return Ok(IdentityCustodyMigrationReport {
-            dry_run,
-            phase: IdentityCustodyMigrationPhase::NotRequired,
-            store_id: common_store_id(&existing_bindings),
-            marker_written: false,
-            cleanup_complete: false,
-            copied_count: 0,
-            verified_count: existing_bindings.len(),
-            identities: reports,
-            blockers,
-            warnings: pending_warnings,
-        });
+        return Ok(MigrationPreparation::Complete(
+            IdentityCustodyMigrationReport {
+                dry_run,
+                phase: IdentityCustodyMigrationPhase::NotRequired,
+                store_id: common_store_id(&existing_bindings),
+                marker_written: false,
+                cleanup_complete: false,
+                copied_count: 0,
+                verified_count: existing_bindings.len(),
+                identities: reports,
+                blockers,
+                warnings: pending_warnings,
+            },
+        ));
     }
     if dry_run || !blockers.is_empty() {
-        return Ok(IdentityCustodyMigrationReport {
-            dry_run,
-            phase: if blockers.is_empty() {
-                IdentityCustodyMigrationPhase::Eligible
-            } else {
-                IdentityCustodyMigrationPhase::Blocked
+        return Ok(MigrationPreparation::Complete(
+            IdentityCustodyMigrationReport {
+                dry_run,
+                phase: if blockers.is_empty() {
+                    IdentityCustodyMigrationPhase::Eligible
+                } else {
+                    IdentityCustodyMigrationPhase::Blocked
+                },
+                store_id: common_store_id(&existing_bindings),
+                marker_written: false,
+                cleanup_complete: false,
+                copied_count: 0,
+                verified_count: existing_bindings.len(),
+                identities: reports,
+                blockers,
+                warnings: pending_warnings
+                    .into_iter()
+                    .chain(std::iter::once(
+                        "dry-run and pre-cutover inspection never remove legacy identity records"
+                            .to_owned(),
+                    ))
+                    .collect(),
             },
-            store_id: common_store_id(&existing_bindings),
-            marker_written: false,
-            cleanup_complete: false,
-            copied_count: 0,
-            verified_count: existing_bindings.len(),
-            identities: reports,
-            blockers,
-            warnings: pending_warnings
-                .into_iter()
-                .chain(std::iter::once(
-                    "dry-run and pre-cutover inspection never remove legacy identity records"
-                        .to_owned(),
-                ))
-                .collect(),
-        });
+        ));
     }
+    Ok(MigrationPreparation::Ready {
+        reports,
+        materials,
+        existing_bindings,
+        pending_warnings,
+    })
+}
 
-    let mut custody = crate::internal::identity_custody::open_controller_manager(core)?;
+async fn run(
+    core: &crate::core::ImCore,
+    dry_run: bool,
+    failure: Option<FailurePoint>,
+) -> crate::ImResult<IdentityCustodyMigrationReport> {
+    let prepare_core = core.clone();
+    let prepared = crate::internal::runtime::worker::run_blocking(move || {
+        prepare_migration(&prepare_core, dry_run)
+    })
+    .await
+    .map_err(|error| crate::ImError::Internal {
+        message: error.to_string(),
+    })??;
+    let (reports, materials, existing_bindings, pending_warnings) = match prepared {
+        MigrationPreparation::Complete(report) => return Ok(report),
+        MigrationPreparation::Ready {
+            reports,
+            materials,
+            existing_bindings,
+            pending_warnings,
+        } => (reports, materials, existing_bindings, pending_warnings),
+    };
+
+    let custody = crate::internal::identity_custody::controller_custody_provider(core).await?;
     let store_id = custody
-        .info()
-        .map_err(crate::internal::identity_custody::map_facade_error)?
+        .store_info()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
         .store_id;
     for binding in &existing_bindings {
         if binding.store_id != store_id {
@@ -194,7 +286,7 @@ fn run(
     let mut bindings = existing_bindings;
     let mut copied_count = 0;
     for material in materials {
-        let binding = copy_one_identity(&mut custody, material)?;
+        let binding = copy_one_identity(custody.as_ref(), material).await?;
         copied_count += 1;
         bindings.push(binding);
         if failure == Some(FailurePoint::AfterCopied(copied_count)) {
@@ -203,14 +295,29 @@ fn run(
     }
 
     for binding in &bindings {
-        verify_binding(&custody, binding)?;
+        verify_binding(custody.as_ref(), binding).await?;
     }
     let verified_count = bindings.len();
-    commit_cutover(core, &legacy_store, &store_id, &bindings)?;
-    if failure == Some(FailurePoint::AfterCutover) {
-        return Err(test_failure("after_cutover"));
-    }
-    cleanup_after_cutover(core, &legacy_store)?;
+    let commit_core = core.clone();
+    let commit_store_id = store_id.clone();
+    let commit_bindings = bindings.clone();
+    crate::internal::runtime::worker::run_blocking(move || {
+        let legacy_store = IdentityStore::new(&commit_core.inner().sdk_paths().identities);
+        commit_cutover(
+            &commit_core,
+            &legacy_store,
+            &commit_store_id,
+            &commit_bindings,
+        )?;
+        if failure == Some(FailurePoint::AfterCutover) {
+            return Err(test_failure("after_cutover"));
+        }
+        cleanup_after_cutover(&commit_core, &legacy_store)
+    })
+    .await
+    .map_err(|error| crate::ImError::Internal {
+        message: error.to_string(),
+    })??;
 
     Ok(IdentityCustodyMigrationReport {
         dry_run: false,
@@ -239,10 +346,10 @@ struct LegacyIdentityMaterial {
     source_dir_name: String,
     did: crate::ids::Did,
     document: serde_json::Value,
-    evidence: anp_identity::VerifiedPublicationEvidence,
-    root_key: Option<anp_identity::host::MigrationPrivateKey>,
-    signing_key: anp_identity::host::MigrationPrivateKey,
-    e2ee_key: anp_identity::host::MigrationPrivateKey,
+    evidence: crate::internal::identity_provider::ProviderPublicationEvidence,
+    root_key: Option<crate::internal::identity_provider::ProviderIdentityMaterialKey>,
+    signing_key: crate::internal::identity_provider::ProviderIdentityMaterialKey,
+    e2ee_key: crate::internal::identity_provider::ProviderIdentityMaterialKey,
     auth_ref: Option<SecretRef>,
 }
 
@@ -323,7 +430,7 @@ fn prepare_legacy_identity(
             imported_key(
                 &document,
                 &root_kid,
-                anp_identity::host::MigrationKeyPurpose::RootControl,
+                crate::internal::identity_provider::ProviderKeyPurpose::RootControl,
                 pem,
             )
         })
@@ -331,17 +438,16 @@ fn prepare_legacy_identity(
     let signing_key = imported_key(
         &document,
         &authorization.signing_key_id,
-        anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
+        crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
         signing_pem,
     )?;
     let e2ee_key = imported_key(
         &document,
         &authorization.e2ee_key_id,
-        anp_identity::host::MigrationKeyPurpose::KeyAgreement,
+        crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
         e2ee_pem,
     )?;
-    let digest = anp_identity::canonical_document_digest(&document)
-        .map_err(crate::internal::identity_custody::map_error)?;
+    let digest = canonical_document_digest(&document)?;
     Ok(LegacyIdentityMaterial {
         report: IdentityCustodyMigrationIdentityReport {
             identity_name: identity_name.to_owned(),
@@ -356,7 +462,7 @@ fn prepare_legacy_identity(
         source_dir_name: entry.dir_name.clone(),
         did,
         document,
-        evidence: anp_identity::VerifiedPublicationEvidence {
+        evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
             document_version: checkpoint.document_version,
             registry_version: checkpoint.registry_version,
             document_digest: digest,
@@ -429,9 +535,9 @@ fn load_legacy_key_material(
 fn imported_key(
     document: &serde_json::Value,
     kid: &str,
-    purpose: anp_identity::host::MigrationKeyPurpose,
+    purpose: crate::internal::identity_provider::ProviderKeyPurpose,
     pem: Zeroizing<String>,
-) -> crate::ImResult<anp_identity::host::MigrationPrivateKey> {
+) -> crate::ImResult<crate::internal::identity_provider::ProviderIdentityMaterialKey> {
     let material = anp::PrivateKeyMaterial::from_pem(&pem).map_err(|_| {
         crate::ImError::CredentialFileUnreadable {
             path_kind: "identity_private_key".to_owned(),
@@ -447,72 +553,77 @@ fn imported_key(
     }
     let raw = match (purpose, material) {
         (
-            anp_identity::host::MigrationKeyPurpose::RootControl
-            | anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
+            crate::internal::identity_provider::ProviderKeyPurpose::RootControl
+            | crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
             anp::PrivateKeyMaterial::Ed25519(key),
         ) => key.to_bytes().to_vec(),
         (
-            anp_identity::host::MigrationKeyPurpose::KeyAgreement,
+            crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
             anp::PrivateKeyMaterial::X25519(key),
         ) => key.to_bytes().to_vec(),
         _ => return Err(crate::ImError::PermissionDenied),
     };
-    Ok(anp_identity::host::MigrationPrivateKey {
-        kid: kid.to_owned(),
-        purpose,
-        encoding: anp_identity::host::MigrationPrivateKeyEncoding::Raw32,
-        secret: Zeroizing::new(raw),
-    })
+    Ok(
+        crate::internal::identity_provider::ProviderIdentityMaterialKey {
+            kid: kid.to_owned(),
+            purpose,
+            encoding: crate::internal::identity_provider::ProviderPrivateKeyEncoding::Raw32,
+            secret: Zeroizing::new(raw),
+        },
+    )
 }
 
-fn copy_one_identity(
-    custody: &mut anp_identity::IdentityManager,
+async fn copy_one_identity(
+    custody: &dyn crate::internal::identity_provider::IdentityCustody,
     material: LegacyIdentityMaterial,
 ) -> crate::ImResult<CutoverBinding> {
-    use anp_identity::host::MigrationPort;
     let did = material.did.as_str().to_owned();
     let expected_document_digest = material.evidence.document_digest.clone();
     let root_capability_present = material.root_key.is_some();
     let existing = custody
-        .list()
-        .map_err(crate::internal::identity_custody::map_facade_error)?
+        .list_identities()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
         .into_iter()
         .find(|descriptor| descriptor.reference.did == did);
-    let identity = match existing {
+    let session = match existing {
         Some(descriptor) => custody
-            .get(&descriptor.reference)
-            .map_err(crate::internal::identity_custody::map_facade_error)?,
-        None => match material.root_key {
-            Some(root_key) => custody
-                .import_full_identity(anp_identity::host::FullIdentityImportRequest {
-                    remote: anp_identity::VerifiedRemoteDocument {
-                        document: anp_identity::DidDocument::from_value(material.document),
-                        evidence: material.evidence,
+            .open_identity(&descriptor.reference)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?,
+        None => {
+            let mut keys = Vec::with_capacity(if material.root_key.is_some() { 3 } else { 2 });
+            if let Some(root_key) = material.root_key {
+                keys.push(root_key);
+            }
+            keys.push(material.signing_key);
+            keys.push(material.e2ee_key);
+            custody
+                .import_identity_material(
+                    crate::internal::identity_provider::ProviderIdentityMaterialImportRequest {
+                        remote:
+                            crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+                                document: material.document,
+                                evidence: material.evidence,
+                            },
+                        did_wba: true,
+                        keys,
+                        request_id: format!(
+                            "legacy-migration:{}:{}",
+                            material.source_unique_id, expected_document_digest
+                        ),
                     },
-                    did_wba: true,
-                    private_keys: vec![root_key, material.signing_key, material.e2ee_key],
-                })
-                .map_err(crate::internal::identity_custody::map_facade_error)?,
-            None => custody
-                .import_device_identity(anp_identity::host::DeviceIdentityImportRequest {
-                    remote: anp_identity::VerifiedRemoteDocument {
-                        document: anp_identity::DidDocument::from_value(material.document),
-                        evidence: material.evidence,
-                    },
-                    did_wba: true,
-                    signing_key: material.signing_key,
-                    agreement_key: material.e2ee_key,
-                })
-                .map_err(crate::internal::identity_custody::map_facade_error)?,
-        },
+                )
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?
+        }
     };
-    let public = identity
+    let public = session
         .public_identity()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
-    if public.state != anp_identity::PublicIdentityState::Active
-        || anp_identity::canonical_document_digest(public.document.as_value())
-            .map_err(crate::internal::identity_custody::map_error)?
-            != expected_document_digest
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || canonical_document_digest(&public.document)? != expected_document_digest
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -529,43 +640,45 @@ fn copy_one_identity(
     })
 }
 
-fn verify_binding(
-    custody: &anp_identity::IdentityManager,
+async fn verify_binding(
+    custody: &dyn crate::internal::identity_provider::IdentityCustody,
     binding: &CutoverBinding,
 ) -> crate::ImResult<()> {
     let info = custody
-        .info()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+        .store_info()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     if info.store_id != binding.store_id {
         return Err(crate::ImError::PermissionDenied);
     }
-    let mut identity = custody
-        .get(&anp_identity::IdentityRef {
+    let identity = custody
+        .open_identity(&crate::internal::identity_provider::ProviderIdentityRef {
             store_id: binding.store_id.clone(),
             identity_id: binding.identity_id.clone(),
             did: binding.did.clone(),
         })
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     let public = identity
         .public_identity()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
-    use anp_identity::host::{IdentityStatusPort, KeyAgreementPort};
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     let status = identity
         .host_status()
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
-    if public.state != anp_identity::PublicIdentityState::Active
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
         || identity
             .resume_document_change()
-            .map_err(crate::internal::identity_custody::map_facade_error)?
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
             .is_some()
-        || anp_identity::canonical_document_digest(public.document.as_value())
-            .map_err(crate::internal::identity_custody::map_error)?
-            != binding.document_digest
+        || canonical_document_digest(&public.document)? != binding.document_digest
         || status.root_capability
             != if binding.root_capability_present {
-                anp_identity::host::HostRootCapability::Active
+                crate::internal::identity_provider::ProviderRootCapability::Active
             } else {
-                anp_identity::host::HostRootCapability::Absent
+                crate::internal::identity_provider::ProviderRootCapability::Absent
             }
     {
         return Err(crate::ImError::PermissionDenied);
@@ -575,7 +688,7 @@ fn verify_binding(
         .iter()
         .find(|key| {
             key.purposes
-                .contains(&anp_identity::KeyPurpose::DeviceAssertion)
+                .contains(&crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion)
         })
         .ok_or(crate::ImError::PermissionDenied)?;
     let agreement = public
@@ -583,23 +696,29 @@ fn verify_binding(
         .iter()
         .find(|key| {
             key.purposes
-                .contains(&anp_identity::KeyPurpose::KeyAgreement)
+                .contains(&crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement)
         })
         .ok_or(crate::ImError::PermissionDenied)?;
     identity
-        .sign(anp_identity::SignRequest {
-            purpose: anp_identity::SigningPurpose::DeviceAssertion,
-            key: anp_identity::KeySelector::Kid(signing.kid.clone()),
+        .sign(crate::internal::identity_provider::ProviderSignRequest {
+            purpose: crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+            key: crate::internal::identity_provider::ProviderKeySelector::Kid(signing.kid.clone()),
             payload: b"awiki identity custody migration verify".to_vec(),
         })
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     let peer = x25519_dalek::StaticSecret::from([97_u8; 32]);
     identity
-        .derive_shared_secret(anp_identity::host::KeyAgreementRequest {
-            key: anp_identity::KeySelector::Kid(agreement.kid.clone()),
-            peer_public: x25519_dalek::PublicKey::from(&peer).to_bytes(),
-        })
-        .map_err(crate::internal::identity_custody::map_facade_error)?;
+        .derive_shared_secret(
+            crate::internal::identity_provider::ProviderKeyAgreementRequest {
+                key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                    agreement.kid.clone(),
+                ),
+                peer_public: x25519_dalek::PublicKey::from(&peer).to_bytes(),
+            },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
     Ok(())
 }
 
@@ -763,6 +882,19 @@ fn common_store_id(bindings: &[CutoverBinding]) -> Option<String> {
         .iter()
         .all(|binding| binding.store_id == first)
         .then_some(first)
+}
+
+fn canonical_document_digest(document: &serde_json::Value) -> crate::ImResult<String> {
+    let canonical = serde_json_canonicalizer::to_vec(document).map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("did_document".to_owned()),
+            "DID document cannot be canonicalized",
+        )
+    })?;
+    Ok(format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+    ))
 }
 
 fn read_optional_utf8(root: &Path, names: &[&str]) -> crate::ImResult<Option<Zeroizing<String>>> {

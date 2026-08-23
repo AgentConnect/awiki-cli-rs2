@@ -358,21 +358,22 @@ impl<'a> IdentityRegistry<'a> {
     pub fn migrate_identity_custody(
         &self,
     ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
-        crate::internal::identity_custody_migration::migrate(self.core)
+        #[cfg(feature = "identity-native-anp")]
+        {
+            return crate::internal::identity_custody_migration::migrate(self.core);
+        }
+        #[cfg(not(feature = "identity-native-anp"))]
+        Err(crate::ImError::IdentityNotReady {
+            identity: "anp-identity-controller".to_owned(),
+            missing: vec!["use_async_external_identity_provider".to_owned()],
+        })
     }
 
     /// Async variant of [`Self::migrate_identity_custody`].
     pub async fn migrate_identity_custody_async(
         &self,
     ) -> crate::ImResult<super::IdentityCustodyMigrationReport> {
-        let core = (*self.core).clone();
-        crate::internal::runtime::worker::run_blocking(move || {
-            crate::internal::identity_custody_migration::migrate(&core)
-        })
-        .await
-        .map_err(|error| crate::ImError::Internal {
-            message: error.to_string(),
-        })?
+        crate::internal::identity_custody_migration::migrate_async(self.core).await
     }
 
     pub fn identity_document(
@@ -852,14 +853,42 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
-        let core = (*self.core).clone();
-        crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).migrate_identity_vault(selector)
+        let before = self.custody_status_async(selector.clone()).await?;
+        let already_migrated = before.backend == super::IdentityCustodyBackend::AnpIdentity;
+        if !already_migrated {
+            let migration = self.migrate_identity_custody_async().await?;
+            if migration.phase == super::IdentityCustodyMigrationPhase::Blocked
+                || !migration.blockers.is_empty()
+            {
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: format!(
+                        "identity custody migration is blocked: {}",
+                        migration.blockers.join("; ")
+                    ),
+                });
+            }
+        }
+        let custody = self.custody_status_async(selector.clone()).await?;
+        if custody.backend != super::IdentityCustodyBackend::AnpIdentity || !custody.ready {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "identity custody migration did not converge".to_owned(),
+            });
+        }
+        let status = self.vault_status_async(selector).await?;
+        let mut warnings = status.warnings.clone();
+        warnings.push(if already_migrated {
+            "already_migrated".to_owned()
+        } else {
+            "migrated_to_anp_identity".to_owned()
+        });
+        Ok(super::IdentityVaultMigrationReport {
+            identity: custody.identity,
+            status,
+            migrated: !already_migrated,
+            verified: custody.missing.is_empty(),
+            plaintext_compat_retained: false,
+            warnings,
         })
-        .await
-        .map_err(|error| crate::ImError::Internal {
-            message: error.to_string(),
-        })?
     }
 
     /// Legacy CLI migration-only bridge. Normal identity custody migration
