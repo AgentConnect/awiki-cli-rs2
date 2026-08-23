@@ -1861,7 +1861,6 @@ impl Probe {
         params: &PrepareDaemonContinuityFixtureParams,
     ) -> Result<Value, ProbeFailure> {
         let core = self._core.as_ref().ok_or(ProbeFailure::InvalidState)?;
-        let client = self._client.as_ref().ok_or(ProbeFailure::InvalidState)?;
         if !params.daemon_binary.is_file()
             || !params.daemon_binary.is_absolute()
             || !params.state_root.is_absolute()
@@ -2081,6 +2080,14 @@ impl Probe {
                     DaemonFixturePrepareFailureStage::SubkeyContract,
                 ));
             }
+            let client = core
+                .client_async(im_core::IdentitySelector::Default)
+                .await
+                .map_err(|_| {
+                    DaemonFixturePrepareFailure(
+                        DaemonFixturePrepareFailureStage::BootstrapSendIdentity,
+                    )
+                })?;
             let bootstrap_id = format!("boot_{}", random_hex(12)?);
             let idempotency_key = format!("personal-agent-bootstrap:{}", random_hex(12)?);
             let ensure_once_key = format!(
