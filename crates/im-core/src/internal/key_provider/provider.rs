@@ -5,6 +5,10 @@ use std::sync::RwLock;
 use crate::internal::identity_provider::{
     IdentitySession, ProviderKeyPurpose, ProviderPublicIdentity,
 };
+use crate::internal::platform_secret::SecretBytes;
+use crate::internal::secret_vault::policy::SecretAccessPolicy;
+use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
+use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
 /// Public-data cache plus asynchronous Host Provider session.
 ///
@@ -28,6 +32,10 @@ pub(crate) struct ProviderEnrollmentIdentitySigner {
 enum ProviderIdentityAuth {
     Ephemeral(RwLock<crate::internal::auth::state::AuthStateSnapshot>),
     File(PathBuf),
+    Vault {
+        vault: Arc<dyn SecretVault + Send + Sync>,
+        auth_ref: RwLock<SecretRef>,
+    },
 }
 
 impl ProviderIdentitySigner {
@@ -57,6 +65,26 @@ impl ProviderIdentitySigner {
             public,
             session,
             auth: ProviderIdentityAuth::Ephemeral(RwLock::new(Default::default())),
+        })
+    }
+
+    pub(crate) fn new_vault(
+        public: ProviderPublicIdentity,
+        session: Arc<dyn IdentitySession>,
+        vault: Arc<dyn SecretVault + Send + Sync>,
+        auth_ref: SecretRef,
+    ) -> crate::ImResult<Self> {
+        validate_auth_ref(&auth_ref)?;
+        if public.state != crate::internal::identity_provider::ProviderIdentityState::Active {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(Self {
+            public,
+            session,
+            auth: ProviderIdentityAuth::Vault {
+                vault,
+                auth_ref: RwLock::new(auth_ref),
+            },
         })
     }
 
@@ -156,6 +184,17 @@ impl super::IdentitySigner for ProviderIdentitySigner {
                     detail: "ephemeral provider auth state lock poisoned".to_owned(),
                 }),
             ProviderIdentityAuth::File(path) => crate::internal::auth::state::read_auth_state(path),
+            ProviderIdentityAuth::Vault { vault, auth_ref } => {
+                let auth_ref = auth_ref
+                    .read()
+                    .map_err(|_| crate::ImError::LocalStateUnavailable {
+                        detail: "provider identity auth ref lock poisoned".to_owned(),
+                    })?
+                    .clone();
+                validate_auth_ref(&auth_ref)?;
+                let secret = vault.open(&auth_ref)?;
+                crate::internal::auth::state::parse_auth_state(secret.expose_secret())
+            }
         }
     }
 
@@ -182,6 +221,33 @@ impl super::IdentitySigner for ProviderIdentitySigner {
             ProviderIdentityAuth::File(path) => {
                 crate::internal::auth::state::persist_jwt_token(path, token)
             }
+            ProviderIdentityAuth::Vault { vault, auth_ref } => {
+                let auth_ref =
+                    auth_ref
+                        .read()
+                        .map_err(|_| crate::ImError::LocalStateUnavailable {
+                            detail: "provider identity auth ref lock poisoned".to_owned(),
+                        })?;
+                validate_auth_ref(&auth_ref)?;
+                let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
+                let candidate = crate::internal::auth::state::parse_auth_state(&raw)?;
+                let sealed = vault.seal(SealSecretRequest {
+                    metadata: metadata_from_ref(&auth_ref),
+                    plaintext: SecretBytes::from_vec(raw),
+                })?;
+                if sealed != *auth_ref {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                let persisted = vault.open(&sealed)?;
+                let persisted =
+                    crate::internal::auth::state::parse_auth_state(persisted.expose_secret())?;
+                if persisted.bearer_token.as_deref() != Some(token.trim())
+                    || persisted.expires_at != candidate.expires_at
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -189,6 +255,56 @@ impl super::IdentitySigner for ProviderIdentitySigner {
         // Recovery is asynchronous for an External Provider. Callers must use
         // the provider session rather than blocking a runtime worker here.
         Err(crate::ImError::PermissionDenied)
+    }
+
+    fn advance_vault_auth_ref(&self, committed: &SecretRef) -> crate::ImResult<()> {
+        let ProviderIdentityAuth::Vault { vault, auth_ref } = &self.auth else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        let mut current = auth_ref
+            .write()
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "provider identity auth ref lock poisoned".to_owned(),
+            })?;
+        if committed.workspace_id != current.workspace_id
+            || committed.device_id != current.device_id
+            || committed.identity_id != current.identity_id
+            || committed.did != current.did
+            || committed.kind != SecretKind::AuthJwt
+            || committed.key_id != current.key_id
+            || committed.key_version < current.key_version
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let opened = vault.open(committed)?;
+        if !crate::internal::auth::state::parse_auth_state(opened.expose_secret())?.has_token {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        *current = committed.clone();
+        Ok(())
+    }
+}
+
+fn validate_auth_ref(auth_ref: &SecretRef) -> crate::ImResult<()> {
+    if auth_ref.kind != SecretKind::AuthJwt
+        || auth_ref.key_id.trim().is_empty()
+        || auth_ref.key_version == 0
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn metadata_from_ref(secret_ref: &SecretRef) -> SecretMetadata {
+    SecretMetadata {
+        workspace_id: secret_ref.workspace_id.clone(),
+        device_id: secret_ref.device_id.clone(),
+        identity_id: secret_ref.identity_id.clone(),
+        did: secret_ref.did.clone(),
+        kind: secret_ref.kind.clone(),
+        key_id: secret_ref.key_id.clone(),
+        key_version: secret_ref.key_version,
+        policy: SecretAccessPolicy::no_prompt_local_secret(),
     }
 }
 

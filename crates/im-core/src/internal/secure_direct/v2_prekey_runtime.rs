@@ -7,8 +7,8 @@ use anp::direct_e2ee::{
     complete_prekey_bundle_v2, get_prekey_bundle_request_v2, key_service_metadata_v2,
     parse_get_prekey_bundle_result_v2, parse_publish_prekey_bundle_result_v2,
     prepare_prekey_bundle_v2, publish_prekey_bundle_request_v2, verify_prekey_bundle_v2,
-    V2GetPrekeyBundleBody, V2GetPrekeyBundleResult, V2OneTimePrekey, V2PrekeyBundle,
-    V2PublishPrekeyBundleBody, V2PublishPrekeyBundleResult, V2SignedPrekey,
+    PreparedV2PrekeyBundle, V2GetPrekeyBundleBody, V2GetPrekeyBundleResult, V2OneTimePrekey,
+    V2PrekeyBundle, V2PublishPrekeyBundleBody, V2PublishPrekeyBundleResult, V2SignedPrekey,
     MTI_DIRECT_E2EE_SUITE_V2,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -39,6 +39,16 @@ pub(crate) struct V2LocalPrekeyPublication {
     pub(crate) one_time_prekeys: Vec<V2OneTimePrekey>,
 }
 
+enum V2LocalPrekeyPreparation {
+    Existing(V2LocalPrekeyPublication),
+    New {
+        prepared: PreparedV2PrekeyBundle,
+        signed_prekey_private: X25519StaticSecret,
+        local_opks: Vec<(V2OneTimePrekey, X25519StaticSecret)>,
+        created: String,
+    },
+}
+
 /// Returns stable local material across retries, generating and Vault-sealing
 /// a new batch before any publish request can leave the process.
 pub(crate) fn ensure_local_prekey_publication(
@@ -46,10 +56,40 @@ pub(crate) fn ensure_local_prekey_publication(
     identity: V2LocalPrekeyIdentity<'_>,
     now: DateTime<Utc>,
 ) -> crate::ImResult<V2LocalPrekeyPublication> {
-    require_exact("did", identity.did)?;
-    require_exact("device_id", identity.device_id)?;
-    require_exact("signing_key_id", identity.signing_key_id)?;
-    require_exact("e2ee_key_id", identity.e2ee_key_id)?;
+    let preparation = prepare_local_prekey_publication(
+        store,
+        identity.did,
+        identity.device_id,
+        identity.signing_key_id,
+        identity.e2ee_key_id,
+        &identity.signing_public,
+        now,
+    )?;
+    if let V2LocalPrekeyPreparation::Existing(publication) = &preparation {
+        return Ok(publication.clone());
+    }
+    let signing_input = match &preparation {
+        V2LocalPrekeyPreparation::New { prepared, .. } => prepared.signing_input(),
+        V2LocalPrekeyPreparation::Existing(_) => unreachable!(),
+    };
+    let signature = (identity.signer)(identity.signing_key_id, signing_input)?;
+    complete_local_prekey_publication(store, preparation, &signature)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_local_prekey_publication(
+    store: &SqliteV2DirectStateStore<'_>,
+    did: &str,
+    device_id: &str,
+    signing_key_id: &str,
+    e2ee_key_id: &str,
+    signing_public: &anp::PublicKeyMaterial,
+    now: DateTime<Utc>,
+) -> crate::ImResult<V2LocalPrekeyPreparation> {
+    require_exact("did", did)?;
+    require_exact("device_id", device_id)?;
+    require_exact("signing_key_id", signing_key_id)?;
+    require_exact("e2ee_key_id", e2ee_key_id)?;
 
     if let Some(local) = store.load_active_bundle()? {
         let available = store.load_available_opk_publics(&local.bundle.bundle_id)?;
@@ -63,8 +103,8 @@ pub(crate) fn ensure_local_prekey_publication(
             .and_then(serde_json::Value::as_str);
         if expires_at > now
             && !available.is_empty()
-            && proof_signing_key_id == Some(identity.signing_key_id)
-            && local.bundle.static_key_agreement_id == identity.e2ee_key_id
+            && proof_signing_key_id == Some(signing_key_id)
+            && local.bundle.static_key_agreement_id == e2ee_key_id
         {
             if let Some(published) = local.published_one_time_prekeys {
                 if !available
@@ -73,10 +113,12 @@ pub(crate) fn ensure_local_prekey_publication(
                 {
                     return Err(crate::ImError::PermissionDenied);
                 }
-                return Ok(V2LocalPrekeyPublication {
-                    bundle: local.bundle,
-                    one_time_prekeys: published,
-                });
+                return Ok(V2LocalPrekeyPreparation::Existing(
+                    V2LocalPrekeyPublication {
+                        bundle: local.bundle,
+                        one_time_prekeys: published,
+                    },
+                ));
             }
             // Legacy local material did not retain the immutable public
             // publish batch. Reusing its bundle id with the now-smaller OPK
@@ -98,18 +140,15 @@ pub(crate) fn ensure_local_prekey_publication(
     let created = now.to_rfc3339_opts(SecondsFormat::Secs, true);
     let prepared = prepare_prekey_bundle_v2(
         &bundle_id,
-        identity.did,
-        identity.device_id,
-        identity.e2ee_key_id,
+        did,
+        device_id,
+        e2ee_key_id,
         signed_prekey,
-        &identity.signing_public,
-        identity.signing_key_id,
+        signing_public,
+        signing_key_id,
         Some(&created),
     )
     .map_err(v2_error)?;
-    let signature = (identity.signer)(identity.signing_key_id, prepared.signing_input())?;
-    let bundle = complete_prekey_bundle_v2(prepared, &signature).map_err(v2_error)?;
-
     let mut local_opks = Vec::with_capacity(DEFAULT_OPK_BATCH_SIZE);
     for _ in 0..DEFAULT_OPK_BATCH_SIZE {
         let private = X25519StaticSecret::random_from_rng(OsRng);
@@ -123,6 +162,31 @@ pub(crate) fn ensure_local_prekey_publication(
         ));
     }
     local_opks.sort_by(|left, right| left.0.key_id.cmp(&right.0.key_id));
+    Ok(V2LocalPrekeyPreparation::New {
+        prepared,
+        signed_prekey_private,
+        local_opks,
+        created,
+    })
+}
+
+fn complete_local_prekey_publication(
+    store: &SqliteV2DirectStateStore<'_>,
+    preparation: V2LocalPrekeyPreparation,
+    signature: &[u8],
+) -> crate::ImResult<V2LocalPrekeyPublication> {
+    let V2LocalPrekeyPreparation::New {
+        prepared,
+        signed_prekey_private,
+        local_opks,
+        created,
+    } = preparation
+    else {
+        return Err(crate::ImError::Internal {
+            message: "existing PreKey publication cannot be completed".to_owned(),
+        });
+    };
+    let bundle = complete_prekey_bundle_v2(prepared, signature).map_err(v2_error)?;
     store.publish_local_bundle(&bundle, &signed_prekey_private, &local_opks, &created)?;
     Ok(V2LocalPrekeyPublication {
         bundle,
@@ -284,7 +348,7 @@ where
     }
     let identity_signer = &client.runtime().key_provider;
     let signing_public = identity_signer.public_key(&authorization.signing_key_id)?;
-    let publication = {
+    let preparation = {
         let connection = crate::internal::local_state::open_writable(
             &core.inner().sdk_paths().local_state.sqlite_path,
         )?;
@@ -295,19 +359,44 @@ where
                 failure: crate::IdentityVaultFailure::Unavailable,
             })?
             .vault();
-        let store = SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, scope)?;
-        ensure_local_prekey_publication(
+        let store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, scope.clone())?;
+        prepare_local_prekey_publication(
             &store,
-            V2LocalPrekeyIdentity {
-                did: client.did().as_str(),
-                device_id: authorization.protocol_device_id.as_str(),
-                signing_key_id: &authorization.signing_key_id,
-                e2ee_key_id: &authorization.e2ee_key_id,
-                signing_public,
-                signer: &|kid, message| identity_signer.sign_device_assertion(kid, message),
-            },
+            client.did().as_str(),
+            authorization.protocol_device_id.as_str(),
+            &authorization.signing_key_id,
+            &authorization.e2ee_key_id,
+            &signing_public,
             Utc::now(),
         )?
+    };
+    let publication = match preparation {
+        V2LocalPrekeyPreparation::Existing(publication) => publication,
+        preparation @ V2LocalPrekeyPreparation::New { .. } => {
+            let signing_input = match &preparation {
+                V2LocalPrekeyPreparation::New { prepared, .. } => prepared.signing_input().to_vec(),
+                V2LocalPrekeyPreparation::Existing(_) => unreachable!(),
+            };
+            let signature = sign_device_assertion_async(
+                identity_signer,
+                &authorization.signing_key_id,
+                signing_input,
+            )
+            .await?;
+            let connection = crate::internal::local_state::open_writable(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+            )?;
+            let vault = core
+                .inner()
+                .identity_vault()
+                .ok_or(crate::ImError::IdentityVault {
+                    failure: crate::IdentityVaultFailure::Unavailable,
+                })?
+                .vault();
+            let store = SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, scope)?;
+            complete_local_prekey_publication(&store, preparation, &signature)?
+        }
     };
 
     let service_did = anp::direct_e2ee::message_service_did_from_document(did_document)
@@ -324,6 +413,25 @@ where
         .await?;
     validate_publish_result(&response, &publication)?;
     Ok(publication)
+}
+
+async fn sign_device_assertion_async(
+    identity_signer: &std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner>,
+    kid: &str,
+    signing_input: Vec<u8>,
+) -> crate::ImResult<Vec<u8>> {
+    let Some(session) = identity_signer.async_session() else {
+        return identity_signer.sign_device_assertion(kid, &signing_input);
+    };
+    session
+        .sign(crate::internal::identity_provider::ProviderSignRequest {
+            purpose: crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+            key: crate::internal::identity_provider::ProviderKeySelector::Kid(kid.to_owned()),
+            payload: signing_input,
+        })
+        .await
+        .map(|signature| signature.bytes)
+        .map_err(crate::internal::identity_provider::map_provider_error)
 }
 
 pub(crate) async fn fetch_verified_prekey(

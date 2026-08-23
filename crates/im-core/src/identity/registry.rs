@@ -1558,11 +1558,27 @@ impl IdentityRegistry<'_> {
                         .to_owned(),
                 });
             }
-            Arc::new(crate::internal::key_provider::ProviderIdentitySigner::new(
-                public,
-                session,
-                identity_dir.join("auth.json"),
-            )?) as Arc<dyn crate::internal::key_provider::IdentitySigner>
+            let provider = if let Some(auth_ref) = entry.anp_identity_auth_ref.clone() {
+                let context = self.core.inner().identity_vault().ok_or_else(|| {
+                    crate::ImError::IdentityNotReady {
+                        identity: summary.did.as_str().to_owned(),
+                        missing: vec!["identity_secret_vault".to_owned()],
+                    }
+                })?;
+                crate::internal::key_provider::ProviderIdentitySigner::new_vault(
+                    public,
+                    session,
+                    context.vault(),
+                    auth_ref,
+                )?
+            } else {
+                crate::internal::key_provider::ProviderIdentitySigner::new(
+                    public,
+                    session,
+                    identity_dir.join("auth.json"),
+                )?
+            };
+            Arc::new(provider) as Arc<dyn crate::internal::key_provider::IdentitySigner>
         } else {
             self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?
         };
