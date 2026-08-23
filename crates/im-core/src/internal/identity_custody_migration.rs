@@ -105,6 +105,7 @@ enum MigrationPreparation {
 fn prepare_migration(
     core: &crate::core::ImCore,
     dry_run: bool,
+    pending: crate::internal::identity_pending_upgrade::PendingUpgradeOutcome,
 ) -> crate::ImResult<MigrationPreparation> {
     let paths = &core.inner().sdk_paths().identities;
     let legacy_store = IdentityStore::new(paths);
@@ -182,7 +183,6 @@ fn prepare_migration(
         }
     }
 
-    let pending = crate::internal::identity_pending_upgrade::converge(core, dry_run)?;
     let mut blockers = pending.blockers;
     let pending_warnings = pending.warnings;
     blockers.extend(
@@ -254,9 +254,10 @@ async fn run(
     dry_run: bool,
     failure: Option<FailurePoint>,
 ) -> crate::ImResult<IdentityCustodyMigrationReport> {
+    let pending = crate::internal::identity_pending_upgrade::converge(core, dry_run).await?;
     let prepare_core = core.clone();
     let prepared = crate::internal::runtime::worker::run_blocking(move || {
-        prepare_migration(&prepare_core, dry_run)
+        prepare_migration(&prepare_core, dry_run, pending)
     })
     .await
     .map_err(|error| crate::ImError::Internal {

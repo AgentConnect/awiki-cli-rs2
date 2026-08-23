@@ -1,6 +1,6 @@
 use super::*;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
 use crate::internal::identity_device_join_runtime::{
@@ -14,8 +14,8 @@ use crate::vault::{
     SecretAccessPolicy, SecretBytes, SecretMetadata, SecretVault,
 };
 
-#[test]
-fn pre_attempt_registration_is_discarded_but_unknown_outcome_is_blocked() {
+#[tokio::test]
+async fn pre_attempt_registration_is_discarded_but_unknown_outcome_is_blocked() {
     let fixture = Fixture::new();
     let safe = fixture.seal(
         SecretKind::IdentityRegistrationPending,
@@ -40,14 +40,14 @@ fn pre_attempt_registration_is_discarded_but_unknown_outcome_is_blocked() {
         None,
     );
 
-    let dry_run = converge(&fixture.core, true).unwrap();
+    let dry_run = converge(&fixture.core, true).await.unwrap();
     assert!(fixture.vault.open(&safe).is_ok());
     assert!(dry_run
         .warnings
         .iter()
         .any(|warning| warning.contains("safe to discard")));
 
-    let applied = converge(&fixture.core, false).unwrap();
+    let applied = converge(&fixture.core, false).await.unwrap();
     assert!(fixture.vault.open(&safe).is_err());
     assert!(fixture.vault.open(&unknown).is_ok());
     assert!(applied
@@ -56,8 +56,8 @@ fn pre_attempt_registration_is_discarded_but_unknown_outcome_is_blocked() {
         .any(|blocker| blocker.contains("unreadable")));
 }
 
-#[test]
-fn attempted_registration_imports_exact_identity_for_reconciliation() {
+#[tokio::test]
+async fn attempted_registration_imports_exact_identity_for_reconciliation() {
     let fixture = Fixture::new();
     let generated =
         crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
@@ -99,7 +99,7 @@ fn attempted_registration_imports_exact_identity_for_reconciliation() {
         None,
     );
 
-    let outcome = converge(&fixture.core, false).unwrap();
+    let outcome = converge(&fixture.core, false).await.unwrap();
 
     assert!(outcome
         .warnings
@@ -126,8 +126,8 @@ fn attempted_registration_imports_exact_identity_for_reconciliation() {
     );
 }
 
-#[test]
-fn pre_commit_recovery_is_discarded_while_root_import_is_retained_for_cutover() {
+#[tokio::test]
+async fn pre_commit_recovery_is_discarded_while_root_import_is_retained_for_cutover() {
     let fixture = Fixture::new();
     let recovery = fixture.seal(
         SecretKind::IdentityHandleRecoveryPending,
@@ -146,7 +146,7 @@ fn pre_commit_recovery_is_discarded_while_root_import_is_retained_for_cutover() 
         None,
     );
 
-    let outcome = converge(&fixture.core, false).unwrap();
+    let outcome = converge(&fixture.core, false).await.unwrap();
 
     assert!(fixture.vault.open(&recovery).is_err());
     assert!(fixture.vault.open(&root).is_ok());
@@ -156,8 +156,8 @@ fn pre_commit_recovery_is_discarded_while_root_import_is_retained_for_cutover() 
         .any(|warning| warning.contains("root-import pending")));
 }
 
-#[test]
-fn legacy_join_keys_are_imported_and_pending_record_becomes_secret_free() {
+#[tokio::test]
+async fn legacy_join_keys_are_imported_and_pending_record_becomes_secret_free() {
     let fixture = Fixture::new();
     let generated =
         crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
@@ -207,7 +207,7 @@ fn legacy_join_keys_are_imported_and_pending_record_becomes_secret_free() {
         Some(generated.did.as_str()),
     );
 
-    let outcome = converge(&fixture.core, false).unwrap();
+    let outcome = converge(&fixture.core, false).await.unwrap();
 
     assert!(outcome
         .warnings
@@ -235,8 +235,8 @@ fn legacy_join_keys_are_imported_and_pending_record_becomes_secret_free() {
     .unwrap();
 }
 
-#[test]
-fn legacy_upgrade_pending_reuses_exact_imported_device_keys() {
+#[tokio::test]
+async fn legacy_upgrade_pending_reuses_exact_imported_device_keys() {
     let fixture = Fixture::new();
     let legacy =
         crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
@@ -295,7 +295,7 @@ fn legacy_upgrade_pending_reuses_exact_imported_device_keys() {
         Some(legacy.identity.did.as_str()),
     );
 
-    let outcome = converge(&fixture.core, false).unwrap();
+    let outcome = converge(&fixture.core, false).await.unwrap();
 
     assert!(outcome
         .warnings
