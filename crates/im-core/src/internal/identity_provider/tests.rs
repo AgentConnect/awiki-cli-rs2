@@ -1,34 +1,19 @@
 use super::*;
 
+fn parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../../../testdata/identity_provider_parity_v1.json"
+    ))
+    .unwrap()
+}
+
 fn create_spec() -> ProviderCreateIdentityRequest {
-    ProviderCreateIdentityRequest {
-        profile: ProviderDidProfile::E1,
-        domain: "example.com".to_owned(),
-        port: None,
-        path_segments: vec!["provider-contract".to_owned()],
-        capabilities: ProviderCapabilities { did_wba: true },
-        managed_keys: vec![
-            ProviderManagedKeySpec {
-                fragment: "root".to_owned(),
-                role: ProviderManagedKeyRole::RootControl,
-            },
-            ProviderManagedKeySpec {
-                fragment: "request".to_owned(),
-                role: ProviderManagedKeyRole::RequestSigning,
-            },
-            ProviderManagedKeySpec {
-                fragment: "agreement".to_owned(),
-                role: ProviderManagedKeyRole::E2eeAgreement,
-            },
-        ],
-        services: Vec::new(),
-        agent_description_url: None,
-        extensions: Vec::new(),
-    }
+    serde_json::from_value(parity_fixture()["create"].clone()).unwrap()
 }
 
 #[tokio::test]
 async fn direct_session_runs_provider_neutral_hot_paths() {
+    let fixture = parity_fixture();
     let root = tempfile::tempdir().unwrap();
     let manager = anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
         state_root: root.path().to_path_buf(),
@@ -68,28 +53,27 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
         .sign(ProviderSignRequest {
             purpose: ProviderSigningPurpose::Authentication,
             key: ProviderKeySelector::Kid(request_kid.clone()),
-            payload: b"provider contract".to_vec(),
+            payload: fixture["sign"]["payloadUtf8"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
         })
         .await
         .unwrap();
     assert_eq!(signature.kid, request_kid);
     assert_eq!(signature.bytes.len(), 64);
 
+    let mut origin_meta = fixture["originProof"]["meta"].clone();
+    origin_meta["sender_did"] = serde_json::Value::String(reference.did.clone());
     let proof = session
         .sign_origin_proof(ProviderOriginProofRequest {
-            method: "message.send".to_owned(),
-            meta: serde_json::json!({
-                "sender_did": reference.did,
-                "timestamp": 1_787_403_600_i64,
-                "target": {
-                    "kind": "agent",
-                    "did": "did:wba:example.com:agents:recipient"
-                },
-                "operation_id": "provider-contract-operation",
-                "message_id": "provider-contract-message",
-                "content_type": "application/json"
-            }),
-            body: serde_json::json!({"message": "provider contract"}),
+            method: fixture["originProof"]["method"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            meta: origin_meta,
+            body: fixture["originProof"]["body"].clone(),
             key: ProviderKeySelector::Kid(request_kid.clone()),
             options: ProviderOriginProofOptions::default(),
         })
@@ -100,13 +84,19 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
     let http = session
         .prepare_http_signature(ProviderExactHttpRequest {
             key: ProviderKeySelector::Kid(request_kid),
-            url: "https://example.com/rpc".to_owned(),
-            method: "POST".to_owned(),
-            headers: vec![ProviderHttpHeader {
-                name: "content-type".to_owned(),
-                value: "application/json".to_owned(),
-            }],
-            body: Some(b"{}".to_vec()),
+            url: fixture["httpSignature"]["url"].as_str().unwrap().to_owned(),
+            method: fixture["httpSignature"]["method"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            headers: serde_json::from_value(fixture["httpSignature"]["headers"].clone()).unwrap(),
+            body: Some(
+                fixture["httpSignature"]["bodyUtf8"]
+                    .as_str()
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
+            ),
             options: ProviderHttpSigningOptions::default(),
         })
         .await
@@ -116,6 +106,29 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
         .header_patch
         .iter()
         .any(|header| header.name.eq_ignore_ascii_case("signature")));
+
+    let mut http_header_names = http
+        .header_patch
+        .iter()
+        .map(|header| header.name.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    http_header_names.sort();
+    let actual = serde_json::json!({
+        "didPrefix": if snapshot.reference.did.starts_with("did:wba:example.com:provider-contract:e1_") {
+            "did:wba:example.com:provider-contract:e1_"
+        } else {
+            ""
+        },
+        "state": snapshot.state,
+        "revision": snapshot.revision,
+        "didWba": snapshot.did_wba,
+        "signatureAlgorithm": signature.algorithm,
+        "signatureLength": signature.bytes.len(),
+        "originSignaturePrefix": if proof.signature.starts_with("sig1=:") { "sig1=:" } else { "" },
+        "httpBindingPrefix": if http.binding_digest.starts_with("sha256:") { "sha256:" } else { "" },
+        "httpHeaderNames": http_header_names,
+    });
+    assert_eq!(actual, fixture["expected"]);
 
     let shared = session
         .derive_shared_secret(ProviderKeyAgreementRequest {

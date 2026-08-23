@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import { ImCoreNodeError, openImCoreNodeClient } from '../dist/index.js'
 import { createIdentityProviderDispatch } from '../dist/provider-bridge.js'
+import { createIdentityProviderFixture } from './identity-provider-fixture.mjs'
+
+const parityFixturePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../testdata/identity_provider_parity_v1.json',
+)
 
 function options(stateRoot, identityProvider) {
   return {
@@ -643,6 +650,83 @@ test('External Provider hot paths make one call and keep binary values out of JS
   assert.equal(calls[2].request.body, body)
   assert.equal(calls[3].request.peerPublic, peerPublic)
   assert.equal(calls[3].request.recipientPublicKey, recipientPublicKey)
+})
+
+test('real External Provider matches the shared Direct semantic fixture', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-parity-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = JSON.parse(await readFile(parityFixturePath, 'utf8'))
+  const identityProvider = await createIdentityProviderFixture(root)
+  t.after(() => identityProvider.dispose())
+  const dispatch = createIdentityProviderDispatch(identityProvider)
+
+  const created = await dispatch([{
+    operation: 'create',
+    payloadJson: JSON.stringify(fixture.create),
+    buffers: [],
+  }])
+  assert.equal(created.ok, true)
+  const identity = JSON.parse(created.payloadJson)
+  const requestKid = identity.activeKeys.find(key =>
+    key.purposes.includes('authentication')
+      && key.purposes.includes('application_assertion'))?.kid
+  assert.equal(typeof requestKid, 'string')
+
+  const sign = await dispatch([{
+    operation: 'sign',
+    payloadJson: JSON.stringify({
+      identity: identity.reference,
+      purpose: fixture.sign.purpose,
+      kid: requestKid,
+    }),
+    buffers: [Buffer.from(fixture.sign.payloadUtf8)],
+  }])
+  assert.equal(sign.ok, true)
+  const signature = JSON.parse(sign.payloadJson)
+
+  const originRequest = structuredClone(fixture.originProof)
+  originRequest.meta.sender_did = identity.reference.did
+  const origin = await dispatch([{
+    operation: 'signOriginProof',
+    payloadJson: JSON.stringify({ identity: identity.reference, request: {
+      method: originRequest.method,
+      meta: originRequest.meta,
+      body: originRequest.body,
+      kid: requestKid,
+    } }),
+    buffers: [],
+  }])
+  assert.equal(origin.ok, true)
+  const proof = JSON.parse(origin.payloadJson)
+
+  const http = await dispatch([{
+    operation: 'prepareHttpSignature',
+    payloadJson: JSON.stringify({
+      identity: identity.reference,
+      kid: requestKid,
+      url: fixture.httpSignature.url,
+      method: fixture.httpSignature.method,
+      headers: fixture.httpSignature.headers,
+      hasBody: true,
+    }),
+    buffers: [Buffer.from(fixture.httpSignature.bodyUtf8)],
+  }])
+  assert.equal(http.ok, true)
+  const httpAttempt = JSON.parse(http.payloadJson)
+  const actual = {
+    didPrefix: identity.reference.did.startsWith('did:wba:example.com:provider-contract:e1_')
+      ? 'did:wba:example.com:provider-contract:e1_'
+      : '',
+    state: identity.state,
+    revision: identity.revision,
+    didWba: identity.capabilities.didWba,
+    signatureAlgorithm: signature.algorithm,
+    signatureLength: sign.buffers[0].length,
+    originSignaturePrefix: proof.signature.startsWith('sig1=:') ? 'sig1=:' : '',
+    httpBindingPrefix: httpAttempt.bindingDigest.startsWith('sha256:') ? 'sha256:' : '',
+    httpHeaderNames: httpAttempt.headerPatch.map(header => header.name.toLowerCase()).sort(),
+  }
+  assert.deepEqual(actual, fixture.expected)
 })
 
 function sealedDelivery(capability = 'IDENTITY_ECDH_SEALED') {
