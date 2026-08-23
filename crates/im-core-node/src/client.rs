@@ -1989,7 +1989,7 @@ async fn initialize_environment(
         .await
         .map_err(SafeError::from_im)?;
     if let Some(identity) = default_identity.as_ref() {
-        migrate_file_identity_to_vault(&core, identity).await?;
+        migrate_legacy_identity_to_anp(&core, identity).await?;
     }
     let client = match default_identity {
         Some(_) => Some(
@@ -2056,24 +2056,39 @@ pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCo
     Ok(config)
 }
 
-async fn migrate_file_identity_to_vault(
+async fn migrate_legacy_identity_to_anp(
     core: &im_core::ImCore,
     identity: &im_core::identity::IdentitySummary,
 ) -> SafeResult<()> {
     let registry = core.identities();
     let selector = im_core::identity::IdentitySelector::Default;
     let status = registry
-        .vault_status_async(selector.clone())
+        .custody_status_async(selector.clone())
         .await
         .map_err(SafeError::from_im)?;
-    if status.selected_backend == im_core::identity::IdentitySecretStorageBackend::Vault {
+    if status.backend == im_core::identity::IdentityCustodyBackend::AnpIdentity && status.ready {
         return Ok(());
     }
-    let report = registry
-        .migrate_identity_vault_async(selector)
+    let migration = registry
+        .migrate_identity_custody_async()
         .await
         .map_err(SafeError::from_im)?;
-    ensure_identity_preserved(identity, &report.identity, report.verified)
+    if migration.phase == im_core::identity::IdentityCustodyMigrationPhase::Blocked
+        || !migration.blockers.is_empty()
+    {
+        return Err(identity_migration_failed());
+    }
+    let after = registry
+        .custody_status_async(selector)
+        .await
+        .map_err(SafeError::from_im)?;
+    ensure_identity_preserved(
+        identity,
+        &after.identity,
+        after.backend == im_core::identity::IdentityCustodyBackend::AnpIdentity
+            && after.ready
+            && after.missing.is_empty(),
+    )
 }
 
 fn ensure_identity_preserved(
@@ -2086,13 +2101,17 @@ fn ensure_identity_preserved(
         || after.did != before.did
         || after.handle != before.handle
     {
-        return Err(SafeError::new(
-            "identity_migration_failed",
-            "The existing IM identity could not be preserved during secure storage migration.",
-            false,
-        ));
+        return Err(identity_migration_failed());
     }
     Ok(())
+}
+
+fn identity_migration_failed() -> SafeError {
+    SafeError::new(
+        "identity_migration_failed",
+        "The existing IM identity could not be preserved during secure storage migration.",
+        false,
+    )
 }
 
 fn realtime_options(
