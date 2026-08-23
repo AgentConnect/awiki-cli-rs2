@@ -22,7 +22,6 @@ napi-derive.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -31,5 +30,4 @@ tokio-util.workspace = true
 napi-build = "=2.4.1"
 
 [dev-dependencies]
-anp-identity.workspace = true
 tempfile = "=3.3.0"
