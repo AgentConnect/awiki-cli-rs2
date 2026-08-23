@@ -7,6 +7,7 @@ import {
   ImCoreNodeError,
   type ImCoreIdentityProvider,
   type ImCoreIdentityReference,
+  type ImCorePreparedIdentityMaterialImport,
   type ImCoreProviderDocumentChangeSession,
   type ImCoreProviderEnrollmentSession,
   type ImCorePreparedRootImport,
@@ -41,9 +42,11 @@ export function createIdentityProviderDispatch(
   const documentSessions = new Map<string, ImCoreProviderDocumentChangeSession>()
   const enrollmentSessions = new Map<string, ImCoreProviderEnrollmentSession>()
   const rootImportSessions = new Map<string, ImCorePreparedRootImport>()
+  const identityImportSessions = new Map<string, ImCorePreparedIdentityMaterialImport>()
   let nextDocumentSession = 1
   let nextEnrollmentSession = 1
   let nextRootImportSession = 1
+  let nextIdentityImportSession = 1
 
   return async (calls: readonly [NativeIdentityProviderCall]): Promise<NativeIdentityProviderReply> => {
     try {
@@ -147,6 +150,47 @@ export function createIdentityProviderDispatch(
             reference(payload.identity),
             object(payload.envelope),
           ))
+        }
+        case 'prepareIdentityMaterialImport': {
+          if (!capabilities.has('IDENTITY_IMPORT')
+            || typeof provider.prepareIdentityMaterialImport !== 'function') throw unavailable()
+          exactBuffers(request.buffers, 0)
+          const prepared = await provider.prepareIdentityMaterialImport({
+            remote: object(payload.remote),
+            didWba: payload.didWba === true,
+            keys: identityMaterialKeySpecs(payload.keys),
+            requestId: requiredString(payload.requestId),
+          })
+          const offer = prepared.offer()
+          if (!Buffer.isBuffer(offer.recipientPublicKey) || offer.recipientPublicKey.length !== 32) {
+            throw new TypeError('identity material import recipient key is invalid')
+          }
+          const sessionId = `identity-import-${nextIdentityImportSession++}`
+          identityImportSessions.set(sessionId, prepared)
+          return success({
+            sessionId,
+            offer: {
+              target: offer.target,
+              requestId: offer.requestId,
+              token: offer.token,
+              authorization: offer.authorization,
+              itemAad: offer.itemAad,
+            },
+          }, [offer.recipientPublicKey])
+        }
+        case 'completeIdentityMaterialImport': {
+          exactBuffers(request.buffers, 0)
+          const sessionId = requiredString(payload.sessionId)
+          const prepared = identityImportSession(identityImportSessions, sessionId)
+          try {
+            return success(await prepared.complete(
+              requiredString(payload.token),
+              identityMaterialEnvelopes(payload.envelopes),
+            ))
+          }
+          finally {
+            identityImportSessions.delete(sessionId)
+          }
         }
         case 'prepareHttpSignature': {
           const hasBody = payload.hasBody === true
@@ -307,6 +351,61 @@ function rootImportSession(
   const session = sessions.get(requiredString(sessionId))
   if (session === undefined) throw new TypeError('identity root import session is invalid')
   return session
+}
+
+function identityImportSession(
+  sessions: ReadonlyMap<string, ImCorePreparedIdentityMaterialImport>,
+  sessionId: unknown,
+): ImCorePreparedIdentityMaterialImport {
+  const session = sessions.get(requiredString(sessionId))
+  if (session === undefined) throw new TypeError('identity material import session is invalid')
+  return session
+}
+
+function identityMaterialKeySpecs(value: unknown): {
+  readonly kid: string
+  readonly purpose: 'root_control' | 'authentication' | 'device_assertion' | 'application_assertion' | 'key_agreement'
+  readonly encoding: 'raw32' | 'pkcs8_der'
+}[] {
+  if (!Array.isArray(value)) throw new TypeError('identity material key specs are invalid')
+  return value.map(item => {
+    const key = object(item)
+    const purpose = key.purpose
+    if (purpose !== 'root_control'
+      && purpose !== 'authentication'
+      && purpose !== 'device_assertion'
+      && purpose !== 'application_assertion'
+      && purpose !== 'key_agreement') {
+      throw new TypeError('identity material key purpose is invalid')
+    }
+    return {
+      kid: requiredString(key.kid),
+      purpose,
+      encoding: privateKeyEncoding(key.encoding),
+    }
+  })
+}
+
+function identityMaterialEnvelopes(value: unknown): readonly {
+  readonly protocol: 'anp-sealed-secret/1'
+  readonly suite: 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1'
+  readonly encappedKey: string
+  readonly ciphertext: string
+}[] {
+  if (!Array.isArray(value)) throw new TypeError('identity material envelopes are invalid')
+  return value.map(item => {
+    const envelope = object(item)
+    if (envelope.protocol !== 'anp-sealed-secret/1'
+      || envelope.suite !== 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1') {
+      throw new TypeError('identity material envelope is invalid')
+    }
+    return {
+      protocol: envelope.protocol,
+      suite: envelope.suite,
+      encappedKey: requiredString(envelope.encappedKey),
+      ciphertext: requiredString(envelope.ciphertext),
+    }
+  })
 }
 
 function privateKeyEncoding(value: unknown): 'raw32' | 'pkcs8_der' {

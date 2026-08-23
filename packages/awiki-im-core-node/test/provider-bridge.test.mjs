@@ -462,6 +462,74 @@ test('External Provider imports wrapped roots only through the legacy transfer c
   assert.deepEqual(calls, [{ reference: identity, value: envelope }])
 })
 
+test('External Provider keeps legacy identity plaintext outside TypeScript import workflow', async () => {
+  const calls = []
+  const recipientPublicKey = Buffer.alloc(32, 5)
+  const target = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const authorization = sealedDelivery('IDENTITY_IMPORT').authorization
+  const prepared = {
+    offer: () => ({
+      target,
+      recipientPublicKey,
+      requestId: 'migration-1',
+      token: 'one-time-token',
+      authorization,
+      itemAad: ['aad-1', 'aad-2'],
+    }),
+    complete: async (token, envelopes) => {
+      calls.push({ token, envelopes })
+      return {
+        reference: target,
+        state: 'active',
+        revision: 1,
+        document: { id: target.did },
+        activeKeys: [],
+        capabilities: { didWba: true },
+      }
+    },
+  }
+  const dispatch = createIdentityProviderDispatch(provider({
+    capabilities: [...provider().capabilities, 'IDENTITY_IMPORT'],
+    prepareIdentityMaterialImport: async request => {
+      calls.push(request)
+      return prepared
+    },
+  }))
+  const offered = await dispatch([{
+    operation: 'prepareIdentityMaterialImport',
+    payloadJson: JSON.stringify({
+      remote: {
+        document: { id: target.did },
+        evidence: { documentVersion: 1, registryVersion: 2, documentDigest: 'sha256:doc' },
+      },
+      didWba: true,
+      keys: [
+        { kid: `${target.did}#device`, purpose: 'device_assertion', encoding: 'raw32' },
+        { kid: `${target.did}#agreement`, purpose: 'key_agreement', encoding: 'raw32' },
+      ],
+      requestId: 'migration-1',
+    }),
+    buffers: [],
+  }])
+  assert.equal(offered.ok, true)
+  assert.deepEqual(offered.buffers, [recipientPublicKey])
+  const { sessionId, offer } = JSON.parse(offered.payloadJson)
+  assert.equal('recipientPublicKey' in offer, false)
+  assert.deepEqual(offer.itemAad, ['aad-1', 'aad-2'])
+
+  const envelopes = [
+    sealedDelivery('IDENTITY_IMPORT').envelope,
+    { ...sealedDelivery('IDENTITY_IMPORT').envelope, ciphertext: 'ciphertext-2' },
+  ]
+  const completed = await dispatch([{
+    operation: 'completeIdentityMaterialImport',
+    payloadJson: JSON.stringify({ sessionId, token: 'one-time-token', envelopes }),
+    buffers: [],
+  }])
+  assert.equal(completed.ok, true)
+  assert.deepEqual(calls[1], { token: 'one-time-token', envelopes })
+})
+
 test('External Provider rejection crosses the Promise bridge as a redacted stable error', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-error-'))
   t.after(() => rm(root, { recursive: true, force: true }))

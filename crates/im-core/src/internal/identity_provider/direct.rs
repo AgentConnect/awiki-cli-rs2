@@ -12,7 +12,8 @@ use super::{
     ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderDocumentCheckpoint,
     ProviderEnrollmentProposal, ProviderEnrollmentProposalKind, ProviderEnrollmentPublicKey,
     ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderExportedRoot, ProviderHostStatus,
-    ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
+    ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityMaterialImportRequest,
+    ProviderIdentityMaterialKey, ProviderIdentityRef, ProviderIdentityState,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
     ProviderLegacyRootExportRequest, ProviderLegacyRootImportOutcome,
     ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
@@ -403,6 +404,51 @@ impl IdentityCustody for DirectAnpIdentityCustody {
         .await
     }
 
+    async fn import_identity_material(
+        &self,
+        request: ProviderIdentityMaterialImportRequest,
+    ) -> ProviderResult<Arc<dyn IdentitySession>> {
+        use anp_identity::host::MigrationPort;
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let mut manager = manager.lock().map_err(|_| internal())?;
+            let has_root = request
+                .keys
+                .iter()
+                .any(|key| key.purpose == ProviderKeyPurpose::RootControl);
+            let managed = if has_root {
+                manager.import_full_identity(anp_identity::host::FullIdentityImportRequest {
+                    remote: request.remote.into(),
+                    did_wba: request.did_wba,
+                    private_keys: request.keys.into_iter().map(native_migration_key).collect(),
+                })
+            } else {
+                let mut signing = None;
+                let mut agreement = None;
+                for key in request.keys {
+                    match key.purpose {
+                        ProviderKeyPurpose::DeviceAssertion if signing.is_none() => {
+                            signing = Some(native_migration_key(key));
+                        }
+                        ProviderKeyPurpose::KeyAgreement if agreement.is_none() => {
+                            agreement = Some(native_migration_key(key));
+                        }
+                        _ => return Err(invalid_request()),
+                    }
+                }
+                manager.import_device_identity(anp_identity::host::DeviceIdentityImportRequest {
+                    remote: request.remote.into(),
+                    did_wba: request.did_wba,
+                    signing_key: signing.ok_or_else(invalid_request)?,
+                    agreement_key: agreement.ok_or_else(invalid_request)?,
+                })
+            }
+            .map_err(map_identity_error)?;
+            Ok(Arc::new(DirectAnpIdentitySession::new(managed)) as Arc<dyn IdentitySession>)
+        })
+        .await
+    }
+
     async fn recover(&self) -> ProviderResult<()> {
         let manager = self.manager.clone();
         run_blocking(move || {
@@ -414,6 +460,38 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                 .map_err(map_identity_error)
         })
         .await
+    }
+}
+
+fn native_migration_key(
+    key: ProviderIdentityMaterialKey,
+) -> anp_identity::host::MigrationPrivateKey {
+    anp_identity::host::MigrationPrivateKey {
+        kid: key.kid,
+        purpose: match key.purpose {
+            ProviderKeyPurpose::RootControl => anp_identity::host::MigrationKeyPurpose::RootControl,
+            ProviderKeyPurpose::Authentication => {
+                anp_identity::host::MigrationKeyPurpose::Authentication
+            }
+            ProviderKeyPurpose::DeviceAssertion => {
+                anp_identity::host::MigrationKeyPurpose::DeviceAssertion
+            }
+            ProviderKeyPurpose::ApplicationAssertion => {
+                anp_identity::host::MigrationKeyPurpose::ApplicationAssertion
+            }
+            ProviderKeyPurpose::KeyAgreement => {
+                anp_identity::host::MigrationKeyPurpose::KeyAgreement
+            }
+        },
+        encoding: match key.encoding {
+            ProviderPrivateKeyEncoding::Raw32 => {
+                anp_identity::host::MigrationPrivateKeyEncoding::Raw32
+            }
+            ProviderPrivateKeyEncoding::Pkcs8Der => {
+                anp_identity::host::MigrationPrivateKeyEncoding::Pkcs8Der
+            }
+        },
+        secret: key.secret,
     }
 }
 
@@ -838,6 +916,10 @@ where
 
 fn internal() -> IdentityProviderError {
     IdentityProviderError::new(IdentityProviderErrorCode::Internal, false)
+}
+
+fn invalid_request() -> IdentityProviderError {
+    IdentityProviderError::new(IdentityProviderErrorCode::InvalidRequest, false)
 }
 
 fn invalid_state() -> IdentityProviderError {

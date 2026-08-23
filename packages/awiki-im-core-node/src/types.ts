@@ -86,6 +86,21 @@ export interface ImCoreIdentityProvider {
     readonly encoding: 'raw32' | 'pkcs8_der'
     readonly requestId: string
   }): Promise<ImCorePreparedRootImport>
+  prepareIdentityMaterialImport?(request: {
+    readonly remote: unknown
+    readonly didWba: boolean
+    readonly keys: readonly {
+      readonly kid: string
+      readonly purpose:
+        | 'root_control'
+        | 'authentication'
+        | 'device_assertion'
+        | 'application_assertion'
+        | 'key_agreement'
+      readonly encoding: 'raw32' | 'pkcs8_der'
+    }[]
+    readonly requestId: string
+  }): Promise<ImCorePreparedIdentityMaterialImport>
   importWrappedRoot?(
     reference: ImCoreIdentityReference,
     envelope: unknown,
@@ -172,6 +187,22 @@ export interface ImCorePreparedRootImport {
     token: string,
     envelope: ImCoreSealedSecretEnvelope,
   ): Promise<'pending' | 'active'>
+}
+
+/** Host-only sealed legacy migration workflow retained inside the provider bridge. */
+export interface ImCorePreparedIdentityMaterialImport {
+  offer(): {
+    readonly target: ImCoreIdentityReference
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+    readonly token: string
+    readonly authorization: ImCoreSealedSecretDelivery['authorization']
+    readonly itemAad: readonly string[]
+  }
+  complete(
+    token: string,
+    envelopes: readonly ImCoreSealedSecretEnvelope[],
+  ): Promise<unknown>
 }
 
 /** Host-only opaque workflow retained inside the provider bridge. */

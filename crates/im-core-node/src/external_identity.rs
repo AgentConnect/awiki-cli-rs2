@@ -8,16 +8,16 @@ use im_core::provider::{
     ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderEnrollmentProposal,
     ProviderEnrollmentProposalKind, ProviderEnrollmentSession, ProviderExactHttpRequest,
     ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor,
-    ProviderIdentityRef, ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm,
-    ProviderKeyPurpose, ProviderKeySelector, ProviderLegacyRootExportRequest,
-    ProviderLegacyRootImportEvidence, ProviderLegacyRootImportOutcome,
-    ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
-    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPrivateKeyEncoding,
-    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
-    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
-    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
-    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
-    ProviderWrappedRootEnvelope,
+    ProviderIdentityMaterialImportRequest, ProviderIdentityRef, ProviderIdentityState,
+    ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
+    ProviderLegacyRootExportRequest, ProviderLegacyRootImportEvidence,
+    ProviderLegacyRootImportOutcome, ProviderLegacyRootImportRequest, ProviderObjectProofRequest,
+    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
+    ProviderPrivateKeyEncoding, ProviderPublicIdentity, ProviderPublicKey,
+    ProviderPublicationAttempt, ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest,
+    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument, ProviderWrappedRootEnvelope,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -235,6 +235,48 @@ struct CompleteSealedImportPayload<'a> {
     session_id: &'a str,
     token: &'a str,
     envelope: SealedSecretEnvelopeWire,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedIdentityImportPreparationPayload<'a> {
+    remote: &'a ProviderVerifiedRemoteDocument,
+    did_wba: bool,
+    keys: Vec<SealedIdentityMaterialKeySpecWire<'a>>,
+    request_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedIdentityMaterialKeySpecWire<'a> {
+    kid: &'a str,
+    purpose: ProviderKeyPurpose,
+    encoding: ProviderPrivateKeyEncoding,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreparedSealedIdentityImportWire {
+    session_id: String,
+    offer: SealedIdentityImportOfferWire,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedIdentityImportOfferWire {
+    target: ProviderIdentityRef,
+    request_id: String,
+    token: String,
+    authorization: AuthorizationContextWire,
+    item_aad: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteSealedIdentityImportPayload<'a> {
+    session_id: &'a str,
+    token: &'a str,
+    envelopes: Vec<SealedSecretEnvelopeWire>,
 }
 
 #[derive(Deserialize)]
@@ -553,6 +595,18 @@ impl IdentityCustody for ExternalIdentityCustody {
             "active" => Ok(ProviderLegacyRootImportOutcome::Active),
             _ => Err(provider_incompatible()),
         }
+    }
+
+    async fn import_identity_material(
+        &self,
+        request: ProviderIdentityMaterialImportRequest,
+    ) -> ProviderResult<Arc<dyn IdentitySession>> {
+        let public = send_sealed_identity_material_import(&self.dispatch, request).await?;
+        Ok(Arc::new(ExternalIdentitySession {
+            dispatch: self.dispatch.clone(),
+            identity: public.reference.clone(),
+            public_cache: Arc::new(tokio::sync::RwLock::new(Some(public))),
+        }))
     }
 
     async fn recover(&self) -> ProviderResult<()> {
@@ -1187,6 +1241,168 @@ async fn send_sealed_root_import(
         "pending" => Ok(ProviderLegacyRootImportOutcome::Pending),
         "active" => Ok(ProviderLegacyRootImportOutcome::Active),
         _ => Err(provider_incompatible()),
+    }
+}
+
+async fn send_sealed_identity_material_import(
+    dispatch: &IdentityProviderDispatch,
+    request: ProviderIdentityMaterialImportRequest,
+) -> ProviderResult<ProviderPublicIdentity> {
+    let ProviderIdentityMaterialImportRequest {
+        remote,
+        did_wba,
+        keys,
+        request_id,
+    } = request;
+    let key_specs = keys
+        .iter()
+        .map(|key| SealedIdentityMaterialKeySpecWire {
+            kid: &key.kid,
+            purpose: key.purpose,
+            encoding: key.encoding,
+        })
+        .collect::<Vec<_>>();
+    let reply = call(
+        dispatch,
+        "prepareIdentityMaterialImport",
+        &SealedIdentityImportPreparationPayload {
+            remote: &remote,
+            did_wba,
+            keys: key_specs,
+            request_id: &request_id,
+        },
+        Vec::new(),
+    )
+    .await?;
+    let prepared: PreparedSealedIdentityImportWire = parse_json(&reply.payload_json)?;
+    let recipient_public: [u8; 32] = exactly_one_buffer(reply.buffers)?
+        .try_into()
+        .map_err(|_| provider_incompatible())?;
+    if prepared.offer.request_id != request_id
+        || prepared.offer.item_aad.len() != keys.len()
+        || remote
+            .document
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            != Some(prepared.offer.target.did.as_str())
+    {
+        return Err(provider_incompatible());
+    }
+    let target = sealed_identity_context(&prepared.offer.target);
+    let shared_keys = keys
+        .iter()
+        .map(|key| anp::sealed_handoff::SealedIdentityMaterialKeySpec {
+            kid: key.kid.clone(),
+            purpose: shared_material_key_purpose(key.purpose),
+            encoding: shared_private_key_encoding(key.encoding),
+        })
+        .collect::<Vec<_>>();
+    let binding = anp::sealed_handoff::identity_material_import_binding(
+        &target,
+        &request_id,
+        &recipient_public,
+        did_wba,
+        &remote.evidence.document_digest,
+        remote.evidence.document_version,
+        remote.evidence.registry_version,
+        &shared_keys,
+    )
+    .map_err(|_| provider_incompatible())?;
+    let authorization = anp::sealed_handoff::SealedAuthorizationContext {
+        provider_instance_id: prepared.offer.authorization.provider_instance_id.clone(),
+        parent_lease_id: prepared.offer.authorization.parent_lease_id.clone(),
+        consumer: prepared.offer.authorization.consumer.clone(),
+        capability: prepared.offer.authorization.capability.clone(),
+        store_id: prepared.offer.authorization.store_id.clone(),
+        expires_at: prepared.offer.authorization.expires_at,
+    };
+    let envelopes = keys
+        .into_iter()
+        .zip(prepared.offer.item_aad.iter())
+        .enumerate()
+        .map(|(index, (key, delivered_aad))| {
+            let expected = anp::sealed_handoff::identity_material_import_item_aad(
+                &authorization,
+                &binding,
+                &target,
+                index,
+                &key.kid,
+            )
+            .map_err(|_| provider_incompatible())?;
+            let delivered = URL_SAFE_NO_PAD
+                .decode(delivered_aad)
+                .map_err(|_| provider_incompatible())?;
+            if delivered != expected {
+                return Err(provider_incompatible());
+            }
+            let sealed = anp::sealed_handoff::SealedHandoff::seal(
+                &recipient_public,
+                SEALED_SECRET_INFO,
+                &expected,
+                &key.secret,
+            )
+            .map_err(|_| provider_incompatible())?;
+            Ok(SealedSecretEnvelopeWire {
+                protocol: SEALED_SECRET_PROTOCOL.to_owned(),
+                suite: anp::sealed_handoff::SEALED_HANDOFF_SUITE.to_owned(),
+                encapped_key: URL_SAFE_NO_PAD.encode(sealed.encapped_key()),
+                ciphertext: URL_SAFE_NO_PAD.encode(sealed.ciphertext()),
+            })
+        })
+        .collect::<ProviderResult<Vec<_>>>()?;
+    let public: WirePublicIdentity = call_json(
+        dispatch,
+        "completeIdentityMaterialImport",
+        &CompleteSealedIdentityImportPayload {
+            session_id: &prepared.session_id,
+            token: &prepared.offer.token,
+            envelopes,
+        },
+        Vec::new(),
+    )
+    .await?;
+    let public = ProviderPublicIdentity::try_from(public)?;
+    if public.reference != prepared.offer.target
+        || public.state != ProviderIdentityState::Active
+        || public.revision != remote.evidence.document_version
+        || public.document != remote.document
+        || public.did_wba != did_wba
+    {
+        return Err(provider_incompatible());
+    }
+    Ok(public)
+}
+
+fn shared_material_key_purpose(
+    purpose: ProviderKeyPurpose,
+) -> anp::sealed_handoff::SealedIdentityMaterialKeyPurpose {
+    match purpose {
+        ProviderKeyPurpose::RootControl => {
+            anp::sealed_handoff::SealedIdentityMaterialKeyPurpose::RootControl
+        }
+        ProviderKeyPurpose::Authentication => {
+            anp::sealed_handoff::SealedIdentityMaterialKeyPurpose::Authentication
+        }
+        ProviderKeyPurpose::DeviceAssertion => {
+            anp::sealed_handoff::SealedIdentityMaterialKeyPurpose::DeviceAssertion
+        }
+        ProviderKeyPurpose::ApplicationAssertion => {
+            anp::sealed_handoff::SealedIdentityMaterialKeyPurpose::ApplicationAssertion
+        }
+        ProviderKeyPurpose::KeyAgreement => {
+            anp::sealed_handoff::SealedIdentityMaterialKeyPurpose::KeyAgreement
+        }
+    }
+}
+
+fn shared_private_key_encoding(
+    encoding: ProviderPrivateKeyEncoding,
+) -> anp::sealed_handoff::SealedPrivateKeyEncoding {
+    match encoding {
+        ProviderPrivateKeyEncoding::Raw32 => anp::sealed_handoff::SealedPrivateKeyEncoding::Raw32,
+        ProviderPrivateKeyEncoding::Pkcs8Der => {
+            anp::sealed_handoff::SealedPrivateKeyEncoding::Pkcs8Der
+        }
     }
 }
 

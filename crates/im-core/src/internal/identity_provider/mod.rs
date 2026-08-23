@@ -625,6 +625,20 @@ pub struct ProviderLegacyRootImportRequest {
     pub root_key: Zeroizing<Vec<u8>>,
 }
 
+pub struct ProviderIdentityMaterialKey {
+    pub kid: String,
+    pub purpose: ProviderKeyPurpose,
+    pub encoding: ProviderPrivateKeyEncoding,
+    pub secret: Zeroizing<Vec<u8>>,
+}
+
+pub struct ProviderIdentityMaterialImportRequest {
+    pub remote: ProviderVerifiedRemoteDocument,
+    pub did_wba: bool,
+    pub keys: Vec<ProviderIdentityMaterialKey>,
+    pub request_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderLegacyRootImportOutcome {
     Pending,
@@ -730,6 +744,16 @@ pub trait IdentityCustody: Send + Sync {
         _identity: &ProviderIdentityRef,
         _envelope: ProviderWrappedRootEnvelope,
     ) -> ProviderResult<ProviderLegacyRootImportOutcome> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
+    async fn import_identity_material(
+        &self,
+        _request: ProviderIdentityMaterialImportRequest,
+    ) -> ProviderResult<Arc<dyn IdentitySession>> {
         Err(IdentityProviderError::new(
             IdentityProviderErrorCode::CapabilityUnavailable,
             false,
