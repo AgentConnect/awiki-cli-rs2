@@ -881,7 +881,7 @@ impl PendingHandleRecoveryStore {
         Ok(Some((secret_ref, pending)))
     }
 
-    pub(crate) fn upgrade_legacy_v4(
+    pub(crate) async fn upgrade_legacy_v4(
         &self,
         core: &crate::core::ImCore,
         legacy_ref: &SecretRef,
@@ -896,6 +896,7 @@ impl PendingHandleRecoveryStore {
         {
             return Err(crate::ImError::PermissionDenied);
         }
+        let request_id = format!("handle-recovery-v4:{}", legacy.operation_id);
         let generated = legacy.generated;
         let checkpoint = legacy.remote_result.as_ref().map_or((1, 1), |result| {
             (
@@ -903,64 +904,63 @@ impl PendingHandleRecoveryStore {
                 result.checkpoint.registry_version,
             )
         });
-        use anp_identity::host::MigrationPort;
-        let mut manager = crate::internal::identity_custody::open_controller_manager(core)?;
-        let existing = manager
-            .list()
-            .map_err(crate::internal::identity_custody::map_facade_error)?
+        let document_digest = recovery_document_digest(&generated.did_document)?;
+        let custody = crate::internal::identity_custody::controller_custody_provider(core).await?;
+        let existing = custody
+            .list_identities()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
             .into_iter()
             .find(|descriptor| descriptor.reference.did == generated.did.as_str());
         let identity = match existing {
-            Some(descriptor) => manager
-                .get(&descriptor.reference)
-                .map_err(crate::internal::identity_custody::map_facade_error)?,
-            None => manager
-                .import_full_identity(anp_identity::host::FullIdentityImportRequest {
-                    remote: anp_identity::VerifiedRemoteDocument {
-                        document: anp_identity::DidDocument::from_value(
-                            generated.did_document.clone(),
-                        ),
-                        evidence: anp_identity::VerifiedPublicationEvidence {
+            Some(descriptor) => custody
+                .open_identity(&descriptor.reference)
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?,
+            None => custody
+                .import_identity_material(
+                    crate::internal::identity_provider::ProviderIdentityMaterialImportRequest {
+                        remote: crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+                            document: generated.did_document.clone(),
+                            evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
                             document_version: checkpoint.0,
                             registry_version: checkpoint.1,
-                            document_digest: anp_identity::canonical_document_digest(
-                                &generated.did_document,
-                            )
-                            .map_err(crate::internal::identity_custody::map_error)?,
+                                document_digest: document_digest.clone(),
+                            },
                         },
+                        did_wba: true,
+                        keys: vec![
+                            imported_recovery_key(
+                                &generated.did_document,
+                                &generated.root_key_id,
+                                crate::internal::identity_provider::ProviderKeyPurpose::RootControl,
+                                &generated.root_private_pem,
+                            )?,
+                            imported_recovery_key(
+                                &generated.did_document,
+                                &generated.device_signing_key_id,
+                                crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
+                                &generated.device_signing_private_pem,
+                            )?,
+                            imported_recovery_key(
+                                &generated.did_document,
+                                &generated.device_e2ee_key_id,
+                                crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
+                                &generated.device_e2ee_private_pem,
+                            )?,
+                        ],
+                        request_id,
                     },
-                    did_wba: true,
-                    private_keys: vec![
-                        imported_recovery_key(
-                            &generated.did_document,
-                            &generated.root_key_id,
-                            anp_identity::host::MigrationKeyPurpose::RootControl,
-                            &generated.root_private_pem,
-                        )?,
-                        imported_recovery_key(
-                            &generated.did_document,
-                            &generated.device_signing_key_id,
-                            anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
-                            &generated.device_signing_private_pem,
-                        )?,
-                        imported_recovery_key(
-                            &generated.did_document,
-                            &generated.device_e2ee_key_id,
-                            anp_identity::host::MigrationKeyPurpose::KeyAgreement,
-                            &generated.device_e2ee_private_pem,
-                        )?,
-                    ],
-                })
-                .map_err(crate::internal::identity_custody::map_facade_error)?,
+                )
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?,
         };
         let public = identity
             .public_identity()
-            .map_err(crate::internal::identity_custody::map_facade_error)?;
-        if public.state != anp_identity::PublicIdentityState::Active
-            || anp_identity::canonical_document_digest(public.document.as_value())
-                .map_err(crate::internal::identity_custody::map_error)?
-                != anp_identity::canonical_document_digest(&generated.did_document)
-                    .map_err(crate::internal::identity_custody::map_error)?
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+            || recovery_document_digest(&public.document)? != document_digest
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -1170,9 +1170,9 @@ fn serialize_v4(pending: &PendingHandleRecoveryV4) -> crate::ImResult<SecretByte
 fn imported_recovery_key(
     document: &serde_json::Value,
     kid: &str,
-    purpose: anp_identity::host::MigrationKeyPurpose,
+    purpose: crate::internal::identity_provider::ProviderKeyPurpose,
     pem: &str,
-) -> crate::ImResult<anp_identity::host::MigrationPrivateKey> {
+) -> crate::ImResult<crate::internal::identity_provider::ProviderIdentityMaterialKey> {
     let material =
         anp::PrivateKeyMaterial::from_pem(pem).map_err(|_| crate::ImError::PermissionDenied)?;
     let expected = anp::authentication::find_verification_method(document, kid)
@@ -1183,22 +1183,33 @@ fn imported_recovery_key(
     }
     let raw = match (purpose, material) {
         (
-            anp_identity::host::MigrationKeyPurpose::RootControl
-            | anp_identity::host::MigrationKeyPurpose::DeviceAssertion,
+            crate::internal::identity_provider::ProviderKeyPurpose::RootControl
+            | crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
             anp::PrivateKeyMaterial::Ed25519(key),
         ) => key.to_bytes().to_vec(),
         (
-            anp_identity::host::MigrationKeyPurpose::KeyAgreement,
+            crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
             anp::PrivateKeyMaterial::X25519(key),
         ) => key.to_bytes().to_vec(),
         _ => return Err(crate::ImError::PermissionDenied),
     };
-    Ok(anp_identity::host::MigrationPrivateKey {
-        kid: kid.to_owned(),
-        purpose,
-        encoding: anp_identity::host::MigrationPrivateKeyEncoding::Raw32,
-        secret: zeroize::Zeroizing::new(raw),
-    })
+    Ok(
+        crate::internal::identity_provider::ProviderIdentityMaterialKey {
+            kid: kid.to_owned(),
+            purpose,
+            encoding: crate::internal::identity_provider::ProviderPrivateKeyEncoding::Raw32,
+            secret: zeroize::Zeroizing::new(raw),
+        },
+    )
+}
+
+fn recovery_document_digest(document: &serde_json::Value) -> crate::ImResult<String> {
+    let canonical =
+        serde_json_canonicalizer::to_vec(document).map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+    ))
 }
 
 pub(crate) fn pending_v4_key_id(operation_id: &str) -> String {
@@ -1506,8 +1517,8 @@ mod tests {
         assert!(pending.validate().is_ok());
     }
 
-    #[test]
-    fn attempted_legacy_pending_imports_identity_before_result_get() {
+    #[tokio::test]
+    async fn attempted_legacy_pending_imports_identity_before_result_get() {
         let generated = crate::internal::identity_generation::generate_handle_recovery_identity(
             "example.invalid",
             "legacy-recovery",
@@ -1648,6 +1659,7 @@ mod tests {
 
         store
             .upgrade_legacy_v4(&core, &legacy_ref, &serde_json::to_vec(&legacy).unwrap())
+            .await
             .unwrap();
 
         let current = store.load_v4(&legacy.operation_id).unwrap().unwrap().1;

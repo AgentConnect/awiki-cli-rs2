@@ -72,7 +72,8 @@ pub(crate) async fn converge(
                     opened.expose_secret(),
                     dry_run,
                     &mut outcome,
-                )?;
+                )
+                .await?;
             }
             SecretKind::IdentityJoinActivationPending => {
                 converge_join(
@@ -300,7 +301,7 @@ struct LegacyRecoveryProbe {
     remote_result: Option<serde_json::Value>,
 }
 
-fn converge_handle_recovery(
+async fn converge_handle_recovery(
     core: &crate::core::ImCore,
     vault: &dyn crate::internal::secret_vault::SecretVault,
     reference: &SecretRef,
@@ -326,7 +327,7 @@ fn converge_handle_recovery(
             );
         } else {
             crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(core)?
-                .upgrade_legacy_v4(core, reference, raw)?;
+                .upgrade_legacy_v4(core, reference, raw).await?;
             outcome.warnings.push(
                 "upgraded attempted legacy Handle Recovery for exact result-get recovery"
                     .to_owned(),
