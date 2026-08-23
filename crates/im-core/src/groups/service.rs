@@ -1554,8 +1554,7 @@ impl<'a> GroupService<'a> {
                     )
                     .await?;
                     let mut result = authoritative;
-                    result.resolved_member =
-                        requested_member_is_did.then_some(resolved_member);
+                    result.resolved_member = requested_member_is_did.then_some(resolved_member);
                     self.refresh_group_state_for_async(&mut result, &group, true)
                         .await;
                     return Ok(result);
