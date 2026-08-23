@@ -1,23 +1,33 @@
 use std::sync::Arc;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use im_core::provider::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
     ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
     ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderEnrollmentProposal,
-    ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderHostStatus, ProviderHttpHeader,
-    ProviderIdentityDescriptor, ProviderIdentityRef, ProviderIdentityState,
-    ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderObjectProofRequest, ProviderOriginProofRequest, ProviderPreparedDocumentChange,
-    ProviderPreparedHttpSignature, ProviderPublicIdentity, ProviderPublicKey,
-    ProviderPublicationAttempt, ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest,
-    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
-    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
-    ProviderVerifiedRemoteDocument,
+    ProviderEnrollmentProposalKind, ProviderEnrollmentSession, ProviderExactHttpRequest,
+    ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityRef,
+    ProviderIdentityState, ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose,
+    ProviderKeySelector, ProviderObjectProofRequest, ProviderOriginProofRequest,
+    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPublicIdentity,
+    ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationResult,
+    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderSharedSecret,
+    ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose,
+    ProviderStoreInfo, ProviderVerifiedRemoteDocument,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
+use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+const SEALED_SECRET_PROTOCOL: &str = "anp-sealed-secret/1";
+const SEALED_SECRET_INFO: &[u8] = b"anp.identity.sealed-secret.v1";
+const IDENTITY_ECDH_CAPABILITY: &str = "IDENTITY_ECDH_SEALED";
+const ECDH_SEALED_OPERATION: &str = "ecdh_sealed";
+const ENROLLMENT_ECDH_SEALED_OPERATION: &str = "enrollment_ecdh_sealed";
 
 pub(crate) type IdentityProviderDispatch = ThreadsafeFunction<
     (NodeIdentityProviderCall,),
@@ -65,6 +75,21 @@ struct ExternalEnrollmentSession {
     dispatch: Arc<IdentityProviderDispatch>,
     session_id: String,
     proposal: ProviderEnrollmentProposal,
+}
+
+impl ExternalIdentitySession {
+    async fn default_agreement_kid(&self) -> ProviderResult<String> {
+        self.public_identity()
+            .await?
+            .active_keys
+            .into_iter()
+            .find(|key| {
+                key.algorithm == ProviderKeyAlgorithm::X25519
+                    && key.purposes.contains(&ProviderKeyPurpose::KeyAgreement)
+            })
+            .map(|key| key.kid)
+            .ok_or_else(|| provider_error(IdentityProviderErrorCode::CapabilityUnavailable, false))
+    }
 }
 
 impl ExternalIdentityCustody {
@@ -141,6 +166,49 @@ struct EnrollmentSessionWire {
 #[serde(rename_all = "camelCase")]
 struct EnrollmentSessionPayload<'a> {
     session_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedKeyAgreementPayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    kid: &'a str,
+    request_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedEnrollmentKeyAgreementPayload<'a> {
+    session_id: &'a str,
+    request_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedSecretDeliveryWire {
+    envelope: SealedSecretEnvelopeWire,
+    authorization: AuthorizationContextWire,
+    aad: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedSecretEnvelopeWire {
+    protocol: String,
+    suite: String,
+    encapped_key: String,
+    ciphertext: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuthorizationContextWire {
+    provider_instance_id: String,
+    parent_lease_id: String,
+    consumer: String,
+    capability: String,
+    store_id: String,
+    expires_at: i64,
 }
 
 #[derive(Serialize)]
@@ -623,15 +691,21 @@ impl IdentitySession for ExternalIdentitySession {
 
     async fn derive_shared_secret(
         &self,
-        _request: ProviderKeyAgreementRequest,
+        request: ProviderKeyAgreementRequest,
     ) -> ProviderResult<ProviderSharedSecret> {
-        // The current provider response omits the authorization/AAD context
-        // needed to authenticate and open the HPKE ciphertext. Never downgrade
-        // this operation to a raw shared-secret bridge.
-        Err(provider_error(
-            IdentityProviderErrorCode::CapabilityUnavailable,
-            false,
-        ))
+        let kid = match request.key {
+            ProviderKeySelector::Kid(kid) => kid,
+            ProviderKeySelector::Default => self.default_agreement_kid().await?,
+        };
+        receive_sealed_shared_secret(
+            &self.dispatch,
+            ECDH_SEALED_OPERATION,
+            &self.identity,
+            None,
+            &kid,
+            request.peer_public,
+        )
+        .await
     }
 
     async fn recover(&self) -> ProviderResult<()> {
@@ -753,15 +827,24 @@ impl ProviderEnrollmentSession for ExternalEnrollmentSession {
 
     async fn derive_device_shared_secret(
         &self,
-        _peer_public: [u8; 32],
+        peer_public: [u8; 32],
     ) -> ProviderResult<ProviderSharedSecret> {
-        // The sealed enrollment response has the same unresolved AAD delivery
-        // requirement as active-identity ECDH. Keep it unavailable instead of
-        // accepting a raw shared secret through TypeScript.
-        Err(provider_error(
-            IdentityProviderErrorCode::CapabilityUnavailable,
-            false,
-        ))
+        let ProviderEnrollmentProposalKind::Device { agreement_key, .. } = &self.proposal.kind
+        else {
+            return Err(provider_error(
+                IdentityProviderErrorCode::CapabilityUnavailable,
+                false,
+            ));
+        };
+        receive_sealed_shared_secret(
+            &self.dispatch,
+            ENROLLMENT_ECDH_SEALED_OPERATION,
+            &self.proposal.identity,
+            Some((&self.session_id, &self.proposal.enrollment_id)),
+            &agreement_key.kid,
+            peer_public,
+        )
+        .await
     }
 
     async fn activate(&self, remote: ProviderVerifiedRemoteDocument) -> ProviderResult<()> {
@@ -789,6 +872,261 @@ impl ProviderEnrollmentSession for ExternalEnrollmentSession {
         )
         .await
     }
+}
+
+async fn receive_sealed_shared_secret(
+    dispatch: &IdentityProviderDispatch,
+    operation: &'static str,
+    identity: &ProviderIdentityRef,
+    enrollment: Option<(&str, &str)>,
+    kid: &str,
+    peer_public: [u8; 32],
+) -> ProviderResult<ProviderSharedSecret> {
+    let recipient = anp::sealed_handoff::SealedHandoffRecipient::generate();
+    let recipient_public = *recipient.public_key();
+    let request_id = random_id();
+    let buffers = vec![
+        Buffer::from(peer_public.to_vec()),
+        Buffer::from(recipient_public.to_vec()),
+    ];
+    let delivery: SealedSecretDeliveryWire = match enrollment {
+        Some((session_id, _)) => {
+            call_json(
+                dispatch,
+                "enrollmentEcdhSealed",
+                &SealedEnrollmentKeyAgreementPayload {
+                    session_id,
+                    request_id: &request_id,
+                },
+                buffers,
+            )
+            .await?
+        }
+        None => {
+            call_json(
+                dispatch,
+                "ecdhSealed",
+                &SealedKeyAgreementPayload {
+                    identity,
+                    kid,
+                    request_id: &request_id,
+                },
+                buffers,
+            )
+            .await?
+        }
+    };
+    let operation_input_digest = match enrollment {
+        Some((_, enrollment_id)) => sealed_enrollment_operation_digest(
+            identity,
+            enrollment_id,
+            kid,
+            &peer_public,
+            &recipient_public,
+            &request_id,
+        )?,
+        None => sealed_key_agreement_operation_digest(
+            identity,
+            kid,
+            &peer_public,
+            &recipient_public,
+            &request_id,
+        )?,
+    };
+    let aad = validate_delivery(
+        &delivery,
+        operation,
+        identity,
+        kid,
+        &request_id,
+        &operation_input_digest,
+        &recipient_public,
+    )?;
+    let handoff = delivery.envelope.to_handoff()?;
+    let plaintext = recipient
+        .open(&handoff, SEALED_SECRET_INFO, &aad)
+        .map_err(|_| provider_incompatible())?;
+    let bytes: [u8; 32] = plaintext
+        .as_slice()
+        .try_into()
+        .map_err(|_| provider_incompatible())?;
+    Ok(ProviderSharedSecret::new(bytes))
+}
+
+impl SealedSecretEnvelopeWire {
+    fn to_handoff(&self) -> ProviderResult<anp::sealed_handoff::SealedHandoff> {
+        if self.protocol != SEALED_SECRET_PROTOCOL
+            || self.suite != anp::sealed_handoff::SEALED_HANDOFF_SUITE
+        {
+            return Err(provider_incompatible());
+        }
+        let encapped = URL_SAFE_NO_PAD
+            .decode(&self.encapped_key)
+            .map_err(|_| provider_incompatible())?;
+        let ciphertext = URL_SAFE_NO_PAD
+            .decode(&self.ciphertext)
+            .map_err(|_| provider_incompatible())?;
+        anp::sealed_handoff::SealedHandoff::from_parts(&encapped, ciphertext)
+            .map_err(|_| provider_incompatible())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_delivery(
+    delivery: &SealedSecretDeliveryWire,
+    operation: &str,
+    identity: &ProviderIdentityRef,
+    kid: &str,
+    request_id: &str,
+    operation_input_digest: &str,
+    recipient_public_key: &[u8; 32],
+) -> ProviderResult<Vec<u8>> {
+    let authorization = &delivery.authorization;
+    if authorization.provider_instance_id.trim().is_empty()
+        || authorization.parent_lease_id.trim().is_empty()
+        || authorization.consumer.trim().is_empty()
+        || authorization.capability != IDENTITY_ECDH_CAPABILITY
+        || authorization.store_id != identity.store_id
+        || authorization.expires_at <= 0
+    {
+        return Err(provider_incompatible());
+    }
+    #[derive(Serialize)]
+    struct Aad<'a> {
+        protocol_version: &'static str,
+        operation: &'a str,
+        provider_instance_id: &'a str,
+        parent_lease_id: &'a str,
+        consumer: &'a str,
+        capability: &'a str,
+        store_id: &'a str,
+        identity_id: &'a str,
+        kid: &'a str,
+        request_id: &'a str,
+        recipient_public_key_digest: String,
+        canonical_request_digest: &'a str,
+    }
+    let expected = serde_json_canonicalizer::to_vec(&Aad {
+        protocol_version: SEALED_SECRET_PROTOCOL,
+        operation,
+        provider_instance_id: &authorization.provider_instance_id,
+        parent_lease_id: &authorization.parent_lease_id,
+        consumer: &authorization.consumer,
+        capability: &authorization.capability,
+        store_id: &identity.store_id,
+        identity_id: &identity.identity_id,
+        kid,
+        request_id,
+        recipient_public_key_digest: recipient_public_key_digest(recipient_public_key),
+        canonical_request_digest: operation_input_digest,
+    })
+    .map_err(|_| provider_incompatible())?;
+    let delivered = URL_SAFE_NO_PAD
+        .decode(&delivery.aad)
+        .map_err(|_| provider_incompatible())?;
+    if delivered != expected {
+        return Err(provider_incompatible());
+    }
+    Ok(expected)
+}
+
+fn sealed_key_agreement_operation_digest(
+    identity: &ProviderIdentityRef,
+    kid: &str,
+    peer_public: &[u8; 32],
+    recipient_public_key: &[u8; 32],
+    request_id: &str,
+) -> ProviderResult<String> {
+    #[derive(Serialize)]
+    struct DigestInput<'a> {
+        protocol: &'static str,
+        operation: &'static str,
+        store_id: &'a str,
+        identity_id: &'a str,
+        did: &'a str,
+        kid: &'a str,
+        algorithm: &'static str,
+        peer_public_b64u: String,
+        recipient_public_key_digest: String,
+        request_id: &'a str,
+    }
+    sealed_operation_digest(&DigestInput {
+        protocol: SEALED_SECRET_PROTOCOL,
+        operation: ECDH_SEALED_OPERATION,
+        store_id: &identity.store_id,
+        identity_id: &identity.identity_id,
+        did: &identity.did,
+        kid,
+        algorithm: "X25519",
+        peer_public_b64u: URL_SAFE_NO_PAD.encode(peer_public),
+        recipient_public_key_digest: recipient_public_key_digest(recipient_public_key),
+        request_id,
+    })
+}
+
+fn sealed_enrollment_operation_digest(
+    identity: &ProviderIdentityRef,
+    enrollment_id: &str,
+    kid: &str,
+    peer_public: &[u8; 32],
+    recipient_public_key: &[u8; 32],
+    request_id: &str,
+) -> ProviderResult<String> {
+    #[derive(Serialize)]
+    struct DigestInput<'a> {
+        protocol: &'static str,
+        operation: &'static str,
+        store_id: &'a str,
+        identity_id: &'a str,
+        did: &'a str,
+        enrollment_id: &'a str,
+        kid: &'a str,
+        algorithm: &'static str,
+        peer_public_b64u: String,
+        recipient_public_key_digest: String,
+        request_id: &'a str,
+    }
+    sealed_operation_digest(&DigestInput {
+        protocol: SEALED_SECRET_PROTOCOL,
+        operation: ENROLLMENT_ECDH_SEALED_OPERATION,
+        store_id: &identity.store_id,
+        identity_id: &identity.identity_id,
+        did: &identity.did,
+        enrollment_id,
+        kid,
+        algorithm: "X25519",
+        peer_public_b64u: URL_SAFE_NO_PAD.encode(peer_public),
+        recipient_public_key_digest: recipient_public_key_digest(recipient_public_key),
+        request_id,
+    })
+}
+
+fn sealed_operation_digest(value: &impl Serialize) -> ProviderResult<String> {
+    let canonical = serde_json_canonicalizer::to_vec(value).map_err(|_| provider_incompatible())?;
+    let mut digest = Sha256::new();
+    digest.update(b"anp.identity.sealed-operation.v1\0");
+    digest.update(canonical);
+    Ok(format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(digest.finalize())
+    ))
+}
+
+fn recipient_public_key_digest(public_key: &[u8; 32]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"anp.identity.recipient-public-key.v1\0");
+    digest.update(public_key);
+    format!("sha256:{}", URL_SAFE_NO_PAD.encode(digest.finalize()))
+}
+
+fn random_id() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn provider_incompatible() -> IdentityProviderError {
+    provider_error(IdentityProviderErrorCode::ProviderIncompatible, false)
 }
 
 async fn call_json<T: for<'de> Deserialize<'de>>(
@@ -983,6 +1321,106 @@ impl TryFrom<WirePublicIdentity> for ProviderPublicIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sealed_ecdh_contract_matches_anp_identity_and_rejects_aad_substitution() {
+        let identity = ProviderIdentityRef {
+            store_id: "store-1".to_owned(),
+            identity_id: "identity-1".to_owned(),
+            did: "did:wba:example.test:alice".to_owned(),
+        };
+        let anp_identity = anp_identity::IdentityRef {
+            store_id: identity.store_id.clone(),
+            identity_id: identity.identity_id.clone(),
+            did: identity.did.clone(),
+        };
+        let kid = format!("{}#agreement", identity.did);
+        let peer_public = [0x31; 32];
+        let recipient = anp::sealed_handoff::SealedHandoffRecipient::generate();
+        let request_id = "request-1";
+        let binding = anp_identity::host::sealed_key_agreement_binding(
+            &anp_identity,
+            &kid,
+            &peer_public,
+            recipient.public_key(),
+            request_id,
+        )
+        .unwrap();
+        assert_eq!(
+            sealed_key_agreement_operation_digest(
+                &identity,
+                &kid,
+                &peer_public,
+                recipient.public_key(),
+                request_id,
+            )
+            .unwrap(),
+            binding.operation_input_digest
+        );
+        let authorization = anp_identity::host::IssuedAuthorizationContext {
+            provider_instance_id: "provider-1".to_owned(),
+            parent_lease_id: "lease-1".to_owned(),
+            consumer: "dsh-awiki".to_owned(),
+            capability: IDENTITY_ECDH_CAPABILITY.to_owned(),
+            store_id: identity.store_id.clone(),
+            expires_at: 2_000_000_000,
+        };
+        let aad = anp_identity::host::sealed_operation_aad(&authorization, &binding, &anp_identity)
+            .unwrap();
+        let handoff = anp::sealed_handoff::SealedHandoff::seal(
+            recipient.public_key(),
+            SEALED_SECRET_INFO,
+            &aad,
+            &[0x42; 32],
+        )
+        .unwrap();
+        let mut delivery = SealedSecretDeliveryWire {
+            envelope: SealedSecretEnvelopeWire {
+                protocol: SEALED_SECRET_PROTOCOL.to_owned(),
+                suite: anp::sealed_handoff::SEALED_HANDOFF_SUITE.to_owned(),
+                encapped_key: URL_SAFE_NO_PAD.encode(handoff.encapped_key()),
+                ciphertext: URL_SAFE_NO_PAD.encode(handoff.ciphertext()),
+            },
+            authorization: AuthorizationContextWire {
+                provider_instance_id: authorization.provider_instance_id,
+                parent_lease_id: authorization.parent_lease_id,
+                consumer: authorization.consumer,
+                capability: authorization.capability,
+                store_id: authorization.store_id,
+                expires_at: authorization.expires_at,
+            },
+            aad: URL_SAFE_NO_PAD.encode(&aad),
+        };
+        assert_eq!(
+            validate_delivery(
+                &delivery,
+                ECDH_SEALED_OPERATION,
+                &identity,
+                &kid,
+                request_id,
+                &binding.operation_input_digest,
+                recipient.public_key(),
+            )
+            .unwrap(),
+            aad
+        );
+
+        delivery.aad.push('A');
+        assert_eq!(
+            validate_delivery(
+                &delivery,
+                ECDH_SEALED_OPERATION,
+                &identity,
+                &kid,
+                request_id,
+                &binding.operation_input_digest,
+                recipient.public_key(),
+            )
+            .unwrap_err()
+            .code,
+            IdentityProviderErrorCode::ProviderIncompatible
+        );
+    }
 
     #[test]
     fn pending_root_proof_wire_uses_the_provider_kid_shape() {

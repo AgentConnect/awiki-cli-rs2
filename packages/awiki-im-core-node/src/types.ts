@@ -27,6 +27,24 @@ export interface ImCoreIdentityReference {
   readonly did: string
 }
 
+export interface ImCoreSealedSecretDelivery {
+  readonly envelope: {
+    readonly protocol: 'anp-sealed-secret/1'
+    readonly suite: 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1'
+    readonly encappedKey: string
+    readonly ciphertext: string
+  }
+  readonly authorization: {
+    readonly providerInstanceId: string
+    readonly parentLeaseId: string
+    readonly consumer: string
+    readonly capability: string
+    readonly storeId: string
+    readonly expiresAt: number
+  }
+  readonly aad: string
+}
+
 export interface ImCoreIdentityProvider {
   readonly protocol: 'anp-identity-provider-ts/1'
   readonly capabilities: readonly string[]
@@ -46,6 +64,13 @@ export interface ImCoreIdentityProvider {
   create(request: unknown): Promise<unknown>
   delete(reference: ImCoreIdentityReference): Promise<void>
   recoverIdentity(reference: ImCoreIdentityReference): Promise<void>
+  ecdhSealed(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly kid: string
+    readonly peerPublic: Buffer
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+  }): Promise<ImCoreSealedSecretDelivery>
   sign(
     reference: ImCoreIdentityReference,
     request:
@@ -128,6 +153,11 @@ export interface ImCoreProviderDocumentChangeSession {
 export interface ImCoreProviderEnrollmentSession {
   proposal(): Promise<unknown>
   signDeviceAssertion(payload: Buffer): Promise<Buffer>
+  deriveDeviceSharedSecretSealed(request: {
+    readonly peerPublic: Buffer
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+  }): Promise<ImCoreSealedSecretDelivery>
   activate(remote: unknown): Promise<'activated'>
   cancel(): Promise<void>
 }

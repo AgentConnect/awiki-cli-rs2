@@ -11,8 +11,9 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-base64.workspace = true
 async-trait.workspace = true
+anp.workspace = true
+base64.workspace = true
 chrono.workspace = true
 fs2.workspace = true
 im-core = { package = "awiki-im-core", path = "../im-core", features = ["identity-external-provider"] }
@@ -21,6 +22,7 @@ napi-derive.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -29,5 +31,5 @@ tokio-util.workspace = true
 napi-build = "=2.4.1"
 
 [dev-dependencies]
-anp.workspace = true
+anp-identity.workspace = true
 tempfile = "=3.3.0"

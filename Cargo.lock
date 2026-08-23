@@ -446,6 +446,7 @@ name = "awiki-im-core-node"
 version = "0.1.6"
 dependencies = [
  "anp",
+ "anp-identity",
  "async-trait",
  "awiki-im-core",
  "base64",
@@ -457,6 +458,7 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "tempfile",
  "tokio",

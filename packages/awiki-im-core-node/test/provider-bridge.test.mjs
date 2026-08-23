@@ -25,6 +25,7 @@ function provider(overrides = {}) {
       'IDENTITY_READ',
       'IDENTITY_CREATE',
       'IDENTITY_SIGN',
+      'IDENTITY_ECDH_SEALED',
       'IDENTITY_DOCUMENT_UPDATE',
       'IDENTITY_HTTP_SIGNATURE',
     ],
@@ -47,6 +48,9 @@ function provider(overrides = {}) {
     },
     delete: async () => {},
     recoverIdentity: async () => {},
+    ecdhSealed: async () => {
+      throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
+    },
     sign: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
@@ -211,6 +215,10 @@ test('External Provider keeps enrollment handles and private operations inside t
       calls.push(Buffer.from(payload))
       return Buffer.from('signed')
     },
+    deriveDeviceSharedSecretSealed: async request => {
+      calls.push(request)
+      return sealedDelivery()
+    },
     activate: async remote => {
       calls.push(remote)
       return 'activated'
@@ -235,13 +243,21 @@ test('External Provider keeps enrollment handles and private operations inside t
   }])
   assert.deepEqual(signed.buffers, [Buffer.from('signed')])
 
+  const enrollmentEcdh = await dispatch([{
+    operation: 'enrollmentEcdhSealed',
+    payloadJson: JSON.stringify({ sessionId, requestId: 'enrollment-ecdh-1' }),
+    buffers: [Buffer.alloc(32, 1), Buffer.alloc(32, 2)],
+  }])
+  assert.equal(enrollmentEcdh.ok, true)
+  assert.deepEqual(JSON.parse(enrollmentEcdh.payloadJson), sealedDelivery())
+
   const activated = await dispatch([{
     operation: 'enrollmentActivate',
     payloadJson: JSON.stringify({ sessionId, remote: { document: { id: proposal.identity.did } } }),
     buffers: [],
   }])
   assert.equal(JSON.parse(activated.payloadJson), 'activated')
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 3)
 
   const stale = await dispatch([{
     operation: 'enrollmentCancel',
@@ -359,6 +375,10 @@ test('External Provider hot paths make one call and keep binary values out of JS
         headerPatch: [{ name: 'signature', value: 'sig1=:value:' }],
       }
     },
+    ecdhSealed: async request => {
+      calls.push({ operation: 'ecdh', request })
+      return sealedDelivery()
+    },
   })
   const dispatch = createIdentityProviderDispatch(identityProvider)
   const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
@@ -399,10 +419,45 @@ test('External Provider hot paths make one call and keep binary values out of JS
   }])
   assert.equal(http.ok, true)
   assert.equal(http.buffers.length, 0)
-  assert.equal(calls.length, 3)
+  const peerPublic = Buffer.alloc(32, 3)
+  const recipientPublicKey = Buffer.alloc(32, 4)
+  const ecdh = await dispatch([{
+    operation: 'ecdhSealed',
+    payloadJson: JSON.stringify({
+      identity,
+      kid: `${identity.did}#agreement`,
+      requestId: 'ecdh-1',
+    }),
+    buffers: [peerPublic, recipientPublicKey],
+  }])
+  assert.equal(ecdh.ok, true)
+  assert.deepEqual(JSON.parse(ecdh.payloadJson), sealedDelivery())
+  assert.equal(calls.length, 4)
   assert.equal(calls[0].request.payload, signInput)
   assert.equal(calls[2].request.body, body)
+  assert.equal(calls[3].request.peerPublic, peerPublic)
+  assert.equal(calls[3].request.recipientPublicKey, recipientPublicKey)
 })
+
+function sealedDelivery() {
+  return {
+    envelope: {
+      protocol: 'anp-sealed-secret/1',
+      suite: 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1',
+      encappedKey: 'encapped',
+      ciphertext: 'ciphertext',
+    },
+    authorization: {
+      providerInstanceId: 'provider-1',
+      parentLeaseId: 'lease-1',
+      consumer: 'dsh-awiki',
+      capability: 'IDENTITY_ECDH_SEALED',
+      storeId: 'store-1',
+      expiresAt: 2_000_000_000,
+    },
+    aad: 'aad',
+  }
+}
 
 test('External Provider bridge rejects malformed binary arity without calling the signer', async () => {
   let signCalls = 0

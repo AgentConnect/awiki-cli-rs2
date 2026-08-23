@@ -15,6 +15,7 @@ const IDENTITY_PROVIDER_PROTOCOL = 'anp-identity-provider-ts/1'
 const REQUIRED_CAPABILITIES = [
   'IDENTITY_READ',
   'IDENTITY_SIGN',
+  'IDENTITY_ECDH_SEALED',
   'IDENTITY_HTTP_SIGNATURE',
   'IDENTITY_CREATE',
   'IDENTITY_DOCUMENT_UPDATE',
@@ -29,7 +30,7 @@ export function createIdentityProviderDispatch(
   if (REQUIRED_CAPABILITIES.some(capability => !capabilities.has(capability))) throw incompatible()
   for (const method of [
     'info', 'recover', 'list', 'publicIdentity', 'hostStatus', 'create', 'delete', 'recoverIdentity',
-    'sign', 'signOriginProof', 'prepareHttpSignature',
+    'sign', 'signOriginProof', 'prepareHttpSignature', 'ecdhSealed',
     'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
     'beginDeviceEnrollment', 'beginRequestSigningEnrollment', 'resumeEnrollment',
   ] as const) {
@@ -74,6 +75,16 @@ export function createIdentityProviderDispatch(
             reference(payload.identity),
             object(payload.request) as never,
           ))
+        case 'ecdhSealed': {
+          const [peerPublic, recipientPublicKey] = pairBuffers(request.buffers)
+          return success(await provider.ecdhSealed({
+            identity: reference(payload.identity),
+            kid: requiredString(payload.kid),
+            peerPublic,
+            recipientPublicKey,
+            requestId: requiredString(payload.requestId),
+          }))
+        }
         case 'prepareHttpSignature': {
           const hasBody = payload.hasBody === true
           const body = hasBody ? singleBuffer(request.buffers) : undefined
@@ -174,6 +185,17 @@ export function createIdentityProviderDispatch(
             payload.sessionId,
           ).signDeviceAssertion(singleBuffer(request.buffers))
           return success(null, [Buffer.from(signature)])
+        }
+        case 'enrollmentEcdhSealed': {
+          const [peerPublic, recipientPublicKey] = pairBuffers(request.buffers)
+          return success(await enrollmentSession(
+            enrollmentSessions,
+            payload.sessionId,
+          ).deriveDeviceSharedSecretSealed({
+            peerPublic,
+            recipientPublicKey,
+            requestId: requiredString(payload.requestId),
+          }))
         }
         case 'enrollmentActivate': {
           const sessionId = requiredString(payload.sessionId)
@@ -288,6 +310,15 @@ function singleBuffer(buffers: readonly Buffer[]): Buffer {
   const buffer = buffers[0]
   if (buffer === undefined) throw new TypeError('identity provider binary payload is invalid')
   return buffer
+}
+
+function pairBuffers(buffers: readonly Buffer[]): readonly [Buffer, Buffer] {
+  exactBuffers(buffers, 2)
+  const [first, second] = buffers
+  if (first === undefined || second === undefined) {
+    throw new TypeError('identity provider binary payload is invalid')
+  }
+  return [first, second]
 }
 
 function errorCode(error: unknown): string {
