@@ -295,8 +295,155 @@ pub struct NativeImCoreNodeClient {
     inner: Arc<ClientInner>,
 }
 
+/// Opaque, single-use external HTTP authentication attempt.
+#[napi(js_name = "NativeExternalHttpAuthAttempt")]
+pub struct NativeExternalHttpAuthAttempt {
+    inner: Arc<ClientInner>,
+    attempt: tokio::sync::Mutex<Option<im_core::ExternalHttpAuthAttempt>>,
+    target_url: String,
+    method: String,
+    header_patch: Vec<(String, String)>,
+    retry_count: u32,
+}
+
+impl NativeExternalHttpAuthAttempt {
+    fn new(inner: Arc<ClientInner>, attempt: im_core::ExternalHttpAuthAttempt) -> Self {
+        let target_url = attempt.target_url().to_owned();
+        let method = attempt.method().to_owned();
+        let header_patch = attempt
+            .header_patch()
+            .iter()
+            .map(|header| (header.name().to_owned(), header.value().to_owned()))
+            .collect();
+        let retry_count = u32::from(attempt.retry_count());
+        Self {
+            inner,
+            attempt: tokio::sync::Mutex::new(Some(attempt)),
+            target_url,
+            method,
+            header_patch,
+            retry_count,
+        }
+    }
+
+    async fn handle_response_inner(
+        &self,
+        input: NodeExternalHttpResponse,
+    ) -> SafeResult<Option<Self>> {
+        let attempt = self.attempt.lock().await.take().ok_or_else(|| {
+            SafeError::new(
+                "external_http_attempt_consumed",
+                "The external HTTP authentication attempt was already completed.",
+                false,
+            )
+        })?;
+        let response = crate::dto::external_http_response(input)?;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let decision = self
+            .inner
+            .wait_im(
+                client
+                    .external_http_auth()
+                    .handle_response_async(attempt, response),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        match decision {
+            im_core::ExternalHttpAuthDecision::Complete => Ok(None),
+            im_core::ExternalHttpAuthDecision::Retry(attempt) => {
+                Ok(Some(Self::new(self.inner.clone(), attempt)))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for NativeExternalHttpAuthAttempt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeExternalHttpAuthAttempt")
+            .field("target_url", &"<redacted-url>")
+            .field("method", &self.method)
+            .field(
+                "header_names",
+                &self
+                    .header_patch
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .field("retry_count", &self.retry_count)
+            .finish()
+    }
+}
+
+#[napi]
+impl NativeExternalHttpAuthAttempt {
+    #[napi(catch_unwind)]
+    pub fn get_target_url(&self) -> String {
+        self.target_url.clone()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_method(&self) -> String {
+        self.method.clone()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_header_patch(&self) -> Vec<NodeExternalHttpHeader> {
+        self.header_patch
+            .iter()
+            .map(|(name, value)| NodeExternalHttpHeader {
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_retry_count(&self) -> u32 {
+        self.retry_count
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn handle_response(
+        &self,
+        input: NodeExternalHttpResponse,
+    ) -> napi::Result<Option<NativeExternalHttpAuthAttempt>> {
+        napi_result(self.handle_response_inner(input).await)
+    }
+}
+
 #[napi]
 impl NativeImCoreNodeClient {
+    #[napi(catch_unwind)]
+    pub async fn prepare_external_http_request(
+        &self,
+        input: NodeExternalHttpRequest,
+    ) -> napi::Result<NativeExternalHttpAuthAttempt> {
+        napi_result(self.prepare_external_http_request_inner(input).await)
+    }
+
+    async fn prepare_external_http_request_inner(
+        &self,
+        input: NodeExternalHttpRequest,
+    ) -> SafeResult<NativeExternalHttpAuthAttempt> {
+        let request = crate::dto::external_http_request(input)?;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let attempt = self
+            .inner
+            .wait_im(
+                client.external_http_auth().prepare_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(NativeExternalHttpAuthAttempt::new(
+            self.inner.clone(),
+            attempt,
+        ))
+    }
+
     #[napi(catch_unwind)]
     pub async fn get_default_identity(&self) -> napi::Result<Option<NodeIdentity>> {
         napi_result(self.get_default_identity_inner().await)
@@ -1842,6 +1989,11 @@ fn core_open_options(
             options
                 .multi_device_handle_recovery_enabled
                 .unwrap_or(false),
+        )
+        .with_external_http_allow_insecure_loopback_for_testing(
+            options
+                .external_http_allow_insecure_loopback_for_testing
+                .unwrap_or(false),
         );
     let core_options = match &options.multi_device_audience {
         Some(audience) => core_options.with_multi_device_audience(audience.clone()),
@@ -2286,6 +2438,7 @@ mod tests {
             sync_timeout_ms: Some(100),
             multi_device_handle_recovery_enabled: None,
             multi_device_audience: None,
+            external_http_allow_insecure_loopback_for_testing: None,
         }
     }
 
@@ -2312,6 +2465,37 @@ mod tests {
             "client_closed"
         );
         open(options(directory.path()), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_http_auth_requires_identity_and_enforces_body_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
+
+        let error = client
+            .prepare_external_http_request_inner(NodeExternalHttpRequest {
+                url: "https://api.example.test/orders".to_owned(),
+                method: "POST".to_owned(),
+                headers: vec![NodeExternalHttpHeader {
+                    name: "content-type".to_owned(),
+                    value: "application/json".to_owned(),
+                }],
+                body: Some(Vec::new().into()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "identity_required");
+
+        let error = client
+            .prepare_external_http_request_inner(NodeExternalHttpRequest {
+                url: "https://api.example.test/orders".to_owned(),
+                method: "POST".to_owned(),
+                headers: Vec::new(),
+                body: Some(vec![0; im_core::EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES + 1].into()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_input");
     }
 
     #[tokio::test]

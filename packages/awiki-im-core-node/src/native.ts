@@ -3,6 +3,9 @@ import type {
   CreateGroupInput,
   DisplayProfileBatchInput,
   DownloadAttachmentInput,
+  ExternalHttpHeader,
+  ExternalHttpRequest,
+  ExternalHttpResponse,
   GroupInput,
   GroupMemberPage,
   GroupMembersInput,
@@ -80,7 +83,21 @@ export interface NativeRealtimeSession {
   stop(): Promise<void>
 }
 
+export interface NativeExternalHttpAuthAttempt {
+  getTargetUrl(): string
+  getMethod(): string
+  getHeaderPatch(): ExternalHttpHeader[]
+  getRetryCount(): number
+  handleResponse(response: ExternalHttpResponse): Promise<NativeExternalHttpAuthAttempt | null>
+}
+
 export interface NativeImCoreNodeClient {
+  prepareExternalHttpRequest(
+    input: Omit<ExternalHttpRequest, 'headers' | 'body'> & {
+      readonly headers: ExternalHttpHeader[]
+      readonly body?: Buffer
+    },
+  ): Promise<NativeExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>

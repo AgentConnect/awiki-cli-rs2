@@ -13,12 +13,44 @@ export interface ImCoreNodeOpenOptions {
   readonly operationTimeoutMs?: number
   /** Timeout for bounded synchronization before list reads. */
   readonly syncTimeoutMs?: number
+  /** Test-only exception for loopback HTTP external-auth targets. */
+  readonly externalHttpAllowInsecureLoopbackForTesting?: boolean
   /** Enables Core-owned durable phone recovery for an existing Handle. */
   readonly multiDeviceHandleRecoveryEnabled?: boolean
   /** Exact User Service audience required when Handle recovery is enabled. */
   readonly multiDeviceAudience?: string
   /** Trusted Host-only ANP Identity Provider lease used by DSH External mode. */
   readonly identityProvider?: ImCoreIdentityProvider
+}
+
+/** One exact HTTP field. Authentication field values are sensitive. */
+export interface ExternalHttpHeader {
+  readonly name: string
+  readonly value: string
+}
+
+/** Exact request bytes authenticated by Rust and sent by a trusted host. */
+export interface ExternalHttpRequest {
+  readonly url: string
+  readonly method: string
+  readonly headers: readonly ExternalHttpHeader[]
+  /** `undefined` means no body; an empty Uint8Array is an explicit empty body. */
+  readonly body?: Uint8Array
+}
+
+/** Response metadata observed without transferring or consuming its body. */
+export interface ExternalHttpResponse {
+  readonly statusCode: number
+  readonly headers: readonly ExternalHttpHeader[]
+}
+
+/** Opaque, single-use external HTTP authentication attempt. */
+export interface ExternalHttpAuthAttempt {
+  readonly targetUrl: string
+  readonly method: string
+  readonly headerPatch: readonly ExternalHttpHeader[]
+  readonly retryCount: number
+  handleResponse(response: ExternalHttpResponse): Promise<ExternalHttpAuthAttempt | null>
 }
 
 export interface ImCoreIdentityReference {
@@ -794,6 +826,7 @@ export class ImCoreNodeError extends Error {
 
 /** Environment-scoped Promise API backed by one Rust ImCore/ImClient pair. */
 export interface ImCoreNodeClient {
+  prepareExternalHttpRequest(input: ExternalHttpRequest): Promise<ExternalHttpAuthAttempt>
   getDefaultIdentity(): Promise<NodeIdentity | null>
   requestRegistrationOtp(input: RegistrationInput): Promise<OtpChallenge>
   completeRegistration(input: RegistrationWithOtp): Promise<NodeIdentity>

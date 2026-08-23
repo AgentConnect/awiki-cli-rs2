@@ -10,7 +10,7 @@ mod mail_tests;
 mod registration_tests;
 mod state;
 
-pub use client::{NativeImCoreNodeClient, NativeRealtimeSession};
+pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient, NativeRealtimeSession};
 pub use dto::*;
 pub use external_identity::{NodeIdentityProviderCall, NodeIdentityProviderReply};
 
