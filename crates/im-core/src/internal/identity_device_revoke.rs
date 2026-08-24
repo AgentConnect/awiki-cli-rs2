@@ -37,16 +37,20 @@ pub(crate) async fn revoke(
     identity: crate::identity::IdentitySelector,
     target_device_id: crate::ids::ProtocolDeviceId,
 ) -> crate::ImResult<crate::identity::DeviceRevokeResult> {
-    // Serialize same-process management mutations so two callers cannot
-    // replace the deterministic exact-retry record with different intents.
-    let _guard = core.inner().device_revoke_lock.lock().await;
-    // Require the authenticated Vault exact-retry boundary before identity or
-    // network access. Public rollout and user-presence gates run even earlier.
-    let store = PendingDeviceRevokeStore::from_core(core).map_err(rejected_before_commit)?;
+    // Loading an async client also recovers pending revocations under the
+    // device-revoke lock. Finish that recovery before serializing this new
+    // mutation, otherwise this path tries to acquire the same Tokio mutex
+    // recursively and waits forever.
     let (client, authorizing_device_id, authorizing_signing_key_id) =
         crate::internal::identity_device_join::ready_admin_context_async(core, &identity, None)
             .await
             .map_err(rejected_before_commit)?;
+    // Serialize same-process management mutations so two callers cannot
+    // replace the deterministic exact-retry record with different intents.
+    let _guard = core.inner().device_revoke_lock.lock().await;
+    // Require the authenticated Vault exact-retry boundary before this new
+    // mutation performs its Registry, document, or revoke network access.
+    let store = PendingDeviceRevokeStore::from_core(core).map_err(rejected_before_commit)?;
     let now = OffsetDateTime::now_utc();
     let mut remote =
         DeviceRevokeHttpAdapter::new(crate::internal::transport::CoreHttpTransport::new(&client));
