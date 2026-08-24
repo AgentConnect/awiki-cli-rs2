@@ -1133,7 +1133,7 @@ async fn external_provider_completes_admin_join_signing_and_document_change() {
         json!({
             "changes": [{
                 "change": "remove_device",
-                "device_id": started.join_request.device_id,
+                "deviceId": started.join_request.device_id,
             }],
         }),
     )

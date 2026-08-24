@@ -591,7 +591,7 @@ async fn prepare_initial_intent(
             serde_json::json!({
                 "changes": [{
                     "change": "remove_device",
-                    "device_id": target_device_id,
+                    "deviceId": target_device_id,
                 }],
             }),
         )

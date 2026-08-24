@@ -1449,14 +1449,14 @@ pub(crate) async fn prepare_admin_approval_async(
             "changes": [{
                 "change": "add_device",
                 "device": {
-                    "device_id": snapshot.join_request.device_id,
-                    "signing_key": {
+                    "deviceId": snapshot.join_request.device_id,
+                    "signingKey": {
                         "kid": signing_key_id,
-                        "public_key_multibase": signing_public_key,
+                        "publicKeyMultibase": signing_public_key,
                     },
-                    "agreement_key": {
+                    "agreementKey": {
                         "kid": agreement_key_id,
-                        "public_key_multibase": agreement_public_key,
+                        "publicKeyMultibase": agreement_public_key,
                     },
                     "profiles": DEVICE_JOIN_VNEXT_PROFILES,
                 },
