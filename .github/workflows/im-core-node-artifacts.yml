@@ -448,12 +448,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p 'require("./packages/awiki-im-core-node/package.json").version')"
-          npm publish "channel/awiki-im-core-node-darwin-arm64-${version}.tgz" --access public
-          npm publish "channel/awiki-im-core-node-darwin-x64-${version}.tgz" --access public
-          npm publish "channel/awiki-im-core-node-linux-arm64-gnu-${version}.tgz" --access public
-          npm publish "channel/awiki-im-core-node-linux-x64-gnu-${version}.tgz" --access public
-          npm publish "channel/awiki-im-core-node-win32-x64-msvc-${version}.tgz" --access public
-          npm publish "channel/awiki-im-core-node-${version}.tgz" --access public
+          npm publish "./channel/awiki-im-core-node-darwin-arm64-${version}.tgz" --access public
+          npm publish "./channel/awiki-im-core-node-darwin-x64-${version}.tgz" --access public
+          npm publish "./channel/awiki-im-core-node-linux-arm64-gnu-${version}.tgz" --access public
+          npm publish "./channel/awiki-im-core-node-linux-x64-gnu-${version}.tgz" --access public
+          npm publish "./channel/awiki-im-core-node-win32-x64-msvc-${version}.tgz" --access public
+          npm publish "./channel/awiki-im-core-node-${version}.tgz" --access public
 
       - name: Verify all published versions
         shell: bash
