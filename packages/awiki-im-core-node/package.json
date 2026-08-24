@@ -1,0 +1,47 @@
+{
+  "name": "@awiki/im-core-node",
+  "version": "0.1.8",
+  "description": "Promise-based Node.js facade for the Awiki Rust IM SDK",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE",
+    "COMMERCIAL-LICENSING.md",
+    "NOTICE.md",
+    "SOURCE.md",
+    "checksums.json",
+    "provenance.json",
+    "sbom.cdx.json"
+  ],
+  "scripts": {
+    "build": "node scripts/build-native.mjs && tsc -p tsconfig.json",
+    "build:typescript": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "optionalDependencies": {
+    "@awiki/im-core-node-darwin-arm64": "workspace:0.1.8",
+    "@awiki/im-core-node-darwin-x64": "workspace:0.1.8",
+    "@awiki/im-core-node-linux-arm64-gnu": "workspace:0.1.8",
+    "@awiki/im-core-node-linux-x64-gnu": "workspace:0.1.8",
+    "@awiki/im-core-node-win32-x64-msvc": "workspace:0.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -72,6 +72,7 @@ pub struct ImCoreOpenOptions {
     pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
     pub multi_device_handle_recovery_enabled: bool, // default false
+    pub external_http_allow_insecure_loopback_for_testing: bool, // default false
 }
 
 pub enum IdentitySecretStoragePolicy {
@@ -477,11 +478,20 @@ impl IdentityRegistry<'_> {
         &self,
         request: RegisterHandleRequest,
     ) -> ImResult<IdentityRegistration>;
+    pub async fn request_registration_otp_async(
+        &self,
+        request: RegisterHandleRequest,
+    ) -> ImResult<RegistrationOtpChallenge>;
 
     pub fn plan_default_identity_change(
         &self,
         selector: IdentitySelector,
     ) -> ImResult<DefaultIdentityChange>;
+}
+
+pub struct RegistrationOtpChallenge {
+    pub retry_after_seconds: u32,
+    pub retry_at: String, // RFC 3339 UTC
 }
 
 pub struct DeleteLocalIdentityResult {
@@ -610,7 +620,12 @@ pending 记录固定保存同一组 device ID/keys 和目标文档；重试时�
 若明确仍是 Legacy 才允许保留原 device keys 刷新 root proof，任何其他 Manifest 或无法确认的远端
 状态都失败关闭。
 
-`register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
+`request_registration_otp_async` 是 phone 注册的第一阶段，只接受 OTP 为空的
+`VerificationInput::Phone`，并返回 User Service 给出的正数重试秒数和 RFC 3339 UTC
+`retry_at`。它不把 token、pending checkpoint 或原始 service response 暴露给 host；第二阶段
+仍用同一 `RegisterHandleRequest` 填入 OTP 调用 `register_handle_async`。
+
+`register_handle` 是唯一完成注册的入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
 Core 将账号验证 token 和可选 Recovery transition 保存在短生命周期、进程内的 opaque
@@ -803,11 +818,18 @@ Manifest Handle Recovery V4.0 是 host-neutral、默认关闭的 Core 能力。H
 `ImCoreOpenOptions.multi_device_handle_recovery_enabled` 显式开启后，使用
 `ImCore::handle_recovery()` 的 typed 操作：`request_handle_recovery_otp`、
 `prepare_handle_recovery`、`activate_handle_recovery`、`resume_handle_recovery`、
-`handle_recovery_status`、`list_handle_recovery_operations`、
+`issue_handle_recovery_attestation`、`handle_recovery_status`、`list_handle_recovery_operations`、
 `discard_handle_recovery_pre_attempt`、`quarantine_handle_recovery_key_unavailable`、
 `authorized_handle_recovery_receipt`、`activate_authorized_join` 和
 `resume_authorized_join_activation`；metrics 另有只读快照。`status` 和 list 只读；
 activate/resume 才能推进持久化状态机。
+`issue_handle_recovery_attestation` 是 DSH Host-only 的短时对账边界：只有本机 operation 已为
+`applied`、reset reference 来自同一 initiator operation，且 account、稳定 owner、完整 Handle、
+previous/current DID、binding generation 与当前已安装 client 全部精确一致时，Core 才用 current
+DID 的 authenticated RPC 获取不透明 token 与过期时间。token 由 zeroizing memory 承载，Debug
+始终 redacted；Host 只可立即转交固定受众的 Model Proxy，不得持久化、记录日志、进入 Browser/
+Agent schema 或模型上下文。joined-device reset、待续跑 operation、旧 client 与任何 epoch mismatch
+全部 fail closed。
 OTP、Recovery Grant、proof、私钥与 JWT 不进入公开进度 DTO 或 SQLite transition marker。
 OTP request 接受规范化 full Handle、phone 与 optional identity：提供 selector 时必须与 Handle
 精确闭合；省略时 Core 只按 Handle 查找本地身份，本机不存在则创建新的本地 owner，绝不回退到
@@ -895,6 +917,109 @@ flows, so callers must treat those values as sensitive and avoid logging or
 persisting them. CLI/App 不应该直接从本地文件 / private state 读取 bearer
 token，也不应该把返回的 token 再保存到外部 credential/session store，除非
 Phase 7 明确引入该边界。
+
+### 7.1 Host-owned external HTTP transport authentication
+
+`external_http_auth()` allows a trusted host to authenticate one exact HTTP
+request while retaining ownership of the network transport. Core chooses an
+origin-scoped in-memory Bearer token when available; otherwise it signs the
+method, target URI, authority and optional body digest with the current device
+request-signing key. The host cannot choose the key, nonce, algorithm or auth
+mode.
+
+```rust
+pub const EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+impl ImClient {
+    pub fn external_http_auth(&self) -> ExternalHttpAuthService<'_>;
+}
+
+impl ExternalHttpHeader {
+    pub fn new(name: impl Into<String>, value: impl Into<String>)
+        -> ImResult<Self>;
+    pub fn name(&self) -> &str;
+    pub fn value(&self) -> &str;
+}
+
+impl ExternalHttpRequest {
+    pub fn new(
+        url: impl Into<String>,
+        method: impl Into<String>,
+        headers: Vec<ExternalHttpHeader>,
+        body: Option<Vec<u8>>,
+    ) -> ImResult<Self>;
+}
+
+impl ExternalHttpResponse {
+    pub fn new(status_code: u16, headers: Vec<ExternalHttpHeader>)
+        -> ImResult<Self>;
+}
+
+impl ExternalHttpAuthService<'_> {
+    pub fn prepare(&self, request: ExternalHttpRequest)
+        -> ImResult<ExternalHttpAuthAttempt>;
+    pub async fn prepare_async(&self, request: ExternalHttpRequest)
+        -> ImResult<ExternalHttpAuthAttempt>;
+    pub fn handle_response(
+        &self,
+        attempt: ExternalHttpAuthAttempt,
+        response: ExternalHttpResponse,
+    ) -> ImResult<ExternalHttpAuthDecision>;
+    pub async fn handle_response_async(
+        &self,
+        attempt: ExternalHttpAuthAttempt,
+        response: ExternalHttpResponse,
+    ) -> ImResult<ExternalHttpAuthDecision>;
+    pub fn clear_cached_tokens(&self) -> ImResult<()>;
+}
+
+impl ExternalHttpAuthAttempt {
+    pub fn header_patch(&self) -> &[ExternalHttpHeader];
+    pub fn target_url(&self) -> &str;
+    pub fn method(&self) -> &str;
+    pub fn retry_count(&self) -> u8;
+}
+
+pub enum ExternalHttpAuthDecision {
+    Complete,
+    Retry(ExternalHttpAuthAttempt),
+}
+```
+
+The request must be an absolute HTTPS URL without credentials or a fragment.
+Literal loopback HTTP is accepted only when the host explicitly enables
+`external_http_allow_insecure_loopback_for_testing`. Request methods are
+canonical uppercase tokens. Duplicate header names and caller-supplied
+`Authorization`, `Signature-Input`, `Signature` or `Content-Digest` fail before
+network I/O. `body: Some(Vec::new())` means an explicitly empty body and is
+still digest-bound; `None` means no body. Bodies above 4 MiB are rejected.
+
+`ExternalHttpAuthAttempt` is opaque, single-use and not cloneable. Its header
+patch is sensitive because it contains either an HTTP signature or Bearer
+token. A `401` can return only one retry attempt; a response for that retry can
+never request a third transport call. Only a `2xx` response
+`Authentication-Info` field can update the process-local token cache. Response
+`Authorization` is ignored. Cache keys bind the current owner identity, DID,
+request-signing key and normalized origin; a stale Bearer `401` uses
+fingerprint compare-and-clear so it cannot delete a concurrently replaced
+token. The cache is not persisted and disappears when the client lifecycle is
+released or explicitly cleared.
+
+The fixed verifier `Accept-Signature` may advertise `content-digest` for every
+challenge. Core treats that component as compatible even when the original
+request has no body, while the actual GET/HEAD/no-body retry signature still
+omits `Content-Digest`. A combined `WWW-Authenticate` value may contain other
+schemes before or after DID-WBA; Core selects exactly one well-formed DID-WBA
+challenge and ignores unrelated schemes. A recognized non-terminal Bearer
+challenge compare-and-clears the matching stale token before a later
+`Accept-Signature` incompatibility can decline the retry.
+
+Core does not send the request or read its response body. The language/host
+facade must send the canonical `attempt.target_url()` and `attempt.method()`,
+apply the returned patch to the exact original headers and body bytes, keep
+redirects manual, submit only response status and headers, and avoid logging
+the patch. Production hosts must not expose this service through browser RPC,
+model tools or an untrusted signing endpoint.
 
 ## 8. messages
 
@@ -991,6 +1116,16 @@ impl MessageService<'_> {
         limit: PageLimit,
     ) -> ImResult<Vec<String>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
+    pub fn conversation_history(
+        &self,
+        conversation: ConversationReadRef,
+        query: HistoryQuery,
+    ) -> ImResult<Page<Message>>;
+    pub async fn conversation_history_async(
+        &self,
+        conversation: ConversationReadRef,
+        query: HistoryQuery,
+    ) -> ImResult<Page<Message>>;
     pub fn local_history(
         &self,
         thread: ThreadRef,
@@ -1005,6 +1140,11 @@ impl MessageService<'_> {
     ) -> ImResult<SyncThreadAfterResult>;
 }
 ```
+
+`conversation_history(_async)` 只接受 directory、conversation list 或
+`ensure_conversation` 已确认的 canonical `conversation_id`。Direct peer-scope ID 由 Core
+解析到当前 DID/Handle route，Group ID 解析到 group route；host 不得用展示字段重建
+`ThreadRef`。该约束与 `send_conversation_*`、`mark_conversation_read` 相同。
 
 P3+ API：
 
@@ -1515,7 +1655,7 @@ version/cursor 的首尾空白不会被规范化接受。stale 最多重启三�
 `group.local_cursor_invalid`、`group.local_cursor_stale`、
 `group.local_inventory_incomplete`、`group.local_inventory_too_large`。
 
-Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
+Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。Node facade 的 `createGroup()` 与 `joinGroup()` 不接受调用方传入成员 Handle；它们从当前 identity-bound `ImClient` 读取完整 Handle 并分别写入 `creator_handle` / `member_handle`。无 Handle 的明确 DID-only identity 仍保持字段缺失，最终 Group Host 对存在的 Handle 执行 fresh resolve 与 DID 精确匹配。
 
 Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string，旧成员 DID 来自当前 owner 的 previous DID history，或来自同一 state root 下已完成且 Handle/current DID/generation 精确一致的 Recovery receipt。fresh owner 没有旧 roster 时，只接受 reliable sync 写入、subject 为当前 DID 的 active Group projection 作为候选；最终仍由 Group Host 对旧 Handle/DID/generation 和 transport-only policy 做权威校验。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
 
@@ -1523,7 +1663,7 @@ Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async
 `handle` / `did` / `status` / `binding_generation`；公共响应中的域内 `user_id` /
 `subject_id` 不参与群成员换绑、Persona 或 scope 判断。
 
-补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。Manifest Handle Recovery V4.0 只为权威策略明确为 `transport-protected`、且权威完整 roster 精确显示旧 DID/旧 generation 的 Handle-backed member 创建修复任务；发送 P4 前必须重新读取 `group.get + group.get_info` 与版本一致的分页 roster。DID-only、Group E2EE、缺失、畸形或冲突状态一律 fail closed，并计入不支持影响项；Recovery operation ID 即使遇到缓存漂移也绝不进入 P6。身份 Recovery 在 receipt 落盘后即为 `applied`，Group 修复的 pending/blocked 只属于 Group journal，不得把 Recovery 改回 blocked。App 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL；CLI/Daemon 的 Recovery 产品入口留待后续版本。
+补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。Manifest Handle Recovery V4.0 只为权威策略明确为 `transport-protected`、且权威完整 roster 精确显示旧 DID/旧 generation 的 Handle-backed member 创建修复任务；发送 P4 前必须重新读取 `group.get + group.get_info` 与版本一致的分页 roster。DID-only、Group E2EE、缺失、畸形或冲突状态一律 fail closed，并计入不支持影响项；Recovery operation ID 即使遇到缓存漂移也绝不进入 P6。身份 Recovery 在 receipt 落盘后即为 `applied`，Group 修复的 pending/blocked 只属于 Group journal，不得把 Recovery 改回 blocked。App 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL；Node facade 的 summary 保留 `group_did`、`layer`、`phase`、`blocked` 和发送暂停群列表，但不得把 warnings 或底层错误详情转发给 Browser；CLI/Daemon 的 Recovery 产品入口留待后续版本。
 
 P4 被 Group Host 接受后，high-level resume 会先把本地稳定 Handle member 投影原子推进到返回请求对应的 `new_member_did` 与 generation，再把 durable P4 job 标记为 `complete` 或 `awaiting_p6`。若该本地投影未能完成，job 保持重试状态；下一次恢复仍使用相同稳定 `operation_id`。因此连续 Handle recovery 的下一代任务必须以前一代已接受并已投影的 DID 为 `previous_member_did`，不能重新从最早历史 DID 建链。
 
@@ -1585,6 +1725,14 @@ impl AttachmentService<'_> {
     ) -> ImResult<AttachmentSendResult>;
     pub fn download(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
     pub async fn download_async(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
+    pub fn download_conversation(
+        &self,
+        request: DownloadConversationAttachmentRequest,
+    ) -> ImResult<DownloadedAttachment>;
+    pub async fn download_conversation_async(
+        &self,
+        request: DownloadConversationAttachmentRequest,
+    ) -> ImResult<DownloadedAttachment>;
 }
 
 pub fn cancel_download(destination: impl AsRef<Path>) -> bool;
@@ -1637,6 +1785,14 @@ pub enum AttachmentDestination {
     LocalFile(PathBuf),
     Memory,
 }
+
+pub struct DownloadConversationAttachmentRequest {
+    pub conversation: ConversationReadRef,
+    pub message_id: MessageId,
+    pub attachment_id: Option<String>,
+    pub destination: AttachmentDestination,
+    pub overwrite: bool,
+}
 ```
 
 `AttachmentSendRequest.security = DefaultPlain | Plain` 保持 `transport-protected + encryption_info.mode=none`。
@@ -1646,6 +1802,11 @@ pub enum AttachmentDestination {
 SDK resolver 先把 canonical `conversation_id` 映射到 direct / group storage route，再写入
 durable projection 并 emit committed patch。plain/default 附件路径在 projection 失败时返回错误；
 App 不再需要 presentation fallback 来补 conversation list/detail correctness。
+
+`DownloadConversationAttachmentRequest` 对下载应用同一 canonical route 规则，Node/Flutter 等
+已经持有 conversation ID 的 host 不再从 peer DID 或 Group DID 猜测 `ThreadRef`。公开
+`parse_attachment_manifest` 只返回 `AttachmentManifest` 的 redacted descriptor、caption 和
+digest；不会返回 object key、nonce、ticket 或密文运行时状态。
 
 target-first 调用方在首次消息尚未建立 canonical conversation 时，可以使用
 `send_with_client_message_id(_async)` 显式传入逻辑消息 ID，并通过

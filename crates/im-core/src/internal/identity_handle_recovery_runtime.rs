@@ -6,12 +6,13 @@ use serde_json::{json, Value};
 
 use crate::identity::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
-    HandleRecoveryAccountEpochReceipt, HandleRecoveryActivateRequest, HandleRecoveryDiscardRequest,
-    HandleRecoveryErrorCode, HandleRecoveryImpact, HandleRecoveryKeyState,
-    HandleRecoveryOperationLifecycle, HandleRecoveryOperationSummary, HandleRecoveryOtpRequest,
-    HandleRecoveryOtpResult, HandleRecoveryPhase, HandleRecoveryPrepareRequest,
-    HandleRecoveryProgress, HandleRecoveryQuarantineRequest, HandleRecoveryResetReference,
-    HandleRecoveryResumeRequest, HandleRecoveryTransitionSourceKind,
+    HandleRecoveryAccountEpochReceipt, HandleRecoveryActivateRequest, HandleRecoveryAttestation,
+    HandleRecoveryAttestationRequest, HandleRecoveryDiscardRequest, HandleRecoveryErrorCode,
+    HandleRecoveryImpact, HandleRecoveryKeyState, HandleRecoveryOperationLifecycle,
+    HandleRecoveryOperationSummary, HandleRecoveryOtpRequest, HandleRecoveryOtpResult,
+    HandleRecoveryPhase, HandleRecoveryPrepareRequest, HandleRecoveryProgress,
+    HandleRecoveryQuarantineRequest, HandleRecoveryResetReference, HandleRecoveryResumeRequest,
+    HandleRecoveryTransitionSourceKind,
 };
 use crate::internal::identity_handle_recovery_pending::{
     PendingHandleRecoveryStore, PendingHandleRecoveryV4, PendingRecoveryPhaseV4,
@@ -88,9 +89,11 @@ pub(crate) async fn request_otp(
             RecoveryLocalContext {
                 owner_identity_id: entry.unique_id.clone(),
                 local_alias: entry.credential_name.clone(),
-                display_name: (!entry.name.trim().is_empty())
-                    .then(|| entry.name.clone())
-                    .unwrap_or_else(|| canonical.local_part.clone()),
+                display_name: if !entry.name.trim().is_empty() {
+                    entry.name.clone()
+                } else {
+                    canonical.local_part.clone()
+                },
                 make_default: entry.is_default,
                 local_previous_did: entry.did.clone(),
                 fresh_local_state: false,
@@ -1073,6 +1076,64 @@ pub(crate) fn status(
     Err(operation_not_found_error())
 }
 
+pub(crate) async fn issue_attestation(
+    core: &crate::core::ImCore,
+    request: HandleRecoveryAttestationRequest,
+) -> crate::ImResult<HandleRecoveryAttestation> {
+    let progress = status(core, &request.operation_id)?;
+    if progress.phase != HandleRecoveryPhase::Applied {
+        return Err(recovery_error(
+            HandleRecoveryErrorCode::LocalTransitionPending,
+        ));
+    }
+    let account_user_id = progress
+        .account_user_id
+        .as_deref()
+        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::UnknownEpoch))?;
+    let generation = progress
+        .binding_generation
+        .as_deref()
+        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::UnknownEpoch))?;
+    let reset = progress
+        .reset_reference
+        .as_ref()
+        .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::UnknownEpoch))?;
+    if reset.source_kind != HandleRecoveryTransitionSourceKind::Initiator
+        || reset.source_id != request.operation_id
+        || reset.account_user_id != account_user_id
+        || reset.owner_identity_id != progress.owner_identity_id.as_str()
+        || reset.current_did != progress.current_did
+        || Some(&reset.previous_did) != progress.local_previous_did.as_ref()
+        || reset.binding_generation != generation
+        || reset.handle != progress.full_handle
+    {
+        return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
+    }
+    let client = core.client(crate::identity::IdentitySelector::Id(
+        progress.owner_identity_id.clone(),
+    ))?;
+    if client.did() != &progress.current_did
+        || client.handle().map(|handle| handle.as_str()) != Some(progress.full_handle.as_str())
+    {
+        return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
+    }
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+    request_attestation(&mut transport, &request.operation_id).await
+}
+
+async fn request_attestation(
+    transport: &mut impl crate::internal::transport::AsyncAuthenticatedRpcTransport,
+    operation_id: &str,
+) -> crate::ImResult<HandleRecoveryAttestation> {
+    let call = crate::internal::identity_wire::handle_recovery::build_attestation_issue_call_v1(
+        operation_id,
+    )?;
+    let raw = transport
+        .authenticated_rpc(call.endpoint, call.method, call.params)
+        .await?;
+    crate::internal::identity_wire::handle_recovery::parse_attestation_issue_result_v1(raw)
+}
+
 fn require_v4_journal(core: &crate::core::ImCore, operation_id: &str) -> crate::ImResult<()> {
     let store = PendingHandleRecoveryStore::from_core(core)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
@@ -1927,6 +1988,14 @@ async fn apply_local_transition_v4(
     } else if marker.phase
         == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
     {
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .reconcile_recovered_identity_index(
+            &pending.owner_identity_id,
+            &result.account_user_id,
+            &pending.full_handle,
+            &result.current_did,
+            &result.binding_generation,
+        )?;
         validate_switched_identity_v4(core, pending, &result)?;
     }
     let marker =
@@ -2383,12 +2452,20 @@ pub(crate) async fn resume_authorized_join_activation(
     core: &crate::core::ImCore,
     join_session_id: &str,
 ) -> crate::ImResult<AuthorizedJoinActivationProgress> {
-    require_enabled(core)?;
+    let recovery_marker = crate::internal::identity_transition_pending::load_joined_device(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        join_session_id,
+    )?;
+    if recovery_marker.is_some() {
+        require_enabled(core)?;
+    }
     let join = core
         .device_join()
         .poll_new_device_join(join_session_id)
         .await?;
-    advance_joined_rebind(core, join_session_id, &join.session.did).await?;
+    if recovery_marker.is_some() {
+        advance_joined_rebind(core, join_session_id, &join.session.did).await?;
+    }
     let reset_reference = crate::internal::identity_transition_pending::load_joined_device(
         &core.inner().sdk_paths().local_state.sqlite_path,
         join_session_id,
@@ -4132,6 +4209,78 @@ mod tests {
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].operation_id, "recover-v4-list");
         assert_eq!(operations[0].owner_identity_id.as_str(), owner_identity_id);
+    }
+
+    struct AttestationTransport {
+        call: Option<(String, String, serde_json::Value)>,
+        response: serde_json::Value,
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for AttestationTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: serde_json::Value,
+        ) -> crate::ImResult<serde_json::Value> {
+            self.call = Some((endpoint.to_owned(), method.to_owned(), params));
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn attestation_request_uses_authenticated_closed_rpc_and_redacts_token() {
+        let mut transport = AttestationTransport {
+            call: None,
+            response: json!({
+                "attestation": "headerheader.payloadpayload.signaturesignature",
+                "expires_at": "2026-08-22T12:00:00Z",
+            }),
+        };
+        let result = request_attestation(&mut transport, "recover-v4-attestation-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            transport.call,
+            Some((
+                crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT.to_owned(),
+                crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_ATTESTATION_ISSUE_V1_METHOD.to_owned(),
+                json!({"operation_id": "recover-v4-attestation-1"}),
+            ))
+        );
+        assert_eq!(
+            result.expose_attestation(),
+            "headerheader.payloadpayload.signaturesignature"
+        );
+        assert!(!format!("{result:?}").contains("payloadpayload"));
+    }
+
+    #[tokio::test]
+    async fn attestation_is_denied_until_the_local_recovery_is_applied() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(temporary.path(), "https://example.invalid", [72_u8; 32]);
+        create_v4_awaiting_factor_operation(
+            &core,
+            "recover-v4-attestation-pending",
+            "owner-attestation-pending",
+        );
+
+        let error = issue_attestation(
+            &core,
+            HandleRecoveryAttestationRequest {
+                operation_id: "recover-v4-attestation-pending".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == HandleRecoveryErrorCode::LocalTransitionPending.as_str()
+        ));
     }
 
     #[test]

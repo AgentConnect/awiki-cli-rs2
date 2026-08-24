@@ -1090,6 +1090,20 @@ where
         &mut self,
         join_session_id: &str,
     ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary> {
+        let local = self
+            .core
+            .device_join()
+            .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?;
+        match local.phase {
+            crate::identity::DeviceJoinLocalPhase::Cancelled => return Ok(local),
+            crate::identity::DeviceJoinLocalPhase::Expired => {
+                return Err(crate::ImError::SessionExpired)
+            }
+            crate::identity::DeviceJoinLocalPhase::Authorized => {
+                return Err(invalid_remote_state("authorized Join cannot be cancelled"))
+            }
+            _ => {}
+        }
         let token = crate::internal::identity_device_join::open_new_device_remote_session_token(
             self.core,
             join_session_id,

@@ -1503,6 +1503,159 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
         );
     }
 
+    #[tokio::test]
+    async fn canonical_direct_id_survives_list_history_send_and_mark_read_routes() {
+        let fixture = Fixture::new("canonical-direct-full-route");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_route(&conversation_id, &peer_scope, "did:example:bob-current");
+        let conversation =
+            crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap();
+        client
+            .messages()
+            .ensure_conversation(conversation.clone())
+            .unwrap();
+        assert_listed(&client, &conversation_id).await;
+
+        let history = super::resolved_history_from_conversation(
+            super::resolve_service_conversation_thread(&client, &conversation).unwrap(),
+        );
+        assert_eq!(history.peer_scope.as_ref(), Some(&peer_scope));
+        assert_eq!(
+            history.handle_peer.as_ref(),
+            Some(&(
+                "bob.awiki.test".to_owned(),
+                "did:example:bob-current".to_owned()
+            ))
+        );
+        match history.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob-current");
+            }
+            other => panic!("expected direct history route, got {other:?}"),
+        }
+
+        let send = super::conversation_send_request(
+            &client,
+            conversation.clone(),
+            crate::messages::MessageBody::Text {
+                text: "canonical route".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageSecurityMode::DefaultPlain,
+            Some(crate::ids::MessageId::parse("msg-canonical-direct-route").unwrap()),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(send.conversation_id, conversation_id);
+        assert_eq!(send.peer_scope.as_ref(), Some(&peer_scope));
+
+        let marked = super::mark_read_input_for_conversation(
+            &client,
+            crate::messages::MarkConversationReadRequest {
+                conversation,
+                watermark: None,
+                fallback_max_message_ids: Some(25),
+            },
+        )
+        .unwrap();
+        assert_storage_thread(marked, &conversation_id);
+    }
+
+    #[tokio::test]
+    async fn canonical_group_id_survives_list_history_send_and_mark_read_routes() {
+        let fixture = Fixture::new("canonical-group-full-route");
+        let client = fixture.client();
+        let conversation_id = "group:did:example:group".to_owned();
+        let conversation =
+            crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap();
+        fixture.seed_active_group("did:example:group");
+        client
+            .messages()
+            .ensure_conversation(conversation.clone())
+            .unwrap();
+        assert_listed(&client, &conversation_id).await;
+
+        let history = super::resolved_history_from_conversation(
+            super::resolve_service_conversation_thread(&client, &conversation).unwrap(),
+        );
+        assert!(history.peer_scope.is_none());
+        assert!(history.handle_peer.is_none());
+        match history.thread {
+            crate::messages::ThreadRef::Group(group) => {
+                assert_eq!(group.as_str(), "did:example:group");
+            }
+            other => panic!("expected group history route, got {other:?}"),
+        }
+
+        let send = super::conversation_send_request(
+            &client,
+            conversation.clone(),
+            crate::messages::MessageBody::Text {
+                text: "canonical group route".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageSecurityMode::DefaultPlain,
+            Some(crate::ids::MessageId::parse("msg-canonical-group-route").unwrap()),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(send.conversation_id, conversation_id);
+
+        let marked = super::mark_read_input_for_conversation(
+            &client,
+            crate::messages::MarkConversationReadRequest {
+                conversation,
+                watermark: None,
+                fallback_max_message_ids: Some(25),
+            },
+        )
+        .unwrap();
+        assert_storage_thread(marked, &conversation_id);
+    }
+
+    async fn assert_listed(client: &crate::core::ImClient, conversation_id: &str) {
+        let page = client
+            .messages()
+            .conversations_async(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .await
+            .unwrap();
+        assert!(page
+            .items
+            .iter()
+            .any(|item| item.conversation_id == conversation_id));
+    }
+
+    fn assert_storage_thread(
+        marked: crate::internal::message_runtime::mark_read::MarkThreadReadInput,
+        conversation_id: &str,
+    ) {
+        match marked.request.thread {
+            crate::messages::ThreadRef::Thread(thread) => {
+                assert_eq!(thread.as_str(), conversation_id);
+            }
+            other => panic!("expected canonical storage route, got {other:?}"),
+        }
+    }
+
     struct Fixture {
         root: PathBuf,
     }
@@ -1644,6 +1797,21 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
             )
             .unwrap();
             crate::internal::local_state::direct_peer_routes::upsert(&connection, &record).unwrap();
+        }
+
+        fn seed_active_group(&self, group_did: &str) {
+            let connection =
+                crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+            connection
+                .execute(
+                    r#"
+INSERT INTO groups
+    (owner_identity_id, owner_did, group_id, group_did, membership_status, stored_at, metadata)
+VALUES ('alice-id', 'did:example:alice', ?1, ?1, 'active', '2026-07-14T00:00:00Z', '{}')
+"#,
+                    [group_did],
+                )
+                .unwrap();
         }
 
         fn message_record_defaults() -> crate::internal::local_state::messages::MessageRecord {
@@ -3372,6 +3540,14 @@ impl<'a> MessageService<'a> {
         query: super::HistoryQuery,
     ) -> crate::ImResult<super::MessagePage> {
         let resolved = resolve_history_thread(self.client, thread)?;
+        self.history_with_resolved_metadata(resolved, query)
+    }
+
+    fn history_with_resolved_metadata(
+        &self,
+        resolved: ResolvedHistoryThread,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3418,6 +3594,15 @@ impl<'a> MessageService<'a> {
         query: super::HistoryQuery,
     ) -> crate::ImResult<super::MessagePage> {
         let resolved = resolve_history_thread_async(self.client, thread).await?;
+        self.history_with_resolved_metadata_async(resolved, query)
+            .await
+    }
+
+    async fn history_with_resolved_metadata_async(
+        &self,
+        resolved: ResolvedHistoryThread,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
         let mut page = crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3456,6 +3641,56 @@ impl<'a> MessageService<'a> {
             }
         }
         Ok(page)
+    }
+
+    /// Reads remote history through a canonical conversation route.
+    ///
+    /// Unlike [`Self::history`], this entrypoint never accepts a DID, Handle or
+    /// Group DID as a substitute for the canonical conversation ID returned by
+    /// directory and conversation-list APIs.
+    pub fn conversation_history(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.conversation_history_with_metadata(conversation, query)
+            .map(super::MessagePage::into_page)
+    }
+
+    /// Async variant of [`Self::conversation_history`].
+    pub async fn conversation_history_async(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.conversation_history_with_metadata_async(conversation, query)
+            .await
+            .map(super::MessagePage::into_page)
+    }
+
+    pub fn conversation_history_with_metadata(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        ensure_conversation_registry(self.client, &conversation)?;
+        let resolved = resolve_service_conversation_thread(self.client, &conversation)?;
+        self.history_with_resolved_metadata(resolved_history_from_conversation(resolved), query)
+    }
+
+    pub async fn conversation_history_with_metadata_async(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        self.ensure_conversation_async(conversation.clone()).await?;
+        let resolved =
+            resolve_service_conversation_thread_async(self.client, &conversation).await?;
+        self.history_with_resolved_metadata_async(
+            resolved_history_from_conversation(resolved),
+            query,
+        )
+        .await
     }
 
     pub fn local_history(
@@ -5142,6 +5377,22 @@ struct ResolvedHistoryThread {
     resolved_did: Option<String>,
     handle_peer: Option<(String, String)>,
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
+fn resolved_history_from_conversation(
+    resolved: ResolvedConversationServiceThread,
+) -> ResolvedHistoryThread {
+    let handle_peer = resolved
+        .peer_scope
+        .as_ref()
+        .zip(resolved.resolved_did.as_ref())
+        .map(|(scope, did)| (scope.full_handle.clone(), did.clone()));
+    ResolvedHistoryThread {
+        thread: resolved.thread,
+        resolved_did: resolved.resolved_did,
+        handle_peer,
+        peer_scope: resolved.peer_scope,
+    }
 }
 
 #[derive(Debug)]

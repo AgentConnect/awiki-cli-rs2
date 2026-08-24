@@ -1307,6 +1307,43 @@ impl<'a> IdentityRegistry<'a> {
         .map(|result| result.sdk_result)
     }
 
+    /// Requests the phone OTP for a Handle registration and returns the
+    /// service-issued retry boundary.
+    ///
+    /// This is the two-stage registration entrypoint for hosts that must show
+    /// the retry time before calling [`Self::register_handle_async`] with the
+    /// completed OTP. It accepts only a `Phone` verification with no OTP.
+    pub async fn request_registration_otp_async(
+        &self,
+        request: super::RegisterHandleRequest,
+    ) -> crate::ImResult<super::RegistrationOtpChallenge> {
+        match &request.verification {
+            super::VerificationInput::Phone { otp, .. }
+                if otp.as_deref().map(str::trim).unwrap_or_default().is_empty() => {}
+            _ => {
+                return Err(crate::ImError::invalid_input(
+                    Some("verification".to_owned()),
+                    "registration OTP request requires phone verification without an OTP",
+                ));
+            }
+        }
+        let result =
+            crate::internal::identity_registration_runtime::IdentityRegistrationRuntime::new(
+                self.core,
+                crate::internal::transport::CorePlainTransport::new(self.core),
+            )
+            .register_handle_async(request)
+            .await?;
+        if result.sdk_result.state != super::HandleRegistrationState::OtpSent {
+            return Err(crate::ImError::Internal {
+                message: "registration OTP request returned a non-OTP state".to_owned(),
+            });
+        }
+        crate::internal::identity_registration_runtime::registration_otp_challenge(
+            result.raw.as_ref(),
+        )
+    }
+
     #[cfg(feature = "mcp-trusted-registration")]
     pub async fn register_handle_with_service_bearer_async(
         &self,
@@ -3665,6 +3702,7 @@ mod tests {
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
                 multi_device_audience: None,
+                external_http_allow_insecure_loopback_for_testing: false,
             },
         )
         .unwrap();
@@ -4357,6 +4395,7 @@ mod tests {
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
                 multi_device_audience: None,
+                external_http_allow_insecure_loopback_for_testing: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

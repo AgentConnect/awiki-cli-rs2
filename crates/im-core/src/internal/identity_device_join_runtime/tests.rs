@@ -942,3 +942,40 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
     assert_eq!(second_session, first_session);
     assert_eq!(state_after_second, state_after_first);
 }
+
+#[tokio::test]
+async fn cancelled_new_device_runtime_does_not_reopen_deleted_remote_token() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let started = core
+        .device_join()
+        .start(crate::identity::DeviceJoinStartRequest {
+            operation_id: "join-cancel-idempotent".to_owned(),
+            did: crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap(),
+            ttl_seconds: 600,
+        })
+        .unwrap();
+    crate::internal::identity_device_join::cancel_join(
+        &core,
+        &started.session.join_session_id,
+        crate::identity::DeviceJoinSide::NewDevice,
+    )
+    .unwrap();
+
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &core,
+        JoinAccessFailingRemote {
+            status_code: 500,
+            code: "must-not-call-remote",
+        },
+        DeviceJoinDidResolver::new(UnusedResolver),
+    );
+    let cancelled = runtime
+        .cancel(&started.session.join_session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        cancelled.phase,
+        crate::identity::DeviceJoinLocalPhase::Cancelled
+    );
+}

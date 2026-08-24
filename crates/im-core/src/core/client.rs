@@ -13,6 +13,7 @@ pub struct ImClient {
             Arc<crate::internal::runtime_store::system_notification_store::SystemNotificationStore>,
         >,
     >,
+    external_http_auth_state: Arc<crate::external_http_auth::ExternalHttpAuthState>,
 }
 
 impl ImClient {
@@ -28,6 +29,7 @@ impl ImClient {
             conversation_store: Arc::new(OnceLock::new()),
             message_store: Arc::new(OnceLock::new()),
             system_notification_store: Arc::new(OnceLock::new()),
+            external_http_auth_state: Arc::new(Default::default()),
         }
     }
 
@@ -71,6 +73,7 @@ impl ImClient {
                 conversation_store: self.conversation_store.clone(),
                 message_store: self.message_store.clone(),
                 system_notification_store: self.system_notification_store.clone(),
+                external_http_auth_state: self.external_http_auth_state.clone(),
             },
             authorization_context_changed,
         ))
@@ -256,6 +259,12 @@ impl ImClient {
         crate::auth::AuthService::new(self)
     }
 
+    /// Prepares and completes ANP authentication for HTTP requests sent by a
+    /// trusted external transport.
+    pub fn external_http_auth(&self) -> crate::external_http_auth::ExternalHttpAuthService<'_> {
+        crate::external_http_auth::ExternalHttpAuthService::new(self)
+    }
+
     pub fn identity(&self) -> crate::identity::IdentityService<'_> {
         crate::identity::IdentityService::new(self)
     }
@@ -308,6 +317,12 @@ impl ImClient {
 
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
+    }
+
+    pub(crate) fn external_http_auth_state(
+        &self,
+    ) -> &Arc<crate::external_http_auth::ExternalHttpAuthState> {
+        &self.external_http_auth_state
     }
 
     pub(crate) fn core_inner(&self) -> &super::ImCoreInner {

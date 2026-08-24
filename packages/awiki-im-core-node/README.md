@@ -1,0 +1,167 @@
+# @awiki/im-core-node
+
+`@awiki/im-core-node` 是 `awiki-im-core` 的 Node.js Promise facade。包只暴露 AWiki IM
+领域 DTO，不包含 DSH、Cordis、SQLite、redb、ANP wire 或 Rust internal 类型。
+
+```ts
+import { openImCoreNodeClient } from '@awiki/im-core-node'
+
+const client = await openImCoreNodeClient({
+  stateRoot: '/absolute/private/path/awiki/im-core',
+  serviceBaseUrl: 'https://awiki.info',
+  didDomain: 'awiki.info',
+  userServiceEndpoint: 'https://awiki.info',
+  messageServiceEndpoint: 'https://awiki.info',
+  mailServiceEndpoint: 'https://mail.awiki.info', // 可省略并回退到 serviceBaseUrl
+})
+
+try {
+  const identity = await client.getDefaultIdentity()
+  const conversations = identity ? await client.listConversations() : undefined
+  const group = identity ? await client.createGroup({ name: 'Release Crew' }) : undefined
+  if (group) await client.addGroupMember({ groupDid: group.did, member: 'alice.awiki.info' })
+  const profiles = identity
+    ? await client.hydrateDisplayProfiles({ peers: ['alice.awiki.info'] })
+    : []
+  const localTimeline = group
+    ? await client.getLocalConversationTimeline({ conversationId: group.conversationId, limit: 50 })
+    : conversations?.items[0]
+      ? await client.getLocalConversationTimeline({
+          conversationId: conversations.items[0].id,
+          limit: 50,
+        })
+      : undefined
+  if (identity) {
+    let realtime = await client.startRealtime()
+    try {
+      for (;;) {
+        const event = await realtime.nextEvent()
+        if (event === null) {
+          await realtime.stop()
+          await client.syncNow({ reason: 'websocket_reconnect' })
+          realtime = await client.startRealtime()
+          continue
+        }
+        if (event.kind === 'sync_required') {
+          await client.syncNow({
+            reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',
+          })
+        }
+      }
+    }
+    finally {
+      await realtime.stop()
+    }
+  }
+  // 经产品层显式二次确认后，可调用 await client.clearLocalData()
+}
+finally {
+  await client.close()
+}
+```
+
+`getLocalConversationTimeline` 只读取 Core 已提交的本地 conversation projection，不发起
+同步、远端 history 或 Directory RPC。它适合首屏显示；远端刷新应在后台进行，并在 Core
+提交后重新读取该 local timeline。它返回的 local cursor 不得传给 `getHistory`。
+
+## 外部 HTTP ANP 认证
+
+可信 Node Host 可以让 Rust 为外部 transport 的请求准备 ANP 认证头。SDK 不发送请求：
+
+```ts
+const attempt = await client.prepareExternalHttpRequest({
+  url: 'https://api.example.com/orders',
+  method: 'POST',
+  headers: [{ name: 'content-type', value: 'application/json' }],
+  body: new TextEncoder().encode('{"productId":"123"}'),
+})
+
+// Apply attempt.headerPatch and send attempt.targetUrl/method with the exact body.
+const retry = await attempt.handleResponse({
+  statusCode: response.status,
+  headers: [...response.headers].map(([name, value]) => ({ name, value })),
+})
+```
+
+attempt 是 single-use opaque 对象。Rust 自动在 origin-scoped 进程内 Bearer cache 和当前设备
+HTTP Message Signature 之间选择；成功响应只从 `Authentication-Info` 接受 Token。一次
+`401` 最多产生一个 retry attempt。正文最大 4 MiB；`undefined` 表示无正文，空
+`Uint8Array` 表示需要摘要绑定的显式空正文。
+
+固定 verifier challenge 即使对无正文请求仍列出 `content-digest`，也不会阻止 GET/HEAD
+重签；实际无正文签名仍省略 `Content-Digest`。多个合并的 `WWW-Authenticate` scheme 中，
+Rust 只选择唯一、合法的 DID-WBA challenge。
+
+`headerPatch` 含敏感凭证，禁止日志记录或序列化。生产只允许 HTTPS；可选
+`externalHttpAllowInsecureLoopbackForTesting` 仅为 literal loopback 测试。该 API 不能暴露给
+浏览器、模型工具或远程调用者。DSH 插件应使用其 Host-only `externalHttpAuth.dispatch`，而
+不是直接让第三方编排 attempt。
+
+## 生命周期与线程
+
+- 一个 client 对应一个环境级 `ImCore` 和一个 default identity-bound `ImClient`，不会为
+  每次请求重开 SQLite 或身份目录。
+- 所有 I/O 都是 Promise；Rust async 任务不会阻塞 Node event loop。
+- `close()` 开始后拒绝新任务，取消可安全取消的任务，等待已接受任务释放状态，再释放
+  state-root 文件锁；重复调用是幂等的。
+- 每个 client 同时只允许一个 Core-owned realtime session；`close()` 和 `clearLocalData()` 会先
+  stop/join active session。
+- `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
+  兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
+- JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
+
+## state root
+
+`stateRoot` 必须是绝对路径。同一路径在同一时间只能由一个实例/进程打开。Unix 上目录收紧为
+`0700`、文件收紧为 `0600`。包不读取旧 TypeScript SDK 的 `identity.json`，也不提供 legacy
+import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私有保存稳定 root key，
+以固定 context 打开 `VaultRequired` Core；Host 不接触或传入 root key。普通重启复用该 key，
+`clearLocalData()` 删除 Vault 并在重新初始化时生成新 key。
+
+## Realtime
+
+`startRealtime()` 复用 Core `RealtimeService::start_async()` 与 reconnect runner。公开事件仅有连接
+状态和 `sync_required`；后者覆盖首次 ready、reconnected、消息 hint、dirty/gap 与 stream
+recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取 committed history。事件不暴露
+消息正文、raw frame/URL/bearer、event sequence、cursor 或 checkpoint，hint 也不具备 checkpoint
+语义。Core event buffer 满或 native stream 结束时，`nextEvent()` 返回 `null`；Host 必须把它视为
+stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
+恢复，不得只退出监听循环，也不得跳过 canonical sync。
+
+## DTO 与错误
+
+- ID/cursor 都是不透明字符串；字节数和 `registeredAtMs` 使用十进制字符串。
+- 时间字段除 `registeredAtMs` 外均为 RFC 3339；附件 bytes 使用 `Uint8Array`/Buffer，绝不经
+  JSON 或 base64。
+- 抛出的 `ImCoreNodeError` 只包含 `{ code, safeMessage, retryable }`。底层服务正文、token、
+  OTP、路径、私钥和附件内容不会进入 JS 错误。
+- `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
+  `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
+- 当前 `0.1.8` 源码 candidate 的 Native contract version 为 `10`，在 `0.1.7` 的 recovery
+  attestation 之上增加可恢复的新设备 Join、SAS/expiry、设备 Registry、审批/拒绝和撤销；
+  `0.1.8` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他版本的 addon。
+
+`issueHandleRecoveryAttestation({ operationId })` 是 Host-only 恢复对账方法，只允许在本机恢复
+已 `applied` 后调用。返回的短时 opaque token 必须由 Host 立即转交固定 Model Proxy 受众并丢弃；
+不得持久化、打印、进入 Browser remote、Agent 工具或模型上下文。
+
+## 邮件
+
+`getMailAccount()`、`listMailInbox()`、`readMail()`、`markMailRead()` 与 `sendMail()` 直接复用
+Core `EmailService`，不会调用 CLI 或自行构造邮件 RPC。读取结果不包含 HTML、后端 attributes 或
+附件 bytes；subject、preview 和纯文本正文有明确的 UTF-8 byte 上限与 truncation 标记。
+
+`markMailRead()` 只支持标为已读。`sendMail()` 只发送纯文本，不接受附件或 HTML，也没有
+idempotency key 和自动重试。Node host 必须在调用这两个 mutation 前取得产品层批准；发送 timeout
+或 transport loss 后必须按“远端结果未知”处理，不能自动再次发送。所有邮件字段都应当作外部
+不可信数据，不能解释为指令。
+
+平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
+AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。
+
+## 原生制品
+
+Tier 1 平台使用独立 optional package；wrapper 会显式区分 glibc 与 musl，不做运行期下载，也
+不回退 TypeScript SDK。第一版五平台矩阵、AGPL test channel、SBOM、checksum、provenance 和
+无源码安装验证见 `docs/node-sdk/awiki-im-core-node-artifacts.md`。仓库不包含自动 npm publish
+job；正式 registry 发布仍是独立 release 动作。

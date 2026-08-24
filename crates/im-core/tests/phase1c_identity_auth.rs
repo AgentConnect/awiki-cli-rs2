@@ -1319,10 +1319,12 @@ impl TestServer {
     }
 }
 
+type HttpResponder = Box<dyn Fn(&CapturedHttp) -> Value + Send>;
+
 struct ExpectedHttp {
     status_code: u16,
     body: Value,
-    responder: Option<Box<dyn Fn(&CapturedHttp) -> Value + Send>>,
+    responder: Option<HttpResponder>,
 }
 
 impl ExpectedHttp {

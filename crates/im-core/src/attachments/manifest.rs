@@ -387,7 +387,9 @@ pub(crate) fn build_attachment_grant_ref(
     AttachmentGrantRef::from_descriptor(descriptor).map(|grant| grant.to_value())
 }
 
-pub(crate) fn parse_attachment_manifest(value: &Value) -> crate::ImResult<AttachmentManifest> {
+/// Parses the public, redacted attachment manifest carried by a projected
+/// message. Secret object keys and nonces are never returned.
+pub fn parse_attachment_manifest(value: &Value) -> crate::ImResult<AttachmentManifest> {
     let parsed = parse_attachment_manifest_internal(value)?;
     Ok(AttachmentManifest {
         attachments: parsed

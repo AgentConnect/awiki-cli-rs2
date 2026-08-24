@@ -1,0 +1,32 @@
+[package]
+name = "awiki-im-core-node"
+version = "0.1.8"
+description = "Node-API facade for the Awiki Rust IM SDK"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+im-core = { package = "awiki-im-core", path = "../im-core" }
+napi.workspace = true
+napi-derive.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[build-dependencies]
+napi-build = "=2.4.1"
+
+[dev-dependencies]
+anp.workspace = true
+tempfile = "=3.3.0"

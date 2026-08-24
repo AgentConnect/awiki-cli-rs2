@@ -228,9 +228,11 @@ WHERE owner_identity_id=?1
     Ok(StableOwnerMatch::Exact(StableOwnerCandidate {
         owner_identity_id: candidate.owner_identity_id,
         local_alias: entry.credential_name.clone(),
-        display_name: (!entry.name.trim().is_empty())
-            .then(|| entry.name.clone())
-            .unwrap_or(canonical.local_part),
+        display_name: if !entry.name.trim().is_empty() {
+            entry.name.clone()
+        } else {
+            canonical.local_part
+        },
         make_default: entry.is_default,
     }))
 }

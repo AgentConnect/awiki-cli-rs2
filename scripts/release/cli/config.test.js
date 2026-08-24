@@ -65,7 +65,7 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
     assert.equal(parsed.channels.stable.version, '1.0.48');
     assert.equal(parsed.channels.stable.min_supported_version, '1.0.48');
-    assert.equal(parsed.anp_commit, '59475cf76b23838a911a7263287ce6b7399d8e02');
+    assert.equal(parsed.anp_commit, 'd3cc6a9571cec9b7d53dfbc5ef5612e56d1d5ea9');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);

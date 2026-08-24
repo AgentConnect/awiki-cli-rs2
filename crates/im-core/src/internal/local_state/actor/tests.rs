@@ -1254,6 +1254,8 @@ async fn db_actor_shutdown_returns_closed_error_for_new_commands() {
     let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
     db.shutdown().await.unwrap();
 
+    std::fs::remove_dir_all(fixture.sqlite_path().parent().unwrap()).unwrap();
+
     let err = db.current_schema_version().await.unwrap_err();
 
     assert_eq!(

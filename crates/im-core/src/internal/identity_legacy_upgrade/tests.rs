@@ -9,8 +9,10 @@ fn published_e1_legacy_identity(
     // The published 0.1.5+14 Core generated this exact E1 + key-2/key-3 +
     // daemon-key-1 structure. Keep the source refs beside the fixture builder
     // so future compatibility work cannot silently broaden the release boundary.
-    assert!(!PUBLISHED_APP_REF.is_empty());
-    assert!(!PUBLISHED_CORE_REF.is_empty());
+    for source_ref in [PUBLISHED_APP_REF, PUBLISHED_CORE_REF] {
+        assert_eq!(source_ref.len(), 40);
+        assert!(source_ref.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
     crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
         "example.test",
         "published-user",

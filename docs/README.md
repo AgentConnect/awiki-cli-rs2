@@ -40,6 +40,8 @@
 - `installation.md`：安装、配置、工作区、runtime 和常见问题。
 - `flutter-sdk/awiki-im-core-flutter-sdk.md`：Flutter/Dart SDK 使用与边界。
 - `flutter-sdk/awiki-me-future-integration.md`：未来接入 `awiki-me` 的建议。
+- `node-sdk/dsh-device-join-extension.md`：DSH 新设备加入与 ready-admin 设备管理所需的 Node
+  facade 增量合同；当前状态为 planned，不代表 API 或 npm 制品已发布。
 - `architecture/awiki-mail-cli.md`、`architecture/awiki-site-pages.md`、`architecture/awiki-skill-architecture.md`：邮件、站点页和 skill 文档。
 
 ### 维护说明

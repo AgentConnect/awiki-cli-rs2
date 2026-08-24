@@ -1274,18 +1274,19 @@ mod tests {
                 "2026-07-20T00:00:00Z",
             )
             .unwrap();
-        let runtime = V2EstablishedDirectRuntime::new(&store);
         let operation_id = session_reply_operation_id("session-init-1").unwrap();
-        let reply = runtime
-            .prepare_outbound(
-                &responder_state.binding,
-                &operation_id,
-                &session_established_plaintext("session-init-1").unwrap(),
-                "2026-07-20T00:00:01Z",
-            )
-            .unwrap();
-        assert!(runtime.mark_outbound_accepted(&reply).unwrap());
-        drop(runtime);
+        {
+            let runtime = V2EstablishedDirectRuntime::new(&store);
+            let reply = runtime
+                .prepare_outbound(
+                    &responder_state.binding,
+                    &operation_id,
+                    &session_established_plaintext("session-init-1").unwrap(),
+                    "2026-07-20T00:00:01Z",
+                )
+                .unwrap();
+            assert!(runtime.mark_outbound_accepted(&reply).unwrap());
+        }
         drop(store);
         drop(connection);
 

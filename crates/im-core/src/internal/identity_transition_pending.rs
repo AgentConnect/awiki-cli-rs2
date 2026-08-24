@@ -361,6 +361,35 @@ pub(crate) fn load(
         .transpose()
 }
 
+/// Returns transitions that crossed the durable identity-switch checkpoint but
+/// did not finish their local post-switch work. These markers are the only
+/// authority allowed to repair a stale active identity-index entry at startup.
+pub(crate) fn load_identity_switched(
+    sqlite_path: &Path,
+) -> crate::ImResult<Vec<IdentityTransitionMarker>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let recovery_ids = {
+        let mut statement = connection
+            .prepare(
+                "SELECT recovery_id FROM identity_transition_pending WHERE phase='identity_switched' ORDER BY updated_at,recovery_id",
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let recovery_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        recovery_ids
+    };
+    drop(connection);
+
+    recovery_ids
+        .into_iter()
+        .map(|recovery_id| load(sqlite_path, &recovery_id)?.ok_or(crate::ImError::PermissionDenied))
+        .collect()
+}
+
 pub(crate) fn load_latest_applied_for_owner(
     sqlite_path: &Path,
     owner_identity_id: &str,
@@ -1157,6 +1186,28 @@ mod tests {
             marker.validate().unwrap_err(),
             crate::ImError::PermissionDenied
         );
+    }
+
+    #[test]
+    fn startup_scan_returns_only_valid_identity_switched_markers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("startup-reconcile.sqlite");
+        let mut completed = test_marker(&path);
+        completed.recovery_id = "recovery-completed".to_owned();
+        completed.source_id = "recover-completed".to_owned();
+        completed.phase = TransitionPhase::Completed;
+        completed.applied_at = Some("2026-08-03T00:02:00Z".to_owned());
+        persist(&path, &completed).unwrap();
+
+        let mut switched = test_marker(&path);
+        switched.recovery_id = "recovery-switched".to_owned();
+        switched.source_id = "recover-switched".to_owned();
+        switched.owner_identity_id = "owner-2".to_owned();
+        switched.phase = TransitionPhase::IdentitySwitched;
+        persist(&path, &switched).unwrap();
+
+        let markers = load_identity_switched(&path).unwrap();
+        assert_eq!(markers, vec![switched]);
     }
 
     #[test]

@@ -1,0 +1,370 @@
+name: IM Core Node Tier 1 Artifacts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/im-core-node-artifacts.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/im-core/**'
+      - 'crates/im-core-node/**'
+      - 'packages/awiki-im-core-node/**'
+      - 'packages/awiki-im-core-node-platforms/**'
+      - 'scripts/release/node-sdk/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/im-core-node-artifacts.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/im-core/**'
+      - 'crates/im-core-node/**'
+      - 'packages/awiki-im-core-node/**'
+      - 'packages/awiki-im-core-node-platforms/**'
+      - 'scripts/release/node-sdk/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: 1.88.0
+  PNPM_VERSION: 10.27.0
+
+jobs:
+  build-platform:
+    name: Build Tier 1 ${{ matrix.target_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_name: linux-x64-gnu
+            package_dir: packages/awiki-im-core-node-platforms/linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            target_dir: target/manylinux-2-28
+            library: libawiki_im_core_node.so
+            manylinux_image: quay.io/pypa/manylinux_2_28_x86_64
+            runner: ubuntu-22.04
+            linux_gnu: true
+          - target_name: linux-arm64-gnu
+            package_dir: packages/awiki-im-core-node-platforms/linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            target_dir: target/manylinux-2-28
+            library: libawiki_im_core_node.so
+            manylinux_image: quay.io/pypa/manylinux_2_28_aarch64
+            runner: ubuntu-22.04-arm
+            linux_gnu: true
+          - target_name: darwin-x64
+            package_dir: packages/awiki-im-core-node-platforms/darwin-x64
+            rust_target: x86_64-apple-darwin
+            target_dir: target
+            library: libawiki_im_core_node.dylib
+            runner: macos-15-intel
+            linux_gnu: false
+          - target_name: darwin-arm64
+            package_dir: packages/awiki-im-core-node-platforms/darwin-arm64
+            rust_target: aarch64-apple-darwin
+            target_dir: target
+            library: libawiki_im_core_node.dylib
+            runner: macos-15
+            linux_gnu: false
+          - target_name: win32-x64-msvc
+            package_dir: packages/awiki-im-core-node-platforms/win32-x64-msvc
+            rust_target: x86_64-pc-windows-msvc
+            target_dir: target
+            library: awiki_im_core_node.dll
+            runner: windows-2022
+            linux_gnu: false
+
+    steps:
+      - name: Checkout awiki-cli-rs2
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: awiki-cli-rs2
+
+      - name: Read pinned ANP SDK revision
+        id: release
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pinned ANP SDK
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp
+          ref: ${{ steps.release.outputs.anp_commit }}
+          path: anp/anp
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup target add --toolchain "${RUST_TOOLCHAIN}" "${{ matrix.rust_target }}"
+
+      - name: Set up Node 22.19
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+
+      - name: Set up pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+      - name: Install build dependencies
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify Windows package-manager launcher
+        if: matrix.target_name == 'win32-x64-msvc'
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSyncPortable } from './scripts/release/node-sdk/spawn-command.mjs'
+          for (const command of ['npm', 'pnpm']) {
+            const result = spawnSyncPortable(command, ['--version'], { encoding: 'utf8' })
+            if (result.status !== 0) throw result.error || new Error(result.stderr || `${command} failed`)
+            console.log(`${command}: ${result.stdout.trim()}`)
+          }
+          NODE
+
+      - name: Build release addon on non-Linux targets
+        if: matrix.linux_gnu == false
+        working-directory: awiki-cli-rs2
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '13.5'
+        run: cargo build --locked --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"
+
+      - name: Build Linux addon inside manylinux 2.28
+        if: matrix.linux_gnu
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME="${HOME}" \
+            -e CARGO_HOME="${HOME}/.cargo" \
+            -e RUSTUP_HOME="${HOME}/.rustup" \
+            -e CARGO_TARGET_DIR="${PWD}/target/manylinux-2-28" \
+            -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+            -v "${HOME}/.cargo:${HOME}/.cargo" \
+            -v "${HOME}/.rustup:${HOME}/.rustup:ro" \
+            -w "${PWD}" \
+            "${{ matrix.manylinux_image }}" \
+            bash -euxo pipefail -c \
+              '"${CARGO_HOME}/bin/cargo" build --locked --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"'
+
+      - name: Enforce Linux manylinux 2.28 baseline
+        if: matrix.linux_gnu
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          addon="${{ matrix.target_dir }}/${{ matrix.rust_target }}/release/${{ matrix.library }}"
+          highest="$(objdump -T "${addon}" | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' | sort -Vu | tail -n 1)"
+          test -n "${highest}"
+          dpkg --compare-versions "${highest}" le 2.28
+          echo "highest required glibc symbol: ${highest}"
+
+      - name: Enforce macOS 13.5 deployment target
+        if: startsWith(matrix.target_name, 'darwin-')
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          addon="${{ matrix.target_dir }}/${{ matrix.rust_target }}/release/${{ matrix.library }}"
+          minos="$(otool -l "${addon}" | awk '$1 == "minos" { print $2; exit }')"
+          test "${minos}" = '13.5'
+          echo "minimum macOS deployment target: ${minos}"
+
+      - name: Stage and audit platform package
+        working-directory: awiki-cli-rs2
+        shell: bash
+        env:
+          AWIKI_NODE_SDK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node scripts/release/node-sdk/stage-package.mjs \
+            --kind platform \
+            --package-dir "${{ matrix.package_dir }}" \
+            --target "${{ matrix.target_name }}" \
+            --binary "${{ matrix.target_dir }}/${{ matrix.rust_target }}/release/${{ matrix.library }}" \
+            --output "dist/node-sdk/staged/${{ matrix.target_name }}"
+          node scripts/release/node-sdk/pack-audit.mjs \
+            --package-dir "dist/node-sdk/staged/${{ matrix.target_name }}" \
+            --destination "dist/node-sdk/tarballs"
+
+      - name: Upload Tier 1 build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: im-core-node-${{ matrix.target_name }}
+          path: awiki-cli-rs2/dist/node-sdk/tarballs/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-wrapper:
+    name: Build root wrapper after platform packages
+    needs: build-platform
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout awiki-cli-rs2
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: awiki-cli-rs2
+
+      - name: Read pinned ANP SDK revision
+        id: release
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pinned ANP SDK
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp
+          ref: ${{ steps.release.outputs.anp_commit }}
+          path: anp/anp
+
+      - name: Set up Rust provenance toolchain
+        shell: bash
+        run: rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+
+      - name: Set up Node 22.19
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+
+      - name: Set up pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+      - name: Build, stage, and audit root wrapper
+        working-directory: awiki-cli-rs2
+        shell: bash
+        env:
+          AWIKI_NODE_SDK_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm --filter @awiki/im-core-node run build:typescript
+          node scripts/release/node-sdk/stage-package.mjs \
+            --kind wrapper \
+            --package-dir packages/awiki-im-core-node \
+            --output dist/node-sdk/staged/wrapper
+          node scripts/release/node-sdk/pack-audit.mjs \
+            --package-dir dist/node-sdk/staged/wrapper \
+            --destination dist/node-sdk/tarballs
+
+      - name: Upload wrapper build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: im-core-node-wrapper
+          path: awiki-cli-rs2/dist/node-sdk/tarballs/*
+          if-no-files-found: error
+          retention-days: 7
+
+  packed-install:
+    name: Packed install ${{ matrix.target.name }} / Node ${{ matrix.node }}
+    needs: [build-platform, build-wrapper]
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.19.0, 24, 26]
+        target:
+          - name: linux-x64-gnu
+            runner: ubuntu-22.04
+          - name: linux-arm64-gnu
+            runner: ubuntu-22.04-arm
+          - name: darwin-x64
+            runner: macos-15-intel
+          - name: darwin-arm64
+            runner: macos-15
+          - name: win32-x64-msvc
+            runner: windows-2022
+
+    steps:
+      - name: Checkout verification script only
+        uses: actions/checkout@v6
+        with:
+          path: source
+          sparse-checkout: |
+            scripts/release/node-sdk/verify-packed-install.mjs
+            scripts/release/node-sdk/spawn-command.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Download wrapper artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: im-core-node-wrapper
+          path: artifacts/wrapper
+
+      - name: Download platform artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: im-core-node-${{ matrix.target.name }}
+          path: artifacts/platform
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install tarballs without scripts, source, or Rust and run fixture
+        shell: bash
+        run: |
+          wrapper="$(find artifacts/wrapper -name '*.tgz' -type f -print -quit)"
+          platform="$(find artifacts/platform -name '*.tgz' -type f -print -quit)"
+          test -n "${wrapper}"
+          test -n "${platform}"
+          node source/scripts/release/node-sdk/verify-packed-install.mjs \
+            --wrapper "${wrapper}" \
+            --platform "${platform}"
+
+      - name: Verify missing optional package fails loudly
+        if: matrix.target.name == 'linux-x64-gnu' && matrix.node == '22.19.0'
+        shell: bash
+        run: |
+          wrapper="$(find artifacts/wrapper -name '*.tgz' -type f -print -quit)"
+          node source/scripts/release/node-sdk/verify-packed-install.mjs \
+            --wrapper "${wrapper}" \
+            --expect-missing
+
+  publish-test-channel:
+    name: Publish approved AGPL test channel
+    needs: [build-platform, build-wrapper, packed-install]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download verified packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: im-core-node-*
+          path: channel
+          merge-multiple: true
+
+      - name: Verify complete release order output
+        shell: bash
+        run: |
+          test "$(find channel -maxdepth 1 -name '*.tgz' -type f | wc -l)" -eq 6
+          test "$(find channel -maxdepth 1 -name '*.tgz.sha256' -type f | wc -l)" -eq 6
+          while IFS= read -r checksum; do
+            (cd channel && sha256sum --check "$(basename "${checksum}")")
+          done < <(find channel -maxdepth 1 -name '*.tgz.sha256' -type f | sort)
+
+      - name: Upload AGPL test channel
+        uses: actions/upload-artifact@v7
+        with:
+          name: im-core-node-agpl-test-channel-${{ github.run_id }}
+          path: channel/*
+          if-no-files-found: error
+          retention-days: 30
