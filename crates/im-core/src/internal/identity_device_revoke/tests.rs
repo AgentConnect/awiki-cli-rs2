@@ -308,6 +308,7 @@ async fn member_caller_self_revoke_and_last_ready_admin_are_rejected() {
             last_ready_registry,
             scenario.document.clone(),
         )
+        .await
         .unwrap_err(),
         crate::ImError::PermissionDenied
     );
@@ -594,6 +595,7 @@ async fn registry_first_recovery_converges_identity_without_resubmitting_revoke(
         scenario.registry.clone(),
         scenario.document.clone(),
     )
+    .await
     .unwrap();
     store.save(&pending).unwrap();
 
@@ -649,6 +651,7 @@ async fn committed_pending_recovery_is_identity_local() {
         scenario.registry.clone(),
         scenario.document.clone(),
     )
+    .await
     .unwrap();
     pending.remote_result = Some(DeviceRevokeRemoteResult {
         target_device_id: pending.target_device_id.clone(),

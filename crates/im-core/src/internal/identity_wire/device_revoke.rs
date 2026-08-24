@@ -26,6 +26,17 @@ pub(crate) struct PreparedDeviceRevoke {
     pub(crate) authorizing_device_proof: DeviceProof,
 }
 
+pub(crate) struct UnsignedDeviceRevoke {
+    operation_id: String,
+    target_device_id: String,
+    expected_checkpoint: IdentityInternalCheckpoint,
+    new_document: Value,
+    authorizing_device_id: String,
+    authorizing_device_proof: DeviceProof,
+    pub(crate) signing_key_id: String,
+    pub(crate) signing_input: Vec<u8>,
+}
+
 impl std::fmt::Debug for PreparedDeviceRevoke {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedDeviceRevoke")
@@ -73,6 +84,29 @@ pub(crate) fn prepare_revoke(
     signer: &dyn Fn(&str, &[u8]) -> crate::ImResult<Vec<u8>>,
     now: OffsetDateTime,
 ) -> crate::ImResult<PreparedDeviceRevoke> {
+    let unsigned = prepare_revoke_unsigned(
+        operation_id,
+        target_device_id,
+        expected_checkpoint,
+        new_document,
+        authorizing_device_id,
+        authorizing_signing_key_id,
+        now,
+    )?;
+    let signature = signer(&unsigned.signing_key_id, &unsigned.signing_input)?;
+    Ok(complete_revoke(unsigned, &signature))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_revoke_unsigned(
+    operation_id: String,
+    target_device_id: String,
+    expected_checkpoint: IdentityInternalCheckpoint,
+    new_document: Value,
+    authorizing_device_id: String,
+    authorizing_signing_key_id: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<UnsignedDeviceRevoke> {
     required("operation_id", &operation_id)?;
     crate::ids::ProtocolDeviceId::parse(&target_device_id)?;
     crate::ids::ProtocolDeviceId::parse(&authorizing_device_id)?;
@@ -98,7 +132,7 @@ pub(crate) fn prepare_revoke(
         .map_err(|_| crate::ImError::Internal {
             message: "generate device revoke proof nonce failed".to_owned(),
         })?;
-    let mut proof = DeviceProof {
+    let proof = DeviceProof {
         proof_type: DEVICE_PROOF_TYPE.to_owned(),
         key_id: required("authorizing_signing_key_id", authorizing_signing_key_id)?,
         created_at,
@@ -121,15 +155,32 @@ pub(crate) fn prepare_revoke(
             detail: error.to_string(),
         }
     })?;
-    proof.signature = URL_SAFE_NO_PAD.encode(signer(&proof.key_id, &signing_input)?);
-    Ok(PreparedDeviceRevoke {
+    let signing_key_id = proof.key_id.clone();
+    Ok(UnsignedDeviceRevoke {
         operation_id,
         target_device_id,
         expected_checkpoint,
         new_document,
         authorizing_device_id,
         authorizing_device_proof: proof,
+        signing_key_id,
+        signing_input,
     })
+}
+
+pub(crate) fn complete_revoke(
+    mut unsigned: UnsignedDeviceRevoke,
+    signature: &[u8],
+) -> PreparedDeviceRevoke {
+    unsigned.authorizing_device_proof.signature = URL_SAFE_NO_PAD.encode(signature);
+    PreparedDeviceRevoke {
+        operation_id: unsigned.operation_id,
+        target_device_id: unsigned.target_device_id,
+        expected_checkpoint: unsigned.expected_checkpoint,
+        new_document: unsigned.new_document,
+        authorizing_device_id: unsigned.authorizing_device_id,
+        authorizing_device_proof: unsigned.authorizing_device_proof,
+    }
 }
 
 pub(crate) fn build_revoke_call(

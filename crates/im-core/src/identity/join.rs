@@ -681,6 +681,26 @@ impl<'a> DeviceJoinService<'a> {
         })
     }
 
+    pub async fn local_device_join_verification_progress_async(
+        &self,
+        admin_identity: super::IdentitySelector,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        let (session, sas) =
+            crate::internal::identity_device_join::local_admin_verification_progress_async(
+                self.core,
+                &admin_identity,
+                join_session_id,
+            )
+            .await?;
+        Ok(DeviceJoinProgress {
+            session: session.into(),
+            remote_state: DeviceJoinRemoteState::ResponseVerified,
+            sas: Some(sas),
+            authorized_device: None,
+        })
+    }
+
     pub async fn start_device_join_verification(
         &self,
         admin_identity: super::IdentitySelector,

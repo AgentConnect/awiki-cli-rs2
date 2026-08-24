@@ -1292,6 +1292,11 @@ pub(crate) async fn adopt_controller_document_async(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    if crate::internal::identity_wire::document::document_hash(&before.document)?
+        == checkpoint.document_hash
+    {
+        return validate_adopted_provider_identity(&before, document);
+    }
     let adopted = identity
         .adopt_verified_document(provider_verified_document(document, checkpoint))
         .await

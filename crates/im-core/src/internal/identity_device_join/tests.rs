@@ -183,6 +183,160 @@ fn open_anp_ready_admin_core(
     (core, identity)
 }
 
+#[cfg(feature = "provider-traits")]
+fn open_external_provider_ready_admin_core(
+    root: &Path,
+) -> (
+    crate::ImCore,
+    serde_json::Value,
+    crate::ids::Did,
+    crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+        IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+        IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+    };
+    use crate::internal::identity_provider::DirectAnpIdentityCustody;
+
+    let provider_root = root.join("provider");
+    let mut manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: provider_root,
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "join-external-provider",
+                [0x6b; 32],
+            )),
+        })
+        .unwrap();
+    let identity = manager
+        .create(anp_identity::CreateIdentityRequest {
+            profile: anp_identity::CreateIdentityProfile::E1,
+            domain: "awiki.test".to_owned(),
+            port: None,
+            path_segments: vec!["users".to_owned(), "external-admin".to_owned()],
+            capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
+            managed_keys: vec![
+                anp_identity::ManagedKeyInput {
+                    fragment: "root".to_owned(),
+                    role: anp_identity::ManagedKeyRole::RootControl,
+                },
+                anp_identity::ManagedKeyInput {
+                    fragment: "device".to_owned(),
+                    role: anp_identity::ManagedKeyRole::DeviceSigning,
+                },
+                anp_identity::ManagedKeyInput {
+                    fragment: "agreement".to_owned(),
+                    role: anp_identity::ManagedKeyRole::E2eeAgreement,
+                },
+            ],
+            external_keys: Vec::new(),
+            services: Vec::new(),
+            agent_description_url: None,
+            extensions: vec![anp_identity::CreateIdentityExtension::DeviceManifest {
+                devices: vec![anp_identity::DeviceManifestEntryInput {
+                    device_id: "device-admin".to_owned(),
+                    signing_key_id: "#device".to_owned(),
+                    e2ee_key_id: "#agreement".to_owned(),
+                    profiles: crate::internal::identity_generation::vnext_device_profiles(),
+                }],
+            }],
+        })
+        .unwrap();
+    let public = identity.public_identity().unwrap();
+    let reference = public.reference.clone();
+    let key_for = |purpose| {
+        public
+            .active_keys
+            .iter()
+            .find(|key| key.purposes.contains(&purpose))
+            .unwrap()
+            .kid
+            .clone()
+    };
+    let root_kid = key_for(anp_identity::KeyPurpose::RootControl);
+    let signing_kid = key_for(anp_identity::KeyPurpose::DeviceAssertion);
+    let agreement_kid = key_for(anp_identity::KeyPurpose::KeyAgreement);
+    let document = public.document.into_value();
+    let checkpoint = IdentityInternalCheckpoint {
+        document_version: 1,
+        document_hash: canonical_hash(&document).unwrap(),
+        registry_version: 1,
+    };
+    let paths = test_paths(root);
+    let provider = Arc::new(DirectAnpIdentityCustody::new(manager));
+    let core = crate::ImCore::new_with_options(
+        test_config(),
+        paths.clone(),
+        crate::ImCoreOpenOptions::default()
+            .with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+                    root.join("vault"),
+                    "join-external-workspace",
+                    "join-external-device",
+                ),
+            )
+            .with_identity_custody_provider(provider),
+    )
+    .unwrap();
+    crate::internal::identity_store::IdentityStore::new(&paths.identities)
+        .save_anp_identity_projection(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias: "alice".to_owned(),
+                did: crate::ids::Did::parse(&reference.did).unwrap(),
+                unique_id: "external-admin-id".to_owned(),
+                user_id: "user-1".to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.awiki.test".to_owned(),
+                binding_generation: None,
+                jwt_token: "access-token".to_owned(),
+                did_document: Some(document.clone()),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                    root_key_id: root_kid,
+                    device_signing_key_id: signing_kid.clone(),
+                    device_e2ee_key_id: agreement_kid.clone(),
+                },
+                device_state: Some(IdentityDeviceState {
+                    schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                    mode: IdentityDeviceMode::VNext,
+                    authorization: Some(DeviceAuthorizationProjection {
+                        protocol_device_id: crate::ids::ProtocolDeviceId::parse("device-admin")
+                            .unwrap(),
+                        signing_key_id: signing_kid,
+                        e2ee_key_id: agreement_kid,
+                        status: DeviceAuthorizationStatus::Active,
+                        role: DeviceAuthorizationRole::Admin,
+                        management_ready: true,
+                        auth_generation: 1,
+                    }),
+                    checkpoint: Some(checkpoint.clone()),
+                }),
+                key1_private_pem: String::new(),
+                key1_public_pem: String::new(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: String::new(),
+                daemon_subkey_package: None,
+                make_default: true,
+            },
+            crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
+                &core,
+                reference.store_id,
+                reference.identity_id,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    (
+        core,
+        document,
+        crate::ids::Did::parse(&reference.did).unwrap(),
+        checkpoint,
+    )
+}
+
 fn reopen_join_test_core(root: &Path) -> crate::ImCore {
     crate::ImCore::new_with_options(
         test_config(),
@@ -838,6 +992,170 @@ async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     );
     assert_eq!(progress.sas.as_deref(), Some(verified.sas.as_str()));
     assert!(progress.authorized_device.is_none());
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn external_provider_completes_admin_join_signing_and_document_change() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let (admin, document, did, checkpoint) =
+        open_external_provider_ready_admin_core(admin_root.path());
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let started = candidate
+        .device_join()
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "start-external-admin".to_owned(),
+                did,
+                ttl_seconds: 300,
+            },
+            &document,
+        )
+        .await
+        .unwrap();
+    let challenged = prepare_admin_challenge_async(
+        &admin,
+        DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "challenge-external-admin".to_owned(),
+            join_request: started.join_request.clone(),
+            challenge_ttl_seconds: 180,
+            document_version: checkpoint.document_version,
+            document_hash: checkpoint.document_hash.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let responded = candidate
+        .device_join()
+        .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
+            operation_id: "respond-external-admin".to_owned(),
+            challenge: challenged.challenge,
+            admin_did_document: document,
+            document_version: checkpoint.document_version,
+            document_hash: checkpoint.document_hash.clone(),
+        })
+        .await
+        .unwrap();
+    verify_response_as_admin(
+        &admin,
+        DeviceJoinAdminVerifyRequest {
+            operation_id: "verify-external-admin".to_owned(),
+            join_session_id: started.session.join_session_id.clone(),
+            response: responded.response,
+        },
+    )
+    .unwrap();
+    let prepared = prepare_admin_approval_async(
+        &admin,
+        "approve-external-admin",
+        &started.session.join_session_id,
+        &checkpoint,
+        &format_time(OffsetDateTime::now_utc()).unwrap(),
+        true,
+    )
+    .await
+    .unwrap();
+    validate_authorized_document(&started.join_request, &prepared.new_document).unwrap();
+
+    let committed = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: checkpoint.document_version + 1,
+        document_hash: canonical_hash(&prepared.new_document).unwrap(),
+        registry_version: checkpoint.registry_version + 1,
+    };
+    let client = admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    complete_provider_document_change(&client, &prepared.new_document, &committed)
+        .await
+        .unwrap();
+    let public = client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .public_identity()
+        .await
+        .unwrap();
+    assert_eq!(
+        canonical_hash(&public.document).unwrap(),
+        committed.document_hash
+    );
+
+    let authorization =
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+            checkpoint: committed,
+            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: started.join_request.device_id.clone(),
+                signing_key_id: method_id(
+                    &started.join_request.signing_public_key,
+                    "join_request.signing_public_key",
+                )
+                .unwrap()
+                .to_owned(),
+                e2ee_key_id: method_id(
+                    &started.join_request.e2ee_public_key,
+                    "join_request.e2ee_public_key",
+                )
+                .unwrap()
+                .to_owned(),
+                status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        };
+    let session = mark_join_authorized_async(
+        &admin,
+        &started.session.join_session_id,
+        &authorization,
+        &prepared.new_document,
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.phase, DeviceJoinLocalPhase::Authorized);
+
+    let rejected = prepare_admin_rejection_async(
+        &admin,
+        crate::identity::IdentitySelector::Default,
+        "another-join-session",
+        crate::identity::DeviceJoinRejectReason::UserRejected,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rejected.rejecting_device_id, "device-admin");
+    assert!(!rejected.proof.proof_value.is_empty());
+
+    let removed_document = provider_document_change_candidate(
+        &client,
+        json!({
+            "changes": [{
+                "change": "remove_device",
+                "device_id": started.join_request.device_id,
+            }],
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        anp::authentication::validate_device_manifest(&removed_document)
+            .unwrap()
+            .unwrap()
+            .devices
+            .iter()
+            .all(|device| device.device_id != started.join_request.device_id)
+    );
+    let removed_checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: authorization.checkpoint.document_version + 1,
+        document_hash: canonical_hash(&removed_document).unwrap(),
+        registry_version: authorization.checkpoint.registry_version + 1,
+    };
+    complete_provider_document_change(&client, &removed_document, &removed_checkpoint)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

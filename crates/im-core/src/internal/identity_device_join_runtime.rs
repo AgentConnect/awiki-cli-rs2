@@ -1297,7 +1297,8 @@ where
     }
     let device = core
         .identities()
-        .device_summary(crate::identity::IdentitySelector::Did(session.did.clone()))?;
+        .device_summary_async(crate::identity::IdentitySelector::Did(session.did.clone()))
+        .await?;
     if device.protocol_device_id.as_ref() != Some(&session.protocol_device_id) {
         return Err(crate::ImError::invalid_input(
             Some("join_session.protocol_device_id".to_owned()),
@@ -1384,14 +1385,19 @@ where
     R: DeviceJoinAdminRemote,
 {
     pub(crate) async fn registry(&mut self) -> crate::ImResult<DeviceJoinRemoteRegistry> {
-        let did = self.core.client(self.admin_identity.clone())?.did().clone();
+        let did = self
+            .core
+            .client_async(self.admin_identity.clone())
+            .await?
+            .did()
+            .clone();
         self.remote.registry(&did, false).await
     }
 
     pub(crate) async fn local_device_join_requests(
         &mut self,
     ) -> crate::ImResult<Vec<crate::identity::DeviceJoinRequestNotice>> {
-        let client = self.core.client(self.admin_identity.clone())?;
+        let client = self.core.client_async(self.admin_identity.clone()).await?;
         let current_device_id = client.exact_protocol_device_id()?;
         let notifications = client.list_verified_device_join_notifications(true).await?;
         let requests_by_session = notifications
@@ -1497,7 +1503,7 @@ where
         operation_id: &str,
         challenge_ttl_seconds: u64,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
-        let client = self.core.client(self.admin_identity.clone())?;
+        let client = self.core.client_async(self.admin_identity.clone()).await?;
         let notification = client
             .get_verified_device_join_notification(join_session_id)
             .await?
@@ -1521,7 +1527,8 @@ where
                 detail: error.to_string(),
             })?;
         let registry = self.registry().await?;
-        let prepared = self.core.device_join().prepare_admin_challenge(
+        let prepared = crate::internal::identity_device_join::prepare_admin_challenge_async(
+            self.core,
             crate::identity::DeviceJoinAdminPrepareRequest {
                 admin_identity: self.admin_identity.clone(),
                 operation_id: operation_id.to_owned(),
@@ -1530,7 +1537,8 @@ where
                 document_version: registry.checkpoint.document_version,
                 document_hash: registry.checkpoint.document_hash,
             },
-        )?;
+        )
+        .await?;
         let submitted = self.remote.submit_challenge(&prepared.challenge).await?;
         if submitted.state != DeviceJoinRemoteState::ChallengeSent {
             return Err(crate::ImError::PermissionDenied);
@@ -1568,16 +1576,22 @@ where
                 value
             }
             None => {
-                let did = self.core.client(self.admin_identity.clone())?.did().clone();
+                let did = self
+                    .core
+                    .client_async(self.admin_identity.clone())
+                    .await?
+                    .did()
+                    .clone();
                 let registry = self.remote.registry(&did, false).await?;
-                crate::internal::identity_device_join::prepare_admin_approval(
+                crate::internal::identity_device_join::prepare_admin_approval_async(
                     self.core,
                     operation_id,
                     join_session_id,
                     &registry.checkpoint,
                     user_presence_at,
                     sas_confirmed,
-                )?
+                )
+                .await?
             }
         };
         let approved = self
@@ -1599,6 +1613,13 @@ where
             checkpoint: approved.checkpoint,
             device: approved.device,
         };
+        let client = self.core.client_async(self.admin_identity.clone()).await?;
+        crate::internal::identity_device_join::complete_provider_document_change(
+            &client,
+            &prepared.new_document,
+            &authorization.checkpoint,
+        )
+        .await?;
         let session = crate::internal::identity_device_join::mark_join_authorized_async(
             self.core,
             join_session_id,
@@ -1620,7 +1641,7 @@ where
         reason: crate::identity::DeviceJoinRejectReason,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
         let fallback_session = if local_admin_session(self.core, join_session_id)?.is_none() {
-            let client = self.core.client(self.admin_identity.clone())?;
+            let client = self.core.client_async(self.admin_identity.clone()).await?;
             let notification = client
                 .get_verified_device_join_notification(join_session_id)
                 .await?
@@ -1649,12 +1670,13 @@ where
         } else {
             None
         };
-        let prepared = crate::internal::identity_device_join::prepare_admin_rejection(
+        let prepared = crate::internal::identity_device_join::prepare_admin_rejection_async(
             self.core,
             self.admin_identity.clone(),
             join_session_id,
             reason,
-        )?;
+        )
+        .await?;
         let rejected = self
             .remote
             .reject(DeviceJoinRemoteRejectRequest {

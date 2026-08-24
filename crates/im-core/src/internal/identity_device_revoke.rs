@@ -44,7 +44,8 @@ pub(crate) async fn revoke(
     // network access. Public rollout and user-presence gates run even earlier.
     let store = PendingDeviceRevokeStore::from_core(core).map_err(rejected_before_commit)?;
     let (client, authorizing_device_id, authorizing_signing_key_id) =
-        crate::internal::identity_device_join::ready_admin_context(core, &identity, None)
+        crate::internal::identity_device_join::ready_admin_context_async(core, &identity, None)
+            .await
             .map_err(rejected_before_commit)?;
     let now = OffsetDateTime::now_utc();
     let mut remote =
@@ -106,7 +107,8 @@ where
     D: DeviceRevokeDocumentResolver,
 {
     let (completed, pending_records) =
-        converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)?;
+        converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)
+            .await?;
     if pending_records.is_empty() {
         return Ok(completed);
     }
@@ -128,7 +130,8 @@ where
     D: DeviceRevokeDocumentResolver,
 {
     let (completed, pending_records) =
-        converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)?;
+        converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)
+            .await?;
     if pending_records.is_empty() {
         return Ok(completed);
     }
@@ -138,7 +141,7 @@ where
     Ok(completed.saturating_add(recovered))
 }
 
-fn converge_committed_pending(
+async fn converge_committed_pending(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     store: &PendingDeviceRevokeStore,
@@ -161,7 +164,7 @@ fn converge_committed_pending(
             continue;
         };
         pending.validate()?;
-        converge_local_state(core, client, &pending, remote_result)?;
+        converge_local_state(core, client, &pending, remote_result).await?;
         store.delete(&secret_ref)?;
         completed = completed.saturating_add(1);
     }
@@ -196,7 +199,7 @@ where
         if store.save(&pending)? != secret_ref {
             return Err(crate::ImError::PermissionDenied);
         }
-        converge_local_state(core, client, &pending, &remote_result)?;
+        converge_local_state(core, client, &pending, &remote_result).await?;
         store.delete(&secret_ref)?;
         completed = completed.saturating_add(1);
     }
@@ -395,6 +398,7 @@ where
                 registry,
                 document,
             )
+            .await
             .map_err(rejected_before_commit)?;
             let secret_ref = store.save(&pending).map_err(rejected_before_commit)?;
             (secret_ref, pending)
@@ -402,17 +406,17 @@ where
     };
 
     if pending.remote_result.is_none() {
-        let identity_signer = &client.runtime().key_provider;
-        let prepared = crate::internal::identity_wire::device_revoke::prepare_revoke(
+        let prepared = prepare_revoke_async(
+            client,
             pending.operation_id.clone(),
             pending.target_device_id.clone(),
             pending.expected_checkpoint.clone(),
             pending.new_document.clone(),
             pending.authorizing_device.device_id.clone(),
             &pending.authorizing_device.signing_key_id,
-            &|kid, message| identity_signer.sign_device_assertion(kid, message),
             now,
         )
+        .await
         .map_err(unknown_outcome)?;
         let expected_checkpoint = pending
             .expected_result_checkpoint()
@@ -452,7 +456,9 @@ where
         .remote_result
         .as_ref()
         .ok_or_else(|| unknown_outcome(crate::ImError::PermissionDenied))?;
-    converge_local_state(core, client, &pending, remote_result).map_err(unknown_outcome)?;
+    converge_local_state(core, client, &pending, remote_result)
+        .await
+        .map_err(unknown_outcome)?;
     let target_device_id =
         crate::ids::ProtocolDeviceId::parse(&pending.target_device_id).map_err(unknown_outcome)?;
     store.delete(&secret_ref).map_err(unknown_outcome)?;
@@ -463,7 +469,56 @@ where
     })
 }
 
-fn prepare_initial_intent(
+#[allow(clippy::too_many_arguments)]
+async fn prepare_revoke_async(
+    client: &crate::core::ImClient,
+    operation_id: String,
+    target_device_id: String,
+    expected_checkpoint: IdentityInternalCheckpoint,
+    new_document: Value,
+    authorizing_device_id: String,
+    authorizing_signing_key_id: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<PreparedDeviceRevoke> {
+    let unsigned = crate::internal::identity_wire::device_revoke::prepare_revoke_unsigned(
+        operation_id,
+        target_device_id,
+        expected_checkpoint,
+        new_document,
+        authorizing_device_id,
+        authorizing_signing_key_id,
+        now,
+    )?;
+    let signature = match client.runtime().identity_session.as_ref() {
+        Some(session) => {
+            let signature = session
+                .sign(crate::internal::identity_provider::ProviderSignRequest {
+                    purpose:
+                        crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                        unsigned.signing_key_id.clone(),
+                    ),
+                    payload: unsigned.signing_input.clone(),
+                })
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            if signature.kid != unsigned.signing_key_id
+                || signature.algorithm
+                    != crate::internal::identity_provider::ProviderKeyAlgorithm::Ed25519
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            signature.bytes
+        }
+        None => client
+            .runtime()
+            .key_provider
+            .sign_device_assertion(&unsigned.signing_key_id, &unsigned.signing_input)?,
+    };
+    Ok(crate::internal::identity_wire::device_revoke::complete_revoke(unsigned, &signature))
+}
+
+async fn prepare_initial_intent(
     client: &crate::core::ImClient,
     target_device_id: &str,
     authorizing_device_id: &str,
@@ -530,18 +585,33 @@ fn prepare_initial_intent(
     validate_manifest_device(&document, &authorizing)?;
     validate_manifest_device(&document, &target)?;
 
-    let root_key_id = format!("{}#key-1", did.as_str());
-    let mut new_document = anp::authentication::remove_device_from_did_document(
-        &document,
-        &root_key_id,
-        target_device_id,
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?;
-    crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
-        &mut new_document,
-        did,
-        client.runtime().key_provider.as_ref(),
-    )?;
+    let new_document = if client.runtime().identity_session.is_some() {
+        crate::internal::identity_device_join::provider_document_change_candidate(
+            client,
+            serde_json::json!({
+                "changes": [{
+                    "change": "remove_device",
+                    "device_id": target_device_id,
+                }],
+            }),
+        )
+        .await?
+        .ok_or(crate::ImError::PermissionDenied)?
+    } else {
+        let root_key_id = format!("{}#key-1", did.as_str());
+        let mut new_document = anp::authentication::remove_device_from_did_document(
+            &document,
+            &root_key_id,
+            target_device_id,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+        crate::internal::identity_daemon_subkey::resign_did_document_with_signer(
+            &mut new_document,
+            did,
+            client.runtime().key_provider.as_ref(),
+        )?;
+        new_document
+    };
     validate_manifest_device(&new_document, &authorizing)?;
     if anp::authentication::validate_device_manifest(&new_document)
         .map_err(|_| crate::ImError::PermissionDenied)?
@@ -599,7 +669,7 @@ fn validate_pending_authorizer(
     Ok(())
 }
 
-fn converge_local_state(
+async fn converge_local_state(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     pending: &PendingDeviceRevoke,
@@ -609,6 +679,12 @@ fn converge_local_state(
     if remote.checkpoint != pending.expected_result_checkpoint()? {
         return Err(crate::ImError::PermissionDenied);
     }
+    crate::internal::identity_device_join::complete_provider_document_change(
+        client,
+        &pending.new_document,
+        &remote.checkpoint,
+    )
+    .await?;
     write_document_atomic(&client.runtime().did_document_path, &pending.new_document)?;
     let local_alias = client
         .current_identity()

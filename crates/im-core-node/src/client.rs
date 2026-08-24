@@ -929,15 +929,19 @@ impl NativeImCoreNodeClient {
         let operation = self.inner.operation().await?;
         let environment = operation.environment()?;
         operation.client()?;
-        environment
-            .core
-            .device_join()
-            .local_device_join_verification_progress(
-                im_core::identity::IdentitySelector::Default,
-                &input.join_session_id,
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .device_join()
+                    .local_device_join_verification_progress_async(
+                        im_core::identity::IdentitySelector::Default,
+                        &input.join_session_id,
+                    ),
+                self.inner.operation_timeout,
             )
+            .await
             .map(crate::dto::admin_device_join_progress)
-            .map_err(SafeError::from_im)
     }
 
     #[napi(catch_unwind)]
