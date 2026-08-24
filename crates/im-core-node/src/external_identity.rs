@@ -915,7 +915,7 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
         attempt: ProviderPublicationAttempt,
         result: ProviderPublicationResult,
     ) -> ProviderResult<ProviderDocumentChangeOutcome> {
-        let outcome = call_json(
+        let outcome: WireDocumentChangeOutcome = call_json(
             &self.dispatch,
             "documentChangeComplete",
             &CompleteDocumentChangePayload {
@@ -926,6 +926,7 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
             Vec::new(),
         )
         .await?;
+        let outcome = ProviderDocumentChangeOutcome::try_from(outcome)?;
         if matches!(
             outcome,
             ProviderDocumentChangeOutcome::Committed { .. }
@@ -940,7 +941,7 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
         &self,
         observation: ProviderVerifiedRemoteDocument,
     ) -> ProviderResult<ProviderDocumentChangeOutcome> {
-        let outcome = call_json(
+        let outcome: WireDocumentChangeOutcome = call_json(
             &self.dispatch,
             "documentChangeReconcile",
             &ReconcileDocumentChangePayload {
@@ -950,6 +951,7 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
             Vec::new(),
         )
         .await?;
+        let outcome = ProviderDocumentChangeOutcome::try_from(outcome)?;
         if matches!(outcome, ProviderDocumentChangeOutcome::Committed { .. }) {
             *self.public_cache.write().await = None;
         }
@@ -1640,6 +1642,15 @@ struct WireCapabilities {
     did_wba: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum WireDocumentChangeOutcome {
+    ReadyForPublication,
+    PublicationUncertain,
+    Committed { identity: WirePublicIdentity },
+    Aborted,
+}
+
 impl TryFrom<WirePublicIdentity> for ProviderPublicIdentity {
     type Error = IdentityProviderError;
 
@@ -1669,9 +1680,56 @@ impl TryFrom<WirePublicIdentity> for ProviderPublicIdentity {
     }
 }
 
+impl TryFrom<WireDocumentChangeOutcome> for ProviderDocumentChangeOutcome {
+    type Error = IdentityProviderError;
+
+    fn try_from(value: WireDocumentChangeOutcome) -> Result<Self, Self::Error> {
+        Ok(match value {
+            WireDocumentChangeOutcome::ReadyForPublication => Self::ReadyForPublication,
+            WireDocumentChangeOutcome::PublicationUncertain => Self::PublicationUncertain,
+            WireDocumentChangeOutcome::Committed { identity } => Self::Committed {
+                identity: identity.try_into()?,
+            },
+            WireDocumentChangeOutcome::Aborted => Self::Aborted,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_change_outcome_accepts_public_facade_identity_shape() {
+        let wire: WireDocumentChangeOutcome = serde_json::from_value(serde_json::json!({
+            "outcome": "committed",
+            "identity": {
+                "reference": {
+                    "storeId": "store-1",
+                    "identityId": "identity-1",
+                    "did": "did:wba:example.test:alice",
+                },
+                "state": "active",
+                "revision": 2,
+                "document": { "id": "did:wba:example.test:alice" },
+                "activeKeys": [{
+                    "kid": "did:wba:example.test:alice#device",
+                    "algorithm": "ed25519",
+                    "purposes": ["authentication", "device_assertion"],
+                }],
+                "capabilities": { "didWba": true },
+            },
+        }))
+        .unwrap();
+
+        let outcome = ProviderDocumentChangeOutcome::try_from(wire).unwrap();
+        let ProviderDocumentChangeOutcome::Committed { identity } = outcome else {
+            panic!("expected committed document change outcome");
+        };
+        assert_eq!(identity.revision, 2);
+        assert!(identity.did_wba);
+        assert_eq!(identity.active_keys.len(), 1);
+    }
 
     #[test]
     fn sealed_delivery_validation_rejects_aad_substitution() {
