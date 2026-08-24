@@ -237,6 +237,109 @@ fn bearer_401_compare_and_clear_preserves_a_concurrently_replaced_token() {
 }
 
 #[test]
+fn no_body_bearer_401_retries_without_content_digest_and_clears_the_token() {
+    let fixture = Fixture::new(false);
+    let service = fixture.client.external_http_auth();
+    let url = "https://api.example.com/resource";
+
+    let initial = service.prepare(get(url)).unwrap();
+    service
+        .handle_response(initial, token_response("get-token", 3600))
+        .unwrap();
+    let bearer = service.prepare(get(url)).unwrap();
+    assert_eq!(
+        header_value(bearer.header_patch(), "Authorization"),
+        Some("Bearer get-token")
+    );
+
+    let ExternalHttpAuthDecision::Retry(retry) = service
+        .handle_response(
+            bearer,
+            recoverable_401_with_error("invalid_access_token", None),
+        )
+        .unwrap()
+    else {
+        panic!("expected one no-body signature retry");
+    };
+    assert_signature(&retry);
+    assert!(header_value(retry.header_patch(), "Content-Digest").is_none());
+    assert_eq!(
+        signature_metadata(&fixture, &retry).components,
+        vec!["@method", "@target-uri", "@authority"]
+    );
+    assert_signature(&service.prepare(get(url)).unwrap());
+}
+
+#[test]
+fn recoverable_bearer_401_clears_token_before_declining_incompatible_signature() {
+    let fixture = Fixture::new(false);
+    let service = fixture.client.external_http_auth();
+    let url = "https://api.example.com/resource";
+
+    let initial = service.prepare(post(url)).unwrap();
+    service
+        .handle_response(initial, token_response("stale-token", 3600))
+        .unwrap();
+    let bearer = service.prepare(post(url)).unwrap();
+    let decision = service
+        .handle_response(
+            bearer,
+            response(
+                401,
+                vec![
+                    ExternalHttpHeader::new(
+                        "WWW-Authenticate",
+                        r#"DIDWba realm="api.example.com", error="invalid_access_token""#,
+                    )
+                    .unwrap(),
+                    ExternalHttpHeader::new(
+                        "Accept-Signature",
+                        r#"sig1=("@method" "cookie");created;nonce;keyid"#,
+                    )
+                    .unwrap(),
+                ],
+            ),
+        )
+        .unwrap();
+    assert!(matches!(decision, ExternalHttpAuthDecision::Complete));
+    assert_signature(&service.prepare(post(url)).unwrap());
+}
+
+#[test]
+fn combined_www_authenticate_selects_the_did_wba_challenge() {
+    let fixture = Fixture::new(false);
+    let service = fixture.client.external_http_auth();
+    let url = "https://api.example.com/resource";
+
+    let initial = service.prepare(post(url)).unwrap();
+    service
+        .handle_response(initial, token_response("combined-token", 3600))
+        .unwrap();
+    let bearer = service.prepare(post(url)).unwrap();
+    let decision = service
+        .handle_response(
+            bearer,
+            response(
+                401,
+                vec![
+                    ExternalHttpHeader::new(
+                        "WWW-Authenticate",
+                        r#"Bearer realm="api, primary", DIDWba realm="api.example.com", error="invalid_access_token", error_description="retry, with signature""#,
+                    )
+                    .unwrap(),
+                    fixed_accept_signature(),
+                ],
+            ),
+        )
+        .unwrap();
+    let ExternalHttpAuthDecision::Retry(retry) = decision else {
+        panic!("expected the DID-WBA challenge to drive one retry");
+    };
+    assert_signature(&retry);
+    assert_signature(&service.prepare(post(url)).unwrap());
+}
+
+#[test]
 fn signature_401_retries_once_with_fresh_or_server_nonce() {
     let fixture = Fixture::new(false);
     let service = fixture.client.external_http_auth();
@@ -472,6 +575,10 @@ fn token_response_with_status(status: u16, token: &str, expires_in: u64) -> Exte
 }
 
 fn recoverable_401(nonce: Option<&str>) -> ExternalHttpResponse {
+    recoverable_401_with_error("invalid_signature", nonce)
+}
+
+fn recoverable_401_with_error(error: &str, nonce: Option<&str>) -> ExternalHttpResponse {
     let nonce = nonce
         .map(|value| format!(r#", nonce="{value}""#))
         .unwrap_or_default();
@@ -480,7 +587,7 @@ fn recoverable_401(nonce: Option<&str>) -> ExternalHttpResponse {
         vec![
             ExternalHttpHeader::new(
                 "WWW-Authenticate",
-                format!(r#"DIDWba realm="api.example.com", error="invalid_signature"{nonce}"#),
+                format!(r#"DIDWba realm="api.example.com", error="{error}"{nonce}"#),
             )
             .unwrap(),
             fixed_accept_signature(),
