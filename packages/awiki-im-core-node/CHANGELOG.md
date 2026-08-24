@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- Report Windows `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION` as the stable `state_in_use` error when another process owns the AWiki state root.
+
 ## 0.1.7
 
 - Add a Host-only opaque recovery-attestation method for post-recovery service reconciliation; the SDK never logs or persists the token.
