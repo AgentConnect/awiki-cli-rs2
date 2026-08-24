@@ -43,7 +43,7 @@ impl StateRoot {
         let lock = open_private_file(&lock_path)?;
         match fs2::FileExt::try_lock_exclusive(&lock) {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(error) if is_lock_contention(&error) => {
                 return Err(SafeError::state_in_use());
             }
             Err(_) => return Err(SafeError::internal()),
@@ -143,6 +143,27 @@ impl StateRoot {
         self.harden_permissions()?;
         Ok(cleared)
     }
+}
+
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // LockFileEx reports ERROR_LOCK_VIOLATION when another process owns
+        // the byte-range lock. Some Windows filesystems surface the adjacent
+        // sharing violation instead. Rust does not consistently classify
+        // either value as WouldBlock across supported toolchains.
+        return is_windows_lock_contention(error.raw_os_error());
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_lock_contention(raw_os_error: Option<i32>) -> bool {
+    matches!(raw_os_error, Some(32 | 33))
 }
 
 #[derive(Debug)]
@@ -402,6 +423,14 @@ mod tests {
         }
         drop(first);
         StateRoot::open(directory.path().to_path_buf()).unwrap();
+    }
+
+    #[test]
+    fn windows_lock_violations_are_reported_as_contention() {
+        assert!(is_windows_lock_contention(Some(32)));
+        assert!(is_windows_lock_contention(Some(33)));
+        assert!(!is_windows_lock_contention(Some(5)));
+        assert!(!is_windows_lock_contention(None));
     }
 
     #[test]
