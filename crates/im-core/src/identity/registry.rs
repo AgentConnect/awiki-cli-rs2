@@ -266,7 +266,15 @@ impl<'a> IdentityRegistry<'a> {
     ) -> crate::ImResult<super::IdentityDeviceSummary> {
         let registry = self.load_registry_async().await?;
         let entry = registry.find_entry(selector)?;
-        self.device_summary_for_entry(entry)
+        let local_key_state = if entry.identity_custody_backend.is_some()
+            || entry.anp_identity_store_id.is_some()
+            || entry.anp_identity_id.is_some()
+        {
+            Some(self.vnext_local_key_state_async(entry).await)
+        } else {
+            None
+        };
+        self.device_summary_for_entry_with_local_key_state(entry, local_key_state)
     }
 
     pub async fn upgrade_legacy_identity_async(
@@ -1842,6 +1850,14 @@ impl IdentityRegistry<'_> {
         &self,
         entry: &RegistryEntry,
     ) -> crate::ImResult<super::IdentityDeviceSummary> {
+        self.device_summary_for_entry_with_local_key_state(entry, None)
+    }
+
+    fn device_summary_for_entry_with_local_key_state(
+        &self,
+        entry: &RegistryEntry,
+        local_key_state: Option<(bool, Option<String>)>,
+    ) -> crate::ImResult<super::IdentityDeviceSummary> {
         let Some(state) = entry.device_state.as_ref() else {
             return Ok(super::IdentityDeviceSummary {
                 identity: entry.summary.clone(),
@@ -1876,7 +1892,8 @@ impl IdentityRegistry<'_> {
                     identity: entry.summary.did.as_str().to_owned(),
                     missing: vec!["device_authorization".to_owned()],
                 })?;
-        let (local_root_available, local_blocker) = self.vnext_local_key_state(entry);
+        let (local_root_available, local_blocker) =
+            local_key_state.unwrap_or_else(|| self.vnext_local_key_state(entry));
         let (readiness, blocked_reason) =
             match state.readiness(local_root_available, local_blocker.as_deref()) {
                 crate::internal::identity_device_state::LocalDeviceReadiness::Legacy => {
@@ -1912,6 +1929,26 @@ impl IdentityRegistry<'_> {
             readiness,
             blocked_reason,
         })
+    }
+
+    async fn vnext_local_key_state_async(&self, entry: &RegistryEntry) -> (bool, Option<String>) {
+        let runtime = match self
+            .load_runtime_async(super::IdentitySelector::Id(entry.summary.id.clone()))
+            .await
+        {
+            Ok(runtime) => runtime,
+            Err(_) => return (false, Some("anp_identity_custody_unavailable".to_owned())),
+        };
+        if runtime.key_provider.request_signing_key_id().is_err()
+            || runtime.key_provider.agreement_key_id().is_err()
+            || runtime.key_provider.auth_state().is_err()
+        {
+            return (
+                false,
+                Some("anp_identity_device_material_unavailable".to_owned()),
+            );
+        }
+        (runtime.key_provider.root_control_key_id().is_ok(), None)
     }
 
     fn vnext_local_key_state(&self, entry: &RegistryEntry) -> (bool, Option<String>) {
@@ -4805,6 +4842,137 @@ mod tests {
                         .contains("private")
                 })
         );
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[tokio::test]
+    async fn external_anp_provider_reports_admin_device_ready() {
+        use crate::internal::identity_provider::DirectAnpIdentityCustody;
+
+        let root = tempfile::tempdir().unwrap();
+        let provider_root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: provider_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("external-readiness", [0x6a; 32]),
+                ),
+            })
+            .unwrap();
+        let identity = manager.create(anp_identity_spec("external-ready")).unwrap();
+        let public = identity.public_identity().unwrap();
+        let reference = public.reference.clone();
+        let root_kid = public
+            .active_keys
+            .iter()
+            .find(|key| {
+                key.purposes
+                    .contains(&anp_identity::KeyPurpose::RootControl)
+            })
+            .unwrap()
+            .kid
+            .clone();
+        let device_kid = public
+            .active_keys
+            .iter()
+            .find(|key| {
+                key.purposes
+                    .contains(&anp_identity::KeyPurpose::DeviceAssertion)
+            })
+            .unwrap()
+            .kid
+            .clone();
+        let agreement_kid = public
+            .active_keys
+            .iter()
+            .find(|key| {
+                key.purposes
+                    .contains(&anp_identity::KeyPurpose::KeyAgreement)
+            })
+            .unwrap()
+            .kid
+            .clone();
+        let did_document = public.document.into_value();
+        let document_hash =
+            crate::internal::identity_wire::document::document_hash(&did_document).unwrap();
+        let provider = std::sync::Arc::new(DirectAnpIdentityCustody::new(manager));
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            paths.clone(),
+            crate::ImCoreOpenOptions::default().with_identity_custody_provider(provider),
+        )
+        .unwrap();
+        let device_state = crate::internal::identity_device_state::IdentityDeviceState {
+            schema_version:
+                crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            mode: crate::internal::identity_device_state::IdentityDeviceMode::VNext,
+            authorization: Some(
+                crate::internal::identity_device_state::DeviceAuthorizationProjection {
+                    protocol_device_id: crate::ids::ProtocolDeviceId::parse("device-a").unwrap(),
+                    signing_key_id: device_kid.clone(),
+                    e2ee_key_id: agreement_kid.clone(),
+                    status:
+                        crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                    role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                    management_ready: true,
+                    auth_generation: 1,
+                },
+            ),
+            checkpoint: Some(
+                crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                    document_version: 1,
+                    document_hash,
+                    registry_version: 1,
+                },
+            ),
+        };
+        crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .save_anp_identity_projection(
+                crate::internal::identity_store::SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: crate::ids::Did::parse(&reference.did).unwrap(),
+                    unique_id: "external-ready-id".to_owned(),
+                    user_id: "user-alice".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    handle: "alice".to_owned(),
+                    full_handle: "alice.example.com".to_owned(),
+                    binding_generation: None,
+                    jwt_token: "external-ready-token".to_owned(),
+                    did_document: Some(did_document),
+                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                        root_key_id: root_kid,
+                        device_signing_key_id: device_kid,
+                        device_e2ee_key_id: agreement_kid,
+                    },
+                    device_state: Some(device_state),
+                    key1_private_pem: String::new(),
+                    key1_public_pem: String::new(),
+                    e2ee_signing_private_pem: String::new(),
+                    e2ee_agreement_private_pem: String::new(),
+                    daemon_subkey_package: None,
+                    make_default: true,
+                },
+                crate::internal::identity_store::AnpIdentityProjectionStorage::from_core(
+                    &core,
+                    reference.store_id,
+                    reference.identity_id,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let summary = core
+            .identities()
+            .device_summary_async(crate::identity::IdentitySelector::Default)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            summary.readiness,
+            crate::identity::IdentityDeviceReadiness::AdminReady
+        );
+        assert!(summary.blocked_reason.is_none());
     }
 
     #[test]
