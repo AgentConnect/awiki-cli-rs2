@@ -367,20 +367,22 @@ impl<'a> HandleRecoveryService<'a> {
             .await
     }
 
-    pub fn discard_handle_recovery_pre_attempt(
+    pub async fn discard_handle_recovery_pre_attempt(
         &self,
         request: HandleRecoveryDiscardRequest,
     ) -> crate::ImResult<HandleRecoveryOperationSummary> {
         crate::internal::identity_handle_recovery_runtime::discard_pre_attempt(self.core, request)
+            .await
     }
 
-    pub fn quarantine_handle_recovery_key_unavailable(
+    pub async fn quarantine_handle_recovery_key_unavailable(
         &self,
         request: HandleRecoveryQuarantineRequest,
     ) -> crate::ImResult<HandleRecoveryOperationSummary> {
         crate::internal::identity_handle_recovery_runtime::quarantine_key_unavailable(
             self.core, request,
         )
+        .await
     }
 
     pub async fn authorized_handle_recovery_receipt(

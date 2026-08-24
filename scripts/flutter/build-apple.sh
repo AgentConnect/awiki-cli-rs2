@@ -165,7 +165,7 @@ for target in "${IOS_TARGETS[@]}"; do
     --release \
     --target "${target}" \
     --no-default-features \
-    --features blocking,sqlite,http,ios,group-e2ee
+    --features blocking,sqlite,http,ios,group-e2ee,identity-native-anp
 done
 
 for target in "${MACOS_TARGETS[@]}"; do
@@ -181,7 +181,7 @@ for target in "${MACOS_TARGETS[@]}"; do
     --release \
     --target "${target}" \
     --no-default-features \
-    --features blocking,sqlite,http,macos,group-e2ee
+    --features blocking,sqlite,http,macos,group-e2ee,identity-native-anp
 done
 
 mkdir -p "${IOS_FRAMEWORK_DIR}" "${MACOS_FRAMEWORK_DIR}" "${IOS_INCLUDE_DIR}" "${MACOS_INCLUDE_DIR}"
@@ -251,7 +251,7 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
   python3 "${ARTIFACT_MANIFEST_TOOL}" write \
     --platform ios \
     --targets "${ios_targets}" \
-    --features blocking,sqlite,http,ios,group-e2ee
+    --features blocking,sqlite,http,ios,group-e2ee,identity-native-anp
 fi
 
 if [[ "${BUILD_MACOS}" == "1" ]]; then
@@ -276,5 +276,5 @@ if [[ "${BUILD_MACOS}" == "1" ]]; then
   python3 "${ARTIFACT_MANIFEST_TOOL}" write \
     --platform macos \
     --targets "${macos_targets}" \
-    --features blocking,sqlite,http,macos,group-e2ee
+    --features blocking,sqlite,http,macos,group-e2ee,identity-native-anp
 fi

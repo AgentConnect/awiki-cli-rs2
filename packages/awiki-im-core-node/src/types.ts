@@ -13,14 +13,16 @@ export interface ImCoreNodeOpenOptions {
   readonly operationTimeoutMs?: number
   /** Timeout for bounded synchronization before list reads. */
   readonly syncTimeoutMs?: number
+  /** Test-only exception for loopback HTTP external-auth targets. */
+  readonly externalHttpAllowInsecureLoopbackForTesting?: boolean
   /** Enables permanent revocation of another device. Defaults to false. */
   readonly multiDeviceDeviceRevokeEnabled?: boolean
   /** Enables Core-owned durable phone recovery for an existing Handle. */
   readonly multiDeviceHandleRecoveryEnabled?: boolean
   /** Exact User Service audience required when Handle recovery is enabled. */
   readonly multiDeviceAudience?: string
-  /** Test-only exception for literal loopback HTTP external-auth targets. */
-  readonly externalHttpAllowInsecureLoopbackForTesting?: boolean
+  /** Trusted Host-only ANP Identity Provider lease used by DSH External mode. */
+  readonly identityProvider?: ImCoreIdentityProvider
 }
 
 /** One exact HTTP field. Authentication field values are sensitive. */
@@ -46,14 +48,217 @@ export interface ExternalHttpResponse {
 
 /** Opaque, single-use external HTTP authentication attempt. */
 export interface ExternalHttpAuthAttempt {
-  /** Canonical target URI covered by the signature. */
   readonly targetUrl: string
   readonly method: string
-  /** Apply this patch only to the exact request represented by this attempt. */
   readonly headerPatch: readonly ExternalHttpHeader[]
   readonly retryCount: number
-  /** Returns the only allowed retry, or `null` when authentication is complete. */
   handleResponse(response: ExternalHttpResponse): Promise<ExternalHttpAuthAttempt | null>
+}
+
+export interface ImCoreIdentityReference {
+  readonly storeId: string
+  readonly identityId: string
+  readonly did: string
+}
+
+export interface ImCoreSealedSecretDelivery {
+  readonly envelope: ImCoreSealedSecretEnvelope
+  readonly authorization: {
+    readonly providerInstanceId: string
+    readonly parentLeaseId: string
+    readonly consumer: string
+    readonly capability: string
+    readonly storeId: string
+    readonly expiresAt: number
+  }
+  readonly aad: string
+}
+
+export interface ImCoreSealedSecretEnvelope {
+  readonly protocol: 'anp-sealed-secret/1'
+  readonly suite: 'hpke-base-x25519-hkdf-sha256-chacha20poly1305-v1'
+  readonly encappedKey: string
+  readonly ciphertext: string
+}
+
+export interface ImCoreIdentityProvider {
+  readonly protocol: 'anp-identity-provider-ts/1'
+  readonly capabilities: readonly string[]
+  info(): Promise<unknown>
+  recover(): Promise<unknown>
+  list(): Promise<readonly unknown[]>
+  publicIdentity(reference: ImCoreIdentityReference): Promise<unknown>
+  hostStatus(reference: ImCoreIdentityReference): Promise<{
+    readonly rootCapability: 'absent' | 'pending' | 'active'
+    readonly rootKeyFingerprint: string
+    readonly checkpoint?: {
+      readonly documentVersion: number
+      readonly registryVersion: number
+      readonly documentDigest: string
+    }
+  }>
+  create(request: unknown): Promise<unknown>
+  delete(reference: ImCoreIdentityReference): Promise<void>
+  recoverIdentity(reference: ImCoreIdentityReference): Promise<void>
+  ecdhSealed(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly kid: string
+    readonly peerPublic: Buffer
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+  }): Promise<ImCoreSealedSecretDelivery>
+  exportRootKeySealed?(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly kid: string
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+    readonly userPresenceConfirmed: boolean
+  }): Promise<ImCoreSealedSecretDelivery>
+  prepareLegacyRootImport?(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly evidence: unknown
+    readonly encoding: 'raw32' | 'pkcs8_der'
+    readonly requestId: string
+  }): Promise<ImCorePreparedRootImport>
+  prepareIdentityMaterialImport?(request: {
+    readonly remote: unknown
+    readonly didWba: boolean
+    readonly keys: readonly {
+      readonly kid: string
+      readonly purpose:
+        | 'root_control'
+        | 'authentication'
+        | 'device_assertion'
+        | 'application_assertion'
+        | 'key_agreement'
+      readonly encoding: 'raw32' | 'pkcs8_der'
+    }[]
+    readonly requestId: string
+  }): Promise<ImCorePreparedIdentityMaterialImport>
+  importWrappedRoot?(
+    reference: ImCoreIdentityReference,
+    envelope: unknown,
+  ): Promise<'pending' | 'active'>
+  sign(
+    reference: ImCoreIdentityReference,
+    request:
+      | { readonly purpose: 'authentication'; readonly kid?: string; readonly payload: Buffer }
+      | { readonly purpose: 'device_assertion'; readonly kid?: string; readonly payload: Buffer }
+      | {
+          readonly purpose: 'application_assertion'
+          readonly domain: string
+          readonly kid?: string
+          readonly payload: Buffer
+        },
+  ): Promise<{ readonly kid: string; readonly algorithm: 'ed25519'; readonly bytes: Buffer }>
+  signOriginProof(
+    reference: ImCoreIdentityReference,
+    request: {
+      readonly method: string
+      readonly meta: unknown
+      readonly body: unknown
+      readonly kid?: string
+      readonly options?: {
+        readonly created?: number
+        readonly expires?: number
+        readonly nonce?: string
+      }
+    },
+  ): Promise<unknown>
+  prepareHttpSignature(request: {
+    readonly identity: ImCoreIdentityReference
+    readonly kid?: string
+    readonly url: string
+    readonly method: string
+    readonly headers: readonly { readonly name: string; readonly value: string }[]
+    readonly body?: Buffer
+    readonly nonce?: string
+    readonly created?: number
+    readonly expires?: number
+    readonly coveredComponents?: readonly string[]
+  }): Promise<unknown>
+  prepareDocumentChange(
+    reference: ImCoreIdentityReference,
+    request: unknown,
+  ): Promise<ImCoreProviderDocumentChangeSession>
+  resumeDocumentChange(
+    reference: ImCoreIdentityReference,
+  ): Promise<ImCoreProviderDocumentChangeSession | undefined>
+  adoptVerifiedDocument(
+    reference: ImCoreIdentityReference,
+    remote: unknown,
+  ): Promise<string>
+  beginDeviceEnrollment(request: unknown): Promise<ImCoreProviderEnrollmentSession>
+  beginRequestSigningEnrollment(request: unknown): Promise<ImCoreProviderEnrollmentSession>
+  resumeEnrollment(
+    reference: ImCoreIdentityReference,
+  ): Promise<ImCoreProviderEnrollmentSession | undefined>
+  confirmRootPromotion?(
+    reference: ImCoreIdentityReference,
+    request: { readonly remote: unknown },
+  ): Promise<void>
+  signPendingRootObjectProof?(
+    reference: ImCoreIdentityReference,
+    request: {
+      readonly kid?: string
+      readonly document: unknown
+      readonly issuerDid: string
+      readonly created?: string
+    },
+  ): Promise<unknown>
+}
+
+/** Host-only sealed import workflow retained inside the provider bridge. */
+export interface ImCorePreparedRootImport {
+  offer(): {
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+    readonly token: string
+    readonly authorization: ImCoreSealedSecretDelivery['authorization']
+    readonly aad: string
+  }
+  complete(
+    token: string,
+    envelope: ImCoreSealedSecretEnvelope,
+  ): Promise<'pending' | 'active'>
+}
+
+/** Host-only sealed legacy migration workflow retained inside the provider bridge. */
+export interface ImCorePreparedIdentityMaterialImport {
+  offer(): {
+    readonly target: ImCoreIdentityReference
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+    readonly token: string
+    readonly authorization: ImCoreSealedSecretDelivery['authorization']
+    readonly itemAad: readonly string[]
+  }
+  complete(
+    token: string,
+    envelopes: readonly ImCoreSealedSecretEnvelope[],
+  ): Promise<unknown>
+}
+
+/** Host-only opaque workflow retained inside the provider bridge. */
+export interface ImCoreProviderDocumentChangeSession {
+  candidate(): Promise<unknown>
+  hostPhase(): Promise<'prepared' | 'publication_in_flight' | 'publication_uncertain' | 'published'>
+  beginPublication(): Promise<unknown>
+  complete(attempt: unknown, result: unknown): Promise<unknown>
+  reconcile(observation: unknown): Promise<unknown>
+}
+
+/** Host-only enrollment workflow retained inside the provider bridge. */
+export interface ImCoreProviderEnrollmentSession {
+  proposal(): Promise<unknown>
+  signDeviceAssertion(payload: Buffer): Promise<Buffer>
+  deriveDeviceSharedSecretSealed(request: {
+    readonly peerPublic: Buffer
+    readonly recipientPublicKey: Buffer
+    readonly requestId: string
+  }): Promise<ImCoreSealedSecretDelivery>
+  activate(remote: unknown): Promise<'activated'>
+  cancel(): Promise<void>
 }
 
 /** Public identity projection. No token, private key, or local path is exposed. */

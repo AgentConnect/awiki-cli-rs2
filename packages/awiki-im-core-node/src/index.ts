@@ -1,4 +1,5 @@
 import { loadNativeBinding } from './loader.js'
+import { createIdentityProviderDispatch } from './provider-bridge.js'
 import type {
   NativeExternalHttpAuthAttempt,
   NativeHandleRecoveryProgress,
@@ -459,6 +460,10 @@ class RustRealtimeSession implements RealtimeSession {
  */
 export async function openImCoreNodeClient(options: ImCoreNodeOpenOptions): Promise<ImCoreNodeClient> {
   const binding = loadNativeBinding()
-  const native = await call(() => binding.openNativeClient(options))
+  const { identityProvider, ...nativeOptions } = options
+  const dispatch = identityProvider === undefined
+    ? undefined
+    : createIdentityProviderDispatch(identityProvider)
+  const native = await call(() => binding.openNativeClient(nativeOptions, dispatch))
   return new RustImCoreNodeClient(native)
 }

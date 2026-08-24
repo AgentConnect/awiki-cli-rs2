@@ -512,6 +512,7 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
             },
             &current_document,
         )
+        .await
         .unwrap();
     let join_session_id = started.session.join_session_id.clone();
     let join_request = started.join_request;
@@ -535,6 +536,7 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
             document_version: 7,
             document_hash: current_document_hash.clone(),
         })
+        .await
         .unwrap();
     admin
         .device_join()
@@ -809,6 +811,7 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
             },
             &document,
         )
+        .await
         .unwrap();
     let join_session_id = started.session.join_session_id.clone();
     let prepared = core
@@ -831,6 +834,7 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
             document_version: 7,
             document_hash,
         })
+        .await
         .unwrap();
     assert_eq!(
         core.device_join()
@@ -947,19 +951,31 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
 async fn cancelled_new_device_runtime_does_not_reopen_deleted_remote_token() {
     let root = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(root.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.test",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
     let started = core
         .device_join()
-        .start(crate::identity::DeviceJoinStartRequest {
-            operation_id: "join-cancel-idempotent".to_owned(),
-            did: crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap(),
-            ttl_seconds: 600,
-        })
+        .start(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "join-cancel-idempotent".to_owned(),
+                did: generated.did,
+                ttl_seconds: 600,
+            },
+            &generated.did_document,
+        )
+        .await
         .unwrap();
     crate::internal::identity_device_join::cancel_join(
         &core,
         &started.session.join_session_id,
         crate::identity::DeviceJoinSide::NewDevice,
     )
+    .await
     .unwrap();
 
     let mut runtime = DeviceJoinNewDeviceRuntime::new(

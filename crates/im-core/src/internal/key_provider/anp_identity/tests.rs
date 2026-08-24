@@ -1,6 +1,7 @@
 use anp_identity::{
-    Capabilities, DeviceManifestEntrySpec, DeviceManifestSpec, DidCreateSpec, DidExtensionSpec,
-    DidProfile, DidStore, KeyRole, ManagedKeySpec, ServiceSpec,
+    CreateIdentityCapabilities, CreateIdentityExtension, CreateIdentityProfile,
+    CreateIdentityRequest, DeviceManifestEntryInput, IdentityService, ManagedKeyInput,
+    ManagedKeyRole,
 };
 use serde_json::json;
 
@@ -10,9 +11,16 @@ use crate::internal::key_provider::IdentitySigner;
 #[test]
 fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports() {
     let root = tempfile::tempdir().unwrap();
-    let mut store =
-        DidStore::initialize_injected(root.path().join("store"), "host", [41_u8; 32]).unwrap();
-    let identity = store.create_identity(spec()).unwrap();
+    let mut manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: root.path().join("store"),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "host",
+                [41_u8; 32],
+            )),
+        })
+        .unwrap();
+    let identity = manager.create(spec()).unwrap();
     let auth_path = root.path().join("identity/auth.json");
     crate::internal::auth::state::persist_jwt_token(&auth_path, "test-token").unwrap();
     let signer = AnpIdentitySigner::new_file(identity, auth_path);
@@ -27,6 +35,13 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
 
     assert_eq!(signer.request_signing_key_id().unwrap(), device_kid);
     assert_eq!(signer.agreement_key_id().unwrap(), agreement_kid);
+    assert_eq!(
+        signer
+            .sign_device_assertion(&device_kid, b"device assertion")
+            .unwrap()
+            .len(),
+        64
+    );
     let signature = signer.sign(&request_kid, b"request").unwrap();
     signer
         .public_key(&request_kid)
@@ -38,6 +53,23 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
         .sign_object_proof(&device_kid, &object, &did, None)
         .unwrap();
     anp::proof::verify_object_proof(&signed, &did, &signer.did_document().unwrap()).unwrap();
+    let origin = signer
+        .sign_origin_proof(
+            "message.send",
+            &json!({
+                "sender_did": did,
+                "timestamp": 1_787_403_600_i64,
+                "target": {"kind": "agent", "did": "did:wba:example.com:peer"},
+                "operation_id": "operation-1",
+                "message_id": "message-1",
+                "content_type": "application/json"
+            }),
+            &json!({"message": "device-signed"}),
+            &device_kid,
+            anp::proof::Rfc9421OriginProofGenerationOptions::default(),
+        )
+        .unwrap();
+    assert!(origin.signature.starts_with("sig1=:"));
     assert_eq!(
         signer.sign_object_proof(&request_kid, &object, &did, None),
         Err(crate::ImError::PermissionDenied)
@@ -99,31 +131,57 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
 #[test]
 fn anp_identity_signer_reloads_once_after_external_generation_advance() {
     let root = tempfile::tempdir().unwrap();
-    let mut store =
-        DidStore::initialize_injected(root.path().join("store"), "host", [42_u8; 32]).unwrap();
-    let identity = store.create_identity(spec()).unwrap();
-    let did = identity.did().to_owned();
-    let request_kid = format!("{did}#request");
-    let signer = AnpIdentitySigner::new_ephemeral(identity);
-    let mut external = store.open_identity(&did).unwrap();
-    let prepared = external
-        .prepare_update(anp_identity::DocumentUpdateSpec {
-            request_signing_rotation: None,
-            request_signing_mutations: Vec::new(),
-            device_mutations: Vec::new(),
-            services: Some(vec![ServiceSpec {
-                id: "message-v2".to_owned(),
-                service_type: "ANPMessageService".to_owned(),
-                service_endpoint: "https://example.com/im/v2".to_owned(),
-                service_did: None,
-                profiles: vec!["anp.core.binding.v1".to_owned()],
-                security_profiles: vec!["transport-protected".to_owned()],
-            }]),
+    let mut external_manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: root.path().join("store"),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "host",
+                [42_u8; 32],
+            )),
         })
         .unwrap();
-    external.begin_publication(&prepared.revision_id).unwrap();
-    external.mark_published(&prepared.revision_id).unwrap();
-    external.commit_update(&prepared.revision_id).unwrap();
+    let mut external = external_manager.create(spec()).unwrap();
+    let reference = external.reference();
+    let did = reference.did.clone();
+    let manager = anp_identity::IdentityManager::open(anp_identity::IdentityManagerConfig {
+        state_root: root.path().join("store"),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "host",
+            [42_u8; 32],
+        )),
+    })
+    .unwrap();
+    let identity = manager.get(&reference).unwrap();
+    let request_kid = format!("{did}#request");
+    let signer = AnpIdentitySigner::new_ephemeral(identity);
+    let mut change = external
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![anp_identity::DocumentChange::ReplaceServices {
+                services: vec![IdentityService {
+                    id: "message-v2".to_owned(),
+                    service_type: "ANPMessageService".to_owned(),
+                    service_endpoint: "https://example.com/im/v2".to_owned(),
+                    service_did: None,
+                    profiles: vec!["anp.core.binding.v1".to_owned()],
+                    security_profiles: vec!["transport-protected".to_owned()],
+                }],
+            }],
+        })
+        .unwrap();
+    let candidate = change.candidate().clone();
+    let attempt = change.begin_publication().unwrap();
+    change
+        .complete(
+            attempt,
+            anp_identity::PublicationResult::Confirmed {
+                evidence: anp_identity::VerifiedPublicationEvidence {
+                    document_version: 2,
+                    registry_version: 2,
+                    document_digest: candidate.candidate_digest,
+                },
+            },
+        )
+        .unwrap();
 
     let signature = signer.sign(&request_kid, b"after-update").unwrap();
     signer
@@ -140,35 +198,35 @@ fn anp_identity_signer_reloads_once_after_external_generation_advance() {
             .is_some_and(|id| id.ends_with("#message-v2"))));
 }
 
-fn spec() -> DidCreateSpec {
-    DidCreateSpec {
-        profile: DidProfile::E1,
+fn spec() -> CreateIdentityRequest {
+    CreateIdentityRequest {
+        profile: CreateIdentityProfile::E1,
         domain: "example.com".to_string(),
         port: None,
         path_segments: vec!["providers".to_string(), "awiki".to_string()],
-        capabilities: Capabilities { did_wba: true },
+        capabilities: CreateIdentityCapabilities { did_wba: true },
         managed_keys: vec![
-            managed("root", KeyRole::RootControl),
-            managed("device", KeyRole::DeviceSigning),
-            managed("request", KeyRole::RequestSigning),
-            managed("agreement", KeyRole::E2eeAgreement),
+            managed("root", ManagedKeyRole::RootControl),
+            managed("device", ManagedKeyRole::DeviceSigning),
+            managed("request", ManagedKeyRole::RequestSigning),
+            managed("agreement", ManagedKeyRole::E2eeAgreement),
         ],
         external_keys: Vec::new(),
         services: Vec::new(),
         agent_description_url: None,
-        extensions: vec![DidExtensionSpec::DeviceManifest(DeviceManifestSpec {
-            devices: vec![DeviceManifestEntrySpec {
+        extensions: vec![CreateIdentityExtension::DeviceManifest {
+            devices: vec![DeviceManifestEntryInput {
                 device_id: "device-a".to_string(),
                 signing_key_id: "#device".to_string(),
                 e2ee_key_id: "#agreement".to_string(),
                 profiles: vec!["anp.core.binding.v1".to_string()],
             }],
-        })],
+        }],
     }
 }
 
-fn managed(fragment: &str, role: KeyRole) -> ManagedKeySpec {
-    ManagedKeySpec {
+fn managed(fragment: &str, role: ManagedKeyRole) -> ManagedKeyInput {
+    ManagedKeyInput {
         fragment: fragment.to_string(),
         role,
     }

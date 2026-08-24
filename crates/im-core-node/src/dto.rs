@@ -1929,7 +1929,7 @@ fn message_content(
         im_core::messages::MessageBodyView::Payload { payload }
             if content_type == Some(im_core::attachments::attachment_manifest_content_type()) =>
         {
-            match im_core::attachments::parse_attachment_manifest(&payload) {
+            match im_core::compat::attachments::parse_attachment_manifest(&payload) {
                 Ok(manifest) => {
                     let selected = manifest
                         .attachments

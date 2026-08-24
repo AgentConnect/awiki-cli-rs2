@@ -1,0 +1,9 @@
+{
+  "name": "@awiki/identity-provider-bridge-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "cargo build --release && node --experimental-strip-types --test test/bridge.test.ts"
+  }
+}

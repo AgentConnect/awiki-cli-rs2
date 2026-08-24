@@ -209,8 +209,8 @@ operation ID，并固定 `challengeTtlSeconds=240`（且不超过 Core public �
 该变更修改 native input、native output 并增加 native method，必须：
 
 1. native API version 从 `9` 提升到 `10`；
-2. Rust crate、wrapper 和全部平台包进入同一个新的 patch 版本；建议下一个版本为 `0.1.8`，
-   实际版本由发布任务确认；
+2. Rust crate、wrapper 和全部平台包进入同一个版本；该能力最初进入 `0.1.8` candidate，当前
+   `release/0815` 由 `0.2.0` candidate 连同 External Identity Provider bridge 一并承载；
 3. loader 拒绝 v9 addon，不能用 optional field 静默兼容缺少 cancel/SAS 的旧二进制；
 4. `stage-package.mjs`、pack audit、checksums、SBOM、provenance 和 packed-install gate 使用同一
    committed source OID；

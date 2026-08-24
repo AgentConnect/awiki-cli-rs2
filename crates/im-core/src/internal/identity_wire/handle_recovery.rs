@@ -689,6 +689,32 @@ pub(crate) fn complete_result_get_v4(
     })
 }
 
+pub(crate) fn parse_commit_result_v4(
+    value: Value,
+    operation_id: &str,
+    intent_hash: &str,
+) -> crate::ImResult<crate::internal::identity_handle_recovery_pending::RecoveryRemoteResultV4> {
+    validate_operation_id(operation_id)?;
+    validate_sha256_digest_v4("intent_hash", intent_hash)?;
+    let result: crate::internal::identity_handle_recovery_pending::RecoveryRemoteResultV4 =
+        closed(value, "Handle Recovery V4 commit")?;
+    result.validate_against(operation_id, intent_hash)?;
+    if result.account_user_id.chars().count() > 255
+        || result.full_handle.chars().count() > 320
+        || result.checkpoint.document_version > i64::MAX as u64
+        || result.checkpoint.registry_version > i64::MAX as u64
+    {
+        return Err(invalid(
+            "result",
+            "committed result is outside the closed Recovery V4 profile",
+        ));
+    }
+    canonical_handle_v4(&result.full_handle)?;
+    canonical_did_wba_v4(&result.previous_did)?;
+    canonical_did_wba_v4(&result.current_did)?;
+    Ok(result)
+}
+
 pub(crate) fn build_attestation_issue_call_v1(
     operation_id: &str,
 ) -> crate::ImResult<super::RpcCall> {
@@ -747,32 +773,6 @@ fn valid_compact_jwt(value: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         })
-}
-
-pub(crate) fn parse_commit_result_v4(
-    value: Value,
-    operation_id: &str,
-    intent_hash: &str,
-) -> crate::ImResult<crate::internal::identity_handle_recovery_pending::RecoveryRemoteResultV4> {
-    validate_operation_id(operation_id)?;
-    validate_sha256_digest_v4("intent_hash", intent_hash)?;
-    let result: crate::internal::identity_handle_recovery_pending::RecoveryRemoteResultV4 =
-        closed(value, "Handle Recovery V4 commit")?;
-    result.validate_against(operation_id, intent_hash)?;
-    if result.account_user_id.chars().count() > 255
-        || result.full_handle.chars().count() > 320
-        || result.checkpoint.document_version > i64::MAX as u64
-        || result.checkpoint.registry_version > i64::MAX as u64
-    {
-        return Err(invalid(
-            "result",
-            "committed result is outside the closed Recovery V4 profile",
-        ));
-    }
-    canonical_handle_v4(&result.full_handle)?;
-    canonical_did_wba_v4(&result.previous_did)?;
-    canonical_did_wba_v4(&result.current_did)?;
-    Ok(result)
 }
 
 pub(crate) fn parse_result_get_v4(

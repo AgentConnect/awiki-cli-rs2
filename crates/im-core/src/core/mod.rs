@@ -11,6 +11,8 @@ pub use self::bootstrap::{
     CoreBootstrap, LocalStateStatus, MigrationReport, PathCheck, PathValidationReport,
 };
 pub use self::client::ImClient;
+#[cfg(feature = "provider-traits")]
+pub use self::options::IdentityCustodyProvider;
 pub use self::options::{IdentitySecretStoragePolicy, ImCoreOpenOptions, ImCoreSecretVaultOptions};
 
 pub(crate) struct ImCoreInner {
@@ -25,6 +27,8 @@ pub(crate) struct ImCoreInner {
     pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) handle_recovery_enabled: bool,
     pub(crate) multi_device_audience: Option<String>,
+    #[cfg(feature = "provider-traits")]
+    pub(crate) identity_custody_provider: Option<IdentityCustodyProvider>,
     pub(crate) external_http_allow_insecure_loopback_for_testing: bool,
     pub(crate) handle_recovery_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
@@ -98,6 +102,8 @@ impl ImCore {
         let multi_device_audience = options.multi_device_audience.filter(|audience| {
             !audience.is_empty() && audience == audience.trim() && audience.chars().count() <= 255
         });
+        #[cfg(feature = "provider-traits")]
+        let identity_custody_provider = options.identity_custody_provider;
         if options.multi_device_handle_recovery_enabled && multi_device_audience.is_none() {
             return Err(crate::ImError::invalid_input(
                 Some("multi_device_audience".to_owned()),
@@ -117,6 +123,8 @@ impl ImCore {
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
                 multi_device_audience,
+                #[cfg(feature = "provider-traits")]
+                identity_custody_provider,
                 external_http_allow_insecure_loopback_for_testing: options
                     .external_http_allow_insecure_loopback_for_testing,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -408,14 +416,18 @@ impl ImCore {
         self.client_with_device_identity_material_inner(material, None)
     }
 
+    #[cfg(feature = "identity-native-anp")]
     pub(crate) fn client_with_pending_anp_identity(
         &self,
-        identity: anp_identity::DidIdentity,
+        identity: anp_identity::ManagedIdentity,
         handle: Option<&str>,
         display_name: &str,
         protocol_device_id: &crate::ids::ProtocolDeviceId,
     ) -> crate::ImResult<ImClient> {
-        let did = crate::ids::Did::parse(identity.did())?;
+        let public = identity
+            .public_identity()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        let did = crate::ids::Did::parse(&public.reference.did)?;
         let identity_id = crate::ids::IdentityId::parse(
             did.as_str()
                 .rsplit(':')
@@ -430,6 +442,7 @@ impl ImCore {
             std::sync::Arc::new(
                 crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
             );
+        let identity_session = provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -450,6 +463,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider: provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -459,15 +473,76 @@ impl ImCore {
         Ok(ImClient::new(self.inner.clone(), runtime))
     }
 
+    #[cfg(feature = "provider-traits")]
+    pub(crate) fn client_with_pending_provider_identity(
+        &self,
+        public: crate::internal::identity_provider::ProviderPublicIdentity,
+        session: std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
+        handle: Option<&str>,
+        display_name: &str,
+        protocol_device_id: &crate::ids::ProtocolDeviceId,
+    ) -> crate::ImResult<ImClient> {
+        let did = crate::ids::Did::parse(&public.reference.did)?;
+        let identity_id = crate::ids::IdentityId::parse(
+            did.as_str()
+                .rsplit(':')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(crate::ImError::PermissionDenied)?,
+        )?;
+        let handle = handle
+            .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
+            .transpose()?;
+        let provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> =
+            std::sync::Arc::new(
+                crate::internal::key_provider::ProviderIdentitySigner::new_ephemeral(
+                    public, session,
+                )?,
+            );
+        let identity_session = provider.async_session();
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle,
+                display_name: Some(display_name.to_owned()),
+                local_alias: None,
+                device_id: Some(protocol_device_id.as_str().to_owned()),
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: false,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider: provider,
+            identity_session,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+                sync_account: None,
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
+    #[cfg(feature = "identity-native-anp")]
     #[doc(hidden)]
     pub fn client_with_anp_delegated_identity(
         &self,
-        identity: anp_identity::DidIdentity,
+        identity: anp_identity::ManagedIdentity,
     ) -> crate::ImResult<ImClient> {
-        if identity.state() != anp_identity::IdentityState::Active {
+        let public = identity
+            .public_identity()
+            .map_err(crate::internal::identity_custody::map_facade_error)?;
+        if public.state != anp_identity::PublicIdentityState::Active {
             return Err(crate::ImError::PermissionDenied);
         }
-        let did = crate::ids::Did::parse(identity.did())?;
+        let did = crate::ids::Did::parse(&public.reference.did)?;
         let identity_id = crate::ids::IdentityId::parse(
             did.as_str()
                 .rsplit(':')
@@ -480,6 +555,7 @@ impl ImCore {
                 crate::internal::key_provider::AnpIdentitySigner::new_ephemeral(identity),
             );
         provider.ensure_request_signing_available()?;
+        let identity_session = provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -500,6 +576,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider: provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -557,12 +634,13 @@ impl ImCore {
         let device_signing_key_id = material.device_signing_key_id.clone();
         let device_e2ee_key_id = material.device_e2ee_key_id.clone();
         let display_name = material.display_name.clone();
-        let key_provider = std::sync::Arc::new(
+        let key_provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> = std::sync::Arc::new(
             crate::internal::key_provider::HostBackedDeviceIdentitySigner::new_with_auth_token_persistence(
                 &material,
                 auth_token_persistence,
             )?,
         );
+        let identity_session = key_provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -583,6 +661,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -621,7 +700,7 @@ impl ImCore {
             .as_deref()
             .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
             .transpose()?;
-        let key_provider = std::sync::Arc::new(match request_signing_key_id {
+        let key_provider: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner> = std::sync::Arc::new(match request_signing_key_id {
             Some(key_id) => {
                 crate::internal::key_provider::HostedIdentitySigner::new_for_request_signing_key(
                     &material, key_id,
@@ -629,6 +708,7 @@ impl ImCore {
             }
             None => crate::internal::key_provider::HostedIdentitySigner::new(&material)?,
         });
+        let identity_session = key_provider.async_session();
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -649,6 +729,7 @@ impl ImCore {
             e2ee_agreement_private_key_path: std::path::PathBuf::new(),
             auth_state_path: std::path::PathBuf::new(),
             key_provider,
+            identity_session,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
@@ -975,6 +1056,15 @@ impl ImCoreInner {
 
     pub(crate) fn multi_device_audience(&self) -> Option<&str> {
         self.multi_device_audience.as_deref()
+    }
+
+    #[cfg(feature = "provider-traits")]
+    pub(crate) fn identity_custody_provider(
+        &self,
+    ) -> Option<&Arc<dyn crate::provider::IdentityCustody>> {
+        self.identity_custody_provider
+            .as_ref()
+            .map(|provider| &provider.inner)
     }
 
     pub(crate) fn handle_recovery_lock(

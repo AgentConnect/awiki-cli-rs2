@@ -362,6 +362,32 @@ pub(crate) fn build_direct_attachment_send_rpc_params(
     )
 }
 
+pub(crate) async fn build_direct_attachment_send_rpc_params_async(
+    identity: &AttachmentSigningIdentity,
+    target_did: &str,
+    manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
+) -> crate::ImResult<Value> {
+    if target_did.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("target_did".to_string()),
+            "direct message target is required",
+        ));
+    }
+    build_signed_attachment_send_rpc_params_async(
+        identity,
+        "direct.send",
+        "agent",
+        target_did,
+        "anp.direct.base.v1",
+        manifest,
+        client_message_id,
+        operation_id,
+    )
+    .await
+}
+
 pub(crate) fn build_group_attachment_send_rpc_params(
     identity: &AttachmentSigningIdentity,
     group_did: &str,
@@ -387,6 +413,32 @@ pub(crate) fn build_group_attachment_send_rpc_params(
     )
 }
 
+pub(crate) async fn build_group_attachment_send_rpc_params_async(
+    identity: &AttachmentSigningIdentity,
+    group_did: &str,
+    manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
+) -> crate::ImResult<Value> {
+    if group_did.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("group_did".to_string()),
+            "group target is required",
+        ));
+    }
+    build_signed_attachment_send_rpc_params_async(
+        identity,
+        "group.send",
+        "group",
+        group_did,
+        "anp.group.base.v1",
+        manifest,
+        client_message_id,
+        operation_id,
+    )
+    .await
+}
+
 fn build_signed_attachment_send_rpc_params(
     identity: &AttachmentSigningIdentity,
     method: &str,
@@ -397,9 +449,66 @@ fn build_signed_attachment_send_rpc_params(
     client_message_id: Option<&crate::ids::MessageId>,
     operation_id: Option<&str>,
 ) -> crate::ImResult<Value> {
+    let payload = attachment_send_payload(
+        &identity.did,
+        method,
+        target_kind,
+        target_did,
+        profile,
+        manifest,
+        client_message_id,
+        operation_id,
+    );
+    let origin_proof = crate::internal::proof::origin::build_origin_proof(
+        &attachment_origin_identity(identity),
+        &payload,
+    )?;
+    Ok(attachment_send_params(payload, origin_proof))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_signed_attachment_send_rpc_params_async(
+    identity: &AttachmentSigningIdentity,
+    method: &str,
+    target_kind: &str,
+    target_did: &str,
+    profile: &str,
+    manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
+) -> crate::ImResult<Value> {
+    let payload = attachment_send_payload(
+        &identity.did,
+        method,
+        target_kind,
+        target_did,
+        profile,
+        manifest,
+        client_message_id,
+        operation_id,
+    );
+    let origin_proof = crate::internal::proof::origin::build_origin_proof_async(
+        &attachment_origin_identity(identity),
+        &payload,
+    )
+    .await?;
+    Ok(attachment_send_params(payload, origin_proof))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attachment_send_payload(
+    sender_did: &str,
+    method: &str,
+    target_kind: &str,
+    target_did: &str,
+    profile: &str,
+    manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
+) -> DirectPayload {
     let body = json!({ "payload": manifest });
     let mut meta = super::common::signed_message_meta(
-        &identity.did,
+        sender_did,
         target_kind,
         target_did,
         profile,
@@ -415,23 +524,31 @@ fn build_signed_attachment_send_rpc_params(
     {
         meta["operation_id"] = Value::String(operation_id.to_string());
     }
-    let payload = DirectPayload {
+    DirectPayload {
         method: method.to_string(),
         meta,
         body,
-    };
-    let origin_proof = crate::internal::proof::origin::build_origin_proof(
-        &crate::internal::proof::origin::OriginProofIdentity {
-            identity_name: identity.identity_name.clone(),
-            did_document: identity.did_document.clone(),
-            signer: identity.signer.clone(),
-            verification_method: identity.verification_method.clone(),
-        },
-        &payload,
-    )?;
-    Ok(json!({
+    }
+}
+
+fn attachment_origin_identity(
+    identity: &AttachmentSigningIdentity,
+) -> crate::internal::proof::origin::OriginProofIdentity {
+    crate::internal::proof::origin::OriginProofIdentity {
+        identity_name: identity.identity_name.clone(),
+        did_document: identity.did_document.clone(),
+        signer: identity.signer.clone(),
+        verification_method: identity.verification_method.clone(),
+    }
+}
+
+fn attachment_send_params(
+    payload: DirectPayload,
+    origin_proof: anp::proof::Rfc9421OriginProof,
+) -> Value {
+    json!({
         "meta": payload.meta,
         "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
         "body": payload.body,
-    }))
+    })
 }

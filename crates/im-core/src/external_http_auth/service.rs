@@ -39,15 +39,15 @@ impl<'a> ExternalHttpAuthService<'a> {
         request: ExternalHttpRequest,
     ) -> crate::ImResult<ExternalHttpAuthAttempt> {
         let prepared = self.prepare_request(request)?;
-        let material = self
+        let signing_key_id = self
             .client
             .runtime()
             .key_provider
-            .device_request_signing_material()?;
+            .request_signing_key_id()?;
         let token_key = TokenKey {
             identity_id: self.client.current_identity().id.as_str().to_owned(),
             did: self.client.did().as_str().to_owned(),
-            signing_key_id: material.key_id.clone(),
+            signing_key_id,
             origin: prepared.origin.clone(),
         };
 
@@ -64,14 +64,41 @@ impl<'a> ExternalHttpAuthService<'a> {
             });
         }
 
-        self.signature_attempt(prepared, token_key, material, None, 0)
+        self.signature_attempt(prepared, token_key, None, 0)
     }
 
     pub async fn prepare_async(
         &self,
         request: ExternalHttpRequest,
     ) -> crate::ImResult<ExternalHttpAuthAttempt> {
-        self.prepare(request)
+        let prepared = self.prepare_request(request)?;
+        let signing_key_id = self
+            .client
+            .runtime()
+            .key_provider
+            .request_signing_key_id()?;
+        let token_key = TokenKey {
+            identity_id: self.client.current_identity().id.as_str().to_owned(),
+            did: self.client.did().as_str().to_owned(),
+            signing_key_id,
+            origin: prepared.origin.clone(),
+        };
+
+        if let Some((token, fingerprint)) = self.cached_token(&token_key)? {
+            return Ok(ExternalHttpAuthAttempt {
+                header_patch: vec![ExternalHttpHeader::new(
+                    "Authorization",
+                    format!("Bearer {}", token.as_str()),
+                )?],
+                request: prepared,
+                token_key,
+                credential: AttemptCredential::Bearer { fingerprint },
+                retry_count: 0,
+            });
+        }
+
+        self.signature_attempt_async(prepared, token_key, None, 0)
+            .await
     }
 
     pub fn handle_response(
@@ -79,53 +106,16 @@ impl<'a> ExternalHttpAuthService<'a> {
         attempt: ExternalHttpAuthAttempt,
         response: ExternalHttpResponse,
     ) -> crate::ImResult<ExternalHttpAuthDecision> {
-        if (200..=299).contains(&response.status_code) {
-            if let ParsedResponseToken::Token(token) = response_token(&response.headers) {
-                self.store_token(attempt.token_key, token)?;
-            }
-            return Ok(ExternalHttpAuthDecision::Complete);
+        match self.response_plan(attempt, response)? {
+            ResponsePlan::Complete => Ok(ExternalHttpAuthDecision::Complete),
+            ResponsePlan::Retry {
+                request,
+                token_key,
+                nonce,
+            } => self
+                .signature_attempt(request, token_key, nonce.as_deref(), 1)
+                .map(ExternalHttpAuthDecision::Retry),
         }
-        if response.status_code != 401 || attempt.retry_count != 0 {
-            return Ok(ExternalHttpAuthDecision::Complete);
-        }
-
-        let challenge = match response_challenge(&response.headers) {
-            ChallengeResult::Absent => Challenge::default(),
-            ChallengeResult::DidWba(challenge) => challenge,
-            ChallengeResult::Unsupported => return Ok(ExternalHttpAuthDecision::Complete),
-        };
-        if !challenge_matches_request(&challenge, &attempt.request)
-            || is_terminal_error(challenge.error.as_deref())
-        {
-            return Ok(ExternalHttpAuthDecision::Complete);
-        }
-
-        if let AttemptCredential::Bearer { fingerprint } = attempt.credential {
-            self.clear_matching_token(&attempt.token_key, fingerprint)?;
-        }
-        if !accept_signature_compatible(&response.headers) {
-            return Ok(ExternalHttpAuthDecision::Complete);
-        }
-
-        let material = self
-            .client
-            .runtime()
-            .key_provider
-            .device_request_signing_material()?;
-        if material.key_id != attempt.token_key.signing_key_id
-            || self.client.current_identity().id.as_str() != attempt.token_key.identity_id
-            || self.client.did().as_str() != attempt.token_key.did
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        self.signature_attempt(
-            attempt.request,
-            attempt.token_key,
-            material,
-            challenge.nonce.as_deref(),
-            1,
-        )
-        .map(ExternalHttpAuthDecision::Retry)
     }
 
     pub async fn handle_response_async(
@@ -133,7 +123,17 @@ impl<'a> ExternalHttpAuthService<'a> {
         attempt: ExternalHttpAuthAttempt,
         response: ExternalHttpResponse,
     ) -> crate::ImResult<ExternalHttpAuthDecision> {
-        self.handle_response(attempt, response)
+        match self.response_plan(attempt, response)? {
+            ResponsePlan::Complete => Ok(ExternalHttpAuthDecision::Complete),
+            ResponsePlan::Retry {
+                request,
+                token_key,
+                nonce,
+            } => self
+                .signature_attempt_async(request, token_key, nonce.as_deref(), 1)
+                .await
+                .map(ExternalHttpAuthDecision::Retry),
+        }
     }
 
     /// Clears the process-local external origin Token Store.
@@ -199,40 +199,26 @@ impl<'a> ExternalHttpAuthService<'a> {
         &self,
         request: PreparedRequest,
         token_key: TokenKey,
-        material: crate::internal::key_provider::DeviceRequestSigningMaterial,
         nonce: Option<&str>,
         retry_count: u8,
     ) -> crate::ImResult<ExternalHttpAuthAttempt> {
-        let private_key = anp::PrivateKeyMaterial::from_pem(&material.private_key_pem)
+        let patch = self
+            .client
+            .runtime()
+            .key_provider
+            .http_signature_headers(
+                &token_key.signing_key_id,
+                &request.url,
+                &request.method,
+                Some(&request.headers),
+                request.body.as_deref(),
+                anp::authentication::HttpSignatureOptions {
+                    nonce: nonce.map(ToOwned::to_owned),
+                    covered_components: Some(signing_components(request.body.is_some())),
+                    ..Default::default()
+                },
+            )
             .map_err(|_| crate::ImError::PermissionDenied)?;
-        let mut components = FIXED_COMPONENTS
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect::<Vec<_>>();
-        let mut signing_headers = request.headers.clone();
-        if let Some(body) = request.body.as_deref() {
-            components.push("content-digest".to_owned());
-            signing_headers.insert(
-                "Content-Digest".to_owned(),
-                anp::authentication::build_content_digest(body),
-            );
-        }
-        let did_document = self.client.runtime().key_provider.did_document()?;
-        let patch = anp::authentication::generate_http_signature_headers(
-            &did_document,
-            &request.url,
-            &request.method,
-            &private_key,
-            Some(&signing_headers),
-            request.body.as_deref(),
-            anp::authentication::HttpSignatureOptions {
-                keyid: Some(material.key_id),
-                nonce: nonce.map(ToOwned::to_owned),
-                covered_components: Some(components),
-                ..Default::default()
-            },
-        )
-        .map_err(|_| crate::ImError::PermissionDenied)?;
         let header_patch = patch
             .into_iter()
             .map(|(name, value)| ExternalHttpHeader::new(name, value))
@@ -243,6 +229,105 @@ impl<'a> ExternalHttpAuthService<'a> {
             token_key,
             credential: AttemptCredential::Signature,
             retry_count,
+        })
+    }
+
+    async fn signature_attempt_async(
+        &self,
+        request: PreparedRequest,
+        token_key: TokenKey,
+        nonce: Option<&str>,
+        retry_count: u8,
+    ) -> crate::ImResult<ExternalHttpAuthAttempt> {
+        let Some(session) = self.client.runtime().identity_session.as_ref() else {
+            return self.signature_attempt(request, token_key, nonce, retry_count);
+        };
+        use crate::internal::identity_provider::{
+            map_provider_error, ProviderExactHttpRequest, ProviderHttpHeader,
+            ProviderHttpSigningOptions, ProviderKeySelector,
+        };
+        let signed = session
+            .prepare_http_signature(ProviderExactHttpRequest {
+                key: ProviderKeySelector::Kid(token_key.signing_key_id.clone()),
+                url: request.url.clone(),
+                method: request.method.clone(),
+                headers: request
+                    .headers
+                    .iter()
+                    .map(|(name, value)| ProviderHttpHeader {
+                        name: name.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+                body: request.body.clone(),
+                options: ProviderHttpSigningOptions {
+                    nonce: nonce.map(ToOwned::to_owned),
+                    covered_components: Some(signing_components(request.body.is_some())),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(map_provider_error)?;
+        if signed.kid != token_key.signing_key_id {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let header_patch = signed
+            .header_patch
+            .into_iter()
+            .map(|header| ExternalHttpHeader::new(header.name, header.value))
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        Ok(ExternalHttpAuthAttempt {
+            header_patch,
+            request,
+            token_key,
+            credential: AttemptCredential::Signature,
+            retry_count,
+        })
+    }
+
+    fn response_plan(
+        &self,
+        attempt: ExternalHttpAuthAttempt,
+        response: ExternalHttpResponse,
+    ) -> crate::ImResult<ResponsePlan> {
+        if (200..=299).contains(&response.status_code) {
+            if let ParsedResponseToken::Token(token) = response_token(&response.headers) {
+                self.store_token(attempt.token_key, token)?;
+            }
+            return Ok(ResponsePlan::Complete);
+        }
+        if response.status_code != 401 || attempt.retry_count != 0 {
+            return Ok(ResponsePlan::Complete);
+        }
+        let challenge = match response_challenge(&response.headers) {
+            ChallengeResult::Absent => Challenge::default(),
+            ChallengeResult::DidWba(challenge) => challenge,
+            ChallengeResult::Unsupported => return Ok(ResponsePlan::Complete),
+        };
+        if !challenge_matches_request(&challenge, &attempt.request)
+            || !accept_signature_compatible(&response.headers, attempt.request.body.is_some())
+            || is_terminal_error(challenge.error.as_deref())
+        {
+            return Ok(ResponsePlan::Complete);
+        }
+        if let AttemptCredential::Bearer { fingerprint } = attempt.credential {
+            self.clear_matching_token(&attempt.token_key, fingerprint)?;
+        }
+        let signing_key_id = self
+            .client
+            .runtime()
+            .key_provider
+            .request_signing_key_id()?;
+        if signing_key_id != attempt.token_key.signing_key_id
+            || self.client.current_identity().id.as_str() != attempt.token_key.identity_id
+            || self.client.did().as_str() != attempt.token_key.did
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(ResponsePlan::Retry {
+            request: attempt.request,
+            token_key: attempt.token_key,
+            nonce: challenge.nonce,
         })
     }
 
@@ -306,6 +391,26 @@ impl<'a> ExternalHttpAuthService<'a> {
     }
 }
 
+enum ResponsePlan {
+    Complete,
+    Retry {
+        request: PreparedRequest,
+        token_key: TokenKey,
+        nonce: Option<String>,
+    },
+}
+
+fn signing_components(body_present: bool) -> Vec<String> {
+    let mut components = FIXED_COMPONENTS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    if body_present {
+        components.push("content-digest".to_owned());
+    }
+    components
+}
+
 fn is_literal_loopback(url: &reqwest::Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
@@ -338,16 +443,12 @@ fn response_challenge(headers: &BTreeMap<String, String>) -> ChallengeResult {
     let Some(value) = headers.get("www-authenticate") else {
         return ChallengeResult::Absent;
     };
-    let Some(challenges) = parse_authenticate_challenges(value) else {
-        return ChallengeResult::Unsupported;
-    };
-    let mut did_wba = challenges
-        .into_iter()
-        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("DIDWba"));
-    let Some((_, parameters)) = did_wba.next() else {
-        return ChallengeResult::Unsupported;
-    };
-    if did_wba.next().is_some() {
+    let trimmed = value.trim();
+    let (scheme, parameters) = trimmed
+        .split_once(char::is_whitespace)
+        .map(|(scheme, rest)| (scheme, rest.trim()))
+        .unwrap_or((trimmed, ""));
+    if !scheme.eq_ignore_ascii_case("DIDWba") {
         return ChallengeResult::Unsupported;
     }
     let Some(parameters) = parse_header_parameters(parameters) else {
@@ -388,7 +489,7 @@ fn is_terminal_error(error: Option<&str>) -> bool {
     )
 }
 
-fn accept_signature_compatible(headers: &BTreeMap<String, String>) -> bool {
+fn accept_signature_compatible(headers: &BTreeMap<String, String>, body_present: bool) -> bool {
     let Some(value) = headers.get("accept-signature") else {
         return true;
     };
@@ -412,7 +513,7 @@ fn accept_signature_compatible(headers: &BTreeMap<String, String>) -> bool {
         FIXED_COMPONENTS
             .iter()
             .any(|allowed| component.eq_ignore_ascii_case(allowed))
-            || component.eq_ignore_ascii_case("content-digest")
+            || (body_present && component.eq_ignore_ascii_case("content-digest"))
     })
 }
 
@@ -521,99 +622,6 @@ fn parse_header_parameters(value: &str) -> Option<BTreeMap<String, String>> {
     Some(result)
 }
 
-fn parse_authenticate_challenges(value: &str) -> Option<Vec<(&str, &str)>> {
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    let mut challenges = Vec::new();
-    while index < bytes.len() {
-        skip_ows_and_commas(bytes, &mut index);
-        if index == bytes.len() {
-            break;
-        }
-        let scheme_start = index;
-        while index < bytes.len() && is_http_token_byte(bytes[index]) {
-            index += 1;
-        }
-        if scheme_start == index {
-            return None;
-        }
-        let scheme = &value[scheme_start..index];
-        if index == bytes.len() {
-            challenges.push((scheme, ""));
-            break;
-        }
-        if !bytes[index].is_ascii_whitespace() {
-            if bytes[index] != b',' {
-                return None;
-            }
-            challenges.push((scheme, ""));
-            index += 1;
-            continue;
-        }
-        skip_ows(bytes, &mut index);
-        let parameters_start = index;
-        let mut cursor = index;
-        let mut quoted = false;
-        let mut escaped = false;
-        let mut parameters_end = bytes.len();
-        while cursor < bytes.len() {
-            let byte = bytes[cursor];
-            if quoted {
-                if escaped {
-                    escaped = false;
-                } else if byte == b'\\' {
-                    escaped = true;
-                } else if byte == b'"' {
-                    quoted = false;
-                }
-                cursor += 1;
-                continue;
-            }
-            if byte == b'"' {
-                quoted = true;
-                cursor += 1;
-                continue;
-            }
-            if byte != b',' {
-                cursor += 1;
-                continue;
-            }
-
-            let mut next = cursor + 1;
-            skip_ows(bytes, &mut next);
-            if next == bytes.len() {
-                parameters_end = cursor;
-                index = bytes.len();
-                break;
-            }
-            let token_start = next;
-            while next < bytes.len() && is_http_token_byte(bytes[next]) {
-                next += 1;
-            }
-            if token_start == next {
-                return None;
-            }
-            let mut after_token = next;
-            skip_ows(bytes, &mut after_token);
-            if bytes.get(after_token) == Some(&b'=') {
-                cursor += 1;
-                continue;
-            }
-            parameters_end = cursor;
-            index = token_start;
-            break;
-        }
-        if quoted || escaped {
-            return None;
-        }
-        if cursor == bytes.len() {
-            index = bytes.len();
-        }
-        challenges.push((scheme, value[parameters_start..parameters_end].trim()));
-    }
-    (!challenges.is_empty()).then_some(challenges)
-}
-
 fn parse_quoted(value: &str, bytes: &[u8], index: &mut usize) -> Option<String> {
     *index += 1;
     let mut parsed = String::new();
@@ -707,25 +715,4 @@ fn skip_ows_and_commas(bytes: &[u8], index: &mut usize) {
 
 fn is_parameter_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-}
-
-fn is_http_token_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'!' | b'#'
-                | b'$'
-                | b'%'
-                | b'&'
-                | b'\''
-                | b'*'
-                | b'+'
-                | b'-'
-                | b'.'
-                | b'^'
-                | b'_'
-                | b'`'
-                | b'|'
-                | b'~'
-        )
 }

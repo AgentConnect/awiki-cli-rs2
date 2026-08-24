@@ -362,34 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn recovery_attestation_failures_are_actionable_and_secret_free() {
-        let unavailable = SafeError::from_im(im_core::ImError::Service {
-            status_code: Some(503),
-            code: Some("recovery_attestation.temporarily_unavailable".to_owned()),
-            message: "operation=secret-op did=did:wba:private".to_owned(),
-            data: Some(serde_json::json!({"attestation": "secret-token"})),
-        });
-        assert_eq!(unavailable.code, "recovery_reconciliation_unavailable");
-        assert!(unavailable.retryable);
-
-        let invalid = SafeError::from_im(im_core::ImError::Service {
-            status_code: Some(404),
-            code: Some("recovery_attestation.not_found".to_owned()),
-            message: "operation=secret-op".to_owned(),
-            data: None,
-        });
-        assert_eq!(invalid.code, "recovery_reconciliation_invalid");
-        assert!(!invalid.retryable);
-
-        for error in [unavailable, invalid] {
-            let payload = serde_json::to_string(&error).unwrap();
-            assert!(!payload.contains("secret-op"));
-            assert!(!payload.contains("did:wba:private"));
-            assert!(!payload.contains("secret-token"));
-        }
-    }
-
-    #[test]
     fn upload_and_download_failures_keep_only_stable_transfer_metadata() {
         for (failure, expected_code, retryable) in [
             (

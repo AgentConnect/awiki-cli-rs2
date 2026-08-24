@@ -600,6 +600,8 @@ struct EncryptedInit {
 struct AsyncInitLocalMaterial {
     agreement_key_id: String,
     identity_signer: std::sync::Arc<dyn crate::internal::key_provider::IdentitySigner>,
+    identity_session:
+        Option<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>>,
 }
 
 struct VerifiedPrekeyBundle {
@@ -662,10 +664,14 @@ where
         &prekey.bundle.signed_prekey.public_key_b64u,
         "signed_prekey.public_key_b64u",
     )?;
-    let static_to_signed_prekey_dh = local_material.identity_signer.ecdh(
-        &local_material.agreement_key_id,
-        &recipient_signed_prekey_public,
-    )?;
+    let static_to_signed_prekey_dh =
+        crate::internal::identity_provider::derive_shared_secret_or_fallback(
+            local_material.identity_session.as_ref(),
+            &local_material.identity_signer,
+            &local_material.agreement_key_id,
+            recipient_signed_prekey_public,
+        )
+        .await?;
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
@@ -777,10 +783,14 @@ where
         &prekey.bundle.signed_prekey.public_key_b64u,
         "signed_prekey.public_key_b64u",
     )?;
-    let static_to_signed_prekey_dh = local_material.identity_signer.ecdh(
-        &local_material.agreement_key_id,
-        &recipient_signed_prekey_public,
-    )?;
+    let static_to_signed_prekey_dh =
+        crate::internal::identity_provider::derive_shared_secret_or_fallback(
+            local_material.identity_session.as_ref(),
+            &local_material.identity_signer,
+            &local_material.agreement_key_id,
+            recipient_signed_prekey_public,
+        )
+        .await?;
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
@@ -1001,6 +1011,7 @@ async fn async_init_local_material(
     Ok(AsyncInitLocalMaterial {
         agreement_key_id: material.agreement_key_id,
         identity_signer: material.identity_signer,
+        identity_session: material.identity_session,
     })
 }
 

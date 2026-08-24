@@ -9,6 +9,7 @@ import test from 'node:test'
 
 import { ImCoreNodeError, openImCoreNodeClient } from '../dist/index.js'
 import { nativePlatformPackages, resolveNativeTarget } from '../dist/targets.js'
+import { createIdentityProviderFixture } from './identity-provider-fixture.mjs'
 
 function options(stateRoot) {
   return {
@@ -75,12 +76,15 @@ test('recovery progress exposes the stable E2EE field through the real native bi
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-recovery-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const service = await startRecoveryService(t)
+  const identityProvider = await createIdentityProviderFixture(root)
+  t.after(() => identityProvider.dispose())
   const client = await openImCoreNodeClient({
     ...options(root),
     serviceBaseUrl: service.baseUrl,
     didDomain: 'awiki.test',
     multiDeviceHandleRecoveryEnabled: true,
     multiDeviceAudience: 'awiki-user-service',
+    identityProvider,
   })
   t.after(() => client.close())
 
@@ -110,10 +114,6 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
   const client = await openImCoreNodeClient(options(root))
   assert.equal(await client.getDefaultIdentity(), null)
   await assert.rejects(
-    client.getLocalConversationTimeline({ conversationId: 'dm:did:example:bob' }),
-    error => error instanceof ImCoreNodeError && error.code === 'identity_required',
-  )
-  await assert.rejects(
     client.prepareExternalHttpRequest({
       url: 'https://api.example.test/orders',
       method: 'POST',
@@ -130,6 +130,10 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
       body: new Uint8Array(4 * 1024 * 1024 + 1),
     }),
     error => error instanceof ImCoreNodeError && error.code === 'invalid_input',
+  )
+  await assert.rejects(
+    client.getLocalConversationTimeline({ conversationId: 'dm:did:example:bob' }),
+    error => error instanceof ImCoreNodeError && error.code === 'identity_required',
   )
   await assert.rejects(
     client.completeRegistrationWithOutcome({
@@ -158,15 +162,15 @@ test('opens an empty Rust state, closes idempotently, and rejects later work', a
     error => error instanceof ImCoreNodeError && error.code === 'client_closed' && error.message === error.safeMessage,
   )
   await assert.rejects(
-    client.getLocalConversationTimeline({ conversationId: 'dm:did:example:bob' }),
-    error => error instanceof ImCoreNodeError && error.code === 'client_closed',
-  )
-  await assert.rejects(
     client.prepareExternalHttpRequest({
       url: 'https://api.example.test/orders',
       method: 'GET',
       headers: [],
     }),
+    error => error instanceof ImCoreNodeError && error.code === 'client_closed',
+  )
+  await assert.rejects(
+    client.getLocalConversationTimeline({ conversationId: 'dm:did:example:bob' }),
     error => error instanceof ImCoreNodeError && error.code === 'client_closed',
   )
 })
@@ -277,15 +281,9 @@ test('routes group, profile, recovery attestation, and payload operations throug
       operation(),
       error => error instanceof ImCoreNodeError
         && error.code === 'identity_required'
-      && error.message === error.safeMessage,
+        && error.message === error.safeMessage,
     )
   }
-  await assert.rejects(
-    client.issueHandleRecoveryAttestation({ operationId: 'missing-recovery' }),
-    error => error instanceof ImCoreNodeError
-      && error.code === 'unsupported_capability'
-      && error.message === error.safeMessage,
-  )
   await assert.rejects(
     client.addGroupMember({
       groupDid: 'did:wba:example.test:group:release-crew',

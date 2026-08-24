@@ -1,6 +1,9 @@
 //! Converges identity pending records written before ANP Identity custody.
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::internal::identity_join_activation_pending::{
@@ -22,7 +25,7 @@ pub(crate) struct PendingUpgradeOutcome {
     pub(crate) warnings: Vec<String>,
 }
 
-pub(crate) fn converge(
+pub(crate) async fn converge(
     core: &crate::core::ImCore,
     dry_run: bool,
 ) -> crate::ImResult<PendingUpgradeOutcome> {
@@ -58,7 +61,8 @@ pub(crate) fn converge(
                     opened.expose_secret(),
                     dry_run,
                     &mut outcome,
-                )?;
+                )
+                .await?;
             }
             SecretKind::IdentityHandleRecoveryPending => {
                 converge_handle_recovery(
@@ -68,7 +72,8 @@ pub(crate) fn converge(
                     opened.expose_secret(),
                     dry_run,
                     &mut outcome,
-                )?;
+                )
+                .await?;
             }
             SecretKind::IdentityJoinActivationPending => {
                 converge_join(
@@ -77,7 +82,8 @@ pub(crate) fn converge(
                     opened.expose_secret(),
                     dry_run,
                     &mut outcome,
-                )?;
+                )
+                .await?;
             }
             SecretKind::IdentityLegacyUpgradePending => {
                 converge_legacy_upgrade(
@@ -86,7 +92,8 @@ pub(crate) fn converge(
                     opened.expose_secret(),
                     dry_run,
                     &mut outcome,
-                )?;
+                )
+                .await?;
             }
             SecretKind::IdentityRootImportPending => outcome.warnings.push(
                 "legacy root-import pending will be imported directly after custody cutover"
@@ -135,9 +142,9 @@ struct LegacyRegistrationPending {
     remote_result: Option<PendingRegistrationRemoteResult>,
 }
 
-fn converge_registration(
+async fn converge_registration(
     core: &crate::core::ImCore,
-    vault: &dyn crate::internal::secret_vault::SecretVault,
+    vault: &(dyn crate::internal::secret_vault::SecretVault + Send + Sync),
     reference: &SecretRef,
     raw: &[u8],
     dry_run: bool,
@@ -167,7 +174,7 @@ fn converge_registration(
                     return Ok(());
                 }
             };
-            upgrade_registration(core, reference, legacy)?;
+            upgrade_registration(core, reference, legacy).await?;
             outcome.warnings.push(
                 "upgraded attempted legacy registration for exact remote reconciliation".to_owned(),
             );
@@ -177,7 +184,7 @@ fn converge_registration(
     Ok(())
 }
 
-fn upgrade_registration(
+async fn upgrade_registration(
     core: &crate::core::ImCore,
     legacy_ref: &SecretRef,
     legacy: LegacyRegistrationPending,
@@ -191,57 +198,71 @@ fn upgrade_registration(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    let request_id = format!("pending-registration:{}", legacy.document_hash);
     let generated = legacy.generated;
-    let mut store = crate::internal::identity_custody::open_controller_store(core)?;
-    let identity = match store.open_identity(generated.did.as_str()) {
-        Ok(identity) => identity,
-        Err(anp_identity::DidError::IdentityNotFound) => store
-            .import_identity(anp_identity::IdentityImportSpec {
-                verified_document: generated.did_document.clone(),
-                evidence: anp_identity::VerifiedDocumentEvidence {
-                    document_version: 1,
-                    registry_version: 1,
-                    document_digest: anp_identity::canonical_document_digest(
-                        &generated.did_document,
-                    )
-                    .map_err(crate::internal::identity_custody::map_error)?,
+    let document_digest = canonical_document_digest(&generated.did_document)?;
+    let custody = crate::internal::identity_custody::controller_custody_provider(core).await?;
+    let existing = custody
+        .list_identities()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == generated.did.as_str());
+    let identity = match existing {
+        Some(descriptor) => custody
+            .open_identity(&descriptor.reference)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?,
+        None => custody
+            .import_identity_material(
+                crate::internal::identity_provider::ProviderIdentityMaterialImportRequest {
+                    remote: crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+                        document: generated.did_document.clone(),
+                        evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
+                            document_version: 1,
+                            registry_version: 1,
+                            document_digest: document_digest.clone(),
+                        },
+                    },
+                    did_wba: true,
+                    keys: vec![
+                        imported_key(
+                            &generated.did_document,
+                            &generated.root_key_id,
+                            crate::internal::identity_provider::ProviderKeyPurpose::RootControl,
+                            Zeroizing::new(generated.root_private_pem.clone()),
+                        )?,
+                        imported_key(
+                            &generated.did_document,
+                            &generated.device_signing_key_id,
+                            crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
+                            Zeroizing::new(generated.device_signing_private_pem.clone()),
+                        )?,
+                        imported_key(
+                            &generated.did_document,
+                            &generated.device_e2ee_key_id,
+                            crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
+                            Zeroizing::new(generated.device_e2ee_private_pem.clone()),
+                        )?,
+                    ],
+                    request_id,
                 },
-                capabilities: anp_identity::Capabilities { did_wba: true },
-                private_keys: vec![
-                    imported_key(
-                        &generated.did_document,
-                        &generated.root_key_id,
-                        anp_identity::KeyRole::RootControl,
-                        Zeroizing::new(generated.root_private_pem.clone()),
-                    )?,
-                    imported_key(
-                        &generated.did_document,
-                        &generated.device_signing_key_id,
-                        anp_identity::KeyRole::DeviceSigning,
-                        Zeroizing::new(generated.device_signing_private_pem.clone()),
-                    )?,
-                    imported_key(
-                        &generated.did_document,
-                        &generated.device_e2ee_key_id,
-                        anp_identity::KeyRole::E2eeAgreement,
-                        Zeroizing::new(generated.device_e2ee_private_pem.clone()),
-                    )?,
-                ],
-            })
-            .map_err(crate::internal::identity_custody::map_error)?,
-        Err(error) => return Err(crate::internal::identity_custody::map_error(error)),
+            )
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?,
     };
-    if identity.state() != anp_identity::IdentityState::Active
-        || anp_identity::canonical_document_digest(identity.document())
-            .map_err(crate::internal::identity_custody::map_error)?
-            != anp_identity::canonical_document_digest(&generated.did_document)
-                .map_err(crate::internal::identity_custody::map_error)?
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || canonical_document_digest(&public.document)? != document_digest
     {
         return Err(crate::ImError::PermissionDenied);
     }
     let registration_identity = PendingRegistrationIdentity {
-        controller_store_id: store.manifest().store_id.clone(),
-        controller_identity_id: identity.identity_id().to_owned(),
+        controller_store_id: public.reference.store_id,
+        controller_identity_id: public.reference.identity_id,
         did: generated.did,
         did_document: generated.did_document,
         protocol_device_id: generated.protocol_device_id,
@@ -280,9 +301,9 @@ struct LegacyRecoveryProbe {
     remote_result: Option<serde_json::Value>,
 }
 
-fn converge_handle_recovery(
+async fn converge_handle_recovery(
     core: &crate::core::ImCore,
-    vault: &dyn crate::internal::secret_vault::SecretVault,
+    vault: &(dyn crate::internal::secret_vault::SecretVault + Send + Sync),
     reference: &SecretRef,
     raw: &[u8],
     dry_run: bool,
@@ -306,7 +327,7 @@ fn converge_handle_recovery(
             );
         } else {
             crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(core)?
-                .upgrade_legacy_v4(core, reference, raw)?;
+                .upgrade_legacy_v4(core, reference, raw).await?;
             outcome.warnings.push(
                 "upgraded attempted legacy Handle Recovery for exact result-get recovery"
                     .to_owned(),
@@ -330,7 +351,7 @@ struct LegacyJoinPending {
     access_result: Option<crate::internal::identity_device_join_runtime::DeviceJoinAccessResult>,
 }
 
-fn converge_join(
+async fn converge_join(
     core: &crate::core::ImCore,
     reference: &SecretRef,
     raw: &[u8],
@@ -359,7 +380,8 @@ fn converge_join(
         Zeroizing::new(legacy.signing_private_pem),
         &legacy.authorization.device.e2ee_key_id,
         Zeroizing::new(legacy.e2ee_private_pem),
-    )?;
+    )
+    .await?;
     let mut current = PendingJoinActivation::new(
         legacy.join_session_id,
         legacy.did,
@@ -396,7 +418,7 @@ struct LegacyUpgradePending {
     access_token: Option<String>,
 }
 
-fn converge_legacy_upgrade(
+async fn converge_legacy_upgrade(
     core: &crate::core::ImCore,
     reference: &SecretRef,
     raw: &[u8],
@@ -436,7 +458,8 @@ fn converge_legacy_upgrade(
         Zeroizing::new(generated.signing_private_pem),
         &generated.e2ee_key_id,
         Zeroizing::new(generated.e2ee_private_pem),
-    )?;
+    )
+    .await?;
     let identity = LegacyUpgradeIdentityRef {
         custody,
         did: generated.did,
@@ -476,7 +499,7 @@ fn converge_legacy_upgrade(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn import_active_device(
+async fn import_active_device(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
     document: &serde_json::Value,
@@ -487,46 +510,63 @@ fn import_active_device(
     e2ee_kid: &str,
     e2ee_pem: Zeroizing<String>,
 ) -> crate::ImResult<JoinEnrollmentRef> {
-    let mut store = crate::internal::identity_custody::open_controller_store(core)?;
-    let identity = match store.open_identity(did.as_str()) {
-        Ok(identity) => identity,
-        Err(anp_identity::DidError::IdentityNotFound) => store
-            .import_device_identity(anp_identity::DeviceIdentityImportSpec {
-                verified_document: document.clone(),
-                evidence: anp_identity::VerifiedDocumentEvidence {
-                    document_version,
-                    registry_version,
-                    document_digest: anp_identity::canonical_document_digest(document)
-                        .map_err(crate::internal::identity_custody::map_error)?,
+    let document_digest = canonical_document_digest(document)?;
+    let custody = crate::internal::identity_custody::controller_custody_provider(core).await?;
+    let existing = custody
+        .list_identities()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == did.as_str());
+    let identity = match existing {
+        Some(descriptor) => custody
+            .open_identity(&descriptor.reference)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?,
+        None => custody
+            .import_identity_material(
+                crate::internal::identity_provider::ProviderIdentityMaterialImportRequest {
+                    remote: crate::internal::identity_provider::ProviderVerifiedRemoteDocument {
+                        document: document.clone(),
+                        evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
+                            document_version,
+                            registry_version,
+                            document_digest: document_digest.clone(),
+                        },
+                    },
+                    did_wba: true,
+                    keys: vec![
+                        imported_key(
+                            document,
+                            signing_kid,
+                            crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
+                            signing_pem,
+                        )?,
+                        imported_key(
+                            document,
+                            e2ee_kid,
+                            crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
+                            e2ee_pem,
+                        )?,
+                    ],
+                    request_id: format!("pending-device:{}:{document_digest}", did.as_str()),
                 },
-                capabilities: anp_identity::Capabilities { did_wba: true },
-                signing_key: imported_key(
-                    document,
-                    signing_kid,
-                    anp_identity::KeyRole::DeviceSigning,
-                    signing_pem,
-                )?,
-                e2ee_key: imported_key(
-                    document,
-                    e2ee_kid,
-                    anp_identity::KeyRole::E2eeAgreement,
-                    e2ee_pem,
-                )?,
-            })
-            .map_err(crate::internal::identity_custody::map_error)?,
-        Err(error) => return Err(crate::internal::identity_custody::map_error(error)),
+            )
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?,
     };
-    if identity.state() != anp_identity::IdentityState::Active
-        || anp_identity::canonical_document_digest(identity.document())
-            .map_err(crate::internal::identity_custody::map_error)?
-            != anp_identity::canonical_document_digest(document)
-                .map_err(crate::internal::identity_custody::map_error)?
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || canonical_document_digest(&public.document)? != document_digest
     {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(JoinEnrollmentRef {
-        store_id: store.manifest().store_id.clone(),
-        identity_id: identity.identity_id().to_owned(),
+        store_id: public.reference.store_id,
+        identity_id: public.reference.identity_id,
         enrollment_id: crate::internal::identity_custody::LEGACY_IMPORTED_ACTIVE_ENROLLMENT_ID
             .to_owned(),
     })
@@ -535,9 +575,9 @@ fn import_active_device(
 fn imported_key(
     document: &serde_json::Value,
     kid: &str,
-    role: anp_identity::KeyRole,
+    purpose: crate::internal::identity_provider::ProviderKeyPurpose,
     pem: Zeroizing<String>,
-) -> crate::ImResult<anp_identity::ImportedPrivateKey> {
+) -> crate::ImResult<crate::internal::identity_provider::ProviderIdentityMaterialKey> {
     let material =
         anp::PrivateKeyMaterial::from_pem(&pem).map_err(|_| crate::ImError::PermissionDenied)?;
     let expected = anp::authentication::find_verification_method(document, kid)
@@ -546,22 +586,26 @@ fn imported_key(
     if material.public_key().to_pem() != expected.to_pem() {
         return Err(crate::ImError::PermissionDenied);
     }
-    let raw = match (role, material) {
+    let raw = match (purpose, material) {
         (
-            anp_identity::KeyRole::RootControl | anp_identity::KeyRole::DeviceSigning,
+            crate::internal::identity_provider::ProviderKeyPurpose::RootControl
+            | crate::internal::identity_provider::ProviderKeyPurpose::DeviceAssertion,
             anp::PrivateKeyMaterial::Ed25519(key),
         ) => key.to_bytes().to_vec(),
-        (anp_identity::KeyRole::E2eeAgreement, anp::PrivateKeyMaterial::X25519(key)) => {
-            key.to_bytes().to_vec()
-        }
+        (
+            crate::internal::identity_provider::ProviderKeyPurpose::KeyAgreement,
+            anp::PrivateKeyMaterial::X25519(key),
+        ) => key.to_bytes().to_vec(),
         _ => return Err(crate::ImError::PermissionDenied),
     };
-    Ok(anp_identity::ImportedPrivateKey::new(
-        kid,
-        role,
-        anp_identity::PrivateKeyEncoding::Raw32,
-        Zeroizing::new(raw),
-    ))
+    Ok(
+        crate::internal::identity_provider::ProviderIdentityMaterialKey {
+            kid: kid.to_owned(),
+            purpose,
+            encoding: crate::internal::identity_provider::ProviderPrivateKeyEncoding::Raw32,
+            secret: Zeroizing::new(raw),
+        },
+    )
 }
 
 fn public_multibase(document: &serde_json::Value, kid: &str) -> crate::ImResult<String> {
@@ -573,6 +617,15 @@ fn public_multibase(document: &serde_json::Value, kid: &str) -> crate::ImResult<
                 .map(ToOwned::to_owned)
         })
         .ok_or(crate::ImError::PermissionDenied)
+}
+
+fn canonical_document_digest(document: &serde_json::Value) -> crate::ImResult<String> {
+    let canonical =
+        serde_json_canonicalizer::to_vec(document).map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+    ))
 }
 
 fn pending_kind(kind: &SecretKind) -> bool {

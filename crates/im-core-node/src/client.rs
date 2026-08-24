@@ -56,6 +56,7 @@ struct ClientInner {
     operation_timeout: Duration,
     sync_timeout: Duration,
     options: NodeOpenOptions,
+    identity_provider: std::sync::Mutex<Option<crate::external_identity::ExternalIdentityCustody>>,
     realtime: tokio::sync::Mutex<Option<RealtimeSlot>>,
     next_realtime_id: AtomicU64,
     #[cfg(test)]
@@ -186,6 +187,10 @@ impl ClientInner {
             }
             if let Ok(mut environment) = self.environment.try_write() {
                 environment.take();
+                self.identity_provider
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
                 self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
                 self.closed.notify_waiters();
             }
@@ -195,6 +200,10 @@ impl ClientInner {
     async fn complete_close(&self, realtime_result: SafeResult<()>) -> SafeResult<()> {
         let mut environment = self.environment.write().await;
         environment.take();
+        self.identity_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.lifecycle.store(LIFECYCLE_CLOSED, Ordering::Release);
         self.closed.notify_waiters();
         realtime_result
@@ -297,25 +306,6 @@ pub struct NativeExternalHttpAuthAttempt {
     retry_count: u32,
 }
 
-impl std::fmt::Debug for NativeExternalHttpAuthAttempt {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NativeExternalHttpAuthAttempt")
-            .field("target_url", &"<redacted-url>")
-            .field("method", &self.method)
-            .field(
-                "header_names",
-                &self
-                    .header_patch
-                    .iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>(),
-            )
-            .field("retry_count", &self.retry_count)
-            .finish()
-    }
-}
-
 impl NativeExternalHttpAuthAttempt {
     fn new(inner: Arc<ClientInner>, attempt: im_core::ExternalHttpAuthAttempt) -> Self {
         let target_url = attempt.target_url().to_owned();
@@ -365,6 +355,25 @@ impl NativeExternalHttpAuthAttempt {
                 Ok(Some(Self::new(self.inner.clone(), attempt)))
             }
         }
+    }
+}
+
+impl std::fmt::Debug for NativeExternalHttpAuthAttempt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeExternalHttpAuthAttempt")
+            .field("target_url", &"<redacted-url>")
+            .field("method", &self.method)
+            .field(
+                "header_names",
+                &self
+                    .header_patch
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .field("retry_count", &self.retry_count)
+            .finish()
     }
 }
 
@@ -505,16 +514,18 @@ impl NativeImCoreNodeClient {
         let challenge = self
             .inner
             .wait_im(
-                environment
-                    .core
-                    .identities()
-                    .request_registration_otp_async(request),
+                environment.core.identities().register_handle_async(request),
                 self.inner.operation_timeout,
             )
             .await?;
+        if challenge.state != im_core::identity::HandleRegistrationState::OtpSent {
+            return Err(SafeError::internal());
+        }
         Ok(NodeOtpChallenge {
-            retry_after_seconds: challenge.retry_after_seconds,
-            retry_at: challenge.retry_at,
+            retry_after_seconds: challenge
+                .retry_after_seconds
+                .ok_or_else(SafeError::internal)?,
+            retry_at: challenge.retry_at.ok_or_else(SafeError::internal)?,
         })
     }
 
@@ -1595,16 +1606,15 @@ impl NativeImCoreNodeClient {
         let page = self
             .inner
             .wait_im(
-                client.messages().conversation_history_async(
+                client.messages().local_conversation_timeline_async(
                     conversation,
-                    im_core::messages::HistoryQuery {
+                    im_core::messages::LocalHistoryQuery {
                         limit: page_limit(input.limit)?,
                         cursor: input
                             .cursor
                             .map(im_core::ids::Cursor::parse)
                             .transpose()
                             .map_err(SafeError::from_im)?,
-                        inbox_history_options: None,
                     },
                 ),
                 self.inner.operation_timeout,
@@ -1816,21 +1826,18 @@ impl NativeImCoreNodeClient {
         let client = operation.client()?;
         let timeout = optional_timeout(input.timeout_ms, self.inner.operation_timeout)?;
         let attachments = client.attachments();
-        let download = box_im_future(
-            attachments.download_conversation_async(
-                im_core::attachments::DownloadConversationAttachmentRequest {
-                    conversation: im_core::messages::ConversationReadRef::new(
-                        input.conversation_id,
-                    )
-                    .map_err(SafeError::from_im)?,
-                    message_id: im_core::ids::MessageId::parse(input.message_id)
-                        .map_err(SafeError::from_im)?,
-                    attachment_id: non_empty_optional(input.attachment_id),
-                    destination: im_core::attachments::AttachmentDestination::Memory,
-                    overwrite: false,
-                },
-            ),
-        );
+        let conversation = im_core::messages::ConversationReadRef::new(input.conversation_id)
+            .map_err(SafeError::from_im)?;
+        let download = box_im_future(attachments.download_async(
+            im_core::attachments::DownloadAttachmentRequest {
+                thread: conversation.as_thread_ref().map_err(SafeError::from_im)?,
+                message_id:
+                    im_core::ids::MessageId::parse(input.message_id).map_err(SafeError::from_im)?,
+                attachment_id: non_empty_optional(input.attachment_id),
+                destination: im_core::attachments::AttachmentDestination::Memory,
+                overwrite: false,
+            },
+        ));
         let result = self.inner.wait_im(download, timeout).await?;
         crate::dto::downloaded_attachment(result)
     }
@@ -2064,29 +2071,6 @@ impl NativeImCoreNodeClient {
         napi_result(self.resume_handle_recovery_inner(input).await)
     }
 
-    async fn resume_handle_recovery_inner(
-        &self,
-        input: NodeHandleRecoveryOperationInput,
-    ) -> SafeResult<NodeHandleRecoveryProgress> {
-        let _mutation = self.inner.mutation.lock().await;
-        let mut operation = self.inner.write_operation().await?;
-        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
-        let value = self
-            .inner
-            .wait_im(
-                environment.core.handle_recovery().resume_handle_recovery(
-                    im_core::identity::HandleRecoveryResumeRequest {
-                        operation_id: input.operation_id,
-                    },
-                ),
-                self.inner.operation_timeout,
-            )
-            .await?;
-        self.refresh_recovered_client(environment, &value).await?;
-        environment.state.harden_permissions()?;
-        Ok(crate::dto::recovery_progress(value))
-    }
-
     #[napi(catch_unwind)]
     pub async fn issue_handle_recovery_attestation(
         &self,
@@ -2118,6 +2102,29 @@ impl NativeImCoreNodeClient {
         Ok(crate::dto::recovery_attestation(value))
     }
 
+    async fn resume_handle_recovery_inner(
+        &self,
+        input: NodeHandleRecoveryOperationInput,
+    ) -> SafeResult<NodeHandleRecoveryProgress> {
+        let _mutation = self.inner.mutation.lock().await;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        let value = self
+            .inner
+            .wait_im(
+                environment.core.handle_recovery().resume_handle_recovery(
+                    im_core::identity::HandleRecoveryResumeRequest {
+                        operation_id: input.operation_id,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        self.refresh_recovered_client(environment, &value).await?;
+        environment.state.harden_permissions()?;
+        Ok(crate::dto::recovery_progress(value))
+    }
+
     #[napi(catch_unwind)]
     pub async fn discard_handle_recovery(
         &self,
@@ -2139,6 +2146,7 @@ impl NativeImCoreNodeClient {
             .discard_handle_recovery_pre_attempt(im_core::identity::HandleRecoveryDiscardRequest {
                 operation_id: input.operation_id,
             })
+            .await
             .map_err(SafeError::from_im)?;
         environment.state.harden_permissions()?;
         Ok(crate::dto::recovery_operation_summary(value))
@@ -2194,10 +2202,6 @@ impl NativeImCoreNodeClient {
             state,
         } = environment;
         drop(client);
-        core.bootstrap()
-            .shutdown_local_state_async()
-            .await
-            .map_err(SafeError::from_im)?;
         drop(core);
 
         let (state, cleared) = self
@@ -2214,7 +2218,21 @@ impl NativeImCoreNodeClient {
                 self.inner.operation_timeout,
             )
             .await?;
-        *slot = Some(initialize_environment(self.inner.options.clone(), state).await?);
+        let identity_provider = self
+            .inner
+            .identity_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        *slot = Some(
+            initialize_environment(
+                self.inner.options.clone(),
+                state,
+                identity_provider,
+                self.inner.operation_timeout,
+            )
+            .await?,
+        );
         Ok(NodeClearLocalDataResult { cleared })
     }
 }
@@ -2225,7 +2243,10 @@ impl Drop for NativeImCoreNodeClient {
     }
 }
 
-pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNodeClient> {
+pub(crate) async fn open(
+    options: NodeOpenOptions,
+    identity_provider_dispatch: Option<crate::external_identity::IdentityProviderDispatch>,
+) -> SafeResult<NativeImCoreNodeClient> {
     let operation_timeout = optional_timeout(
         options.operation_timeout_ms,
         Duration::from_millis(u64::from(DEFAULT_OPERATION_TIMEOUT_MS)),
@@ -2238,7 +2259,15 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
     let state = tokio::task::spawn_blocking(move || StateRoot::open(PathBuf::from(state_root)))
         .await
         .map_err(|_| SafeError::internal())??;
-    let environment = initialize_environment(options.clone(), state).await?;
+    let identity_provider =
+        identity_provider_dispatch.map(crate::external_identity::ExternalIdentityCustody::new);
+    let environment = initialize_environment(
+        options.clone(),
+        state,
+        identity_provider.clone(),
+        operation_timeout,
+    )
+    .await?;
     Ok(NativeImCoreNodeClient {
         inner: Arc::new(ClientInner {
             lifecycle: AtomicU8::new(LIFECYCLE_OPEN),
@@ -2249,6 +2278,7 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
             operation_timeout,
             sync_timeout,
             options,
+            identity_provider: std::sync::Mutex::new(identity_provider),
             realtime: tokio::sync::Mutex::new(None),
             next_realtime_id: AtomicU64::new(1),
             #[cfg(test)]
@@ -2260,13 +2290,23 @@ pub(crate) async fn open(options: NodeOpenOptions) -> SafeResult<NativeImCoreNod
 async fn initialize_environment(
     options: NodeOpenOptions,
     state: StateRoot,
+    identity_provider: Option<crate::external_identity::ExternalIdentityCustody>,
+    operation_timeout: Duration,
 ) -> SafeResult<Environment> {
+    if let Some(provider) = identity_provider.as_ref() {
+        tokio::time::timeout(operation_timeout, provider.handshake())
+            .await
+            .map_err(|_| SafeError::timeout())??;
+    }
     let paths = state.paths();
     let config = core_config(&options)?;
-    let core =
-        im_core::ImCore::open_with_options(config, paths, core_open_options(&options, &state)?)
-            .await
-            .map_err(SafeError::from_im)?;
+    let core = im_core::ImCore::open_with_options(
+        config,
+        paths,
+        core_open_options(&options, &state, identity_provider)?,
+    )
+    .await
+    .map_err(SafeError::from_im)?;
     core.bootstrap()
         .initialize_local_state_async()
         .await
@@ -2278,7 +2318,7 @@ async fn initialize_environment(
         .await
         .map_err(SafeError::from_im)?;
     if let Some(identity) = default_identity.as_ref() {
-        migrate_file_identity_to_vault(&core, identity).await?;
+        migrate_legacy_identity_to_anp(&core, identity).await?;
     }
     let client = match default_identity {
         Some(_) => Some(
@@ -2298,6 +2338,7 @@ async fn initialize_environment(
 fn core_open_options(
     options: &NodeOpenOptions,
     state: &StateRoot,
+    identity_provider: Option<crate::external_identity::ExternalIdentityCustody>,
 ) -> SafeResult<im_core::ImCoreOpenOptions> {
     let core_options = im_core::ImCoreOpenOptions::default()
         .with_identity_secret_vault(
@@ -2317,8 +2358,12 @@ fn core_open_options(
                 .external_http_allow_insecure_loopback_for_testing
                 .unwrap_or(false),
         );
-    Ok(match &options.multi_device_audience {
+    let core_options = match &options.multi_device_audience {
         Some(audience) => core_options.with_multi_device_audience(audience.clone()),
+        None => core_options,
+    };
+    Ok(match identity_provider {
+        Some(provider) => core_options.with_identity_custody_provider(Arc::new(provider)),
         None => core_options,
     })
 }
@@ -2343,24 +2388,39 @@ pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCo
     Ok(config)
 }
 
-async fn migrate_file_identity_to_vault(
+async fn migrate_legacy_identity_to_anp(
     core: &im_core::ImCore,
     identity: &im_core::identity::IdentitySummary,
 ) -> SafeResult<()> {
     let registry = core.identities();
     let selector = im_core::identity::IdentitySelector::Default;
     let status = registry
-        .vault_status_async(selector.clone())
+        .custody_status_async(selector.clone())
         .await
         .map_err(SafeError::from_im)?;
-    if status.selected_backend == im_core::identity::IdentitySecretStorageBackend::Vault {
+    if status.backend == im_core::identity::IdentityCustodyBackend::AnpIdentity && status.ready {
         return Ok(());
     }
-    let report = registry
-        .migrate_identity_vault_async(selector)
+    let migration = registry
+        .migrate_identity_custody_async()
         .await
         .map_err(SafeError::from_im)?;
-    ensure_identity_preserved(identity, &report.identity, report.verified)
+    if migration.phase == im_core::identity::IdentityCustodyMigrationPhase::Blocked
+        || !migration.blockers.is_empty()
+    {
+        return Err(identity_migration_failed());
+    }
+    let after = registry
+        .custody_status_async(selector)
+        .await
+        .map_err(SafeError::from_im)?;
+    ensure_identity_preserved(
+        identity,
+        &after.identity,
+        after.backend == im_core::identity::IdentityCustodyBackend::AnpIdentity
+            && after.ready
+            && after.missing.is_empty(),
+    )
 }
 
 fn ensure_identity_preserved(
@@ -2373,13 +2433,17 @@ fn ensure_identity_preserved(
         || after.did != before.did
         || after.handle != before.handle
     {
-        return Err(SafeError::new(
-            "identity_migration_failed",
-            "The existing IM identity could not be preserved during secure storage migration.",
-            false,
-        ));
+        return Err(identity_migration_failed());
     }
     Ok(())
+}
+
+fn identity_migration_failed() -> SafeError {
+    SafeError::new(
+        "identity_migration_failed",
+        "The existing IM identity could not be preserved during secure storage migration.",
+        false,
+    )
 }
 
 fn realtime_options(
@@ -2781,7 +2845,7 @@ mod tests {
     #[tokio::test]
     async fn close_is_idempotent_rejects_new_work_and_releases_the_state_lock() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         client.inner.close().await.unwrap();
         client.inner.close().await.unwrap();
         assert_eq!(
@@ -2800,13 +2864,44 @@ mod tests {
                 .code,
             "client_closed"
         );
-        open(options(directory.path())).await.unwrap();
+        open(options(directory.path()), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_http_auth_requires_identity_and_enforces_body_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
+
+        let error = client
+            .prepare_external_http_request_inner(NodeExternalHttpRequest {
+                url: "https://api.example.test/orders".to_owned(),
+                method: "POST".to_owned(),
+                headers: vec![NodeExternalHttpHeader {
+                    name: "content-type".to_owned(),
+                    value: "application/json".to_owned(),
+                }],
+                body: Some(Vec::new().into()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "identity_required");
+
+        let error = client
+            .prepare_external_http_request_inner(NodeExternalHttpRequest {
+                url: "https://api.example.test/orders".to_owned(),
+                method: "POST".to_owned(),
+                headers: Vec::new(),
+                body: Some(vec![0; im_core::EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES + 1].into()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_input");
     }
 
     #[tokio::test]
     async fn close_cancels_an_inflight_operation_before_releasing_state() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         let operation = client.inner.operation().await.unwrap();
         let inner = client.inner.clone();
         let close = tokio::spawn(async move { inner.close().await });
@@ -2814,13 +2909,13 @@ mod tests {
         assert!(!close.is_finished());
         drop(operation);
         close.await.unwrap().unwrap();
-        open(options(directory.path())).await.unwrap();
+        open(options(directory.path()), None).await.unwrap();
     }
 
     #[tokio::test]
     async fn close_error_still_reaches_closed_notifies_waiters_and_releases_state_lock() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         let expected = SafeError::new(
             "realtime_join_failed",
             "The realtime session failed while closing.",
@@ -2839,13 +2934,13 @@ mod tests {
             .await
             .expect("a second close must not wait in closing")
             .unwrap();
-        open(options(directory.path())).await.unwrap();
+        open(options(directory.path()), None).await.unwrap();
     }
 
     #[tokio::test]
     async fn clear_local_data_removes_owned_state_and_keeps_the_client_open() {
         let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
+        let client = open(options(directory.path()), None).await.unwrap();
         std::fs::write(directory.path().join("cache/owned.bin"), b"private").unwrap();
         std::fs::write(directory.path().join("vault/owned.bin"), b"private").unwrap();
         std::fs::write(directory.path().join("compatibility.json"), b"{}").unwrap();
@@ -2857,7 +2952,11 @@ mod tests {
         assert_eq!(client.get_default_identity_inner().await.unwrap(), None);
         assert!(client.clear_local_data_inner().await.unwrap().cleared);
         assert_eq!(
-            open(options(directory.path())).await.err().unwrap().code,
+            open(options(directory.path()), None)
+                .await
+                .err()
+                .unwrap()
+                .code,
             "state_in_use"
         );
     }
@@ -2914,6 +3013,7 @@ mod tests {
             event_type: Some("raw.event.type".to_owned()),
             domains: Default::default(),
             reason: Some("raw recovery reason".to_owned()),
+            dirty_lanes: Default::default(),
             sync_dirty: true,
             gap_detected: true,
             has_unknown_domain: false,
@@ -2988,230 +3088,5 @@ mod tests {
             std::mem::size_of_val(&future),
             2 * std::mem::size_of::<usize>()
         );
-    }
-
-    #[tokio::test]
-    async fn external_http_attempt_reuses_token_and_is_single_use() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
-        install_external_http_identity(&client).await;
-
-        let initial = client
-            .prepare_external_http_request_inner(external_http_request(
-                "https://api.example.test/orders",
-            ))
-            .await
-            .unwrap();
-        assert_eq!(initial.get_target_url(), "https://api.example.test/orders");
-        assert_eq!(initial.get_method(), "POST");
-        assert_eq!(initial.get_retry_count(), 0);
-        assert!(node_header(&initial.get_header_patch(), "Signature").is_some());
-        assert!(initial
-            .handle_response_inner(NodeExternalHttpResponse {
-                status_code: 200,
-                headers: vec![NodeExternalHttpHeader {
-                    name: "Authentication-Info".to_owned(),
-                    value: r#"access_token="node-token", token_type="Bearer", expires_in=3600"#
-                        .to_owned(),
-                }],
-            })
-            .await
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            initial
-                .handle_response_inner(NodeExternalHttpResponse {
-                    status_code: 200,
-                    headers: Vec::new(),
-                })
-                .await
-                .unwrap_err()
-                .code,
-            "external_http_attempt_consumed"
-        );
-
-        let bearer = client
-            .prepare_external_http_request_inner(external_http_request(
-                "https://api.example.test/next",
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            node_header(&bearer.get_header_patch(), "Authorization"),
-            Some("Bearer node-token")
-        );
-        assert!(!format!("{bearer:?}").contains("node-token"));
-    }
-
-    #[tokio::test]
-    async fn external_http_attempt_returns_only_one_retry_and_obeys_lifecycle() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
-        install_external_http_identity(&client).await;
-
-        let initial = client
-            .prepare_external_http_request_inner(external_http_request(
-                "https://api.example.test/orders",
-            ))
-            .await
-            .unwrap();
-        let retry = initial
-            .handle_response_inner(recoverable_external_401())
-            .await
-            .unwrap()
-            .expect("one retry");
-        assert_eq!(retry.get_retry_count(), 1);
-        assert!(node_header(&retry.get_header_patch(), "Signature").is_some());
-        assert!(retry
-            .handle_response_inner(recoverable_external_401())
-            .await
-            .unwrap()
-            .is_none());
-
-        let before_clear = client
-            .prepare_external_http_request_inner(external_http_request(
-                "https://api.example.test/clear",
-            ))
-            .await
-            .unwrap();
-        client.clear_local_data_inner().await.unwrap();
-        assert_eq!(
-            before_clear
-                .handle_response_inner(NodeExternalHttpResponse {
-                    status_code: 200,
-                    headers: Vec::new(),
-                })
-                .await
-                .unwrap_err()
-                .code,
-            "identity_required"
-        );
-        assert_eq!(
-            client
-                .prepare_external_http_request_inner(external_http_request(
-                    "https://api.example.test/after-clear",
-                ))
-                .await
-                .unwrap_err()
-                .code,
-            "identity_required"
-        );
-    }
-
-    #[tokio::test]
-    async fn external_http_loopback_requires_the_explicit_node_option() {
-        let denied_root = tempfile::tempdir().unwrap();
-        let denied = open(options(denied_root.path())).await.unwrap();
-        install_external_http_identity(&denied).await;
-        assert_eq!(
-            denied
-                .prepare_external_http_request_inner(external_http_request(
-                    "http://127.0.0.1:3000/orders",
-                ))
-                .await
-                .unwrap_err()
-                .code,
-            "invalid_input"
-        );
-
-        let allowed_root = tempfile::tempdir().unwrap();
-        let mut allowed_options = options(allowed_root.path());
-        allowed_options.external_http_allow_insecure_loopback_for_testing = Some(true);
-        let allowed = open(allowed_options).await.unwrap();
-        install_external_http_identity(&allowed).await;
-        allowed
-            .prepare_external_http_request_inner(external_http_request(
-                "http://127.0.0.1:3000/orders",
-            ))
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn external_http_attempt_fails_closed_after_client_close() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(options(directory.path())).await.unwrap();
-        install_external_http_identity(&client).await;
-        let attempt = client
-            .prepare_external_http_request_inner(external_http_request(
-                "https://api.example.test/orders",
-            ))
-            .await
-            .unwrap();
-        client.inner.close().await.unwrap();
-        assert_eq!(
-            attempt
-                .handle_response_inner(NodeExternalHttpResponse {
-                    status_code: 200,
-                    headers: Vec::new(),
-                })
-                .await
-                .unwrap_err()
-                .code,
-            "client_closed"
-        );
-    }
-
-    async fn install_external_http_identity(client: &NativeImCoreNodeClient) {
-        let bundle = anp::authentication::create_did_wba_document(
-            "example.test",
-            anp::authentication::DidDocumentOptions::default(),
-        )
-        .unwrap();
-        let did = bundle.did_document["id"].as_str().unwrap().to_owned();
-        let mut slot = client.inner.write_operation().await.unwrap();
-        let environment = slot.as_mut().unwrap();
-        environment.client = Some(
-            environment
-                .core
-                .client_with_identity_material(im_core::identity::HostedIdentityMaterial {
-                    identity_id: "node-external-http-auth".to_owned(),
-                    did,
-                    handle: None,
-                    display_name: None,
-                    did_document: bundle.did_document.clone(),
-                    default_signing_private_key_pem: bundle.keys["key-1"].private_key_pem.clone(),
-                    e2ee_agreement_private_key_pem: None,
-                    auth_token: None,
-                })
-                .unwrap(),
-        );
-    }
-
-    fn external_http_request(url: &str) -> NodeExternalHttpRequest {
-        NodeExternalHttpRequest {
-            url: url.to_owned(),
-            method: "POST".to_owned(),
-            headers: vec![NodeExternalHttpHeader {
-                name: "Content-Type".to_owned(),
-                value: "application/json".to_owned(),
-            }],
-            body: Some(br#"{"ok":true}"#.to_vec().into()),
-        }
-    }
-
-    fn recoverable_external_401() -> NodeExternalHttpResponse {
-        NodeExternalHttpResponse {
-            status_code: 401,
-            headers: vec![
-                NodeExternalHttpHeader {
-                    name: "WWW-Authenticate".to_owned(),
-                    value: r#"DIDWba realm="api.example.test", error="invalid_signature""#
-                        .to_owned(),
-                },
-                NodeExternalHttpHeader {
-                    name: "Accept-Signature".to_owned(),
-                    value: r#"sig1=("@method" "@target-uri" "@authority" "content-digest");created;expires;nonce;keyid"#
-                        .to_owned(),
-                },
-            ],
-        }
-    }
-
-    fn node_header<'a>(headers: &'a [NodeExternalHttpHeader], name: &str) -> Option<&'a str> {
-        headers
-            .iter()
-            .find(|header| header.name.eq_ignore_ascii_case(name))
-            .map(|header| header.value.as_str())
     }
 }

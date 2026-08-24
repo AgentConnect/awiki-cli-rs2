@@ -149,9 +149,14 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
             &input.init_body.sender_ephemeral_pub_b64u,
             "sender_ephemeral_pub_b64u",
         )?;
-        let static_to_ephemeral_dh = agreement
-            .identity_signer
-            .ecdh(&agreement.agreement_key_id, &sender_ephemeral)?;
+        let static_to_ephemeral_dh =
+            crate::internal::identity_provider::derive_shared_secret_or_fallback(
+                agreement.identity_session.as_ref(),
+                &agreement.identity_signer,
+                &agreement.agreement_key_id,
+                sender_ephemeral,
+            )
+            .await?;
         let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
         let owner_did = self.client.did().as_str().to_owned();
         let consume_one_time_prekey_id = input.init_body.recipient_one_time_prekey_id.clone();

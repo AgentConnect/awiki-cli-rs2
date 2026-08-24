@@ -66,14 +66,38 @@ pub(crate) fn production_context(
     // not from the possibly stale local bootstrap copy. This also makes a
     // remotely revoked controller fail closed before it can prepare a commit.
     let did_document = resolve_member_document_fresh(client, client.did().as_str())?;
+    build_production_context(client, device, did_document)
+}
+
+async fn production_context_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<ProductionV2Context<'_>> {
+    let device = current_v2_device(client)?;
+    let did_document = resolve_member_document_fresh_async(client, client.did().as_str()).await?;
+    build_production_context(client, device, did_document)
+}
+
+fn build_production_context<'a>(
+    client: &'a crate::core::ImClient,
+    device: CurrentV2Device,
+    did_document: Value,
+) -> crate::ImResult<ProductionV2Context<'a>> {
     validate_current_device_document(client.did().as_str(), &device, &did_document)?;
 
+    let signer = client
+        .runtime()
+        .key_provider
+        .async_session()
+        .map(crate::internal::proof::origin::OriginProofSigner::Provider)
+        .unwrap_or_else(|| {
+            crate::internal::proof::origin::OriginProofSigner::Identity(Arc::clone(
+                &client.runtime().key_provider,
+            ))
+        });
     let proof_identity = OriginProofIdentity {
         identity_name: client.current_identity().id.as_str().to_owned(),
         did_document: Some(did_document.clone()),
-        signer: crate::internal::proof::origin::OriginProofSigner::Identity(Arc::clone(
-            &client.runtime().key_provider,
-        )),
+        signer,
         verification_method: Some(device.signing_key_id.clone()),
     };
     let runtime = super::v2_runtime::runtime_for_client(client)?;
@@ -160,6 +184,75 @@ pub(crate) fn publish_current_key_package(
     })
 }
 
+pub(crate) async fn publish_current_key_package_async(
+    client: &crate::core::ImClient,
+    request: crate::groups::GroupKeyPackagePublishRequest,
+) -> crate::ImResult<crate::groups::GroupKeyPackagePublishResult> {
+    let context = production_context_async(client).await?;
+    require_current_device_selection(request.device_id.as_deref(), &context.device.device_id)?;
+    let service_did = service_did(client)?;
+    let operation_id = operation_id("publish-key-package");
+    let now = OffsetDateTime::now_utc();
+    let now_text = format_time(now)?;
+    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
+    let key_package_id = request
+        .key_package_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "kp-{}",
+                crate::internal::wire::common::generate_operation_id()
+            )
+        });
+    let prepared = context
+        .product
+        .prepare_current_key_package_async(
+            service_meta(
+                client,
+                &context.device,
+                service_did.as_str(),
+                &operation_id,
+                GROUP_E2EE_TRANSPORT_PROFILE_V2,
+                &now_text,
+            ),
+            V2GenerateKeyPackageInput {
+                owner_did: client.did().as_str().to_owned(),
+                owner_device_id: context.device.device_id.clone(),
+                verification_method: context.device.signing_key_id.clone(),
+                key_package_id: key_package_id.clone(),
+                issued_at: now_text.clone(),
+                expires_at,
+                now: now_text,
+                draft_extension_negotiated: true,
+                request_id: format!("{operation_id}-local"),
+            },
+            &context.did_document,
+            context.identity_signer.as_ref(),
+        )
+        .await?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let accepted = context
+        .product
+        .publish_current_key_package_async(&mut transport, &prepared)
+        .await?;
+    let raw_response =
+        serde_json::to_value(&accepted).map_err(|error| crate::ImError::Serialization {
+            detail: format!("serialize P6 v2 KeyPackage publish result: {error}"),
+        })?;
+    Ok(crate::groups::GroupKeyPackagePublishResult {
+        owner_did: client.did().clone(),
+        device_id: context.device.device_id,
+        key_package_id,
+        purpose: request.purpose,
+        group: request.group,
+        raw_response,
+        warnings: Vec::new(),
+    })
+}
+
 /// Publishes a stable P6 KeyPackage family for the selected current device.
 /// The caller supplies deterministic family base IDs; the SDK WAL may return a
 /// fresh attempt-specific `meta` and body after an unaccepted attempt expires.
@@ -188,22 +281,25 @@ pub(crate) async fn publish_stable_key_package(
     // A volatile wire timestamp would change the stable WAL digest after a
     // restart. P6 permits this field to be omitted.
     meta.created_at = None;
-    let prepared = context.product.prepare_current_key_package(
-        meta,
-        V2GenerateKeyPackageInput {
-            owner_did: client.did().as_str().to_owned(),
-            owner_device_id: context.device.device_id.clone(),
-            verification_method: context.device.signing_key_id.clone(),
-            key_package_id: base_key_package_id.to_owned(),
-            issued_at: now_text.clone(),
-            expires_at,
-            now: now_text,
-            draft_extension_negotiated: true,
-            request_id: format!("{base_operation_id}-local"),
-        },
-        &context.did_document,
-        context.identity_signer.as_ref(),
-    )?;
+    let prepared = context
+        .product
+        .prepare_current_key_package_async(
+            meta,
+            V2GenerateKeyPackageInput {
+                owner_did: client.did().as_str().to_owned(),
+                owner_device_id: context.device.device_id.clone(),
+                verification_method: context.device.signing_key_id.clone(),
+                key_package_id: base_key_package_id.to_owned(),
+                issued_at: now_text.clone(),
+                expires_at,
+                now: now_text,
+                draft_extension_negotiated: true,
+                request_id: format!("{base_operation_id}-local"),
+            },
+            &context.did_document,
+            context.identity_signer.as_ref(),
+        )
+        .await?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     context
         .product
@@ -282,6 +378,77 @@ pub(crate) fn initialize_created_group(
     Ok(())
 }
 
+pub(crate) async fn initialize_created_group_async(
+    client: &crate::core::ImClient,
+    group_state_ref: V2GroupStateRef,
+) -> crate::ImResult<()> {
+    let mut context = production_context_async(client).await?;
+    let service_did = service_did(client)?;
+    let now = OffsetDateTime::now_utc();
+    let now_text = format_time(now)?;
+    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
+    let publish_operation = operation_id("create-key-package");
+    let key_package_id = format!(
+        "kp-{}",
+        crate::internal::wire::common::generate_operation_id()
+    );
+    let prepared_package = context
+        .product
+        .prepare_current_key_package_async(
+            service_meta(
+                client,
+                &context.device,
+                service_did.as_str(),
+                &publish_operation,
+                GROUP_E2EE_TRANSPORT_PROFILE_V2,
+                &now_text,
+            ),
+            V2GenerateKeyPackageInput {
+                owner_did: client.did().as_str().to_owned(),
+                owner_device_id: context.device.device_id.clone(),
+                verification_method: context.device.signing_key_id.clone(),
+                key_package_id,
+                issued_at: now_text.clone(),
+                expires_at,
+                now: now_text.clone(),
+                draft_extension_negotiated: true,
+                request_id: format!("{publish_operation}-local"),
+            },
+            &context.did_document,
+            context.identity_signer.as_ref(),
+        )
+        .await?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    context
+        .product
+        .publish_current_key_package_async(&mut transport, &prepared_package)
+        .await?;
+
+    let create_operation = operation_id("create");
+    let submission = context.product.prepare_create(V2CreateGroupInput {
+        meta: service_meta(
+            client,
+            &context.device,
+            service_did.as_str(),
+            &create_operation,
+            GROUP_E2EE_SECURITY_PROFILE_V2,
+            &now_text,
+        ),
+        group_state_ref,
+        creator_key_package: prepared_package.body.group_key_package,
+        creator_did_document: context.did_document,
+        now: now_text,
+        draft_extension_negotiated: true,
+        pending_commit_id: format!("pending-{create_operation}"),
+        request_id: format!("{create_operation}-prepare"),
+    })?;
+    context
+        .product
+        .submit_create_async(&submission, format!("{create_operation}-finalize"))
+        .await?;
+    Ok(())
+}
+
 /// Verifies that the selected current device owns an active local leaf before
 /// a public P4 membership mutation is attempted.
 pub(crate) fn preflight_current_controller(
@@ -289,6 +456,26 @@ pub(crate) fn preflight_current_controller(
     group_did: &str,
 ) -> crate::ImResult<()> {
     let context = production_context(client)?;
+    let endpoints = context
+        .product
+        .list_local_group_member_endpoints(endpoint_inventory_input(
+            client,
+            &context.device,
+            group_did,
+            "preflight",
+        ))?;
+    require_current_controller_endpoint(
+        &endpoints.member_endpoints,
+        client.did().as_str(),
+        &context.device.device_id,
+    )
+}
+
+pub(crate) async fn preflight_current_controller_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<()> {
+    let context = production_context_async(client).await?;
     let endpoints = context
         .product
         .list_local_group_member_endpoints(endpoint_inventory_input(
@@ -392,6 +579,83 @@ pub(crate) fn add_active_member_devices(
     })
 }
 
+pub(crate) async fn add_active_member_devices_async(
+    client: &crate::core::ImClient,
+    group_state_ref: V2GroupStateRef,
+    member_did: &str,
+) -> crate::ImResult<usize> {
+    require_exact_group(&group_state_ref)?;
+    let group_did = group_state_ref.group_did.clone();
+    let mut next_state_ref = Some(group_state_ref);
+    let mut changed = 0usize;
+    for _ in 0..256 {
+        let member_document = resolve_member_document_fresh_async(client, member_did).await?;
+        let manifest = validated_p6_manifest(member_did, &member_document)?;
+        let desired = eligible_device_ids(&manifest);
+        if desired.is_empty() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let mut context = production_context_async(client).await?;
+        if resume_pending_membership_commits_async(client, &mut context, &group_did).await? > 0 {
+            next_state_ref = None;
+        }
+        let endpoints =
+            context
+                .product
+                .list_local_group_member_endpoints(endpoint_inventory_input(
+                    client,
+                    &context.device,
+                    &group_did,
+                    "add-reconcile",
+                ))?;
+        require_current_controller_endpoint(
+            &endpoints.member_endpoints,
+            client.did().as_str(),
+            &context.device.device_id,
+        )?;
+        let desired = desired
+            .into_iter()
+            .map(|device_id| (member_did.to_owned(), device_id))
+            .collect::<BTreeSet<_>>();
+        let observed = endpoint_set_for_member(member_did, &endpoints.member_endpoints);
+        let (extra, missing) = roster_delta(&desired, &observed);
+        let extra = extra.into_iter().next().map(|(_, device_id)| device_id);
+        let missing = missing.into_iter().next().map(|(_, device_id)| device_id);
+        if extra.is_none() && missing.is_none() {
+            return Ok(changed);
+        }
+        let state_ref = match next_state_ref.take() {
+            Some(reference) => reference,
+            None => fresh_group_state_ref_async(client, &group_did).await?,
+        };
+        if let Some(device_id) = extra {
+            submit_exact_remove_async(
+                client,
+                &mut context,
+                state_ref,
+                member_did,
+                &device_id,
+                member_document,
+            )
+            .await?;
+        } else if let Some(device_id) = missing {
+            submit_exact_add_async(
+                client,
+                &mut context,
+                state_ref,
+                member_did,
+                &device_id,
+                member_document,
+            )
+            .await?;
+        }
+        changed = changed.saturating_add(1);
+    }
+    Err(crate::ImError::LocalStateUnavailable {
+        detail: "P6 v2 target device roster did not stabilize".to_owned(),
+    })
+}
+
 /// Removes every accepted local leaf for the P4 member that has just become
 /// removed. The target list comes from the authenticated MLS tree rather than
 /// the current Manifest because Manifest loss is itself a valid Remove trigger.
@@ -443,6 +707,62 @@ pub(crate) fn remove_inactive_member_devices(
             &target_device_id,
             member_document.clone(),
         )?;
+        removed = removed.saturating_add(1);
+    }
+    Err(crate::ImError::LocalStateUnavailable {
+        detail: "P6 v2 removed-member endpoint set did not converge".to_owned(),
+    })
+}
+
+pub(crate) async fn remove_inactive_member_devices_async(
+    client: &crate::core::ImClient,
+    group_state_ref: V2GroupStateRef,
+    member_did: &str,
+) -> crate::ImResult<usize> {
+    require_exact_group(&group_state_ref)?;
+    let member_document = resolve_member_document_fresh_async(client, member_did).await?;
+    validate_member_document_id(member_did, &member_document)?;
+    let group_did = group_state_ref.group_did.clone();
+    let mut next_state_ref = Some(group_state_ref);
+    let mut removed = 0usize;
+    for _ in 0..256 {
+        let mut context = production_context_async(client).await?;
+        if resume_pending_membership_commits_async(client, &mut context, &group_did).await? > 0 {
+            next_state_ref = None;
+        }
+        let endpoints =
+            context
+                .product
+                .list_local_group_member_endpoints(endpoint_inventory_input(
+                    client,
+                    &context.device,
+                    &group_did,
+                    "remove-reconcile",
+                ))?;
+        require_current_controller_endpoint(
+            &endpoints.member_endpoints,
+            client.did().as_str(),
+            &context.device.device_id,
+        )?;
+        let Some(target_device_id) = member_device_ids(member_did, &endpoints.member_endpoints)
+            .into_iter()
+            .next()
+        else {
+            return Ok(removed);
+        };
+        let state_ref = match next_state_ref.take() {
+            Some(reference) => reference,
+            None => fresh_group_state_ref_async(client, &group_did).await?,
+        };
+        submit_exact_remove_async(
+            client,
+            &mut context,
+            state_ref,
+            member_did,
+            &target_device_id,
+            member_document.clone(),
+        )
+        .await?;
         removed = removed.saturating_add(1);
     }
     Err(crate::ImError::LocalStateUnavailable {
@@ -577,6 +897,112 @@ pub(crate) fn reconcile_group_device_roster(
     })
 }
 
+pub(crate) async fn reconcile_group_device_roster_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<V2RosterReconcileSummary> {
+    if !current_actor_is_active_owner_async(client, group.clone()).await? {
+        return Ok(V2RosterReconcileSummary::default());
+    }
+    let group_did = group.as_str().to_owned();
+    let mut summary = V2RosterReconcileSummary::default();
+    for _ in 0..256 {
+        let mut context = production_context_async(client).await?;
+        summary.repaired_wal_entries = summary.repaired_wal_entries.saturating_add(
+            resume_pending_membership_commits_async(client, &mut context, &group_did).await?,
+        );
+        let inspected = context
+            .product
+            .inspect_local_group(endpoint_inventory_input(
+                client,
+                &context.device,
+                &group_did,
+                "group-roster-reconcile-readiness",
+            ))?;
+        if !local_group_can_reconcile_roster(&inspected.readiness) {
+            return Ok(summary);
+        }
+        let (group_state_ref, desired) =
+            fresh_desired_group_roster_async(client, group.clone()).await?;
+        let endpoints =
+            context
+                .product
+                .list_local_group_member_endpoints(endpoint_inventory_input(
+                    client,
+                    &context.device,
+                    &group_did,
+                    "group-roster-reconcile",
+                ))?;
+        require_current_controller_endpoint(
+            &endpoints.member_endpoints,
+            client.did().as_str(),
+            &context.device.device_id,
+        )?;
+
+        let observed = endpoints
+            .member_endpoints
+            .iter()
+            .map(|endpoint| {
+                (
+                    endpoint.member_did.clone(),
+                    endpoint.member_device_id.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let desired_endpoints = desired
+            .iter()
+            .flat_map(|(member_did, member)| {
+                member
+                    .device_ids
+                    .iter()
+                    .map(|device_id| (member_did.clone(), device_id.clone()))
+            })
+            .collect::<BTreeSet<_>>();
+        let (extra, missing) = roster_delta(&desired_endpoints, &observed);
+        summary.remaining_devices = extra.len().saturating_add(missing.len());
+        let extra = extra.into_iter().next();
+        let missing = missing.into_iter().next();
+        if extra.is_none() && missing.is_none() {
+            return Ok(summary);
+        }
+
+        if let Some((member_did, member_device_id)) = extra {
+            let document = match desired.get(&member_did) {
+                Some(member) => member.document.clone(),
+                None => resolve_member_document_fresh_async(client, &member_did).await?,
+            };
+            validate_member_document_id(&member_did, &document)?;
+            submit_exact_remove_async(
+                client,
+                &mut context,
+                group_state_ref,
+                &member_did,
+                &member_device_id,
+                document,
+            )
+            .await?;
+            summary.removed_devices = summary.removed_devices.saturating_add(1);
+        } else if let Some((member_did, member_device_id)) = missing {
+            let member = desired
+                .get(&member_did)
+                .ok_or(crate::ImError::PermissionDenied)?;
+            submit_exact_add_async(
+                client,
+                &mut context,
+                group_state_ref,
+                &member_did,
+                &member_device_id,
+                member.document.clone(),
+            )
+            .await?;
+            summary.added_devices = summary.added_devices.saturating_add(1);
+        }
+    }
+    Err(crate::ImError::LocalStateUnavailable {
+        detail: "P6 v2 group device roster did not stabilize".to_owned(),
+    })
+}
+
 fn current_actor_is_active_owner(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
@@ -588,6 +1014,28 @@ fn current_actor_is_active_owner(
         crate::internal::transport::CoreHttpTransport::new(client),
     )
     .get_with_policy(group)?;
+    if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
+        return Ok(false);
+    }
+    Ok(authoritative.group.as_ref().is_some_and(|snapshot| {
+        snapshot.did.as_str() == group_did
+            && snapshot.membership_status.as_deref() == Some("active")
+            && snapshot.my_role.as_deref() == Some("owner")
+    }))
+}
+
+async fn current_actor_is_active_owner_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<bool> {
+    let group_did = group.as_str().to_owned();
+    let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group)
+    .await?;
     if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
         return Ok(false);
     }
@@ -615,6 +1063,108 @@ fn fresh_desired_group_roster(
         }
     }
     Err(crate::ImError::CursorStale)
+}
+
+async fn fresh_desired_group_roster_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+    for attempt in 0..4 {
+        match fresh_desired_group_roster_attempt_async(client, group.clone()).await {
+            Err(crate::ImError::CursorStale) if attempt < 3 => continue,
+            result => return result,
+        }
+    }
+    Err(crate::ImError::CursorStale)
+}
+
+async fn fresh_desired_group_roster_attempt_async(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+    let group_did = group.as_str().to_owned();
+    let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group.clone())
+    .await?;
+    if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let snapshot = authoritative
+        .group
+        .as_ref()
+        .filter(|snapshot| snapshot.did.as_str() == group_did)
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "authoritative group.get omitted caller membership".to_owned(),
+        })?;
+    if snapshot.membership_status.as_deref() != Some("active")
+        || snapshot.my_role.as_deref() != Some("owner")
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let raw =
+        authoritative
+            .raw_response()
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get omitted raw group state".to_owned(),
+            })?;
+    validate_embedded_group_state_refs(&group_did, raw)?;
+    let state_ref = crate::internal::group_e2ee::state_ref::group_state_ref_from_group_response(
+        &group_did, raw,
+    )
+    .map(v2_group_state_ref)
+    .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+        detail: "authoritative group.get omitted group_state_version".to_owned(),
+    })?;
+    let max_members = super::member_collector::product_max_members(raw)?;
+    let members = super::member_collector::collect_complete_group_members_async(
+        client,
+        group.clone(),
+        Some(&state_ref.group_state_version),
+        max_members,
+    )
+    .await?;
+    if members.group_state_version != state_ref.group_state_version {
+        return Err(crate::ImError::CursorStale);
+    }
+
+    let mut desired = BTreeMap::new();
+    for member in members.members {
+        if member.status.as_deref().unwrap_or("active") != "active" {
+            continue;
+        }
+        let did = member
+            .did
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "active P4 member omitted its current DID".to_owned(),
+            })?;
+        let document = resolve_member_document_fresh_async(client, did.as_str()).await?;
+        let manifest = validated_p6_manifest(did.as_str(), &document)?;
+        desired.insert(
+            did.as_str().to_owned(),
+            DesiredP6Member {
+                document,
+                device_ids: eligible_device_ids(&manifest),
+            },
+        );
+    }
+    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group)
+    .await?;
+    if !group_state_version_matches(
+        refreshed.raw_response(),
+        state_ref.group_state_version.as_str(),
+    ) {
+        return Err(crate::ImError::CursorStale);
+    }
+    Ok((state_ref, desired))
 }
 
 fn fresh_desired_group_roster_attempt(
@@ -795,6 +1345,14 @@ fn resolve_member_document_fresh(
     super::v2_notice::resolve_did_document_fresh(client, &mut transport, member_did)
 }
 
+async fn resolve_member_document_fresh_async(
+    client: &crate::core::ImClient,
+    member_did: &str,
+) -> crate::ImResult<Value> {
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    super::v2_notice::resolve_did_document_fresh_async(client, &mut transport, member_did).await
+}
+
 fn fresh_group_state_ref(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -806,6 +1364,35 @@ fn fresh_group_state_ref(
         crate::internal::transport::CoreHttpTransport::new(client),
     )
     .get_with_policy(group)?;
+    if !crate::groups::authoritative_group_e2ee_classification(group_did, &result)? {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let raw = result
+        .raw_response()
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "authoritative group.get omitted its raw response".to_owned(),
+        })?;
+    validate_embedded_group_state_refs(group_did, raw)?;
+    let reference =
+        crate::internal::group_e2ee::state_ref::group_state_ref_from_group_response(group_did, raw)
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get omitted group_state_version".to_owned(),
+            })?;
+    Ok(v2_group_state_ref(reference))
+}
+
+async fn fresh_group_state_ref_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<V2GroupStateRef> {
+    let group = crate::ids::GroupRef::parse(group_did)?;
+    let result = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group)
+    .await?;
     if !crate::groups::authoritative_group_e2ee_classification(group_did, &result)? {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -861,6 +1448,59 @@ fn resume_pending_membership_commits(
                     &submission,
                     format!("{operation_id}-wal-finalize"),
                 )?;
+                repaired = repaired.saturating_add(1);
+            }
+        }
+    }
+    Err(crate::ImError::LocalStateUnavailable {
+        detail: "P6 v2 pending membership WAL did not stabilize".to_owned(),
+    })
+}
+
+async fn resume_pending_membership_commits_async(
+    client: &crate::core::ImClient,
+    context: &mut ProductionV2Context<'_>,
+    group_did: &str,
+) -> crate::ImResult<usize> {
+    let mut repaired = 0usize;
+    for _ in 0..256 {
+        let reconciled = context
+            .product
+            .reconcile_pending(format!("{}-wal", operation_id("reconcile")))?;
+        repaired = repaired.saturating_add(
+            reconciled
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.pending.group_did == group_did
+                        && matches!(entry.pending.status.as_str(), "aborted" | "finalized")
+                })
+                .count(),
+        );
+        let Some(entry) = reconciled.entries.into_iter().find(|entry| {
+            entry.pending.group_did == group_did && entry.pending.status == "prepared"
+        }) else {
+            return Ok(repaired);
+        };
+        let operation_id = entry.pending.operation_id.clone();
+        let meta = control_meta(client, &context.device, group_did, &operation_id);
+        match prepared_membership_submission(meta, entry.pending)? {
+            PreparedMembershipSubmission::Add(submission) => {
+                submit_prepared_add_async(
+                    context,
+                    &submission,
+                    format!("{operation_id}-wal-finalize"),
+                )
+                .await?;
+                repaired = repaired.saturating_add(1);
+            }
+            PreparedMembershipSubmission::Remove(submission) => {
+                submit_prepared_remove_async(
+                    context,
+                    &submission,
+                    format!("{operation_id}-wal-finalize"),
+                )
+                .await?;
                 repaired = repaired.saturating_add(1);
             }
         }
@@ -982,6 +1622,57 @@ fn submit_exact_add(
     submit_prepared_add(context, &submission, format!("{add_operation}-finalize"))
 }
 
+async fn submit_exact_add_async(
+    client: &crate::core::ImClient,
+    context: &mut ProductionV2Context<'_>,
+    group_state_ref: V2GroupStateRef,
+    member_did: &str,
+    member_device_id: &str,
+    member_document: Value,
+) -> crate::ImResult<()> {
+    let target_service_did = anp::direct_e2ee::message_service_did_from_document(&member_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let lookup_now = format_time(OffsetDateTime::now_utc())?;
+    let lookup_operation = operation_id("get-key-package");
+    let package = context
+        .product
+        .get_target_key_package_async(
+            service_meta(
+                client,
+                &context.device,
+                &target_service_did,
+                &lookup_operation,
+                GROUP_E2EE_TRANSPORT_PROFILE_V2,
+                &lookup_now,
+            ),
+            V2GetKeyPackageBody {
+                target_did: member_did.to_owned(),
+                target_device_id: member_device_id.to_owned(),
+                preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
+                require_fresh: Some(true),
+            },
+        )
+        .await?;
+    let now_text = format_time(OffsetDateTime::now_utc())?;
+    let add_operation = operation_id("add");
+    let submission = context.product.prepare_add(V2AddMemberInput {
+        meta: control_meta(
+            client,
+            &context.device,
+            &group_state_ref.group_did,
+            &add_operation,
+        ),
+        group_state_ref,
+        group_key_package: package.group_key_package,
+        member_did_document: member_document,
+        now: now_text,
+        draft_extension_negotiated: true,
+        pending_commit_id: format!("pending-{add_operation}"),
+        request_id: format!("{add_operation}-prepare"),
+    })?;
+    submit_prepared_add_async(context, &submission, format!("{add_operation}-finalize")).await
+}
+
 fn submit_exact_remove(
     client: &crate::core::ImClient,
     context: &mut ProductionV2Context<'_>,
@@ -1020,6 +1711,45 @@ fn submit_exact_remove(
     unreachable!("bounded P6 Remove retry loop always returns")
 }
 
+async fn submit_exact_remove_async(
+    client: &crate::core::ImClient,
+    context: &mut ProductionV2Context<'_>,
+    group_state_ref: V2GroupStateRef,
+    member_did: &str,
+    member_device_id: &str,
+    member_document: Value,
+) -> crate::ImResult<()> {
+    let now_text = format_time(OffsetDateTime::now_utc())?;
+    let remove_operation = operation_id("remove");
+    let submission = context.product.prepare_remove(V2RemoveMemberInput {
+        meta: control_meta(
+            client,
+            &context.device,
+            &group_state_ref.group_did,
+            &remove_operation,
+        ),
+        group_state_ref,
+        member_did: member_did.to_owned(),
+        member_device_id: member_device_id.to_owned(),
+        member_did_document: member_document,
+        now: now_text,
+        draft_extension_negotiated: true,
+        pending_commit_id: format!("pending-{remove_operation}"),
+        request_id: format!("{remove_operation}-prepare"),
+    })?;
+    let finalize_request_id = format!("{remove_operation}-finalize");
+    for retry in 0_u64..=5 {
+        match submit_prepared_remove_async(context, &submission, finalize_request_id.clone()).await
+        {
+            Err(error) if retry < 5 && p6_remove_trigger_convergence_pending(&error) => {
+                tokio::time::sleep(std::time::Duration::from_millis((retry + 1) * 200)).await;
+            }
+            outcome => return outcome,
+        }
+    }
+    unreachable!("bounded P6 Remove retry loop always returns")
+}
+
 fn submit_prepared_add(
     context: &mut ProductionV2Context<'_>,
     submission: &V2PreparedAddSubmission,
@@ -1027,6 +1757,29 @@ fn submit_prepared_add(
 ) -> crate::ImResult<()> {
     let pending_commit_id = submission.prepared.pending_commit_id.clone();
     match context.product.submit_add(submission, finalize_request_id) {
+        Ok(_) => Ok(()),
+        Err(error) if p6_host_rejection_is_deterministic(&error) => {
+            context.product.abort_pending(
+                pending_commit_id,
+                format!("{}-abort", operation_id("add-rejected")),
+            )?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn submit_prepared_add_async(
+    context: &mut ProductionV2Context<'_>,
+    submission: &V2PreparedAddSubmission,
+    finalize_request_id: String,
+) -> crate::ImResult<()> {
+    let pending_commit_id = submission.prepared.pending_commit_id.clone();
+    match context
+        .product
+        .submit_add_async(submission, finalize_request_id)
+        .await
+    {
         Ok(_) => Ok(()),
         Err(error) if p6_host_rejection_is_deterministic(&error) => {
             context.product.abort_pending(
@@ -1048,6 +1801,29 @@ fn submit_prepared_remove(
     match context
         .product
         .submit_remove(submission, finalize_request_id)
+    {
+        Ok(_) => Ok(()),
+        Err(error) if p6_host_rejection_is_deterministic(&error) => {
+            context.product.abort_pending(
+                pending_commit_id,
+                format!("{}-abort", operation_id("remove-rejected")),
+            )?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn submit_prepared_remove_async(
+    context: &mut ProductionV2Context<'_>,
+    submission: &V2PreparedRemoveSubmission,
+    finalize_request_id: String,
+) -> crate::ImResult<()> {
+    let pending_commit_id = submission.prepared.pending_commit_id.clone();
+    match context
+        .product
+        .submit_remove_async(submission, finalize_request_id)
+        .await
     {
         Ok(_) => Ok(()),
         Err(error) if p6_host_rejection_is_deterministic(&error) => {

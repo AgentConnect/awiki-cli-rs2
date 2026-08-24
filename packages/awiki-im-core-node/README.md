@@ -66,36 +66,22 @@ finally {
 
 ## 外部 HTTP ANP 认证
 
-可信 Node Host 可以让 Rust 为外部 transport 的请求准备 ANP 认证头。SDK 不发送请求：
+默认 Node client 不返回认证 Header patch，也不把签名器作为普通 TypeScript API 暴露。
+DSH Host 必须通过受限 Provider lease 的 `authenticatedHttp.dispatch` 完成签名和发送，普通
+插件只能提交精确请求并接收响应。
 
-```ts
-const attempt = await client.prepareExternalHttpRequest({
-  url: 'https://api.example.com/orders',
-  method: 'POST',
-  headers: [{ name: 'content-type', value: 'application/json' }],
-  body: new TextEncoder().encode('{"productId":"123"}'),
-})
+## DSH External Identity Provider
 
-// Apply attempt.headerPatch and send attempt.targetUrl/method with the exact body.
-const retry = await attempt.handleResponse({
-  statusCode: response.status,
-  headers: [...response.headers].map(([name, value]) => ({ name, value })),
-})
-```
+DSH Host 将 `ctx.anpIdentity.acquireProvider(...)` 返回的 Host-only lease 作为
+`identityProvider` 传给 `openImCoreNodeClient()`。打开时会校验
+`anp-identity-provider-ts/1`、必需 capability、Provider readiness 与 Store schema；任一项不匹配
+都 fail closed，不会隐式改用另一个身份 Store。
 
-attempt 是 single-use opaque 对象。Rust 自动在 origin-scoped 进程内 Bearer cache 和当前设备
-HTTP Message Signature 之间选择；成功响应只从 `Authentication-Info` 接受 Token。一次
-`401` 最多产生一个 retry attempt。正文最大 4 MiB；`undefined` 表示无正文，空
-`Uint8Array` 表示需要摘要绑定的显式空正文。
-
-固定 verifier challenge 即使对无正文请求仍列出 `content-digest`，也不会阻止 GET/HEAD
-重签；实际无正文签名仍省略 `Content-Digest`。多个合并的 `WWW-Authenticate` scheme 中，
-Rust 只选择唯一、合法的 DID-WBA challenge。
-
-`headerPatch` 含敏感凭证，禁止日志记录或序列化。生产只允许 HTTPS；可选
-`externalHttpAllowInsecureLoopbackForTesting` 仅为 literal loopback 测试。该 API 不能暴露给
-浏览器、模型工具或远程调用者。DSH 插件应使用其 Host-only `externalHttpAuth.dispatch`，而
-不是直接让第三方编排 attempt。
+Provider 回调全部是异步 Promise。签名 payload、签名结果和 HTTP body 使用独立 Buffer 槽，不经
+JSON/base64；公开 DID 快照在 Rust session 内缓存，普通签名和 Origin Proof 各只跨 TS 一次。
+Host teardown 必须先 `await client.close()`，再 dispose Provider lease。当前 External bridge 在
+sealed ECDH 响应携带可验证 AAD 上下文之前明确返回 capability unavailable，不会降级为把 raw
+shared secret 交给 JavaScript。
 
 ## 生命周期与线程
 
@@ -137,13 +123,13 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.1.8` 源码 candidate 的 Native contract version 为 `10`，在 `0.1.7` 的 recovery
-  attestation 之上增加可恢复的新设备 Join、SAS/expiry、设备 Registry、审批/拒绝和撤销；
-  `0.1.8` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他版本的 addon。
-
-`issueHandleRecoveryAttestation({ operationId })` 是 Host-only 恢复对账方法，只允许在本机恢复
-已 `applied` 后调用。返回的短时 opaque token 必须由 Host 立即转交固定 Model Proxy 受众并丢弃；
-不得持久化、打印、进入 Browser remote、Agent 工具或模型上下文。
+- 当前 `0.2.0` 源码 candidate 的 Native contract version 为 `10`，增加 Host-only External
+  Identity Provider Promise bridge，并保留 `0.1.8` 引入的新设备 Join 恢复/SAS/cancel、
+  ready-admin Registry、审批/拒绝和设备撤销；同时保留 prepared registration
+  Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send。registry `0.1.5` 是
+  v5，包含 external HTTP auth、local timeline、群管理展示、realtime 与 mail facade；`0.1.6`
+  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.0` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他
+  版本的 addon。
 
 ## 邮件
 

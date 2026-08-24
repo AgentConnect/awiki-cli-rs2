@@ -23,15 +23,15 @@ pub(crate) struct RootImportPromotionRequest {
 /// - active root capability present while the index is still a member projection;
 /// - index promoted while the coordinator remains `registry_confirmed`;
 /// - coordinator promoted while a long-lived client still has stale custody state.
-pub(crate) fn repair_root_import_promotion(
+pub(crate) async fn repair_root_import_promotion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     request: RootImportPromotionRequest,
 ) -> crate::ImResult<()> {
-    converge_root_import_promotion(core, client, request)
+    converge_root_import_promotion(core, client, request).await
 }
 
-fn converge_root_import_promotion(
+async fn converge_root_import_promotion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     request: RootImportPromotionRequest,
@@ -85,12 +85,13 @@ fn converge_root_import_promotion(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    crate::internal::identity_custody::confirm_completion_root(
+    crate::internal::identity_custody::confirm_completion_root_async(
         core,
         &request.pending_root_ref,
         &document,
         &request.checkpoint,
-    )?;
+    )
+    .await?;
     let mut state = entry
         .device_state
         .clone()
@@ -105,7 +106,14 @@ fn converge_root_import_promotion(
     state.checkpoint = Some(request.checkpoint.clone());
     state.validate_for_did(client.did())?;
     store.save_device_state(&local_alias, state)?;
-    client.runtime().key_provider.reload_custody()?;
+    if let Some(session) = client.runtime().identity_session.as_ref() {
+        session
+            .recover()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+    } else {
+        client.runtime().key_provider.reload_custody()?;
+    }
 
     mark_coordinator_promoted(
         &connection,

@@ -294,8 +294,8 @@ fn response_signature_input_is_closed_and_canonicalizable() {
     assert!(canonical_bytes(&value).is_ok());
 }
 
-#[test]
-fn join_start_emits_mixed_profiles() {
+#[tokio::test]
+async fn join_start_emits_mixed_profiles() {
     let candidate_root = tempfile::tempdir().unwrap();
     let candidate = open_empty_vault_core(candidate_root.path());
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
@@ -315,6 +315,7 @@ fn join_start_emits_mixed_profiles() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
 
     assert_eq!(
@@ -346,16 +347,96 @@ fn join_start_emits_mixed_profiles() {
             SecretKind::IdentityDeviceSigningPrivate | SecretKind::IdentityE2eeAgreementPrivate
         )));
     let custody = stored.join_custody.unwrap();
-    let anp_store = crate::internal::identity_custody::open_controller_store(&candidate).unwrap();
-    let identity = anp_store
-        .open_identity(started.session.did.as_str())
+    let manager = crate::internal::identity_custody::open_controller_manager(&candidate).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == started.session.did.as_str())
         .unwrap();
-    assert_eq!(identity.identity_id(), custody.identity_id);
-    assert_eq!(identity.state(), anp_identity::IdentityState::Enrolling);
+    let identity = manager.get(&descriptor.reference).unwrap();
+    assert_eq!(identity.reference().identity_id, custody.identity_id);
+    assert_eq!(
+        identity.public_identity().unwrap().state,
+        anp_identity::PublicIdentityState::Enrolling
+    );
 }
 
-#[test]
-fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
+#[tokio::test]
+async fn join_start_resumes_enrollment_after_crash_before_local_session_commit() {
+    let candidate_root = tempfile::tempdir().unwrap();
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "example.com",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
+    let operation_id = "start-resume-after-provider-side-effect";
+    let request = DeviceJoinStartRequest {
+        operation_id: operation_id.to_owned(),
+        did: generated.did.clone(),
+        ttl_seconds: 300,
+    };
+    *FAIL_AFTER_JOIN_ENROLLMENT_PREPARED.lock().unwrap() = Some(operation_id.to_owned());
+
+    let error = candidate
+        .device_join()
+        .start(request.clone(), &generated.did_document)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::ImError::Internal { .. }));
+    let journal = DeviceJoinCreationJournalStore::new(&candidate)
+        .load(operation_id)
+        .unwrap()
+        .unwrap();
+    let custody = journal.custody.clone().unwrap();
+    assert!(journal.enrollment.is_some());
+    let identities = crate::internal::identity_custody::open_controller_manager(&candidate)
+        .unwrap()
+        .list()
+        .unwrap();
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|identity| identity.reference.did == generated.did.as_str())
+            .count(),
+        1
+    );
+
+    let started = candidate
+        .device_join()
+        .start(request, &generated.did_document)
+        .await
+        .unwrap();
+    assert_eq!(
+        JoinStateStore::new(&candidate)
+            .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+            .unwrap()
+            .unwrap()
+            .join_custody,
+        Some(custody)
+    );
+    assert!(DeviceJoinCreationJournalStore::new(&candidate)
+        .load(operation_id)
+        .unwrap()
+        .is_none());
+    let identities = crate::internal::identity_custody::open_controller_manager(&candidate)
+        .unwrap()
+        .list()
+        .unwrap();
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|identity| identity.reference.did == generated.did.as_str())
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
     let root = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(root.path());
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
@@ -375,6 +456,7 @@ fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
     let stored = JoinStateStore::new(&core)
         .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
@@ -386,14 +468,16 @@ fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secret() {
         &started.session.join_session_id,
         DeviceJoinSide::NewDevice,
     )
+    .await
     .unwrap();
 
-    assert_eq!(
-        crate::internal::identity_custody::open_controller_store(&core)
+    assert!(
+        crate::internal::identity_custody::open_controller_manager(&core)
             .unwrap()
-            .open_identity(generated.did.as_str())
-            .err(),
-        Some(anp_identity::DidError::IdentityNotFound)
+            .list()
+            .unwrap()
+            .into_iter()
+            .all(|descriptor| descriptor.reference.did != generated.did.as_str())
     );
     assert!(required_vault(&core)
         .unwrap()
@@ -419,8 +503,8 @@ fn join_profile_reader_accepts_only_canonical_or_legacy_complete_sets() {
     assert!(!join_profiles_are_supported(&hybrid));
 }
 
-#[test]
-fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
+#[tokio::test]
+async fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
     let root = tempfile::tempdir().unwrap();
     let core = open_empty_vault_core(root.path());
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey("awiki.test", "alice", None, None).unwrap();
@@ -437,6 +521,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
     let pending = core
         .device_join()
@@ -448,6 +533,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
             },
             &generated.did_document,
         )
+        .await
         .unwrap();
     let other = core
         .device_join()
@@ -459,6 +545,7 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
             },
             &other_generated.did_document,
         )
+        .await
         .unwrap();
     let authorized_device_id = authorized.session.protocol_device_id.clone();
     let authorized_state = mark_new_device_join_authorized(
@@ -501,8 +588,8 @@ fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
         .is_err());
 }
 
-#[test]
-fn identity_retirement_replays_exact_join_cleanup_after_restart() {
+#[tokio::test]
+async fn identity_retirement_replays_exact_join_cleanup_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(root.path());
     let protocol_device_id = core
@@ -521,6 +608,7 @@ fn identity_retirement_replays_exact_join_cleanup_after_restart() {
             },
             &document,
         )
+        .await
         .unwrap();
     let pending = core
         .device_join()
@@ -532,6 +620,7 @@ fn identity_retirement_replays_exact_join_cleanup_after_restart() {
             },
             &document,
         )
+        .await
         .unwrap();
     let late_authorized = mark_new_device_join_authorized(
         &core,
@@ -660,8 +749,8 @@ fn request_role_is_member_only() {
     ));
 }
 
-#[test]
-fn local_admin_verification_progress_is_phase_gated_and_read_only() {
+#[tokio::test]
+async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(admin_root.path());
@@ -677,6 +766,7 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
             },
             &document,
         )
+        .await
         .unwrap();
     let prepared = core
         .device_join()
@@ -707,6 +797,7 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
             document_version: 7,
             document_hash,
         })
+        .await
         .unwrap();
     let verified = core
         .device_join()
@@ -749,8 +840,8 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     assert!(progress.authorized_device.is_none());
 }
 
-#[test]
-fn admin_rejects_legacy_join_before_preparing_document_mutation() {
+#[tokio::test]
+async fn admin_rejects_legacy_join_before_preparing_document_mutation() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (admin, document, did) = open_ready_admin_core(admin_root.path());
@@ -766,6 +857,7 @@ fn admin_rejects_legacy_join_before_preparing_document_mutation() {
             },
             &document,
         )
+        .await
         .unwrap();
     let challenged = admin
         .device_join()
@@ -787,6 +879,7 @@ fn admin_rejects_legacy_join_before_preparing_document_mutation() {
             document_version: 7,
             document_hash: document_hash.clone(),
         })
+        .await
         .unwrap();
     admin
         .device_join()
@@ -839,8 +932,8 @@ fn admin_rejects_legacy_join_before_preparing_document_mutation() {
     assert!(unchanged.approval.is_none());
 }
 
-#[test]
-fn local_new_device_sas_is_restart_safe_and_read_only() {
+#[tokio::test]
+async fn local_new_device_sas_is_restart_safe_and_read_only() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(admin_root.path());
@@ -856,6 +949,7 @@ fn local_new_device_sas_is_restart_safe_and_read_only() {
             },
             &document,
         )
+        .await
         .unwrap();
     assert!(
         local_new_device_verification_sas(&candidate, &started.session.join_session_id,).is_err()
@@ -880,6 +974,7 @@ fn local_new_device_sas_is_restart_safe_and_read_only() {
             document_version: 7,
             document_hash,
         })
+        .await
         .unwrap();
     drop(candidate);
 
@@ -943,9 +1038,18 @@ fn admin_join_projection_advances_checkpoint_and_is_repeat_safe() {
 fn admin_join_projection_adopts_published_document_into_anp_identity() {
     let root = tempfile::tempdir().unwrap();
     let (core, projected) = open_anp_ready_admin_core(root.path());
-    let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
-    let mut identity = store.open_identity(projected.did.as_str()).unwrap();
-    let current = identity.checkpoint().unwrap().clone();
+    let manager = crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == projected.did.as_str())
+        .unwrap();
+    let mut identity = manager.get(&descriptor.reference).unwrap();
+    let current = anp_identity::host::IdentityStatusPort::host_status(&identity)
+        .unwrap()
+        .checkpoint
+        .unwrap();
     let signing_private = ed25519_dalek::SigningKey::from_bytes(&[91_u8; 32]);
     let mut signing_multikey = vec![0xed, 0x01];
     signing_multikey.extend_from_slice(&signing_private.verifying_key().to_bytes());
@@ -953,21 +1057,19 @@ fn admin_join_projection_adopts_published_document_into_anp_identity() {
     let mut agreement_multikey = vec![0xec, 0x01];
     agreement_multikey
         .extend_from_slice(&x25519_dalek::PublicKey::from(&agreement_private).to_bytes());
-    let prepared = identity
-        .prepare_update(anp_identity::DocumentUpdateSpec {
-            request_signing_rotation: None,
-            request_signing_mutations: Vec::new(),
-            device_mutations: vec![anp_identity::DeviceMutationSpec::Add {
-                device: anp_identity::DeviceAddSpec {
+    let mut change = identity
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![anp_identity::DocumentChange::AddDevice {
+                device: anp_identity::DeviceInput {
                     device_id: "peer-device".to_owned(),
-                    signing_key: anp_identity::DevicePublicKeySpec {
+                    signing_key: anp_identity::PublicKeyInput {
                         kid: format!("{}#peer-sign", projected.did.as_str()),
                         public_key_multibase: format!(
                             "z{}",
                             bs58::encode(signing_multikey).into_string()
                         ),
                     },
-                    e2ee_key: anp_identity::DevicePublicKeySpec {
+                    agreement_key: anp_identity::PublicKeyInput {
                         kid: format!("{}#peer-e2ee", projected.did.as_str()),
                         public_key_multibase: format!(
                             "z{}",
@@ -977,13 +1079,18 @@ fn admin_join_projection_adopts_published_document_into_anp_identity() {
                     profiles: crate::internal::identity_generation::vnext_device_profiles(),
                 },
             }],
-            services: None,
         })
         .unwrap();
-    let updated_document = prepared.candidate_document;
-    identity.abort_update(&prepared.revision_id).unwrap();
+    let updated_document = change.candidate().candidate_document.clone().into_value();
+    let attempt = change.begin_publication().unwrap();
+    change
+        .complete(
+            attempt,
+            anp_identity::PublicationResult::RejectedBeforeAcceptance,
+        )
+        .unwrap();
     drop(identity);
-    drop(store);
+    drop(manager);
     let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
         document_version: current.document_version + 1,
         document_hash: canonical_hash(&updated_document).unwrap(),
@@ -1005,11 +1112,24 @@ fn admin_join_projection_adopts_published_document_into_anp_identity() {
     )
     .unwrap();
 
-    let store = crate::internal::identity_custody::open_controller_store(&core).unwrap();
-    let identity = store.open_identity(projected.did.as_str()).unwrap();
-    assert_eq!(identity.document(), &updated_document);
+    let manager = crate::internal::identity_custody::open_controller_manager(&core).unwrap();
+    let descriptor = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| descriptor.reference.did == projected.did.as_str())
+        .unwrap();
+    let identity = manager.get(&descriptor.reference).unwrap();
     assert_eq!(
-        identity.checkpoint().unwrap().document_digest,
+        identity.public_identity().unwrap().document.as_value(),
+        &updated_document
+    );
+    assert_eq!(
+        anp_identity::host::IdentityStatusPort::host_status(&identity)
+            .unwrap()
+            .checkpoint
+            .unwrap()
+            .document_digest,
         checkpoint.document_hash
     );
 }
@@ -1093,6 +1213,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
             },
             &admin_document,
         )
+        .await
         .unwrap();
     let join_request = started.join_request.clone();
     let marker =
@@ -1133,6 +1254,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
             document_version: 7,
             document_hash: admin_hash.clone(),
         })
+        .await
         .unwrap();
     admin
         .device_join()
@@ -1177,12 +1299,21 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
                 auth_generation: 1,
             },
         };
-    prepare_new_device_activation(
+    mark_join_authorized_async(
+        &admin,
+        &started.session.join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .await
+    .unwrap();
+    prepare_new_device_activation_async(
         &candidate,
         &started.session.join_session_id,
         &authorization,
         &approval.new_document,
     )
+    .await
     .unwrap();
     record_new_device_access_result(
         &candidate,
@@ -1221,7 +1352,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
     )
     .unwrap();
     assert!(matches!(
-        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
         Err(crate::ImError::Service {
             status_code: None,
             code: Some(code),
@@ -1284,7 +1415,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
     .unwrap();
     drop(db);
     assert!(matches!(
-        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
         Err(crate::ImError::PermissionDenied)
     ));
     assert_eq!(
@@ -1331,7 +1462,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
 
     FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(matches!(
-        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
         Err(crate::ImError::Internal { message })
             if message == "injected crash after recovery Join identity save"
     ));
@@ -1368,7 +1499,9 @@ VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
     drop(db);
 
     let reopened = reopen_join_test_core(candidate_root.path());
-    finalize_new_device_activation(&reopened, &started.session.join_session_id).unwrap();
+    finalize_new_device_activation_async(&reopened, &started.session.join_session_id)
+        .await
+        .unwrap();
     let marker = crate::internal::identity_transition_pending::load_joined_device(
         &candidate_paths.local_state.sqlite_path,
         &started.session.join_session_id,

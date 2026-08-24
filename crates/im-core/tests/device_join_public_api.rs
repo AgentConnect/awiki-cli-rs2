@@ -142,7 +142,8 @@ fn low_level_join_state_machine_is_not_a_public_rollout_bypass() {
         "session",
     ] {
         assert!(
-            service.contains(&format!("pub(crate) fn {method}")),
+            service.contains(&format!("pub(crate) fn {method}"))
+                || service.contains(&format!("pub(crate) async fn {method}")),
             "low-level method {method} must remain crate-internal"
         );
     }

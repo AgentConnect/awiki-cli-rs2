@@ -2,6 +2,7 @@ import { copyFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import '../../../scripts/check-node-identity-boundary.mjs'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = resolve(packageRoot, '../..')

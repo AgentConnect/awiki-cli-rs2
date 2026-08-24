@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "create": {
+    "profile": "e1",
+    "domain": "example.com",
+    "pathSegments": ["provider-contract"],
+    "capabilities": { "didWba": true },
+    "managedKeys": [
+      { "fragment": "root", "role": "root_control" },
+      { "fragment": "request", "role": "request_signing" },
+      { "fragment": "agreement", "role": "e2ee_agreement" }
+    ],
+    "services": [],
+    "extensions": []
+  },
+  "sign": {
+    "purpose": "authentication",
+    "payloadUtf8": "provider contract"
+  },
+  "originProof": {
+    "method": "message.send",
+    "meta": {
+      "sender_did": "$DID",
+      "timestamp": 1787403600,
+      "target": {
+        "kind": "agent",
+        "did": "did:wba:example.com:agents:recipient"
+      },
+      "operation_id": "provider-contract-operation",
+      "message_id": "provider-contract-message",
+      "content_type": "application/json"
+    },
+    "body": { "message": "provider contract" }
+  },
+  "httpSignature": {
+    "url": "https://example.com/rpc",
+    "method": "POST",
+    "headers": [{ "name": "content-type", "value": "application/json" }],
+    "bodyUtf8": "{}"
+  },
+  "expected": {
+    "didPrefix": "did:wba:example.com:provider-contract:e1_",
+    "state": "active",
+    "revision": 1,
+    "didWba": true,
+    "signatureAlgorithm": "ed25519",
+    "signatureLength": 64,
+    "originSignaturePrefix": "sig1=:",
+    "httpBindingPrefix": "sha256:",
+    "httpHeaderNames": ["content-digest", "signature", "signature-input"]
+  }
+}

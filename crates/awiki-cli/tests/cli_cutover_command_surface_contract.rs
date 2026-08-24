@@ -478,16 +478,9 @@ fn release_artifact_script_documents_e2ee_feature_gate() {
         .nth(1)
         .and_then(|rest| rest.split("pub fn join(").next())
         .expect("GroupService::create_async source");
-    let worker_start = create_async
-        .find("run_blocking(move ||")
-        .expect("P6 sync initialization should enter the blocking worker");
-    let worker_end = create_async[worker_start..]
-        .find(".map_err(|err| crate::ImError::Internal")
-        .map(|offset| worker_start + offset)
-        .expect("P6 blocking worker result mapping");
-    let worker_call = &create_async[worker_start..worker_end];
-    assert!(worker_call.contains("initialize_created_group("));
-    assert!(worker_call.trim_end().ends_with(".await"));
+    assert!(create_async.contains("initialize_created_group_async("));
+    assert!(create_async.contains(".await?"));
+    assert!(!create_async.contains("run_blocking(move ||"));
 
     let script = std::fs::read_to_string(
         crate_root

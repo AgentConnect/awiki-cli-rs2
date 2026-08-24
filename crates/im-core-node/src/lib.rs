@@ -3,6 +3,7 @@
 mod client;
 mod dto;
 mod error;
+mod external_identity;
 #[cfg(test)]
 mod mail_tests;
 #[cfg(test)]
@@ -11,6 +12,7 @@ mod state;
 
 pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient, NativeRealtimeSession};
 pub use dto::*;
+pub use external_identity::{NodeIdentityProviderCall, NodeIdentityProviderReply};
 
 use napi::bindgen_prelude::create_custom_tokio_runtime;
 use napi_derive::{module_init, napi};
@@ -31,8 +33,11 @@ fn configure_napi_runtime() {
 /// Opens one environment-scoped Rust IM Core and its default identity-bound
 /// client. The same state root cannot be open in two processes or instances.
 #[napi(catch_unwind, js_name = "openNativeClient")]
-pub async fn open_native_client(options: NodeOpenOptions) -> napi::Result<NativeImCoreNodeClient> {
-    error::napi_result(client::open(options).await)
+pub async fn open_native_client(
+    options: NodeOpenOptions,
+    identity_provider_dispatch: Option<external_identity::IdentityProviderDispatch>,
+) -> napi::Result<NativeImCoreNodeClient> {
+    error::napi_result(client::open(options, identity_provider_dispatch).await)
 }
 
 /// Native facade contract version consumed by the TypeScript loader.
@@ -44,7 +49,7 @@ pub fn native_api_version() -> u32 {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn device_management_uses_native_api_v10() {
+    fn external_identity_provider_and_device_management_use_native_api_v10() {
         assert_eq!(super::native_api_version(), 10);
     }
 

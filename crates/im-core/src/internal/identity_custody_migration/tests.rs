@@ -45,9 +45,9 @@ fn dry_run_is_secret_free_and_does_not_create_the_target_store() {
 fn multi_identity_copy_failure_retries_before_atomic_cutover() {
     let fixture = Fixture::file(&[("alice", true), ("bob", false)]);
 
-    assert!(run(&fixture.core, false, Some(FailurePoint::AfterCopied(1))).is_err());
-    let staged = crate::internal::identity_custody::open_controller_store(&fixture.core).unwrap();
-    assert_eq!(staged.list_identities().unwrap().len(), 1);
+    assert!(sync_run(&fixture.core, false, Some(FailurePoint::AfterCopied(1))).is_err());
+    let staged = crate::internal::identity_custody::open_controller_manager(&fixture.core).unwrap();
+    assert_eq!(staged.list().unwrap().len(), 1);
     let before_cutover = IdentityStore::new(&fixture.paths.identities)
         .load_index()
         .unwrap();
@@ -94,7 +94,7 @@ fn multi_identity_copy_failure_retries_before_atomic_cutover() {
 fn crash_after_marker_keeps_new_backend_live_and_cleanup_is_idempotent() {
     let fixture = Fixture::file(&[("alice", true)]);
 
-    assert!(run(&fixture.core, false, Some(FailurePoint::AfterCutover)).is_err());
+    assert!(sync_run(&fixture.core, false, Some(FailurePoint::AfterCutover)).is_err());
     let cutover = IdentityStore::new(&fixture.paths.identities)
         .load_index()
         .unwrap();
@@ -127,7 +127,7 @@ fn crash_after_marker_keeps_new_backend_live_and_cleanup_is_idempotent() {
 #[test]
 fn source_key_change_after_copy_prevents_cutover_and_keeps_legacy_files() {
     let fixture = Fixture::file(&[("alice", true)]);
-    assert!(run(&fixture.core, false, Some(FailurePoint::AfterCopied(1))).is_err());
+    assert!(sync_run(&fixture.core, false, Some(FailurePoint::AfterCopied(1))).is_err());
     let index = IdentityStore::new(&fixture.paths.identities)
         .load_index()
         .unwrap();

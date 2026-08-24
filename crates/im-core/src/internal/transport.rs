@@ -894,7 +894,8 @@ impl<'a> CoreHttpTransport<'a> {
         self.retry_pending_auth_commit();
         let auth_headers = self
             .auth
-            .get_auth_header(url, force_new_auth, method, Some(&headers), Some(&body))
+            .get_auth_header_async(url, force_new_auth, method, Some(&headers), Some(&body))
+            .await
             .map_err(|err| crate::ImError::TransportUnavailable {
                 detail: err.to_string(),
             })?;
@@ -910,11 +911,13 @@ impl<'a> CoreHttpTransport<'a> {
         if response.status_code == 401 && !self.ephemeral_bearer && !self.last_auth_retry_consumed {
             self.last_auth_retry_consumed = true;
             let headers = if self.auth.should_retry_after_401(&response.headers) {
-                self.challenge_headers(url, method, &response.headers, body.as_slice())?
+                self.challenge_headers_async(url, method, &response.headers, body.as_slice())
+                    .await?
             } else {
                 self.auth.clear_token(url);
                 self.jwt_token = None;
-                self.auth_headers(url, method, body.as_slice(), true)?
+                self.auth_headers_async(url, method, body.as_slice(), true)
+                    .await?
             };
             let mut headers = headers;
             append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
@@ -964,6 +967,56 @@ impl<'a> CoreHttpTransport<'a> {
         let auth_headers = self
             .auth
             .get_challenge_auth_header(url, response_headers, method, Some(&headers), Some(body))
+            .map_err(|err| crate::ImError::TransportUnavailable {
+                detail: err.to_string(),
+            })?;
+        headers.extend(auth_headers);
+        Ok(headers)
+    }
+
+    async fn auth_headers_async(
+        &mut self,
+        url: &str,
+        method: &str,
+        body: &[u8],
+        force_new: bool,
+    ) -> crate::ImResult<BTreeMap<String, String>> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        let auth_headers = self
+            .auth
+            .get_auth_header_async(url, force_new, method, Some(&headers), Some(body))
+            .await
+            .map_err(|err| crate::ImError::TransportUnavailable {
+                detail: err.to_string(),
+            })?;
+        headers.extend(auth_headers);
+        Ok(headers)
+    }
+
+    async fn challenge_headers_async(
+        &mut self,
+        url: &str,
+        method: &str,
+        response_headers: &BTreeMap<String, String>,
+        body: &[u8],
+    ) -> crate::ImResult<BTreeMap<String, String>> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        let auth_headers = self
+            .auth
+            .get_challenge_auth_header_async(
+                url,
+                response_headers,
+                method,
+                Some(&headers),
+                Some(body),
+            )
+            .await
             .map_err(|err| crate::ImError::TransportUnavailable {
                 detail: err.to_string(),
             })?;
@@ -1861,7 +1914,16 @@ impl RpcTransport for CorePlainTransport<'_> {
         &mut self,
         pending: &crate::internal::identity_registration_pending::PendingRegistration,
     ) -> crate::ImResult<PendingRegistrationReconciliation> {
-        reconcile_pending_registration(self.core, pending)
+        #[cfg(feature = "identity-native-anp")]
+        return reconcile_pending_registration(self.core, pending);
+
+        #[cfg(not(feature = "identity-native-anp"))]
+        {
+            let _ = pending;
+            Err(crate::ImError::unsupported(
+                "synchronous-external-identity-provider",
+            ))
+        }
     }
 }
 
@@ -2242,6 +2304,7 @@ fn service_error_from_http(status_code: u16, body: &[u8]) -> crate::ImError {
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn reconcile_pending_registration(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
@@ -2277,7 +2340,7 @@ async fn reconcile_pending_registration_async(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<PendingRegistrationReconciliation> {
-    let client = pending_registration_client(core, pending)?;
+    let client = pending_registration_client_async(core, pending).await?;
     let mut transport = pending_registration_transport(&client, pending);
     let access_token = match transport.refresh_jwt_async().await {
         Ok(token) => token,
@@ -2305,14 +2368,16 @@ async fn reconcile_pending_registration_async(
     })
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn pending_registration_client(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<crate::core::ImClient> {
-    let identity = crate::internal::identity_custody::registration_controller_signing_identity(
-        core,
-        &pending.identity,
-    )?;
+    let identity =
+        crate::internal::identity_custody::registration_controller_signing_managed_identity(
+            core,
+            &pending.identity,
+        )?;
     core.client_with_pending_anp_identity(
         identity,
         Some(&format!(
@@ -2322,6 +2387,43 @@ fn pending_registration_client(
         &pending.display_name,
         &pending.identity.protocol_device_id,
     )
+}
+
+async fn pending_registration_client_async(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_registration_pending::PendingRegistration,
+) -> crate::ImResult<crate::core::ImClient> {
+    #[cfg(feature = "provider-traits")]
+    if core.inner().identity_custody_provider().is_some() {
+        let session = crate::internal::identity_custody::provider_registration_session(
+            core,
+            &pending.identity,
+        )
+        .await?;
+        let public = session
+            .public_identity()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        return core.client_with_pending_provider_identity(
+            public,
+            session,
+            Some(&format!(
+                "{}.{}",
+                pending.target_handle, pending.target_domain
+            )),
+            &pending.display_name,
+            &pending.identity.protocol_device_id,
+        );
+    }
+
+    #[cfg(feature = "identity-native-anp")]
+    return pending_registration_client(core, pending);
+
+    #[cfg(not(feature = "identity-native-anp"))]
+    Err(crate::ImError::IdentityNotReady {
+        identity: pending.identity.did.as_str().to_owned(),
+        missing: vec!["external_identity_provider".to_owned()],
+    })
 }
 
 fn pending_registration_transport<'a>(

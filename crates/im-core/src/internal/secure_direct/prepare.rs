@@ -9,7 +9,7 @@ use crate::internal::transport::AuthenticatedRpcTransport;
 #[cfg(feature = "sqlite")]
 use super::client::{
     prepare_direct_secure_client, DirectSecureClientInput, DirectSecurePrekeyPublishRequest,
-    MessageServiceDirectSecureClient,
+    DirectSecurePrekeySigningPreparation, MessageServiceDirectSecureClient,
 };
 
 #[cfg(feature = "sqlite")]
@@ -35,7 +35,21 @@ pub(crate) struct DirectSecurePrekeyPrepareInput {
 #[derive(Debug)]
 pub(crate) struct DirectSecurePrekeyPrepareResult {
     pub(crate) status: super::status::DirectSecureLocalStatus,
-    pub(crate) publish_request: DirectSecurePrekeyPublishRequest,
+    pub(crate) publish: DirectSecurePrekeyPublish,
+}
+
+pub(crate) enum DirectSecurePrekeyPublish {
+    Ready(DirectSecurePrekeyPublishRequest),
+    NeedsSignature(DirectSecurePrekeySigningPreparation),
+}
+
+impl std::fmt::Debug for DirectSecurePrekeyPublish {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Ready(_) => "Ready(<publish-request>)",
+            Self::NeedsSignature(_) => "NeedsSignature(<prepared-bundle>)",
+        })
+    }
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]
@@ -71,12 +85,32 @@ pub(crate) async fn prepare_direct_for_client_async(
     )
     .await?;
     let input = direct_prekey_prepare_input_from_client(client, peer).await?;
+    let signing_key_id = input.signing_key_id.clone();
+    let identity_session = input.identity_signer.async_session();
     let db = client.core_inner().local_state_db().await?;
     let result = db.prepare_direct_secure_prekeys(input).await?;
+    let publish_request = match result.publish {
+        DirectSecurePrekeyPublish::Ready(request) => request,
+        DirectSecurePrekeyPublish::NeedsSignature(preparation) => {
+            let session = identity_session.ok_or(crate::ImError::PermissionDenied)?;
+            let signature = session
+                .sign(crate::internal::identity_provider::ProviderSignRequest {
+                    purpose:
+                        crate::internal::identity_provider::ProviderSigningPurpose::DeviceAssertion,
+                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                        signing_key_id,
+                    ),
+                    payload: preparation.signing_input().to_vec(),
+                })
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
+            preparation.complete(&signature.bytes)?
+        }
+    };
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let mut warnings = Vec::new();
     let prepared_local_send_state =
-        match publish_prekey_request_async(&mut transport, result.publish_request).await {
+        match publish_prekey_request_async(&mut transport, publish_request).await {
             Ok(_) => true,
             Err(err) => {
                 warnings.push(format!("direct E2EE prekey bundle publish failed: {err}"));
@@ -183,6 +217,7 @@ pub(crate) fn prepare_direct_prekeys_for_connection(
     connection: &rusqlite::Connection,
     input: DirectSecurePrekeyPrepareInput,
 ) -> crate::ImResult<DirectSecurePrekeyPrepareResult> {
+    let requires_async_signature = input.identity_signer.async_session().is_some();
     let mut direct_client = MessageServiceDirectSecureClient::new(
         prepare_direct_secure_client(DirectSecureClientInput {
             owner_identity_id: input.owner_identity_id.clone(),
@@ -201,7 +236,11 @@ pub(crate) fn prepare_direct_prekeys_for_connection(
             })
         }),
     );
-    let publish_request = direct_client.prepare_prekey_bundle_publish_request()?;
+    let publish = if requires_async_signature {
+        DirectSecurePrekeyPublish::NeedsSignature(direct_client.prepare_prekey_bundle_signing()?)
+    } else {
+        DirectSecurePrekeyPublish::Ready(direct_client.prepare_prekey_bundle_publish_request()?)
+    };
     let status = super::status::direct_status_for_scope(
         connection,
         &super::status::DirectSecureStatusScope {
@@ -216,10 +255,7 @@ pub(crate) fn prepare_direct_prekeys_for_connection(
                 .to_owned(),
         });
     }
-    Ok(DirectSecurePrekeyPrepareResult {
-        status,
-        publish_request,
-    })
+    Ok(DirectSecurePrekeyPrepareResult { status, publish })
 }
 
 #[cfg(not(feature = "sqlite"))]

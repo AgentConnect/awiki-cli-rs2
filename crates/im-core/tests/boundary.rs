@@ -121,7 +121,7 @@ fn root_transfer_sender_uses_only_confirmed_legacy_envelopes() {
     for required in [
         "RootKeyEnvelopeV1",
         "root_private_key_pkcs8_b64u",
-        "export_root_private_key",
+        "export_root_for_legacy_envelope",
         "user_presence_confirmed",
         "envelope_format = 'legacy_v1'",
     ] {
@@ -134,8 +134,8 @@ fn root_transfer_sender_uses_only_confirmed_legacy_envelopes() {
         .find("if !request.user_presence_confirmed")
         .expect("root transfer confirmation gate");
     let export = production
-        .find(".export_root_private_key")
-        .expect("ANP Identity root export");
+        .find(".export_root_for_legacy_envelope")
+        .expect("provider-mediated ANP Identity root export");
     assert!(
         confirmation < export,
         "Root Transfer must verify user confirmation before exporting the root key"
@@ -259,6 +259,22 @@ fn anp_bound_runtime_cannot_fall_back_to_legacy_identity_providers() {
         .unwrap();
     let legacy_metadata = readiness.find("entry.vault_migration.as_ref()").unwrap();
     assert!(anp_return < legacy_metadata);
+}
+
+#[test]
+fn native_hosts_select_mutually_exclusive_identity_custody_features() {
+    let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("im-core crate parent")
+        .to_path_buf();
+    let node = fs::read_to_string(crates_dir.join("im-core-node/Cargo.toml")).unwrap();
+    assert!(node.contains("default-features = false"));
+    assert!(node.contains("identity-external-provider"));
+    assert!(!node.contains("identity-native-anp"));
+
+    let dart = fs::read_to_string(crates_dir.join("im-core-dart/Cargo.toml")).unwrap();
+    assert!(dart.contains("default = [\"sqlite\", \"http\", \"identity-native-anp\"]"));
+    assert!(dart.contains("identity-native-anp = [\"im-core/identity-native-anp\"]"));
 }
 
 fn rust_item<'a>(source: &'a str, declaration: &str) -> Option<&'a str> {

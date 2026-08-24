@@ -1,16 +1,26 @@
 # Changelog
 
-## 0.1.8
+## 0.2.0 (unreleased)
 
-- Add restart-safe new-device Join listing, explicit cancellation, SAS, expiry, and user-presence input.
-- Add Host-only device registry, Join approval/rejection, and device revocation methods.
-- Raise the native API contract to v10 so wrappers reject addons without the device management facade.
+- Add restart-safe new-device Join listing, explicit cancellation, SAS/expiry, ready-admin
+  Registry, approval/rejection, and device revocation methods.
+- Add the Host-only `anp-identity-provider-ts/1` External Provider bridge with readiness handshake,
+  structured error mapping, bounded Promise calls, public snapshot caching, and explicit Buffer slots.
+- Keep sealed ECDH fail closed until the Provider delivery includes the authorization/AAD context
+  required for authenticated HPKE open; no raw shared-secret fallback is exposed.
+- Raise the native API contract to v10 so the wrapper rejects published v9
+  binaries that do not implement the External Provider bridge, and release the
+  ThreadsafeFunction during explicit client close.
 
 ## 0.1.7
 
-- Add a Host-only opaque recovery-attestation method for post-recovery service reconciliation; the SDK never logs or persists the token.
-- Add stable `recovery_reconciliation_unavailable` and `recovery_reconciliation_invalid` errors without exposing the remote response.
-- Raise the native API contract to v9 so wrappers reject v8 binaries that do not provide the recovery-attestation method.
+- Add a Host-only opaque recovery-attestation method for post-recovery service
+  reconciliation; the SDK never logs or persists the token.
+- Add stable `recovery_reconciliation_unavailable` and
+  `recovery_reconciliation_invalid` errors without exposing the remote
+  response.
+- Raise the native API contract to v9 so wrappers reject v8 binaries that do
+  not provide the recovery-attestation method.
 
 ## 0.1.6
 

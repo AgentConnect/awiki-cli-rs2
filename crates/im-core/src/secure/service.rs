@@ -488,39 +488,29 @@ impl GroupSecureConversation<'_> {
         #[cfg(feature = "group-e2ee")]
         {
             if self.client.core_inner().group_e2ee_v2_enabled() {
-                let client = self.client.clone();
-                let group = self.group.clone();
                 let request_id = format!(
                     "im-core-p6-v2-repair-{}",
                     crate::internal::wire::common::generate_operation_id()
                 );
-                return crate::internal::runtime::worker::run_blocking(move || {
-                    let roster =
-                        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster(
-                            &client,
-                            group.clone(),
-                        )?;
-                    let runtime =
-                        crate::internal::group_e2ee::v2_runtime::runtime_for_client(&client)?;
-                    let mut result =
-                        crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(
-                            runtime,
-                        )
-                        .repair(group, request_id)?;
-                    result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
-                    result.removed_devices =
-                        u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
-                    result.remaining_devices =
-                        u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
-                    result.repaired |= roster.added_devices > 0
-                        || roster.removed_devices > 0
-                        || roster.repaired_wal_entries > 0;
-                    Ok(result)
-                })
-                .await
-                .map_err(|err| crate::ImError::Internal {
-                    message: format!("P6 v2 repair worker failed: {err}"),
-                })?;
+                let roster =
+                    crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
+                        self.client,
+                        self.group.clone(),
+                    )
+                    .await?;
+                let runtime =
+                    crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+                let mut result =
+                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                        .repair(self.group.clone(), request_id)?;
+                result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
+                result.removed_devices = u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
+                result.remaining_devices =
+                    u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
+                result.repaired |= roster.added_devices > 0
+                    || roster.removed_devices > 0
+                    || roster.repaired_wal_entries > 0;
+                return Ok(result);
             }
             let provider =
                 crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;

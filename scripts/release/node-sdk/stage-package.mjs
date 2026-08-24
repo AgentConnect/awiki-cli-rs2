@@ -118,7 +118,7 @@ async function writeCommonFiles(output, manifest, target, binary) {
     schemaVersion: 1,
     package: { name: manifest.name, version: manifest.version },
     target: target || 'platform-independent-wrapper',
-    nativeApiVersion: 10,
+    nativeApiVersion: 8,
     source: {
       repository: 'https://github.com/AgentConnect/awiki-cli-rs2',
       commit: source.commit,

@@ -6,11 +6,6 @@ struct PublicParity {
 
 const PUBLIC_PARITY: &[PublicParity] = &[
     PublicParity {
-        capability: "external_http_auth",
-        node_method: "prepareExternalHttpRequest",
-        core_facade: "ExternalHttpAuthService::prepare_async/handle_response_async",
-    },
-    PublicParity {
         capability: "identity",
         node_method: "getDefaultIdentity",
         core_facade: "ImCore::identities().default_identity_async",
@@ -18,7 +13,7 @@ const PUBLIC_PARITY: &[PublicParity] = &[
     PublicParity {
         capability: "registration_otp",
         node_method: "requestRegistrationOtp",
-        core_facade: "IdentityRegistry::request_registration_otp_async",
+        core_facade: "IdentityRegistry::register_handle_async(OtpSent)",
     },
     PublicParity {
         capability: "registration",
@@ -103,7 +98,7 @@ const PUBLIC_PARITY: &[PublicParity] = &[
     PublicParity {
         capability: "history",
         node_method: "getHistory",
-        core_facade: "MessageService::conversation_history_async",
+        core_facade: "MessageService::local_conversation_timeline_async",
     },
     PublicParity {
         capability: "local_timeline",
@@ -133,7 +128,7 @@ const PUBLIC_PARITY: &[PublicParity] = &[
     PublicParity {
         capability: "attachment_download",
         node_method: "downloadAttachment",
-        core_facade: "AttachmentService::download_conversation_async",
+        core_facade: "AttachmentService::download_async",
     },
     PublicParity {
         capability: "mail_account",
@@ -180,7 +175,6 @@ const PUBLIC_PARITY: &[PublicParity] = &[
 #[test]
 fn dsh_required_capabilities_have_one_public_facade_route() {
     let expected = [
-        "external_http_auth",
         "identity",
         "registration_otp",
         "registration",
@@ -277,4 +271,34 @@ fn node_facade_source_is_host_neutral_and_uses_no_private_storage_api() {
             "Node facade must not contain private or host-specific token {forbidden}"
         );
     }
+}
+
+#[test]
+fn external_provider_bridge_is_async_binary_explicit_and_has_no_raw_secret_fallback() {
+    let rust = include_str!("../src/external_identity.rs");
+    assert!(rust.contains("ThreadsafeFunction"));
+    assert!(rust.contains("call_async_catch"));
+    for forbidden in ["block_on", "block_in_place", "shared_secret.to_vec()"] {
+        assert!(
+            !rust.contains(forbidden),
+            "External Provider bridge must not use {forbidden}"
+        );
+    }
+
+    let start = rust
+        .find("async fn derive_shared_secret")
+        .expect("External ECDH method");
+    let method = &rust[start
+        ..rust[start..]
+            .find("async fn recover")
+            .expect("next provider method")
+            + start];
+    assert!(method.contains("receive_sealed_shared_secret"));
+    assert!(method.contains("ECDH_SEALED_OPERATION"));
+    assert!(!method.contains("shared_secret.to_vec()"));
+
+    let typescript = include_str!("../../../packages/awiki-im-core-node/src/provider-bridge.ts");
+    assert!(typescript.contains("singleBuffer(request.buffers)"));
+    assert!(typescript.contains("case 'ecdhSealed'"));
+    assert!(typescript.contains("case 'exportRootKeySealed'"));
 }

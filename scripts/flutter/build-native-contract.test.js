@@ -201,7 +201,7 @@ test("Android native IM Core includes group E2EE support", () => {
   );
   assert.match(
     source,
-    /--features blocking,sqlite,http,android,group-e2ee/,
+    /--features blocking,sqlite,http,android,group-e2ee,identity-native-anp/,
   );
 });
 
@@ -211,7 +211,7 @@ test("iOS native IM Core includes group E2EE support", () => {
     "utf8",
   );
   assert.equal(
-    source.match(/blocking,sqlite,http,ios,group-e2ee/g)?.length,
+    source.match(/blocking,sqlite,http,ios,group-e2ee,identity-native-anp/g)?.length,
     2,
   );
 });
@@ -223,6 +223,6 @@ test("Windows native IM Core includes group E2EE support", () => {
   );
   assert.match(
     source,
-    /\$Features = 'blocking,sqlite,http,windows,group-e2ee'/,
+    /\$Features = 'blocking,sqlite,http,windows,group-e2ee,identity-native-anp'/,
   );
 });

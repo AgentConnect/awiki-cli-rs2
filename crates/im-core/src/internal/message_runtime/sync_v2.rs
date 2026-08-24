@@ -1297,8 +1297,7 @@ where
                     envelope,
                     ..
                 } => {
-                    validate_p6_delta_binding(group_did, group_event_seq, envelope)
-                        .and_then(|_| Ok(()))?;
+                    validate_p6_delta_binding(group_did, group_event_seq, envelope).map(|_| ())?;
                     apply_p6_lane_delivery_projection_async(self.client, envelope)
                         .await
                         .map(Some)

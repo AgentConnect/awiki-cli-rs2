@@ -13,6 +13,11 @@ Runtime configuration and explicit product flows still control its use; this
 does not make ordinary Direct messages or newly created groups encrypted by
 default.
 
+All native builds also compile the Rust `identity-native-anp` provider. Mobile
+and desktop Flutter hosts therefore use ANP Identity directly in native memory;
+they do not load the Node binding or the DSH plugin. DSH builds use the separate
+external TypeScript Provider mode instead.
+
 ## License
 
 This package is available under [GNU AGPLv3](LICENSE) or a separate

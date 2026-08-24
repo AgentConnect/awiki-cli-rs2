@@ -3,6 +3,9 @@ use std::sync::Arc;
 
 pub(crate) struct ProviderBackedDidAuth {
     provider: Arc<dyn super::IdentitySigner>,
+    identity_session: Option<Arc<dyn crate::internal::identity_provider::IdentitySession>>,
+    enrollment_session:
+        Option<Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>>,
     auth_mode: anp::authentication::AuthMode,
     tokens: HashMap<String, String>,
 }
@@ -12,10 +15,71 @@ impl ProviderBackedDidAuth {
         provider: Arc<dyn super::IdentitySigner>,
         auth_mode: anp::authentication::AuthMode,
     ) -> Self {
+        let identity_session = provider.async_session();
+        let enrollment_session = provider.async_enrollment_session();
         Self {
             provider,
+            identity_session,
+            enrollment_session,
             auth_mode,
             tokens: HashMap::new(),
+        }
+    }
+
+    pub(crate) async fn get_auth_header_async(
+        &mut self,
+        server_url: &str,
+        force_new: bool,
+        method: &str,
+        headers: Option<&BTreeMap<String, String>>,
+        body: Option<&[u8]>,
+    ) -> crate::ImResult<BTreeMap<String, String>> {
+        let token_origin = extract_origin(server_url);
+        if !force_new {
+            if let Some(token) = self.tokens.get(&token_origin) {
+                return Ok(BTreeMap::from([(
+                    "Authorization".to_string(),
+                    format!("Bearer {token}"),
+                )]));
+            }
+        }
+        if let Some(session) = self.enrollment_session.as_ref() {
+            return prepare_enrollment_http_signature_async(
+                self.provider.as_ref(),
+                session,
+                server_url,
+                method,
+                headers,
+                body,
+                anp::authentication::HttpSignatureOptions::default(),
+            )
+            .await;
+        }
+        let Some(session) = self.identity_session.as_ref() else {
+            return self.get_auth_header(server_url, force_new, method, headers, body);
+        };
+        match self.auth_mode {
+            anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
+                prepare_http_signature_async(
+                    session,
+                    server_url,
+                    method,
+                    headers,
+                    body,
+                    crate::internal::identity_provider::ProviderHttpSigningOptions::default(),
+                )
+                .await
+            }
+            anp::authentication::AuthMode::LegacyDidWba => {
+                let key_id = self.provider.request_signing_key_id()?;
+                let value = self
+                    .provider
+                    .legacy_did_wba_header(&key_id, &extract_domain(server_url), "1.1")
+                    .map_err(|err| crate::ImError::TransportUnavailable {
+                        detail: format!("DID-WBA legacy auth generation failed: {err}"),
+                    })?;
+                Ok(BTreeMap::from([("Authorization".to_string(), value)]))
+            }
         }
     }
 
@@ -185,6 +249,152 @@ impl ProviderBackedDidAuth {
             }
         }
     }
+
+    pub(crate) async fn get_challenge_auth_header_async(
+        &mut self,
+        server_url: &str,
+        response_headers: &BTreeMap<String, String>,
+        method: &str,
+        headers: Option<&BTreeMap<String, String>>,
+        body: Option<&[u8]>,
+    ) -> crate::ImResult<BTreeMap<String, String>> {
+        let www_authenticate = get_header_case_insensitive(response_headers, "WWW-Authenticate");
+        let accept_signature = get_header_case_insensitive(response_headers, "Accept-Signature");
+        let challenge = www_authenticate
+            .map(|value| parse_www_authenticate(value))
+            .unwrap_or_default();
+        let covered_components = normalize_covered_components(
+            accept_signature
+                .map(|value| parse_accept_signature(value))
+                .as_ref(),
+            headers,
+            body,
+        );
+        match self.auth_mode {
+            anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
+                if let Some(session) = self.enrollment_session.as_ref() {
+                    prepare_enrollment_http_signature_async(
+                        self.provider.as_ref(),
+                        session,
+                        server_url,
+                        method,
+                        headers,
+                        body,
+                        anp::authentication::HttpSignatureOptions {
+                            nonce: challenge.get("nonce").cloned(),
+                            covered_components,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                } else if let Some(session) = self.identity_session.as_ref() {
+                    prepare_http_signature_async(
+                        session,
+                        server_url,
+                        method,
+                        headers,
+                        body,
+                        crate::internal::identity_provider::ProviderHttpSigningOptions {
+                            nonce: challenge.get("nonce").cloned(),
+                            covered_components,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                } else {
+                    self.get_challenge_auth_header(
+                        server_url,
+                        response_headers,
+                        method,
+                        headers,
+                        body,
+                    )
+                }
+            }
+            anp::authentication::AuthMode::LegacyDidWba => {
+                let key_id = self.provider.request_signing_key_id()?;
+                let value = self
+                    .provider
+                    .legacy_did_wba_header(&key_id, &extract_domain(server_url), "1.1")
+                    .map_err(|err| crate::ImError::TransportUnavailable {
+                        detail: format!("DID-WBA challenge legacy auth generation failed: {err}"),
+                    })?;
+                Ok(BTreeMap::from([("Authorization".to_string(), value)]))
+            }
+        }
+    }
+}
+
+async fn prepare_http_signature_async(
+    session: &Arc<dyn crate::internal::identity_provider::IdentitySession>,
+    server_url: &str,
+    method: &str,
+    headers: Option<&BTreeMap<String, String>>,
+    body: Option<&[u8]>,
+    options: crate::internal::identity_provider::ProviderHttpSigningOptions,
+) -> crate::ImResult<BTreeMap<String, String>> {
+    use crate::internal::identity_provider::{
+        map_provider_error, ProviderExactHttpRequest, ProviderHttpHeader, ProviderKeySelector,
+    };
+    let prepared = session
+        .prepare_http_signature(ProviderExactHttpRequest {
+            key: ProviderKeySelector::Default,
+            url: server_url.to_owned(),
+            method: method.to_owned(),
+            headers: headers
+                .into_iter()
+                .flat_map(|headers| headers.iter())
+                .map(|(name, value)| ProviderHttpHeader {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            body: body.map(ToOwned::to_owned),
+            options,
+        })
+        .await
+        .map_err(map_provider_error)
+        .map_err(|err| crate::ImError::TransportUnavailable {
+            detail: format!("DID-WBA HTTP signature generation failed: {err}"),
+        })?;
+    Ok(prepared
+        .header_patch
+        .into_iter()
+        .map(|header| (header.name, header.value))
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_enrollment_http_signature_async(
+    provider: &dyn super::IdentitySigner,
+    session: &Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+    server_url: &str,
+    method: &str,
+    headers: Option<&BTreeMap<String, String>>,
+    body: Option<&[u8]>,
+    mut options: anp::authentication::HttpSignatureOptions,
+) -> crate::ImResult<BTreeMap<String, String>> {
+    let kid = provider.request_signing_key_id()?;
+    options.keyid = Some(kid);
+    let document = provider.did_document()?;
+    let prepared = anp::authentication::prepare_http_signature_headers(
+        &document, server_url, method, headers, body, options,
+    )
+    .map_err(|_| crate::ImError::TransportUnavailable {
+        detail: "pending enrollment HTTP signature preparation failed".to_owned(),
+    })?;
+    let signature = session
+        .sign_device_assertion(prepared.signing_input().to_vec())
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)
+        .map_err(|_| crate::ImError::TransportUnavailable {
+            detail: "pending enrollment HTTP signature failed".to_owned(),
+        })?;
+    anp::authentication::complete_http_signature_headers(prepared, &signature).map_err(|_| {
+        crate::ImError::TransportUnavailable {
+            detail: "pending enrollment HTTP signature completion failed".to_owned(),
+        }
+    })
 }
 
 fn extract_origin(server_url: &str) -> String {
@@ -321,7 +531,122 @@ fn normalize_covered_components(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::key_provider::FileBackedIdentitySigner;
+    use crate::internal::key_provider::{AnpIdentitySigner, FileBackedIdentitySigner};
+
+    struct AsyncOnlySigner {
+        session: Arc<dyn crate::internal::identity_provider::IdentitySession>,
+    }
+
+    impl crate::internal::key_provider::IdentitySigner for AsyncOnlySigner {
+        fn async_session(
+            &self,
+        ) -> Option<Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+            Some(self.session.clone())
+        }
+
+        fn did_document(&self) -> crate::ImResult<serde_json::Value> {
+            panic!("async authentication must not use the synchronous signer")
+        }
+
+        fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>> {
+            panic!("async authentication must not use the synchronous signer")
+        }
+
+        fn request_signing_key_id(&self) -> crate::ImResult<String> {
+            panic!("async authentication must not use the synchronous signer")
+        }
+
+        fn sign(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+            panic!("async authentication must not use the synchronous signer")
+        }
+
+        fn sign_root(&self, _kid: &str, _message: &[u8]) -> crate::ImResult<Vec<u8>> {
+            panic!("async authentication must not use the synchronous signer")
+        }
+
+        fn ecdh(
+            &self,
+            _kid: &str,
+            _peer_public: &[u8],
+        ) -> crate::ImResult<zeroize::Zeroizing<[u8; 32]>> {
+            panic!("async authentication must not use the synchronous signer")
+        }
+
+        fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+            panic!("not used by this test")
+        }
+
+        fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+            Ok(None)
+        }
+
+        fn persist_auth_token(&self, _token: &str) -> crate::ImResult<()> {
+            panic!("not used by this test")
+        }
+    }
+
+    #[tokio::test]
+    async fn async_provider_did_auth_uses_provider_session() {
+        let root = tempfile::tempdir().unwrap();
+        let mut manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("async-http-auth", [0x72; 32]),
+                ),
+            })
+            .unwrap();
+        let identity = manager
+            .create(anp_identity::CreateIdentityRequest {
+                profile: anp_identity::CreateIdentityProfile::E1,
+                domain: "example.com".to_owned(),
+                port: None,
+                path_segments: vec!["async-http-auth".to_owned()],
+                capabilities: anp_identity::CreateIdentityCapabilities { did_wba: true },
+                managed_keys: vec![
+                    anp_identity::ManagedKeyInput {
+                        fragment: "root".to_owned(),
+                        role: anp_identity::ManagedKeyRole::RootControl,
+                    },
+                    anp_identity::ManagedKeyInput {
+                        fragment: "request".to_owned(),
+                        role: anp_identity::ManagedKeyRole::RequestSigning,
+                    },
+                ],
+                external_keys: Vec::new(),
+                services: Vec::new(),
+                agent_description_url: None,
+                extensions: Vec::new(),
+            })
+            .unwrap();
+        let direct = AnpIdentitySigner::new_ephemeral(identity);
+        let provider = Arc::new(AsyncOnlySigner {
+            session: direct.provider_session(),
+        });
+        let mut auth =
+            ProviderBackedDidAuth::new(provider, anp::authentication::AuthMode::HttpSignatures);
+
+        let headers = auth
+            .get_auth_header_async(
+                "https://api.example.com/orders",
+                false,
+                "POST",
+                Some(&BTreeMap::from([(
+                    "Content-Type".to_owned(),
+                    "application/json".to_owned(),
+                )])),
+                Some(b"{}"),
+            )
+            .await
+            .unwrap();
+
+        assert!(headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("signature-input")));
+        assert!(headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("signature")));
+    }
 
     #[test]
     fn provider_did_auth_generates_http_signature_headers() {

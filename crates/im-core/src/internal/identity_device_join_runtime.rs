@@ -644,14 +644,16 @@ async fn refresh_join_device_access(
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
 ) -> crate::ImResult<DeviceJoinAccessResult> {
     pending.validate()?;
-    let identity = crate::internal::identity_custody::active_join_identity(
+    let (public, identity) = crate::internal::identity_custody::active_join_provider_identity(
         core,
         &pending.did,
         &pending.custody,
         &pending.authorization.device.signing_key_id,
         &pending.authorization.device.e2ee_key_id,
-    )?;
-    let client = core.client_with_pending_anp_identity(
+    )
+    .await?;
+    let client = core.client_with_pending_provider_identity(
+        public,
         identity,
         None,
         pending.did.as_str(),
@@ -887,7 +889,7 @@ where
     {
         let operation_id = request.operation_id.clone();
         let document = self.resolver.resolve(&request.did).await?;
-        let local = self.core.device_join().start(request, &document)?;
+        let local = self.core.device_join().start(request, &document).await?;
         local_hook(&local.session)?;
         if local.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
             return Ok(local.session);
@@ -920,10 +922,11 @@ where
             .device_join()
             .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?;
         if local.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
-            local = crate::internal::identity_device_join::finalize_new_device_activation(
+            local = crate::internal::identity_device_join::finalize_new_device_activation_async(
                 self.core,
                 join_session_id,
-            )?;
+            )
+            .await?;
             publish_v2_messaging_material_after_activation(self.core, &local).await?;
             return Ok(DeviceJoinAdvanceResult {
                 session: local,
@@ -957,7 +960,8 @@ where
                     self.core,
                     join_session_id,
                     crate::identity::DeviceJoinSide::NewDevice,
-                )?;
+                )
+                .await?;
                 Ok(DeviceJoinAdvanceResult {
                     session,
                     remote_state: status.state,
@@ -970,7 +974,8 @@ where
                     self.core,
                     join_session_id,
                     crate::identity::DeviceJoinSide::NewDevice,
-                )?;
+                )
+                .await?;
                 Ok(DeviceJoinAdvanceResult {
                     session,
                     remote_state: status.state,
@@ -994,7 +999,8 @@ where
                         format!("join-response:{}", challenge.challenge_id),
                         challenge,
                         document,
-                    )?;
+                    )
+                    .await?;
                 let transition = self
                     .remote
                     .submit_response(DeviceJoinRemoteResponseRequest {
@@ -1036,12 +1042,14 @@ where
                     .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?
                     .did;
                 let document = self.resolver.resolve(&did).await?;
-                let pending = crate::internal::identity_device_join::prepare_new_device_activation(
-                    self.core,
-                    join_session_id,
-                    &authorization,
-                    &document,
-                )?;
+                let pending =
+                    crate::internal::identity_device_join::prepare_new_device_activation_async(
+                        self.core,
+                        join_session_id,
+                        &authorization,
+                        &document,
+                    )
+                    .await?;
                 self.complete_new_device_activation(pending).await
             }
             DeviceJoinRemoteState::Pending => Ok(DeviceJoinAdvanceResult {
@@ -1073,10 +1081,11 @@ where
             )?;
         }
         let authorization = pending.authorization.clone();
-        let session = crate::internal::identity_device_join::finalize_new_device_activation(
+        let session = crate::internal::identity_device_join::finalize_new_device_activation_async(
             self.core,
             &pending.join_session_id,
-        )?;
+        )
+        .await?;
         publish_v2_messaging_material_after_activation(self.core, &session).await?;
         Ok(DeviceJoinAdvanceResult {
             session,
@@ -1125,6 +1134,7 @@ where
             join_session_id,
             crate::identity::DeviceJoinSide::NewDevice,
         )
+        .await
     }
 }
 
@@ -1589,13 +1599,13 @@ where
             checkpoint: approved.checkpoint,
             device: approved.device,
         };
-        let session = crate::internal::identity_device_join::mark_join_authorized(
+        let session = crate::internal::identity_device_join::mark_join_authorized_async(
             self.core,
             join_session_id,
-            crate::identity::DeviceJoinSide::Admin,
             &authorization,
             &prepared.new_document,
-        )?;
+        )
+        .await?;
         Ok(DeviceJoinAdvanceResult {
             session,
             remote_state: approved.state,
@@ -1662,7 +1672,9 @@ where
             self.core,
             join_session_id,
             crate::identity::DeviceJoinSide::Admin,
-        ) {
+        )
+        .await
+        {
             Ok(session) => session,
             Err(crate::ImError::IdentityNotFound { .. }) => {
                 fallback_session.ok_or_else(|| crate::ImError::IdentityNotFound {

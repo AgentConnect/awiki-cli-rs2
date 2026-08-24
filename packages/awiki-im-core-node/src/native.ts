@@ -86,18 +86,18 @@ export interface NativeHandleRecoveryProgress {
   }
 }
 
+export interface NativeRealtimeSession {
+  nextEvent(): Promise<RealtimeEvent | null>
+  getStatus(): Promise<RealtimeStatus>
+  stop(): Promise<void>
+}
+
 export interface NativeExternalHttpAuthAttempt {
   getTargetUrl(): string
   getMethod(): string
   getHeaderPatch(): ExternalHttpHeader[]
   getRetryCount(): number
   handleResponse(response: ExternalHttpResponse): Promise<NativeExternalHttpAuthAttempt | null>
-}
-
-export interface NativeRealtimeSession {
-  nextEvent(): Promise<RealtimeEvent | null>
-  getStatus(): Promise<RealtimeStatus>
-  stop(): Promise<void>
 }
 
 export interface NativeImCoreNodeClient {
@@ -166,5 +166,26 @@ export interface NativeImCoreNodeClient {
 
 export interface NativeBinding {
   readonly nativeApiVersion: () => number
-  readonly openNativeClient: (options: ImCoreNodeOpenOptions) => Promise<NativeImCoreNodeClient>
+  readonly openNativeClient: (
+    options: Omit<ImCoreNodeOpenOptions, 'identityProvider'>,
+    identityProviderDispatch?: NativeIdentityProviderDispatch,
+  ) => Promise<NativeImCoreNodeClient>
 }
+
+export interface NativeIdentityProviderCall {
+  readonly operation: string
+  readonly payloadJson: string
+  readonly buffers: readonly Buffer[]
+}
+
+export interface NativeIdentityProviderReply {
+  readonly ok: boolean
+  readonly payloadJson: string
+  readonly buffers: readonly Buffer[]
+  readonly errorCode?: string
+  readonly retryable?: boolean
+}
+
+export type NativeIdentityProviderDispatch = (
+  call: readonly [NativeIdentityProviderCall],
+) => Promise<NativeIdentityProviderReply>

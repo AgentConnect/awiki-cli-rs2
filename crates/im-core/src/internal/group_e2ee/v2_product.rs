@@ -239,6 +239,141 @@ where
     }
 }
 
+impl<T> RpcGroupE2eeV2Host<T>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
+    async fn origin_auth_async<M: Serialize, B: Serialize>(
+        &self,
+        method: &str,
+        meta: &M,
+        body: &B,
+    ) -> crate::ImResult<V2OriginAuth> {
+        let payload = DirectPayload {
+            method: method.to_owned(),
+            meta: to_value(meta, "P6 v2 request metadata")?,
+            body: to_value(body, "P6 v2 request body")?,
+        };
+        let proof = crate::internal::proof::origin::build_origin_proof_async(
+            &self.proof_identity,
+            &payload,
+        )
+        .await?;
+        serde_json::from_value(crate::internal::proof::origin::origin_auth_value(&proof)).map_err(
+            |err| crate::ImError::Serialization {
+                detail: format!("encode P6 v2 origin auth: {err}"),
+            },
+        )
+    }
+
+    async fn execute_async<R>(
+        &mut self,
+        request: Value,
+        parse_result: fn(&Value) -> Result<R, anp::group_e2ee::GroupE2eeV2Error>,
+    ) -> crate::ImResult<R> {
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing method"))?
+            .to_owned();
+        let mut params = request
+            .get("params")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing params"))?;
+        if let Some(client_instance_id) = self.p6_client_instance_id.as_deref() {
+            let params = params.as_object_mut().expect("validated P6 params object");
+            let client = params
+                .entry("client".to_owned())
+                .or_insert_with(|| Value::Object(Default::default()))
+                .as_object_mut()
+                .ok_or_else(|| serialization_error("P6 client context must be an object"))?;
+            client.insert(
+                "p6_delivery".to_owned(),
+                serde_json::json!({
+                    "profile": "p6.delivery_context.v1",
+                    "client_instance_id": client_instance_id,
+                }),
+            );
+        }
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, &method, params)
+            .await?;
+        parse_result(&raw).map_err(map_v2_wire_error)
+    }
+
+    async fn get_key_package_async(
+        &mut self,
+        meta: V2ServiceMetadata,
+        body: V2GetKeyPackageBody,
+    ) -> crate::ImResult<V2GetKeyPackageResult> {
+        let request = get_key_package_request_v2(meta, body).map_err(map_v2_wire_error)?;
+        self.execute_async(request, parse_get_key_package_result_v2)
+            .await
+    }
+
+    async fn create_group_async(
+        &mut self,
+        meta: V2ServiceMetadata,
+        body: V2GroupCreateBody,
+    ) -> crate::ImResult<V2GroupCreateResult> {
+        let auth = self
+            .origin_auth_async(METHOD_GROUP_CREATE_V2, &meta, &body)
+            .await?;
+        let request = group_create_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
+        self.execute_async(request, parse_group_create_result_v2)
+            .await
+    }
+
+    async fn add_member_async(
+        &mut self,
+        meta: anp::group_e2ee::V2GroupControlMetadata,
+        body: V2GroupAddBody,
+    ) -> crate::ImResult<V2GroupMembershipResult> {
+        let auth = self
+            .origin_auth_async(METHOD_GROUP_ADD_V2, &meta, &body)
+            .await?;
+        let request = group_add_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
+        self.execute_async(request, parse_group_membership_result_v2)
+            .await
+    }
+
+    async fn remove_member_async(
+        &mut self,
+        meta: anp::group_e2ee::V2GroupControlMetadata,
+        body: V2GroupRemoveBody,
+    ) -> crate::ImResult<V2GroupMembershipResult> {
+        let auth = self
+            .origin_auth_async(METHOD_GROUP_REMOVE_V2, &meta, &body)
+            .await?;
+        let request = group_remove_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
+        self.execute_async(request, parse_group_membership_result_v2)
+            .await
+    }
+
+    async fn send_application_async(
+        &mut self,
+        meta: V2GroupSendMetadata,
+        body: V2GroupCipherObject,
+        client_context: Option<Value>,
+    ) -> crate::ImResult<V2GroupSendResult> {
+        let auth = self
+            .origin_auth_async(METHOD_GROUP_SEND_V2, &meta, &body)
+            .await?;
+        let mut request = group_send_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
+        if let Some(client_context) = client_context {
+            request
+                .get_mut("params")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| serialization_error("P6 v2 SDK request params must be an object"))?
+                .insert("client".to_owned(), client_context);
+        }
+        self.execute_async(request, parse_group_send_result_v2)
+            .await
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct V2PreparedCreateSubmission {
     pub(crate) meta: V2ServiceMetadata,
@@ -347,6 +482,39 @@ where
             did_document,
             identity_signer,
         )?;
+        publish_key_package_request_v2(prepared.meta.clone(), prepared.body.clone())
+            .map_err(map_v2_wire_error)?;
+        Ok(prepared)
+    }
+
+    pub(crate) async fn prepare_current_key_package_async(
+        &self,
+        meta: V2ServiceMetadata,
+        input: V2GenerateKeyPackageInput,
+        did_document: &Value,
+        identity_signer: &dyn crate::internal::key_provider::IdentitySigner,
+    ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
+        self.ensure_current_device(&input.owner_did, &input.owner_device_id)?;
+        self.ensure_current_device(&meta.sender_did, &meta.sender_device_id)?;
+        let prepared = self
+            .runtime
+            .prepare_or_resume_key_package_publish_async(
+                V2PrepareKeyPackagePublishInput {
+                    meta,
+                    owner_did: input.owner_did,
+                    owner_device_id: input.owner_device_id,
+                    verification_method: input.verification_method,
+                    key_package_id: input.key_package_id,
+                    issued_at: input.issued_at,
+                    expires_at: input.expires_at,
+                    now: input.now,
+                    draft_extension_negotiated: input.draft_extension_negotiated,
+                    request_id: input.request_id,
+                },
+                did_document,
+                identity_signer,
+            )
+            .await?;
         publish_key_package_request_v2(prepared.meta.clone(), prepared.body.clone())
             .map_err(map_v2_wire_error)?;
         Ok(prepared)
@@ -831,6 +999,161 @@ where
             ));
         }
         Ok(())
+    }
+}
+
+impl<T> GroupE2eeV2Product<RpcGroupE2eeV2Host<T>>
+where
+    T: AsyncAuthenticatedRpcTransport + AuthenticatedRpcTransport,
+{
+    pub(crate) async fn submit_create_async(
+        &mut self,
+        submission: &V2PreparedCreateSubmission,
+        request_id: impl Into<String>,
+    ) -> crate::ImResult<V2Committed<V2GroupCreateResult>> {
+        let result = self
+            .host
+            .create_group_async(submission.meta.clone(), submission.prepared.body.clone())
+            .await?;
+        result.validate().map_err(map_v2_wire_error)?;
+        let body = &submission.prepared.body;
+        if result.group_did != body.group_did
+            || result.group_state_ref != body.group_state_ref
+            || result.crypto_group_id_b64u != body.crypto_group_id_b64u
+            || result.epoch != body.epoch
+        {
+            return Err(host_typed_result_mismatch("group create result"));
+        }
+        let finalized = self.runtime.finalize_commit(V2FinalizeInput {
+            pending_commit_id: submission.prepared.pending_commit_id.clone(),
+            request_id: request_id.into(),
+        })?;
+        Ok(V2Committed {
+            accepted: result,
+            finalized,
+        })
+    }
+
+    pub(crate) async fn get_target_key_package_async(
+        &mut self,
+        meta: V2ServiceMetadata,
+        body: V2GetKeyPackageBody,
+    ) -> crate::ImResult<V2GetKeyPackageResult> {
+        self.ensure_current_device(&meta.sender_did, &meta.sender_device_id)?;
+        get_key_package_request_v2(meta.clone(), body.clone()).map_err(map_v2_wire_error)?;
+        let result = self.host.get_key_package_async(meta, body.clone()).await?;
+        result.validate().map_err(map_v2_wire_error)?;
+        if result.target_did != body.target_did || result.target_device_id != body.target_device_id
+        {
+            return Err(host_typed_result_mismatch("KeyPackage lookup result"));
+        }
+        Ok(result)
+    }
+
+    pub(crate) async fn submit_add_async(
+        &mut self,
+        submission: &V2PreparedAddSubmission,
+        request_id: impl Into<String>,
+    ) -> crate::ImResult<V2Committed<V2GroupMembershipResult>> {
+        let result = self
+            .host
+            .add_member_async(submission.meta.clone(), submission.prepared.body.clone())
+            .await?;
+        verify_membership_result(&result, &submission.prepared.body)?;
+        let finalized = self.runtime.finalize_commit(V2FinalizeInput {
+            pending_commit_id: submission.prepared.pending_commit_id.clone(),
+            request_id: request_id.into(),
+        })?;
+        Ok(V2Committed {
+            accepted: result,
+            finalized,
+        })
+    }
+
+    pub(crate) async fn submit_remove_async(
+        &mut self,
+        submission: &V2PreparedRemoveSubmission,
+        request_id: impl Into<String>,
+    ) -> crate::ImResult<V2Committed<V2GroupMembershipResult>> {
+        let result = self
+            .host
+            .remove_member_async(submission.meta.clone(), submission.prepared.body.clone())
+            .await?;
+        verify_remove_result(&result, &submission.prepared.body)?;
+        let finalized = self.runtime.finalize_commit(V2FinalizeInput {
+            pending_commit_id: submission.prepared.pending_commit_id.clone(),
+            request_id: request_id.into(),
+        })?;
+        Ok(V2Committed {
+            accepted: result,
+            finalized,
+        })
+    }
+
+    pub(crate) async fn submit_product_application_send_async(
+        &mut self,
+        prepared: &V2PreparedProductApplicationSend,
+    ) -> crate::ImResult<V2GroupSendResult> {
+        self.submit_application_send_async(&prepared.encrypted)
+            .await
+    }
+
+    pub(crate) async fn submit_application_send_async(
+        &mut self,
+        prepared: &V2PreparedApplicationSend,
+    ) -> crate::ImResult<V2GroupSendResult> {
+        let result = match self
+            .host
+            .send_application_async(
+                prepared.meta.clone(),
+                prepared.cipher.clone(),
+                prepared.client_context.clone(),
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let signal = match &error {
+                    crate::ImError::Service {
+                        code: Some(code), ..
+                    } if code == "group.not_member" => {
+                        Some(anp::group_e2ee::operations::v2::V2TerminalSignal::GroupNotMember)
+                    }
+                    crate::ImError::Service {
+                        code: Some(code), ..
+                    } if code == "group.e2ee.leaf_not_current" => {
+                        Some(anp::group_e2ee::operations::v2::V2TerminalSignal::LeafNotCurrent)
+                    }
+                    _ => None,
+                };
+                if let Some(signal) = signal {
+                    let scope = self.runtime.owner_scope()?;
+                    self.runtime.mark_terminal_intent(
+                        anp::group_e2ee::operations::v2::V2MarkTerminalIntentInput {
+                            owner_did: scope.owner_did,
+                            owner_device_id: scope.device_id,
+                            group_did: prepared.cipher.group_state_ref.group_did.clone(),
+                            signal,
+                            request_id: format!(
+                                "p6-v2-send-terminal-{}",
+                                crate::internal::wire::common::generate_operation_id()
+                            ),
+                        },
+                    )?;
+                }
+                return Err(error);
+            }
+        };
+        result.validate().map_err(map_v2_wire_error)?;
+        if result.group_did != prepared.cipher.group_state_ref.group_did
+            || result.message_id != prepared.meta.message_id
+            || result.operation_id != prepared.meta.operation_id
+            || result.group_state_version != prepared.cipher.group_state_ref.group_state_version
+            || result.epoch != prepared.cipher.epoch
+        {
+            return Err(host_typed_result_mismatch("group send result"));
+        }
+        Ok(result)
     }
 }
 

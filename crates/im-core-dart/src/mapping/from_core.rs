@@ -2423,6 +2423,8 @@ mod tests {
                     },
                 ),
                 default_identity_change: None,
+                retry_after_seconds: None,
+                retry_at: None,
                 warnings: Vec::new(),
             });
 

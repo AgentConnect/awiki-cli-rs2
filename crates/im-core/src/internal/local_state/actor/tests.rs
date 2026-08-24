@@ -1062,11 +1062,13 @@ async fn db_actor_prepare_direct_secure_prekeys_persists_local_state_and_returns
         result.status.state,
         crate::secure::DirectSecureState::WaitingForPeer
     );
-    assert_eq!(
-        result.publish_request.method,
-        "direct.e2ee.publish_prekey_bundle"
-    );
-    let params = serde_json::Value::Object(result.publish_request.params.clone());
+    let crate::internal::secure_direct::prepare::DirectSecurePrekeyPublish::Ready(publish_request) =
+        &result.publish
+    else {
+        panic!("direct signer should complete the publish request in the DB actor");
+    };
+    assert_eq!(publish_request.method, "direct.e2ee.publish_prekey_bundle");
+    let params = serde_json::Value::Object(publish_request.params.clone());
     assert!(params.pointer("/body/prekey_bundle").is_some());
     assert_eq!(
         params

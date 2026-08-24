@@ -289,21 +289,28 @@ fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
 
 #[test]
 fn messages_read_runtime_uses_the_current_anp_request_signer() {
+    use anp_identity::host::EnrollmentWorkflow as _;
+
     let fixture = Fixture::new();
     let source_root = tempfile::tempdir().unwrap();
-    let mut source_store =
-        anp_identity::DidStore::initialize_injected(source_root.path(), "source", [95; 32])
-            .unwrap();
-    let mut source = source_store
-        .create_identity(anp_identity::DidCreateSpec {
-            profile: anp_identity::DidProfile::E1,
+    let mut source_manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: source_root.path().to_path_buf(),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "source", [95; 32],
+            )),
+        })
+        .unwrap();
+    let mut source = source_manager
+        .create(anp_identity::CreateIdentityRequest {
+            profile: anp_identity::CreateIdentityProfile::E1,
             domain: "awiki.test".to_owned(),
             port: None,
             path_segments: vec!["users".to_owned(), "delegated-read".to_owned()],
-            capabilities: anp_identity::Capabilities { did_wba: false },
-            managed_keys: vec![anp_identity::ManagedKeySpec {
+            capabilities: anp_identity::CreateIdentityCapabilities { did_wba: false },
+            managed_keys: vec![anp_identity::ManagedKeyInput {
                 fragment: "key-1".to_owned(),
-                role: anp_identity::KeyRole::RootControl,
+                role: anp_identity::ManagedKeyRole::RootControl,
             }],
             external_keys: Vec::new(),
             services: Vec::new(),
@@ -312,51 +319,72 @@ fn messages_read_runtime_uses_the_current_anp_request_signer() {
         })
         .unwrap();
     let daemon_root = tempfile::tempdir().unwrap();
-    let mut daemon_store =
-        anp_identity::DidStore::initialize_injected(daemon_root.path(), "daemon", [96; 32])
-            .unwrap();
-    let (mut daemon_identity, prepared) = daemon_store
-        .prepare_request_signing_enrollment(anp_identity::RequestSigningEnrollmentSpec {
-            verified_document: source.document().clone(),
-            evidence: anp_identity::VerifiedDocumentEvidence {
-                document_version: 1,
-                registry_version: 1,
-                document_digest: anp_identity::canonical_document_digest(source.document())
-                    .unwrap(),
+    let mut daemon_manager =
+        anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+            state_root: daemon_root.path().to_path_buf(),
+            root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+                "daemon", [96; 32],
+            )),
+        })
+        .unwrap();
+    let source_public = source.public_identity().unwrap();
+    let mut enrollment = daemon_manager
+        .begin_request_signing_enrollment(anp_identity::host::RequestSigningEnrollmentRequest {
+            remote: anp_identity::VerifiedRemoteDocument {
+                document: source_public.document.clone(),
+                evidence: anp_identity::VerifiedPublicationEvidence {
+                    document_version: 1,
+                    registry_version: 1,
+                    document_digest: source_public.document.canonical_digest().unwrap(),
+                },
             },
             fragment: "daemon-key-1".to_owned(),
-            capabilities: anp_identity::Capabilities { did_wba: true },
+            capabilities: anp_identity::host::EnrollmentCapabilities { did_wba: true },
         })
         .unwrap();
-    let update = source
-        .prepare_update(anp_identity::DocumentUpdateSpec {
-            request_signing_rotation: None,
-            request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
-                key: anp_identity::RequestSigningPublicKeySpec {
-                    kid: prepared.request_signing_key.kid.clone(),
-                    public_key_multibase: prepared.request_signing_key.public_key_multibase.clone(),
+    let proposal = enrollment.proposal().clone();
+    let anp_identity::host::EnrollmentProposalKind::RequestSigning { signing_key } = &proposal.kind
+    else {
+        panic!("expected request-signing enrollment");
+    };
+    let mut update = source
+        .prepare_document_change(anp_identity::DocumentChangeRequest {
+            changes: vec![anp_identity::DocumentChange::AddAuthenticationKey {
+                key: anp_identity::PublicKeyInput {
+                    kid: signing_key.kid.clone(),
+                    public_key_multibase: signing_key.public_key_multibase.clone(),
                 },
             }],
-            device_mutations: Vec::new(),
-            services: None,
         })
         .unwrap();
-    source.begin_publication(&update.revision_id).unwrap();
-    source.mark_published(&update.revision_id).unwrap();
-    source.commit_update(&update.revision_id).unwrap();
-    daemon_identity
-        .adopt_verified_document(anp_identity::AdoptVerifiedDocumentSpec {
-            document: source.document().clone(),
-            evidence: anp_identity::VerifiedDocumentEvidence {
+    let candidate = update.candidate().clone();
+    let attempt = update.begin_publication().unwrap();
+    update
+        .complete(
+            attempt,
+            anp_identity::PublicationResult::Confirmed {
+                evidence: anp_identity::VerifiedPublicationEvidence {
+                    document_version: 2,
+                    registry_version: 2,
+                    document_digest: candidate.candidate_digest,
+                },
+            },
+        )
+        .unwrap();
+    let source_public = source.public_identity().unwrap();
+    enrollment
+        .activate(anp_identity::VerifiedRemoteDocument {
+            document: source_public.document.clone(),
+            evidence: anp_identity::VerifiedPublicationEvidence {
                 document_version: 2,
                 registry_version: 2,
-                document_digest: anp_identity::canonical_document_digest(source.document())
-                    .unwrap(),
+                document_digest: source_public.document.canonical_digest().unwrap(),
             },
         })
         .unwrap();
-    let user_did = source.did().to_owned();
-    let verification_method = prepared.request_signing_key.kid;
+    let user_did = source_public.reference.did;
+    let verification_method = signing_key.kid.clone();
+    let daemon_identity = daemon_manager.get(&proposal.identity).unwrap();
     let client = fixture
         .core()
         .client_with_anp_delegated_identity(daemon_identity)

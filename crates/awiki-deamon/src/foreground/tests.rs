@@ -3433,7 +3433,11 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         serde_json::from_str(loaded.private_key_ref_json.as_deref().unwrap()).unwrap();
     crate::identity_custody::open_referenced_identity(&state, &custody)
         .unwrap()
-        .sign(&custody.key_id, b"migrated bootstrap key")
+        .sign(anp_identity::SignRequest {
+            purpose: anp_identity::SigningPurpose::Authentication,
+            key: anp_identity::KeySelector::Kid(custody.key_id.clone()),
+            payload: b"migrated bootstrap key".to_vec(),
+        })
         .unwrap();
     assert!(!format!("{loaded:?}").contains("BEGIN PRIVATE KEY"));
     let binding = state

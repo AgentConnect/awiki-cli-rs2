@@ -127,6 +127,7 @@ pub async fn discard_handle_recovery_pre_attempt(
         .discard_handle_recovery_pre_attempt(im_core::identity::HandleRecoveryDiscardRequest {
             operation_id,
         })
+        .await
         .map(Into::into)
         .map_err(DartImError::from)
 }
@@ -144,6 +145,7 @@ pub async fn quarantine_handle_recovery_key_unavailable(
                 user_presence_confirmed,
             },
         )
+        .await
         .map(Into::into)
         .map_err(DartImError::from)
 }

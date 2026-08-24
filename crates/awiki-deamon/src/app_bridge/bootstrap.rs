@@ -1790,19 +1790,24 @@ mod tests {
         let state = DaemonState::open(&config).unwrap();
         state.initialize().unwrap();
         let source_root = tempfile::tempdir().unwrap();
-        let mut source_store =
-            anp_identity::DidStore::initialize_injected(source_root.path(), "source", [92; 32])
-                .unwrap();
-        let mut source = source_store
-            .create_identity(anp_identity::DidCreateSpec {
-                profile: anp_identity::DidProfile::E1,
+        let mut source_manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: source_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("source", [92; 32]),
+                ),
+            })
+            .unwrap();
+        let mut source = source_manager
+            .create(anp_identity::CreateIdentityRequest {
+                profile: anp_identity::CreateIdentityProfile::E1,
                 domain: "example.com".to_owned(),
                 port: None,
                 path_segments: vec!["users".to_owned(), "bootstrap-v3".to_owned()],
-                capabilities: anp_identity::Capabilities { did_wba: false },
-                managed_keys: vec![anp_identity::ManagedKeySpec {
+                capabilities: anp_identity::CreateIdentityCapabilities { did_wba: false },
+                managed_keys: vec![anp_identity::ManagedKeyInput {
                     fragment: "key-1".to_owned(),
-                    role: anp_identity::KeyRole::RootControl,
+                    role: anp_identity::ManagedKeyRole::RootControl,
                 }],
                 external_keys: Vec::new(),
                 services: Vec::new(),
@@ -1810,32 +1815,46 @@ mod tests {
                 extensions: Vec::new(),
             })
             .unwrap();
-        let prepared =
-            crate::identity_custody::prepare_daemon_subkey(&state, source.document()).unwrap();
-        let update = source
-            .prepare_update(anp_identity::DocumentUpdateSpec {
-                request_signing_rotation: None,
-                request_signing_mutations: vec![anp_identity::RequestSigningMutationSpec::Add {
-                    key: anp_identity::RequestSigningPublicKeySpec {
+        let source_public = source.public_identity().unwrap();
+        let prepared = crate::identity_custody::prepare_daemon_subkey(
+            &state,
+            source_public.document.as_value(),
+        )
+        .unwrap();
+        let mut update = source
+            .prepare_document_change(anp_identity::DocumentChangeRequest {
+                changes: vec![anp_identity::DocumentChange::AddAuthenticationKey {
+                    key: anp_identity::PublicKeyInput {
                         kid: prepared.verification_method.clone(),
                         public_key_multibase: prepared.public_key_multibase.clone(),
                     },
                 }],
-                device_mutations: Vec::new(),
-                services: None,
             })
             .unwrap();
-        source.begin_publication(&update.revision_id).unwrap();
-        source.mark_published(&update.revision_id).unwrap();
-        source.commit_update(&update.revision_id).unwrap();
+        let candidate = update.candidate().clone();
+        let attempt = update.begin_publication().unwrap();
+        update
+            .complete(
+                attempt,
+                anp_identity::PublicationResult::Confirmed {
+                    evidence: anp_identity::VerifiedPublicationEvidence {
+                        document_version: 2,
+                        registry_version: 2,
+                        document_digest: candidate.candidate_digest,
+                    },
+                },
+            )
+            .unwrap();
+        let source_public = source.public_identity().unwrap();
+        let source_did = source_public.reference.did.clone();
 
         let mut payload = valid_payload();
-        payload["controller_did"] = json!(source.did());
+        payload["controller_did"] = json!(source_did.clone());
         payload["idempotency_key"] =
-            json!(format!("personal-agent-bootstrap:{}:app_1", source.did()));
+            json!(format!("personal-agent-bootstrap:{}:app_1", source_did));
         let package = payload["user_subkey_package"].as_object_mut().unwrap();
         package.insert("schema".to_owned(), json!(USER_SUBKEY_PACKAGE_SCHEMA_V3));
-        package.insert("user_did".to_owned(), json!(source.did()));
+        package.insert("user_did".to_owned(), json!(source_did.clone()));
         package.insert(
             "verification_method".to_owned(),
             json!(prepared.verification_method),
@@ -1854,17 +1873,11 @@ mod tests {
         assert!(serialized_package.get("private_key_pem").is_none());
         assert!(serialized_package.get("private_key_multibase").is_none());
         let resolver = StaticDidResolver {
-            document: source.document().clone(),
+            document: source_public.document.into_value(),
         };
 
-        process_bootstrap_envelope(
-            &state,
-            "did:agent:daemon",
-            source.did(),
-            &resolver,
-            envelope,
-        )
-        .unwrap();
+        process_bootstrap_envelope(&state, "did:agent:daemon", &source_did, &resolver, envelope)
+            .unwrap();
 
         let stored = state
             .load_user_delegated_identity(&prepared.verification_method)
@@ -1877,7 +1890,11 @@ mod tests {
         assert_eq!(stored_reference.key_id, prepared.verification_method);
         crate::identity_custody::open_referenced_identity(&state, &stored_reference)
             .unwrap()
-            .sign(&stored_reference.key_id, b"public-only bootstrap")
+            .sign(anp_identity::SignRequest {
+                purpose: anp_identity::SigningPurpose::Authentication,
+                key: anp_identity::KeySelector::Kid(stored_reference.key_id.clone()),
+                payload: b"public-only bootstrap".to_vec(),
+            })
             .unwrap();
     }
 

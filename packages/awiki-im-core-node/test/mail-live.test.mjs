@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { ImCoreNodeError, openImCoreNodeClient } from '../dist/index.js'
+import { createIdentityProviderFixture } from './identity-provider-fixture.mjs'
 
 function syntheticAccessToken({ did, userId, deviceId, keyId }) {
   const now = Math.floor(Date.now() / 1000)
@@ -238,7 +239,7 @@ async function syntheticMailService() {
   }
 }
 
-function options(stateRoot, identityUrl, mailUrl) {
+function options(stateRoot, identityUrl, mailUrl, identityProvider) {
   return {
     stateRoot,
     serviceBaseUrl: identityUrl,
@@ -249,6 +250,7 @@ function options(stateRoot, identityUrl, mailUrl) {
     didDomain: 'legacy.test',
     operationTimeoutMs: 10_000,
     syncTimeoutMs: 1_000,
+    identityProvider,
   }
 }
 
@@ -258,10 +260,12 @@ test('mail facade uses the identity-bound mail transport and keeps the v1 projec
   const stateRoot = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-mail-live-'))
   const identityService = await syntheticIdentityService()
   const mailService = await syntheticMailService()
+  const identityProvider = await createIdentityProviderFixture(stateRoot)
   let client
   t.after(async () => {
     mailService.releaseBlocked()
     await client?.close()
+    identityProvider.dispose()
     await Promise.all([identityService.close(), mailService.close()])
     await rm(stateRoot, { recursive: true, force: true })
   })
@@ -270,22 +274,29 @@ test('mail facade uses the identity-bound mail transport and keeps the v1 projec
     stateRoot,
     identityService.baseUrl,
     mailService.baseUrl,
+    identityProvider,
   ))
   await client.requestRegistrationOtp({
     handle: 'mail-live.legacy.test',
     phone: '+15551234569',
   })
-  const identity = await client.completeRegistration({
+  const registration = await client.completeRegistrationWithOutcome({
     handle: 'mail-live.legacy.test',
     phone: '+15551234569',
     otp: '123456',
   })
+  assert.equal(registration.status, 'registered')
+  assert.deepEqual(registration.warnings, [])
+  const identity = registration.identity
+  assert(identity)
 
-  assert.deepEqual(identityService.requests.slice(0, 3), [
+  assert.deepEqual(identityService.requests.slice(0, 2), [
     { method: 'send_otp', path: '/user-service/v1/handle/rpc' },
     { method: 'register', path: '/user-service/v1/did-auth/rpc' },
-    { method: 'direct.e2ee.publish_prekey_bundle', path: '/im/rpc' },
   ])
+  assert(identityService.requests.some(request =>
+    request.method === 'direct.e2ee.publish_prekey_bundle'
+      && request.path === '/im/rpc'))
   assert.equal(identityService.requests.some(request => request.path === '/mail/rpc'), false)
 
   const account = await client.getMailAccount()

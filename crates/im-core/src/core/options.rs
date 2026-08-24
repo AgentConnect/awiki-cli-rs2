@@ -83,11 +83,30 @@ pub struct ImCoreOpenOptions {
     /// key-possession proofs. It must equal User Service
     /// `AWIKI_MULTI_DEVICE_AUDIENCE`; Core never derives or hard-codes it.
     pub multi_device_audience: Option<String>,
+    #[cfg(feature = "provider-traits")]
+    pub(crate) identity_custody_provider: Option<IdentityCustodyProvider>,
     /// Allows ANP external HTTP authentication for literal loopback HTTP URLs.
     ///
     /// This is a test-only transport-policy exception. Remote HTTP remains
     /// forbidden and callers still own the actual network transport.
     pub external_http_allow_insecure_loopback_for_testing: bool,
+}
+
+/// Opaque trusted-host handle for an externally supplied identity provider.
+///
+/// The handle is intentionally available only with `provider-traits`; ordinary
+/// application consumers should use the product-level identity APIs instead.
+#[cfg(feature = "provider-traits")]
+#[derive(Clone)]
+pub struct IdentityCustodyProvider {
+    pub(crate) inner: Arc<dyn crate::provider::IdentityCustody>,
+}
+
+#[cfg(feature = "provider-traits")]
+impl fmt::Debug for IdentityCustodyProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("IdentityCustodyProvider(<host-provider>)")
+    }
 }
 
 impl ImCoreOpenOptions {
@@ -127,6 +146,16 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_audience(mut self, audience: impl Into<String>) -> Self {
         self.multi_device_audience = Some(audience.into());
+        self
+    }
+
+    /// Installs the trusted Host SPI used by External identity custody mode.
+    #[cfg(feature = "provider-traits")]
+    pub fn with_identity_custody_provider(
+        mut self,
+        provider: Arc<dyn crate::provider::IdentityCustody>,
+    ) -> Self {
+        self.identity_custody_provider = Some(IdentityCustodyProvider { inner: provider });
         self
     }
 

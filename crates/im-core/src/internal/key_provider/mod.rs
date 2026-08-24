@@ -1,16 +1,35 @@
+#[cfg(feature = "identity-native-anp")]
 mod anp_identity;
 mod did_auth;
 mod file;
 mod hosted;
+#[cfg(feature = "provider-traits")]
+mod provider;
 pub(crate) mod vault;
 
-pub(crate) use self::anp_identity::{AnpIdentitySigner, PendingAnpEnrollmentSigner};
+#[cfg(feature = "identity-native-anp")]
+pub(crate) use self::anp_identity::AnpIdentitySigner;
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedIdentitySigner;
 pub(crate) use self::hosted::{HostBackedDeviceIdentitySigner, HostedIdentitySigner};
+#[cfg(feature = "provider-traits")]
+pub(crate) use self::provider::{ProviderEnrollmentIdentitySigner, ProviderIdentitySigner};
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
 pub(crate) trait IdentitySigner: Send + Sync {
+    fn async_session(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>> {
+        None
+    }
+
+    fn async_enrollment_session(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>>
+    {
+        None
+    }
+
     fn did_document(&self) -> crate::ImResult<serde_json::Value>;
 
     fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>>;
@@ -259,7 +278,7 @@ pub(crate) fn ecdh_private_pem(
     Ok(shared)
 }
 
-fn map_crypto_error(error: impl std::fmt::Display) -> crate::ImError {
+pub(crate) fn map_crypto_error(error: impl std::fmt::Display) -> crate::ImError {
     crate::ImError::LocalStateUnavailable {
         detail: format!("identity signing operation failed: {error}"),
     }

@@ -14,11 +14,13 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 #[cfg(feature = "group-e2ee")]
 use sha2::{Digest as _, Sha256};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "identity-native-anp")]
+use std::time::Instant;
 
-use crate::internal::transport::{
-    AsyncRestTransport, AsyncRpcTransport, RestTransport, RpcTransport,
-};
+use crate::internal::transport::{AsyncRestTransport, AsyncRpcTransport};
+#[cfg(feature = "identity-native-anp")]
+use crate::internal::transport::{RestTransport, RpcTransport};
 
 const DEFAULT_EMAIL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_EMAIL_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -27,72 +29,6 @@ const REGISTRATION_GROUP_KEY_PACKAGE_PUBLISH_PENDING_WARNING: &str =
     "registration_group_key_package_publish_pending";
 const REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING: &str = "registration_pending_cleanup_required";
 const REGISTRATION_PROOF_EXPIRED_AWIKI_CODE: &str = "device.document_proof_expired";
-
-pub(crate) fn registration_otp_challenge(
-    raw: Option<&Value>,
-) -> crate::ImResult<crate::identity::RegistrationOtpChallenge> {
-    let object = raw
-        .and_then(Value::as_object)
-        .ok_or_else(|| crate::ImError::Serialization {
-            detail: "registration OTP response must be an object".to_owned(),
-        })?;
-    let retry_after_seconds = object
-        .get("retry_after_seconds")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| crate::ImError::Serialization {
-            detail: "registration OTP retry_after_seconds is invalid".to_owned(),
-        })?;
-    let retry_at = object
-        .get("retry_at")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .filter(|value| value.offset().local_minus_utc() == 0)
-        .map(|value| {
-            value
-                .with_timezone(&chrono::Utc)
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        })
-        .ok_or_else(|| crate::ImError::Serialization {
-            detail: "registration OTP retry_at is invalid".to_owned(),
-        })?;
-    Ok(crate::identity::RegistrationOtpChallenge {
-        retry_after_seconds,
-        retry_at,
-    })
-}
-
-#[cfg(test)]
-mod registration_otp_challenge_tests {
-    use serde_json::json;
-
-    #[test]
-    fn accepts_the_public_retry_boundary() {
-        let value = json!({
-            "ok": true,
-            "message": "sent",
-            "retry_after_seconds": 60,
-            "retry_at": "2026-08-15T12:00:00Z"
-        });
-        let challenge = super::registration_otp_challenge(Some(&value)).unwrap();
-        assert_eq!(challenge.retry_after_seconds, 60);
-        assert_eq!(challenge.retry_at, "2026-08-15T12:00:00Z");
-    }
-
-    #[test]
-    fn rejects_missing_or_non_utc_retry_metadata() {
-        for value in [
-            json!({"retry_after_seconds": 0, "retry_at": "2026-08-15T12:00:00Z"}),
-            json!({"retry_after_seconds": 60, "retry_at": "2026-08-15T12:00:00+08:00"}),
-            json!({"retry_after_seconds": 60}),
-        ] {
-            assert!(super::registration_otp_challenge(Some(&value)).is_err());
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IdentityRegistrationRuntimeResult {
@@ -152,7 +88,14 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
         handle: crate::ids::Handle,
         method: crate::identity::RegistrationMethod,
         state: crate::identity::HandleRegistrationState,
+        raw_response: Option<&serde_json::Value>,
     ) -> crate::identity::HandleRegistrationResult {
+        let (retry_after_seconds, retry_at) =
+            if state == crate::identity::HandleRegistrationState::OtpSent {
+                registration_otp_retry(raw_response)
+            } else {
+                (None, None)
+            };
         crate::identity::HandleRegistrationResult {
             identity: None,
             account_id: None,
@@ -161,11 +104,14 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
             state,
             join_required: None,
             default_identity_change: None,
+            retry_after_seconds,
+            retry_at,
             warnings: warnings_for_request(&request),
         }
     }
 }
 
+#[cfg(feature = "identity-native-anp")]
 impl<'a, T> IdentityRegistrationRuntime<'a, T>
 where
     T: RpcTransport + RestTransport,
@@ -199,6 +145,7 @@ where
                             target.full_handle,
                             method,
                             crate::identity::HandleRegistrationState::OtpSent,
+                            Some(&raw),
                         ),
                         raw: Some(raw),
                     });
@@ -226,6 +173,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailSent,
+                                Some(&raw),
                             ),
                             raw: Some(raw),
                         });
@@ -237,6 +185,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailPending,
+                                None,
                             ),
                             raw: Some(raw),
                         });
@@ -362,6 +311,7 @@ where
                             target.full_handle,
                             method,
                             crate::identity::HandleRegistrationState::OtpSent,
+                            Some(&raw),
                         ),
                         raw: Some(raw),
                     });
@@ -392,6 +342,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailSent,
+                                Some(&raw),
                             ),
                             raw: Some(raw),
                         });
@@ -406,6 +357,7 @@ where
                                 target.full_handle,
                                 method,
                                 crate::identity::HandleRegistrationState::EmailPending,
+                                None,
                             ),
                             raw: Some(raw),
                         });
@@ -428,7 +380,7 @@ where
                 self.core,
             )?;
         let (pending_ref, mut pending) =
-            load_or_create_pending_registration(self.core, &store, &request, &target)?;
+            load_or_create_pending_registration_async(self.core, &store, &request, &target).await?;
         verify_pending_matches_request(&pending, &request, &target)?;
         if pending.remote_result.is_none() && pending.remote_attempted {
             match self
@@ -437,18 +389,20 @@ where
                 .await?
             {
                 crate::internal::transport::PendingRegistrationReconciliation::Absent => {
-                    crate::internal::identity_custody::reconcile_registration_publication(
+                    crate::internal::identity_custody::reconcile_registration_publication_async(
                         self.core,
                         &pending.identity,
                         false,
-                    )?;
+                    )
+                    .await?;
                 }
                 committed => {
-                    crate::internal::identity_custody::reconcile_registration_publication(
+                    crate::internal::identity_custody::reconcile_registration_publication_async(
                         self.core,
                         &pending.identity,
                         true,
-                    )?;
+                    )
+                    .await?;
                     apply_registration_reconciliation(&mut pending, committed)?;
                     store.save(&pending)?;
                 }
@@ -457,10 +411,11 @@ where
         if pending.remote_result.is_none() {
             let mut refreshed_expired_proof = false;
             loop {
-                crate::internal::identity_custody::begin_registration_publication(
+                crate::internal::identity_custody::begin_registration_publication_async(
                     self.core,
                     &pending.identity,
-                )?;
+                )
+                .await?;
                 pending.remote_attempted = true;
                 store.save(&pending)?;
                 let call = register_call(&pending, &request)?;
@@ -471,24 +426,27 @@ where
                 {
                     Ok(raw) => match parse_register_outcome(&pending, raw)? {
                         RegistrationRemoteOutcome::Registered(result) => {
-                            crate::internal::identity_custody::commit_registration_publication(
+                            crate::internal::identity_custody::commit_registration_publication_async(
                                 self.core,
                                 &pending.identity,
-                            )?;
+                            )
+                            .await?;
                             pending.remote_result = Some(result);
                             pending.phase =
                                     crate::internal::identity_registration_pending::PendingRegistrationPhase::RemoteCommitted;
                         }
                         RegistrationRemoteOutcome::JoinRequired(join_required) => {
-                            crate::internal::identity_custody::reconcile_registration_publication(
+                            crate::internal::identity_custody::reconcile_registration_publication_async(
                                 self.core,
                                 &pending.identity,
                                 false,
-                            )?;
-                            crate::internal::identity_custody::discard_unpublished_registration(
+                            )
+                            .await?;
+                            crate::internal::identity_custody::discard_unpublished_registration_async(
                                 self.core,
                                 &pending.identity,
-                            )?;
+                            )
+                            .await?;
                             store.delete(&pending_ref)?;
                             let preparation = prepare_join_required(self.core, join_required)?;
                             return join_required_result(&request, target.full_handle, preparation);
@@ -501,19 +459,21 @@ where
                             .await?
                         {
                             crate::internal::transport::PendingRegistrationReconciliation::Absent => {
-                                crate::internal::identity_custody::reconcile_registration_publication(
+                                crate::internal::identity_custody::reconcile_registration_publication_async(
                                     self.core,
                                     &pending.identity,
                                     false,
-                                )?;
+                                )
+                                .await?;
                                 return Err(error);
                             }
                             committed => {
-                                crate::internal::identity_custody::reconcile_registration_publication(
+                                crate::internal::identity_custody::reconcile_registration_publication_async(
                                     self.core,
                                     &pending.identity,
                                     true,
-                                )?;
+                                )
+                                .await?;
                                 apply_registration_reconciliation(&mut pending, committed)?
                             }
                         }
@@ -521,16 +481,18 @@ where
                     Err(error)
                         if !refreshed_expired_proof && registration_proof_expired(&error) =>
                     {
-                        crate::internal::identity_custody::reconcile_registration_publication(
+                        crate::internal::identity_custody::reconcile_registration_publication_async(
                             self.core,
                             &pending.identity,
                             false,
-                        )?;
+                        )
+                        .await?;
                         let (document, revision_id) =
-                            crate::internal::identity_custody::refresh_registration_document(
+                            crate::internal::identity_custody::refresh_registration_document_async(
                                 self.core,
                                 &pending.identity,
-                            )?;
+                            )
+                            .await?;
                         pending.replace_prepared_document(document, Some(revision_id))?;
                         store.save(&pending)?;
                         refreshed_expired_proof = true;
@@ -631,6 +593,7 @@ fn ensure_registration_domain(
     Ok(())
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn load_or_create_pending_registration(
     core: &crate::core::ImCore,
     store: &crate::internal::identity_registration_pending::PendingRegistrationStore,
@@ -648,6 +611,43 @@ fn load_or_create_pending_registration(
         &target.effective_domain,
         &target.local_part,
     )?;
+    let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
+        target.local_part.clone(),
+        target.effective_domain.clone(),
+        local_alias(request, target),
+        request
+            .profile
+            .display_name
+            .clone()
+            .unwrap_or_else(|| target.local_part.clone()),
+        request.make_default,
+        pending_verification_kind(&request.verification).to_owned(),
+        pending_verification_target(&request.verification),
+        request.invite_code.clone(),
+        identity,
+    )?;
+    let secret_ref = store.save(&pending)?;
+    Ok((secret_ref, pending))
+}
+
+async fn load_or_create_pending_registration_async(
+    core: &crate::core::ImCore,
+    store: &crate::internal::identity_registration_pending::PendingRegistrationStore,
+    request: &crate::identity::RegisterHandleRequest,
+    target: &RegistrationTarget,
+) -> crate::ImResult<(
+    crate::internal::secret_vault::record::SecretRef,
+    crate::internal::identity_registration_pending::PendingRegistration,
+)> {
+    if let Some(existing) = store.load(&target.local_part, &target.effective_domain)? {
+        return Ok(existing);
+    }
+    let identity = crate::internal::identity_custody::provision_registration_identity_async(
+        core,
+        &target.effective_domain,
+        &target.local_part,
+    )
+    .await?;
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         target.local_part.clone(),
         target.effective_domain.clone(),
@@ -730,6 +730,7 @@ fn register_call(
     )
 }
 
+#[cfg(feature = "identity-native-anp")]
 fn ensure_remote_registration<T, P>(
     core: &crate::core::ImCore,
     transport: &mut T,
@@ -1045,6 +1046,26 @@ fn require_exact_fields(raw: &Value, expected: &[&str]) -> crate::ImResult<()> {
     Ok(())
 }
 
+fn registration_otp_retry(
+    raw_response: Option<&serde_json::Value>,
+) -> (Option<u32>, Option<String>) {
+    let Some(raw) = raw_response else {
+        return (None, None);
+    };
+    let value = raw.get("result").unwrap_or(raw);
+    let retry_after_seconds = value
+        .get("retry_after_seconds")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let retry_at = value
+        .get("retry_at")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    (retry_after_seconds, retry_at)
+}
+
 fn join_required_result(
     request: &crate::identity::RegisterHandleRequest,
     handle: crate::ids::Handle,
@@ -1059,6 +1080,8 @@ fn join_required_result(
             state: crate::identity::HandleRegistrationState::JoinRequired,
             join_required: Some(join_required),
             default_identity_change: None,
+            retry_after_seconds: None,
+            retry_at: None,
             warnings: warnings_for_request(request),
         },
         raw: None,
@@ -1446,6 +1469,8 @@ fn registration_result(
                     warnings: Vec::new(),
                 }
             }),
+            retry_after_seconds: None,
+            retry_at: None,
             warnings: Vec::new(),
         },
         raw: None,
@@ -1766,6 +1791,29 @@ mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use time::OffsetDateTime;
+
+    #[test]
+    fn registration_otp_retry_preserves_server_guidance() {
+        let raw = serde_json::json!({
+            "result": {
+                "ok": true,
+                "retry_after_seconds": 60,
+                "retry_at": "2099-08-20T12:00:00Z"
+            }
+        });
+        assert_eq!(
+            registration_otp_retry(Some(&raw)),
+            (Some(60), Some("2099-08-20T12:00:00Z".to_owned()))
+        );
+        assert_eq!(registration_otp_retry(None), (None, None));
+        assert_eq!(
+            registration_otp_retry(Some(&serde_json::json!({
+                "retry_after_seconds": -1,
+                "retry_at": " "
+            }))),
+            (None, None)
+        );
+    }
 
     #[derive(Clone, Copy)]
     enum RpcBehavior {
