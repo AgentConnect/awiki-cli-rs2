@@ -2,6 +2,7 @@
   "name": "@awiki/im-core-node-darwin-x64",
   "version": "0.1.8",
   "description": "macOS Intel native addon for @awiki/im-core-node",
+  "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
   "type": "commonjs",
   "license": "AGPL-3.0-only",
   "os": ["darwin"],
