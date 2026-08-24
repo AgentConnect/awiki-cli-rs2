@@ -34,7 +34,7 @@ test('trusted publishing is gated to the release branch and verified artifacts',
 test('trusted publishing keeps all platform packages ahead of the root wrapper', () => {
   const workflow = readFileSync(workflowPath, 'utf8')
   const publishCommands = [...workflow.matchAll(
-    /^\s+npm publish "channel\/([^"]+)" --access public$/gm,
+    /^\s+npm publish "\.\/channel\/([^"]+)" --access public$/gm,
   )].map((match) => match[1])
 
   assert.deepEqual(publishCommands, [
