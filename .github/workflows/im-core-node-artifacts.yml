@@ -2,6 +2,12 @@ name: IM Core Node Tier 1 Artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_to_npm:
+        description: Publish the verified packages to npm through OIDC
+        required: true
+        default: false
+        type: boolean
   pull_request:
     paths:
       - '.github/workflows/im-core-node-artifacts.yml'
@@ -368,3 +374,98 @@ jobs:
           path: channel/*
           if-no-files-found: error
           retention-days: 30
+
+  publish-npm:
+    name: Publish verified packages to npm with OIDC
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_to_npm == true &&
+      github.ref == 'refs/heads/release/0714-dsh'
+    needs: publish-test-channel
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download verified release channel
+        uses: actions/download-artifact@v8
+        with:
+          name: im-core-node-agpl-test-channel-${{ github.run_id }}
+          path: channel
+
+      - name: Set up Node for trusted publishing
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Set up OIDC-capable npm
+        run: npm install --global npm@11.19.0
+
+      - name: Verify release version and unpublished state
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./packages/awiki-im-core-node/package.json").version')"
+          packages=(
+            '@awiki/im-core-node-darwin-arm64'
+            '@awiki/im-core-node-darwin-x64'
+            '@awiki/im-core-node-linux-arm64-gnu'
+            '@awiki/im-core-node-linux-x64-gnu'
+            '@awiki/im-core-node-win32-x64-msvc'
+            '@awiki/im-core-node'
+          )
+          tarballs=(
+            "awiki-im-core-node-darwin-arm64-${version}.tgz"
+            "awiki-im-core-node-darwin-x64-${version}.tgz"
+            "awiki-im-core-node-linux-arm64-gnu-${version}.tgz"
+            "awiki-im-core-node-linux-x64-gnu-${version}.tgz"
+            "awiki-im-core-node-win32-x64-msvc-${version}.tgz"
+            "awiki-im-core-node-${version}.tgz"
+          )
+
+          test "$(find channel -maxdepth 1 -name '*.tgz' -type f | wc -l)" -eq 6
+          for index in "${!packages[@]}"; do
+            test -f "channel/${tarballs[$index]}"
+            published="$(npm view "${packages[$index]}" versions --json)"
+            node -e '
+              const versions = JSON.parse(process.argv[1])
+              const target = process.argv[2]
+              if ((Array.isArray(versions) ? versions : [versions]).includes(target)) {
+                throw new Error(`${process.argv[3]}@${target} is already published`)
+              }
+            ' "${published}" "${version}" "${packages[$index]}"
+          done
+
+      - name: Publish platform packages before the root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./packages/awiki-im-core-node/package.json").version')"
+          npm publish "channel/awiki-im-core-node-darwin-arm64-${version}.tgz" --access public
+          npm publish "channel/awiki-im-core-node-darwin-x64-${version}.tgz" --access public
+          npm publish "channel/awiki-im-core-node-linux-arm64-gnu-${version}.tgz" --access public
+          npm publish "channel/awiki-im-core-node-linux-x64-gnu-${version}.tgz" --access public
+          npm publish "channel/awiki-im-core-node-win32-x64-msvc-${version}.tgz" --access public
+          npm publish "channel/awiki-im-core-node-${version}.tgz" --access public
+
+      - name: Verify all published versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./packages/awiki-im-core-node/package.json").version')"
+          for package in \
+            '@awiki/im-core-node-darwin-arm64' \
+            '@awiki/im-core-node-darwin-x64' \
+            '@awiki/im-core-node-linux-arm64-gnu' \
+            '@awiki/im-core-node-linux-x64-gnu' \
+            '@awiki/im-core-node-win32-x64-msvc' \
+            '@awiki/im-core-node'; do
+            test "$(npm view "${package}@${version}" version)" = "${version}"
+          done
