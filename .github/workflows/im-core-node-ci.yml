@@ -83,6 +83,13 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Build pinned ANP Identity Node binding
+        working-directory: anp/anp-identity
+        shell: bash
+        run: |
+          npm --prefix bindings/node ci
+          npm --prefix bindings/node run build
+
       - name: Verify Rust facade and Node bridge
         working-directory: awiki-cli-rs2
         shell: bash
