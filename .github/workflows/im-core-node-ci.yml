@@ -1,6 +1,7 @@
 name: IM Core Node CI
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/im-core-node-ci.yml'
