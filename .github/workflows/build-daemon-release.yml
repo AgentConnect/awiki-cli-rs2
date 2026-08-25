@@ -58,7 +58,7 @@ jobs:
         with:
           repository: agent-network-protocol/anp
           ref: ${{ steps.release.outputs.anp_commit }}
-          path: anp/anp
+          path: anp
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

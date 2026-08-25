@@ -13,7 +13,8 @@ const SERVER_KEYS = new Set([
   'cli_download_rate',
 ]);
 const RELEASE_KEYS = new Set([
-  'schema_version', 'channels', 'anp_commit', 'archive_keep_versions', 'targets',
+  'schema_version', 'channels', 'anp_repository', 'anp_commit',
+  'anp_identity_commit', 'archive_keep_versions', 'targets',
 ]);
 const CHANNEL_KEYS = new Set(['version', 'min_supported_version']);
 const SUPPORTED_TARGETS = [
@@ -111,7 +112,45 @@ function readServerConfig(filePath) {
   return config;
 }
 
-function readReleaseConfig(filePath) {
+function readAnpCandidateLock(filePath) {
+  const lock = JSON.parse(fs.readFileSync(path.resolve(filePath), 'utf8'));
+  rejectUnknownKeys(
+    lock,
+    new Set(['schemaVersion', 'candidateVersion', 'sourceDateEpoch', 'anp', 'identity']),
+    'ANP candidate lock',
+  );
+  if (lock.schemaVersion !== 1 || lock.candidateVersion !== '1.0.0'
+      || !Number.isInteger(lock.sourceDateEpoch) || lock.sourceDateEpoch < 1) {
+    throw new Error('ANP candidate lock version is invalid');
+  }
+  rejectUnknownKeys(
+    lock.anp,
+    new Set(['repository', 'commit', 'rustTreeSha256', 'pythonWheel']),
+    'ANP candidate SDK',
+  );
+  rejectUnknownKeys(
+    lock.identity,
+    new Set(['repository', 'commit', 'version', 'rustTreeSha256']),
+    'ANP Identity candidate',
+  );
+  rejectUnknownKeys(lock.anp.pythonWheel, new Set(['filename', 'sha256']), 'ANP wheel');
+  if (lock.anp.repository !== 'https://github.com/agent-network-protocol/anp.git'
+      || !/^[a-f0-9]{40}$/.test(lock.anp.commit || '')
+      || !/^[a-f0-9]{64}$/.test(lock.anp.rustTreeSha256 || '')
+      || lock.anp.pythonWheel.filename !== 'anp-1.0.0-py3-none-any.whl'
+      || !/^[a-f0-9]{64}$/.test(lock.anp.pythonWheel.sha256 || '')) {
+    throw new Error('ANP candidate SDK provenance is invalid');
+  }
+  if (lock.identity.repository !== 'https://github.com/agent-network-protocol/anp-identity.git'
+      || !/^[a-f0-9]{40}$/.test(lock.identity.commit || '')
+      || lock.identity.version !== '0.2.0'
+      || !/^[a-f0-9]{64}$/.test(lock.identity.rustTreeSha256 || '')) {
+    throw new Error('ANP Identity candidate provenance is invalid');
+  }
+  return lock;
+}
+
+function readReleaseConfig(filePath, candidateLockPath = null) {
   const config = JSON.parse(fs.readFileSync(path.resolve(filePath), 'utf8'));
   rejectUnknownKeys(config, RELEASE_KEYS, 'release-config');
   if (config.schema_version !== 1 || !config.channels || !Array.isArray(config.targets)) {
@@ -131,7 +170,9 @@ function readReleaseConfig(filePath) {
   }
   if (!config.channels.beta.version.includes('-')) throw new Error('beta version must be a prerelease');
   if (config.channels.stable.version.includes('-')) throw new Error('stable version must not be a prerelease');
+  if (config.anp_repository !== 'agent-network-protocol/anp') throw new Error('anp_repository is invalid');
   if (!/^[a-f0-9]{40}$/i.test(config.anp_commit || '')) throw new Error('anp_commit must be a full commit SHA');
+  if (!/^[a-f0-9]{40}$/i.test(config.anp_identity_commit || '')) throw new Error('anp_identity_commit must be a full commit SHA');
   if (!Number.isInteger(config.archive_keep_versions) || config.archive_keep_versions < 1 || config.archive_keep_versions > 100) {
     throw new Error('archive_keep_versions must be an integer from 1 to 100');
   }
@@ -141,12 +182,26 @@ function readReleaseConfig(filePath) {
       || SUPPORTED_TARGETS.some(target => !uniqueTargets.includes(target))) {
     throw new Error(`targets must contain exactly: ${SUPPORTED_TARGETS.join(', ')}`);
   }
+  if (candidateLockPath) {
+    const candidate = readAnpCandidateLock(candidateLockPath);
+    if (config.anp_commit !== candidate.anp.commit
+        || config.anp_identity_commit !== candidate.identity.commit) {
+      throw new Error('release config does not match ANP candidate lock');
+    }
+  }
   return config;
 }
 
 if (require.main === module) {
   const [kind, filePath, key] = process.argv.slice(2);
-  const config = kind === 'server' ? readServerConfig(filePath) : kind === 'release' ? readReleaseConfig(filePath) : null;
+  const candidateLock = kind === 'release'
+    ? path.resolve(path.dirname(path.resolve(filePath)), '../../../anp-release.lock.json')
+    : null;
+  const config = kind === 'server'
+    ? readServerConfig(filePath)
+    : kind === 'release'
+      ? readReleaseConfig(filePath, candidateLock)
+      : null;
   if (!config) throw new Error('usage: config.js server|release FILE [KEY]');
   if (!key) process.stdout.write(`${JSON.stringify(config)}\n`);
   else {
@@ -156,4 +211,6 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseFlatToml, readServerConfig, readReleaseConfig };
+module.exports = {
+  parseFlatToml, readAnpCandidateLock, readServerConfig, readReleaseConfig,
+};

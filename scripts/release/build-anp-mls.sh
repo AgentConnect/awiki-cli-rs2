@@ -9,7 +9,7 @@ Usage:
   scripts/release/build-anp-mls.sh [--dry-run] [--output DIR]
 
 Environment:
-  ANP_MLS_SOURCE_DIR           Path to the anp/anp/rust crate (default: ../anp/anp/rust)
+  ANP_MLS_SOURCE_DIR           Path to the anp/rust crate (default: ../anp/rust)
   AWIKI_ANP_MLS_RELEASE_DIR    Output directory (default: dist/anp-mls)
   CARGO                        Cargo binary (default: cargo)
 
@@ -21,7 +21,7 @@ USAGE
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
-source_dir="${ANP_MLS_SOURCE_DIR:-../anp/anp/rust}"
+source_dir="${ANP_MLS_SOURCE_DIR:-../anp/rust}"
 output_dir="${AWIKI_ANP_MLS_RELEASE_DIR:-dist/anp-mls}"
 dry_run=0
 

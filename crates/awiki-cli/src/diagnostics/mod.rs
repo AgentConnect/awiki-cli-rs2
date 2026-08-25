@@ -998,10 +998,10 @@ fn anp_mls_remediation(
     state: &MlsStateInspection,
 ) -> String {
     if resolve_failed {
-        return "Build anp-mls from ../anp/anp/rust, put it next to release artifacts or on PATH, or set AWIKI_ANP_MLS_BINARY to the absolute binary path. Plain messaging does not require anp-mls.".to_string();
+        return "Build anp-mls from ../anp/rust, put it next to release artifacts or on PATH, or set AWIKI_ANP_MLS_BINARY to the absolute binary path. Plain messaging does not require anp-mls.".to_string();
     }
     if probe_failed {
-        return "Install a current anp-mls build that supports `anp-mls system version --json-in -`; rebuild from ../anp/anp/rust if this probe fails.".to_string();
+        return "Install a current anp-mls build that supports `anp-mls system version --json-in -`; rebuild from ../anp/rust if this probe fails.".to_string();
     }
     if compat_failed {
         return "Replace anp-mls with a build that reports api_version anp-mls/v1, binary_name anp-mls, and supported command `system version`.".to_string();

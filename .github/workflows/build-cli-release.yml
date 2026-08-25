@@ -76,8 +76,8 @@ jobs:
         with:
           repository: agent-network-protocol/anp
           ref: ${{ steps.release.outputs.anp_commit }}
-          # Cargo.toml resolves ANP through ../anp/anp/rust from this checkout.
-          path: anp/anp
+          # Cargo.toml resolves ANP through ../anp/rust from this checkout.
+          path: anp
 
       - name: Set up Rust
         shell: bash

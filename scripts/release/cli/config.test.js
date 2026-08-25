@@ -5,7 +5,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { parseFlatToml, readReleaseConfig, readServerConfig } = require('./config.js');
+const {
+  parseFlatToml, readAnpCandidateLock, readReleaseConfig, readServerConfig,
+} = require('./config.js');
 
 test('flat TOML parser accepts quoted values and rejects executable syntax', () => {
   assert.deepEqual(parseFlatToml('public_origin = "https://example.com" # comment\n'), {
@@ -65,7 +67,8 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
     assert.equal(parsed.channels.stable.version, '1.0.48');
     assert.equal(parsed.channels.stable.min_supported_version, '1.0.48');
-    assert.equal(parsed.anp_commit, 'd3cc6a9571cec9b7d53dfbc5ef5612e56d1d5ea9');
+    assert.equal(parsed.anp_commit, 'c64bfb086acb1930803bb95db8b4e28b67cc2983');
+    assert.equal(parsed.anp_identity_commit, 'afcbe1a36b5e6b060d072961d59115b2bb3ed14f');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
@@ -82,6 +85,27 @@ test('server and release configuration schemas are strict', () => {
 
     fs.writeFileSync(invalidRelease, JSON.stringify({ ...parsed, unexpected: true }));
     assert.throws(() => readReleaseConfig(invalidRelease), /unknown release-config keys/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('release config is bound to the closed ANP candidate lock', () => {
+  const release = path.resolve(__dirname, 'release-config.json');
+  const lockPath = path.resolve(__dirname, '../../../anp-release.lock.json');
+  const lock = readAnpCandidateLock(lockPath);
+  const parsed = readReleaseConfig(release, lockPath);
+  assert.equal(parsed.anp_commit, lock.anp.commit);
+  assert.equal(parsed.anp_identity_commit, lock.identity.commit);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-candidate-lock-'));
+  try {
+    const mismatched = path.join(root, 'release.json');
+    fs.writeFileSync(mismatched, JSON.stringify({ ...parsed, anp_commit: 'f'.repeat(40) }));
+    assert.throws(
+      () => readReleaseConfig(mismatched, lockPath),
+      /does not match ANP candidate lock/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
