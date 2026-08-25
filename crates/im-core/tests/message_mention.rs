@@ -171,3 +171,26 @@ fn schema_less_mention_payload_can_be_used_in_send_payload_request() {
         awiki_im_core::messages::MessageBody::Payload { .. }
     ));
 }
+
+#[test]
+fn historical_transition_payload_round_trips_unchanged() {
+    let historical_did = "did:wba:example.com:agents:alice:e1_old";
+    let payload = json!({
+        "text": "@alice review this",
+        "mentions": [{
+            "id": "men_1",
+            "range": {"start": 0, "end": 6, "unit": "unicode_code_point"},
+            "target": {"kind": "agent", "did": historical_did},
+            "mention_role": "addressee"
+        }]
+    });
+
+    let parsed = parse_message_mention_payload(&payload).expect("historical payload parses");
+    let serialized = serde_json::to_value(parsed).expect("serialize parsed payload");
+
+    assert_eq!(serialized, payload);
+    assert_eq!(
+        serialized.pointer("/mentions/0/target/did"),
+        Some(&json!(historical_did))
+    );
+}

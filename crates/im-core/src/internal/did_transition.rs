@@ -69,24 +69,29 @@ pub(crate) fn parse_service_error(error: &crate::ImError) -> Option<DidTransitio
     };
     let code = numeric_service_code(code.as_deref(), data.as_ref())?;
     let data = data.as_ref()?.as_object()?;
+    if !only_fields(data, &["anp_code", "json_rpc_code", "retryable", "details"]) {
+        return None;
+    }
+    let details = data.get("details")?.as_object()?;
     match code {
         ANP_DID_SUPERSEDED => {
-            if !only_fields(
-                data,
-                &["anp_code", "json_rpc_code", "requested_did", "current_did"],
-            ) {
+            if !only_fields(details, &["requested_did", "current_did"])
+                || data.get("retryable").and_then(Value::as_bool) != Some(true)
+            {
                 return None;
             }
             Some(DidTransitionServiceError::Superseded {
-                requested_did: canonical_did(data.get("requested_did")?)?,
-                current_did: canonical_did(data.get("current_did")?)?,
+                requested_did: canonical_did(details.get("requested_did")?)?,
+                current_did: canonical_did(details.get("current_did")?)?,
             })
         }
         ANP_DID_TRANSITION_INVALID | ANP_DID_TRANSITION_CONFLICT => {
-            if !only_fields(data, &["anp_code", "json_rpc_code", "reason"]) {
+            if !only_fields(details, &["reason"])
+                || data.get("retryable").and_then(Value::as_bool) != Some(false)
+            {
                 return None;
             }
-            let reason = DidTransitionReason::parse(data.get("reason")?.as_str()?)?;
+            let reason = DidTransitionReason::parse(details.get("reason")?.as_str()?)?;
             if code == ANP_DID_TRANSITION_INVALID {
                 Some(DidTransitionServiceError::Invalid { reason })
             } else {

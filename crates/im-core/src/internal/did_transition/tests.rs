@@ -8,8 +8,12 @@ fn did_transition_error_typed_1019_1020_1021_are_closed() {
         message: "redacted".to_owned(),
         data: Some(serde_json::json!({
             "json_rpc_code": 1019,
-            "requested_did": "did:wba:example.com:users:alice:e1_old",
-            "current_did": "did:wba:example.com:users:alice:e1_new"
+            "anp_code": "anp.did_superseded",
+            "retryable": true,
+            "details": {
+                "requested_did": "did:wba:example.com:users:alice:e1_old",
+                "current_did": "did:wba:example.com:users:alice:e1_new"
+            }
         })),
     };
     assert!(matches!(
@@ -22,7 +26,16 @@ fn did_transition_error_typed_1019_1020_1021_are_closed() {
             status_code: None,
             code: Some(code.to_string()),
             message: "redacted".to_owned(),
-            data: Some(serde_json::json!({"json_rpc_code": code, "reason": reason})),
+            data: Some(serde_json::json!({
+                "json_rpc_code": code,
+                "anp_code": if code == 1020 {
+                    "anp.did_transition_invalid"
+                } else {
+                    "anp.did_transition_conflict"
+                },
+                "retryable": false,
+                "details": {"reason": reason}
+            })),
         };
         assert!(parse_service_error(&error).is_some());
     }
@@ -33,9 +46,13 @@ fn did_transition_error_typed_1019_1020_1021_are_closed() {
         message: "redacted".to_owned(),
         data: Some(serde_json::json!({
             "json_rpc_code": 1019,
-            "requested_did": "did:wba:example.com:users:alice:e1_old",
-            "current_did": "did:wba:example.com:users:alice:e1_new",
-            "proof": {"secret": true}
+            "anp_code": "anp.did_superseded",
+            "retryable": true,
+            "details": {
+                "requested_did": "did:wba:example.com:users:alice:e1_old",
+                "current_did": "did:wba:example.com:users:alice:e1_new",
+                "proof": {"secret": true}
+            }
         })),
     };
     assert_eq!(parse_service_error(&leaked), None);
@@ -90,4 +107,41 @@ fn canonical_conversation_did_transition_primitive_carries_no_route_or_conversat
     assert!(!value.contains("conversation_id"));
     assert!(!value.contains("persona"));
     assert!(!value.contains("route"));
+}
+
+#[test]
+fn did_superseded_retry_attachment_retry_preserves_manifest_and_grant() {
+    let payload = serde_json::json!({
+        "attachments": [{
+            "attachment_id": "att-1",
+            "object_uri": "https://objects.example/obj-1",
+            "digest": {"alg": "sha-256", "value_b64u": "digest"}
+        }],
+        "grant": {
+            "message_id": "msg-attachment-1",
+            "message_target_did": "did:wba:example.com:users:alice:e1_old"
+        }
+    });
+    let original = DidBoundRetryRequest {
+        message_id: "msg-attachment-1".to_owned(),
+        operation_id: "op-attachment-1".to_owned(),
+        target_did: "did:wba:example.com:users:alice:e1_old".to_owned(),
+        payload: payload.clone(),
+        did_bound_digest: "digest-old".to_owned(),
+        signature: "signature-old".to_owned(),
+    };
+
+    let rebuilt = rebuild_once_for_verified_successor(
+        &original,
+        "did:wba:example.com:users:alice:e1_new",
+        |did, _| Ok((format!("digest:{did}"), format!("signature:{did}"))),
+    )
+    .expect("verified successor rebuild");
+
+    assert_eq!(rebuilt.payload, payload);
+    assert_eq!(
+        rebuilt.payload["attachments"],
+        original.payload["attachments"]
+    );
+    assert_eq!(rebuilt.payload["grant"], original.payload["grant"]);
 }
