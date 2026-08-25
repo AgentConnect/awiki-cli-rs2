@@ -120,6 +120,8 @@ pub struct GroupCreateRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_handle: Option<crate::ids::Handle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_members: Vec<GroupInitialMemberRequest>,
     pub description: Option<String>,
     pub avatar_uri: Option<String>,
     pub discoverability: Option<GroupDiscoverability>,
@@ -144,6 +146,7 @@ impl GroupCreateRequest {
         Self {
             name: name.into(),
             creator_handle: None,
+            initial_members: Vec::new(),
             description: None,
             avatar_uri: None,
             discoverability: None,
@@ -162,6 +165,13 @@ impl GroupCreateRequest {
             member_max_total_chars: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInitialMemberRequest {
+    pub member_did: crate::ids::Did,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<GroupMemberRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

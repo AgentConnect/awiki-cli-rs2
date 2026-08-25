@@ -308,6 +308,7 @@ pub fn build_bridge_group_create_rpc_params(
         &identity.did,
         &crate::groups::GroupCreateRequest {
             creator_handle: None,
+            initial_members: Vec::new(),
             name: request.name,
             description: optional_trimmed(request.description),
             avatar_uri: optional_trimmed(request.avatar_uri),

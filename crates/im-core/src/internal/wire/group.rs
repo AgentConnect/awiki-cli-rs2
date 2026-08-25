@@ -55,6 +55,16 @@ pub(crate) fn build_group_json_send_payload(
     })
 }
 
+pub(crate) fn use_group_base_v2(
+    mut payload: DirectPayload,
+    enabled: bool,
+) -> crate::ImResult<DirectPayload> {
+    if enabled {
+        payload.meta["profile"] = Value::String("anp.group.base.v2".to_string());
+    }
+    Ok(payload)
+}
+
 pub(crate) fn build_group_create_payload(
     sender_did: &str,
     request: &crate::groups::GroupCreateRequest,
@@ -133,6 +143,38 @@ pub(crate) fn build_group_create_payload(
     })
 }
 
+pub(crate) fn build_group_create_payload_for_gate(
+    sender_did: &str,
+    request: &crate::groups::GroupCreateRequest,
+    service_did: &crate::ids::Did,
+    v2_enabled: bool,
+) -> crate::ImResult<DirectPayload> {
+    if !v2_enabled {
+        return build_group_create_payload(sender_did, request, service_did);
+    }
+    if request.creator_handle.is_some() {
+        return Err(crate::ImError::invalid_input(
+            Some("creator_handle".to_string()),
+            "anp.group.base.v2 does not use Handle-backed membership",
+        ));
+    }
+    let mut payload = build_group_create_payload(sender_did, request, service_did)?;
+    payload.body["initial_members"] = Value::Array(
+        request
+            .initial_members
+            .iter()
+            .map(|member| {
+                let mut value = json!({"member_did": member.member_did.as_str()});
+                if let Some(role) = member.role.as_ref() {
+                    value["role"] = Value::String(role.as_str().to_string());
+                }
+                value
+            })
+            .collect(),
+    );
+    use_group_base_v2(payload, true)
+}
+
 pub(crate) fn build_group_join_payload(
     sender_did: &str,
     request: &crate::groups::GroupJoinRequest,
@@ -153,6 +195,20 @@ pub(crate) fn build_group_join_payload(
         "group.join",
         Value::Object(body),
     )
+}
+
+pub(crate) fn build_group_join_payload_for_gate(
+    sender_did: &str,
+    request: &crate::groups::GroupJoinRequest,
+    v2_enabled: bool,
+) -> crate::ImResult<DirectPayload> {
+    if v2_enabled && request.member_handle.is_some() {
+        return Err(crate::ImError::invalid_input(
+            Some("member_handle".to_string()),
+            "anp.group.base.v2 binds group.join to the authenticated DID",
+        ));
+    }
+    use_group_base_v2(build_group_join_payload(sender_did, request)?, v2_enabled)
 }
 
 pub(crate) fn build_group_leave_payload(
@@ -195,6 +251,20 @@ pub(crate) fn build_group_add_member_payload(
         request.group.as_str(),
         "group.add",
         Value::Object(body),
+    )
+}
+
+pub(crate) fn build_group_add_member_payload_for_gate(
+    sender_did: &str,
+    request: &crate::groups::GroupMemberMutationRequest,
+    v2_enabled: bool,
+) -> crate::ImResult<DirectPayload> {
+    if v2_enabled {
+        request.member.as_did()?;
+    }
+    use_group_base_v2(
+        build_group_add_member_payload(sender_did, request)?,
+        v2_enabled,
     )
 }
 
@@ -356,6 +426,21 @@ pub(crate) fn build_group_get_info_rpc_params(
             "include_member_list": false
         }
     }))
+}
+
+pub(crate) fn build_group_get_info_rpc_params_for_gate(
+    sender_did: &str,
+    group_did: &str,
+    operation_id: &str,
+    include_policy: bool,
+    v2_enabled: bool,
+) -> crate::ImResult<Value> {
+    let mut params =
+        build_group_get_info_rpc_params(sender_did, group_did, operation_id, include_policy)?;
+    if v2_enabled {
+        params["meta"]["profile"] = Value::String("anp.group.base.v2".to_string());
+    }
+    Ok(params)
 }
 
 pub(crate) fn build_group_list_rpc_params(
@@ -718,6 +803,75 @@ mod handle_identity_tests {
         );
         assert_eq!(p4["body"]["include_policy"], true);
         assert_eq!(p4["body"]["include_member_list"], false);
+    }
+
+    #[test]
+    fn group_v2_did_only_methods_follow_hidden_gate() {
+        let service = crate::ids::Did::parse("did:example:service").unwrap();
+        let mut create = crate::groups::GroupCreateRequest::new("Demo");
+        create.initial_members = vec![crate::groups::GroupInitialMemberRequest {
+            member_did: crate::ids::Did::parse("did:example:bob").unwrap(),
+            role: Some(crate::groups::GroupMemberRole::Admin),
+        }];
+        let closed =
+            build_group_create_payload_for_gate("did:example:alice", &create, &service, false)
+                .unwrap();
+        assert_eq!(closed.meta["profile"], "anp.group.base.v1");
+        assert!(closed.body.get("initial_members").is_none());
+
+        let open =
+            build_group_create_payload_for_gate("did:example:alice", &create, &service, true)
+                .unwrap();
+        assert_eq!(open.meta["profile"], "anp.group.base.v2");
+        assert_eq!(
+            open.body["initial_members"],
+            json!([{"member_did": "did:example:bob", "role": "admin"}])
+        );
+        assert!(open.body.get("creator_handle").is_none());
+
+        let did_add = crate::groups::GroupMemberMutationRequest {
+            group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            member: crate::groups::GroupMemberRef::parse("did:example:bob", "").unwrap(),
+            role: Some(crate::groups::GroupMemberRole::Member),
+            reason_text: None,
+            leave_request_id: None,
+            security: crate::groups::GroupSecurityRequirement::Default,
+        };
+        let added =
+            build_group_add_member_payload_for_gate("did:example:alice", &did_add, true).unwrap();
+        assert_eq!(added.meta["profile"], "anp.group.base.v2");
+        assert_eq!(added.body["member_did"], "did:example:bob");
+        assert!(added.body.get("member_handle").is_none());
+
+        let mut handle_add = did_add;
+        handle_add.member = crate::groups::GroupMemberRef::parse("bob.example.com", "").unwrap();
+        build_group_add_member_payload_for_gate("did:example:alice", &handle_add, true)
+            .expect_err("v2 group.add must not route through Handle/rebind semantics");
+
+        let info = build_group_get_info_rpc_params_for_gate(
+            "did:example:alice",
+            "did:example:group",
+            "read-v2",
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(info["meta"]["profile"], "anp.group.base.v2");
+    }
+
+    #[test]
+    fn group_wire_contract_v1_rebind_remains_available_when_v2_gate_changes() {
+        let request = crate::groups::GroupRebindMemberRequest {
+            group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            member_handle: crate::ids::Handle::parse("bob.example.com", "").unwrap(),
+            previous_member_did: crate::ids::Did::parse("did:example:bob-old").unwrap(),
+            new_member_did: crate::ids::Did::parse("did:example:bob-new").unwrap(),
+            handle_binding_generation: "2".to_owned(),
+        };
+        let payload = build_group_rebind_member_payload("did:example:bob-new", &request).unwrap();
+        assert_eq!(payload.method, "group.rebind_member");
+        assert_eq!(payload.meta["profile"], "anp.group.base.v1");
+        assert_eq!(payload.body["member_handle"], "bob.example.com");
     }
 
     #[test]

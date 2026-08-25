@@ -56,10 +56,13 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload(
+        let payload = crate::internal::wire::group::build_group_create_payload_for_gate(
             self.client.did().as_str(),
             &request,
             service_did,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -70,9 +73,12 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_join_payload(
+        let payload = crate::internal::wire::group::build_group_join_payload_for_gate(
             self.client.did().as_str(),
             &request,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -83,9 +89,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_leave_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_leave_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -96,9 +107,12 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_add_member_payload(
+        let payload = crate::internal::wire::group::build_group_add_member_payload_for_gate(
             self.client.did().as_str(),
             &request,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -109,9 +123,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_remove_member_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_remove_member_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -135,9 +154,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_update_profile_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_update_profile_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -148,9 +172,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_update_policy_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_update_policy_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -220,10 +249,13 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload(
+        let payload = crate::internal::wire::group::build_group_create_payload_for_gate(
             self.client.did().as_str(),
             &request,
             service_did,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -234,9 +266,12 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_join_payload(
+        let payload = crate::internal::wire::group::build_group_join_payload_for_gate(
             self.client.did().as_str(),
             &request,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -247,9 +282,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_leave_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_leave_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -260,9 +300,12 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_add_member_payload(
+        let payload = crate::internal::wire::group::build_group_add_member_payload_for_gate(
             self.client.did().as_str(),
             &request,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -273,9 +316,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_remove_member_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_remove_member_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -321,9 +369,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_update_profile_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_update_profile_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -334,9 +387,14 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_update_policy_payload(
-            self.client.did().as_str(),
-            &request,
+        let payload = crate::internal::wire::group::use_group_base_v2(
+            crate::internal::wire::group::build_group_update_policy_payload(
+                self.client.did().as_str(),
+                &request,
+            )?,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -454,6 +512,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
                 creator_handle: None,
+                initial_members: Vec::new(),
                 description: Some(" group description ".to_string()),
                 avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
@@ -572,6 +631,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
                 creator_handle: None,
+                initial_members: Vec::new(),
                 description: Some(" group description ".to_string()),
                 avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
@@ -688,6 +748,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Demo Group".to_string(),
                 creator_handle: None,
+                initial_members: Vec::new(),
                 description: None,
                 avatar_uri: None,
                 discoverability: None,
@@ -738,6 +799,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Demo Group".to_string(),
                 creator_handle: None,
+                initial_members: Vec::new(),
                 description: None,
                 avatar_uri: None,
                 discoverability: None,
@@ -787,6 +849,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
                 creator_handle: None,
+                initial_members: Vec::new(),
                 description: None,
                 avatar_uri: None,
                 discoverability: None,
@@ -839,6 +902,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
                 creator_handle: None,
+                initial_members: Vec::new(),
                 description: None,
                 avatar_uri: None,
                 discoverability: None,

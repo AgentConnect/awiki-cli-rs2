@@ -32,13 +32,13 @@ pub use crate::external_http_auth::{
 };
 pub use crate::groups::{
     GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupE2eeProcessLeaveRequest,
-    GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupJoinRequest,
-    GroupKeyPackagePublishRequest, GroupKeyPackagePublishResult, GroupKeyPackagePurpose,
-    GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
-    GroupMemberRef, GroupMemberResolution, GroupMemberRole, GroupMembersRequest,
-    GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch,
-    GroupSecurityRequirement, GroupService, GroupSnapshot, GroupSummary, GroupUpdatePolicyRequest,
-    GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
+    GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupInitialMemberRequest,
+    GroupJoinRequest, GroupKeyPackagePublishRequest, GroupKeyPackagePublishResult,
+    GroupKeyPackagePurpose, GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit,
+    GroupMemberMutationRequest, GroupMemberRef, GroupMemberResolution, GroupMemberRole,
+    GroupMembersRequest, GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch,
+    GroupProfilePatch, GroupSecurityRequirement, GroupService, GroupSnapshot, GroupSummary,
+    GroupUpdatePolicyRequest, GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use crate::identity::{
     ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingRequest,

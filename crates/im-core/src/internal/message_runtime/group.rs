@@ -60,7 +60,14 @@ where
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
 
         let message_type = body.message_type();
-        let mut payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
+        let mut payload = build_group_payload(
+            self.client.did().as_str(),
+            group.as_str(),
+            &body,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
+        )?;
         apply_delivery_overrides(&mut payload.meta, &input.request);
         let credentials = match input.credentials {
             Some(credentials) => credentials,
@@ -120,7 +127,14 @@ where
             .await?;
 
         let message_type = body.message_type();
-        let mut payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
+        let mut payload = build_group_payload(
+            self.client.did().as_str(),
+            group.as_str(),
+            &body,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
+        )?;
         apply_delivery_overrides(&mut payload.meta, &input.request);
         let credentials = match input.credentials {
             Some(credentials) => credentials,
@@ -333,8 +347,9 @@ fn build_group_payload(
     sender_did: &str,
     group_did: &str,
     body: &OutgoingGroupBody,
+    v2_enabled: bool,
 ) -> crate::ImResult<crate::internal::wire::direct::DirectPayload> {
-    match body {
+    let payload = match body {
         OutgoingGroupBody::Text { text, kind } => {
             let content_type =
                 crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
@@ -352,7 +367,8 @@ fn build_group_payload(
                 payload.clone(),
             )
         }
-    }
+    }?;
+    crate::internal::wire::group::use_group_base_v2(payload, v2_enabled)
 }
 
 fn validate_plain_security(security: &crate::messages::MessageSecurityMode) -> crate::ImResult<()> {

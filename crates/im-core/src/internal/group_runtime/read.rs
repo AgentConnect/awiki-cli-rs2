@@ -58,11 +58,14 @@ where
             "group-read-{}",
             crate::internal::wire::common::generate_operation_id()
         );
-        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params(
+        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params_for_gate(
             self.client.did().as_str(),
             group.as_str(),
             &operation_id,
             true,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         let authoritative = self.transport.authenticated_rpc(
             MESSAGE_RPC_ENDPOINT,
@@ -185,11 +188,14 @@ where
             "group-read-{}",
             crate::internal::wire::common::generate_operation_id()
         );
-        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params(
+        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params_for_gate(
             self.client.did().as_str(),
             group.as_str(),
             &operation_id,
             true,
+            self.client
+                .core_inner()
+                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         let authoritative = self
             .transport
