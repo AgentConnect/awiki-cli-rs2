@@ -52,7 +52,7 @@ pub struct ImCore {
 }
 
 impl ImCore {
-    /// Stops the local-state actor and waits until its SQLite connection is closed.
+    /// Stops the local-state actor and waits until its database handle is closed.
     ///
     /// Hosts must call this before deleting or replacing the state directory. The
     /// current `ImCore` instance must not be used afterwards.

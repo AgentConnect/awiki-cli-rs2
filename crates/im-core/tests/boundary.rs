@@ -250,7 +250,7 @@ fn anp_bound_runtime_cannot_fall_back_to_legacy_identity_providers() {
     assert!(anp_return < legacy_vault);
     assert!(anp_return < legacy_file);
 
-    let readiness = rust_item(&source, "fn vnext_local_key_state")
+    let readiness = rust_item(&source, "\n    fn vnext_local_key_state(")
         .expect("vnext_local_key_state implementation");
     let anp_branch = readiness.find("if has_anp_binding").unwrap();
     let anp_return = readiness[anp_branch..]
