@@ -2205,6 +2205,12 @@ impl NativeImCoreNodeClient {
             client,
             state,
         } = environment;
+        self.inner
+            .wait_im(
+                core.shutdown_local_state_for_reset(),
+                self.inner.operation_timeout,
+            )
+            .await?;
         drop(client);
         drop(core);
 
