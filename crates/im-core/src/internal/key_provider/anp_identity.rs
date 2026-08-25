@@ -201,22 +201,7 @@ impl super::IdentitySigner for AnpIdentitySigner {
     }
 
     fn request_signing_key_id(&self) -> crate::ImResult<String> {
-        let identity = self
-            .identity
-            .public_identity()
-            .map_err(map_facade_identity_error)?;
-        if identity.state != PublicIdentityState::Active {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        identity
-            .active_keys
-            .iter()
-            .find(|key| {
-                key.purposes.contains(&KeyPurpose::Authentication)
-                    && key.purposes.contains(&KeyPurpose::ApplicationAssertion)
-            })
-            .map(|key| key.kid.clone())
-            .ok_or(crate::ImError::PermissionDenied)
+        self.active_kid(&[KeyPurpose::DeviceAssertion, KeyPurpose::Authentication])
     }
 
     fn agreement_key_id(&self) -> crate::ImResult<String> {
