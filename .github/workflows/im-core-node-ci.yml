@@ -1,6 +1,7 @@
 name: IM Core Node CI
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/im-core-node-ci.yml'
@@ -44,14 +45,23 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         run: |
+          echo "anp_repository=$(node -p 'require("./scripts/release/cli/release-config.json").anp_repository')" >> "${GITHUB_OUTPUT}"
           echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+          echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
         with:
-          repository: agent-network-protocol/anp
+          repository: ${{ steps.release.outputs.anp_repository }}
           ref: ${{ steps.release.outputs.anp_commit }}
           path: anp/anp
+
+      - name: Checkout pinned ANP Identity
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp-identity
+          ref: ${{ steps.release.outputs.anp_identity_commit }}
+          path: anp/anp-identity
 
       - name: Set up Rust 1.88
         shell: bash
@@ -72,6 +82,13 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build pinned ANP Identity Node binding
+        working-directory: anp/anp-identity
+        shell: bash
+        run: |
+          npm --prefix bindings/node ci
+          npm --prefix bindings/node run build
 
       - name: Verify Rust facade and Node bridge
         working-directory: awiki-cli-rs2

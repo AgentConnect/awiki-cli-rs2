@@ -474,31 +474,6 @@ fn is_transient_sqlite_lock(error: &crate::ImError) -> bool {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_transient_sqlite_lock;
-
-    #[test]
-    fn realtime_p6_preflight_retries_only_sqlite_locks() {
-        assert!(is_transient_sqlite_lock(
-            &crate::ImError::LocalStateUnavailable {
-                detail: "database is locked".to_owned(),
-            }
-        ));
-        assert!(is_transient_sqlite_lock(
-            &crate::ImError::LocalStateUnavailable {
-                detail: "database table is locked".to_owned(),
-            }
-        ));
-        assert!(!is_transient_sqlite_lock(
-            &crate::ImError::LocalStateUnavailable {
-                detail: "disk I/O error".to_owned(),
-            }
-        ));
-        assert!(!is_transient_sqlite_lock(&crate::ImError::PermissionDenied));
-    }
-}
-
 pub fn bearer_authorization_header(token: &str) -> String {
     format!("Bearer {}", token.trim())
 }
@@ -698,4 +673,29 @@ async fn read_auth_token_async(path: std::path::PathBuf) -> crate::ImResult<Opti
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(ToOwned::to_owned))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_sqlite_lock;
+
+    #[test]
+    fn realtime_p6_preflight_retries_only_sqlite_locks() {
+        assert!(is_transient_sqlite_lock(
+            &crate::ImError::LocalStateUnavailable {
+                detail: "database is locked".to_owned(),
+            }
+        ));
+        assert!(is_transient_sqlite_lock(
+            &crate::ImError::LocalStateUnavailable {
+                detail: "database table is locked".to_owned(),
+            }
+        ));
+        assert!(!is_transient_sqlite_lock(
+            &crate::ImError::LocalStateUnavailable {
+                detail: "disk I/O error".to_owned(),
+            }
+        ));
+        assert!(!is_transient_sqlite_lock(&crate::ImError::PermissionDenied));
+    }
 }

@@ -10,7 +10,9 @@
       "min_supported_version": "1.0.48"
     }
   },
-  "anp_commit": "d3cc6a9571cec9b7d53dfbc5ef5612e56d1d5ea9",
+  "anp_repository": "agent-network-protocol/anp",
+  "anp_commit": "3824e65a27cb11cc36892f7191ee83a4924e1a1d",
+  "anp_identity_commit": "8bc337056b5020c78de5c87cfb76e21c05408eeb",
   "archive_keep_versions": 10,
   "targets": [
     "darwin-amd64",
