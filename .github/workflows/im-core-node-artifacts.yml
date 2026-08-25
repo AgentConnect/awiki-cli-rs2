@@ -93,13 +93,14 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         run: |
+          echo "anp_repository=$(node -p 'require("./scripts/release/cli/release-config.json").anp_repository')" >> "${GITHUB_OUTPUT}"
           echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
           echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
         with:
-          repository: agent-network-protocol/anp
+          repository: ${{ steps.release.outputs.anp_repository }}
           ref: ${{ steps.release.outputs.anp_commit }}
           path: anp/anp
 
@@ -234,13 +235,14 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         run: |
+          echo "anp_repository=$(node -p 'require("./scripts/release/cli/release-config.json").anp_repository')" >> "${GITHUB_OUTPUT}"
           echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
           echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
         with:
-          repository: agent-network-protocol/anp
+          repository: ${{ steps.release.outputs.anp_repository }}
           ref: ${{ steps.release.outputs.anp_commit }}
           path: anp/anp
 
