@@ -94,6 +94,7 @@ jobs:
         shell: bash
         run: |
           echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+          echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
@@ -101,6 +102,13 @@ jobs:
           repository: agent-network-protocol/anp
           ref: ${{ steps.release.outputs.anp_commit }}
           path: anp/anp
+
+      - name: Checkout pinned ANP Identity
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp-identity
+          ref: ${{ steps.release.outputs.anp_identity_commit }}
+          path: anp/anp-identity
 
       - name: Set up Rust
         shell: bash
@@ -225,7 +233,9 @@ jobs:
         id: release
         working-directory: awiki-cli-rs2
         shell: bash
-        run: echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+        run: |
+          echo "anp_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_commit')" >> "${GITHUB_OUTPUT}"
+          echo "anp_identity_commit=$(node -p 'require("./scripts/release/cli/release-config.json").anp_identity_commit')" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
@@ -233,6 +243,13 @@ jobs:
           repository: agent-network-protocol/anp
           ref: ${{ steps.release.outputs.anp_commit }}
           path: anp/anp
+
+      - name: Checkout pinned ANP Identity
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp-identity
+          ref: ${{ steps.release.outputs.anp_identity_commit }}
+          path: anp/anp-identity
 
       - name: Set up Rust provenance toolchain
         shell: bash
