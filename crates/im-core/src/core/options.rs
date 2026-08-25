@@ -79,6 +79,11 @@ pub struct ImCoreOpenOptions {
     /// Enables the hidden same-deployment Manifest Handle Recovery v1 path.
     /// This gate is local, defaults to false, and does not advertise support.
     pub multi_device_handle_recovery_enabled: bool,
+    /// Enables the hidden did:wba transition retry path.
+    ///
+    /// This local rollout gate defaults to `false` and is never advertised or
+    /// serialized into protocol requests.
+    pub did_transition_vnext_hidden_rollout_enabled: bool,
     /// Explicit same-deployment control-plane audience used in Recovery V4
     /// key-possession proofs. It must equal User Service
     /// `AWIKI_MULTI_DEVICE_AUDIENCE`; Core never derives or hard-codes it.
@@ -141,6 +146,11 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_handle_recovery_enabled(mut self, enabled: bool) -> Self {
         self.multi_device_handle_recovery_enabled = enabled;
+        self
+    }
+
+    pub fn with_did_transition_vnext_hidden_rollout_enabled(mut self, enabled: bool) -> Self {
+        self.did_transition_vnext_hidden_rollout_enabled = enabled;
         self
     }
 
@@ -272,6 +282,17 @@ mod tests {
             ImCoreOpenOptions::default()
                 .with_multi_device_handle_recovery_enabled(true)
                 .multi_device_handle_recovery_enabled
+        );
+    }
+
+    #[test]
+    fn did_transition_rollout_gate_is_local_and_default_off() {
+        let default_options = ImCoreOpenOptions::default();
+        assert!(!default_options.did_transition_vnext_hidden_rollout_enabled);
+        assert!(
+            ImCoreOpenOptions::default()
+                .with_did_transition_vnext_hidden_rollout_enabled(true)
+                .did_transition_vnext_hidden_rollout_enabled
         );
     }
 }

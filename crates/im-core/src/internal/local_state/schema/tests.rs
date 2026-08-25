@@ -68,6 +68,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "conversation_aliases"),
         ("table", "group_rebind_outbox"),
         ("table", "group_rebind_p6_jobs"),
+        ("table", "did_transition_edges"),
         ("view", "threads"),
         ("view", "inbox"),
         ("view", "outbox"),
@@ -106,6 +107,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_group_members_owner_membership");
     assert_index_exists(&db, "idx_group_rebind_outbox_resume");
     assert_index_exists(&db, "idx_group_rebind_p6_resume");
+    assert_index_exists(&db, "idx_did_transition_edges_owner_successor");
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -2377,6 +2379,63 @@ fn current_schema_with_missing_recovery_index_fails_closed_without_repair() {
 }
 
 #[test]
+fn schema_37_migrates_v36_transactionally_and_reopens_idempotently() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute(
+        "INSERT INTO direct_peer_routes(owner_identity_id,conversation_id,peer_user_id,full_handle,current_did,updated_at) VALUES ('owner-1','dm:peer-scope:v1:alice:bob','user-2','bob.example.com','did:wba:example.com:users:bob:e1_old','1')",
+        [],
+    )
+    .unwrap();
+    db.execute_batch("DROP TABLE did_transition_edges; PRAGMA user_version=36;")
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "did_transition_edges");
+    assert_index_exists(&db, "idx_did_transition_edges_owner_successor");
+    assert_eq!(
+        db.query_row("SELECT current_did FROM direct_peer_routes", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap(),
+        "did:wba:example.com:users:bob:e1_old"
+    );
+    for absent in ["did_transition_conflicts", "did_transition_reconcile_jobs"] {
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [absent],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn schema_37_failed_migration_rolls_back_version_and_partial_index() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch(
+        r#"
+DROP TABLE did_transition_edges;
+CREATE TABLE did_transition_edges (owner_identity_id TEXT NOT NULL);
+PRAGMA user_version=36;
+"#,
+    )
+    .unwrap();
+
+    assert!(ensure_schema(&db).is_err());
+    assert_eq!(current_schema_version(&db).unwrap(), 36);
+    assert!(!has_index(&db, "idx_did_transition_edges_owner_successor").unwrap());
+}
+
+#[test]
 fn v35_to_v36_adds_handle_recovery_receipt_fields_and_operation_index() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("state.sqlite");
@@ -2425,7 +2484,7 @@ PRAGMA user_version=35;
 
     ensure_schema(&db).unwrap();
 
-    assert_eq!(current_schema_version(&db).unwrap(), 36);
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     for column in [
         "current_device_id",
         "device_auth_generation",

@@ -72,6 +72,7 @@ pub struct ImCoreOpenOptions {
     pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
     pub multi_device_handle_recovery_enabled: bool, // default false
+    pub did_transition_vnext_hidden_rollout_enabled: bool, // default false
     pub external_http_allow_insecure_loopback_for_testing: bool, // default false
 }
 
@@ -237,14 +238,18 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 35。pre-open canonical runner 只拥有 schema 27；已经完成
-canonical cutover 的 schema 28 到 35 必须返回 `not_required`，随后由普通 Core open
+当前 target 为 schema 37。pre-open canonical runner 只拥有 schema 27；已经完成
+canonical cutover 的 schema 28 到 37 必须返回 `not_required`，随后由普通 Core open
 推进或校验。普通 open 严格识别 release/0714 schema 28-31 以及两条开发线曾产生的
 v32-v34 合法形态，并在单一事务中收敛为 hydration projection、subject-scoped checkpoint、
 可证明的旧 Direct WireIdentity 修复、v2 account/message sync、read recovery，以及
-未解析消息与 remote-thread binding 的 durable association。schema 35 的 association
+未解析消息与 remote-thread binding 的 durable association、schema 36 Handle Recovery
+状态，以及 schema 37 owner-scoped strong-assurance DID transition edge cache。schema 35 的 association
 使 Persona replay 能原子写入 canonical message/binding，不能把暂定 DID conversation
 写成 durable binding。
+schema 37 不更新 route、Persona、conversation、历史 wire identity 或 recovery outbox，
+也不创建 transition conflict/reconcile job 表；只有 ANP resolver 完整验证成功后的
+`verified` / `recovery_verified` edge 可以按 CAS 写入。
 未知、残缺或混合得无法证明的同号形态必须 fail closed，不能被猜测性迁移或静默删除。
 
 P2+ API：

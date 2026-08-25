@@ -26,6 +26,7 @@ pub(crate) struct ImCoreInner {
     pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
     pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) handle_recovery_enabled: bool,
+    pub(crate) did_transition_vnext_hidden_rollout_enabled: bool,
     pub(crate) multi_device_audience: Option<String>,
     #[cfg(feature = "provider-traits")]
     pub(crate) identity_custody_provider: Option<IdentityCustodyProvider>,
@@ -134,6 +135,8 @@ impl ImCore {
                 device_revoke_lock: tokio::sync::Mutex::new(()),
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
+                did_transition_vnext_hidden_rollout_enabled: options
+                    .did_transition_vnext_hidden_rollout_enabled,
                 multi_device_audience,
                 #[cfg(feature = "provider-traits")]
                 identity_custody_provider,
@@ -1060,6 +1063,10 @@ impl ImCoreInner {
 
     pub(crate) fn handle_recovery_enabled(&self) -> bool {
         self.handle_recovery_enabled
+    }
+
+    pub(crate) fn did_transition_vnext_hidden_rollout_enabled(&self) -> bool {
+        self.did_transition_vnext_hidden_rollout_enabled
     }
 
     pub(crate) fn external_http_allow_insecure_loopback_for_testing(&self) -> bool {

@@ -4125,6 +4125,7 @@ mod tests {
                 multi_device_direct_e2ee_enabled: false,
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
+                did_transition_vnext_hidden_rollout_enabled: false,
                 multi_device_audience: None,
                 #[cfg(feature = "provider-traits")]
                 identity_custody_provider: None,
@@ -4988,6 +4989,7 @@ mod tests {
                 multi_device_direct_e2ee_enabled: false,
                 multi_device_group_e2ee_enabled: false,
                 multi_device_handle_recovery_enabled: false,
+                did_transition_vnext_hidden_rollout_enabled: false,
                 multi_device_audience: None,
                 #[cfg(feature = "provider-traits")]
                 identity_custody_provider: None,

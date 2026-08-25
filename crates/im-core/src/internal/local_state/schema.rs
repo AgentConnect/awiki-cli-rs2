@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 36;
+pub(crate) const SCHEMA_VERSION: i64 = 37;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -15,6 +15,7 @@ const SYNC_INSTALLATION_ID_SCHEMA_VERSION: i64 = 33;
 const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
 const INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION: i64 = 35;
 const HANDLE_RECOVERY_V4_SCHEMA_VERSION: i64 = 36;
+const DID_TRANSITION_EDGE_SCHEMA_VERSION: i64 = 37;
 const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
     "identity_account_bindings",
     "message_sync_state",
@@ -1035,8 +1036,8 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         return migrate_v35_to_v36(connection);
     }
     if version == HANDLE_RECOVERY_V4_SCHEMA_VERSION {
-        if current_schema_shape_is_complete(connection)? {
-            return Ok(());
+        if schema_v36_shape_is_complete(connection)? {
+            return migrate_v36_to_v37(connection);
         }
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
@@ -1048,6 +1049,16 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
             target_version: SCHEMA_VERSION,
+        });
+    }
+    if version == DID_TRANSITION_EDGE_SCHEMA_VERSION {
+        if current_schema_shape_is_complete(connection)? {
+            return Ok(());
+        }
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete DID transition edge shape"
+            ),
         });
     }
     create_schema(connection, false)
@@ -1214,7 +1225,28 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
             crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,
         )
         .map_err(super::local_state_unavailable)?;
-    set_schema_version(&transaction, HANDLE_RECOVERY_V4_SCHEMA_VERSION)?;
+    // Continue directly into the additive schema-37 cache so one open always
+    // reaches the current head without exposing schema 36 as an intermediate
+    // successful result.
+    super::did_transition_edges::create_schema(&transaction)?;
+    set_schema_version(&transaction, DID_TRANSITION_EDGE_SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != HANDLE_RECOVERY_V4_SCHEMA_VERSION
+        || !schema_v36_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "sqlite schema v36 must be complete before adding DID transition edges"
+                .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    super::did_transition_edges::create_schema(&transaction)?;
+    set_schema_version(&transaction, DID_TRANSITION_EDGE_SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1310,7 +1342,7 @@ fn merged_v35_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
         )?)
 }
 
-fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+fn schema_v36_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     if !merged_v35_shape_is_complete(connection)?
         || !has_table(connection, "identity_transition_pending")?
         || !has_table(connection, "handle_recovery_operations_v4")?
@@ -1345,6 +1377,12 @@ fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<
         }
     }
     Ok(true)
+}
+
+fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(schema_v36_shape_is_complete(connection)?
+        && has_table(connection, "did_transition_edges")?
+        && has_index(connection, "idx_did_transition_edges_owner_successor")?)
 }
 
 fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {
@@ -1409,6 +1447,7 @@ pub(super) fn create_schema(
     connection
         .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
         .map_err(super::local_state_unavailable)?;
+    super::did_transition_edges::create_schema(connection)?;
     connection
         .execute_batch(
             crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,

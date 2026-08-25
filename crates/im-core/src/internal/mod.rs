@@ -6,6 +6,7 @@ pub(crate) mod blob;
 pub(crate) mod canonical_identity;
 pub(crate) mod contact_store;
 pub(crate) mod delegated_identity;
+pub(crate) mod did_transition;
 pub(crate) mod direct_rebind;
 pub(crate) mod directory_runtime;
 pub(crate) mod discovery;

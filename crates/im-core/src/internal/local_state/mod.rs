@@ -15,6 +15,8 @@ pub(crate) mod conversation_registry;
 pub(crate) mod conversation_summaries;
 pub(crate) mod conversations;
 #[cfg(feature = "sqlite")]
+pub(crate) mod did_transition_edges;
+#[cfg(feature = "sqlite")]
 pub(crate) mod direct_peer_routes;
 pub(crate) mod email;
 pub(crate) mod groups;

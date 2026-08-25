@@ -894,6 +894,12 @@ Schema 35 has two reviewed predecessor shapes: the pre-Handle-Recovery shape wit
 `identity_transition_pending`, and the early Handle-Recovery shape with its narrower table.
 The ordinary 35-to-current transaction must create or extend these shapes in place before
 advancing `user_version`; it must not delete the local projection or identity state.
+Schema 36 is the reviewed Handle Recovery head. Ordinary open adds schema 37's sole
+`did_transition_edges` table transactionally. The table is owner-scoped and stores only
+ANP-resolver `verified` / `recovery_verified` predecessor-to-successor edges. It is not a
+route, Persona, canonical-conversation, historical-wire, or recovery-job projection;
+migration and cache writes never mutate those existing owners and do not create speculative
+conflict/reconcile tables.
 The source allowlist is pinned to the exact deployed release/0710 daemon
 artifact, source ref, and schema fingerprint. Its checked-in fixture is built
 by that binary in an isolated state root and contains synthetic rows only.
