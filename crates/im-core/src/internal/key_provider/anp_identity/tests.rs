@@ -33,7 +33,7 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
     let root_kid = format!("{did}#root");
     let agreement_kid = format!("{did}#agreement");
 
-    assert_eq!(signer.request_signing_key_id().unwrap(), device_kid);
+    assert_eq!(signer.request_signing_key_id().unwrap(), request_kid);
     assert_eq!(signer.agreement_key_id().unwrap(), agreement_kid);
     assert_eq!(
         signer
@@ -65,7 +65,7 @@ fn anp_identity_signer_routes_typed_crypto_and_file_auth_without_private_exports
                 "content_type": "application/json"
             }),
             &json!({"message": "device-signed"}),
-            &device_kid,
+            &request_kid,
             anp::proof::Rfc9421OriginProofGenerationOptions::default(),
         )
         .unwrap();
