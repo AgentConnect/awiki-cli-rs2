@@ -5063,21 +5063,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
-        let calls = calls.borrow();
-        assert_eq!(
-            calls
-                .iter()
-                .map(|call| call.method.as_str())
-                .collect::<Vec<_>>(),
-            ["sync.bootstrap", "sync.delta"]
-        );
-        assert_eq!(
-            calls[1]
-                .params
-                .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
-            Some(&json!("41"))
-        );
-        drop(calls);
+        {
+            let calls = calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.method.as_str())
+                    .collect::<Vec<_>>(),
+                ["sync.bootstrap", "sync.delta"]
+            );
+            assert_eq!(
+                calls[1]
+                    .params
+                    .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
+                Some(&json!("41"))
+            );
+        }
         let db = client.core_inner().local_state_db().await.unwrap();
         assert!(!db
             .lane_capability_negotiation_required(
@@ -7922,27 +7923,28 @@ mod tests {
         assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
         assert_eq!(*refresh_calls.borrow(), 1);
         assert_eq!(*authentication_reloads.borrow(), 1);
-        let calls = calls.borrow();
-        assert_eq!(
-            calls
-                .iter()
-                .map(|call| call.method.as_str())
-                .collect::<Vec<_>>(),
-            ["sync.delta", "sync.bootstrap", "sync.delta"]
-        );
-        assert_eq!(
-            calls[0]
-                .params
-                .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
-            Some(&json!("41"))
-        );
-        assert_eq!(
-            calls[2]
-                .params
-                .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
-            Some(&json!("51"))
-        );
-        drop(calls);
+        {
+            let calls = calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.method.as_str())
+                    .collect::<Vec<_>>(),
+                ["sync.delta", "sync.bootstrap", "sync.delta"]
+            );
+            assert_eq!(
+                calls[0]
+                    .params
+                    .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
+                Some(&json!("41"))
+            );
+            assert_eq!(
+                calls[2]
+                    .params
+                    .pointer("/body/lanes/p5_device/cursor/stream_epoch"),
+                Some(&json!("51"))
+            );
+        }
         let lane = client
             .core_inner()
             .local_state_db()
