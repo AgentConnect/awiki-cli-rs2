@@ -581,6 +581,25 @@ pub(crate) async fn provision_handle_recovery_identity_async(
     .map_err(|error| crate::ImError::Internal {
         message: error.to_string(),
     })??;
+    let full_handle = format!("{local_part}.{domain}");
+    let historical_predecessors =
+        match crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(
+            core,
+        ) {
+            Ok(store) => store
+                .list_v4_for_handle(&full_handle)?
+                .into_iter()
+                .filter_map(|(_, pending)| {
+                    (pending.phase
+                        == crate::internal::identity_handle_recovery_pending::PendingRecoveryPhaseV4::Applied)
+                        .then_some(pending.local_previous_did)
+                })
+                .collect::<std::collections::BTreeSet<_>>(),
+            Err(crate::ImError::LocalStateUnavailable { .. }) => {
+                std::collections::BTreeSet::new()
+            }
+            Err(error) => return Err(error),
+        };
     let custody = controller_custody_provider(core).await?;
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
@@ -592,6 +611,7 @@ pub(crate) async fn provision_handle_recovery_identity_async(
     {
         if descriptor.state != ProviderIdentityState::Active
             || projected.contains(&descriptor.reference.identity_id)
+            || historical_predecessors.contains(&descriptor.reference.did)
             || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
