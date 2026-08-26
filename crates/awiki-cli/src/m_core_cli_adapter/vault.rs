@@ -39,12 +39,17 @@ pub fn build_im_core_open_options(
     let multi_device_device_revoke_enabled = multi_device_device_revoke_enabled()?;
     let multi_device_direct_e2ee_enabled = multi_device_direct_e2ee_enabled()?;
     let multi_device_group_e2ee_enabled = multi_device_group_e2ee_enabled()?;
+    let did_transition_vnext_hidden_rollout_enabled =
+        did_transition_vnext_hidden_rollout_enabled()?;
     let plan = cli_vault_open_plan(resolved)?;
     if !plan.vault_enabled {
         return Ok(ImCoreOpenOptions::file_compat()
             .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
             .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
-            .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled));
+            .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled)
+            .with_did_transition_vnext_hidden_rollout_enabled(
+                did_transition_vnext_hidden_rollout_enabled,
+            ));
     }
     if !plan.root_key_available {
         return Err(missing_root_key_error("build im-core"));
@@ -63,7 +68,10 @@ pub fn build_im_core_open_options(
         )
         .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
         .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
-        .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled))
+        .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled)
+        .with_did_transition_vnext_hidden_rollout_enabled(
+            did_transition_vnext_hidden_rollout_enabled,
+        ))
 }
 
 pub(crate) fn multi_device_device_revoke_enabled() -> Result<bool, ExitError> {
@@ -104,6 +112,20 @@ pub(crate) fn multi_device_group_e2ee_enabled() -> Result<bool, ExitError> {
             2,
             "AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED must be 0 or 1.",
             "Leave it unset for the enabled product default, or set it to 0 for emergency rollback.",
+        )),
+    }
+}
+
+pub(crate) fn did_transition_vnext_hidden_rollout_enabled() -> Result<bool, ExitError> {
+    match std::env::var("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED") {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) if value.trim() == "1" => Ok(true),
+        Ok(value) if value.trim() == "0" => Ok(false),
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(ExitError::new(
+            "invalid_config",
+            2,
+            "AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED must be 0 or 1.",
+            "Leave it unset for the disabled default, or set it to 1 only for a reviewed hidden-rollout target.",
         )),
     }
 }

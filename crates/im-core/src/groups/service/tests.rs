@@ -531,20 +531,24 @@ fn v2_admin_is_not_misclassified_as_an_illegal_p4_actor_or_p6_owner() {
 }
 
 #[test]
-fn v2_leave_fails_before_p4_or_legacy_for_e2ee_group() {
+fn v2_leave_allows_p4_first_for_e2ee_group_and_rejects_mismatched_policy() {
     let group = "did:example:group";
     let member = authoritative_group(group, "group-e2ee", "member", "active");
-    assert!(matches!(
-        super::require_v2_leave_safe(group, &member, false),
-        Err(crate::ImError::LocalStateUnavailable { .. })
-    ));
-    assert!(matches!(
-        super::require_v2_leave_safe(group, &member, true),
-        Err(crate::ImError::LocalStateUnavailable { .. })
-    ));
+    assert!(super::require_v2_leave_safe(group, &member, false).is_ok());
+    assert!(super::require_v2_leave_safe(group, &member, true).is_ok());
 
     let transport = authoritative_group(group, "transport-protected", "member", "active");
     assert!(super::require_v2_leave_safe(group, &transport, false).is_ok());
+    assert!(matches!(
+        super::require_v2_leave_safe(group, &transport, true),
+        Err(crate::ImError::InvalidInput { .. })
+    ));
+
+    let owner = authoritative_group(group, "group-e2ee", "owner", "active");
+    assert!(matches!(
+        super::require_v2_leave_safe(group, &owner, true),
+        Err(crate::ImError::InvalidInput { .. })
+    ));
 }
 
 #[test]

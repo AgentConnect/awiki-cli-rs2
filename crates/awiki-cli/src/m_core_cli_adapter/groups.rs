@@ -117,6 +117,21 @@ fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
     result.response_json().cloned().unwrap_or(Value::Null)
 }
 
+fn group_compat_handle(handle: Option<Handle>) -> Result<Option<Handle>, MessageAdapterError> {
+    let vnext_enabled =
+        crate::m_core_cli_adapter::vault::did_transition_vnext_hidden_rollout_enabled()
+            .map_err(|error| MessageAdapterError::Internal(error.to_string()))?;
+    Ok(select_group_compat_handle(handle, vnext_enabled))
+}
+
+fn select_group_compat_handle(handle: Option<Handle>, vnext_enabled: bool) -> Option<Handle> {
+    if vnext_enabled {
+        None
+    } else {
+        handle
+    }
+}
+
 pub fn create_group_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -125,9 +140,10 @@ pub fn create_group_via_im_core(
     if request.name.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
+    let creator_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .create(group_create_request(request, client.handle().cloned())?)
+        .create(group_create_request(request, creator_handle)?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
@@ -154,9 +170,10 @@ pub async fn create_group_via_im_core_async(
     if request.name.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
+    let creator_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .create_async(group_create_request(request, client.handle().cloned())?)
+        .create_async(group_create_request(request, creator_handle)?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -185,9 +202,10 @@ pub fn join_group_via_im_core(
         return Err(MessageAdapterError::GroupRequired);
     }
     let requested_group = request.group.clone();
+    let member_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .join(group_join_request(request, client.handle().cloned())?)
+        .join(group_join_request(request, member_handle)?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or(requested_group);
@@ -214,9 +232,10 @@ pub async fn join_group_via_im_core_async(
         return Err(MessageAdapterError::GroupRequired);
     }
     let requested_group = request.group.clone();
+    let member_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .join_async(group_join_request(request, client.handle().cloned())?)
+        .join_async(group_join_request(request, member_handle)?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -1353,24 +1372,33 @@ fn group_summary_to_json(group: &GroupSummary) -> Value {
 
 fn group_member_to_json(member: &GroupMember) -> Value {
     let did = member.did.as_ref().map(Did::as_str).unwrap_or_default();
+    let mut value = json!({
+        "member_did": did,
+        "did": did,
+        "role": member.role,
+        "status": member.status,
+        "joined_at": member.joined_at,
+    });
+    if group_vnext_projection_enabled() {
+        return value;
+    }
     let handle = member
         .handle
         .as_ref()
         .map(Handle::as_str)
         .map(normalize_handle_value)
         .unwrap_or_default();
-    json!({
-        "member_did": did,
-        "did": did,
-        "member_handle": handle,
-        "handle": handle,
-        "role": member.role,
-        "status": member.status,
-        "joined_at": member.joined_at,
-    })
+    value["member_handle"] = Value::String(handle.clone());
+    value["handle"] = Value::String(handle);
+    value
 }
 
 fn group_member_resolution_json(member: Option<&GroupMemberResolution>) -> Value {
+    if group_vnext_projection_enabled() {
+        return json!({
+            "did": member.map(|value| value.did.as_str()).unwrap_or_default(),
+        });
+    }
     match member {
         Some(member) => json!({
             "did": member.did.as_str(),
@@ -1407,6 +1435,12 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .entry("did".to_string())
             .or_insert_with(|| Value::String(did));
     }
+    if group_vnext_projection_enabled() {
+        for key in ["handle", "member_handle", "agent_handle"] {
+            object.remove(key);
+        }
+        return member;
+    }
     let handle = normalize_handle_value(&default_string(
         &string_value(object.get("handle")),
         &default_string(
@@ -1421,6 +1455,11 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .or_insert_with(|| Value::String(handle));
     }
     member
+}
+
+fn group_vnext_projection_enabled() -> bool {
+    std::env::var("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED")
+        .is_ok_and(|value| value.trim() == "1")
 }
 
 fn group_message_to_json(message: &Message) -> Value {
@@ -1870,7 +1909,8 @@ mod group_message_projection_tests {
     use super::{
         group_create_request, group_join_request, im_error_to_message_error,
         is_attachment_manifest_payload, normalize_group_snapshot,
-        required_group_member_page_binding, GroupCreateRequest, GroupJoinRequest,
+        required_group_member_page_binding, select_group_compat_handle, GroupCreateRequest,
+        GroupJoinRequest,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
 
@@ -1892,6 +1932,19 @@ mod group_message_projection_tests {
             group_create_request(request, None).unwrap().creator_handle,
             None
         );
+    }
+
+    #[test]
+    fn vnext_group_requests_drop_only_the_adapter_injected_compat_handle() {
+        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
+
+        assert_eq!(
+            select_group_compat_handle(Some(handle.clone()), false),
+            Some(handle.clone())
+        );
+        assert_eq!(select_group_compat_handle(Some(handle), true), None);
+        assert_eq!(select_group_compat_handle(None, false), None);
+        assert_eq!(select_group_compat_handle(None, true), None);
     }
 
     #[test]

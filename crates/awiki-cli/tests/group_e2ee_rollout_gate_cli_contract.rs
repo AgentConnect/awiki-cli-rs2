@@ -8,7 +8,7 @@ fn group_gate_defaults_on_and_accepts_explicit_zero_or_one() {
     for gate in [None, Some("0"), Some("1")] {
         let workspace = TempDir::new("group-rollout-valid").unwrap();
         write_file_compat_config(workspace.path());
-        let output = awiki_cmd(workspace.path(), gate);
+        let output = awiki_cmd(workspace.path(), gate, None);
         assert_eq!(output.status.code(), Some(0), "stderr={:?}", output.stderr);
     }
 }
@@ -18,7 +18,7 @@ fn invalid_group_gate_fails_closed() {
     for gate in ["", "true", "yes", "2"] {
         let workspace = TempDir::new("group-rollout-invalid").unwrap();
         write_file_compat_config(workspace.path());
-        let output = awiki_cmd(workspace.path(), Some(gate));
+        let output = awiki_cmd(workspace.path(), Some(gate), None);
 
         assert_eq!(output.status.code(), Some(2), "gate={gate:?}");
         let error: Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -30,7 +30,34 @@ fn invalid_group_gate_fails_closed() {
     }
 }
 
-fn awiki_cmd(workspace: &Path, gate: Option<&str>) -> Output {
+#[test]
+fn did_transition_hidden_gate_accepts_zero_or_one_and_rejects_other_values() {
+    for gate in [None, Some("0"), Some("1")] {
+        let workspace = TempDir::new("did-transition-rollout-valid").unwrap();
+        write_file_compat_config(workspace.path());
+        let output = awiki_cmd(workspace.path(), None, gate);
+        assert_eq!(output.status.code(), Some(0), "stderr={:?}", output.stderr);
+    }
+
+    for gate in ["", "true", "yes", "2"] {
+        let workspace = TempDir::new("did-transition-rollout-invalid").unwrap();
+        write_file_compat_config(workspace.path());
+        let output = awiki_cmd(workspace.path(), None, Some(gate));
+        assert_eq!(output.status.code(), Some(2), "gate={gate:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "invalid_config");
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED must be 0 or 1"));
+    }
+}
+
+fn awiki_cmd(
+    workspace: &Path,
+    group_gate: Option<&str>,
+    did_transition_gate: Option<&str>,
+) -> Output {
     let home = workspace.join("home");
     let product_home = workspace.join(".awiki-cli");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
@@ -44,12 +71,16 @@ fn awiki_cmd(workspace: &Path, gate: Option<&str>) -> Output {
         .env_remove("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED")
         .env_remove("AWIKI_MULTI_DEVICE_HANDLE_RECOVERY_ENABLED")
         .env_remove("AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED")
+        .env_remove("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME");
-    if let Some(gate) = gate {
+    if let Some(gate) = group_gate {
         command.env("AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED", gate);
+    }
+    if let Some(gate) = did_transition_gate {
+        command.env("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED", gate);
     }
     command.output().unwrap()
 }

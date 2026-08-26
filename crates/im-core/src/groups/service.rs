@@ -3451,18 +3451,15 @@ fn require_v2_leave_safe(
     authoritative: &super::GroupReadResult,
     caller_requested_e2ee: bool,
 ) -> crate::ImResult<()> {
-    if authoritative_group_e2ee_classification(group_did, authoritative)? {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "P6 v2 leave requires a subsequent owner-controlled device Remove; refusing P4 leave until durable owner orchestration is available"
-                .to_owned(),
-        });
-    }
-    if caller_requested_e2ee {
+    let group_uses_e2ee = authoritative_group_e2ee_classification(group_did, authoritative)?;
+    if !group_uses_e2ee && caller_requested_e2ee {
         return Err(crate::ImError::invalid_input(
             Some("security".to_owned()),
             "the authoritative group policy is transport-protected",
         ));
     }
+    // P6 v2 has no leave-request method: P4 records `left` first, then an
+    // owner device converges every affected Leaf through the existing repair.
     if authoritative.group.as_ref().is_some_and(|group| {
         group.did.as_str() == group_did
             && group.my_role.as_deref() == Some("owner")
