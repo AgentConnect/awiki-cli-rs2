@@ -842,6 +842,9 @@ fn migrate_local_state_inner(
         "identity_root_import_completion_v1",
         "identity_root_transfer_sender_v1",
         "system_notification_join_state",
+        "message_sync_state",
+        "lane_sync_state",
+        "sync_lane_capability_state",
     ] {
         delete_owner_rows(&transaction, table, &marker.owner_identity_id)?;
     }
@@ -1500,6 +1503,18 @@ mod tests {
             "INSERT INTO direct_e2ee_v2_pending(owner_identity_id,owner_did,local_device_id,peer_did,peer_device_id,operation_id,message_id,session_id,session_revision,pending_blob,created_at,updated_at) VALUES ('owner-1','did:wba:example.invalid:users:alice-old','old-device','did:wba:example.invalid:users:bob','bob-device','old-operation','old-message','session-v2-old',0,X'01','2026-08-03T00:00:00Z','2026-08-03T00:00:00Z')",
             [],
         ).unwrap();
+        connection.execute(
+            "INSERT INTO message_sync_state(owner_identity_id,account_id,device_id,device_auth_generation,stream_epoch,scan_seq,bootstrap_state,updated_at) VALUES ('owner-1','user-1','old-device','3','1','9','active',1)",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO lane_sync_state(owner_identity_id,lane,stream_epoch,scan_seq,committed_seq) VALUES ('owner-1','p5_device','11','4','4')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO sync_lane_capability_state(owner_identity_id,negotiated_device_auth_generation) VALUES ('owner-1','3')",
+            [],
+        ).unwrap();
         drop(connection);
 
         let marker = IdentityTransitionMarker {
@@ -1587,6 +1602,23 @@ mod tests {
                 .unwrap(),
             2
         );
+        for table in [
+            "message_sync_state",
+            "lane_sync_state",
+            "sync_lane_capability_state",
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE owner_identity_id='owner-1'"),
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0,
+                "Recovery retained the predecessor device's {table}"
+            );
+        }
         let metadata: String = connection
             .query_row(
                 "SELECT metadata FROM identity_did_history WHERE owner_identity_id='owner-1' AND did='did:wba:example.invalid:users:alice-new'",
