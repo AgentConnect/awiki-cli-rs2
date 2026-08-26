@@ -618,13 +618,24 @@ async fn fetch_current_group_state_ref_async(
     group_did: &str,
     operation_id: &str,
 ) -> crate::ImResult<anp::group_e2ee::V2GroupStateRef> {
+    let snapshot_params =
+        crate::internal::wire::group::build_group_get_rpc_params(client.did().as_str(), group_did)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let snapshot = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+        "group.get",
+        snapshot_params,
+    )
+    .await?;
+    ensure_group_e2ee_v2_send_not_paused(&snapshot)?;
+
     let params = crate::internal::wire::group::build_group_get_info_rpc_params(
         client.did().as_str(),
         group_did,
         operation_id,
         false,
     )?;
-    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let raw = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
         &mut transport,
         crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
@@ -661,6 +672,23 @@ async fn fetch_current_group_state_ref_async(
         group_state_version: version.to_owned(),
         policy_hash: None,
         roster_hash: None,
+    })
+}
+
+#[cfg(feature = "group-e2ee")]
+fn ensure_group_e2ee_v2_send_not_paused(snapshot: &Value) -> crate::ImResult<()> {
+    if snapshot
+        .pointer("/e2ee_maintenance/send_paused")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Ok(());
+    }
+    Err(crate::ImError::Service {
+        status_code: None,
+        code: Some("group.e2ee.state_not_ready".to_owned()),
+        message: "P6 v2 send is paused while Group membership convergence is pending".to_owned(),
+        data: None,
     })
 }
 
@@ -1011,5 +1039,28 @@ mod tests {
         assert_eq!(params["body"]["include_member_list"], false);
         assert!(!encoded.contains("device_id"));
         assert!(!encoded.contains("deviceManifest"));
+    }
+
+    #[test]
+    #[cfg(feature = "group-e2ee")]
+    fn p6_v2_send_stops_before_encryption_when_host_projects_maintenance_pause() {
+        ensure_group_e2ee_v2_send_not_paused(&serde_json::json!({
+            "group_did": "did:example:group"
+        }))
+        .unwrap();
+
+        let error = ensure_group_e2ee_v2_send_not_paused(&serde_json::json!({
+            "group_did": "did:example:group",
+            "e2ee_maintenance": {
+                "reason": "device_revocation_pending",
+                "send_paused": true
+            }
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service { code: Some(code), .. }
+                if code == "group.e2ee.state_not_ready"
+        ));
     }
 }

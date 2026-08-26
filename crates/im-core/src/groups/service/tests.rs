@@ -372,25 +372,32 @@ fn public_group_lifecycle_gate_keeps_legacy_off_and_selects_v2_on() {
 
 #[test]
 fn v2_member_mutation_keeps_p4_base_separate_without_changing_legacy() {
+    let resolved = crate::groups::GroupMemberResolution {
+        did: crate::ids::Did::parse("did:example:bob").unwrap(),
+        handle: Some(crate::ids::Handle::parse("bob.example.com", "").unwrap()),
+    };
     let request = crate::groups::GroupMemberMutationRequest {
         group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
-        member: crate::groups::GroupMemberRef::parse("did:example:bob", "").unwrap(),
+        member: crate::groups::GroupMemberRef::parse("bob.example.com", "").unwrap(),
         role: None,
         reason_text: None,
         leave_request_id: None,
         security: crate::groups::GroupSecurityRequirement::Required,
     };
 
-    let v2 = super::p4_member_mutation_request(request.clone(), true);
+    let v2 = super::p4_member_mutation_request(request.clone(), &resolved, true, true);
     assert_eq!(
         v2.security,
         crate::groups::GroupSecurityRequirement::Default
     );
-    let legacy = super::p4_member_mutation_request(request, false);
+    assert_eq!(v2.member.as_str(), "did:example:bob");
+
+    let legacy = super::p4_member_mutation_request(request, &resolved, false, false);
     assert_eq!(
         legacy.security,
         crate::groups::GroupSecurityRequirement::Required
     );
+    assert_eq!(legacy.member.as_str(), "bob.example.com");
 }
 
 #[test]

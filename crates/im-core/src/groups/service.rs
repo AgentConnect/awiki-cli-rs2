@@ -483,7 +483,7 @@ impl<'a> GroupService<'a> {
             )?;
         }
         #[cfg(feature = "group-e2ee")]
-        let request = p4_member_mutation_request(request, use_v2_p6);
+        let request = p4_member_mutation_request(request, &resolved_member, v2_enabled, use_v2_p6);
         let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -645,7 +645,7 @@ impl<'a> GroupService<'a> {
             .await?;
         }
         #[cfg(feature = "group-e2ee")]
-        let request = p4_member_mutation_request(request, use_v2_p6);
+        let request = p4_member_mutation_request(request, &resolved_member, v2_enabled, use_v2_p6);
         let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3475,9 +3475,16 @@ fn require_v2_leave_safe(
 
 #[cfg(feature = "group-e2ee")]
 fn p4_member_mutation_request(
-    mut request: super::GroupMemberMutationRequest,
+    request: super::GroupMemberMutationRequest,
+    resolved_member: &super::GroupMemberResolution,
+    v2_enabled: bool,
     use_v2_p6: bool,
 ) -> super::GroupMemberMutationRequest {
+    let mut request = if v2_enabled {
+        resolved_group_member_request(request, resolved_member)
+    } else {
+        request
+    };
     if use_v2_p6 {
         request.security = super::GroupSecurityRequirement::Default;
     }
