@@ -9,15 +9,18 @@ use im_core::provider::{
     ProviderEnrollmentProposalKind, ProviderEnrollmentSession, ProviderExactHttpRequest,
     ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor,
     ProviderIdentityMaterialImportRequest, ProviderIdentityRef, ProviderIdentityState,
+    ProviderIdentityTransitionOutcome, ProviderIdentityTransitionPublicationAttempt,
+    ProviderIdentityTransitionPublicationResult, ProviderIdentityTransitionRemoteObservation,
+    ProviderIdentityTransitionRequest, ProviderIdentityTransitionSession,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
     ProviderLegacyRootExportRequest, ProviderLegacyRootImportEvidence,
     ProviderLegacyRootImportOutcome, ProviderLegacyRootImportRequest, ProviderObjectProofRequest,
     ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
-    ProviderPrivateKeyEncoding, ProviderPublicIdentity, ProviderPublicKey,
-    ProviderPublicationAttempt, ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest,
-    ProviderResult, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
-    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
-    ProviderVerifiedRemoteDocument, ProviderWrappedRootEnvelope,
+    ProviderPreparedIdentityTransition, ProviderPrivateKeyEncoding, ProviderPublicIdentity,
+    ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationResult,
+    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderSharedSecret,
+    ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof, ProviderSigningPurpose,
+    ProviderStoreInfo, ProviderVerifiedRemoteDocument, ProviderWrappedRootEnvelope,
 };
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -71,6 +74,12 @@ struct ExternalDocumentChangeSession {
     session_id: String,
     candidate: ProviderPreparedDocumentChange,
     public_cache: Arc<tokio::sync::RwLock<Option<ProviderPublicIdentity>>>,
+}
+
+struct ExternalIdentityTransitionSession {
+    dispatch: Arc<IdentityProviderDispatch>,
+    session_id: String,
+    candidate: ProviderPreparedIdentityTransition,
 }
 
 struct ExternalEnrollmentSession {
@@ -165,6 +174,34 @@ struct ReconcileDocumentChangePayload<'a> {
 struct DocumentSessionWire {
     session_id: String,
     candidate: ProviderPreparedDocumentChange,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IdentityTransitionSessionWire {
+    session_id: String,
+    candidate: ProviderPreparedIdentityTransition,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityTransitionSessionPayload<'a> {
+    session_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteIdentityTransitionPayload<'a> {
+    session_id: &'a str,
+    attempt: &'a ProviderIdentityTransitionPublicationAttempt,
+    result: &'a ProviderIdentityTransitionPublicationResult,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconcileIdentityTransitionPayload<'a> {
+    session_id: &'a str,
+    observation: &'a ProviderIdentityTransitionRemoteObservation,
 }
 
 #[derive(Deserialize)]
@@ -474,6 +511,44 @@ impl IdentityCustody for ExternalIdentityCustody {
             Vec::new(),
         )
         .await
+    }
+
+    async fn prepare_identity_transition(
+        &self,
+        request: ProviderIdentityTransitionRequest,
+    ) -> ProviderResult<Arc<dyn ProviderIdentityTransitionSession>> {
+        let wire: IdentityTransitionSessionWire = call_json(
+            &self.dispatch,
+            "prepareIdentityTransition",
+            &request,
+            Vec::new(),
+        )
+        .await?;
+        Ok(Arc::new(ExternalIdentityTransitionSession {
+            dispatch: self.dispatch.clone(),
+            session_id: wire.session_id,
+            candidate: wire.candidate,
+        }))
+    }
+
+    async fn resume_identity_transition(
+        &self,
+        expected_current_did: &str,
+    ) -> ProviderResult<Option<Arc<dyn ProviderIdentityTransitionSession>>> {
+        let wire: Option<IdentityTransitionSessionWire> = call_json(
+            &self.dispatch,
+            "resumeIdentityTransition",
+            &serde_json::json!({ "expectedCurrentDid": expected_current_did }),
+            Vec::new(),
+        )
+        .await?;
+        Ok(wire.map(|wire| {
+            Arc::new(ExternalIdentityTransitionSession {
+                dispatch: self.dispatch.clone(),
+                session_id: wire.session_id,
+                candidate: wire.candidate,
+            }) as Arc<dyn ProviderIdentityTransitionSession>
+        }))
     }
 
     async fn begin_device_enrollment(
@@ -956,6 +1031,61 @@ impl ProviderDocumentChangeSession for ExternalDocumentChangeSession {
             *self.public_cache.write().await = None;
         }
         Ok(outcome)
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderIdentityTransitionSession for ExternalIdentityTransitionSession {
+    async fn candidate(&self) -> ProviderResult<ProviderPreparedIdentityTransition> {
+        Ok(self.candidate.clone())
+    }
+
+    async fn begin_publication(
+        &self,
+    ) -> ProviderResult<ProviderIdentityTransitionPublicationAttempt> {
+        call_json(
+            &self.dispatch,
+            "identityTransitionBeginPublication",
+            &IdentityTransitionSessionPayload {
+                session_id: &self.session_id,
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn complete(
+        &self,
+        attempt: ProviderIdentityTransitionPublicationAttempt,
+        result: ProviderIdentityTransitionPublicationResult,
+    ) -> ProviderResult<ProviderIdentityTransitionOutcome> {
+        call_json(
+            &self.dispatch,
+            "identityTransitionComplete",
+            &CompleteIdentityTransitionPayload {
+                session_id: &self.session_id,
+                attempt: &attempt,
+                result: &result,
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn reconcile(
+        &self,
+        observation: ProviderIdentityTransitionRemoteObservation,
+    ) -> ProviderResult<ProviderIdentityTransitionOutcome> {
+        call_json(
+            &self.dispatch,
+            "identityTransitionReconcile",
+            &ReconcileIdentityTransitionPayload {
+                session_id: &self.session_id,
+                observation: &observation,
+            },
+            Vec::new(),
+        )
+        .await
     }
 }
 

@@ -14,16 +14,19 @@ use super::{
     ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderExportedRoot, ProviderHostStatus,
     ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityMaterialImportRequest,
     ProviderIdentityMaterialKey, ProviderIdentityRef, ProviderIdentityState,
+    ProviderIdentityTransitionOutcome, ProviderIdentityTransitionPublicationAttempt,
+    ProviderIdentityTransitionPublicationResult, ProviderIdentityTransitionRemoteObservation,
+    ProviderIdentityTransitionRequest, ProviderIdentityTransitionSession,
     ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
     ProviderLegacyRootExportRequest, ProviderLegacyRootImportOutcome,
     ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
-    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature, ProviderPrivateKeyEncoding,
-    ProviderPublicIdentity, ProviderPublicKey, ProviderPublicationAttempt,
-    ProviderPublicationEvidence, ProviderPublicationResult,
-    ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderRootCapability,
-    ProviderSharedSecret, ProviderSignRequest, ProviderSignature, ProviderSignedOriginProof,
-    ProviderSigningPurpose, ProviderStoreInfo, ProviderVerifiedRemoteDocument,
-    ProviderWrappedRootEnvelope,
+    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
+    ProviderPreparedIdentityTransition, ProviderPrivateKeyEncoding, ProviderPublicIdentity,
+    ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationEvidence,
+    ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
+    ProviderRootCapability, ProviderSharedSecret, ProviderSignRequest, ProviderSignature,
+    ProviderSignedOriginProof, ProviderSigningPurpose, ProviderStoreInfo,
+    ProviderVerifiedRemoteDocument, ProviderWrappedRootEnvelope,
 };
 
 pub(crate) struct DirectAnpIdentityCustody {
@@ -42,6 +45,10 @@ enum DirectIdentityHandle {
 
 struct DirectDocumentChangeSession {
     session: Arc<Mutex<anp_identity::DocumentChangeSession>>,
+}
+
+struct DirectIdentityTransitionSession {
+    session: Arc<Mutex<anp_identity::IdentityTransitionSession>>,
 }
 
 struct DirectEnrollmentSession {
@@ -156,6 +163,57 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                     anp_identity::DeleteIdentityRequest::default(),
                 )
                 .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn prepare_identity_transition(
+        &self,
+        request: ProviderIdentityTransitionRequest,
+    ) -> ProviderResult<Arc<dyn ProviderIdentityTransitionSession>> {
+        let manager = self.manager.clone();
+        run_blocking(move || {
+            let session = manager
+                .lock()
+                .map_err(|_| internal())?
+                .prepare_identity_transition(anp_identity::IdentityTransitionRequest {
+                    expected_current_did: request.expected_current_did,
+                    operation_id: request.operation_id,
+                    successor: request.successor.into(),
+                    transition_document: request
+                        .transition_document
+                        .map(anp_identity::DidDocument::from_value),
+                    provider_document: request
+                        .provider_document
+                        .map(anp_identity::DidDocument::from_value),
+                })
+                .map_err(map_identity_error)?;
+            Ok(Arc::new(DirectIdentityTransitionSession {
+                session: Arc::new(Mutex::new(session)),
+            }) as Arc<dyn ProviderIdentityTransitionSession>)
+        })
+        .await
+    }
+
+    async fn resume_identity_transition(
+        &self,
+        expected_current_did: &str,
+    ) -> ProviderResult<Option<Arc<dyn ProviderIdentityTransitionSession>>> {
+        let manager = self.manager.clone();
+        let expected_current_did = expected_current_did.to_owned();
+        run_blocking(move || {
+            manager
+                .lock()
+                .map_err(|_| internal())?
+                .resume_identity_transition(&expected_current_did)
+                .map_err(map_identity_error)
+                .map(|session| {
+                    session.map(|session| {
+                        Arc::new(DirectIdentityTransitionSession {
+                            session: Arc::new(Mutex::new(session)),
+                        }) as Arc<dyn ProviderIdentityTransitionSession>
+                    })
+                })
         })
         .await
     }
@@ -692,6 +750,126 @@ fn camel_to_snake(value: &str) -> String {
     output
 }
 
+fn provider_transition_candidate(
+    candidate: &anp_identity::PreparedIdentityTransition,
+) -> ProviderResult<ProviderPreparedIdentityTransition> {
+    let assurance = match candidate.assurance.as_str() {
+        "verified" => super::ProviderTransitionAssurance::Verified,
+        "recovery_verified" => super::ProviderTransitionAssurance::RecoveryVerified,
+        "provider_asserted" => super::ProviderTransitionAssurance::ProviderAsserted,
+        "unverified" => super::ProviderTransitionAssurance::Unverified,
+        _ => return Err(internal()),
+    };
+    Ok(ProviderPreparedIdentityTransition {
+        operation_id: candidate.operation_id.clone(),
+        expected_current_did: candidate.expected_current_did.clone(),
+        successor_did: candidate.successor_did.clone(),
+        predecessor_document: candidate.predecessor_document.as_value().clone(),
+        successor_document: candidate.successor_document.as_value().clone(),
+        predecessor_digest: candidate.predecessor_digest.clone(),
+        successor_digest: candidate.successor_digest.clone(),
+        assurance,
+    })
+}
+
+fn provider_transition_attempt(
+    attempt: anp_identity::IdentityTransitionPublicationAttempt,
+) -> ProviderResult<ProviderIdentityTransitionPublicationAttempt> {
+    let value = serde_json::to_value(attempt).map_err(|_| internal())?;
+    Ok(ProviderIdentityTransitionPublicationAttempt {
+        operation_id: value
+            .get("operation_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(internal)?
+            .to_owned(),
+        predecessor_digest: value
+            .get("predecessor_digest")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(internal)?
+            .to_owned(),
+        successor_digest: value
+            .get("successor_digest")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(internal)?
+            .to_owned(),
+        publication_generation: value
+            .get("publication_generation")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(internal)?,
+    })
+}
+
+fn native_transition_attempt(
+    attempt: ProviderIdentityTransitionPublicationAttempt,
+) -> ProviderResult<anp_identity::IdentityTransitionPublicationAttempt> {
+    serde_json::from_value(serde_json::json!({
+        "operation_id": attempt.operation_id,
+        "predecessor_digest": attempt.predecessor_digest,
+        "successor_digest": attempt.successor_digest,
+        "publication_generation": attempt.publication_generation,
+    }))
+    .map_err(|_| internal())
+}
+
+fn native_transition_result(
+    result: ProviderIdentityTransitionPublicationResult,
+) -> anp_identity::IdentityTransitionPublicationResult {
+    match result {
+        ProviderIdentityTransitionPublicationResult::Confirmed { evidence } => {
+            anp_identity::IdentityTransitionPublicationResult::Confirmed {
+                evidence: anp_identity::IdentityTransitionPublicationEvidence {
+                    predecessor_digest: evidence.predecessor_digest,
+                    successor_digest: evidence.successor_digest,
+                },
+            }
+        }
+        ProviderIdentityTransitionPublicationResult::RejectedBeforeAcceptance => {
+            anp_identity::IdentityTransitionPublicationResult::RejectedBeforeAcceptance
+        }
+        ProviderIdentityTransitionPublicationResult::Unknown => {
+            anp_identity::IdentityTransitionPublicationResult::Unknown
+        }
+    }
+}
+
+fn native_transition_observation(
+    observation: ProviderIdentityTransitionRemoteObservation,
+) -> anp_identity::IdentityTransitionRemoteObservation {
+    match observation {
+        ProviderIdentityTransitionRemoteObservation::RemoteOld { current_document } => {
+            anp_identity::IdentityTransitionRemoteObservation::RemoteOld {
+                current_document: anp_identity::DidDocument::from_value(current_document),
+            }
+        }
+        ProviderIdentityTransitionRemoteObservation::Published {
+            predecessor_document,
+            successor_document,
+        } => anp_identity::IdentityTransitionRemoteObservation::Published {
+            predecessor_document: anp_identity::DidDocument::from_value(predecessor_document),
+            successor_document: anp_identity::DidDocument::from_value(successor_document),
+        },
+    }
+}
+
+fn provider_transition_outcome(
+    outcome: anp_identity::IdentityTransitionOutcome,
+) -> ProviderIdentityTransitionOutcome {
+    match outcome {
+        anp_identity::IdentityTransitionOutcome::ReadyForPublication => {
+            ProviderIdentityTransitionOutcome::ReadyForPublication
+        }
+        anp_identity::IdentityTransitionOutcome::PublicationUncertain => {
+            ProviderIdentityTransitionOutcome::PublicationUncertain
+        }
+        anp_identity::IdentityTransitionOutcome::Committed { current_did } => {
+            ProviderIdentityTransitionOutcome::Committed { current_did }
+        }
+        anp_identity::IdentityTransitionOutcome::Aborted => {
+            ProviderIdentityTransitionOutcome::Aborted
+        }
+    }
+}
+
 fn with_identity<T>(
     handle: &DirectIdentityHandle,
     operation: impl FnOnce(&anp_identity::ManagedIdentity) -> anp_identity::IdentityResult<T>,
@@ -820,6 +998,69 @@ impl ProviderDocumentChangeSession for DirectDocumentChangeSession {
                 .reconcile(observation.into())
                 .map(Into::into)
                 .map_err(map_identity_error)
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl ProviderIdentityTransitionSession for DirectIdentityTransitionSession {
+    async fn candidate(&self) -> ProviderResult<ProviderPreparedIdentityTransition> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let session = session.lock().map_err(|_| internal())?;
+            provider_transition_candidate(session.candidate())
+        })
+        .await
+    }
+
+    async fn begin_publication(
+        &self,
+    ) -> ProviderResult<ProviderIdentityTransitionPublicationAttempt> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let attempt = session
+                .lock()
+                .map_err(|_| internal())?
+                .begin_publication()
+                .map_err(map_identity_error)?;
+            provider_transition_attempt(attempt)
+        })
+        .await
+    }
+
+    async fn complete(
+        &self,
+        attempt: ProviderIdentityTransitionPublicationAttempt,
+        result: ProviderIdentityTransitionPublicationResult,
+    ) -> ProviderResult<ProviderIdentityTransitionOutcome> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let outcome = session
+                .lock()
+                .map_err(|_| internal())?
+                .complete(
+                    native_transition_attempt(attempt)?,
+                    native_transition_result(result),
+                )
+                .map_err(map_identity_error)?;
+            Ok(provider_transition_outcome(outcome))
+        })
+        .await
+    }
+
+    async fn reconcile(
+        &self,
+        observation: ProviderIdentityTransitionRemoteObservation,
+    ) -> ProviderResult<ProviderIdentityTransitionOutcome> {
+        let session = self.session.clone();
+        run_blocking(move || {
+            let outcome = session
+                .lock()
+                .map_err(|_| internal())?
+                .reconcile(native_transition_observation(observation))
+                .map_err(map_identity_error)?;
+            Ok(provider_transition_outcome(outcome))
         })
         .await
     }

@@ -184,6 +184,16 @@ export interface ImCoreIdentityProvider {
   resumeDocumentChange(
     reference: ImCoreIdentityReference,
   ): Promise<ImCoreProviderDocumentChangeSession | undefined>
+  prepareIdentityTransition(request: {
+    readonly expectedCurrentDid: string
+    readonly operationId: string
+    readonly successor: ImCoreIdentityReference
+    readonly transitionDocument?: unknown
+    readonly providerDocument?: unknown
+  }): Promise<ImCoreProviderIdentityTransitionSession>
+  resumeIdentityTransition(
+    expectedCurrentDid: string,
+  ): Promise<ImCoreProviderIdentityTransitionSession | undefined>
   adoptVerifiedDocument(
     reference: ImCoreIdentityReference,
     remote: unknown,
@@ -243,6 +253,14 @@ export interface ImCorePreparedIdentityMaterialImport {
 export interface ImCoreProviderDocumentChangeSession {
   candidate(): Promise<unknown>
   hostPhase(): Promise<'prepared' | 'publication_in_flight' | 'publication_uncertain' | 'published'>
+  beginPublication(): Promise<unknown>
+  complete(attempt: unknown, result: unknown): Promise<unknown>
+  reconcile(observation: unknown): Promise<unknown>
+}
+
+/** Host-only DID transition workflow retained inside the provider bridge. */
+export interface ImCoreProviderIdentityTransitionSession {
+  candidate(): Promise<unknown>
   beginPublication(): Promise<unknown>
   complete(attempt: unknown, result: unknown): Promise<unknown>
   reconcile(observation: unknown): Promise<unknown>

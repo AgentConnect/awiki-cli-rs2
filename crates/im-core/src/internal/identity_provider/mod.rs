@@ -331,6 +331,115 @@ pub enum ProviderDocumentChangeOutcome {
     Aborted,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderIdentityTransitionRequest {
+    pub expected_current_did: String,
+    pub operation_id: String,
+    pub successor: ProviderIdentityRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition_document: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_document: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTransitionAssurance {
+    Verified,
+    RecoveryVerified,
+    ProviderAsserted,
+    Unverified,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderPreparedIdentityTransition {
+    pub operation_id: String,
+    pub expected_current_did: String,
+    pub successor_did: String,
+    pub predecessor_document: Value,
+    pub successor_document: Value,
+    pub predecessor_digest: String,
+    pub successor_digest: String,
+    pub assurance: ProviderTransitionAssurance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderIdentityTransitionPublicationAttempt {
+    pub operation_id: String,
+    pub predecessor_digest: String,
+    pub successor_digest: String,
+    pub publication_generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProviderIdentityTransitionPublicationEvidence {
+    pub predecessor_digest: String,
+    pub successor_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ProviderIdentityTransitionPublicationResult {
+    Confirmed {
+        evidence: ProviderIdentityTransitionPublicationEvidence,
+    },
+    RejectedBeforeAcceptance,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(
+    tag = "observation",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProviderIdentityTransitionRemoteObservation {
+    RemoteOld {
+        current_document: Value,
+    },
+    Published {
+        predecessor_document: Value,
+        successor_document: Value,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "outcome",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProviderIdentityTransitionOutcome {
+    ReadyForPublication,
+    PublicationUncertain,
+    Committed { current_did: String },
+    Aborted,
+}
+
+#[async_trait]
+pub trait ProviderIdentityTransitionSession: Send + Sync {
+    async fn candidate(&self) -> ProviderResult<ProviderPreparedIdentityTransition>;
+
+    async fn begin_publication(
+        &self,
+    ) -> ProviderResult<ProviderIdentityTransitionPublicationAttempt>;
+
+    async fn complete(
+        &self,
+        attempt: ProviderIdentityTransitionPublicationAttempt,
+        result: ProviderIdentityTransitionPublicationResult,
+    ) -> ProviderResult<ProviderIdentityTransitionOutcome>;
+
+    async fn reconcile(
+        &self,
+        observation: ProviderIdentityTransitionRemoteObservation,
+    ) -> ProviderResult<ProviderIdentityTransitionOutcome>;
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderDocumentChangePhase {
@@ -701,6 +810,26 @@ pub trait IdentityCustody: Send + Sync {
     ) -> ProviderResult<Arc<dyn IdentitySession>>;
 
     async fn delete_identity(&self, identity: &ProviderIdentityRef) -> ProviderResult<()>;
+
+    async fn prepare_identity_transition(
+        &self,
+        _request: ProviderIdentityTransitionRequest,
+    ) -> ProviderResult<Arc<dyn ProviderIdentityTransitionSession>> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
+
+    async fn resume_identity_transition(
+        &self,
+        _expected_current_did: &str,
+    ) -> ProviderResult<Option<Arc<dyn ProviderIdentityTransitionSession>>> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
 
     async fn begin_device_enrollment(
         &self,

@@ -603,7 +603,7 @@ pub(crate) fn mark_applied(
 
 /// Applies the recovery-authorized state epoch reset while preserving business
 /// history. The marker tuple is rechecked inside the same transaction before
-/// any credential-scoped state is retired.
+/// superseded write-capable state is retired.
 pub(crate) fn migrate_local_state(
     sqlite_path: &Path,
     marker: &IdentityTransitionMarker,
@@ -643,8 +643,8 @@ pub(crate) fn migrate_joined_device_local_state_without_historical_binding(
 /// local binding may be older than the authoritative Recovery predecessor,
 /// but it must still belong to the same stable owner/account/Handle and be
 /// strictly older than the committed epoch. This does not perform V4.1
-/// transparent history adoption; credential-scoped state is retired by the
-/// same transaction as an ordinary Recovery transition.
+/// transparent history adoption; superseded write-capable state is retired by
+/// the same transaction as an ordinary Recovery transition.
 pub(crate) fn migrate_initiator_fresh_local_state(
     sqlite_path: &Path,
     marker: &IdentityTransitionMarker,
@@ -787,72 +787,65 @@ fn migrate_local_state_inner(
         return Err(crate::ImError::PermissionDenied);
     }
 
-    // Cascades clear Account State cursor/recovery/read/outbox projections.
-    transaction
-        .execute(
-            "DELETE FROM identity_account_bindings WHERE owner_identity_id=?1",
-            [&marker.owner_identity_id],
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
     let now_unix = time::OffsetDateTime::now_utc().unix_timestamp();
-    transaction
-        .execute(
-            r#"INSERT INTO identity_account_bindings
+    if let Some((account_id, handle_scope, current_did, identity_generation)) = binding.as_ref() {
+        let changed = transaction
+            .execute(
+                r#"UPDATE identity_account_bindings
+                   SET current_did=?2,device_id=?3,identity_generation=?4,
+                       device_auth_generation=?5,updated_at=?6
+                   WHERE owner_identity_id=?1 AND account_id=?7
+                     AND handle_scope IS ?8 AND current_did=?9
+                     AND identity_generation=?10"#,
+                rusqlite::params![
+                    marker.owner_identity_id,
+                    marker.current_did,
+                    bootstrap_device_id,
+                    marker.binding_generation,
+                    auth_generation.to_string(),
+                    now_unix,
+                    account_id,
+                    handle_scope,
+                    current_did,
+                    identity_generation,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if changed != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    } else {
+        transaction
+            .execute(
+                r#"INSERT INTO identity_account_bindings
                 (owner_identity_id,account_id,handle_scope,current_did,device_id,
                  identity_generation,device_auth_generation,created_at,updated_at)
                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)"#,
-            rusqlite::params![
-                marker.owner_identity_id,
-                marker.account_user_id,
-                marker.handle,
-                marker.current_did,
-                bootstrap_device_id,
-                marker.binding_generation,
-                auth_generation.to_string(),
-                now_unix,
-            ],
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
+                rusqlite::params![
+                    marker.owner_identity_id,
+                    marker.account_user_id,
+                    marker.handle,
+                    marker.current_did,
+                    bootstrap_device_id,
+                    marker.binding_generation,
+                    auth_generation.to_string(),
+                    now_unix,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+    }
 
-    // Subject checkpoints are epoch-scoped. Lazy sync restarts the new DID at
-    // zero only after the reset receipt/marker is durable.
-    transaction
-        .execute(
-            "DELETE FROM sync_state WHERE owner_identity_id=?1",
-            [&marker.owner_identity_id],
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let now = now()?;
+    retire_superseded_write_state(&transaction, marker, &now)?;
 
     for table in [
-        "direct_e2ee_sessions",
-        "direct_e2ee_signed_prekeys",
-        "direct_e2ee_one_time_prekeys",
-        "e2ee_outbox",
-        "direct_e2ee_v2_owner_scopes",
-        "direct_e2ee_v2_attachment_intents",
-        "direct_e2ee_v2_delivery_ledger",
-        "direct_e2ee_v2_one_time_prekeys",
-        "direct_e2ee_v2_pending",
-        "direct_e2ee_v2_prekey_bundles",
-        "direct_e2ee_v2_replay",
-        "direct_e2ee_v2_session_reply_ledger",
-        "direct_e2ee_v2_sessions",
-        "group_rebind_outbox",
-        "group_rebind_p6_jobs",
         "identity_root_import_completion_v1",
         "identity_root_transfer_sender_v1",
         "system_notification_join_state",
     ] {
         delete_owner_rows(&transaction, table, &marker.owner_identity_id)?;
     }
-    delete_rows_by_column(
-        &transaction,
-        "e2ee_sessions",
-        "owner_did",
-        &marker.previous_did,
-    )?;
 
-    let now = now()?;
     transaction
         .execute(
             "UPDATE identity_did_history SET status='previous',last_seen_at=?1 WHERE owner_identity_id=?2 AND did<>?3",
@@ -882,6 +875,83 @@ fn migrate_local_state_inner(
     transaction
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)
+}
+
+fn retire_superseded_write_state(
+    transaction: &rusqlite::Transaction<'_>,
+    marker: &IdentityTransitionMarker,
+    now: &str,
+) -> crate::ImResult<()> {
+    update_existing_table(
+        transaction,
+        "direct_e2ee_signed_prekeys",
+        "UPDATE direct_e2ee_signed_prekeys SET status='retired',updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND status='active'",
+        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "direct_e2ee_one_time_prekeys",
+        "UPDATE direct_e2ee_one_time_prekeys SET status='consumed',consumed_at=COALESCE(consumed_at,?3) WHERE owner_identity_id=?1 AND owner_did=?2 AND status IN ('available','reserved')",
+        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "direct_e2ee_v2_sessions",
+        "UPDATE direct_e2ee_v2_sessions SET disabled=1,updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND disabled=0",
+        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "direct_e2ee_v2_prekey_bundles",
+        "UPDATE direct_e2ee_v2_prekey_bundles SET status='retired',updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND status<>'retired'",
+        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "direct_e2ee_v2_one_time_prekeys",
+        "UPDATE direct_e2ee_v2_one_time_prekeys SET status='consumed',consumed_at=COALESCE(consumed_at,?3) WHERE owner_identity_id=?1 AND owner_did=?2 AND status IN ('available','reserved')",
+        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "e2ee_outbox",
+        "UPDATE e2ee_outbox SET local_status='dropped',last_error_code='did_transition_superseded_old_did',retry_hint=NULL,updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND local_status IN ('queued','failed')",
+        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "group_rebind_outbox",
+        "UPDATE group_rebind_outbox SET phase='blocked',lease_expires_at=NULL,next_attempt_at=NULL,last_error_code='did_transition_replaced_legacy_rebind',last_error_detail=NULL,updated_at=?2 WHERE owner_identity_id=?1 AND phase NOT IN ('complete','blocked')",
+        rusqlite::params![marker.owner_identity_id, now],
+    )?;
+    update_existing_table(
+        transaction,
+        "group_rebind_p6_jobs",
+        "UPDATE group_rebind_p6_jobs SET phase='blocked',lease_expires_at=NULL,next_attempt_at=NULL,last_error_code='did_transition_replaced_legacy_rebind',last_error_detail=NULL,updated_at=?2 WHERE owner_identity_id=?1 AND phase NOT IN ('complete','blocked')",
+        rusqlite::params![marker.owner_identity_id, now],
+    )?;
+    Ok(())
+}
+
+fn update_existing_table<P: rusqlite::Params>(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &str,
+    sql: &str,
+    params: P,
+) -> crate::ImResult<()> {
+    let exists: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if exists != 0 {
+        transaction
+            .execute(sql, params)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+    }
+    Ok(())
 }
 
 fn canonical_generation_is_less_than(left: &str, right: &str) -> bool {
@@ -922,27 +992,6 @@ fn delete_owner_rows(
                 &format!("DELETE FROM {table} WHERE owner_identity_id=?1"),
                 [owner_identity_id],
             )
-            .map_err(crate::internal::local_state::local_state_unavailable)?;
-    }
-    Ok(())
-}
-
-fn delete_rows_by_column(
-    transaction: &rusqlite::Transaction<'_>,
-    table: &str,
-    column: &str,
-    value: &str,
-) -> crate::ImResult<()> {
-    let exists: i64 = transaction
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-            [table],
-            |row| row.get(0),
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
-    if exists != 0 {
-        transaction
-            .execute(&format!("DELETE FROM {table} WHERE {column}=?1"), [value])
             .map_err(crate::internal::local_state::local_state_unavailable)?;
     }
     Ok(())
@@ -1421,11 +1470,12 @@ mod tests {
     }
 
     #[test]
-    fn authorized_epoch_reset_preserves_history_and_retires_old_crypto() {
+    fn authorized_epoch_reset_preserves_old_crypto_and_retires_old_writers() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.sqlite");
         let connection = crate::internal::local_state::open_writable(&path).unwrap();
         crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        crate::internal::secure_direct::v2_store::ensure_v2_schema(&connection).unwrap();
         connection.execute(
             "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('owner-1','user-1','alice.example.invalid','did:wba:example.invalid:users:alice-old','old-device','7','3',1,1)",
             [],
@@ -1436,6 +1486,18 @@ mod tests {
         ).unwrap();
         connection.execute(
             "INSERT INTO direct_e2ee_sessions(owner_identity_id,owner_did,peer_did,session_id,state_blob,created_at,updated_at) VALUES ('owner-1','did:wba:example.invalid:users:alice-old','did:wba:example.invalid:users:bob','session-old',X'01','2026-08-03T00:00:00Z','2026-08-03T00:00:00Z')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO direct_e2ee_v2_owner_scopes(owner_identity_id,owner_did,local_device_id,created_at) VALUES ('owner-1','did:wba:example.invalid:users:alice-old','old-device','2026-08-03T00:00:00Z')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO direct_e2ee_v2_sessions(owner_identity_id,owner_did,local_device_id,peer_did,peer_device_id,session_id,state_blob,revision,disabled,created_at,updated_at) VALUES ('owner-1','did:wba:example.invalid:users:alice-old','old-device','did:wba:example.invalid:users:bob','bob-device','session-v2-old',X'01',0,0,'2026-08-03T00:00:00Z','2026-08-03T00:00:00Z')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO direct_e2ee_v2_pending(owner_identity_id,owner_did,local_device_id,peer_did,peer_device_id,operation_id,message_id,session_id,session_revision,pending_blob,created_at,updated_at) VALUES ('owner-1','did:wba:example.invalid:users:alice-old','old-device','did:wba:example.invalid:users:bob','bob-device','old-operation','old-message','session-v2-old',0,X'01','2026-08-03T00:00:00Z','2026-08-03T00:00:00Z')",
             [],
         ).unwrap();
         drop(connection);
@@ -1493,7 +1555,27 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            0
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT disabled FROM direct_e2ee_v2_sessions WHERE owner_identity_id='owner-1' AND session_id='session-v2-old'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_pending WHERE owner_identity_id='owner-1' AND operation_id='old-operation'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
         );
         assert_eq!(
             connection
@@ -1515,6 +1597,144 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&metadata).unwrap()["protocol"],
             "manifest_handle_recovery_v4"
+        );
+    }
+
+    #[test]
+    fn phase4_0714_recovery_preserves_history_and_isolates_legacy_writers() {
+        let Ok(fixture_dir) = std::env::var("AWIKI_0714_E2EE_FIXTURE_DIR") else {
+            return;
+        };
+        let source = Path::new(&fixture_dir).join("core-schema-36.sqlite");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("phase4-0714-recovery.sqlite");
+        std::fs::copy(source, &path).unwrap();
+
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        drop(connection);
+
+        let marker = IdentityTransitionMarker {
+            schema_version: 1,
+            contract_version:
+                crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned(),
+            contract_hash: crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
+                .to_owned(),
+            recovery_id: "fixture-recovery-0714".to_owned(),
+            source_kind: TransitionSourceKind::Initiator,
+            source_id: "fixture-recovery-0714".to_owned(),
+            state_root_fingerprint: state_root_fingerprint(&path),
+            account_user_id: "fixture-account-0714".to_owned(),
+            owner_identity_id: "fixture-owner-0714".to_owned(),
+            handle: "fixture.invalid".to_owned(),
+            previous_did: "did:wba:alice.fixture.invalid:agents:primary:e1_fixture_alice"
+                .to_owned(),
+            current_did: "did:wba:alice.fixture.invalid:agents:primary:e1_fixture_alice_next"
+                .to_owned(),
+            binding_generation: "2".to_owned(),
+            current_device_id: Some("fixture-device-0714-next".to_owned()),
+            device_auth_generation: Some("1".to_owned()),
+            registry_version: Some("2".to_owned()),
+            applied_at: None,
+            metadata_json: "{}".to_owned(),
+            phase: TransitionPhase::Pending,
+            created_at: "2026-08-26T00:00:00Z".to_owned(),
+            updated_at: "2026-08-26T00:00:00Z".to_owned(),
+        };
+        persist(&path, &marker).unwrap();
+        migrate_local_state(&path, &marker, "fixture-device-0714-next", 1).unwrap();
+
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        let binding: (String, String, String, String, String, String, i64) = connection
+            .query_row(
+                "SELECT owner_identity_id,account_id,current_did,device_id,identity_generation,device_auth_generation,created_at FROM identity_account_bindings",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            binding,
+            (
+                "fixture-owner-0714".to_owned(),
+                "fixture-account-0714".to_owned(),
+                marker.current_did.clone(),
+                "fixture-device-0714-next".to_owned(),
+                "2".to_owned(),
+                "1".to_owned(),
+                1_710_400_000,
+            )
+        );
+
+        for (table, expected) in [
+            ("messages", 2_i64),
+            ("conversation_registry", 1),
+            ("conversation_summaries", 1),
+            ("direct_peer_routes", 1),
+            ("attachment_manifest_cache", 1),
+            ("sync_state", 1),
+            ("e2ee_outbox", 1),
+            ("group_rebind_outbox", 1),
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                expected,
+                "Recovery changed the locked 0714 {table} row count"
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT event_seq FROM sync_state WHERE owner_identity_id='fixture-owner-0714' AND sync_subject_id='fixture-account-0714'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "2"
+        );
+        let outbox: (String, String, Option<String>) = connection
+            .query_row(
+                "SELECT owner_did,local_status,last_error_code FROM e2ee_outbox WHERE outbox_id='fixture-outbox-0714'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            outbox,
+            (
+                marker.previous_did.clone(),
+                "dropped".to_owned(),
+                Some("did_transition_superseded_old_did".to_owned()),
+            )
+        );
+        let legacy_rebind: (String, Option<String>, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT phase,next_attempt_at,lease_expires_at,last_error_code FROM group_rebind_outbox WHERE job_id='fixture-rebind-job-0714'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_rebind,
+            (
+                "blocked".to_owned(),
+                None,
+                None,
+                Some("did_transition_replaced_legacy_rebind".to_owned()),
+            )
         );
     }
 

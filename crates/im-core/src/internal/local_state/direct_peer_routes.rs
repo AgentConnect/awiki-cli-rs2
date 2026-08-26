@@ -173,6 +173,94 @@ WHERE owner_identity_id = ?1 AND conversation_id = ?2
     }
 }
 
+pub(crate) fn compare_and_set_verified_transition(
+    connection: &mut Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    expected_current_did: &str,
+    verified_current_did: &str,
+) -> crate::ImResult<DirectPeerRouteRecord> {
+    let route = get(connection, owner_identity_id, conversation_id)?.ok_or_else(|| {
+        crate::ImError::IdentityBindingConflict {
+            detail: "verified DID transition has no existing Direct route".to_owned(),
+        }
+    })?;
+    if route.current_did != expected_current_did {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Direct route changed while DID transition was being verified".to_owned(),
+        });
+    }
+    let peer_persona_id = route.peer_persona_id.as_deref().ok_or_else(|| {
+        crate::ImError::IdentityBindingConflict {
+            detail: "verified DID transition route has no immutable Persona".to_owned(),
+        }
+    })?;
+    let verified_at = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+    let old_identifier_updated = transaction
+        .execute(
+            r#"UPDATE peer_identifiers SET is_current = 0, last_seen_at = ?1
+WHERE owner_identity_id = ?2 AND peer_persona_id = ?3
+  AND identifier_kind = 'did' AND identifier_value = ?4 AND is_current = 1"#,
+            (
+                verified_at.as_str(),
+                owner_identity_id,
+                peer_persona_id,
+                expected_current_did,
+            ),
+        )
+        .map_err(super::local_state_unavailable)?;
+    if old_identifier_updated != 1 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Direct route predecessor is not the current Persona DID".to_owned(),
+        });
+    }
+    super::peer_identifiers::bind(
+        &transaction,
+        &super::peer_identifiers::PeerIdentifierRecord {
+            owner_identity_id: owner_identity_id.to_owned(),
+            peer_persona_id: peer_persona_id.to_owned(),
+            identifier_kind: "did".to_owned(),
+            identifier_value: verified_current_did.to_owned(),
+            is_current: true,
+            binding_generation: None,
+            source: "verified_did_transition".to_owned(),
+            verified_at: verified_at.clone(),
+        },
+    )?;
+    let updated = transaction
+        .execute(
+            r#"UPDATE direct_peer_routes
+SET current_did = ?1, updated_at = ?2
+WHERE owner_identity_id = ?3 AND conversation_id = ?4
+  AND current_did = ?5 AND peer_persona_id = ?6"#,
+            (
+                verified_current_did,
+                verified_at.as_str(),
+                owner_identity_id,
+                conversation_id,
+                expected_current_did,
+                peer_persona_id,
+            ),
+        )
+        .map_err(super::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Direct route CAS lost a concurrent DID transition".to_owned(),
+        });
+    }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    get(connection, owner_identity_id, conversation_id)?.ok_or_else(|| {
+        crate::ImError::IdentityBindingConflict {
+            detail: "Direct route disappeared after DID transition CAS".to_owned(),
+        }
+    })
+}
+
 fn validate_record(record: &DirectPeerRouteRecord) -> crate::ImResult<()> {
     if let (Some(peer_persona_id), Some(authority_namespace)) = (
         record.peer_persona_id.as_deref(),
@@ -290,5 +378,77 @@ mod tests {
                 ..
             } if field == "conversation_id"
         ));
+    }
+
+    #[test]
+    fn verified_transition_cas_preserves_persona_and_rejects_fork() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+            "awiki.test",
+            "user-bob",
+            "bob.awiki.test",
+            Some("active"),
+        )
+        .unwrap();
+        super::super::peer_personas::upsert(
+            &connection,
+            &super::super::peer_personas::PeerPersonaRecord {
+                owner_identity_id: "owner-a".to_owned(),
+                persona: persona.clone(),
+                binding_generation: Some("1".to_owned()),
+                subject_type: "human".to_owned(),
+                source: "handle_authority".to_owned(),
+                authority_revision: None,
+                verified_at: "1".to_owned(),
+            },
+        )
+        .unwrap();
+        super::super::peer_identifiers::bind(
+            &connection,
+            &super::super::peer_identifiers::PeerIdentifierRecord {
+                owner_identity_id: "owner-a".to_owned(),
+                peer_persona_id: persona.peer_persona_id.clone(),
+                identifier_kind: "did".to_owned(),
+                identifier_value: "did:wba:awiki.test:user:bob:e1-old".to_owned(),
+                is_current: true,
+                binding_generation: Some("1".to_owned()),
+                source: "handle_authority".to_owned(),
+                verified_at: "1".to_owned(),
+            },
+        )
+        .unwrap();
+        upsert(
+            &connection,
+            &DirectPeerRouteRecord::from_verified_persona(
+                "owner-a",
+                &persona,
+                "did:wba:awiki.test:user:bob:e1-old",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let updated = compare_and_set_verified_transition(
+            &mut connection,
+            "owner-a",
+            &persona.direct_conversation_id(),
+            "did:wba:awiki.test:user:bob:e1-old",
+            "did:wba:awiki.test:user:bob:e1-new",
+        )
+        .unwrap();
+        assert_eq!(
+            updated.peer_persona_id.as_deref(),
+            Some(persona.peer_persona_id.as_str())
+        );
+        assert_eq!(updated.current_did, "did:wba:awiki.test:user:bob:e1-new");
+        assert!(compare_and_set_verified_transition(
+            &mut connection,
+            "owner-a",
+            &persona.direct_conversation_id(),
+            "did:wba:awiki.test:user:bob:e1-old",
+            "did:wba:awiki.test:user:bob:e1-fork",
+        )
+        .is_err());
     }
 }

@@ -142,6 +142,40 @@ fn roster_delta_removes_only_the_revoked_exact_device_and_keeps_siblings() {
 }
 
 #[test]
+fn roster_reconcile_adds_successor_devices_before_removing_predecessor_leaves() {
+    let extra = vec![(
+        "did:example:owner:previous".to_owned(),
+        "device-a1".to_owned(),
+    )];
+    let missing = vec![
+        (
+            "did:example:member:current".to_owned(),
+            "device-b1".to_owned(),
+        ),
+        (
+            "did:example:owner:current".to_owned(),
+            "device-a1".to_owned(),
+        ),
+    ];
+
+    let (selected_extra, selected_missing) =
+        next_roster_change("did:example:owner:current", extra.clone(), missing);
+    assert!(selected_extra.is_none());
+    assert_eq!(
+        selected_missing,
+        Some((
+            "did:example:owner:current".to_owned(),
+            "device-a1".to_owned()
+        ))
+    );
+
+    let (selected_extra, selected_missing) =
+        next_roster_change("did:example:owner:current", extra.clone(), Vec::new());
+    assert_eq!(selected_extra, extra.first().cloned());
+    assert!(selected_missing.is_none());
+}
+
+#[test]
 fn empty_eligible_manifest_set_can_drive_whole_roster_leaf_removal() {
     let manifest = DeviceManifest {
         manifest_type: anp::authentication::DEVICE_MANIFEST_TYPE.to_owned(),

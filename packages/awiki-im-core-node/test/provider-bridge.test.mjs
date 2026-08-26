@@ -71,6 +71,10 @@ function provider(overrides = {}) {
       throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
     },
     resumeDocumentChange: async () => undefined,
+    prepareIdentityTransition: async () => {
+      throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
+    },
+    resumeIdentityTransition: async () => undefined,
     adoptVerifiedDocument: async () => 'unchanged',
     beginDeviceEnrollment: async () => {
       throw Object.assign(new Error('not available'), { code: 'capability_unavailable' })
@@ -196,6 +200,94 @@ test('External Provider keeps document workflow handles inside the bridge', asyn
   }])
   assert.equal(stale.ok, false)
   assert.equal(stale.errorCode, 'invalid_request')
+})
+
+test('External Provider keeps resumable identity transition handles inside the bridge', async () => {
+  const candidate = {
+    operationId: 'transition-1',
+    expectedCurrentDid: 'did:wba:example.test:alice',
+    successorDid: 'did:wba:example.test:alice-next',
+    predecessorDocument: { id: 'did:wba:example.test:alice', deactivated: true },
+    successorDocument: { id: 'did:wba:example.test:alice-next' },
+    predecessorDigest: 'sha256:predecessor',
+    successorDigest: 'sha256:successor',
+    assurance: 'verified',
+  }
+  const calls = []
+  const session = {
+    candidate: async () => candidate,
+    beginPublication: async () => ({
+      operationId: candidate.operationId,
+      predecessorDigest: candidate.predecessorDigest,
+      successorDigest: candidate.successorDigest,
+      publicationGeneration: 1,
+    }),
+    complete: async (attempt, result) => {
+      calls.push({ attempt, result })
+      return { outcome: 'publication_uncertain' }
+    },
+    reconcile: async observation => {
+      calls.push({ observation })
+      return { outcome: 'committed', currentDid: candidate.successorDid }
+    },
+  }
+  const dispatch = createIdentityProviderDispatch(provider({
+    prepareIdentityTransition: async () => session,
+    resumeIdentityTransition: async () => session,
+  }))
+  const prepared = await dispatch([{
+    operation: 'prepareIdentityTransition',
+    payloadJson: JSON.stringify({
+      expectedCurrentDid: candidate.expectedCurrentDid,
+      operationId: candidate.operationId,
+      successor: {
+        storeId: 'store-1',
+        identityId: 'successor-1',
+        did: candidate.successorDid,
+      },
+    }),
+    buffers: [],
+  }])
+  const preparedWire = JSON.parse(prepared.payloadJson)
+  assert.deepEqual(preparedWire.candidate, candidate)
+  const attemptReply = await dispatch([{
+    operation: 'identityTransitionBeginPublication',
+    payloadJson: JSON.stringify({ sessionId: preparedWire.sessionId }),
+    buffers: [],
+  }])
+  const attempt = JSON.parse(attemptReply.payloadJson)
+  await dispatch([{
+    operation: 'identityTransitionComplete',
+    payloadJson: JSON.stringify({
+      sessionId: preparedWire.sessionId,
+      attempt,
+      result: { result: 'unknown' },
+    }),
+    buffers: [],
+  }])
+  const resumed = await dispatch([{
+    operation: 'resumeIdentityTransition',
+    payloadJson: JSON.stringify({ expectedCurrentDid: candidate.expectedCurrentDid }),
+    buffers: [],
+  }])
+  const resumedWire = JSON.parse(resumed.payloadJson)
+  const reconciled = await dispatch([{
+    operation: 'identityTransitionReconcile',
+    payloadJson: JSON.stringify({
+      sessionId: resumedWire.sessionId,
+      observation: {
+        observation: 'published',
+        predecessorDocument: candidate.predecessorDocument,
+        successorDocument: candidate.successorDocument,
+      },
+    }),
+    buffers: [],
+  }])
+  assert.deepEqual(JSON.parse(reconciled.payloadJson), {
+    outcome: 'committed',
+    currentDid: candidate.successorDid,
+  })
+  assert.equal(calls.length, 2)
 })
 
 test('External Provider keeps enrollment handles and private operations inside the bridge', async () => {

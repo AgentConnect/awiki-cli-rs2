@@ -216,6 +216,12 @@ fn v4_commit_and_result_get_sign_distinct_exact_transcripts() {
             nonce: &[9_u8; 32],
         },
         recovery_grant: SecretBytes::from_vec(b"secret-grant-v4".to_vec()),
+        predecessor_did_document: json!({
+            "id": "did:wba:example.invalid:users:alice-old",
+            "deactivated": true,
+            "successorDid": "did:wba:example.invalid:users:alice-new",
+            "proof": {"type": "DataIntegrityProof"}
+        }),
         new_did_document: document,
     })
     .unwrap();
@@ -229,6 +235,7 @@ fn v4_commit_and_result_get_sign_distinct_exact_transcripts() {
             "intent",
             "intent_hash",
             "new_did_document",
+            "predecessor_did_document",
             "recovery_grant",
         ]
     );

@@ -76,6 +76,7 @@ pub(crate) struct PendingCommitV4 {
     intent: crate::internal::identity_handle_recovery_pending::RecoveryIntentV4,
     intent_hash: String,
     recovery_grant: SecretBytes,
+    predecessor_did_document: Value,
     new_did_document: Value,
     proof: PendingKeyPossessionProofV4,
 }
@@ -107,6 +108,7 @@ struct PendingKeyPossessionProofV4 {
 pub(crate) struct CommitProofInputV4<'a> {
     pub(crate) proof: KeyPossessionProofInputV4<'a>,
     pub(crate) recovery_grant: SecretBytes,
+    pub(crate) predecessor_did_document: Value,
     pub(crate) new_did_document: Value,
 }
 
@@ -618,6 +620,7 @@ pub(crate) fn prepare_commit_v4(input: CommitProofInputV4<'_>) -> crate::ImResul
         intent: input.proof.intent.clone(),
         intent_hash: computed_intent_hash,
         recovery_grant: input.recovery_grant,
+        predecessor_did_document: input.predecessor_did_document,
         new_did_document: input.new_did_document,
         proof,
     })
@@ -634,6 +637,7 @@ pub(crate) fn complete_commit_v4(
         "intent": pending.intent,
         "intent_hash": pending.intent_hash,
         "recovery_grant": required(&recovery_grant, "recovery_grant")?,
+        "predecessor_did_document": pending.predecessor_did_document,
         "new_did_document": pending.new_did_document,
         "bootstrap_key_possession_proof": proof,
     });

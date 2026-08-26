@@ -160,6 +160,50 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
         ProviderDocumentChangeOutcome::Aborted
     );
 
+    let successor = custody.create_identity(create_spec()).await.unwrap();
+    let successor = successor.public_identity().await.unwrap();
+    let transition = custody
+        .prepare_identity_transition(ProviderIdentityTransitionRequest {
+            expected_current_did: reference.did.clone(),
+            operation_id: "provider-transition-response-loss".to_owned(),
+            successor: successor.reference.clone(),
+            transition_document: None,
+            provider_document: None,
+        })
+        .await
+        .unwrap();
+    let transition_candidate = transition.candidate().await.unwrap();
+    assert_eq!(transition_candidate.successor_did, successor.reference.did);
+    let transition_attempt = transition.begin_publication().await.unwrap();
+    assert_eq!(
+        transition
+            .complete(
+                transition_attempt,
+                ProviderIdentityTransitionPublicationResult::Unknown,
+            )
+            .await
+            .unwrap(),
+        ProviderIdentityTransitionOutcome::PublicationUncertain
+    );
+    let resumed = custody
+        .resume_identity_transition(&reference.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.candidate().await.unwrap(), transition_candidate);
+    assert_eq!(
+        resumed
+            .reconcile(ProviderIdentityTransitionRemoteObservation::Published {
+                predecessor_document: transition_candidate.predecessor_document,
+                successor_document: transition_candidate.successor_document,
+            })
+            .await
+            .unwrap(),
+        ProviderIdentityTransitionOutcome::Committed {
+            current_did: successor.reference.did,
+        }
+    );
+
     let enrollment_root = tempfile::tempdir().unwrap();
     let enrollment_manager =
         anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {

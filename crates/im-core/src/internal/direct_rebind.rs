@@ -20,6 +20,20 @@ pub(crate) async fn rebind_for_stale_error(
     request: DirectRebindRequest,
     error: &crate::ImError,
 ) -> crate::ImResult<Option<DirectRebindResult>> {
+    if client
+        .core_inner()
+        .did_transition_vnext_hidden_rollout_enabled()
+    {
+        if let Some(crate::internal::did_transition::DidTransitionServiceError::Superseded {
+            requested_did,
+            current_did,
+        }) = crate::internal::did_transition::parse_service_error(error)
+        {
+            return rebind_for_verified_transition(client, request, requested_did, current_did)
+                .await
+                .map(Some);
+        }
+    }
     let Some(context) = rebind_context(client, &request, error)? else {
         return Ok(None);
     };
@@ -76,6 +90,132 @@ pub(crate) async fn rebind_for_stale_error(
         ));
     }
     Ok(Some(result))
+}
+
+async fn rebind_for_verified_transition(
+    client: &crate::core::ImClient,
+    request: DirectRebindRequest,
+    requested_did: String,
+    hinted_current_did: String,
+) -> crate::ImResult<DirectRebindResult> {
+    if request.stale_did.as_deref() != Some(requested_did.as_str()) {
+        return Err(binding_conflict(
+            "1019 requested DID does not match the exact Direct route attempt",
+        ));
+    }
+    let owner = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)?;
+    let lock = client
+        .core_inner()
+        .direct_rebind_lock(&owner.owner_identity_id, &request.conversation_id);
+    let _guard = lock.lock().await;
+    let mut connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let route = crate::internal::local_state::direct_peer_routes::get(
+        &connection,
+        &owner.owner_identity_id,
+        &request.conversation_id,
+    )?
+    .ok_or_else(|| binding_conflict("1019 retry has no durable Direct route"))?;
+    if route.current_did != requested_did {
+        if route.current_did != hinted_current_did {
+            return Err(binding_conflict(
+                "Direct route changed to a different DID during 1019 recovery",
+            ));
+        }
+        let full_handle = route.full_handle.clone();
+        return validate_route_result(client.did().as_str(), &request, &full_handle, route);
+    }
+
+    let core = client.core_handle();
+    let mut transport = crate::internal::transport::CorePlainTransport::new(&core);
+    let documents = collect_transition_documents(&mut transport, &requested_did).await?;
+    let fetcher = TransitionDocumentMap { documents };
+    let resolved = crate::internal::did_transition::resolve_and_cache_verified(
+        &connection,
+        &owner.owner_identity_id,
+        &requested_did,
+        &fetcher,
+        &std::collections::HashMap::new(),
+        None,
+    )?;
+    if resolved.current_did != hinted_current_did
+        || resolved.hops.is_empty()
+        || resolved.hops.iter().any(|hop| {
+            !matches!(
+                hop.assurance,
+                anp::authentication::TransitionAssurance::Verified
+                    | anp::authentication::TransitionAssurance::RecoveryVerified
+            )
+        })
+    {
+        return Err(binding_conflict(
+            "1019 hint was not proven by one strong DID transition chain",
+        ));
+    }
+    let route =
+        crate::internal::local_state::direct_peer_routes::compare_and_set_verified_transition(
+            &mut connection,
+            &owner.owner_identity_id,
+            &request.conversation_id,
+            &requested_did,
+            &resolved.current_did,
+        )?;
+    let full_handle = route.full_handle.clone();
+    validate_route_result(client.did().as_str(), &request, &full_handle, route)
+}
+
+struct TransitionDocumentMap {
+    documents: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl anp::authentication::DidDocumentFetcher for TransitionDocumentMap {
+    fn fetch(&self, did: &str) -> Result<serde_json::Value, String> {
+        self.documents
+            .get(did)
+            .cloned()
+            .ok_or_else(|| format!("DID transition document is unavailable for {did}"))
+    }
+}
+
+async fn collect_transition_documents<T>(
+    transport: &mut T,
+    requested_did: &str,
+) -> crate::ImResult<std::collections::HashMap<String, serde_json::Value>>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
+    let mut documents = std::collections::HashMap::new();
+    let mut current = requested_did.to_owned();
+    for _ in 0..=anp::authentication::DEFAULT_MAX_TRANSITION_HOPS {
+        if documents.contains_key(&current) {
+            return Err(binding_conflict(
+                "DID transition document chain contains a cycle",
+            ));
+        }
+        let document = crate::internal::discovery::did_document::resolve_did_document_async(
+            transport, &current,
+        )
+        .await?;
+        let successor = document
+            .get("successorDid")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let deactivated = document
+            .get("deactivated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+        documents.insert(current.clone(), document);
+        if !deactivated {
+            return Ok(documents);
+        }
+        current = successor.ok_or_else(|| {
+            binding_conflict("deactivated DID transition document has no successor")
+        })?;
+    }
+    Err(binding_conflict(
+        "DID transition chain exceeds the hop limit",
+    ))
 }
 
 pub(crate) fn rebind_for_stale_error_blocking(

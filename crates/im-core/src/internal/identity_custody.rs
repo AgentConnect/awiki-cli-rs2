@@ -725,6 +725,219 @@ pub(crate) async fn handle_recovery_identity_async(
     Ok(identity)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HandleRecoveryTransitionCandidate {
+    pub(crate) predecessor_document: serde_json::Value,
+    pub(crate) successor_document: serde_json::Value,
+    pub(crate) predecessor_digest: String,
+    pub(crate) successor_digest: String,
+    pub(crate) assurance: String,
+}
+
+fn handle_recovery_transition_request(
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::internal::identity_provider::ProviderIdentityTransitionRequest {
+    crate::internal::identity_provider::ProviderIdentityTransitionRequest {
+        expected_current_did: pending.local_previous_did.clone(),
+        operation_id: pending.operation_id.clone(),
+        successor: crate::internal::identity_provider::ProviderIdentityRef {
+            store_id: pending.identity.store_id.clone(),
+            identity_id: pending.identity.identity_id.clone(),
+            did: pending.identity.did.as_str().to_owned(),
+        },
+        transition_document: None,
+        provider_document: None,
+    }
+}
+
+fn public_transition_candidate(
+    candidate: &crate::internal::identity_provider::ProviderPreparedIdentityTransition,
+) -> HandleRecoveryTransitionCandidate {
+    HandleRecoveryTransitionCandidate {
+        predecessor_document: candidate.predecessor_document.clone(),
+        successor_document: candidate.successor_document.clone(),
+        predecessor_digest: candidate.predecessor_digest.clone(),
+        successor_digest: candidate.successor_digest.clone(),
+        assurance: match candidate.assurance {
+            crate::internal::identity_provider::ProviderTransitionAssurance::Verified => "verified",
+            crate::internal::identity_provider::ProviderTransitionAssurance::RecoveryVerified => {
+                "recovery_verified"
+            }
+            crate::internal::identity_provider::ProviderTransitionAssurance::ProviderAsserted => {
+                "provider_asserted"
+            }
+            crate::internal::identity_provider::ProviderTransitionAssurance::Unverified => {
+                "unverified"
+            }
+        }
+        .to_owned(),
+    }
+}
+
+pub(crate) async fn prepare_handle_recovery_transition_candidate(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<HandleRecoveryTransitionCandidate> {
+    let custody = controller_custody_provider(core).await?;
+    let session = custody
+        .prepare_identity_transition(handle_recovery_transition_request(pending))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let provider_candidate = session
+        .candidate()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let candidate = public_transition_candidate(&provider_candidate);
+    if candidate.successor_document != pending.identity.did_document
+        || candidate.assurance != "verified"
+        || candidate
+            .predecessor_document
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            != Some(pending.local_previous_did.as_str())
+        || candidate
+            .predecessor_document
+            .get("successorDid")
+            .and_then(serde_json::Value::as_str)
+            != Some(pending.identity.did.as_str())
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(candidate)
+}
+
+pub(crate) async fn begin_handle_recovery_transition_publication(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let custody = controller_custody_provider(core).await?;
+    let session = custody
+        .prepare_identity_transition(handle_recovery_transition_request(pending))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    session
+        .begin_publication()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    Ok(())
+}
+
+pub(crate) async fn mark_handle_recovery_transition_unknown(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let custody = controller_custody_provider(core).await?;
+    let session = custody
+        .prepare_identity_transition(handle_recovery_transition_request(pending))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let attempt = session
+        .begin_publication()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    match session
+        .complete(
+            attempt,
+            crate::internal::identity_provider::ProviderIdentityTransitionPublicationResult::Unknown,
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+    {
+        crate::internal::identity_provider::ProviderIdentityTransitionOutcome::PublicationUncertain => Ok(()),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
+pub(crate) async fn confirm_handle_recovery_transition_published(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let custody = controller_custody_provider(core).await?;
+    let session = custody
+        .prepare_identity_transition(handle_recovery_transition_request(pending))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let candidate = session
+        .candidate()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let confirmed = if let Ok(attempt) = session.begin_publication().await {
+        session
+            .complete(
+                attempt,
+                crate::internal::identity_provider::ProviderIdentityTransitionPublicationResult::Confirmed {
+                    evidence: crate::internal::identity_provider::ProviderIdentityTransitionPublicationEvidence {
+                        predecessor_digest: candidate.predecessor_digest.clone(),
+                        successor_digest: candidate.successor_digest.clone(),
+                    },
+                },
+            )
+            .await
+    } else {
+        session
+            .reconcile(
+                crate::internal::identity_provider::ProviderIdentityTransitionRemoteObservation::Published {
+                    predecessor_document: candidate.predecessor_document.clone(),
+                    successor_document: candidate.successor_document.clone(),
+                },
+            )
+            .await
+    }
+    .map_err(crate::internal::identity_provider::map_provider_error)?;
+    match confirmed {
+        crate::internal::identity_provider::ProviderIdentityTransitionOutcome::Committed {
+            current_did,
+        } if current_did == pending.identity.did.as_str() => Ok(()),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
+pub(crate) async fn reconcile_handle_recovery_transition_remote_old(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let custody = controller_custody_provider(core).await?;
+    let predecessor = custody
+        .list_identities()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .into_iter()
+        .find(|entry| entry.reference.did == pending.local_previous_did)
+        .ok_or(crate::ImError::PermissionDenied)?
+        .reference;
+    let current_document = custody
+        .open_identity(&predecessor)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+        .document;
+    let session = custody
+        .prepare_identity_transition(handle_recovery_transition_request(pending))
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if let Ok(attempt) = session.begin_publication().await {
+        session
+            .complete(
+                attempt,
+                crate::internal::identity_provider::ProviderIdentityTransitionPublicationResult::Unknown,
+            )
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+    }
+    match session
+        .reconcile(
+            crate::internal::identity_provider::ProviderIdentityTransitionRemoteObservation::RemoteOld { current_document },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+    {
+        crate::internal::identity_provider::ProviderIdentityTransitionOutcome::ReadyForPublication => Ok(()),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
 pub(crate) async fn discard_unpublished_handle_recovery_async(
     core: &crate::core::ImCore,
     expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,

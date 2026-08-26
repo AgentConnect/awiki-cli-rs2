@@ -10,6 +10,7 @@ import {
   type ImCorePreparedIdentityMaterialImport,
   type ImCoreProviderDocumentChangeSession,
   type ImCoreProviderEnrollmentSession,
+  type ImCoreProviderIdentityTransitionSession,
   type ImCorePreparedRootImport,
 } from './types.js'
 
@@ -34,16 +35,19 @@ export function createIdentityProviderDispatch(
     'info', 'recover', 'list', 'publicIdentity', 'hostStatus', 'create', 'delete', 'recoverIdentity',
     'sign', 'signOriginProof', 'prepareHttpSignature', 'ecdhSealed',
     'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
+    'prepareIdentityTransition', 'resumeIdentityTransition',
     'beginDeviceEnrollment', 'beginRequestSigningEnrollment', 'resumeEnrollment',
   ] as const) {
     if (typeof provider[method] !== 'function') throw incompatible()
   }
 
   const documentSessions = new Map<string, ImCoreProviderDocumentChangeSession>()
+  const transitionSessions = new Map<string, ImCoreProviderIdentityTransitionSession>()
   const enrollmentSessions = new Map<string, ImCoreProviderEnrollmentSession>()
   const rootImportSessions = new Map<string, ImCorePreparedRootImport>()
   const identityImportSessions = new Map<string, ImCorePreparedIdentityMaterialImport>()
   let nextDocumentSession = 1
+  let nextTransitionSession = 1
   let nextEnrollmentSession = 1
   let nextRootImportSession = 1
   let nextIdentityImportSession = 1
@@ -219,6 +223,21 @@ export function createIdentityProviderDispatch(
           documentSessions.set(sessionId, session)
           return success({ sessionId, candidate: await session.candidate() })
         }
+        case 'prepareIdentityTransition': {
+          const session = await provider.prepareIdentityTransition(payload as never)
+          const sessionId = `identity-transition-${nextTransitionSession++}`
+          transitionSessions.set(sessionId, session)
+          return success({ sessionId, candidate: await session.candidate() })
+        }
+        case 'resumeIdentityTransition': {
+          const session = await provider.resumeIdentityTransition(
+            requiredString(payload.expectedCurrentDid),
+          )
+          if (session === undefined) return success(null)
+          const sessionId = `identity-transition-${nextTransitionSession++}`
+          transitionSessions.set(sessionId, session)
+          return success({ sessionId, candidate: await session.candidate() })
+        }
         case 'adoptVerifiedDocument':
           return success(await provider.adoptVerifiedDocument(
             reference(payload.identity),
@@ -286,6 +305,28 @@ export function createIdentityProviderDispatch(
           if (isFinalDocumentOutcome(outcome)) documentSessions.delete(sessionId)
           return success(outcome)
         }
+        case 'identityTransitionBeginPublication':
+          return success(await transitionSession(
+            transitionSessions,
+            payload.sessionId,
+          ).beginPublication())
+        case 'identityTransitionComplete': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await transitionSession(transitionSessions, sessionId).complete(
+            object(payload.attempt),
+            object(payload.result),
+          )
+          if (isFinalDocumentOutcome(outcome)) transitionSessions.delete(sessionId)
+          return success(outcome)
+        }
+        case 'identityTransitionReconcile': {
+          const sessionId = requiredString(payload.sessionId)
+          const outcome = await transitionSession(transitionSessions, sessionId).reconcile(
+            object(payload.observation),
+          )
+          if (isFinalDocumentOutcome(outcome)) transitionSessions.delete(sessionId)
+          return success(outcome)
+        }
         case 'enrollmentSignDeviceAssertion': {
           const signature = await enrollmentSession(
             enrollmentSessions,
@@ -332,6 +373,15 @@ function documentSession(
 ): ImCoreProviderDocumentChangeSession {
   const session = sessions.get(requiredString(value))
   if (session === undefined) throw new TypeError('identity provider document session is invalid')
+  return session
+}
+
+function transitionSession(
+  sessions: ReadonlyMap<string, ImCoreProviderIdentityTransitionSession>,
+  value: unknown,
+): ImCoreProviderIdentityTransitionSession {
+  const session = sessions.get(requiredString(value))
+  if (session === undefined) throw new TypeError('identity transition session is invalid')
   return session
 }
 

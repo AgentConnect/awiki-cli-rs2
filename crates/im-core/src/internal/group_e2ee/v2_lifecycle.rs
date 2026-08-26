@@ -829,11 +829,6 @@ pub(crate) fn reconcile_group_device_roster(
                     &group_did,
                     "group-roster-reconcile",
                 ))?;
-        require_current_controller_endpoint(
-            &endpoints.member_endpoints,
-            client.did().as_str(),
-            &context.device.device_id,
-        )?;
 
         let observed = endpoints
             .member_endpoints
@@ -856,13 +851,31 @@ pub(crate) fn reconcile_group_device_roster(
             .collect::<BTreeSet<_>>();
         let (extra, missing) = roster_delta(&desired_endpoints, &observed);
         summary.remaining_devices = extra.len().saturating_add(missing.len());
-        let extra = extra.into_iter().next();
-        let missing = missing.into_iter().next();
+        let (extra, missing) = next_roster_change(client.did().as_str(), extra, missing);
         if extra.is_none() && missing.is_none() {
             return Ok(summary);
         }
+        require_reconcile_controller_endpoint(
+            client,
+            &endpoints.member_endpoints,
+            &context.device.device_id,
+            missing.as_ref().map(|(member_did, _)| member_did.as_str()),
+        )?;
 
-        if let Some((member_did, member_device_id)) = extra {
+        if let Some((member_did, member_device_id)) = missing {
+            let member = desired
+                .get(&member_did)
+                .ok_or(crate::ImError::PermissionDenied)?;
+            submit_exact_add(
+                client,
+                &mut context,
+                group_state_ref,
+                &member_did,
+                &member_device_id,
+                member.document.clone(),
+            )?;
+            summary.added_devices = summary.added_devices.saturating_add(1);
+        } else if let Some((member_did, member_device_id)) = extra {
             let document = match desired.get(&member_did) {
                 Some(member) => member.document.clone(),
                 None => resolve_member_document(client, &member_did)?,
@@ -877,19 +890,6 @@ pub(crate) fn reconcile_group_device_roster(
                 document,
             )?;
             summary.removed_devices = summary.removed_devices.saturating_add(1);
-        } else if let Some((member_did, member_device_id)) = missing {
-            let member = desired
-                .get(&member_did)
-                .ok_or(crate::ImError::PermissionDenied)?;
-            submit_exact_add(
-                client,
-                &mut context,
-                group_state_ref,
-                &member_did,
-                &member_device_id,
-                member.document.clone(),
-            )?;
-            summary.added_devices = summary.added_devices.saturating_add(1);
         }
     }
     Err(crate::ImError::LocalStateUnavailable {
@@ -933,11 +933,6 @@ pub(crate) async fn reconcile_group_device_roster_async(
                     &group_did,
                     "group-roster-reconcile",
                 ))?;
-        require_current_controller_endpoint(
-            &endpoints.member_endpoints,
-            client.did().as_str(),
-            &context.device.device_id,
-        )?;
 
         let observed = endpoints
             .member_endpoints
@@ -960,13 +955,32 @@ pub(crate) async fn reconcile_group_device_roster_async(
             .collect::<BTreeSet<_>>();
         let (extra, missing) = roster_delta(&desired_endpoints, &observed);
         summary.remaining_devices = extra.len().saturating_add(missing.len());
-        let extra = extra.into_iter().next();
-        let missing = missing.into_iter().next();
+        let (extra, missing) = next_roster_change(client.did().as_str(), extra, missing);
         if extra.is_none() && missing.is_none() {
             return Ok(summary);
         }
+        require_reconcile_controller_endpoint(
+            client,
+            &endpoints.member_endpoints,
+            &context.device.device_id,
+            missing.as_ref().map(|(member_did, _)| member_did.as_str()),
+        )?;
 
-        if let Some((member_did, member_device_id)) = extra {
+        if let Some((member_did, member_device_id)) = missing {
+            let member = desired
+                .get(&member_did)
+                .ok_or(crate::ImError::PermissionDenied)?;
+            submit_exact_add_async(
+                client,
+                &mut context,
+                group_state_ref,
+                &member_did,
+                &member_device_id,
+                member.document.clone(),
+            )
+            .await?;
+            summary.added_devices = summary.added_devices.saturating_add(1);
+        } else if let Some((member_did, member_device_id)) = extra {
             let document = match desired.get(&member_did) {
                 Some(member) => member.document.clone(),
                 None => resolve_member_document_fresh_async(client, &member_did).await?,
@@ -982,20 +996,6 @@ pub(crate) async fn reconcile_group_device_roster_async(
             )
             .await?;
             summary.removed_devices = summary.removed_devices.saturating_add(1);
-        } else if let Some((member_did, member_device_id)) = missing {
-            let member = desired
-                .get(&member_did)
-                .ok_or(crate::ImError::PermissionDenied)?;
-            submit_exact_add_async(
-                client,
-                &mut context,
-                group_state_ref,
-                &member_did,
-                &member_device_id,
-                member.document.clone(),
-            )
-            .await?;
-            summary.added_devices = summary.added_devices.saturating_add(1);
         }
     }
     Err(crate::ImError::LocalStateUnavailable {
@@ -1982,6 +1982,26 @@ fn roster_delta(
     )
 }
 
+fn next_roster_change(
+    current_did: &str,
+    extra: Vec<V2EndpointKey>,
+    missing: Vec<V2EndpointKey>,
+) -> (Option<V2EndpointKey>, Option<V2EndpointKey>) {
+    let missing = missing
+        .iter()
+        .find(|(member_did, _)| member_did == current_did)
+        .cloned()
+        .or_else(|| missing.first().cloned());
+    if missing.is_some() {
+        // A DID transition may expose both the successor gap and predecessor
+        // surplus at once. Add every desired Leaf before any Remove; the Host
+        // independently enforces the same durable update/state-ref ordering.
+        (None, missing)
+    } else {
+        (extra.first().cloned(), None)
+    }
+}
+
 fn local_group_can_reconcile_roster(readiness: &V2LocalGroupReadiness) -> bool {
     *readiness == V2LocalGroupReadiness::Active
 }
@@ -2013,6 +2033,33 @@ fn require_current_controller_endpoint(
     } else {
         Err(crate::ImError::PermissionDenied)
     }
+}
+
+fn require_reconcile_controller_endpoint(
+    client: &crate::core::ImClient,
+    endpoints: &[V2LocalGroupMemberEndpoint],
+    current_device_id: &str,
+    next_add_target: Option<&str>,
+) -> crate::ImResult<()> {
+    if require_current_controller_endpoint(endpoints, client.did().as_str(), current_device_id)
+        .is_ok()
+    {
+        return Ok(());
+    }
+    if next_add_target != Some(client.did().as_str()) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let marker = crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        client.runtime().owner.identity_id.as_str(),
+    )?
+    .filter(|marker| {
+        marker.current_did == client.did().as_str()
+            && marker.current_device_id.as_deref() == Some(current_device_id)
+            && marker.previous_did != marker.current_did
+    })
+    .ok_or(crate::ImError::PermissionDenied)?;
+    require_current_controller_endpoint(endpoints, &marker.previous_did, current_device_id)
 }
 
 fn endpoint_inventory_input(

@@ -1498,6 +1498,11 @@ async fn send_commit_v4(
         .intent_hash
         .clone()
         .ok_or(crate::ImError::PermissionDenied)?;
+    let transition_candidate =
+        crate::internal::identity_custody::prepare_handle_recovery_transition_candidate(
+            core, pending,
+        )
+        .await?;
     let audience = core
         .inner()
         .multi_device_audience()
@@ -1513,6 +1518,7 @@ async fn send_commit_v4(
                 nonce: &nonce,
             },
             recovery_grant: pending.recovery_grant()?,
+            predecessor_did_document: transition_candidate.predecessor_document,
             new_did_document: pending.identity.did_document.clone(),
         },
     )?;
@@ -1532,6 +1538,8 @@ async fn send_commit_v4(
             .map_err(crate::internal::identity_provider::map_provider_error)?;
     let prepared =
         crate::internal::identity_wire::handle_recovery::complete_commit_v4(prepared, &signature)?;
+    crate::internal::identity_custody::begin_handle_recovery_transition_publication(core, pending)
+        .await?;
     if !pending.commit_attempted {
         let attempted_at = now_second_z()?;
         crate::internal::identity_handle_recovery_operation::mark_commit_attempted(
@@ -1554,6 +1562,10 @@ async fn send_commit_v4(
     {
         Ok(raw) => raw,
         Err(error) => {
+            crate::internal::identity_custody::mark_handle_recovery_transition_unknown(
+                core, pending,
+            )
+            .await?;
             if let Some(raw_code) = service_code(&error) {
                 let Some(code) = crate::internal::identity_wire::handle_recovery::RecoveryServerErrorCodeV4::parse(raw_code) else {
                     return Err(error);
@@ -1583,11 +1595,22 @@ async fn send_commit_v4(
             return Ok(false);
         }
     };
-    let result = crate::internal::identity_wire::handle_recovery::parse_commit_result_v4(
+    let result = match crate::internal::identity_wire::handle_recovery::parse_commit_result_v4(
         raw,
         &pending.operation_id,
         &intent_hash,
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            crate::internal::identity_custody::mark_handle_recovery_transition_unknown(
+                core, pending,
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    crate::internal::identity_custody::confirm_handle_recovery_transition_published(core, pending)
+        .await?;
     let revision = pending.revision;
     pending.record_remote_result(result)?;
     store.save_v4_cas(pending, revision)?;
@@ -1762,6 +1785,10 @@ async fn reconcile_result_v4(
     }
     match result {
         crate::internal::identity_wire::handle_recovery::RecoveryResultGetV4::Committed(result) => {
+            crate::internal::identity_custody::confirm_handle_recovery_transition_published(
+                core, pending,
+            )
+            .await?;
             let revision = pending.revision;
             pending.record_remote_result(result)?;
             store.save_v4_cas(pending, revision)?;
@@ -1777,6 +1804,10 @@ async fn reconcile_result_v4(
             Ok(ReconcileV4Outcome::Committed)
         }
         crate::internal::identity_wire::handle_recovery::RecoveryResultGetV4::ResultAbsent => {
+            crate::internal::identity_custody::reconcile_handle_recovery_transition_remote_old(
+                core, pending,
+            )
+            .await?;
             Ok(ReconcileV4Outcome::ResultAbsent)
         }
     }
@@ -2043,17 +2074,6 @@ async fn apply_local_transition_v4(
             &result.checkpoint.registry_version.to_string(),
             "{}",
         )?;
-        if !pending.fresh_local_state {
-            let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
-                sqlite_path,
-                &pending.owner_identity_id,
-                &pending.full_handle,
-                std::slice::from_ref(&pending.local_previous_did),
-                &result.current_did,
-                &result.binding_generation,
-            );
-        }
-        let _ = client.groups().resume_rebind_recovery_async(100).await;
     }
     let applied =
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?
@@ -2927,6 +2947,910 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(feature = "provider-traits")]
+    fn recovery_test_core_with_provider(
+        root: &std::path::Path,
+        endpoint: &str,
+        vault_key: [u8; 32],
+        provider: std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody>,
+    ) -> crate::ImCore {
+        let paths = crate::ImCorePaths {
+            identities: crate::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities/registry.json"),
+                default_identity_path: Some(root.join("identities/default")),
+            },
+            local_state: crate::LocalStatePaths {
+                sqlite_path: root.join("local/im.sqlite"),
+            },
+            runtime: crate::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        };
+        crate::ImCore::new_with_options(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse(endpoint).unwrap(),
+                did_domain: "fixture.invalid".to_owned(),
+                client_version_info: None,
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            paths,
+            crate::ImCoreOpenOptions::default()
+                .with_multi_device_handle_recovery_enabled(true)
+                .with_multi_device_audience("awiki-user-service")
+                .with_external_http_allow_insecure_loopback_for_testing(true)
+                .with_identity_custody_provider(provider)
+                .with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        crate::vault::DeviceVaultRootKey::from_bytes(vault_key),
+                        root.join("vault"),
+                        "fixture-workspace-0714",
+                        "fixture-device-0714",
+                    ),
+                ),
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "provider-traits")]
+    struct Fixture0714IdentityCustody {
+        inner: std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody>,
+        predecessor_did: String,
+        predecessor_document: serde_json::Value,
+        transitions: std::sync::Mutex<
+            std::collections::BTreeMap<String, std::sync::Arc<Fixture0714TransitionSession>>,
+        >,
+    }
+
+    #[cfg(feature = "provider-traits")]
+    impl Fixture0714IdentityCustody {
+        fn new(
+            inner: std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody>,
+            predecessor_did: impl Into<String>,
+            predecessor_document: serde_json::Value,
+        ) -> Self {
+            Self {
+                inner,
+                predecessor_did: predecessor_did.into(),
+                predecessor_document,
+                transitions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            }
+        }
+    }
+
+    #[cfg(feature = "provider-traits")]
+    struct Fixture0714TransitionSession {
+        candidate: crate::internal::identity_provider::ProviderPreparedIdentityTransition,
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[async_trait::async_trait]
+    impl crate::internal::identity_provider::ProviderIdentityTransitionSession
+        for Fixture0714TransitionSession
+    {
+        async fn candidate(
+            &self,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            crate::internal::identity_provider::ProviderPreparedIdentityTransition,
+        > {
+            Ok(self.candidate.clone())
+        }
+
+        async fn begin_publication(
+            &self,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            crate::internal::identity_provider::ProviderIdentityTransitionPublicationAttempt,
+        > {
+            Ok(
+                crate::internal::identity_provider::ProviderIdentityTransitionPublicationAttempt {
+                    operation_id: self.candidate.operation_id.clone(),
+                    predecessor_digest: self.candidate.predecessor_digest.clone(),
+                    successor_digest: self.candidate.successor_digest.clone(),
+                    publication_generation: 1,
+                },
+            )
+        }
+
+        async fn complete(
+            &self,
+            attempt: crate::internal::identity_provider::ProviderIdentityTransitionPublicationAttempt,
+            result: crate::internal::identity_provider::ProviderIdentityTransitionPublicationResult,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            crate::internal::identity_provider::ProviderIdentityTransitionOutcome,
+        > {
+            use crate::internal::identity_provider::{
+                IdentityProviderError, IdentityProviderErrorCode,
+                ProviderIdentityTransitionOutcome, ProviderIdentityTransitionPublicationResult,
+            };
+            if attempt.operation_id != self.candidate.operation_id
+                || attempt.predecessor_digest != self.candidate.predecessor_digest
+                || attempt.successor_digest != self.candidate.successor_digest
+            {
+                return Err(IdentityProviderError::new(
+                    IdentityProviderErrorCode::InvalidRequest,
+                    false,
+                ));
+            }
+            match result {
+                ProviderIdentityTransitionPublicationResult::Unknown => {
+                    Ok(ProviderIdentityTransitionOutcome::PublicationUncertain)
+                }
+                ProviderIdentityTransitionPublicationResult::RejectedBeforeAcceptance => {
+                    Ok(ProviderIdentityTransitionOutcome::Aborted)
+                }
+                ProviderIdentityTransitionPublicationResult::Confirmed { evidence }
+                    if evidence.predecessor_digest == self.candidate.predecessor_digest
+                        && evidence.successor_digest == self.candidate.successor_digest =>
+                {
+                    Ok(ProviderIdentityTransitionOutcome::Committed {
+                        current_did: self.candidate.successor_did.clone(),
+                    })
+                }
+                ProviderIdentityTransitionPublicationResult::Confirmed { .. } => {
+                    Err(IdentityProviderError::new(
+                        IdentityProviderErrorCode::VerificationFailed,
+                        false,
+                    ))
+                }
+            }
+        }
+
+        async fn reconcile(
+            &self,
+            observation: crate::internal::identity_provider::ProviderIdentityTransitionRemoteObservation,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            crate::internal::identity_provider::ProviderIdentityTransitionOutcome,
+        > {
+            use crate::internal::identity_provider::{
+                IdentityProviderError, IdentityProviderErrorCode,
+                ProviderIdentityTransitionOutcome, ProviderIdentityTransitionRemoteObservation,
+            };
+            match observation {
+                ProviderIdentityTransitionRemoteObservation::RemoteOld { current_document }
+                    if current_document == self.candidate.predecessor_document =>
+                {
+                    Ok(ProviderIdentityTransitionOutcome::ReadyForPublication)
+                }
+                ProviderIdentityTransitionRemoteObservation::Published {
+                    predecessor_document,
+                    successor_document,
+                } if predecessor_document == self.candidate.predecessor_document
+                    && successor_document == self.candidate.successor_document =>
+                {
+                    Ok(ProviderIdentityTransitionOutcome::Committed {
+                        current_did: self.candidate.successor_did.clone(),
+                    })
+                }
+                _ => Err(IdentityProviderError::new(
+                    IdentityProviderErrorCode::VerificationFailed,
+                    false,
+                )),
+            }
+        }
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[async_trait::async_trait]
+    impl crate::internal::identity_provider::IdentityCustody for Fixture0714IdentityCustody {
+        async fn store_info(
+            &self,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            crate::internal::identity_provider::ProviderStoreInfo,
+        > {
+            self.inner.store_info().await
+        }
+
+        async fn list_identities(
+            &self,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            Vec<crate::internal::identity_provider::ProviderIdentityDescriptor>,
+        > {
+            self.inner.list_identities().await
+        }
+
+        async fn open_identity(
+            &self,
+            identity: &crate::internal::identity_provider::ProviderIdentityRef,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
+        > {
+            self.inner.open_identity(identity).await
+        }
+
+        async fn create_identity(
+            &self,
+            request: crate::internal::identity_provider::ProviderCreateIdentityRequest,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
+        > {
+            self.inner.create_identity(request).await
+        }
+
+        async fn delete_identity(
+            &self,
+            identity: &crate::internal::identity_provider::ProviderIdentityRef,
+        ) -> crate::internal::identity_provider::ProviderResult<()> {
+            self.inner.delete_identity(identity).await
+        }
+
+        async fn prepare_identity_transition(
+            &self,
+            request: crate::internal::identity_provider::ProviderIdentityTransitionRequest,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            std::sync::Arc<
+                dyn crate::internal::identity_provider::ProviderIdentityTransitionSession,
+            >,
+        > {
+            use crate::internal::identity_provider::{
+                IdentityProviderError, IdentityProviderErrorCode, ProviderTransitionAssurance,
+            };
+            if request.expected_current_did != self.predecessor_did
+                || request.transition_document.is_some()
+                || request.provider_document.is_some()
+            {
+                return Err(IdentityProviderError::new(
+                    IdentityProviderErrorCode::InvalidRequest,
+                    false,
+                ));
+            }
+            let successor = self.inner.open_identity(&request.successor).await?;
+            let successor = successor.public_identity().await?;
+            if successor.reference != request.successor {
+                return Err(IdentityProviderError::new(
+                    IdentityProviderErrorCode::VerificationFailed,
+                    false,
+                ));
+            }
+            let mut predecessor_document = self.predecessor_document.clone();
+            predecessor_document["successorDid"] =
+                serde_json::Value::String(successor.reference.did.clone());
+            let candidate =
+                crate::internal::identity_provider::ProviderPreparedIdentityTransition {
+                    operation_id: request.operation_id.clone(),
+                    expected_current_did: request.expected_current_did,
+                    successor_did: successor.reference.did,
+                    predecessor_digest: crate::internal::identity_wire::document::document_hash(
+                        &predecessor_document,
+                    )
+                    .map_err(|_| {
+                        IdentityProviderError::new(
+                            IdentityProviderErrorCode::VerificationFailed,
+                            false,
+                        )
+                    })?,
+                    successor_digest: crate::internal::identity_wire::document::document_hash(
+                        &successor.document,
+                    )
+                    .map_err(|_| {
+                        IdentityProviderError::new(
+                            IdentityProviderErrorCode::VerificationFailed,
+                            false,
+                        )
+                    })?,
+                    predecessor_document,
+                    successor_document: successor.document,
+                    assurance: ProviderTransitionAssurance::Verified,
+                };
+            let mut transitions = self.transitions.lock().map_err(|_| {
+                IdentityProviderError::new(IdentityProviderErrorCode::Internal, false)
+            })?;
+            if let Some(existing) = transitions.get(&request.operation_id) {
+                if existing.candidate != candidate {
+                    return Err(IdentityProviderError::new(
+                        IdentityProviderErrorCode::Conflict,
+                        false,
+                    ));
+                }
+                return Ok(existing.clone());
+            }
+            let session = std::sync::Arc::new(Fixture0714TransitionSession { candidate });
+            transitions.insert(request.operation_id, session.clone());
+            Ok(session)
+        }
+
+        async fn resume_identity_transition(
+            &self,
+            expected_current_did: &str,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            Option<
+                std::sync::Arc<
+                    dyn crate::internal::identity_provider::ProviderIdentityTransitionSession,
+                >,
+            >,
+        > {
+            if expected_current_did != self.predecessor_did {
+                return Ok(None);
+            }
+            let transitions = self.transitions.lock().map_err(|_| {
+                crate::internal::identity_provider::IdentityProviderError::new(
+                    crate::internal::identity_provider::IdentityProviderErrorCode::Internal,
+                    false,
+                )
+            })?;
+            if transitions.len() > 1 {
+                return Err(
+                    crate::internal::identity_provider::IdentityProviderError::new(
+                        crate::internal::identity_provider::IdentityProviderErrorCode::Conflict,
+                        false,
+                    ),
+                );
+            }
+            Ok(transitions.values().next().cloned().map(|session| {
+                session
+                    as std::sync::Arc<
+                        dyn crate::internal::identity_provider::ProviderIdentityTransitionSession,
+                    >
+            }))
+        }
+
+        async fn begin_device_enrollment(
+            &self,
+            request: crate::internal::identity_provider::ProviderDeviceEnrollmentRequest,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+        > {
+            self.inner.begin_device_enrollment(request).await
+        }
+
+        async fn begin_request_signing_enrollment(
+            &self,
+            request: crate::internal::identity_provider::ProviderRequestSigningEnrollmentRequest,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+        > {
+            self.inner.begin_request_signing_enrollment(request).await
+        }
+
+        async fn resume_enrollment(
+            &self,
+            identity: &crate::internal::identity_provider::ProviderIdentityRef,
+        ) -> crate::internal::identity_provider::ProviderResult<
+            Option<
+                std::sync::Arc<dyn crate::internal::identity_provider::ProviderEnrollmentSession>,
+            >,
+        > {
+            self.inner.resume_enrollment(identity).await
+        }
+
+        async fn confirm_root_promotion(
+            &self,
+            identity: &crate::internal::identity_provider::ProviderIdentityRef,
+            remote: crate::internal::identity_provider::ProviderVerifiedRemoteDocument,
+        ) -> crate::internal::identity_provider::ProviderResult<()> {
+            self.inner.confirm_root_promotion(identity, remote).await
+        }
+
+        async fn sign_pending_root_object_proof(
+            &self,
+            identity: &crate::internal::identity_provider::ProviderIdentityRef,
+            request: crate::internal::identity_provider::ProviderObjectProofRequest,
+        ) -> crate::internal::identity_provider::ProviderResult<serde_json::Value> {
+            self.inner
+                .sign_pending_root_object_proof(identity, request)
+                .await
+        }
+
+        async fn recover(&self) -> crate::internal::identity_provider::ProviderResult<()> {
+            self.inner.recover().await
+        }
+    }
+
+    #[cfg(all(
+        feature = "provider-traits",
+        feature = "identity-native-anp",
+        feature = "group-e2ee"
+    ))]
+    #[tokio::test]
+    async fn phase4_0714_fixture_completes_formal_recovery_after_commit_response_loss() {
+        use sha2::Digest as _;
+
+        let Ok(fixture_dir) = std::env::var("AWIKI_0714_E2EE_FIXTURE_DIR") else {
+            return;
+        };
+        let fixture_dir = std::path::Path::new(&fixture_dir);
+        let root = tempfile::tempdir().unwrap();
+        copy_fixture_tree(fixture_dir, root.path());
+        std::fs::create_dir_all(root.path().join("local")).unwrap();
+        std::fs::copy(
+            root.path().join("core-schema-36.sqlite"),
+            root.path().join("local/im.sqlite"),
+        )
+        .unwrap();
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("manifest.json")).unwrap())
+                .unwrap();
+        let locked_digests = manifest["fileDigests"].as_object().unwrap().clone();
+        let root_key = URL_SAFE_NO_PAD
+            .decode(
+                std::fs::read_to_string(root.path().join("vault-root-key.fixture.b64u"))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let predecessor_did =
+            "did:wba:alice.fixture.invalid:agents:primary:e1_fixture_alice".to_owned();
+        let mut predecessor =
+            crate::internal::identity_generation::generate_handle_recovery_identity(
+                "invalid", "fixture", None, None,
+            )
+            .unwrap();
+        let generated_predecessor_did = predecessor.did.as_str().to_owned();
+        replace_json_string(
+            &mut predecessor.did_document,
+            &generated_predecessor_did,
+            &predecessor_did,
+        );
+        assert_eq!(
+            predecessor.did_document["id"].as_str(),
+            Some(predecessor_did.as_str())
+        );
+
+        let provider_root = root.path().join("fixture-provider");
+        let manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: provider_root,
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("phase4-0714-provider", [0x74; 32]),
+                ),
+            })
+            .unwrap();
+        let direct: std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody> =
+            std::sync::Arc::new(
+                crate::internal::identity_provider::DirectAnpIdentityCustody::new(manager),
+            );
+        let provider: std::sync::Arc<dyn crate::internal::identity_provider::IdentityCustody> =
+            std::sync::Arc::new(Fixture0714IdentityCustody::new(
+                direct,
+                predecessor_did.clone(),
+                predecessor.did_document.clone(),
+            ));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut methods = Vec::new();
+            let mut remote_result = None;
+            for request_index in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let raw = read_http_request(&mut stream);
+                let body = http_request_json(&raw);
+                if request_index == 0 {
+                    methods.push(body["method"].as_str().unwrap().to_owned());
+                    write_json_response(
+                        &mut stream,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "ok": true,
+                                "retry_after_seconds": 60,
+                                "retry_at": "2099-08-26T12:00:00Z"
+                            }
+                        }),
+                    );
+                } else if request_index == 1 {
+                    methods.push("handle_recovery_exchange_v4".to_owned());
+                    write_json_response(
+                        &mut stream,
+                        &json!({
+                            "contract_version": crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+                            "recovery_grant": "phase4-0714-fixture-grant",
+                            "purpose": "awiki.identity.handle-recovery.v1",
+                            "expires_at": "2099-08-26T12:05:00Z",
+                            "current_binding": {
+                                "account_user_id": "fixture-account-0714",
+                                "full_handle": "fixture.invalid",
+                                "current_did": "did:wba:alice.fixture.invalid:agents:primary:e1_fixture_alice",
+                                "binding_generation": "1"
+                            }
+                        }),
+                    );
+                } else if request_index == 2 {
+                    methods.push(body["method"].as_str().unwrap().to_owned());
+                    let intent = &body["params"]["intent"];
+                    let successor = body["params"]["new_did_document"].clone();
+                    let successor_did = successor["id"].as_str().unwrap().to_owned();
+                    let device = &successor["deviceManifest"]["devices"][0];
+                    remote_result = Some(json!({
+                        "state": "recovered",
+                        "operation_id": intent["operation_id"],
+                        "intent_hash": body["params"]["intent_hash"],
+                        "intent_schema_version": "1",
+                        "contract_version": crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+                        "account_user_id": "fixture-account-0714",
+                        "full_handle": "fixture.invalid",
+                        "previous_did": intent["expected_previous_did"],
+                        "current_did": successor_did,
+                        "binding_generation": "2",
+                        "checkpoint": {
+                            "document_version": 2,
+                            "document_hash": crate::internal::identity_wire::document::document_hash(&successor).unwrap(),
+                            "registry_version": 2
+                        },
+                        "bootstrap_device": {
+                            "device_id": intent["bootstrap_device_id"],
+                            "status": "active",
+                            "role": "admin",
+                            "management_ready": true,
+                            "auth_generation": 1
+                        },
+                        "committed_at": "2026-08-26T12:00:00Z",
+                        "fixture_signing_key_id": device["signing_key_id"]
+                    }));
+                    // The authoritative commit has happened, but its HTTP response is lost.
+                    drop(stream);
+                } else if request_index == 3 {
+                    methods.push(body["method"].as_str().unwrap().to_owned());
+                    let result = remote_result.as_ref().unwrap();
+                    let mut public_result = result.clone();
+                    public_result
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("fixture_signing_key_id");
+                    write_json_response(
+                        &mut stream,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {"state": "committed", "result": public_result}
+                        }),
+                    );
+                } else if request_index == 4 {
+                    methods.push(body["method"].as_str().unwrap().to_owned());
+                    let result = remote_result.as_ref().unwrap();
+                    let did = result["current_did"].as_str().unwrap();
+                    let device_id = result["bootstrap_device"]["device_id"].as_str().unwrap();
+                    let key_id = result["fixture_signing_key_id"].as_str().unwrap();
+                    write_json_response(
+                        &mut stream,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "did": did,
+                                "user_id": "fixture-account-0714",
+                                "access_token": fixture_access_token(did, device_id, key_id)
+                            }
+                        }),
+                    );
+                } else {
+                    methods.push(body["method"].as_str().unwrap().to_owned());
+                    let publish = &body["params"]["body"];
+                    write_json_response(
+                        &mut stream,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "published": true,
+                                "owner_did": publish["prekey_bundle"]["owner_did"],
+                                "owner_device_id": publish["prekey_bundle"]["owner_device_id"],
+                                "bundle_id": publish["prekey_bundle"]["bundle_id"],
+                                "published_at": "2026-08-26T12:00:01Z",
+                                "published_opk_count": publish["one_time_prekeys"].as_array().unwrap().len()
+                            }
+                        }),
+                    );
+                }
+            }
+            methods
+        });
+
+        let core =
+            recovery_test_core_with_provider(root.path(), &endpoint, root_key, provider.clone());
+        crate::internal::identity_store::IdentityStore::new(
+            &core.inner().sdk_paths().identities,
+        )
+        .save_anp_identity_projection(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias: "default".to_owned(),
+                did: crate::ids::Did::parse(&predecessor_did).unwrap(),
+                unique_id: "fixture-owner-0714".to_owned(),
+                user_id: "fixture-account-0714".to_owned(),
+                display_name: "Fixture 0714".to_owned(),
+                handle: "fixture".to_owned(),
+                full_handle: "fixture.invalid".to_owned(),
+                binding_generation: Some("1".to_owned()),
+                jwt_token: String::new(),
+                did_document: Some(predecessor.did_document),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                    root_key_id: format!("{predecessor_did}#fixture-root"),
+                    device_signing_key_id: format!("{predecessor_did}#fixture-sign"),
+                    device_e2ee_key_id: format!("{predecessor_did}#fixture-e2ee"),
+                },
+                device_state: None,
+                key1_private_pem: String::new(),
+                key1_public_pem: String::new(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: String::new(),
+                daemon_subkey_package: None,
+                make_default: true,
+            },
+            crate::internal::identity_store::AnpIdentityProjectionStorage::from_core_pending_auth(
+                &core,
+                "fixture-legacy-provider",
+                "fixture-legacy-identity",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let otp = core
+            .handle_recovery()
+            .request_handle_recovery_otp(HandleRecoveryOtpRequest {
+                identity: None,
+                full_handle: "fixture.invalid".to_owned(),
+                phone: "+15555550714".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(otp.owner_identity_id.as_str(), "fixture-owner-0714");
+        let prepared = core
+            .handle_recovery()
+            .prepare_handle_recovery(HandleRecoveryPrepareRequest {
+                operation_id: otp.operation_id.clone(),
+                phone: "+15555550714".to_owned(),
+                code: "071407".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(prepared.phase, HandleRecoveryPhase::ReadyToCommit);
+        let uncertain = core
+            .handle_recovery()
+            .activate_handle_recovery(HandleRecoveryActivateRequest {
+                operation_id: otp.operation_id.clone(),
+                user_presence_confirmed: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(uncertain.phase, HandleRecoveryPhase::RemoteOutcomeUnknown);
+        assert_eq!(
+            uncertain.failure_code,
+            Some(HandleRecoveryErrorCode::OutcomeUnknown)
+        );
+        let successor_did = uncertain.current_did.as_str().to_owned();
+        drop(core);
+
+        let reopened =
+            recovery_test_core_with_provider(root.path(), &endpoint, root_key, provider.clone());
+        let applied = reopened
+            .handle_recovery()
+            .resume_handle_recovery(HandleRecoveryResumeRequest {
+                operation_id: otp.operation_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(applied.phase, HandleRecoveryPhase::Applied);
+        assert_eq!(applied.owner_identity_id.as_str(), "fixture-owner-0714");
+        assert_eq!(
+            applied.account_user_id.as_deref(),
+            Some("fixture-account-0714")
+        );
+        assert_eq!(applied.full_handle, "fixture.invalid");
+        assert_eq!(applied.current_did.as_str(), successor_did);
+
+        let connection = crate::internal::local_state::open_writable(
+            &reopened.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        let binding: (String, String, String, String, i64) = connection
+            .query_row(
+                "SELECT owner_identity_id,account_id,current_did,identity_generation,created_at FROM identity_account_bindings",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            binding,
+            (
+                "fixture-owner-0714".to_owned(),
+                "fixture-account-0714".to_owned(),
+                successor_did.clone(),
+                "2".to_owned(),
+                1_710_400_000,
+            )
+        );
+        for (table, expected) in [
+            ("messages", 2_i64),
+            ("conversation_registry", 1),
+            ("conversation_summaries", 1),
+            ("direct_peer_routes", 1),
+            ("attachment_manifest_cache", 1),
+            ("sync_state", 1),
+            ("e2ee_outbox", 1),
+            ("group_rebind_outbox", 1),
+        ] {
+            assert_eq!(
+                connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                expected,
+                "formal Recovery changed the locked 0714 {table} count"
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM identity_transition_pending WHERE source_id=?1 AND phase='completed'",
+                    [&otp.operation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM handle_recovery_operations_v4 WHERE operation_id=?1 AND lifecycle_class='applied'",
+                    [&otp.operation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_prekey_bundles WHERE owner_identity_id='fixture-owner-0714' AND owner_did=?1 AND status='active'",
+                    [&successor_did],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT local_status FROM e2ee_outbox WHERE outbox_id='fixture-outbox-0714'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "dropped"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT phase FROM group_rebind_outbox WHERE job_id='fixture-rebind-job-0714'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "blocked"
+        );
+        drop(connection);
+
+        let index = crate::internal::identity_store::IdentityStore::new(
+            &reopened.inner().sdk_paths().identities,
+        )
+        .load_index()
+        .unwrap();
+        assert_eq!(index.credentials.len(), 1);
+        let identity = index.credentials.get("default").unwrap();
+        assert_eq!(identity.unique_id, "fixture-owner-0714");
+        assert_eq!(identity.user_id, "fixture-account-0714");
+        assert_eq!(identity.did, successor_did);
+        assert_eq!(identity.full_handle, "fixture.invalid");
+
+        for (relative, expected) in locked_digests {
+            let actual = format!(
+                "{:x}",
+                sha2::Sha256::digest(std::fs::read(root.path().join(&relative)).unwrap())
+            );
+            assert_eq!(
+                actual,
+                expected.as_str().unwrap(),
+                "0714 artifact changed: {relative}"
+            );
+        }
+        let methods = server.join().unwrap();
+        assert_eq!(
+            methods,
+            vec![
+                "send_otp",
+                "handle_recovery_exchange_v4",
+                "handle_recovery_commit_v4",
+                "handle_recovery_result_get_v4",
+                "get_me",
+                "direct.e2ee.publish_prekey_bundle",
+            ]
+        );
+    }
+
+    #[cfg(all(
+        feature = "provider-traits",
+        feature = "identity-native-anp",
+        feature = "group-e2ee"
+    ))]
+    fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
+        std::fs::create_dir_all(target).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let target_path = target.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_fixture_tree(&source_path, &target_path);
+            } else {
+                std::fs::copy(source_path, target_path).unwrap();
+            }
+        }
+    }
+
+    #[cfg(all(
+        feature = "provider-traits",
+        feature = "identity-native-anp",
+        feature = "group-e2ee"
+    ))]
+    fn replace_json_string(value: &mut serde_json::Value, from: &str, to: &str) {
+        match value {
+            serde_json::Value::String(text) => *text = text.replace(from, to),
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    replace_json_string(value, from, to);
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for value in values.values_mut() {
+                    replace_json_string(value, from, to);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(all(
+        feature = "provider-traits",
+        feature = "identity-native-anp",
+        feature = "group-e2ee"
+    ))]
+    fn http_request_json(request: &str) -> serde_json::Value {
+        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+
+    #[cfg(all(
+        feature = "provider-traits",
+        feature = "identity-native-anp",
+        feature = "group-e2ee"
+    ))]
+    fn fixture_access_token(did: &str, device_id: &str, key_id: &str) -> String {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": did,
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": did,
+            "user_id": "fixture-account-0714",
+            "device_id": device_id,
+            "key_id": key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+            "jti": "phase4-0714-recovery"
+        });
+        format!(
+            "e30.{}.fixture",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
     fn v4_awaiting_factor_pending(
         operation_id: &str,
         owner_identity_id: &str,
@@ -3022,10 +3946,11 @@ mod tests {
         }
     }
 
-    fn create_v4_awaiting_factor_operation(
+    fn create_v4_awaiting_factor_operation_inner(
         core: &crate::ImCore,
         operation_id: &str,
         owner_identity_id: &str,
+        with_transition_predecessor: bool,
     ) -> (
         PendingHandleRecoveryV4,
         crate::internal::secret_vault::SecretRef,
@@ -3037,6 +3962,27 @@ mod tests {
             "alice",
         )
         .unwrap();
+        if with_transition_predecessor {
+            let predecessor_spec =
+                crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+                    "awiki.test",
+                    "alice",
+                    None,
+                    None,
+                )
+                .unwrap();
+            pending.local_previous_did =
+                crate::internal::identity_custody::open_controller_manager(core)
+                    .unwrap()
+                    .create(crate::internal::identity_custody::native_create_spec(
+                        predecessor_spec.spec,
+                    ))
+                    .unwrap()
+                    .public_identity()
+                    .unwrap()
+                    .reference
+                    .did;
+        }
         pending.validate().unwrap();
         let store = PendingHandleRecoveryStore::from_core(core).unwrap();
         let secret_ref = store.create_v4(&pending).unwrap();
@@ -3054,6 +4000,25 @@ mod tests {
         )
         .unwrap();
         (pending, secret_ref)
+    }
+
+    fn create_v4_awaiting_factor_operation(
+        core: &crate::ImCore,
+        operation_id: &str,
+        owner_identity_id: &str,
+    ) -> (
+        PendingHandleRecoveryV4,
+        crate::internal::secret_vault::SecretRef,
+    ) {
+        create_v4_awaiting_factor_operation_inner(core, operation_id, owner_identity_id, false)
+    }
+
+    fn create_v4_operation_with_transition_identities(
+        core: &crate::ImCore,
+        operation_id: &str,
+        owner_identity_id: &str,
+    ) -> PendingHandleRecoveryV4 {
+        create_v4_awaiting_factor_operation_inner(core, operation_id, owner_identity_id, true).0
     }
 
     fn make_v4_operation_remote_unresolved(
@@ -3159,8 +4124,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let core = recovery_test_core(root.path(), &endpoint, [93_u8; 32]);
         let operation_id = "recover-v4-delayed-commit-refresh";
-        let (mut pending, _) =
-            create_v4_awaiting_factor_operation(&core, operation_id, "owner-delayed-refresh");
+        let mut pending = create_v4_operation_with_transition_identities(
+            &core,
+            operation_id,
+            "owner-delayed-refresh",
+        );
         make_v4_operation_remote_unresolved(&core, &mut pending);
         let result = remote_result_for_pending(&pending, "user-refresh-1");
         let changed_did = result.current_did.clone();
