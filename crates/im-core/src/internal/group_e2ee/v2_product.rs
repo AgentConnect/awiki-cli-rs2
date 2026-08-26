@@ -6,11 +6,12 @@
 
 use anp::group_e2ee::operations::v2::{
     V2AcceptKeyPackagePublishInput, V2AddMemberInput, V2DecryptInput, V2DecryptOutput,
-    V2EncryptInput, V2FinalizeInput, V2FinalizeOutput, V2GenerateKeyPackageInput,
-    V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2KeyPackagePublishStatus,
-    V2ListLocalGroupMemberEndpointsOutput, V2PrepareKeyPackagePublishInput, V2PreparedAdd,
-    V2PreparedCreate, V2PreparedKeyPackagePublish, V2PreparedRemove, V2ProcessNoticeInput,
-    V2ProcessNoticeOutput, V2ReconcilePendingInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
+    V2DidTransitionController, V2EncryptInput, V2FinalizeInput, V2FinalizeOutput,
+    V2GenerateKeyPackageInput, V2InspectLocalGroupInput, V2InspectLocalGroupOutput,
+    V2KeyPackagePublishStatus, V2ListLocalGroupMemberEndpointsOutput,
+    V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate, V2PreparedKeyPackagePublish,
+    V2PreparedRemove, V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ReconcilePendingInput,
+    V2ReconciledPendingCommit, V2RemoveMemberInput,
 };
 use anp::group_e2ee::{
     get_key_package_request_v2, group_add_request_v2, group_create_request_v2,
@@ -700,6 +701,18 @@ where
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
         let meta = input.meta.clone();
         let prepared = self.runtime.add_member_prepare(input)?;
+        Ok(V2PreparedAddSubmission { meta, prepared })
+    }
+
+    pub(crate) fn prepare_transition_add(
+        &self,
+        input: V2AddMemberInput,
+        controller: V2DidTransitionController,
+    ) -> crate::ImResult<V2PreparedAddSubmission> {
+        let meta = input.meta.clone();
+        let prepared = self
+            .runtime
+            .transition_add_member_prepare(input, controller)?;
         Ok(V2PreparedAddSubmission { meta, prepared })
     }
 

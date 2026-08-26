@@ -8,12 +8,12 @@
 
 use anp::group_e2ee::operations::v2::{
     self, V2AcceptKeyPackagePublishInput, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput,
-    V2DecryptOutput, V2FinalizeInput, V2FinalizeOutput, V2GenerateKeyPackageInput,
-    V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2KeyPackagePublishPreparation,
-    V2ListLocalGroupMemberEndpointsOutput, V2MarkTerminalIntentInput,
-    V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate, V2PreparedKeyPackagePublish,
-    V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput,
-    V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
+    V2DecryptOutput, V2DidTransitionController, V2FinalizeInput, V2FinalizeOutput,
+    V2GenerateKeyPackageInput, V2InspectLocalGroupInput, V2InspectLocalGroupOutput,
+    V2KeyPackagePublishPreparation, V2ListLocalGroupMemberEndpointsOutput,
+    V2MarkTerminalIntentInput, V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate,
+    V2PreparedKeyPackagePublish, V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput,
+    V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
     V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
@@ -142,6 +142,15 @@ impl GroupE2eeV2Runtime {
         input: V2AddMemberInput,
     ) -> crate::ImResult<V2PreparedAdd> {
         v2::add_member_prepare_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn transition_add_member_prepare(
+        &self,
+        input: V2AddMemberInput,
+        controller: V2DidTransitionController,
+    ) -> crate::ImResult<V2PreparedAdd> {
+        v2::add_member_prepare_for_did_transition_v2(&self.store, input, controller)
+            .map_err(map_group_mls_error)
     }
 
     pub(crate) fn remove_member_prepare(

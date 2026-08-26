@@ -84,6 +84,18 @@ fn build_production_context<'a>(
 ) -> crate::ImResult<ProductionV2Context<'a>> {
     validate_current_device_document(client.did().as_str(), &device, &did_document)?;
 
+    let runtime = super::v2_runtime::runtime_for_client(client)?;
+    build_production_context_with_runtime(client, device, did_document, runtime)
+}
+
+fn build_production_context_with_runtime<'a>(
+    client: &'a crate::core::ImClient,
+    device: CurrentV2Device,
+    did_document: Value,
+    runtime: super::v2_runtime::GroupE2eeV2Runtime,
+) -> crate::ImResult<ProductionV2Context<'a>> {
+    validate_current_device_document(client.did().as_str(), &device, &did_document)?;
+
     let signer = client
         .runtime()
         .key_provider
@@ -100,7 +112,6 @@ fn build_production_context<'a>(
         signer,
         verification_method: Some(device.signing_key_id.clone()),
     };
-    let runtime = super::v2_runtime::runtime_for_client(client)?;
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
@@ -778,6 +789,322 @@ pub(crate) struct V2RosterReconcileSummary {
     pub(crate) remaining_devices: usize,
 }
 
+struct TransitionControllerContext<'a> {
+    context: ProductionV2Context<'a>,
+    predecessor_did: String,
+    predecessor_device_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TransitionAddProgress {
+    matched: bool,
+    added: bool,
+    repaired_wal_entries: usize,
+}
+
+fn transition_controller_context<'a>(
+    client: &'a crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<Option<TransitionControllerContext<'a>>> {
+    let current_device = current_v2_device(client)?;
+    let Some(marker) = crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        client.runtime().owner.identity_id.as_str(),
+    )?
+    .filter(|marker| {
+        marker.current_did == client.did().as_str()
+            && marker.current_device_id.as_deref() == Some(current_device.device_id.as_str())
+            && marker.previous_did != marker.current_did
+    }) else {
+        return Ok(None);
+    };
+    let predecessor_document = resolve_member_document_fresh(client, &marker.previous_did)?;
+    let current_document = resolve_member_document_fresh(client, client.did().as_str())?;
+    transition_controller_context_from_documents(
+        client,
+        group_did,
+        current_device,
+        marker.previous_did,
+        predecessor_document,
+        current_document,
+    )
+}
+
+async fn transition_controller_context_async<'a>(
+    client: &'a crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<Option<TransitionControllerContext<'a>>> {
+    let current_device = current_v2_device(client)?;
+    let Some(marker) = crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        client.runtime().owner.identity_id.as_str(),
+    )?
+    .filter(|marker| {
+        marker.current_did == client.did().as_str()
+            && marker.current_device_id.as_deref() == Some(current_device.device_id.as_str())
+            && marker.previous_did != marker.current_did
+    }) else {
+        return Ok(None);
+    };
+    let predecessor_document =
+        resolve_member_document_fresh_async(client, &marker.previous_did).await?;
+    let current_document =
+        resolve_member_document_fresh_async(client, client.did().as_str()).await?;
+    transition_controller_context_from_documents(
+        client,
+        group_did,
+        current_device,
+        marker.previous_did,
+        predecessor_document,
+        current_document,
+    )
+}
+
+fn transition_controller_context_from_documents<'a>(
+    client: &'a crate::core::ImClient,
+    group_did: &str,
+    current_device: CurrentV2Device,
+    predecessor_did: String,
+    predecessor_document: Value,
+    current_document: Value,
+) -> crate::ImResult<Option<TransitionControllerContext<'a>>> {
+    let manifest = validated_p6_manifest(&predecessor_did, &predecessor_document)?;
+    let sqlite_path = &client.core_inner().sdk_paths().local_state.sqlite_path;
+    let owner_identity_id = client.runtime().owner.identity_id.as_str();
+    let mut selected = None;
+    for predecessor_device_id in eligible_device_ids(&manifest) {
+        let store =
+            anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
+                sqlite_path,
+                owner_identity_id,
+                &predecessor_did,
+                &predecessor_device_id,
+            )
+            .map_err(|error| crate::ImError::LocalStateUnavailable {
+                detail: format!("initialize predecessor P6 v2 group MLS store: {error}"),
+            })?;
+        if !store.state_db_path().is_file() {
+            continue;
+        }
+        let runtime = super::v2_runtime::GroupE2eeV2Runtime::new(store);
+        let inspected = runtime.inspect_local_group(V2InspectLocalGroupInput {
+            owner_did: predecessor_did.clone(),
+            owner_device_id: predecessor_device_id.clone(),
+            group_did: group_did.to_owned(),
+            request_id: format!("{}-transition-inspect", operation_id("reconcile")),
+        })?;
+        if inspected.readiness != V2LocalGroupReadiness::Active {
+            continue;
+        }
+        let endpoints = runtime.list_local_group_member_endpoints(V2InspectLocalGroupInput {
+            owner_did: predecessor_did.clone(),
+            owner_device_id: predecessor_device_id.clone(),
+            group_did: group_did.to_owned(),
+            request_id: format!("{}-transition-inventory", operation_id("reconcile")),
+        })?;
+        require_current_controller_endpoint(
+            &endpoints.member_endpoints,
+            &predecessor_did,
+            &predecessor_device_id,
+        )?;
+        if selected.is_some() {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "multiple predecessor devices retain active MLS controller state"
+                    .to_owned(),
+            });
+        }
+        selected = Some((runtime, predecessor_device_id));
+    }
+    let Some((runtime, predecessor_device_id)) = selected else {
+        return Ok(None);
+    };
+    Ok(Some(TransitionControllerContext {
+        context: build_production_context_with_runtime(
+            client,
+            current_device,
+            current_document,
+            runtime,
+        )?,
+        predecessor_did,
+        predecessor_device_id,
+    }))
+}
+
+fn transition_add_current_owner(
+    client: &crate::core::ImClient,
+    current_context: &mut ProductionV2Context<'_>,
+    group_state_ref: V2GroupStateRef,
+    member_document: Value,
+) -> crate::ImResult<TransitionAddProgress> {
+    let group_did = group_state_ref.group_did.clone();
+    let Some(mut transition) = transition_controller_context(client, &group_did)? else {
+        return Ok(TransitionAddProgress::default());
+    };
+    let repaired = resume_pending_membership_commits(client, &mut transition.context, &group_did)?;
+    let endpoints = transition
+        .context
+        .product
+        .list_local_group_member_endpoints(V2InspectLocalGroupInput {
+            owner_did: transition.predecessor_did.clone(),
+            owner_device_id: transition.predecessor_device_id.clone(),
+            group_did: group_did.clone(),
+            request_id: format!("{}-transition-inventory", operation_id("reconcile")),
+        })?;
+    if endpoints.member_endpoints.iter().any(|endpoint| {
+        endpoint.member_did == client.did().as_str()
+            && endpoint.member_device_id == current_context.device.device_id
+    }) {
+        return Ok(TransitionAddProgress {
+            matched: true,
+            added: false,
+            repaired_wal_entries: repaired,
+        });
+    }
+    require_current_controller_endpoint(
+        &endpoints.member_endpoints,
+        &transition.predecessor_did,
+        &transition.predecessor_device_id,
+    )?;
+    let target_service_did = anp::direct_e2ee::message_service_did_from_document(&member_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let lookup_now = format_time(OffsetDateTime::now_utc())?;
+    let lookup_operation = operation_id("get-key-package");
+    let package = current_context.product.get_target_key_package(
+        service_meta(
+            client,
+            &current_context.device,
+            &target_service_did,
+            &lookup_operation,
+            GROUP_E2EE_TRANSPORT_PROFILE_V2,
+            &lookup_now,
+        ),
+        V2GetKeyPackageBody {
+            target_did: client.did().as_str().to_owned(),
+            target_device_id: current_context.device.device_id.clone(),
+            preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
+            require_fresh: Some(true),
+        },
+    )?;
+    let add_operation = operation_id("transition-add");
+    let submission = transition.context.product.prepare_transition_add(
+        V2AddMemberInput {
+            meta: control_meta(client, &current_context.device, &group_did, &add_operation),
+            group_state_ref,
+            group_key_package: package.group_key_package,
+            member_did_document: member_document,
+            now: format_time(OffsetDateTime::now_utc())?,
+            draft_extension_negotiated: true,
+            pending_commit_id: format!("pending-{add_operation}"),
+            request_id: format!("{add_operation}-prepare"),
+        },
+        anp::group_e2ee::operations::v2::V2DidTransitionController {
+            predecessor_did: transition.predecessor_did,
+            predecessor_device_id: transition.predecessor_device_id,
+        },
+    )?;
+    submit_prepared_add(
+        &mut transition.context,
+        &submission,
+        format!("{add_operation}-finalize"),
+    )?;
+    Ok(TransitionAddProgress {
+        matched: true,
+        added: true,
+        repaired_wal_entries: repaired,
+    })
+}
+
+async fn transition_add_current_owner_async(
+    client: &crate::core::ImClient,
+    current_context: &mut ProductionV2Context<'_>,
+    group_state_ref: V2GroupStateRef,
+    member_document: Value,
+) -> crate::ImResult<TransitionAddProgress> {
+    let group_did = group_state_ref.group_did.clone();
+    let Some(mut transition) = transition_controller_context_async(client, &group_did).await?
+    else {
+        return Ok(TransitionAddProgress::default());
+    };
+    let repaired =
+        resume_pending_membership_commits_async(client, &mut transition.context, &group_did)
+            .await?;
+    let endpoints = transition
+        .context
+        .product
+        .list_local_group_member_endpoints(V2InspectLocalGroupInput {
+            owner_did: transition.predecessor_did.clone(),
+            owner_device_id: transition.predecessor_device_id.clone(),
+            group_did: group_did.clone(),
+            request_id: format!("{}-transition-inventory", operation_id("reconcile")),
+        })?;
+    if endpoints.member_endpoints.iter().any(|endpoint| {
+        endpoint.member_did == client.did().as_str()
+            && endpoint.member_device_id == current_context.device.device_id
+    }) {
+        return Ok(TransitionAddProgress {
+            matched: true,
+            added: false,
+            repaired_wal_entries: repaired,
+        });
+    }
+    require_current_controller_endpoint(
+        &endpoints.member_endpoints,
+        &transition.predecessor_did,
+        &transition.predecessor_device_id,
+    )?;
+    let target_service_did = anp::direct_e2ee::message_service_did_from_document(&member_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let lookup_now = format_time(OffsetDateTime::now_utc())?;
+    let lookup_operation = operation_id("get-key-package");
+    let package = current_context
+        .product
+        .get_target_key_package_async(
+            service_meta(
+                client,
+                &current_context.device,
+                &target_service_did,
+                &lookup_operation,
+                GROUP_E2EE_TRANSPORT_PROFILE_V2,
+                &lookup_now,
+            ),
+            V2GetKeyPackageBody {
+                target_did: client.did().as_str().to_owned(),
+                target_device_id: current_context.device.device_id.clone(),
+                preferred_suite: Some(GROUP_E2EE_MTI_SUITE_V2.to_owned()),
+                require_fresh: Some(true),
+            },
+        )
+        .await?;
+    let add_operation = operation_id("transition-add");
+    let submission = transition.context.product.prepare_transition_add(
+        V2AddMemberInput {
+            meta: control_meta(client, &current_context.device, &group_did, &add_operation),
+            group_state_ref,
+            group_key_package: package.group_key_package,
+            member_did_document: member_document,
+            now: format_time(OffsetDateTime::now_utc())?,
+            draft_extension_negotiated: true,
+            pending_commit_id: format!("pending-{add_operation}"),
+            request_id: format!("{add_operation}-prepare"),
+        },
+        anp::group_e2ee::operations::v2::V2DidTransitionController {
+            predecessor_did: transition.predecessor_did,
+            predecessor_device_id: transition.predecessor_device_id,
+        },
+    )?;
+    submit_prepared_add_async(
+        &mut transition.context,
+        &submission,
+        format!("{add_operation}-finalize"),
+    )
+    .await?;
+    Ok(TransitionAddProgress {
+        matched: true,
+        added: true,
+        repaired_wal_entries: repaired,
+    })
+}
+
 /// Reconciles one selected group's MLS endpoints to the authoritative P4
 /// active-member set and each member's fresh P2 device Manifest. Progress is
 /// derived from the accepted SDK tree after every commit; the SDK WAL remains
@@ -809,6 +1136,34 @@ pub(crate) fn reconcile_group_device_roster(
                 &group_did,
                 "group-roster-reconcile-readiness",
             ))?;
+        if inspected.readiness == V2LocalGroupReadiness::Missing {
+            let (group_state_ref, desired) = fresh_desired_group_roster(client, group.clone())?;
+            let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
+                member
+                    .device_ids
+                    .iter()
+                    .any(|device_id| device_id == &context.device.device_id)
+            }) else {
+                return Ok(summary);
+            };
+            let progress = transition_add_current_owner(
+                client,
+                &mut context,
+                group_state_ref,
+                current_member.document.clone(),
+            )?;
+            if progress.matched {
+                summary.repaired_wal_entries = summary
+                    .repaired_wal_entries
+                    .saturating_add(progress.repaired_wal_entries);
+                if progress.added {
+                    summary.added_devices = summary.added_devices.saturating_add(1);
+                }
+                summary.remaining_devices = summary.remaining_devices.max(1);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
+        }
         // A same-DID sibling inherits the P4 business role but does not own
         // this historical group's MLS state until it processes a Welcome.
         // Repair must remain a secret-free no-op instead of synthesizing or
@@ -919,6 +1274,36 @@ pub(crate) async fn reconcile_group_device_roster_async(
                 &group_did,
                 "group-roster-reconcile-readiness",
             ))?;
+        if inspected.readiness == V2LocalGroupReadiness::Missing {
+            let (group_state_ref, desired) =
+                fresh_desired_group_roster_async(client, group.clone()).await?;
+            let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
+                member
+                    .device_ids
+                    .iter()
+                    .any(|device_id| device_id == &context.device.device_id)
+            }) else {
+                return Ok(summary);
+            };
+            let progress = transition_add_current_owner_async(
+                client,
+                &mut context,
+                group_state_ref,
+                current_member.document.clone(),
+            )
+            .await?;
+            if progress.matched {
+                summary.repaired_wal_entries = summary
+                    .repaired_wal_entries
+                    .saturating_add(progress.repaired_wal_entries);
+                if progress.added {
+                    summary.added_devices = summary.added_devices.saturating_add(1);
+                }
+                summary.remaining_devices = summary.remaining_devices.max(1);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+        }
         if !local_group_can_reconcile_roster(&inspected.readiness) {
             return Ok(summary);
         }
