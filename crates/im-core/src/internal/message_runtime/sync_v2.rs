@@ -2410,10 +2410,15 @@ fn validate_system_notification_event_contract(
             "system.notification is missing its service origin DID",
         )
     })?;
-    let expected_origin_prefix = format!(
-        "did:wba:{}:agents:system-notification:e1_",
-        client.did_domain()
-    );
+    let service_did = client
+        .core_inner()
+        .sdk_config()
+        .anp_service_did
+        .as_ref()
+        .map(crate::ids::Did::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("did:wba:{}", client.did_domain()));
+    let expected_origin_prefix = format!("{service_did}:agents:system-notification:e1_");
     let origin_fingerprint = origin_did
         .strip_prefix(&expected_origin_prefix)
         .ok_or_else(|| {
@@ -3718,6 +3723,7 @@ mod tests {
     struct Fixture {
         root: std::path::PathBuf,
         did_domain: String,
+        anp_service_did: Option<crate::ids::Did>,
     }
 
     impl Fixture {
@@ -3726,6 +3732,15 @@ mod tests {
         }
 
         fn new_with_identity(prefix: &str, did: &str, did_domain: &str) -> Self {
+            Self::new_with_identity_and_service(prefix, did, did_domain, None)
+        }
+
+        fn new_with_identity_and_service(
+            prefix: &str,
+            did: &str,
+            did_domain: &str,
+            anp_service_did: Option<&str>,
+        ) -> Self {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -3759,6 +3774,10 @@ mod tests {
             Self {
                 root,
                 did_domain: did_domain.to_owned(),
+                anp_service_did: anp_service_did
+                    .map(crate::ids::Did::parse)
+                    .transpose()
+                    .unwrap(),
             }
         }
 
@@ -3773,7 +3792,7 @@ mod tests {
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
                     anp_service_endpoint: None,
-                    anp_service_did: None,
+                    anp_service_did: self.anp_service_did.clone(),
                     ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
@@ -8857,6 +8876,36 @@ mod tests {
                 validate_system_notification_event_contract(&client, &binding, &event).is_err()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn system_notification_origin_uses_message_service_did_for_split_tenant() {
+        let fixture = Fixture::new_with_identity_and_service(
+            "system-notification-split-tenant",
+            "did:wba:tenant.test:user:alice:e1_example",
+            "tenant.test",
+            Some("did:wba:awiki.test"),
+        );
+        let client = fixture.client();
+        let binding = crate::identity::ActiveSyncAccountBinding {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            account_id: "account-1".to_owned(),
+            current_did: client.did().as_str().to_owned(),
+            protocol_device_id: "device-1".to_owned(),
+            identity_generation: "1".to_owned(),
+            device_auth_generation: "1".to_owned(),
+        };
+        let canonical = system_notification_contract_fixture(&binding);
+        validate_system_notification_event_contract(&client, &binding, &canonical).unwrap();
+
+        let mut tenant_origin = canonical;
+        tenant_origin.origin_did = Some(format!(
+            "did:wba:tenant.test:agents:system-notification:e1_{}",
+            "A".repeat(43)
+        ));
+        assert!(
+            validate_system_notification_event_contract(&client, &binding, &tenant_origin).is_err()
+        );
     }
 
     #[tokio::test]
