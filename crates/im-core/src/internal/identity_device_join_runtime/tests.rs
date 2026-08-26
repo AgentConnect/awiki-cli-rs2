@@ -676,10 +676,10 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
 }
 
 #[test]
-fn recovery_join_post_activation_policy_never_publishes_p6() {
+fn recovery_join_refreshes_jwt_before_publishing_p5_and_p6() {
     assert_eq!(
         post_activation_publish_policy(true),
-        PostActivationPublishPolicy::PrekeysOnly
+        PostActivationPublishPolicy::RefreshJwtThenPrekeysAndGroupKeyPackage
     );
     assert_eq!(
         post_activation_publish_policy(false),

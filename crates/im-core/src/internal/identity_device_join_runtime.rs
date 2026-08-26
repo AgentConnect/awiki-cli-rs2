@@ -5,9 +5,9 @@
 //! seven frozen Join RPC operations, the authenticated Registry projection and
 //! standard DID resolution. Tokens cross the boundary as zeroizing bytes and
 //! are sealed before a caller can resume the flow. Once authorized, a device
-//! publishes its P5 PreKey. Ordinary Join also publishes its current P6
-//! KeyPackage when Group E2EE v2 is enabled; recovery-authorized Join is
-//! deliberately P5-only. A publication failure is returned after local
+//! publishes its P5 PreKey and publishes its current P6 KeyPackage when Group
+//! E2EE v2 is enabled. Recovery-authorized Join refreshes its JWT first. A
+//! publication failure is returned after local
 //! authorization so the same Join poll can retry the missing public material.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -1147,20 +1147,15 @@ async fn publish_v2_messaging_material_after_activation(
         &session.join_session_id,
     )?
     .is_some();
-    if post_activation_publish_policy(recovery_join) == PostActivationPublishPolicy::PrekeysOnly {
+    if post_activation_publish_policy(recovery_join)
+        == PostActivationPublishPolicy::RefreshJwtThenPrekeysAndGroupKeyPackage
+    {
         let client = core
             .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
             .await?;
         crate::internal::transport::CoreHttpTransport::new_signature_only(&client)
             .refresh_jwt_async()
             .await?;
-        let mut prekey_publisher = ProductionDeviceJoinPrekeyPublisher;
-        return publish_v2_prekeys_after_activation_with_publisher(
-            core,
-            session,
-            &mut prekey_publisher,
-        )
-        .await;
     }
     let mut prekey_publisher = ProductionDeviceJoinPrekeyPublisher;
     publish_v2_prekeys_after_activation_with_publisher(core, session, &mut prekey_publisher)
@@ -1177,12 +1172,12 @@ async fn publish_v2_messaging_material_after_activation(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PostActivationPublishPolicy {
     PrekeysAndGroupKeyPackage,
-    PrekeysOnly,
+    RefreshJwtThenPrekeysAndGroupKeyPackage,
 }
 
 fn post_activation_publish_policy(recovery_join: bool) -> PostActivationPublishPolicy {
     if recovery_join {
-        PostActivationPublishPolicy::PrekeysOnly
+        PostActivationPublishPolicy::RefreshJwtThenPrekeysAndGroupKeyPackage
     } else {
         PostActivationPublishPolicy::PrekeysAndGroupKeyPackage
     }
