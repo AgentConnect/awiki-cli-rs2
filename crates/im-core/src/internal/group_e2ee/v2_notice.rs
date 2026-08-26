@@ -15,6 +15,12 @@ use crate::internal::transport::{AsyncRawJsonTransport, RawJsonTransport};
 
 use super::v2_runtime::GroupE2eeV2Runtime;
 
+struct NoticeRuntimeContext {
+    runtime: GroupE2eeV2Runtime,
+    owner_did: String,
+    transition_dids: Option<(String, String)>,
+}
+
 /// Returns true only for the standard P6 v2 notice profile and notice shape.
 ///
 /// History/inbox responses may retain only `meta` and `body`, so a flat
@@ -52,16 +58,22 @@ pub(crate) fn consume_for_client(
     value: &Value,
 ) -> crate::ImResult<V2ProcessNoticeOutput> {
     let (meta, notice) = parse_notice(value)?;
-    let runtime = super::v2_runtime::runtime_for_client(client)?;
-    let member_documents = match resolve_member_documents(client, &notice) {
+    let context = runtime_context_for_notice(client, &meta)?;
+    let member_documents = match resolve_member_documents(
+        client,
+        &meta,
+        &notice,
+        &context.owner_did,
+        context.transition_dids.as_ref(),
+    ) {
         Ok(documents) => documents,
         Err(error) if is_local_not_active_member(&error) => {
-            resolve_self_remove_member_documents(client, &runtime, &notice)?
+            resolve_self_remove_member_documents(client, &context.runtime, &notice)?
         }
         Err(error) => return Err(error),
     };
     consume_with_runtime(
-        &runtime,
+        &context.runtime,
         meta,
         notice,
         member_documents,
@@ -78,16 +90,24 @@ pub(crate) async fn consume_for_client_async(
     value: &Value,
 ) -> crate::ImResult<V2ProcessNoticeOutput> {
     let (meta, notice) = parse_notice(value)?;
-    let runtime = super::v2_runtime::runtime_for_client(client)?;
-    let member_documents = match resolve_member_documents_async(client, &notice).await {
+    let context = runtime_context_for_notice(client, &meta)?;
+    let member_documents = match resolve_member_documents_async(
+        client,
+        &meta,
+        &notice,
+        &context.owner_did,
+        context.transition_dids.as_ref(),
+    )
+    .await
+    {
         Ok(documents) => documents,
         Err(error) if is_local_not_active_member(&error) => {
-            resolve_self_remove_member_documents_async(client, &runtime, &notice).await?
+            resolve_self_remove_member_documents_async(client, &context.runtime, &notice).await?
         }
         Err(error) => return Err(error),
     };
     consume_with_runtime(
-        &runtime,
+        &context.runtime,
         meta,
         notice,
         member_documents,
@@ -149,7 +169,10 @@ pub(crate) fn parse_notice(
 
 fn resolve_member_documents(
     client: &crate::core::ImClient,
+    meta: &V2GroupNoticeMetadata,
     notice: &V2E2eeNotice,
+    owner_did: &str,
+    transition_dids: Option<&(String, String)>,
 ) -> crate::ImResult<Vec<V2DidDocument>> {
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let group = crate::ids::GroupRef::parse(&notice.group_did)?;
@@ -170,7 +193,8 @@ fn resolve_member_documents(
         Some(&notice.group_state_ref.group_state_version),
         max_members,
     )?;
-    let dids = member_dids_from_complete_roster(client.did().as_str(), notice, roster.members)?;
+    let mut dids = member_dids_from_complete_roster(owner_did, notice, roster.members)?;
+    include_transition_notice_dids(&mut dids, meta, notice, transition_dids);
     dids.into_iter()
         .map(|did| {
             resolve_did_document(client, &mut transport, &did)
@@ -181,7 +205,10 @@ fn resolve_member_documents(
 
 async fn resolve_member_documents_async(
     client: &crate::core::ImClient,
+    meta: &V2GroupNoticeMetadata,
     notice: &V2E2eeNotice,
+    owner_did: &str,
+    transition_dids: Option<&(String, String)>,
 ) -> crate::ImResult<Vec<V2DidDocument>> {
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let group = crate::ids::GroupRef::parse(&notice.group_did)?;
@@ -204,13 +231,86 @@ async fn resolve_member_documents_async(
         max_members,
     )
     .await?;
-    let dids = member_dids_from_complete_roster(client.did().as_str(), notice, roster.members)?;
+    let mut dids = member_dids_from_complete_roster(owner_did, notice, roster.members)?;
+    include_transition_notice_dids(&mut dids, meta, notice, transition_dids);
     let mut documents = Vec::with_capacity(dids.len());
     for did in dids {
         let document = resolve_did_document_async(client, &mut transport, &did).await?;
         documents.push(V2DidDocument { did, document });
     }
     Ok(documents)
+}
+
+fn runtime_context_for_notice(
+    client: &crate::core::ImClient,
+    meta: &V2GroupNoticeMetadata,
+) -> crate::ImResult<NoticeRuntimeContext> {
+    let current = super::v2_runtime::runtime_for_client(client)?;
+    let current_scope = current.owner_scope()?;
+    let marker = crate::internal::identity_transition_pending::load_latest_applied_for_owner(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        &current_scope.owner_identity_id,
+    )?
+    .filter(|marker| {
+        marker.current_did == current_scope.owner_did
+            && marker.current_device_id.as_deref() == Some(current_scope.device_id.as_str())
+            && marker.previous_did != marker.current_did
+    });
+    let transition_dids = marker
+        .as_ref()
+        .map(|marker| (marker.previous_did.clone(), marker.current_did.clone()));
+    if meta.target.did == current_scope.owner_did
+        && meta.recipient_device_id == current_scope.device_id
+    {
+        return Ok(NoticeRuntimeContext {
+            runtime: current,
+            owner_did: current_scope.owner_did,
+            transition_dids,
+        });
+    }
+
+    let marker = marker
+        .filter(|marker| meta.target.did == marker.previous_did)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let store = anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        current_scope.owner_identity_id,
+        marker.previous_did.clone(),
+        meta.recipient_device_id.clone(),
+    )
+    .map_err(|error| crate::ImError::LocalStateUnavailable {
+        detail: format!("initialize predecessor P6 v2 notice store: {error}"),
+    })?;
+    if !store.state_db_path().is_file() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "predecessor P6 v2 notice store is unavailable".to_owned(),
+        });
+    }
+    Ok(NoticeRuntimeContext {
+        runtime: GroupE2eeV2Runtime::new(store),
+        owner_did: marker.previous_did.clone(),
+        transition_dids: Some((marker.previous_did, marker.current_did)),
+    })
+}
+
+fn include_transition_notice_dids(
+    dids: &mut BTreeSet<String>,
+    meta: &V2GroupNoticeMetadata,
+    notice: &V2E2eeNotice,
+    transition_dids: Option<&(String, String)>,
+) {
+    let Some((previous_did, current_did)) = transition_dids else {
+        return;
+    };
+    let transition_notice = meta.target.did == *previous_did
+        || notice.subject_did == *previous_did
+        || (notice.notice_type == "welcome-delivery"
+            && meta.target.did == *current_did
+            && notice.subject_did == *current_did);
+    if transition_notice {
+        dids.insert(previous_did.clone());
+        dids.insert(current_did.clone());
+    }
 }
 
 fn resolve_self_remove_member_documents(
@@ -596,6 +696,47 @@ mod tests {
             }]
         )
         .is_err());
+    }
+
+    #[test]
+    fn transition_notices_include_both_did_documents_only_for_the_exact_transition() {
+        let (mut meta, mut notice) = parse_notice(&test_notice_wire()).unwrap();
+        let transition = (
+            "did:example:alice:previous".to_owned(),
+            "did:example:alice:current".to_owned(),
+        );
+
+        meta.target.did = transition.1.clone();
+        notice.notice_type = "welcome-delivery".to_owned();
+        notice.subject_did = transition.1.clone();
+        let mut dids = BTreeSet::new();
+        include_transition_notice_dids(&mut dids, &meta, &notice, Some(&transition));
+        assert_eq!(
+            dids,
+            BTreeSet::from([transition.0.clone(), transition.1.clone()])
+        );
+
+        meta.target.did = transition.0.clone();
+        notice.notice_type = "commit-delivery".to_owned();
+        let mut predecessor_notice_dids = BTreeSet::new();
+        include_transition_notice_dids(
+            &mut predecessor_notice_dids,
+            &meta,
+            &notice,
+            Some(&transition),
+        );
+        assert_eq!(predecessor_notice_dids, dids);
+
+        meta.target.did = transition.1.clone();
+        notice.subject_did = "did:example:member".to_owned();
+        let mut ordinary_notice_dids = BTreeSet::new();
+        include_transition_notice_dids(
+            &mut ordinary_notice_dids,
+            &meta,
+            &notice,
+            Some(&transition),
+        );
+        assert!(ordinary_notice_dids.is_empty());
     }
 
     #[test]
