@@ -63,19 +63,46 @@ fn locked_0714_schema_36_fixture_migrates_to_37_without_data_drift() {
     fs::copy(source, &migrated).unwrap();
 
     let before = Connection::open_with_flags(&migrated, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    assert_eq!(awiki_im_core::compat::local_state::current_schema_version(&before).unwrap(), 36);
+    assert_eq!(
+        awiki_im_core::compat::local_state::current_schema_version(&before).unwrap(),
+        36
+    );
     let before_digest = conservation_digest(&before);
     assert_eq!(scalar(&before, "SELECT COUNT(*) FROM messages"), 2);
-    assert_eq!(scalar(&before, "SELECT SUM(unread_count) FROM conversation_summaries"), 1);
-    assert_eq!(scalar(&before, "SELECT SUM(unread_mention_count) FROM conversation_summaries"), 1);
-    assert_eq!(scalar(&before, "SELECT COUNT(*) FROM group_rebind_outbox WHERE phase='awaiting_p6'"), 1);
+    assert_eq!(
+        scalar(
+            &before,
+            "SELECT SUM(unread_count) FROM conversation_summaries"
+        ),
+        1
+    );
+    assert_eq!(
+        scalar(
+            &before,
+            "SELECT SUM(unread_mention_count) FROM conversation_summaries"
+        ),
+        1
+    );
+    assert_eq!(
+        scalar(
+            &before,
+            "SELECT COUNT(*) FROM group_rebind_outbox WHERE phase='awaiting_p6'"
+        ),
+        1
+    );
     drop(before);
 
     let connection = Connection::open(&migrated).unwrap();
     awiki_im_core::compat::local_state::ensure_schema(&connection).unwrap();
-    assert_eq!(awiki_im_core::compat::local_state::current_schema_version(&connection).unwrap(), 37);
+    assert_eq!(
+        awiki_im_core::compat::local_state::current_schema_version(&connection).unwrap(),
+        37
+    );
     assert_eq!(conservation_digest(&connection), before_digest);
-    assert_eq!(scalar(&connection, "SELECT COUNT(*) FROM did_transition_edges"), 0);
+    assert_eq!(
+        scalar(&connection, "SELECT COUNT(*) FROM did_transition_edges"),
+        0
+    );
     assert_eq!(
         scalar(
             &connection,

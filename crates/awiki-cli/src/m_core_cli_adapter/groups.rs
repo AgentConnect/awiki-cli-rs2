@@ -1145,6 +1145,7 @@ fn group_create_request(
     Ok(SdkGroupCreateRequest {
         name: request.name,
         creator_handle,
+        initial_members: Vec::new(),
         description: optional_string(&request.description),
         avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
