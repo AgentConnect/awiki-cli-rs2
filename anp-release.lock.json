@@ -1,13 +1,13 @@
 {
   "anp": {
     "commit": "c64bfb086acb1930803bb95db8b4e28b67cc2983",
+    "didTransitionVectorsTreeSha256": "7e505fe68a250acd0c41a998b4628dd85ab82e08c319d349e696ff410f78c6cb",
     "pythonWheel": {
       "filename": "anp-1.0.0-py3-none-any.whl",
       "sha256": "9d040babced643907ca9c07bcf570c5176554bb2c2a6f631608d2b49b127aab5"
     },
     "repository": "https://github.com/agent-network-protocol/anp.git",
-    "rustTreeSha256": "89b60ca88b129c31e5a4f1d0326f4430fefcbd9fdbb583ac4033297b1982b4c0",
-    "didTransitionVectorsTreeSha256": "7e505fe68a250acd0c41a998b4628dd85ab82e08c319d349e696ff410f78c6cb"
+    "rustTreeSha256": "89b60ca88b129c31e5a4f1d0326f4430fefcbd9fdbb583ac4033297b1982b4c0"
   },
   "candidateVersion": "1.0.0",
   "identity": {
