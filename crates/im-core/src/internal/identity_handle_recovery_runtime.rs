@@ -2065,6 +2065,13 @@ async fn apply_local_transition_v4(
             &recovered_did,
         )
         .await?;
+        if core.inner().group_e2ee_v2_enabled() {
+            crate::internal::identity_registration_runtime::publish_v2_group_key_package_after_registration_async(
+                core,
+                &recovered_did,
+            )
+            .await?;
+        }
         crate::internal::identity_transition_pending::mark_applied(
             sqlite_path,
             &pending.operation_id,

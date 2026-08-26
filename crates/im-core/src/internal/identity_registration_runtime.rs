@@ -1527,7 +1527,7 @@ async fn publish_v2_messaging_material_after_registration_async(
     registration_messaging_material_warnings(prekey_result, group_key_package_result)
 }
 
-async fn publish_v2_group_key_package_after_registration_async(
+pub(crate) async fn publish_v2_group_key_package_after_registration_async(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
 ) -> crate::ImResult<()> {
