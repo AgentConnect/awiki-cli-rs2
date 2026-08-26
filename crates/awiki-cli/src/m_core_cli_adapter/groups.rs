@@ -118,10 +118,13 @@ fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
 }
 
 fn group_compat_handle(handle: Option<Handle>) -> Result<Option<Handle>, MessageAdapterError> {
-    let vnext_enabled =
-        crate::m_core_cli_adapter::vault::did_transition_vnext_hidden_rollout_enabled()
-            .map_err(|error| MessageAdapterError::Internal(error.to_string()))?;
+    let vnext_enabled = group_vnext_enabled()?;
     Ok(select_group_compat_handle(handle, vnext_enabled))
+}
+
+fn group_vnext_enabled() -> Result<bool, MessageAdapterError> {
+    crate::m_core_cli_adapter::vault::did_transition_vnext_hidden_rollout_enabled()
+        .map_err(|error| MessageAdapterError::Internal(error.to_string()))
 }
 
 fn select_group_compat_handle(handle: Option<Handle>, vnext_enabled: bool) -> Option<Handle> {
@@ -149,7 +152,7 @@ pub fn create_group_via_im_core(
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
     let warnings = group_control_warnings(resolved, result.warnings.clone());
     let snapshot = group_snapshot_result_json(&result, &raw).unwrap_or(Value::Null);
-    let members = group_members_to_cli_json(&result, &raw);
+    let members = group_members_to_cli_json(&result, &raw)?;
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -180,7 +183,7 @@ pub async fn create_group_via_im_core_async(
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
     let warnings = group_control_warnings(resolved, result.warnings.clone());
     let snapshot = group_snapshot_result_json(&result, &raw).unwrap_or(Value::Null);
-    let members = group_members_to_cli_json(&result, &raw);
+    let members = group_members_to_cli_json(&result, &raw)?;
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -375,8 +378,8 @@ fn mutate_group_member_via_im_core(
     let warnings = group_control_warnings(resolved, result.warnings.clone());
     let snapshot = group_snapshot_result_json(&result, &raw)
         .unwrap_or_else(|| json!({ "group_did": request.group }));
-    let members = group_members_to_cli_json(&result, &raw);
-    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref());
+    let members = group_members_to_cli_json(&result, &raw)?;
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -421,8 +424,8 @@ async fn mutate_group_member_via_im_core_async(
     let warnings = group_control_warnings(resolved, result.warnings.clone());
     let snapshot = group_snapshot_result_json(&result, &raw)
         .unwrap_or_else(|| json!({ "group_did": request.group }));
-    let members = group_members_to_cli_json(&result, &raw);
-    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref());
+    let members = group_members_to_cli_json(&result, &raw)?;
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -664,7 +667,7 @@ pub fn group_members_via_im_core(
     let page_group =
         required_group_member_page_binding(result.page_group.as_ref(), &requested_group)?;
     let raw = group_raw_response(&result);
-    let members = group_members_to_cli_json(&result, &raw);
+    let members = group_members_to_cli_json(&result, &raw)?;
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
@@ -703,7 +706,7 @@ pub async fn group_members_via_im_core_async(
     let page_group =
         required_group_member_page_binding(result.page_group.as_ref(), &requested_group)?;
     let raw = group_raw_response(&result);
-    let members = group_members_to_cli_json(&result, &raw);
+    let members = group_members_to_cli_json(&result, &raw)?;
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
@@ -990,12 +993,14 @@ pub fn process_group_e2ee_leave_request_via_im_core(
         })
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
+    let members = group_members_to_cli_json(&result, &raw)?;
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
     Ok(CommandResult {
         data: json!({
             "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
-            "members": group_members_to_cli_json(&result, &raw),
+            "members": members,
             "delivery": raw,
-            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+            "member": resolved_member,
         }),
         summary: "Processed group E2EE leave request".to_string(),
         warnings: compact_warnings(result.warnings),
@@ -1030,12 +1035,14 @@ pub async fn process_group_e2ee_leave_request_via_im_core_async(
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
+    let members = group_members_to_cli_json(&result, &raw)?;
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
     Ok(CommandResult {
         data: json!({
             "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
-            "members": group_members_to_cli_json(&result, &raw),
+            "members": members,
             "delivery": raw,
-            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+            "member": resolved_member,
         }),
         summary: "Processed group E2EE leave request".to_string(),
         warnings: compact_warnings(result.warnings),
@@ -1142,12 +1149,14 @@ fn group_e2ee_key_command_result(
     result: im_core::groups::GroupReadResult,
 ) -> Result<CommandResult, MessageAdapterError> {
     let raw = group_raw_response(&result);
+    let members = group_members_to_cli_json(&result, &raw)?;
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
     Ok(CommandResult {
         data: json!({
             "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": group })),
-            "members": group_members_to_cli_json(&result, &raw),
+            "members": members,
             "delivery": raw,
-            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+            "member": resolved_member,
         }),
         summary: summary.to_string(),
         warnings: compact_warnings(result.warnings),
@@ -1278,14 +1287,22 @@ fn groups_to_cli_json(result: &GroupReadResult) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn group_members_to_cli_json(result: &GroupReadResult, raw: &Value) -> Vec<Value> {
+fn group_members_to_cli_json(
+    result: &GroupReadResult,
+    raw: &Value,
+) -> Result<Vec<Value>, MessageAdapterError> {
+    let vnext_enabled = group_vnext_enabled()?;
     if !result.members.is_empty() {
-        return result.members.iter().map(group_member_to_json).collect();
+        return Ok(result
+            .members
+            .iter()
+            .map(|member| group_member_to_json(member, vnext_enabled))
+            .collect());
     }
-    values_from_array(raw.get("members"))
+    Ok(values_from_array(raw.get("members"))
         .into_iter()
-        .map(normalize_group_member_json)
-        .collect()
+        .map(|member| normalize_group_member_json(member, vnext_enabled))
+        .collect())
 }
 
 fn group_messages_to_cli_json(result: &GroupReadResult, raw: &Value) -> Vec<Value> {
@@ -1370,7 +1387,7 @@ fn group_summary_to_json(group: &GroupSummary) -> Value {
     })
 }
 
-fn group_member_to_json(member: &GroupMember) -> Value {
+fn group_member_to_json(member: &GroupMember, vnext_enabled: bool) -> Value {
     let did = member.did.as_ref().map(Did::as_str).unwrap_or_default();
     let mut value = json!({
         "member_did": did,
@@ -1379,7 +1396,7 @@ fn group_member_to_json(member: &GroupMember) -> Value {
         "status": member.status,
         "joined_at": member.joined_at,
     });
-    if group_vnext_projection_enabled() {
+    if vnext_enabled {
         return value;
     }
     let handle = member
@@ -1393,8 +1410,20 @@ fn group_member_to_json(member: &GroupMember) -> Value {
     value
 }
 
-fn group_member_resolution_json(member: Option<&GroupMemberResolution>) -> Value {
-    if group_vnext_projection_enabled() {
+fn group_member_resolution_json(
+    member: Option<&GroupMemberResolution>,
+) -> Result<Value, MessageAdapterError> {
+    Ok(group_member_resolution_json_for_mode(
+        member,
+        group_vnext_enabled()?,
+    ))
+}
+
+fn group_member_resolution_json_for_mode(
+    member: Option<&GroupMemberResolution>,
+    vnext_enabled: bool,
+) -> Value {
+    if vnext_enabled {
         return json!({
             "did": member.map(|value| value.did.as_str()).unwrap_or_default(),
         });
@@ -1416,7 +1445,7 @@ fn group_member_resolution_json(member: Option<&GroupMemberResolution>) -> Value
     }
 }
 
-fn normalize_group_member_json(mut member: Value) -> Value {
+fn normalize_group_member_json(mut member: Value, vnext_enabled: bool) -> Value {
     let Some(object) = member.as_object_mut() else {
         return member;
     };
@@ -1435,7 +1464,7 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .entry("did".to_string())
             .or_insert_with(|| Value::String(did));
     }
-    if group_vnext_projection_enabled() {
+    if vnext_enabled {
         for key in ["handle", "member_handle", "agent_handle"] {
             object.remove(key);
         }
@@ -1455,11 +1484,6 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .or_insert_with(|| Value::String(handle));
     }
     member
-}
-
-fn group_vnext_projection_enabled() -> bool {
-    std::env::var("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED")
-        .is_ok_and(|value| value.trim() == "1")
 }
 
 fn group_message_to_json(message: &Message) -> Value {
@@ -1907,12 +1931,13 @@ mod group_message_projection_tests {
     use serde_json::json;
 
     use super::{
-        group_create_request, group_join_request, im_error_to_message_error,
-        is_attachment_manifest_payload, normalize_group_snapshot,
-        required_group_member_page_binding, select_group_compat_handle, GroupCreateRequest,
-        GroupJoinRequest,
+        group_create_request, group_join_request, group_member_resolution_json_for_mode,
+        group_member_to_json, im_error_to_message_error, is_attachment_manifest_payload,
+        normalize_group_member_json, normalize_group_snapshot, required_group_member_page_binding,
+        select_group_compat_handle, GroupCreateRequest, GroupJoinRequest,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
+    use im_core::groups::{GroupMember, GroupMemberResolution};
 
     #[test]
     fn group_create_request_preserves_selected_handle_mode_and_none_compatibility() {
@@ -1938,13 +1963,81 @@ mod group_message_projection_tests {
     fn vnext_group_requests_drop_only_the_adapter_injected_compat_handle() {
         let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
 
-        assert_eq!(
-            select_group_compat_handle(Some(handle.clone()), false),
-            Some(handle.clone())
-        );
-        assert_eq!(select_group_compat_handle(Some(handle), true), None);
+        let legacy_handle = select_group_compat_handle(Some(handle.clone()), false);
+        assert_eq!(legacy_handle, Some(handle.clone()));
+        let vnext_handle = select_group_compat_handle(Some(handle), true);
+        assert_eq!(vnext_handle, None);
         assert_eq!(select_group_compat_handle(None, false), None);
         assert_eq!(select_group_compat_handle(None, true), None);
+
+        let create = group_create_request(
+            GroupCreateRequest {
+                name: "DID-only group".to_owned(),
+                ..GroupCreateRequest::default()
+            },
+            vnext_handle.clone(),
+        )
+        .unwrap();
+        assert!(create.creator_handle.is_none());
+
+        let join = group_join_request(
+            GroupJoinRequest {
+                group: "did:wba:example.com:groups:demo:e1".to_owned(),
+                ..GroupJoinRequest::default()
+            },
+            vnext_handle,
+        )
+        .unwrap();
+        assert!(join.member_handle.is_none());
+    }
+
+    #[test]
+    fn vnext_group_member_projection_is_did_only_and_legacy_keeps_handle() {
+        let did = im_core::ids::Did::parse("did:wba:example.com:users:alice:e1_demo").unwrap();
+        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
+        let member = GroupMember {
+            membership_id: None,
+            peer_persona_id: None,
+            did: Some(did.clone()),
+            credential_did: None,
+            handle: Some(handle.clone()),
+            handle_binding_generation: Some("7".to_owned()),
+            role: Some("member".to_owned()),
+            status: Some("active".to_owned()),
+            joined_at: None,
+            subject_type: None,
+        };
+
+        let vnext = group_member_to_json(&member, true);
+        assert_eq!(vnext["did"], did.as_str());
+        assert!(vnext.get("handle").is_none());
+        assert!(vnext.get("member_handle").is_none());
+
+        let legacy = group_member_to_json(&member, false);
+        assert_eq!(legacy["handle"], "alice");
+        assert_eq!(legacy["member_handle"], "alice");
+
+        let raw_vnext = normalize_group_member_json(
+            json!({
+                "agent_did": did.as_str(),
+                "handle": handle.as_str(),
+                "member_handle": handle.as_str(),
+                "agent_handle": handle.as_str(),
+            }),
+            true,
+        );
+        assert_eq!(raw_vnext["did"], did.as_str());
+        for key in ["handle", "member_handle", "agent_handle"] {
+            assert!(raw_vnext.get(key).is_none(), "vNext exposed {key}");
+        }
+
+        let resolution = GroupMemberResolution {
+            did: did.clone(),
+            handle: Some(handle),
+        };
+        let resolved_vnext = group_member_resolution_json_for_mode(Some(&resolution), true);
+        assert_eq!(resolved_vnext["did"], did.as_str());
+        assert!(resolved_vnext.get("handle").is_none());
     }
 
     #[test]
