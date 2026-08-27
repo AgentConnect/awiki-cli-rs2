@@ -556,7 +556,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
 | groups | lifecycle, members, profile/policy, group reads | group wire helpers, raw group receipts |
 | attachments | send/download/cancel, source/destination DTOs | upload slots, object commit, ticket params, Range negotiation, resumable partial registry, encrypted manifest internals |
-| secure | status, prepare, repair, outbox summary, secure send policy | ciphertext, prekeys, KeyPackage, MLS private state, provider IO |
+| secure | Direct status；Group status/prepare/repair；secure send policy | ciphertext, prekeys, KeyPackage, MLS private state, provider IO |
 | realtime | status, runner, event stream, normalized `ImEvent` | WebSocket frame, request id, ping/pong, dispatch queues |
 | email | account, inbox, read, mark-read, send, attachment, notifications | mail RPC params, raw JSON payload, auth headers |
 | content/site | page/site product operations | content/site RPC envelope and wire normalization |
@@ -575,7 +575,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 - `groups`: group lifecycle, members, profile/policy, group message reads, group E2EE lifecycle hooks.
 - Node Group facade 从 identity-bound client 自动附加当前完整 Handle，Group Host 再 fresh resolve 并验证 DID；Browser 不选择成员锚定方式，也不能把 Handle-backed 本地账户静默降级为 DID-only。
 - `attachments`: streaming upload, digest, manifest, message send, ticket download, resumable local-file or memory sinks, cancellation and atomic publication.
-- `secure`: direct E2EE, group E2EE, status/prepare/repair, secure outbox, secure message orchestration.
+- `secure`: Direct E2EE 状态与发送策略；Group E2EE status/prepare/repair；加密编排。阶段五不再公开旧 Direct prepare/repair 或 secure-outbox 操作面。
 - `realtime`: embeddable WebSocket runner, reconnect, notification projection, host notification events.
 - `email`: account, inbox/read/send/mark-read, attachment download, mail notifications.
 - `content/site`: handle content pages and tenant bare-domain site pages.

@@ -1809,15 +1809,15 @@ P6 增加：
 
 ```rust
 client.secure().direct(peer).status()
-client.secure().direct(peer).prepare()
-client.secure().direct(peer).repair()
-client.secure().outbox().list_failed()
-client.secure().outbox().retry(id)
-client.secure().outbox().drop(id)
 client.secure().group(group).status()
 client.secure().group(group).prepare()
 client.secure().group(group).repair()
 ```
+
+阶段五切换后，Direct 只保留当前状态查询和正常消息发送路径；旧 P5 v1 的手工
+`prepare/repair` 与 secure-outbox 操作面已删除。P6 v2 仍保留 owner 侧
+`group().prepare()/repair()`，用于现行 Group roster/MLS 收敛，不能与已经删除的
+Direct legacy repair 混为一谈。
 
 KeyPackage、prekey、MLS provider、ciphertext processing、direct session id、ratchet counter、raw attachment manifest 不进入默认 public API。
 

@@ -227,7 +227,7 @@ fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
 }
 
 #[test]
-fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
+fn workspace_upgrade_default_upgrader_plan_matches_supported_migration_chain() {
     let upgrader = workspace_upgrade::new_default_upgrader();
     assert_eq!(upgrader.latest_version(), 4);
 
@@ -241,7 +241,7 @@ fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
         vec![
             (0, 1, "workspace_0_to_1_bootstrap_local_state_upgrade"),
             (1, 2, "workspace_1_to_2_remove_legacy_skill_and_listener"),
-            (2, 3, "workspace_2_to_3_replace_existing_k1_handle_dids"),
+            (2, 3, "workspace_2_to_3_retire_k1_online_replacement"),
             (3, 4, "workspace_3_to_4_owner_identity_local_state"),
         ]
     );
@@ -254,7 +254,7 @@ fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
             .collect::<Vec<_>>(),
         vec![
             "workspace_1_to_2_remove_legacy_skill_and_listener",
-            "workspace_2_to_3_replace_existing_k1_handle_dids",
+            "workspace_2_to_3_retire_k1_online_replacement",
             "workspace_3_to_4_owner_identity_local_state",
         ]
     );
