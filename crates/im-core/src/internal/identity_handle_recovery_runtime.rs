@@ -2646,6 +2646,16 @@ fn progress_v4(
         .map(reset_reference_from_marker)
         .transpose()?;
     let result = pending.remote_result.as_ref();
+    let (unsupported_e2ee_group_count, unsupported_did_only_group_count) =
+        if !pending.fresh_local_state {
+            crate::internal::group_rebind_recovery::recovery_impact_counts(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &pending.owner_identity_id,
+                &pending.local_previous_did,
+            )?
+        } else {
+            (0, 0)
+        };
     Ok(HandleRecoveryProgress {
         operation_id: pending.operation_id.clone(),
         owner_identity_id: crate::ids::IdentityId::parse(&pending.owner_identity_id)?,
@@ -2676,6 +2686,8 @@ fn progress_v4(
         impact: HandleRecoveryImpact {
             local_ordinary_data_will_migrate: !pending.fresh_local_state,
             other_devices_must_rejoin: true,
+            unsupported_e2ee_group_count,
+            unsupported_did_only_group_count,
         },
         reset_reference,
         failure_code: pending

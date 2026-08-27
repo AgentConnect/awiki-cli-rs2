@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use serde_json::Value;
+
 // These tables are part of the historical local-state shape. Phase 5 keeps the
 // schema and existing rows readable, but no current runtime enqueues, claims,
 // or advances legacy Group rebind jobs.
@@ -50,6 +52,80 @@ CREATE TABLE IF NOT EXISTS group_rebind_p6_jobs (
 CREATE INDEX IF NOT EXISTS idx_group_rebind_p6_resume
 ON group_rebind_p6_jobs(owner_identity_id, phase, next_attempt_at, updated_at);
 "#;
+
+/// Read the frozen Recovery V4 impact projection without reviving a legacy writer.
+pub(crate) fn recovery_impact_counts(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    previous_member_did: &str,
+) -> crate::ImResult<(u32, u32)> {
+    let connection = rusqlite::Connection::open_with_flags(
+        sqlite_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT gm.anchor_kind, g.metadata
+FROM group_members gm
+JOIN groups g
+  ON g.owner_identity_id=gm.owner_identity_id AND g.group_id=gm.group_id
+WHERE gm.owner_identity_id=?1
+  AND gm.member_did=?2
+  AND COALESCE(gm.status,'active')='active'
+  AND COALESCE(g.membership_status,'active') NOT IN ('left','removed','inactive','non_member')"#,
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![owner_identity_id, previous_member_did],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut e2ee = 0_u32;
+    let mut did_only = 0_u32;
+    for row in rows {
+        let (anchor_kind, metadata) =
+            row.map_err(crate::internal::local_state::local_state_unavailable)?;
+        if anchor_kind != "handle" {
+            did_only = did_only.saturating_add(1);
+        }
+        if metadata.as_deref().and_then(metadata_e2ee_classification) == Some(true) {
+            e2ee = e2ee.saturating_add(1);
+        }
+    }
+    Ok((e2ee, did_only))
+}
+
+fn metadata_e2ee_classification(metadata: &str) -> Option<bool> {
+    let metadata = serde_json::from_str::<Value>(metadata).ok()?;
+    let profiles = [
+        metadata.get("message_security_profile"),
+        metadata.get("required_security_profile"),
+        metadata
+            .get("group_policy")
+            .and_then(|policy| policy.get("message_security_profile")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .map(|value| value.trim().to_ascii_lowercase())
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>();
+    if profiles.iter().any(|profile| profile == "group-e2ee") {
+        return Some(true);
+    }
+    if !profiles.is_empty()
+        && profiles
+            .iter()
+            .all(|profile| matches!(profile.as_str(), "transport-protected" | "transport"))
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 pub(crate) fn previous_recovery_did_matches(
     sqlite_path: &Path,
@@ -105,6 +181,47 @@ WHERE owner_identity_id=?1
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_impact_reader_preserves_frozen_history_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite_path = dir.path().join("im.sqlite");
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute_batch(
+            r#"
+INSERT INTO groups
+ (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,metadata,stored_at)
+VALUES
+ ('owner','did:new','group-e2ee','group-e2ee','member','active',
+  '{"required_security_profile":"group-e2ee"}','now'),
+ ('owner','did:new','group-did','group-did','member','active',
+  '{"required_security_profile":"transport-protected"}','now');
+INSERT INTO group_members
+ (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,
+  anchor_value,handle_binding_generation,status,last_synced_at)
+VALUES
+ ('owner','did:new','group-e2ee','member-e2ee','did:old','alice.example','handle',
+  'alice.example','1','active','now'),
+ ('owner','did:new','group-did','member-did','did:old',NULL,'did',
+  'did:old',NULL,'active','now');
+"#,
+        )
+        .unwrap();
+        drop(db);
+
+        assert_eq!(
+            recovery_impact_counts(&sqlite_path, "owner", "did:old").unwrap(),
+            (1, 1)
+        );
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        let legacy_jobs: i64 = db
+            .query_row("SELECT COUNT(*) FROM group_rebind_outbox", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(legacy_jobs, 0);
+    }
 
     #[test]
     fn current_transition_projection_does_not_consume_legacy_group_journal() {
