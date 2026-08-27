@@ -104,6 +104,10 @@ const DIRECT_CIPHER_CONTENT_TYPE: &str = "application/anp-direct-cipher+json";
 const DIRECT_WIRE_INBOX_PAGE_LIMIT: i64 = 100;
 const DIRECT_WIRE_INBOX_MAX_PAGES: usize = 20;
 const DAEMON_SETUP_ATTEMPT_LIMIT: usize = 2;
+const PROBE_CLIENT_RELEASE: &str = match option_env!("AWIKI_CLI_RELEASE") {
+    Some(release) => release,
+    None => "0815",
+};
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -2449,6 +2453,15 @@ impl Probe {
             authorization.parse().map_err(|_| ProbeFailure::Runtime)?;
         header.set_sensitive(true);
         request.headers_mut().insert(WS_AUTHORIZATION, header);
+        let client_version: tokio_tungstenite::tungstenite::http::HeaderValue =
+            probe_client_version_header()?
+                .to_str()
+                .map_err(|_| ProbeFailure::Runtime)?
+                .parse()
+                .map_err(|_| ProbeFailure::Runtime)?;
+        request
+            .headers_mut()
+            .insert("x-awiki-client-version", client_version);
         let connector = ws_connector(self.ca_bundle.as_deref()).await?;
         match connect_async_tls_with_config(request, None, false, connector).await {
             Ok((stream, _)) => Ok(WsConnectOutcome::Connected(Box::new(stream))),
@@ -2805,6 +2818,10 @@ impl Probe {
             .http
             .post(endpoint.clone())
             .header(REQWEST_AUTHORIZATION, authorization)
+            .header(
+                im_core::CLIENT_VERSION_HEADER,
+                probe_client_version_header()?,
+            )
             .header(CONTENT_TYPE, "application/json")
             .body(payload)
             .send()
@@ -2850,6 +2867,18 @@ impl Probe {
         }
         Ok(url)
     }
+}
+
+fn probe_client_version_header() -> Result<ReqwestHeaderValue, ProbeFailure> {
+    let value = im_core::ClientVersionInfo::new(
+        "awiki-cli",
+        PROBE_CLIENT_RELEASE,
+        env!("CARGO_PKG_VERSION"),
+        None,
+    )
+    .map_err(|_| ProbeFailure::Runtime)?
+    .header_value();
+    value.parse().map_err(|_| ProbeFailure::Runtime)
 }
 
 fn daemon_continuity_delegated_status_ready(status: &str) -> bool {
@@ -6879,12 +6908,19 @@ INSERT INTO runtime_final_outbox (
         let observed_skips = Arc::new(Mutex::new(Vec::new()));
         let (base_url, server) = spawn_direct_wire_pagination_server(observed_skips.clone()).await;
         let mut probe = test_probe(&base_url);
+        let raw_message_id = direct_recipient_delivery_operation_id(
+            SENDER_DID,
+            "dev-sender-1",
+            LOCAL_DID,
+            "dev-local-1",
+            "message-page-2",
+        );
         let request = json!({
             "id": "wire-page",
             "action": "direct_wire_projection",
             "params": {
                 "peer_did": SENDER_DID,
-                "message_id": "message-page-2",
+                "message_id": raw_message_id,
                 "expected_shape": "init",
                 "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
             }
@@ -6908,6 +6944,7 @@ INSERT INTO runtime_final_outbox (
             WIRE_CIPHERTEXT_SECRET,
             WIRE_PLAINTEXT_SECRET,
             "message-page-2",
+            raw_message_id.as_str(),
             SENDER_DID,
         ] {
             assert!(!encoded.contains(forbidden));
@@ -8221,11 +8258,31 @@ INSERT INTO runtime_final_outbox (
             .local_addr()
             .expect("WebSocket capabilities server address");
         let base_url = format!("http://{address}");
+        let expected_client_version = match probe_client_version_header() {
+            Ok(value) => value,
+            Err(_) => panic!("probe client version header"),
+        }
+        .to_str()
+        .expect("ASCII probe client version header")
+        .to_owned();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("accept WebSocket request");
-            let mut stream = tokio_tungstenite::accept_async(socket)
-                .await
-                .expect("accept WebSocket handshake");
+            let mut stream = tokio_tungstenite::accept_hdr_async(
+                socket,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("x-awiki-client-version")
+                            .and_then(|value| value.to_str().ok()),
+                        Some(expected_client_version.as_str())
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept WebSocket handshake");
             let message = stream
                 .next()
                 .await
@@ -8342,10 +8399,20 @@ INSERT INTO runtime_final_outbox (
             .local_addr()
             .expect("direct-wire pagination address");
         let base_url = format!("http://{address}");
+        let expected_client_version = match probe_client_version_header() {
+            Ok(value) => value,
+            Err(_) => panic!("probe client version header"),
+        }
+        .to_str()
+        .expect("ASCII probe client version header")
+        .to_ascii_lowercase();
         let server = tokio::spawn(async move {
             for page_index in 0..2 {
                 let (mut socket, _) = listener.accept().await.expect("accept inbox request");
                 let request = read_http_request(&mut socket).await;
+                assert!(request.to_ascii_lowercase().contains(&format!(
+                    "x-awiki-client-version: {expected_client_version}"
+                )));
                 let (_, body) = request.split_once("\r\n\r\n").expect("inbox request body");
                 let payload: Value = serde_json::from_str(body).expect("inbox request JSON");
                 assert_eq!(payload["method"], "inbox.get");
