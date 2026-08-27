@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration as StdDuration, Instant};
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -10,6 +11,8 @@ use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTranspo
 
 const PENDING_PERSONA_RESOLUTION_LIMIT: u32 = 32;
 const GROUP_SEQUENCE_ONLY_TARGET_NOT_FOUND_MAX_ATTEMPTS: i64 = 3;
+const SYNC_RUN_MAX_PAGES: u32 = 20;
+const SYNC_RUN_DEADLINE: StdDuration = StdDuration::from_secs(20);
 
 pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     client: &'a crate::core::ImClient,
@@ -573,9 +576,21 @@ where
         mut self,
         request: crate::messages::MessageSyncRequest,
     ) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+        let binding = self.client.active_sync_account_binding().await?;
+        let db = self.client.core_inner().local_state_db().await?;
+        let run = db
+            .begin_message_sync_run(&binding.owner_identity_id, unix_time_i64())
+            .await?;
+        let run_started = Instant::now();
         let mut device_epoch_refresh_attempted = false;
-        loop {
-            match self.sync_now_once(&request).await {
+        let final_result = loop {
+            match self
+                .sync_now_once(&request, run.run_generation, run_started)
+                .await
+            {
                 Err(error)
                     if !device_epoch_refresh_attempted && is_device_epoch_rejection(&error) =>
                 {
@@ -589,21 +604,60 @@ where
                     let _owner_guard = owner_lock.lock().await;
                     let db = self.client.core_inner().local_state_db().await?;
                     match self.drain_read_outbox(&db, &binding).await {
-                        Ok(None) => return Ok(outcome),
-                        Ok(Some(error)) => return Err(error),
+                        Ok(None) => break Ok(outcome),
+                        Ok(Some(error)) => break Err(error),
                         Err(_) => {
                             outcome
                                 .warnings
                                 .push("sync.read_state_writeback_deferred".to_owned());
-                            return Ok(outcome);
+                            break Ok(outcome);
                         }
                     }
                 }
-                Ok((_outcome, Some(error))) => return Err(error),
-                Ok((outcome, None)) => return Ok(outcome),
-                Err(error) => return Err(error),
+                Ok((_outcome, Some(error))) => break Err(error),
+                Ok((outcome, None)) => break Ok(outcome),
+                Err(error) => break Err(error),
             }
+        };
+        let budget_pending = final_result.as_ref().is_ok_and(|outcome| {
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning == "sync.budget_exhausted")
+        });
+        let now = unix_time_i64();
+        let last_result_json = match &final_result {
+            Ok(outcome) => json!({
+                "status": outcome.status,
+                "pages_fetched": outcome.pages_fetched,
+                "events_applied": outcome.events_applied,
+                "budget_pending": budget_pending,
+                "elapsed_ms": run_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            }),
+            Err(error) => json!({
+                "status": "retryable_failure",
+                "error": error.to_string(),
+                "elapsed_ms": run_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            }),
         }
+        .to_string();
+        let current_generation = db
+            .finish_message_sync_run(crate::internal::local_state::sync_v2::MessageSyncRunState {
+                owner_identity_id: run.owner_identity_id,
+                sync_pending: budget_pending || final_result.is_err(),
+                run_generation: run.run_generation,
+                next_retry_at: final_result.as_ref().err().map(|_| now.saturating_add(1)),
+                last_result_json: Some(last_result_json),
+                updated_at: now,
+            })
+            .await?;
+        if !current_generation {
+            return Err(sync_error(
+                "SYNC_RUN_SUPERSEDED",
+                "a newer sync run superseded this result",
+            ));
+        }
+        final_result
     }
 
     async fn refresh_session_and_lane_epoch(&mut self) -> crate::ImResult<()> {
@@ -626,6 +680,8 @@ where
     async fn sync_now_once(
         &mut self,
         request: &crate::messages::MessageSyncRequest,
+        run_generation: i64,
+        run_started: Instant,
     ) -> crate::ImResult<(crate::messages::MessageSyncOutcome, Option<crate::ImError>)> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)
@@ -666,7 +722,8 @@ where
         {
             crate::internal::local_state::sync_v2::MessageSyncStateAccess::Ready(state) => state,
             crate::internal::local_state::sync_v2::MessageSyncStateAccess::BootstrapRequired(_) => {
-                self.bootstrap(&db, &binding, &mut result).await?
+                self.bootstrap(&db, &binding, run_generation, &mut result)
+                    .await?
             }
         };
         if db
@@ -687,6 +744,7 @@ where
             .await;
 
         let mut recovery_token_retries = 0_u8;
+        let mut failure_fingerprints = BTreeMap::new();
         let mut blocked_lanes = BTreeSet::new();
         let mut p5_lane_recovery_attempted = false;
         loop {
@@ -736,7 +794,14 @@ where
                 crate::internal::wire::sync_v2::SyncDeltaResponseV2::Delta(page) => page,
                 crate::internal::wire::sync_v2::SyncDeltaResponseV2::RecoveryRequired(recovery) => {
                     match self
-                        .recover_snapshot(&db, &binding, &state, &recovery, &mut result)
+                        .recover_snapshot(
+                            &db,
+                            &binding,
+                            &state,
+                            &recovery,
+                            run_generation,
+                            &mut result,
+                        )
                         .await
                     {
                         Ok(next) => {
@@ -747,7 +812,7 @@ where
                         Err(error)
                             if matches!(
                                 error_code(&error),
-                                Some("SYNC_RECOVERY_TOKEN_INVALID" | "SYNC_RECOVERY_TOKEN_EXPIRED")
+                                Some("sync.recovery_token_invalid" | "sync.recovery_token_expired")
                             ) && recovery_token_retries < 1 =>
                         {
                             recovery_token_retries += 1;
@@ -803,10 +868,11 @@ where
             let hydrated = if hydration_event_ids.is_empty() {
                 BTreeMap::new()
             } else {
-                let (hydrated, _) = hydrate_required_messages(
+                let (hydrated, _) = hydrate_required_messages_with_budget(
                     &mut self.transport,
                     &wire_identity(self.client),
                     &hydration_event_ids,
+                    &mut failure_fingerprints,
                 )
                 .await?;
                 result.messages_hydrated = result
@@ -859,9 +925,12 @@ where
             result
                 .changed_conversation_ids
                 .extend(resolved_conversations);
+            require_current_sync_run_generation(&db, &binding.owner_identity_id, run_generation)
+                .await?;
             let outcome = db
                 .apply_sync_delta_v2(crate::internal::local_state::sync_v2::DeltaApplyInputV2 {
                     owner_identity_id: binding.owner_identity_id.clone(),
+                    expected_run_generation: Some(run_generation),
                     owner_did: binding.current_did.clone(),
                     account_id: binding.account_id.clone(),
                     protocol_device_id: binding.protocol_device_id.clone(),
@@ -908,6 +977,7 @@ where
                     &db,
                     &binding,
                     &page.lanes,
+                    page.lane_transport_invalid,
                     &requested_lanes,
                     &mut lane_states,
                     &mut blocked_lanes,
@@ -920,6 +990,22 @@ where
             state.bootstrap_state = "active".to_owned();
             state.last_server_time = Some(page.server_time);
             state.last_success_at = Some(unix_time_i64());
+            let has_continuation = page.has_more || lane_has_more;
+            if has_continuation
+                && (result.pages_fetched >= SYNC_RUN_MAX_PAGES
+                    || run_started.elapsed() >= SYNC_RUN_DEADLINE)
+            {
+                result.warnings.push("sync.budget_exhausted".to_owned());
+                result.changed_conversation_ids.sort();
+                result.changed_conversation_ids.dedup();
+                result.status =
+                    if result.events_applied == 0 && result.changed_conversation_ids.is_empty() {
+                        crate::messages::MessageSyncStatus::Idle
+                    } else {
+                        crate::messages::MessageSyncStatus::Changed
+                    };
+                return Ok((best_effort_cleanup(&db, &state, result).await, None));
+            }
             if page.has_more && state.scan_seq == cursor.scan_seq {
                 return Err(sync_error(
                     "SYNC_INVALID_PAGE",
@@ -963,6 +1049,7 @@ where
             crate::internal::wire::sync_v2::SyncLaneV3,
             crate::internal::wire::sync_v2::SyncLaneDeltaSectionV3,
         >,
+        transport_invalid: bool,
         requested: &BTreeMap<
             crate::internal::wire::sync_v2::SyncLaneV3,
             crate::internal::wire::sync_v2::SyncLaneCursorV3,
@@ -977,29 +1064,35 @@ where
     ) -> crate::ImResult<bool> {
         use crate::internal::wire::sync_v2::{SyncLaneDeltaSectionV3, SyncLaneV3};
 
-        if requested.is_empty() {
-            if !sections.is_empty() {
-                return Err(sync_error(
-                    "SYNC_INVALID_PAGE",
-                    "sync.delta returned unrequested lane sections",
-                ));
-            }
-            return Ok(false);
+        if transport_invalid {
+            result
+                .warnings
+                .push("sync.lane.transport_invalid".to_owned());
         }
-        if requested.keys().any(|lane| !sections.contains_key(lane))
-            || sections.keys().any(|lane| !requested.contains_key(lane))
-        {
-            return Err(sync_error(
-                "SYNC_INVALID_PAGE",
-                "sync.delta lane sections do not match the requested lanes",
-            ));
+        for lane in requested.keys().filter(|lane| !sections.contains_key(lane)) {
+            result
+                .warnings
+                .push(format!("sync.lane.{}.missing", lane.as_str()));
+            blocked_lanes.insert(*lane);
         }
         let mut any_has_more = false;
         for lane in [SyncLaneV3::P5Device, SyncLaneV3::P6Group] {
             let Some(section) = sections.get(&lane) else {
                 continue;
             };
+            if !requested.contains_key(&lane) {
+                result
+                    .warnings
+                    .push(format!("sync.lane.{}.unrequested", lane.as_str()));
+                continue;
+            }
             match section {
+                SyncLaneDeltaSectionV3::TransportInvalid => {
+                    result
+                        .warnings
+                        .push(format!("sync.lane.{}.transport_invalid", lane.as_str()));
+                    blocked_lanes.insert(lane);
+                }
                 SyncLaneDeltaSectionV3::Error(error) => {
                     result
                         .warnings
@@ -1717,6 +1810,7 @@ where
         binding: &crate::identity::ActiveSyncAccountBinding,
         previous: &crate::internal::local_state::sync_v2::MessageSyncState,
         recovery: &crate::internal::wire::sync_v2::SyncRecoveryV2,
+        run_generation: i64,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
         let now = unix_time_i64();
@@ -1836,6 +1930,7 @@ where
             .apply_sync_snapshot_v2(
                 crate::internal::local_state::sync_v2::SnapshotApplyInputV2 {
                     owner_identity_id: binding.owner_identity_id.clone(),
+                    expected_run_generation: Some(run_generation),
                     owner_did: binding.current_did.clone(),
                     account_id: binding.account_id.clone(),
                     protocol_device_id: binding.protocol_device_id.clone(),
@@ -1847,6 +1942,7 @@ where
                     stream_epoch: snapshot.snapshot_cursor.stream_epoch.clone(),
                     snapshot_scan_seq: snapshot.snapshot_cursor.scan_seq.clone(),
                     server_time: snapshot.server_time.clone(),
+                    server_cutoff: snapshot.server_cutoff.clone(),
                     events,
                     groups,
                     read_states,
@@ -1921,8 +2017,10 @@ where
         &mut self,
         db: &crate::internal::local_state::actor::LocalStateDb,
         binding: &crate::identity::ActiveSyncAccountBinding,
+        run_generation: i64,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
+        require_explicit_sync_negotiation(&mut self.transport, self.client).await?;
         let client_instance_id = db
             .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
             .await?;
@@ -1945,7 +2043,11 @@ where
         {
             if account_id != &binding.account_id
                 || device_id != &binding.protocol_device_id
-                || p6_delivery_client_instance_id != &client_instance_id
+                || !bootstrap_p6_activation_matches(
+                    lane_bootstrap,
+                    p6_delivery_client_instance_id.as_deref(),
+                    &client_instance_id,
+                )
             {
                 return Err(sync_error(
                     "SYNC_ACCOUNT_BINDING_MISMATCH",
@@ -1985,13 +2087,15 @@ where
                 updated_at: now,
             };
             let state = self
-                .recover_snapshot(db, binding, &previous, recovery, result)
+                .recover_snapshot(db, binding, &previous, recovery, run_generation, result)
                 .await?;
             db.replace_lane_sync_states(
                 &binding.owner_identity_id,
                 lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap),
             )
             .await?;
+            record_explicit_lane_negotiation(db, binding, &client_instance_id, lane_bootstrap)
+                .await?;
             return Ok(state);
         }
         let crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) = response
@@ -2000,7 +2104,11 @@ where
         };
         if bootstrap.account_id != binding.account_id
             || bootstrap.device_id != binding.protocol_device_id
-            || bootstrap.p6_delivery_client_instance_id != client_instance_id
+            || !bootstrap_p6_activation_matches(
+                &bootstrap.lane_bootstrap,
+                bootstrap.p6_delivery_client_instance_id.as_deref(),
+                &client_instance_id,
+            )
         {
             return Err(sync_error(
                 "SYNC_ACCOUNT_BINDING_MISMATCH",
@@ -2058,6 +2166,13 @@ where
                 read_states,
                 lane_states,
             },
+        )
+        .await?;
+        record_explicit_lane_negotiation(
+            db,
+            binding,
+            &client_instance_id,
+            &bootstrap.lane_bootstrap,
         )
         .await?;
         Ok(state)
@@ -2156,6 +2271,7 @@ pub(crate) async fn refresh_lane_bootstrap_with_transport_async<T>(
 where
     T: AsyncAuthenticatedRpcTransport,
 {
+    require_explicit_sync_negotiation(transport, client).await?;
     let client_instance_id = db
         .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
         .await?;
@@ -2172,7 +2288,7 @@ where
             bootstrap.account_id.as_str(),
             bootstrap.device_id.as_str(),
             &bootstrap.lane_bootstrap,
-            bootstrap.p6_delivery_client_instance_id.as_str(),
+            bootstrap.p6_delivery_client_instance_id.as_deref(),
         ),
         crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
             account_id,
@@ -2184,12 +2300,16 @@ where
             account_id.as_str(),
             device_id.as_str(),
             lane_bootstrap,
-            p6_delivery_client_instance_id.as_str(),
+            p6_delivery_client_instance_id.as_deref(),
         ),
     };
     if account_id != binding.account_id
         || device_id != binding.protocol_device_id
-        || activated_client_instance_id != client_instance_id
+        || !bootstrap_p6_activation_matches(
+            lane_bootstrap,
+            activated_client_instance_id,
+            &client_instance_id,
+        )
     {
         return Err(sync_error(
             "SYNC_ACCOUNT_BINDING_MISMATCH",
@@ -2199,7 +2319,85 @@ where
     let states = lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap);
     db.replace_lane_sync_states(&binding.owner_identity_id, states.clone())
         .await?;
+    record_explicit_lane_negotiation(db, binding, &client_instance_id, lane_bootstrap).await?;
     Ok(lane_state_map(states))
+}
+
+async fn record_explicit_lane_negotiation(
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    client_instance_id: &str,
+    lanes: &crate::internal::wire::sync_v2::SyncLaneBootstrapV3,
+) -> crate::ImResult<()> {
+    let capabilities = [
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+    ]
+    .into_iter()
+    .filter(|lane| lanes.capabilities.contains(lane))
+    .map(|lane| lane.capability())
+    .collect::<Vec<_>>();
+    let capabilities = serde_json::to_string(&capabilities).map_err(|error| {
+        sync_error(
+            "SYNC_NEGOTIATION_STATE_INVALID",
+            format!("failed to encode negotiated lane state: {error}"),
+        )
+    })?;
+    db.record_sync_lane_capability_negotiation_v1a(
+        &binding.owner_identity_id,
+        &binding.device_auth_generation,
+        client_instance_id,
+        capabilities,
+    )
+    .await
+}
+
+async fn require_current_sync_run_generation(
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    owner_identity_id: &str,
+    expected_generation: i64,
+) -> crate::ImResult<()> {
+    let current = db
+        .load_message_sync_run_state(owner_identity_id)
+        .await?
+        .ok_or_else(|| sync_error("SYNC_RUN_SUPERSEDED", "sync run state is missing"))?;
+    if current.run_generation != expected_generation {
+        return Err(sync_error(
+            "SYNC_RUN_SUPERSEDED",
+            "a newer sync run superseded the local apply",
+        ));
+    }
+    Ok(())
+}
+
+async fn require_explicit_sync_negotiation<T>(
+    transport: &mut T,
+    client: &crate::core::ImClient,
+) -> crate::ImResult<()>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
+    let params =
+        crate::internal::wire::sync_v2::build_capability_discovery_params(&wire_identity(client))?;
+    let raw = transport
+        .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "anp.get_capabilities", params)
+        .await?;
+    crate::internal::wire::sync_v2::require_explicit_sync_negotiation_capability(&raw)
+}
+
+fn bootstrap_p6_activation_matches(
+    lanes: &crate::internal::wire::sync_v2::SyncLaneBootstrapV3,
+    activated_client_instance_id: Option<&str>,
+    expected_client_instance_id: &str,
+) -> bool {
+    if lanes
+        .capabilities
+        .contains(&crate::internal::wire::sync_v2::SyncLaneV3::P6Group)
+    {
+        activated_client_instance_id == Some(expected_client_instance_id)
+    } else {
+        activated_client_instance_id.is_none()
+    }
 }
 
 fn lane_states_from_bootstrap(
@@ -2822,14 +3020,44 @@ async fn hydrate_required_messages<T: AsyncAuthenticatedRpcTransport>(
     identity: &crate::internal::wire::common::WireIdentity,
     message_event_ids: &[String],
 ) -> crate::ImResult<(BTreeMap<String, Value>, u32)> {
+    hydrate_required_messages_with_budget(
+        transport,
+        identity,
+        message_event_ids,
+        &mut BTreeMap::new(),
+    )
+    .await
+}
+
+async fn hydrate_required_messages_with_budget<T: AsyncAuthenticatedRpcTransport>(
+    transport: &mut T,
+    identity: &crate::internal::wire::common::WireIdentity,
+    message_event_ids: &[String],
+    failure_fingerprints: &mut BTreeMap<String, u8>,
+) -> crate::ImResult<(BTreeMap<String, Value>, u32)> {
     let mut hydrated = BTreeMap::new();
     let mut count = 0_u32;
     for event_ids in hydration_event_id_batches(message_event_ids) {
         let params =
             crate::internal::wire::sync_v2::build_message_get_batch_params(identity, event_ids)?;
-        let raw = transport
-            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "message.get_batch", params)
-            .await?;
+        let raw = loop {
+            match transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "message.get_batch", params.clone())
+                .await
+            {
+                Ok(raw) => break raw,
+                Err(error) if is_transient_sync_io_error(&error) => {
+                    let fingerprint = sync_failure_fingerprint("message.get_batch", &error);
+                    let failures = failure_fingerprints.entry(fingerprint).or_default();
+                    *failures = failures.saturating_add(1);
+                    if *failures >= 3 {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(sync_retry_delay(&error, *failures)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let batch = crate::internal::wire::sync_v2::parse_message_batch(&raw, event_ids)?;
         if !batch.unavailable.is_empty() {
             return Err(sync_error(
@@ -2848,6 +3076,50 @@ async fn hydrate_required_messages<T: AsyncAuthenticatedRpcTransport>(
         }
     }
     Ok((hydrated, count))
+}
+
+fn is_transient_sync_io_error(error: &crate::ImError) -> bool {
+    match error {
+        crate::ImError::TransportUnavailable { .. } => true,
+        crate::ImError::Service {
+            status_code, code, ..
+        } => {
+            matches!(status_code, Some(408 | 425 | 429 | 500..=599))
+                || code.as_deref() == Some("anp.temporarily_unavailable")
+        }
+        _ => false,
+    }
+}
+
+fn sync_failure_fingerprint(operation: &str, error: &crate::ImError) -> String {
+    match error {
+        crate::ImError::Service {
+            status_code, code, ..
+        } => format!(
+            "{operation}:service:{}:{}",
+            status_code.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+            code.as_deref().unwrap_or("none")
+        ),
+        crate::ImError::TransportUnavailable { .. } => format!("{operation}:transport"),
+        _ => format!("{operation}:non_transient"),
+    }
+}
+
+fn sync_retry_delay(error: &crate::ImError, failure_count: u8) -> StdDuration {
+    let retry_after_seconds = match error {
+        crate::ImError::Service {
+            data: Some(data), ..
+        } => data
+            .get("retry_after_seconds")
+            .or_else(|| data.get("retry_after"))
+            .and_then(Value::as_u64),
+        _ => None,
+    };
+    if let Some(seconds) = retry_after_seconds {
+        return StdDuration::from_secs(seconds.min(30));
+    }
+    let exponent = u32::from(failure_count.saturating_sub(1)).min(8);
+    StdDuration::from_millis(100_u64.saturating_mul(1_u64 << exponent))
 }
 
 fn thread_for_event(
@@ -3394,7 +3666,7 @@ pub(crate) fn failure_outcome(
                         | "anp.device_not_eligible"
                         | "anp.device_state_changed"
                         | "SYNC_ACCOUNT_BINDING_MISMATCH"
-                        | "SYNC_DEVICE_BINDING_MISMATCH"
+                        | "sync.device_binding_mismatch"
                         | "SYNC_AUTH_GENERATION_MISMATCH"
                 )
             ) =>
@@ -4956,28 +5228,40 @@ mod tests {
         binding: &crate::identity::ActiveSyncAccountBinding,
         lanes: &[(crate::internal::wire::sync_v2::SyncLaneV3, &str)],
     ) {
-        client
-            .core_inner()
-            .local_state_db()
-            .await
-            .unwrap()
-            .replace_lane_sync_states(
-                &binding.owner_identity_id,
-                lanes
-                    .iter()
-                    .map(
-                        |(lane, epoch)| crate::internal::local_state::sync_v2::LaneSyncState {
-                            owner_identity_id: binding.owner_identity_id.clone(),
-                            lane: *lane,
-                            stream_epoch: (*epoch).to_owned(),
-                            scan_seq: "0".to_owned(),
-                            committed_seq: "0".to_owned(),
-                        },
-                    )
-                    .collect(),
-            )
+        let db = client.core_inner().local_state_db().await.unwrap();
+        db.replace_lane_sync_states(
+            &binding.owner_identity_id,
+            lanes
+                .iter()
+                .map(
+                    |(lane, epoch)| crate::internal::local_state::sync_v2::LaneSyncState {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        lane: *lane,
+                        stream_epoch: (*epoch).to_owned(),
+                        scan_seq: "0".to_owned(),
+                        committed_seq: "0".to_owned(),
+                    },
+                )
+                .collect(),
+        )
+        .await
+        .unwrap();
+        let client_instance_id = db
+            .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
             .await
             .unwrap();
+        let capabilities = lanes
+            .iter()
+            .map(|(lane, _)| lane.capability())
+            .collect::<Vec<_>>();
+        db.record_sync_lane_capability_negotiation_v1a(
+            &binding.owner_identity_id,
+            &binding.device_auth_generation,
+            client_instance_id,
+            serde_json::to_string(&capabilities).unwrap(),
+        )
+        .await
+        .unwrap();
     }
 
     #[cfg(feature = "group-e2ee")]
@@ -5018,6 +5302,124 @@ mod tests {
             ])
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v1a_serialized_discovery_bootstrap_and_delta_run_with_zero_secure_lanes() {
+        let fixture = SyncSnapshotFixture::new("v1a-explicit-zero");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let transport = SyncSnapshotTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                Ok(json!({
+                    "supported_profiles": [
+                        crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
+                    ]
+                })),
+                Ok(json!({
+                    "mode": "tail_only",
+                    "account_id": binding.account_id,
+                    "device_id": binding.protocol_device_id,
+                    "server_time": "2026-08-27T00:00:00Z",
+                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                    "read_state_baseline": [],
+                    "group_state_baseline": [],
+                    "warnings": [],
+                    "sync_capabilities": []
+                })),
+                Ok(sync_snapshot_delta("1", "0", Vec::new())),
+            ],
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            transport,
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["anp.get_capabilities", "sync.bootstrap", "sync.delta"]
+        );
+        assert_eq!(
+            calls[1].params["body"]["capabilities"]["requested_sync_capabilities"],
+            json!([])
+        );
+        assert!(calls[2].params["body"].get("lanes").is_none());
+        assert!(calls[2].params["body"].get("p6_delivery").is_none());
+    }
+
+    #[tokio::test]
+    async fn v1a_malformed_lane_does_not_rollback_serialized_ordinary_delta() {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
+        let fixture = SyncSnapshotFixture::new("v1a-malformed-lane-isolation");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        seed_lane_states(&client, &binding, &[(SyncLaneV3::P5Device, "41")]).await;
+        let group_did = "did:wba:awiki.test:groups:v1a-lane-isolation";
+        let mut response = sync_snapshot_delta(
+            "1",
+            "1",
+            vec![sync_group_member_changed_event(
+                &binding,
+                "v1a-ordinary-event-1",
+                "1",
+                group_did,
+                "1",
+                "1",
+                "did:wba:awiki.test:user:bob:e1_actor",
+                "did:wba:awiki.test:user:carol:e1_subject",
+                "active",
+            )],
+        );
+        response["lanes"] = json!({
+            "p5_device": {
+                "events": "malformed",
+                "next_cursor": {"stream_epoch": "41", "scan_seq": "1"},
+                "has_more": false
+            }
+        });
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(Rc::new(RefCell::new(Vec::new())), vec![Ok(response)]),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.events_applied, 1);
+        assert!(outcome
+            .warnings
+            .contains(&"sync.lane.p5_device.transport_invalid".to_owned()));
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(state.scan_seq, "1");
+        let lane_states = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_lane_sync_states(binding.owner_identity_id)
+            .await
+            .unwrap();
+        assert_eq!(lane_states.len(), 1);
+        assert_eq!(lane_states[0].lane, SyncLaneV3::P5Device);
+        assert_eq!(lane_states[0].scan_seq, "0");
     }
 
     #[tokio::test]
@@ -6043,6 +6445,7 @@ mod tests {
             .unwrap()
             .apply_sync_delta_v2(crate::internal::local_state::sync_v2::DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -7066,7 +7469,7 @@ mod tests {
                         "20",
                     )),
                     Err(sync_error(
-                        "SYNC_RECOVERY_TOKEN_INVALID",
+                        "sync.recovery_token_invalid",
                         "recovery token was invalid",
                     )),
                     Ok(sync_snapshot_recovery(
@@ -7076,7 +7479,7 @@ mod tests {
                         "20",
                     )),
                     Err(sync_error(
-                        "SYNC_RECOVERY_TOKEN_EXPIRED",
+                        "sync.recovery_token_expired",
                         "replacement recovery token expired",
                     )),
                 ],
@@ -7092,7 +7495,7 @@ mod tests {
             crate::ImError::Service {
                 code: Some(code),
                 ..
-            } if code == "SYNC_RECOVERY_TOKEN_EXPIRED"
+            } if code == "sync.recovery_token_expired"
         ));
         let failed_state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
         assert_eq!(

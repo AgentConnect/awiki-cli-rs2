@@ -124,6 +124,18 @@ CREATE TABLE IF NOT EXISTS message_sync_state (
 CREATE UNIQUE INDEX IF NOT EXISTS message_sync_state_account_device_idx
 ON message_sync_state(account_id, device_id);
 
+CREATE TABLE IF NOT EXISTS message_sync_run_state (
+    owner_identity_id  TEXT PRIMARY KEY,
+    sync_pending       INTEGER NOT NULL CHECK (sync_pending IN (0, 1)),
+    run_generation     INTEGER NOT NULL CHECK (run_generation > 0),
+    next_retry_at      INTEGER,
+    last_result_json   TEXT,
+    updated_at         INTEGER NOT NULL,
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS lane_sync_state (
     owner_identity_id  TEXT NOT NULL,
     lane               TEXT NOT NULL,
@@ -155,6 +167,8 @@ CREATE TABLE IF NOT EXISTS lane_sync_state (
 CREATE TABLE IF NOT EXISTS sync_lane_capability_state (
     owner_identity_id                  TEXT PRIMARY KEY,
     negotiated_device_auth_generation TEXT NOT NULL,
+    client_instance_id                 TEXT,
+    negotiated_capabilities_json       TEXT,
     CHECK (
         negotiated_device_auth_generation <> ''
         AND negotiated_device_auth_generation NOT GLOB '*[^0-9]*'
@@ -508,6 +522,16 @@ pub(crate) struct SyncDiagnosticsState {
     pub(crate) next_retry_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MessageSyncRunState {
+    pub(crate) owner_identity_id: String,
+    pub(crate) sync_pending: bool,
+    pub(crate) run_generation: i64,
+    pub(crate) next_retry_at: Option<i64>,
+    pub(crate) last_result_json: Option<String>,
+    pub(crate) updated_at: i64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SyncCleanupOutcome {
     pub(crate) applied_events_deleted: usize,
@@ -595,6 +619,7 @@ pub(crate) struct ReadStateApplyV2 {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DeltaApplyInputV2 {
     pub(crate) owner_identity_id: String,
+    pub(crate) expected_run_generation: Option<i64>,
     pub(crate) owner_did: String,
     pub(crate) account_id: String,
     pub(crate) protocol_device_id: String,
@@ -644,6 +669,7 @@ pub(crate) enum RealtimeMessageApplyOutcomeV3 {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) owner_identity_id: String,
+    pub(crate) expected_run_generation: Option<i64>,
     pub(crate) owner_did: String,
     pub(crate) account_id: String,
     pub(crate) protocol_device_id: String,
@@ -655,6 +681,7 @@ pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) stream_epoch: String,
     pub(crate) snapshot_scan_seq: String,
     pub(crate) server_time: String,
+    pub(crate) server_cutoff: String,
     pub(crate) events: Vec<DeltaApplyEventV2>,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
     pub(crate) read_states: Vec<ReadStateApplyV2>,
@@ -667,7 +694,36 @@ pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(READ_RECOVERY_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_sync_lane_capability_columns_v1a(connection)?;
     create_installation_schema(connection)
+}
+
+fn ensure_sync_lane_capability_columns_v1a(connection: &Connection) -> crate::ImResult<()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(sync_lane_capability_state)")
+        .map_err(super::local_state_unavailable)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(super::local_state_unavailable)?
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(super::local_state_unavailable)?;
+    drop(statement);
+    for (column, definition) in [
+        ("client_instance_id", "TEXT"),
+        ("negotiated_capabilities_json", "TEXT"),
+    ] {
+        if !columns.contains(column) {
+            connection
+                .execute(
+                    &format!(
+                        "ALTER TABLE sync_lane_capability_state ADD COLUMN {column} {definition}"
+                    ),
+                    [],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn create_installation_schema(connection: &Connection) -> crate::ImResult<()> {
@@ -1036,38 +1092,17 @@ fn replace_lane_sync_states_in_transaction(
             ));
         }
     }
-    connection
-        .execute(
-            "DELETE FROM lane_sync_state WHERE owner_identity_id = ?1",
-            [owner_identity_id],
-        )
-        .map_err(super::local_state_unavailable)?;
-    if let Some(p6_epoch) = states
-        .iter()
-        .find(|state| state.lane == crate::internal::wire::sync_v2::SyncLaneV3::P6Group)
-        .map(|state| state.stream_epoch.as_str())
-    {
-        connection
-            .execute(
-                "DELETE FROM p6_lane_blockers WHERE owner_identity_id = ?1 AND stream_epoch <> ?2",
-                params![owner_identity_id, p6_epoch],
-            )
-            .map_err(super::local_state_unavailable)?;
-    } else {
-        connection
-            .execute(
-                "DELETE FROM p6_lane_blockers WHERE owner_identity_id = ?1",
-                [owner_identity_id],
-            )
-            .map_err(super::local_state_unavailable)?;
-    }
     for state in states {
         connection
             .execute(
                 r#"
 INSERT INTO lane_sync_state(
     owner_identity_id, lane, stream_epoch, scan_seq, committed_seq
-) VALUES (?1, ?2, ?3, ?4, ?5)"#,
+) VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(owner_identity_id, lane) DO UPDATE SET
+    stream_epoch = excluded.stream_epoch,
+    scan_seq = excluded.scan_seq,
+    committed_seq = excluded.committed_seq"#,
                 params![
                     state.owner_identity_id,
                     state.lane.as_str(),
@@ -1113,9 +1148,12 @@ pub(crate) fn lane_capability_negotiation_required(
     }
     let negotiated = connection
         .query_row(
-            "SELECT negotiated_device_auth_generation
-             FROM sync_lane_capability_state
-             WHERE owner_identity_id = ?1",
+            "SELECT capability.negotiated_device_auth_generation
+             FROM sync_lane_capability_state AS capability
+             JOIN sync_installation_state AS installation
+               ON installation.owner_identity_id = capability.owner_identity_id
+              AND installation.client_instance_id = capability.client_instance_id
+             WHERE capability.owner_identity_id = ?1",
             [owner_identity_id],
             |row| row.get::<_, String>(0),
         )
@@ -1124,7 +1162,92 @@ pub(crate) fn lane_capability_negotiation_required(
     Ok(negotiated.as_deref() != Some(device_auth_generation))
 }
 
+pub(crate) fn record_sync_lane_capability_negotiation_v1a(
+    connection: &Connection,
+    owner_identity_id: &str,
+    device_auth_generation: &str,
+    client_instance_id: &str,
+    negotiated_capabilities_json: &str,
+) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_positive_decimal("device_auth_generation", device_auth_generation)?;
+    validate_required("client_instance_id", client_instance_id)?;
+    let capabilities: serde_json::Value = serde_json::from_str(negotiated_capabilities_json)
+        .map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("negotiated_capabilities_json".to_owned()),
+                "negotiated capabilities must be valid JSON",
+            )
+        })?;
+    let capabilities = capabilities.as_array().ok_or_else(|| {
+        crate::ImError::invalid_input(
+            Some("negotiated_capabilities_json".to_owned()),
+            "negotiated capabilities must be an array",
+        )
+    })?;
+    let mut seen = BTreeSet::new();
+    for capability in capabilities {
+        let Some(capability) = capability.as_str() else {
+            return Err(crate::ImError::invalid_input(
+                Some("negotiated_capabilities_json".to_owned()),
+                "negotiated capabilities must contain strings",
+            ));
+        };
+        if !matches!(capability, "lanes.p5_device.v1" | "lanes.p6_group.v1")
+            || !seen.insert(capability)
+        {
+            return Err(crate::ImError::invalid_input(
+                Some("negotiated_capabilities_json".to_owned()),
+                "negotiated capabilities contain an unknown or duplicate lane",
+            ));
+        }
+    }
+    connection
+        .execute(
+            r#"
+INSERT INTO sync_lane_capability_state(
+    owner_identity_id, negotiated_device_auth_generation,
+    client_instance_id, negotiated_capabilities_json
+) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT(owner_identity_id) DO UPDATE SET
+    negotiated_device_auth_generation = excluded.negotiated_device_auth_generation,
+    client_instance_id = excluded.client_instance_id,
+    negotiated_capabilities_json = excluded.negotiated_capabilities_json
+"#,
+            params![
+                owner_identity_id,
+                device_auth_generation,
+                client_instance_id,
+                negotiated_capabilities_json,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
 pub(crate) fn load_lane_sync_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<LaneSyncState>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    let binding =
+        load_identity_account_binding(connection, owner_identity_id)?.ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "lane sync state requires an active account binding".to_owned(),
+            }
+        })?;
+    let negotiated = load_negotiated_lanes_v1a(connection, &binding)?;
+    let states = load_all_lane_sync_states(connection, owner_identity_id)?;
+    Ok(match negotiated {
+        None => states,
+        Some(negotiated) => states
+            .into_iter()
+            .filter(|state| negotiated.contains(&state.lane))
+            .collect(),
+    })
+}
+
+fn load_all_lane_sync_states(
     connection: &Connection,
     owner_identity_id: &str,
 ) -> crate::ImResult<Vec<LaneSyncState>> {
@@ -1171,6 +1294,96 @@ ORDER BY CASE lane WHEN 'p5_device' THEN 1 ELSE 2 END"#,
     Ok(states)
 }
 
+fn load_negotiated_lanes_v1a(
+    connection: &Connection,
+    binding: &IdentityAccountBinding,
+) -> crate::ImResult<Option<BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>>> {
+    let row = connection
+        .query_row(
+            "SELECT negotiated_device_auth_generation, client_instance_id,
+                    negotiated_capabilities_json
+             FROM sync_lane_capability_state
+             WHERE owner_identity_id = ?1",
+            [&binding.owner_identity_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((generation, client_instance_id, capabilities_json)) = row else {
+        return Ok(None);
+    };
+    let (client_instance_id, capabilities_json) = match (client_instance_id, capabilities_json) {
+        (None, None) => return Ok(None),
+        (Some(client_instance_id), Some(capabilities_json)) => {
+            (client_instance_id, capabilities_json)
+        }
+        _ => {
+            return Err(sync_error(
+                "SYNC_NEGOTIATION_STATE_INVALID",
+                "stored negotiated lane capability state is incomplete",
+            ))
+        }
+    };
+    let current_client_instance_id = connection
+        .query_row(
+            "SELECT client_instance_id FROM sync_installation_state
+             WHERE owner_identity_id = ?1",
+            [&binding.owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if generation != binding.device_auth_generation
+        || current_client_instance_id.as_deref() != Some(client_instance_id.as_str())
+    {
+        return Ok(Some(BTreeSet::new()));
+    }
+    let values: serde_json::Value = serde_json::from_str(&capabilities_json).map_err(|_| {
+        sync_error(
+            "SYNC_NEGOTIATION_STATE_INVALID",
+            "stored negotiated lane capabilities are invalid JSON",
+        )
+    })?;
+    let values = values.as_array().ok_or_else(|| {
+        sync_error(
+            "SYNC_NEGOTIATION_STATE_INVALID",
+            "stored negotiated lane capabilities are not an array",
+        )
+    })?;
+    let mut lanes = BTreeSet::new();
+    for value in values {
+        let capability = value.as_str().ok_or_else(|| {
+            sync_error(
+                "SYNC_NEGOTIATION_STATE_INVALID",
+                "stored negotiated lane capability is not a string",
+            )
+        })?;
+        let lane = match capability {
+            "lanes.p5_device.v1" => crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            "lanes.p6_group.v1" => crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            _ => {
+                return Err(sync_error(
+                    "SYNC_NEGOTIATION_STATE_INVALID",
+                    "stored negotiated lane capability is unknown",
+                ))
+            }
+        };
+        if !lanes.insert(lane) {
+            return Err(sync_error(
+                "SYNC_NEGOTIATION_STATE_INVALID",
+                "stored negotiated lane capability is duplicated",
+            ));
+        }
+    }
+    Ok(Some(lanes))
+}
+
 pub(crate) fn advance_lane_sync_state(
     connection: &Connection,
     next: &LaneSyncState,
@@ -1187,7 +1400,7 @@ fn advance_lane_sync_state_in_transaction(
     next: &LaneSyncState,
 ) -> crate::ImResult<()> {
     validate_lane_sync_state(next)?;
-    let current = load_lane_sync_states(connection, &next.owner_identity_id)?
+    let current = load_all_lane_sync_states(connection, &next.owner_identity_id)?
         .into_iter()
         .find(|state| state.lane == next.lane)
         .ok_or_else(|| sync_error("SYNC_LANE_BOOTSTRAP_REQUIRED", "lane state is missing"))?;
@@ -1791,6 +2004,7 @@ pub(crate) fn apply_delta_v2(
     validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
     validate_decimal("next_scan_seq", &input.next_scan_seq)?;
     validate_required("server_time", &input.server_time)?;
+    validate_expected_run_generation(input.expected_run_generation)?;
 
     let mut event_ids = BTreeSet::new();
     let mut event_seqs = BTreeSet::new();
@@ -1821,6 +2035,11 @@ pub(crate) fn apply_delta_v2(
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
+    require_message_sync_run_generation(
+        &transaction,
+        &input.owner_identity_id,
+        input.expected_run_generation,
+    )?;
     let binding = load_identity_account_binding(&transaction, &input.owner_identity_id)?
         .ok_or_else(|| crate::ImError::IdentityBindingConflict {
             detail: "v2 delta requires an active account binding".to_owned(),
@@ -2070,10 +2289,17 @@ pub(crate) fn apply_snapshot_v2(
     validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
     validate_decimal("snapshot_scan_seq", &input.snapshot_scan_seq)?;
     validate_required("server_time", &input.server_time)?;
+    validate_required("server_cutoff", &input.server_cutoff)?;
+    validate_expected_run_generation(input.expected_run_generation)?;
 
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
+    require_message_sync_run_generation(
+        &transaction,
+        &input.owner_identity_id,
+        input.expected_run_generation,
+    )?;
     let binding = load_identity_account_binding(&transaction, &input.owner_identity_id)?
         .ok_or_else(|| crate::ImError::IdentityBindingConflict {
             detail: "snapshot requires an active account binding".to_owned(),
@@ -2111,6 +2337,33 @@ pub(crate) fn apply_snapshot_v2(
             "snapshot recovery authorization changed before commit",
         ));
     }
+
+    let snapshot_message_ids = input
+        .events
+        .iter()
+        .flat_map(|event| event.messages.iter().map(|message| message.msg_id.clone()))
+        .collect::<BTreeSet<_>>();
+    let snapshot_notification_event_ids = input
+        .events
+        .iter()
+        .filter(|event| event.system_notification.is_some())
+        .map(|event| event.event_id.clone())
+        .collect::<BTreeSet<_>>();
+    let snapshot_group_ids = input
+        .groups
+        .iter()
+        .map(|group| group.group_id.clone())
+        .collect::<BTreeSet<_>>();
+    let removed_conversation_ids = replace_snapshot_ordinary_projection(
+        &transaction,
+        &input.owner_identity_id,
+        &input.protocol_device_id,
+        &input.server_time,
+        &input.server_cutoff,
+        &snapshot_message_ids,
+        &snapshot_group_ids,
+        &snapshot_notification_event_ids,
+    )?;
 
     let now = unix_time_i64();
     let mut events = input.events;
@@ -2233,6 +2486,16 @@ pub(crate) fn apply_snapshot_v2(
         &groups,
         &read_states,
     )?;
+    invalidation
+        .conversation_ids
+        .extend(removed_conversation_ids.iter().cloned());
+    invalidation
+        .thread_ids
+        .extend(removed_conversation_ids.iter().cloned());
+    invalidation.conversation_ids.sort();
+    invalidation.conversation_ids.dedup();
+    invalidation.thread_ids.sort();
+    invalidation.thread_ids.dedup();
     if !messages.is_empty() {
         let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
         let mut conversation_ids = invalidation
@@ -2293,6 +2556,163 @@ pub(crate) fn apply_snapshot_v2(
         committed_system_notifications,
         invalidation,
     })
+}
+
+fn replace_snapshot_ordinary_projection(
+    connection: &Connection,
+    owner_identity_id: &str,
+    protocol_device_id: &str,
+    server_time: &str,
+    server_cutoff: &str,
+    snapshot_message_ids: &BTreeSet<String>,
+    snapshot_group_ids: &BTreeSet<String>,
+    snapshot_notification_event_ids: &BTreeSet<String>,
+) -> crate::ImResult<BTreeSet<String>> {
+    let cutoff = chrono::DateTime::parse_from_rfc3339(server_cutoff).map_err(|_| {
+        sync_error(
+            "SYNC_INVALID_SNAPSHOT",
+            "snapshot server_cutoff must be an RFC3339 timestamp",
+        )
+    })?;
+    let message_rows = {
+        let mut statement = connection
+            .prepare(
+                r#"
+SELECT msg_id,
+       COALESCE(NULLIF(conversation_id, ''), thread_id),
+       COALESCE(NULLIF(sent_at, ''), stored_at)
+FROM messages
+WHERE owner_identity_id = ?1
+  AND is_e2ee = 0
+  AND json_valid(metadata) = 1
+  AND json_extract(metadata, '$.sync_event_id') IS NOT NULL
+  AND json_extract(metadata, '$.sync_event_type') = 'message.created'
+"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([owner_identity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(super::local_state_unavailable)?
+    };
+    let mut removed_conversation_ids = BTreeSet::new();
+    for (message_id, conversation_id, timestamp) in message_rows {
+        let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(&timestamp) else {
+            continue;
+        };
+        if timestamp < cutoff || snapshot_message_ids.contains(&message_id) {
+            continue;
+        }
+        connection
+            .execute(
+                "DELETE FROM message_identity_aliases
+                 WHERE owner_identity_id = ?1
+                   AND (alias_msg_id = ?2 OR canonical_msg_id = ?2)",
+                params![owner_identity_id, message_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+        connection
+            .execute(
+                "DELETE FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                params![owner_identity_id, message_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+        if !conversation_id.trim().is_empty() {
+            removed_conversation_ids.insert(conversation_id);
+        }
+    }
+    for conversation_id in &removed_conversation_ids {
+        super::conversation_summaries::rebuild_conversation(
+            connection,
+            owner_identity_id,
+            conversation_id,
+        )?;
+    }
+
+    let synced_group_ids = {
+        let mut statement = connection
+            .prepare(
+                "SELECT group_id FROM groups
+                 WHERE owner_identity_id = ?1
+                   AND json_valid(metadata) = 1
+                   AND json_extract(metadata, '$.source') = 'im-core.sync_delta'",
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([owner_identity_id], |row| row.get::<_, String>(0))
+            .map_err(super::local_state_unavailable)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(super::local_state_unavailable)?
+    };
+    for group_id in synced_group_ids {
+        if snapshot_group_ids.contains(&group_id) {
+            continue;
+        }
+        connection
+            .execute(
+                "UPDATE groups
+                 SET membership_status = 'left', my_role = '', remote_updated_at = ?3
+                 WHERE owner_identity_id = ?1 AND group_id = ?2",
+                params![owner_identity_id, group_id, server_time],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+
+    connection
+        .execute(
+            "DELETE FROM sync_remote_read_states WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+
+    let missing_notifications = {
+        let mut statement = connection
+            .prepare(
+                "SELECT current_event_id, join_session_id
+                 FROM system_notification_join_state
+                 WHERE owner_identity_id = ?1
+                   AND protocol_device_id = ?2
+                   AND terminal = 0
+                   AND julianday(expires_at) > julianday(?3)",
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                params![owner_identity_id, protocol_device_id, server_time],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(super::local_state_unavailable)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(super::local_state_unavailable)?
+    };
+    for (event_id, join_session_id) in missing_notifications {
+        if snapshot_notification_event_ids.contains(&event_id) {
+            continue;
+        }
+        connection
+            .execute(
+                "DELETE FROM system_notification_receipts
+                 WHERE owner_identity_id = ?1 AND join_session_id = ?2",
+                params![owner_identity_id, join_session_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+        connection
+            .execute(
+                "DELETE FROM system_notification_join_state
+                 WHERE owner_identity_id = ?1 AND protocol_device_id = ?2
+                   AND join_session_id = ?3 AND terminal = 0",
+                params![owner_identity_id, protocol_device_id, join_session_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(removed_conversation_ids)
 }
 
 pub(crate) fn load_message_sync_state(
@@ -2362,6 +2782,165 @@ WHERE owner_identity_id = ?1"#,
                     last_error_code: row.get(9)?,
                     metadata_json: row.get(10)?,
                     updated_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
+fn validate_expected_run_generation(expected: Option<i64>) -> crate::ImResult<()> {
+    if expected.is_some_and(|generation| generation <= 0) {
+        return Err(crate::ImError::invalid_input(
+            Some("expected_run_generation".to_owned()),
+            "expected sync run generation must be positive",
+        ));
+    }
+    Ok(())
+}
+
+fn require_message_sync_run_generation(
+    connection: &Connection,
+    owner_identity_id: &str,
+    expected: Option<i64>,
+) -> crate::ImResult<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current = connection
+        .query_row(
+            "SELECT run_generation FROM message_sync_run_state WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if current != Some(expected) {
+        return Err(sync_error(
+            "SYNC_RUN_SUPERSEDED",
+            "a newer sync run superseded this apply transaction",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn begin_message_sync_run(
+    connection: &Connection,
+    owner_identity_id: &str,
+    now: i64,
+) -> crate::ImResult<MessageSyncRunState> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if load_identity_account_binding(connection, owner_identity_id)?.is_none() {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "message sync run requires an active account binding".to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let current_generation = transaction
+        .query_row(
+            "SELECT run_generation FROM message_sync_run_state WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .unwrap_or(0);
+    let run_generation = current_generation.checked_add(1).ok_or_else(|| {
+        sync_error(
+            "SYNC_RUN_GENERATION_EXHAUSTED",
+            "sync run generation overflow",
+        )
+    })?;
+    transaction
+        .execute(
+            r#"
+INSERT INTO message_sync_run_state
+    (owner_identity_id, sync_pending, run_generation, next_retry_at,
+     last_result_json, updated_at)
+VALUES (?1, 1, ?2, NULL, NULL, ?3)
+ON CONFLICT(owner_identity_id)
+DO UPDATE SET
+    sync_pending = 1,
+    run_generation = excluded.run_generation,
+    next_retry_at = NULL,
+    last_result_json = NULL,
+    updated_at = excluded.updated_at
+"#,
+            params![owner_identity_id, run_generation, now],
+        )
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(MessageSyncRunState {
+        owner_identity_id: owner_identity_id.to_owned(),
+        sync_pending: true,
+        run_generation,
+        next_retry_at: None,
+        last_result_json: None,
+        updated_at: now,
+    })
+}
+
+pub(crate) fn finish_message_sync_run(
+    connection: &Connection,
+    state: &MessageSyncRunState,
+) -> crate::ImResult<bool> {
+    validate_required("owner_identity_id", &state.owner_identity_id)?;
+    if state.run_generation <= 0 {
+        return Err(crate::ImError::invalid_input(
+            Some("run_generation".to_owned()),
+            "sync run generation must be positive",
+        ));
+    }
+    let updated = connection
+        .execute(
+            r#"
+UPDATE message_sync_run_state
+SET sync_pending = ?3,
+    next_retry_at = ?4,
+    last_result_json = ?5,
+    updated_at = ?6
+WHERE owner_identity_id = ?1
+  AND run_generation = ?2
+"#,
+            params![
+                state.owner_identity_id,
+                state.run_generation,
+                i64::from(state.sync_pending),
+                state.next_retry_at,
+                state.last_result_json,
+                state.updated_at,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(updated == 1)
+}
+
+pub(crate) fn load_message_sync_run_state(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Option<MessageSyncRunState>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    connection
+        .query_row(
+            r#"
+SELECT owner_identity_id, sync_pending, run_generation,
+       next_retry_at, last_result_json, updated_at
+FROM message_sync_run_state
+WHERE owner_identity_id = ?1
+"#,
+            [owner_identity_id],
+            |row| {
+                Ok(MessageSyncRunState {
+                    owner_identity_id: row.get(0)?,
+                    sync_pending: row.get::<_, i64>(1)? != 0,
+                    run_generation: row.get(2)?,
+                    next_retry_at: row.get(3)?,
+                    last_result_json: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             },
         )
@@ -4734,6 +5313,7 @@ fn subtract_small_decimal(value: &str, amount: u32) -> crate::ImResult<Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn binding() -> IdentityAccountBinding {
         IdentityAccountBinding {
@@ -4935,6 +5515,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -4974,6 +5555,7 @@ mod tests {
             &delta_only_db,
             DeltaApplyInputV2 {
                 owner_identity_id: delta_only_binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: delta_only_binding.current_did.clone(),
                 account_id: delta_only_binding.account_id.clone(),
                 protocol_device_id: delta_only_binding.protocol_device_id.clone(),
@@ -5017,6 +5599,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -5408,6 +5991,7 @@ mod tests {
         let delta =
             |sync_event_id: &str, next_scan_seq: &str, proof_hash: &str| DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -5544,6 +6128,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -5787,6 +6372,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -5925,6 +6511,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -5943,6 +6530,252 @@ mod tests {
             panic!("empty sparse page must leave the v2 cursor ready");
         };
         assert_eq!(advanced.scan_seq, "25");
+    }
+
+    #[test]
+    fn v1a_apply_transaction_rejects_a_superseded_run_generation() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let first = begin_message_sync_run(&db, &binding.owner_identity_id, 2).unwrap();
+        let second = begin_message_sync_run(&db, &binding.owner_identity_id, 3).unwrap();
+        assert!(second.run_generation > first.run_generation);
+
+        let input = |expected_run_generation, next_scan_seq: &str| DeltaApplyInputV2 {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            expected_run_generation: Some(expected_run_generation),
+            owner_did: binding.current_did.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: "1".to_owned(),
+            next_scan_seq: next_scan_seq.to_owned(),
+            server_time: "2026-08-27T00:00:00Z".to_owned(),
+            events: Vec::new(),
+        };
+        let error = apply_delta_v2(&db, input(first.run_generation, "11")).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == "SYNC_RUN_SUPERSEDED"
+        ));
+        let MessageSyncStateAccess::Ready(unchanged) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("superseded run must leave cursor ready")
+        };
+        assert_eq!(unchanged.scan_seq, "10");
+
+        apply_delta_v2(&db, input(second.run_generation, "11")).unwrap();
+        let MessageSyncStateAccess::Ready(advanced) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("current run must advance cursor")
+        };
+        assert_eq!(advanced.scan_seq, "11");
+    }
+
+    #[test]
+    fn v1a_snapshot_replaces_only_in_window_sync_owned_ordinary_projection() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "10".to_owned(),
+                recovery_id_hash: Some("v1a-recovery".to_owned()),
+                snapshot_scan_seq: Some("20".to_owned()),
+                status: "applying".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let record = |message_id: &str,
+                      sent_at: &str,
+                      metadata: &str,
+                      is_e2ee: bool|
+         -> super::super::messages::MessageRecord {
+            super::super::messages::MessageRecord {
+                msg_id: message_id.to_owned(),
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                conversation_id: "dm:v1a-peer".to_owned(),
+                wire_thread_kind: "direct".to_owned(),
+                wire_thread_ref: "did:example:v1a-peer".to_owned(),
+                wire_identity_resolution_state: "resolved".to_owned(),
+                thread_id: "dm:v1a-peer".to_owned(),
+                direction: 0,
+                sender_did: "did:example:v1a-peer".to_owned(),
+                receiver_did: binding.current_did.clone(),
+                content_type: "text/plain".to_owned(),
+                content: message_id.to_owned(),
+                sent_at: sent_at.to_owned(),
+                stored_at: sent_at.to_owned(),
+                is_e2ee,
+                metadata: metadata.to_owned(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            }
+        };
+        let sync_metadata = r#"{"sync_event_id":"event-v1a","sync_event_type":"message.created"}"#;
+        super::super::messages::upsert_messages(
+            &db,
+            &[
+                record(
+                    "sync-recent-missing",
+                    "2026-08-27T00:00:00Z",
+                    sync_metadata,
+                    false,
+                ),
+                record(
+                    "sync-older-history",
+                    "2026-08-20T00:00:00Z",
+                    sync_metadata,
+                    false,
+                ),
+                record("local-recent-draft", "2026-08-27T00:00:00Z", "{}", false),
+                record("secure-recent", "2026-08-27T00:00:00Z", sync_metadata, true),
+            ],
+        )
+        .unwrap();
+        super::super::groups::upsert_group(
+            &db,
+            super::super::groups::GroupRecord {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                group_id: "did:example:v1a-group".to_owned(),
+                group_did: "did:example:v1a-group".to_owned(),
+                membership_status: "active".to_owned(),
+                my_role: "member".to_owned(),
+                stored_at: "2026-08-27T00:00:00Z".to_owned(),
+                metadata: json!({
+                    "source": "im-core.sync_delta",
+                    "required_security_profile": "anp.group.e2ee.v2"
+                })
+                .to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sync_remote_read_states
+             (owner_identity_id, remote_thread_key, thread_kind, read_watermark_seq,
+              state_version, occurred_at)
+             VALUES (?1, 'dm:v1a-peer', 'direct', '3', '1', '2026-08-27T00:00:00Z')",
+            [&binding.owner_identity_id],
+        )
+        .unwrap();
+
+        apply_snapshot_v2(
+            &db,
+            SnapshotApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                expected_stream_epoch: "1".to_owned(),
+                expected_scan_seq: "10".to_owned(),
+                allow_missing_previous: false,
+                recovery_id_hash: "v1a-recovery".to_owned(),
+                stream_epoch: "1".to_owned(),
+                snapshot_scan_seq: "20".to_owned(),
+                server_time: "2026-08-27T01:00:00Z".to_owned(),
+                server_cutoff: "2026-08-25T01:00:00Z".to_owned(),
+                events: Vec::new(),
+                groups: Vec::new(),
+                read_states: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let message_ids = {
+            let mut statement = db
+                .prepare("SELECT msg_id FROM messages WHERE owner_identity_id = ?1 ORDER BY msg_id")
+                .unwrap();
+            statement
+                .query_map([&binding.owner_identity_id], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            message_ids,
+            vec!["local-recent-draft", "secure-recent", "sync-older-history"]
+        );
+        let (membership_status, metadata): (String, String) = db
+            .query_row(
+                "SELECT membership_status, metadata FROM groups
+                 WHERE owner_identity_id = ?1 AND group_id = 'did:example:v1a-group'",
+                [&binding.owner_identity_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(membership_status, "left");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap()
+                ["required_security_profile"],
+            "anp.group.e2ee.v2"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_remote_read_states WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -6822,6 +7655,7 @@ mod tests {
             &db,
             SnapshotApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -6833,6 +7667,7 @@ mod tests {
                 stream_epoch: "1".to_owned(),
                 snapshot_scan_seq: "50".to_owned(),
                 server_time: "2026-07-28T10:00:01Z".to_owned(),
+                server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
                 events: Vec::new(),
                 groups: Vec::new(),
                 read_states: vec![remote_read],
@@ -6861,6 +7696,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -7499,6 +8335,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -7572,6 +8409,7 @@ mod tests {
             &db,
             DeltaApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -7651,6 +8489,7 @@ mod tests {
             &db,
             SnapshotApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -7662,6 +8501,7 @@ mod tests {
                 stream_epoch: "2".to_owned(),
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-07-31T10:00:02Z".to_owned(),
+                server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
                 events: vec![DeltaApplyEventV2 {
                     event_id: "snapshot-event-20".to_owned(),
                     event_seq: "20".to_owned(),
@@ -7778,6 +8618,7 @@ mod tests {
             &db,
             SnapshotApplyInputV2 {
                 owner_identity_id: binding.owner_identity_id.clone(),
+                expected_run_generation: None,
                 owner_did: binding.current_did.clone(),
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
@@ -7789,6 +8630,7 @@ mod tests {
                 stream_epoch: "1".to_owned(),
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-07-28T10:00:02Z".to_owned(),
+                server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
                 events: Vec::new(),
                 groups: Vec::new(),
                 read_states: Vec::new(),
@@ -7879,6 +8721,7 @@ mod tests {
         };
         let snapshot_input = |events| SnapshotApplyInputV2 {
             owner_identity_id: binding.owner_identity_id.clone(),
+            expected_run_generation: None,
             owner_did: binding.current_did.clone(),
             account_id: binding.account_id.clone(),
             protocol_device_id: binding.protocol_device_id.clone(),
@@ -7890,6 +8733,7 @@ mod tests {
             stream_epoch: "2".to_owned(),
             snapshot_scan_seq: "20".to_owned(),
             server_time: "2026-07-23T02:00:01Z".to_owned(),
+            server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
             events,
             groups: Vec::new(),
             read_states: Vec::new(),
@@ -8055,6 +8899,16 @@ mod tests {
             },
         ];
         replace_lane_sync_states(&db, &binding.owner_identity_id, &states).unwrap();
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        record_sync_lane_capability_negotiation_v1a(
+            &db,
+            &binding.owner_identity_id,
+            &binding.device_auth_generation,
+            &client_instance_id,
+            r#"["lanes.p5_device.v1","lanes.p6_group.v1"]"#,
+        )
+        .unwrap();
         assert_eq!(
             load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
             states
@@ -8095,41 +8949,171 @@ mod tests {
     }
 
     #[test]
-    fn lane_bootstrap_replaces_capability_set_and_cascades_with_owner() {
+    fn v1a_capability_schema_additively_extends_and_preserves_the_legacy_row() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            r#"
+CREATE TABLE sync_lane_capability_state (
+    owner_identity_id TEXT PRIMARY KEY,
+    negotiated_device_auth_generation TEXT NOT NULL
+);
+INSERT INTO sync_lane_capability_state(
+    owner_identity_id, negotiated_device_auth_generation
+) VALUES ('owner-legacy', '2');
+"#,
+        )
+        .unwrap();
+
+        create_schema(&db).unwrap();
+
+        let columns = db
+            .prepare("PRAGMA table_info(sync_lane_capability_state)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<BTreeSet<_>, _>>()
+            .unwrap();
+        assert!(columns.contains("client_instance_id"));
+        assert!(columns.contains("negotiated_capabilities_json"));
+        assert_eq!(
+            db.query_row(
+                "SELECT negotiated_device_auth_generation, client_instance_id,
+                        negotiated_capabilities_json
+                 FROM sync_lane_capability_state WHERE owner_identity_id = 'owner-legacy'",
+                [],
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            )
+            .unwrap(),
+            ("2".to_owned(), None, None)
+        );
+    }
+
+    #[test]
+    fn v1a_lane_capability_reconcile_preserves_inactive_cursors_and_blockers() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         create_schema(&db).unwrap();
         let binding = binding();
         upsert_identity_account_binding(&db, &binding).unwrap();
-        replace_lane_sync_states(
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        let p5 = LaneSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            stream_epoch: "41".to_owned(),
+            scan_seq: "3".to_owned(),
+            committed_seq: "3".to_owned(),
+        };
+        let p6 = LaneSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            stream_epoch: "42".to_owned(),
+            scan_seq: "0".to_owned(),
+            committed_seq: "0".to_owned(),
+        };
+        replace_lane_sync_states(&db, &binding.owner_identity_id, &[p5.clone(), p6.clone()])
+            .unwrap();
+        record_sync_lane_capability_negotiation_v1a(
             &db,
             &binding.owner_identity_id,
-            &[LaneSyncState {
-                owner_identity_id: binding.owner_identity_id.clone(),
-                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
-                stream_epoch: "41".to_owned(),
-                scan_seq: "0".to_owned(),
-                committed_seq: "0".to_owned(),
-            }],
+            &binding.device_auth_generation,
+            &client_instance_id,
+            r#"["lanes.p5_device.v1","lanes.p6_group.v1"]"#,
         )
         .unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [p5.clone(), p6.clone()]
+        );
+
+        let mut p6_advanced = p6;
+        p6_advanced.scan_seq = "1".to_owned();
+        p6_advanced.committed_seq = "1".to_owned();
+        let blocker = P6LaneBlocker {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            event_id: "p6-preserved-blocker".to_owned(),
+            stream_epoch: "42".to_owned(),
+            event_seq: "1".to_owned(),
+            event_type: "p6.delivery.created".to_owned(),
+            group_did: "did:wba:example.com:groups:e1_preserved".to_owned(),
+            group_event_seq: Some("1".to_owned()),
+            payload_json: serde_json::json!({"meta": {}, "body": {}}).to_string(),
+            attempt_count: 1,
+            last_error_code: "group.e2ee.epoch_conflict".to_owned(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        record_p6_lane_blocker_and_advance(&db, &blocker, &p6_advanced).unwrap();
+
         replace_lane_sync_states(&db, &binding.owner_identity_id, &[]).unwrap();
+        record_sync_lane_capability_negotiation_v1a(
+            &db,
+            &binding.owner_identity_id,
+            &binding.device_auth_generation,
+            &client_instance_id,
+            "[]",
+        )
+        .unwrap();
         assert!(load_lane_sync_states(&db, &binding.owner_identity_id)
             .unwrap()
             .is_empty());
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM lane_sync_state WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            list_p6_lane_blockers(&db, &binding.owner_identity_id, 10)
+                .unwrap()
+                .len(),
+            1
+        );
 
+        let mut p5_reactivated = p5;
+        p5_reactivated.scan_seq = "4".to_owned();
+        p5_reactivated.committed_seq = "4".to_owned();
         replace_lane_sync_states(
             &db,
             &binding.owner_identity_id,
-            &[LaneSyncState {
-                owner_identity_id: binding.owner_identity_id.clone(),
-                lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
-                stream_epoch: "42".to_owned(),
-                scan_seq: "0".to_owned(),
-                committed_seq: "0".to_owned(),
-            }],
+            std::slice::from_ref(&p5_reactivated),
         )
         .unwrap();
+        record_sync_lane_capability_negotiation_v1a(
+            &db,
+            &binding.owner_identity_id,
+            &binding.device_auth_generation,
+            &client_instance_id,
+            r#"["lanes.p5_device.v1"]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [p5_reactivated]
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT scan_seq FROM lane_sync_state WHERE owner_identity_id = ?1 AND lane = 'p6_group'",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            list_p6_lane_blockers(&db, &binding.owner_identity_id, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+
         db.execute(
             "DELETE FROM identity_account_bindings WHERE owner_identity_id = ?1",
             [&binding.owner_identity_id],
@@ -8148,6 +9132,13 @@ mod tests {
                 [],
                 |row| { row.get::<_, i64>(0) }
             )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM p6_lane_blockers", [], |row| {
+                row.get::<_, i64>(0)
+            })
             .unwrap(),
             0
         );

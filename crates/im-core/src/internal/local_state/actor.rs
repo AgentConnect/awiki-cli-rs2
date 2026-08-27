@@ -43,6 +43,19 @@ enum LocalStateCommand {
         owner_identity_id: String,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncStateAccess>>,
     },
+    BeginMessageSyncRun {
+        owner_identity_id: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncRunState>>,
+    },
+    FinishMessageSyncRun {
+        state: super::sync_v2::MessageSyncRunState,
+        reply: oneshot::Sender<crate::ImResult<bool>>,
+    },
+    LoadMessageSyncRunState {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::MessageSyncRunState>>>,
+    },
     AdvanceMessageSyncState {
         state: super::sync_v2::MessageSyncState,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncStateAccess>>,
@@ -168,6 +181,13 @@ enum LocalStateCommand {
         owner_identity_id: String,
         device_auth_generation: String,
         reply: oneshot::Sender<crate::ImResult<bool>>,
+    },
+    RecordSyncLaneCapabilityNegotiationV1a {
+        owner_identity_id: String,
+        device_auth_generation: String,
+        client_instance_id: String,
+        negotiated_capabilities_json: String,
+        reply: oneshot::Sender<crate::ImResult<()>>,
     },
     ReplaceLaneSyncStates {
         owner_identity_id: String,
@@ -717,6 +737,44 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn begin_message_sync_run(
+        &self,
+        owner_identity_id: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<super::sync_v2::MessageSyncRunState> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::BeginMessageSyncRun {
+            owner_identity_id: owner_identity_id.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn finish_message_sync_run(
+        &self,
+        state: super::sync_v2::MessageSyncRunState,
+    ) -> crate::ImResult<bool> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::FinishMessageSyncRun { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_message_sync_run_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::MessageSyncRunState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadMessageSyncRunState {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn record_applied_sync_event(
         &self,
         receipt: super::sync_v2::AppliedEventReceipt,
@@ -1027,6 +1085,25 @@ impl LocalStateDb {
         self.send(LocalStateCommand::LaneCapabilityNegotiationRequired {
             owner_identity_id: owner_identity_id.into(),
             device_auth_generation: device_auth_generation.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn record_sync_lane_capability_negotiation_v1a(
+        &self,
+        owner_identity_id: impl Into<String>,
+        device_auth_generation: impl Into<String>,
+        client_instance_id: impl Into<String>,
+        negotiated_capabilities_json: impl Into<String>,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RecordSyncLaneCapabilityNegotiationV1a {
+            owner_identity_id: owner_identity_id.into(),
+            device_auth_generation: device_auth_generation.into(),
+            client_instance_id: client_instance_id.into(),
+            negotiated_capabilities_json: negotiated_capabilities_json.into(),
             reply,
         })
         .await?;
@@ -2131,6 +2208,27 @@ fn run_actor(
                     super::sync_v2::load_message_sync_state(&connection, &owner_identity_id);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::BeginMessageSyncRun {
+                owner_identity_id,
+                now,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::begin_message_sync_run(&connection, &owner_identity_id, now);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::FinishMessageSyncRun { state, reply } => {
+                let result = super::sync_v2::finish_message_sync_run(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadMessageSyncRunState {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_message_sync_run_state(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
             LocalStateCommand::AdvanceMessageSyncState { state, reply } => {
                 let result = super::sync_v2::advance_message_sync_state(&connection, &state);
                 let _ = reply.send(result);
@@ -2382,6 +2480,22 @@ fn run_actor(
                     &connection,
                     &owner_identity_id,
                     &device_auth_generation,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RecordSyncLaneCapabilityNegotiationV1a {
+                owner_identity_id,
+                device_auth_generation,
+                client_instance_id,
+                negotiated_capabilities_json,
+                reply,
+            } => {
+                let result = super::sync_v2::record_sync_lane_capability_negotiation_v1a(
+                    &connection,
+                    &owner_identity_id,
+                    &device_auth_generation,
+                    &client_instance_id,
+                    &negotiated_capabilities_json,
                 );
                 let _ = reply.send(result);
             }

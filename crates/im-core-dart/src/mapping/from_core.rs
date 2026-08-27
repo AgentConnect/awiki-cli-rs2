@@ -2277,8 +2277,8 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 mod tests {
     use super::{
         realtime_event_to_dart, DartActiveSyncAccountBinding, DartGroupSummary,
-        DartHandleRegistrationJoinMode, DartHandleRegistrationResult, DartRelationStatus,
-        DartSyncDomain,
+        DartHandleRegistrationJoinMode, DartHandleRegistrationResult, DartMessageSyncOutcome,
+        DartMessageSyncStatus, DartRelationStatus, DartSyncDomain,
     };
     use im_core::{
         directory::RelationshipStatus,
@@ -2296,6 +2296,24 @@ mod tests {
             SystemNotificationKind, SystemNotificationSnapshot, SystemNotificationState,
         },
     };
+
+    #[test]
+    fn v1a_message_sync_budget_continuation_maps_without_a_lane_processing_status() {
+        let mapped = DartMessageSyncOutcome::from(im_core::messages::MessageSyncOutcome {
+            status: im_core::messages::MessageSyncStatus::Changed,
+            events_applied: 20,
+            pages_fetched: 20,
+            messages_hydrated: 20,
+            duplicates_skipped: 0,
+            changed_conversation_ids: vec!["dm:peer".to_owned()],
+            committed_incoming_messages: Vec::new(),
+            error_code: None,
+            warnings: vec!["sync.budget_exhausted".to_owned()],
+        });
+        assert_eq!(mapped.status, DartMessageSyncStatus::Changed);
+        assert_eq!(mapped.pages_fetched, 20);
+        assert_eq!(mapped.warnings, ["sync.budget_exhausted"]);
+    }
 
     #[test]
     fn registration_recovery_join_maps_to_opaque_typed_dart_result() {
