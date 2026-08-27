@@ -38,6 +38,50 @@ fn im_core_src_does_not_reference_cli_boundary_types() {
 }
 
 #[test]
+fn v1b_public_sync_domain_dto_is_secret_free_and_cursor_independent() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(manifest_dir.join("src/messages/dto.rs")).unwrap();
+    let domain =
+        rust_item(&source, "struct MessageSyncDomainState").expect("V1-B public domain state DTO");
+    for required in ["lane", "scope", "retryable", "operation_ref", "status"] {
+        assert!(
+            domain.contains(required),
+            "domain DTO is missing {required}"
+        );
+    }
+    for forbidden in [
+        "cursor",
+        "raw_payload",
+        "ciphertext",
+        "private_message",
+        "secret",
+        "token",
+    ] {
+        assert!(
+            !domain.contains(forbidden),
+            "domain DTO exposes forbidden field {forbidden}"
+        );
+    }
+    let status =
+        rust_item(&source, "enum MessageSyncDomainStatus").expect("V1-B public domain status enum");
+    for required in [
+        "Pending",
+        "Processing",
+        "Applied",
+        "Terminal",
+        "RejoinRequired",
+        "RepairRequired",
+        "UpgradeRequired",
+        "ActionRequired",
+    ] {
+        assert!(
+            status.contains(required),
+            "domain status is missing {required}"
+        );
+    }
+}
+
+#[test]
 fn pending_identity_records_do_not_embed_private_key_fields() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let cases = [

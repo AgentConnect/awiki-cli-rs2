@@ -3917,6 +3917,43 @@ fn apply_p5_v2_product_outcome(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn p5_lane_projection_record(
+    client: &crate::core::ImClient,
+    envelope: &Value,
+    outcome: &crate::internal::secure_direct::v2_product::V2InboundProductOutcome,
+) -> crate::ImResult<Option<crate::internal::local_state::messages::MessageRecord>> {
+    use crate::internal::secure_direct::v2_product::V2InboundProductOutcome;
+    let wire_peer_did = match outcome {
+        V2InboundProductOutcome::Business(projection) => projection.sender_did.as_str(),
+        V2InboundProductOutcome::OwnSync(projection) => projection.target_did.as_str(),
+        V2InboundProductOutcome::Replay
+        | V2InboundProductOutcome::ConsumedControl
+        | V2InboundProductOutcome::SuppressedControl => return Ok(None),
+    };
+    let (metadata, body) =
+        crate::internal::secure_direct::v2_product::parse_v2_wire_message(envelope)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+    let cache_binding = p5_cache_binding(&metadata, &body)?;
+    let mut projected = envelope.clone();
+    apply_p5_v2_product_outcome(&mut projected, outcome.clone());
+    redact_attachment_manifests_for_public_projection(std::slice::from_mut(&mut projected));
+    let raw = serde_json::json!({"messages": [projected], "has_more": false});
+    let page = page_from_raw(client, &raw, crate::ids::PageLimit::new(1)?)?;
+    let [message] = page.items.as_slice() else {
+        return Err(crate::ImError::Serialization {
+            detail: "P5 lane product outcome did not produce one message".to_owned(),
+        });
+    };
+    let mut record =
+        crate::internal::message_runtime::local_projection::message_record_from_message(
+            client, message,
+        )?
+        .with_resolved_wire_thread("direct", wire_peer_did);
+    persist_p5_cache_binding_metadata(&mut record, &cache_binding)?;
+    Ok(Some(record))
+}
+
+#[cfg(feature = "sqlite")]
 fn apply_p5_v2_business_body(
     message: &mut Value,
     body: &crate::internal::secure_direct::v2_product::V2InboundBusinessBody,

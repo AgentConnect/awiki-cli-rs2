@@ -6,6 +6,10 @@ pub(crate) const APPLIED_EVENT_MIN_RECEIPTS_PER_OWNER: i64 = 10_000;
 pub(crate) const APPLIED_EVENT_SAFETY_WINDOW: u32 = 1_000;
 pub(crate) const SYNC_CLEANUP_BATCH_SIZE: u32 = 256;
 pub(crate) const TERMINAL_SYNC_STATE_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
+pub(crate) const SYNC_LANE_INPUT_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const SYNC_LANE_PENDING_ITEM_LIMIT: i64 = 4096;
+pub(crate) const SYNC_LANE_PENDING_TOTAL_BYTES: i64 = 64 * 1024 * 1024;
+pub(crate) const SYNC_LANE_CLOSED_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 
 pub(crate) const SYNC_INSTALLATION_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS sync_installation_state (
@@ -251,6 +255,163 @@ CREATE TABLE IF NOT EXISTS p6_lane_blockers (
         ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS sync_lane_inbox (
+    input_id                    TEXT PRIMARY KEY,
+    owner_identity_id           TEXT NOT NULL,
+    lane                        TEXT NOT NULL,
+    lane_epoch                  TEXT NOT NULL,
+    position                    TEXT NOT NULL,
+    event_id                    TEXT NOT NULL,
+    event_type                  TEXT NOT NULL,
+    raw_payload_json            TEXT NOT NULL,
+    payload_bytes               INTEGER NOT NULL,
+    account_id_snapshot         TEXT NOT NULL,
+    device_id_snapshot          TEXT NOT NULL,
+    auth_generation_snapshot    TEXT NOT NULL,
+    client_instance_id_snapshot TEXT NOT NULL,
+    group_did                   TEXT,
+    received_at                 TEXT NOT NULL,
+    source_created_at           TEXT,
+    source_expires_at           TEXT,
+    closed_at                   INTEGER,
+    created_at                  INTEGER NOT NULL,
+    UNIQUE (owner_identity_id, lane, lane_epoch, event_id),
+    UNIQUE (owner_identity_id, lane, lane_epoch, position),
+    CHECK (lane IN ('p5_device', 'p6_group')),
+    CHECK (event_type IN (
+        'p5.delivery.created', 'p6.delivery.created', 'p6.control.notice'
+    )),
+    CHECK (json_valid(raw_payload_json)),
+    CHECK (json_type(raw_payload_json) = 'object'),
+    CHECK (payload_bytes > 0 AND payload_bytes <= 1048576),
+    CHECK (length(trim(input_id)) > 0),
+    CHECK (length(trim(event_id)) > 0),
+    CHECK (length(trim(received_at)) > 0),
+    CHECK (
+        lane_epoch <> ''
+        AND lane_epoch NOT GLOB '*[^0-9]*'
+        AND substr(lane_epoch, 1, 1) <> '0'
+    ),
+    CHECK (
+        position <> ''
+        AND position NOT GLOB '*[^0-9]*'
+        AND substr(position, 1, 1) <> '0'
+    ),
+    CHECK (
+        (lane = 'p5_device' AND event_type = 'p5.delivery.created' AND group_did IS NULL)
+        OR
+        (lane = 'p6_group' AND event_type IN (
+            'p6.delivery.created', 'p6.control.notice'
+        ) AND length(trim(group_did)) > 0)
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_lane_inbox_pending
+ON sync_lane_inbox(owner_identity_id, lane, closed_at, created_at, input_id);
+
+CREATE INDEX IF NOT EXISTS idx_sync_lane_inbox_closed_gc
+ON sync_lane_inbox(closed_at)
+WHERE closed_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS sync_lane_transport_state (
+    owner_identity_id     TEXT NOT NULL,
+    lane                  TEXT NOT NULL,
+    last_transport_error  TEXT,
+    updated_at            INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, lane),
+    CHECK (lane IN ('p5_device', 'p6_group')),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sync_p5_input_outcomes (
+    input_id         TEXT PRIMARY KEY,
+    owner_identity_id TEXT NOT NULL,
+    peer_scope       TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    retryable        INTEGER NOT NULL CHECK (retryable IN (0, 1)),
+    attempt_count    INTEGER NOT NULL DEFAULT 0,
+    next_retry_at    INTEGER,
+    operation_ref    TEXT,
+    last_error_code  TEXT,
+    updated_at       INTEGER NOT NULL,
+    CHECK (status IN (
+        'pending', 'processing', 'applied', 'terminal',
+        'repair_required', 'upgrade_required'
+    )),
+    CHECK (length(trim(peer_scope)) > 0),
+    FOREIGN KEY (input_id) REFERENCES sync_lane_inbox(input_id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_p5_input_outcomes_due
+ON sync_p5_input_outcomes(owner_identity_id, status, next_retry_at, peer_scope, input_id);
+
+CREATE TABLE IF NOT EXISTS sync_p5_did_cutovers (
+    owner_identity_id TEXT NOT NULL,
+    old_did           TEXT NOT NULL,
+    new_did           TEXT NOT NULL,
+    cutover_at        INTEGER NOT NULL,
+    drain_deadline    INTEGER NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('draining', 'drained')),
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, old_did, new_did),
+    CHECK (old_did <> new_did),
+    CHECK (drain_deadline >= cutover_at),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+-- A second authoritative DID transition can occur before the preceding
+-- accepted backlog reaches its retention boundary. Each old DID keeps an
+-- independent bounded-drain responsibility.
+DROP INDEX IF EXISTS idx_sync_p5_did_cutovers_active;
+
+CREATE TABLE IF NOT EXISTS sync_p6_input_outcomes (
+    input_id          TEXT PRIMARY KEY,
+    owner_identity_id TEXT NOT NULL,
+    group_did         TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    retryable         INTEGER NOT NULL CHECK (retryable IN (0, 1)),
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    next_retry_at     INTEGER,
+    operation_ref     TEXT,
+    last_error_code   TEXT,
+    updated_at        INTEGER NOT NULL,
+    CHECK (status IN (
+        'pending', 'processing', 'applied', 'terminal',
+        'rejoin_required', 'repair_required',
+        'upgrade_required', 'action_required'
+    )),
+    CHECK (length(trim(group_did)) > 0),
+    FOREIGN KEY (input_id) REFERENCES sync_lane_inbox(input_id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_p6_input_outcomes_due
+ON sync_p6_input_outcomes(owner_identity_id, status, next_retry_at, group_did, input_id);
+
+CREATE TABLE IF NOT EXISTS sync_p6_legacy_migration_repairs (
+    owner_identity_id TEXT NOT NULL,
+    event_id           TEXT NOT NULL,
+    status             TEXT NOT NULL CHECK (status = 'repair_required'),
+    reason             TEXT NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, event_id),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS sync_applied_events (
     owner_identity_id  TEXT NOT NULL,
     event_id           TEXT NOT NULL,
@@ -406,6 +567,114 @@ pub(crate) struct LaneSyncState {
     pub(crate) stream_epoch: String,
     pub(crate) scan_seq: String,
     pub(crate) committed_seq: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneHandoffInput {
+    pub(crate) owner_identity_id: String,
+    pub(crate) account_id_snapshot: String,
+    pub(crate) device_id_snapshot: String,
+    pub(crate) auth_generation_snapshot: String,
+    pub(crate) client_instance_id_snapshot: String,
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) lane_epoch: String,
+    pub(crate) position: String,
+    pub(crate) event_id: String,
+    pub(crate) event_type: String,
+    pub(crate) raw_payload: serde_json::Value,
+    pub(crate) group_did: Option<String>,
+    pub(crate) received_at: String,
+    pub(crate) source_created_at: Option<String>,
+    pub(crate) source_expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncLaneHandoffOutcome {
+    Inserted,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneInboxRecord {
+    pub(crate) input_id: String,
+    pub(crate) owner_identity_id: String,
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) lane_epoch: String,
+    pub(crate) position: String,
+    pub(crate) event_id: String,
+    pub(crate) event_type: String,
+    pub(crate) raw_payload: serde_json::Value,
+    pub(crate) group_did: Option<String>,
+    pub(crate) received_at: String,
+    pub(crate) source_created_at: Option<String>,
+    pub(crate) source_expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncLaneDomainStatus {
+    Pending,
+    Processing,
+    Applied,
+    Terminal,
+    RejoinRequired,
+    RepairRequired,
+    UpgradeRequired,
+    ActionRequired,
+}
+
+impl SyncLaneDomainStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processing => "processing",
+            Self::Applied => "applied",
+            Self::Terminal => "terminal",
+            Self::RejoinRequired => "rejoin_required",
+            Self::RepairRequired => "repair_required",
+            Self::UpgradeRequired => "upgrade_required",
+            Self::ActionRequired => "action_required",
+        }
+    }
+
+    pub(crate) fn is_closed(self) -> bool {
+        !matches!(self, Self::Pending | Self::Processing)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneDomainState {
+    pub(crate) input_id: String,
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) scope: String,
+    pub(crate) status: SyncLaneDomainStatus,
+    pub(crate) retryable: bool,
+    pub(crate) attempt_count: i64,
+    pub(crate) next_retry_at: Option<i64>,
+    pub(crate) operation_ref: Option<String>,
+    pub(crate) last_error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncLaneTransportState {
+    pub(crate) lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    pub(crate) last_transport_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LegacyP6InboxMigrationReport {
+    pub(crate) migrated: usize,
+    pub(crate) already_migrated: usize,
+    pub(crate) repair_required: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct P5DidCutover {
+    pub(crate) owner_identity_id: String,
+    pub(crate) old_did: String,
+    pub(crate) new_did: String,
+    pub(crate) cutover_at: i64,
+    pub(crate) drain_deadline: i64,
+    pub(crate) status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -705,7 +974,9 @@ pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
         .execute_batch(READ_RECOVERY_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)?;
     ensure_sync_lane_capability_columns_v1a(connection)?;
-    create_installation_schema(connection)
+    create_installation_schema(connection)?;
+    let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
+    Ok(())
 }
 
 fn ensure_sync_lane_capability_columns_v1a(connection: &Connection) -> crate::ImResult<()> {
@@ -759,6 +1030,7 @@ pub(crate) fn load_or_create_sync_client_instance_id(
         .map_err(super::local_state_unavailable)?
     {
         validate_required("client_instance_id", &client_instance_id)?;
+        let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
         return Ok(client_instance_id);
     }
     use base64::Engine as _;
@@ -781,6 +1053,7 @@ pub(crate) fn load_or_create_sync_client_instance_id(
             params![owner_identity_id, client_instance_id, unix_time_i64()],
         )
         .map_err(super::local_state_unavailable)?;
+    let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
     Ok(client_instance_id)
 }
 
@@ -789,6 +1062,7 @@ pub(crate) fn upsert_identity_account_binding(
     binding: &IdentityAccountBinding,
 ) -> crate::ImResult<()> {
     validate_binding(binding)?;
+    let mut previous_current_did = None;
     if let Some((
         account_id,
         protocol_device_id,
@@ -815,6 +1089,7 @@ pub(crate) fn upsert_identity_account_binding(
         .optional()
         .map_err(super::local_state_unavailable)?
     {
+        previous_current_did = Some(current_did.clone());
         if account_id != binding.account_id {
             return Err(crate::ImError::IdentityBindingConflict {
                 detail: "owner identity is already bound to a different account".to_owned(),
@@ -891,6 +1166,21 @@ DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    if let Some(old_did) = previous_current_did.filter(|old| old != &binding.current_did) {
+        register_p5_did_cutover(
+            connection,
+            &P5DidCutover {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                old_did,
+                new_did: binding.current_did.clone(),
+                cutover_at: binding.updated_at,
+                drain_deadline: binding
+                    .updated_at
+                    .saturating_add(SYNC_LANE_CLOSED_RETENTION_SECONDS),
+                status: "draining".to_owned(),
+            },
+        )?;
+    }
     Ok(())
 }
 
@@ -1286,7 +1576,7 @@ pub(crate) fn load_lane_sync_states(
     })
 }
 
-fn load_all_lane_sync_states(
+pub(crate) fn load_all_lane_sync_states(
     connection: &Connection,
     owner_identity_id: &str,
 ) -> crate::ImResult<Vec<LaneSyncState>> {
@@ -1477,6 +1767,1072 @@ WHERE owner_identity_id = ?1 AND lane = ?2 AND stream_epoch = ?5"#,
             detail: "lane sync cursor changed while it was being advanced".to_owned(),
         });
     }
+    Ok(())
+}
+
+pub(crate) fn migrate_legacy_p6_blockers_to_inbox(
+    connection: &Connection,
+) -> crate::ImResult<LegacyP6InboxMigrationReport> {
+    let blockers = {
+        let mut statement = connection
+            .prepare(
+                r#"
+SELECT blocker.owner_identity_id, blocker.event_id, blocker.stream_epoch,
+       blocker.event_seq, blocker.event_type, blocker.group_did,
+       blocker.group_event_seq, blocker.payload_json, blocker.created_at,
+       binding.account_id, binding.device_id, binding.device_auth_generation,
+       installation.client_instance_id
+FROM p6_lane_blockers AS blocker
+JOIN identity_account_bindings AS binding
+  ON binding.owner_identity_id = blocker.owner_identity_id
+LEFT JOIN sync_installation_state AS installation
+  ON installation.owner_identity_id = blocker.owner_identity_id
+ORDER BY blocker.owner_identity_id, blocker.stream_epoch, blocker.event_seq
+"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(super::local_state_unavailable)?
+    };
+    let mut report = LegacyP6InboxMigrationReport::default();
+    for (
+        owner_identity_id,
+        event_id,
+        lane_epoch,
+        position,
+        event_type,
+        group_did,
+        group_event_seq,
+        raw_payload_json,
+        created_at,
+        account_id,
+        device_id,
+        auth_generation,
+        client_instance_id,
+    ) in blockers
+    {
+        let Some(client_instance_id) = client_instance_id else {
+            // Installation identity is generated lazily after schema open.
+            // Leave the legacy row untouched and retry migration immediately
+            // after load_or_create_sync_client_instance_id.
+            continue;
+        };
+        let raw_payload = serde_json::from_str::<serde_json::Value>(&raw_payload_json).ok();
+        let payload_bytes = i64::try_from(raw_payload_json.len()).unwrap_or(i64::MAX);
+        let shape_valid = raw_payload
+            .as_ref()
+            .is_some_and(serde_json::Value::is_object)
+            && matches!(
+                event_type.as_str(),
+                "p6.delivery.created" | "p6.control.notice"
+            )
+            && ((event_type == "p6.delivery.created" && group_event_seq.is_some())
+                || (event_type == "p6.control.notice" && group_event_seq.is_none()))
+            && payload_bytes <= SYNC_LANE_INPUT_MAX_BYTES as i64;
+        if !shape_valid {
+            record_legacy_p6_migration_repair(
+                connection,
+                &owner_identity_id,
+                &event_id,
+                "legacy blocker cannot be reconstructed losslessly",
+                created_at,
+            )?;
+            report.repair_required += 1;
+            continue;
+        }
+        let raw_payload = raw_payload.expect("validated legacy blocker payload");
+        let input_id = stable_sync_lane_input_id(
+            &owner_identity_id,
+            crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            &lane_epoch,
+            &event_id,
+        )?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(super::local_state_unavailable)?;
+        if let Some((stored_position, stored_type, stored_payload)) = transaction
+            .query_row(
+                "SELECT position, event_type, raw_payload_json
+                 FROM sync_lane_inbox WHERE input_id = ?1",
+                [&input_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(super::local_state_unavailable)?
+        {
+            let stored_payload = serde_json::from_str::<serde_json::Value>(&stored_payload).ok();
+            if stored_position == position
+                && stored_type == event_type
+                && stored_payload.as_ref() == Some(&raw_payload)
+            {
+                transaction
+                    .commit()
+                    .map_err(super::local_state_unavailable)?;
+                report.already_migrated += 1;
+                continue;
+            }
+            transaction
+                .rollback()
+                .map_err(super::local_state_unavailable)?;
+            record_legacy_p6_migration_repair(
+                connection,
+                &owner_identity_id,
+                &event_id,
+                "legacy blocker conflicts with an existing lane input",
+                created_at,
+            )?;
+            report.repair_required += 1;
+            continue;
+        }
+        let position_conflict = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sync_lane_inbox
+                    WHERE owner_identity_id=?1 AND lane='p6_group'
+                      AND lane_epoch=?2 AND position=?3
+                )",
+                params![owner_identity_id, lane_epoch, position],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(super::local_state_unavailable)?;
+        let (pending_items, pending_bytes) = transaction
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(payload_bytes),0)
+                 FROM sync_lane_inbox
+                 WHERE owner_identity_id=?1 AND lane='p6_group' AND closed_at IS NULL",
+                [&owner_identity_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(super::local_state_unavailable)?;
+        if position_conflict
+            || pending_items.saturating_add(1) > SYNC_LANE_PENDING_ITEM_LIMIT
+            || pending_bytes.saturating_add(payload_bytes) > SYNC_LANE_PENDING_TOTAL_BYTES
+        {
+            transaction
+                .rollback()
+                .map_err(super::local_state_unavailable)?;
+            record_legacy_p6_migration_repair(
+                connection,
+                &owner_identity_id,
+                &event_id,
+                if position_conflict {
+                    "legacy blocker position conflicts with an existing lane input"
+                } else {
+                    "legacy blocker migration exceeds fixed lane capacity"
+                },
+                created_at,
+            )?;
+            report.repair_required += 1;
+            continue;
+        }
+        let received_at = chrono::DateTime::<chrono::Utc>::from_timestamp(created_at, 0)
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| format!("unix:{created_at}"));
+        transaction
+            .execute(
+                r#"
+INSERT INTO sync_lane_inbox(
+    input_id, owner_identity_id, lane, lane_epoch, position,
+    event_id, event_type, raw_payload_json, payload_bytes,
+    account_id_snapshot, device_id_snapshot, auth_generation_snapshot,
+    client_instance_id_snapshot, group_did, received_at, created_at
+) VALUES (?1,?2,'p6_group',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+"#,
+                params![
+                    input_id,
+                    owner_identity_id,
+                    lane_epoch,
+                    position,
+                    event_id,
+                    event_type,
+                    raw_payload_json,
+                    payload_bytes,
+                    account_id,
+                    device_id,
+                    auth_generation,
+                    client_instance_id,
+                    group_did,
+                    received_at,
+                    created_at,
+                ],
+            )
+            .map_err(super::local_state_unavailable)?;
+        transaction
+            .commit()
+            .map_err(super::local_state_unavailable)?;
+        report.migrated += 1;
+    }
+    Ok(report)
+}
+
+fn record_legacy_p6_migration_repair(
+    connection: &Connection,
+    owner_identity_id: &str,
+    event_id: &str,
+    reason: &str,
+    now: i64,
+) -> crate::ImResult<()> {
+    connection
+        .execute(
+            r#"
+INSERT INTO sync_p6_legacy_migration_repairs(
+    owner_identity_id, event_id, status, reason, updated_at
+) VALUES (?1,?2,'repair_required',?3,?4)
+ON CONFLICT(owner_identity_id,event_id) DO UPDATE SET
+    status='repair_required', reason=excluded.reason, updated_at=excluded.updated_at
+"#,
+            params![owner_identity_id, event_id, reason, now],
+        )
+        .map_err(super::local_state_unavailable)?;
+    record_lane_transport_error(
+        connection,
+        owner_identity_id,
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+        Some("lane_migration_repair_required"),
+        now,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn stable_sync_lane_input_id(
+    owner_identity_id: &str,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    lane_epoch: &str,
+    event_id: &str,
+) -> crate::ImResult<String> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_positive_decimal("lane_epoch", lane_epoch)?;
+    validate_required("event_id", event_id)?;
+    serde_json::to_string(&serde_json::json!([
+        owner_identity_id,
+        lane.as_str(),
+        lane_epoch,
+        event_id
+    ]))
+    .map_err(|error| {
+        sync_error(
+            "LANE_INPUT_INVALID",
+            format!("failed to encode stable lane input identity: {error}"),
+        )
+    })
+}
+
+pub(crate) fn commit_sync_lane_handoff(
+    connection: &Connection,
+    input: &SyncLaneHandoffInput,
+) -> crate::ImResult<SyncLaneHandoffOutcome> {
+    validate_sync_lane_handoff_input(input)?;
+    let raw_payload_json = serde_json::to_string(&input.raw_payload).map_err(|error| {
+        sync_error(
+            "LANE_INPUT_INVALID",
+            format!("failed to encode complete lane payload: {error}"),
+        )
+    })?;
+    let payload_bytes = i64::try_from(raw_payload_json.len()).map_err(|_| {
+        sync_error(
+            "LANE_INPUT_TOO_LARGE",
+            "lane payload length exceeds the local signed range",
+        )
+    })?;
+    if payload_bytes > SYNC_LANE_INPUT_MAX_BYTES as i64 {
+        return Err(sync_error(
+            "LANE_INPUT_TOO_LARGE",
+            "lane payload exceeds the fixed 1 MiB limit",
+        ));
+    }
+    let input_id = stable_sync_lane_input_id(
+        &input.owner_identity_id,
+        input.lane,
+        &input.lane_epoch,
+        &input.event_id,
+    )?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    validate_sync_lane_handoff_binding(&transaction, input)?;
+
+    if let Some((stored_position, stored_event_type, stored_payload)) = transaction
+        .query_row(
+            "SELECT position, event_type, raw_payload_json
+             FROM sync_lane_inbox
+             WHERE owner_identity_id = ?1 AND lane = ?2
+               AND lane_epoch = ?3 AND event_id = ?4",
+            params![
+                input.owner_identity_id,
+                input.lane.as_str(),
+                input.lane_epoch,
+                input.event_id,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+    {
+        let stored_payload = serde_json::from_str::<serde_json::Value>(&stored_payload)
+            .map_err(|_| sync_error("LANE_INPUT_CONFLICT", "stored lane payload is invalid"))?;
+        if stored_position != input.position
+            || stored_event_type != input.event_type
+            || stored_payload != input.raw_payload
+        {
+            return Err(sync_error(
+                "LANE_INPUT_CONFLICT",
+                "lane event identity is already bound to another position or payload",
+            ));
+        }
+        advance_lane_sync_state_in_transaction(
+            &transaction,
+            &LaneSyncState {
+                owner_identity_id: input.owner_identity_id.clone(),
+                lane: input.lane,
+                stream_epoch: input.lane_epoch.clone(),
+                scan_seq: input.position.clone(),
+                committed_seq: input.position.clone(),
+            },
+        )?;
+        clear_lane_transport_error_in_transaction(
+            &transaction,
+            &input.owner_identity_id,
+            input.lane,
+        )?;
+        transaction
+            .commit()
+            .map_err(super::local_state_unavailable)?;
+        return Ok(SyncLaneHandoffOutcome::Duplicate);
+    }
+
+    let position_conflict = transaction
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sync_lane_inbox
+                WHERE owner_identity_id = ?1 AND lane = ?2
+                  AND lane_epoch = ?3 AND position = ?4
+            )",
+            params![
+                input.owner_identity_id,
+                input.lane.as_str(),
+                input.lane_epoch,
+                input.position,
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::local_state_unavailable)?;
+    if position_conflict {
+        return Err(sync_error(
+            "LANE_INPUT_CONFLICT",
+            "lane position is already bound to another event",
+        ));
+    }
+
+    let (pending_items, pending_bytes) = transaction
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)
+             FROM sync_lane_inbox
+             WHERE owner_identity_id = ?1 AND lane = ?2 AND closed_at IS NULL",
+            params![input.owner_identity_id, input.lane.as_str()],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(super::local_state_unavailable)?;
+    if pending_items.saturating_add(1) > SYNC_LANE_PENDING_ITEM_LIMIT
+        || pending_bytes.saturating_add(payload_bytes) > SYNC_LANE_PENDING_TOTAL_BYTES
+    {
+        transaction
+            .rollback()
+            .map_err(super::local_state_unavailable)?;
+        record_lane_transport_error(
+            connection,
+            &input.owner_identity_id,
+            input.lane,
+            Some("lane_storage_pressure"),
+            unix_time_i64(),
+        )?;
+        return Err(sync_error(
+            "LANE_STORAGE_PRESSURE",
+            "lane inbox reached its fixed pending capacity",
+        ));
+    }
+
+    transaction
+        .execute(
+            r#"
+INSERT INTO sync_lane_inbox(
+    input_id, owner_identity_id, lane, lane_epoch, position,
+    event_id, event_type, raw_payload_json, payload_bytes,
+    account_id_snapshot, device_id_snapshot, auth_generation_snapshot,
+    client_instance_id_snapshot, group_did, received_at,
+    source_created_at, source_expires_at, closed_at, created_at
+) VALUES (
+    ?1, ?2, ?3, ?4, ?5,
+    ?6, ?7, ?8, ?9,
+    ?10, ?11, ?12,
+    ?13, ?14, ?15,
+    ?16, ?17, NULL, ?18
+)
+"#,
+            params![
+                input_id,
+                input.owner_identity_id,
+                input.lane.as_str(),
+                input.lane_epoch,
+                input.position,
+                input.event_id,
+                input.event_type,
+                raw_payload_json,
+                payload_bytes,
+                input.account_id_snapshot,
+                input.device_id_snapshot,
+                input.auth_generation_snapshot,
+                input.client_instance_id_snapshot,
+                input.group_did,
+                input.received_at,
+                input.source_created_at,
+                input.source_expires_at,
+                unix_time_i64(),
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    advance_lane_sync_state_in_transaction(
+        &transaction,
+        &LaneSyncState {
+            owner_identity_id: input.owner_identity_id.clone(),
+            lane: input.lane,
+            stream_epoch: input.lane_epoch.clone(),
+            scan_seq: input.position.clone(),
+            committed_seq: input.position.clone(),
+        },
+    )?;
+    clear_lane_transport_error_in_transaction(&transaction, &input.owner_identity_id, input.lane)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(SyncLaneHandoffOutcome::Inserted)
+}
+
+pub(crate) fn list_pending_sync_lane_inputs(
+    connection: &Connection,
+    owner_identity_id: &str,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    now: i64,
+    limit: u32,
+) -> crate::ImResult<Vec<SyncLaneInboxRecord>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if limit == 0 || limit > 256 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "lane consumer limit must be between 1 and 256",
+        ));
+    }
+    let outcome_table = match lane {
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device => "sync_p5_input_outcomes",
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group => "sync_p6_input_outcomes",
+    };
+    let sql = format!(
+        "SELECT inbox.input_id, inbox.owner_identity_id, inbox.lane,
+                inbox.lane_epoch, inbox.position, inbox.event_id,
+                inbox.event_type, inbox.raw_payload_json, inbox.group_did,
+                inbox.received_at, inbox.source_created_at, inbox.source_expires_at
+         FROM sync_lane_inbox AS inbox
+         LEFT JOIN {outcome_table} AS outcome ON outcome.input_id = inbox.input_id
+         WHERE inbox.owner_identity_id = ?1 AND inbox.lane = ?2
+           AND inbox.closed_at IS NULL
+           AND (outcome.status IS NULL OR outcome.status IN ('pending', 'processing'))
+           AND (outcome.next_retry_at IS NULL OR outcome.next_retry_at <= ?3)
+         ORDER BY length(inbox.lane_epoch), inbox.lane_epoch,
+                  length(inbox.position), inbox.position, inbox.input_id
+         LIMIT ?4"
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            params![owner_identity_id, lane.as_str(), now, i64::from(limit)],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                ))
+            },
+        )
+        .map_err(super::local_state_unavailable)?;
+    let mut inputs = Vec::new();
+    for row in rows {
+        let (
+            input_id,
+            owner_identity_id,
+            lane_name,
+            lane_epoch,
+            position,
+            event_id,
+            event_type,
+            raw_payload_json,
+            group_did,
+            received_at,
+            source_created_at,
+            source_expires_at,
+        ) = row.map_err(super::local_state_unavailable)?;
+        inputs.push(SyncLaneInboxRecord {
+            input_id,
+            owner_identity_id,
+            lane: parse_lane_name(&lane_name)?,
+            lane_epoch,
+            position,
+            event_id,
+            event_type,
+            raw_payload: serde_json::from_str(&raw_payload_json).map_err(|_| {
+                sync_error("LANE_INPUT_INVALID", "stored lane input payload is invalid")
+            })?,
+            group_did,
+            received_at,
+            source_created_at,
+            source_expires_at,
+        });
+    }
+    Ok(inputs)
+}
+
+pub(crate) fn write_sync_lane_domain_state(
+    connection: &Connection,
+    state: &SyncLaneDomainState,
+    now: i64,
+) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    write_sync_lane_domain_state_in_transaction(&transaction, state, now)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn write_sync_lane_domain_state_in_transaction(
+    connection: &Connection,
+    state: &SyncLaneDomainState,
+    now: i64,
+) -> crate::ImResult<()> {
+    validate_sync_lane_domain_state(state)?;
+    let owner_identity_id = state_owner_identity_id(state, connection)?;
+    let stored_lane = connection
+        .query_row(
+            "SELECT lane FROM sync_lane_inbox
+             WHERE input_id = ?1 AND owner_identity_id = ?2",
+            params![state.input_id, owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some(stored_lane) = stored_lane else {
+        return Err(sync_error(
+            "LANE_INPUT_MISSING",
+            "domain outcome references a missing lane input",
+        ));
+    };
+    if parse_lane_name(&stored_lane)? != state.lane {
+        return Err(sync_error(
+            "LANE_INPUT_CONFLICT",
+            "domain outcome lane does not match its input",
+        ));
+    }
+    let (table, scope_column) = match state.lane {
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device => {
+            ("sync_p5_input_outcomes", "peer_scope")
+        }
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group => {
+            ("sync_p6_input_outcomes", "group_did")
+        }
+    };
+    if let Some(existing_status) = connection
+        .query_row(
+            &format!("SELECT status FROM {table} WHERE input_id=?1"),
+            [&state.input_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+    {
+        let existing_status = parse_lane_domain_status(&existing_status)?;
+        if existing_status.is_closed() {
+            if existing_status == state.status {
+                return Ok(());
+            }
+            return Err(sync_error(
+                "LANE_DOMAIN_STATE_CONFLICT",
+                "closed lane domain outcome cannot be reopened or rewritten",
+            ));
+        }
+    }
+    let sql = format!(
+        "INSERT INTO {table}(
+             input_id, owner_identity_id, {scope_column}, status, retryable,
+             attempt_count, next_retry_at, operation_ref, last_error_code, updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+         ON CONFLICT(input_id) DO UPDATE SET
+             {scope_column}=excluded.{scope_column},
+             status=excluded.status,
+             retryable=excluded.retryable,
+             attempt_count=excluded.attempt_count,
+             next_retry_at=excluded.next_retry_at,
+             operation_ref=excluded.operation_ref,
+             last_error_code=excluded.last_error_code,
+             updated_at=excluded.updated_at"
+    );
+    connection
+        .execute(
+            &sql,
+            params![
+                state.input_id,
+                owner_identity_id,
+                state.scope,
+                state.status.as_str(),
+                state.retryable,
+                state.attempt_count,
+                state.next_retry_at,
+                state.operation_ref,
+                state.last_error_code,
+                now,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute(
+            "UPDATE sync_lane_inbox SET closed_at = ?2 WHERE input_id = ?1",
+            params![state.input_id, state.status.is_closed().then_some(now),],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn load_sync_lane_domain_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<SyncLaneDomainState>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    let mut states = Vec::new();
+    for (lane, table, scope_column) in [
+        (
+            crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            "sync_p5_input_outcomes",
+            "peer_scope",
+        ),
+        (
+            crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            "sync_p6_input_outcomes",
+            "group_did",
+        ),
+    ] {
+        let sql = format!(
+            "SELECT input_id, {scope_column}, status, retryable, attempt_count,
+                    next_retry_at, operation_ref, last_error_code
+             FROM {table} WHERE owner_identity_id = ?1 ORDER BY input_id"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([owner_identity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        for row in rows {
+            let (
+                input_id,
+                scope,
+                status,
+                retryable,
+                attempt_count,
+                next_retry_at,
+                operation_ref,
+                last_error_code,
+            ) = row.map_err(super::local_state_unavailable)?;
+            states.push(SyncLaneDomainState {
+                input_id,
+                lane,
+                scope,
+                status: parse_lane_domain_status(&status)?,
+                retryable,
+                attempt_count,
+                next_retry_at,
+                operation_ref,
+                last_error_code,
+            });
+        }
+    }
+    Ok(states)
+}
+
+pub(crate) fn register_p5_did_cutover(
+    connection: &Connection,
+    cutover: &P5DidCutover,
+) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &cutover.owner_identity_id)?;
+    validate_required("old_did", &cutover.old_did)?;
+    validate_required("new_did", &cutover.new_did)?;
+    if cutover.old_did == cutover.new_did
+        || cutover.status != "draining"
+        || cutover.drain_deadline < cutover.cutover_at
+    {
+        return Err(sync_error(
+            "P5_CUTOVER_INVALID",
+            "P5 DID cutover must be a bounded old-to-new drain",
+        ));
+    }
+    let binding = load_identity_account_binding(connection, &cutover.owner_identity_id)?
+        .ok_or_else(|| crate::ImError::IdentityBindingConflict {
+            detail: "P5 DID cutover requires an active binding".to_owned(),
+        })?;
+    if binding.current_did != cutover.new_did {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "P5 DID cutover successor is not the current authoritative DID".to_owned(),
+        });
+    }
+    connection
+        .execute(
+            r#"
+INSERT INTO sync_p5_did_cutovers(
+    owner_identity_id, old_did, new_did, cutover_at,
+    drain_deadline, status, updated_at
+) VALUES (?1,?2,?3,?4,?5,'draining',?4)
+ON CONFLICT(owner_identity_id,old_did,new_did) DO UPDATE SET
+    drain_deadline=excluded.drain_deadline,
+    updated_at=excluded.updated_at
+"#,
+            params![
+                cutover.owner_identity_id,
+                cutover.old_did,
+                cutover.new_did,
+                cutover.cutover_at,
+                cutover.drain_deadline,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn load_p5_did_cutover(
+    connection: &Connection,
+    owner_identity_id: &str,
+    old_did: &str,
+) -> crate::ImResult<Option<P5DidCutover>> {
+    connection
+        .query_row(
+            "SELECT owner_identity_id,old_did,new_did,cutover_at,
+                    drain_deadline,status
+             FROM sync_p5_did_cutovers
+             WHERE owner_identity_id=?1 AND old_did=?2",
+            params![owner_identity_id, old_did],
+            |row| {
+                Ok(P5DidCutover {
+                    owner_identity_id: row.get(0)?,
+                    old_did: row.get(1)?,
+                    new_did: row.get(2)?,
+                    cutover_at: row.get(3)?,
+                    drain_deadline: row.get(4)?,
+                    status: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn complete_p5_did_cutover_if_drained(
+    connection: &Connection,
+    owner_identity_id: &str,
+    old_did: &str,
+    now: i64,
+) -> crate::ImResult<bool> {
+    let pending = connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sync_lane_inbox
+                WHERE owner_identity_id=?1 AND lane='p5_device'
+                  AND closed_at IS NULL
+                  AND json_extract(raw_payload_json,'$.meta.target.did')=?2
+            )",
+            params![owner_identity_id, old_did],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::local_state_unavailable)?;
+    if pending {
+        return Ok(false);
+    }
+    Ok(connection
+        .execute(
+            "UPDATE sync_p5_did_cutovers
+             SET status='drained', updated_at=?3
+             WHERE owner_identity_id=?1 AND old_did=?2 AND status='draining'",
+            params![owner_identity_id, old_did, now],
+        )
+        .map_err(super::local_state_unavailable)?
+        == 1)
+}
+
+pub(crate) fn record_lane_transport_error(
+    connection: &Connection,
+    owner_identity_id: &str,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+    last_transport_error: Option<&str>,
+    now: i64,
+) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    connection
+        .execute(
+            r#"
+INSERT INTO sync_lane_transport_state(
+    owner_identity_id, lane, last_transport_error, updated_at
+) VALUES (?1,?2,?3,?4)
+ON CONFLICT(owner_identity_id, lane) DO UPDATE SET
+    last_transport_error=excluded.last_transport_error,
+    updated_at=excluded.updated_at
+"#,
+            params![owner_identity_id, lane.as_str(), last_transport_error, now],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn load_lane_transport_states(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<SyncLaneTransportState>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT lane, last_transport_error FROM sync_lane_transport_state
+             WHERE owner_identity_id = ?1 ORDER BY lane",
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(super::local_state_unavailable)?;
+    rows.map(|row| {
+        let (lane, last_transport_error) = row.map_err(super::local_state_unavailable)?;
+        Ok(SyncLaneTransportState {
+            lane: parse_lane_name(&lane)?,
+            last_transport_error,
+        })
+    })
+    .collect()
+}
+
+pub(crate) fn purge_closed_sync_lane_inputs(
+    connection: &Connection,
+    now: i64,
+    limit: u32,
+) -> crate::ImResult<usize> {
+    if limit == 0 || limit > 1024 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "lane inbox cleanup limit must be between 1 and 1024",
+        ));
+    }
+    connection
+        .execute(
+            "DELETE FROM sync_lane_inbox WHERE input_id IN (
+                 SELECT input_id FROM sync_lane_inbox
+                 WHERE closed_at IS NOT NULL AND closed_at <= ?1
+                 ORDER BY closed_at, input_id LIMIT ?2
+             )",
+            params![
+                now.saturating_sub(SYNC_LANE_CLOSED_RETENTION_SECONDS),
+                i64::from(limit),
+            ],
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn validate_sync_lane_handoff_input(input: &SyncLaneHandoffInput) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &input.owner_identity_id)?;
+    validate_required("account_id_snapshot", &input.account_id_snapshot)?;
+    validate_required("device_id_snapshot", &input.device_id_snapshot)?;
+    validate_positive_decimal("auth_generation_snapshot", &input.auth_generation_snapshot)?;
+    validate_required(
+        "client_instance_id_snapshot",
+        &input.client_instance_id_snapshot,
+    )?;
+    validate_positive_decimal("lane_epoch", &input.lane_epoch)?;
+    validate_positive_decimal("position", &input.position)?;
+    validate_required("event_id", &input.event_id)?;
+    validate_required("received_at", &input.received_at)?;
+    if !input.raw_payload.is_object() {
+        return Err(sync_error(
+            "LANE_INPUT_INVALID",
+            "lane raw payload must be a complete JSON object",
+        ));
+    }
+    let shape_valid = match input.lane {
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device => {
+            input.event_type == "p5.delivery.created" && input.group_did.is_none()
+        }
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group => {
+            matches!(
+                input.event_type.as_str(),
+                "p6.delivery.created" | "p6.control.notice"
+            ) && input
+                .group_did
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        }
+    };
+    if !shape_valid {
+        return Err(sync_error(
+            "LANE_INPUT_INVALID",
+            "lane input does not match its production event discriminator",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sync_lane_handoff_binding(
+    connection: &Connection,
+    input: &SyncLaneHandoffInput,
+) -> crate::ImResult<()> {
+    let binding =
+        load_identity_account_binding(connection, &input.owner_identity_id)?.ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "lane handoff requires an active account binding".to_owned(),
+            }
+        })?;
+    if binding.account_id != input.account_id_snapshot
+        || binding.protocol_device_id != input.device_id_snapshot
+        || binding.device_auth_generation != input.auth_generation_snapshot
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane handoff binding snapshot does not match the active replica".to_owned(),
+        });
+    }
+    let client_instance_id = connection
+        .query_row(
+            "SELECT client_instance_id FROM sync_installation_state
+             WHERE owner_identity_id = ?1",
+            [&input.owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if client_instance_id.as_deref() != Some(input.client_instance_id_snapshot.as_str()) {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "lane handoff client installation snapshot is stale".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_sync_lane_domain_state(state: &SyncLaneDomainState) -> crate::ImResult<()> {
+    validate_required("input_id", &state.input_id)?;
+    validate_required("scope", &state.scope)?;
+    if state.attempt_count < 0
+        || (state.status.is_closed() && state.retryable)
+        || (!state.retryable && state.next_retry_at.is_some())
+        || (state.lane == crate::internal::wire::sync_v2::SyncLaneV3::P5Device
+            && matches!(
+                state.status,
+                SyncLaneDomainStatus::RejoinRequired | SyncLaneDomainStatus::ActionRequired
+            ))
+    {
+        return Err(sync_error(
+            "LANE_DOMAIN_STATE_INVALID",
+            "lane domain state violates its closed retry contract",
+        ));
+    }
+    Ok(())
+}
+
+fn state_owner_identity_id(
+    state: &SyncLaneDomainState,
+    connection: &Connection,
+) -> crate::ImResult<String> {
+    connection
+        .query_row(
+            "SELECT owner_identity_id FROM sync_lane_inbox WHERE input_id = ?1",
+            [&state.input_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .ok_or_else(|| sync_error("LANE_INPUT_MISSING", "lane input does not exist"))
+}
+
+fn parse_lane_domain_status(value: &str) -> crate::ImResult<SyncLaneDomainStatus> {
+    match value {
+        "pending" => Ok(SyncLaneDomainStatus::Pending),
+        "processing" => Ok(SyncLaneDomainStatus::Processing),
+        "applied" => Ok(SyncLaneDomainStatus::Applied),
+        "terminal" => Ok(SyncLaneDomainStatus::Terminal),
+        "rejoin_required" => Ok(SyncLaneDomainStatus::RejoinRequired),
+        "repair_required" => Ok(SyncLaneDomainStatus::RepairRequired),
+        "upgrade_required" => Ok(SyncLaneDomainStatus::UpgradeRequired),
+        "action_required" => Ok(SyncLaneDomainStatus::ActionRequired),
+        _ => Err(sync_error(
+            "LANE_DOMAIN_STATE_INVALID",
+            "stored lane domain state is unknown",
+        )),
+    }
+}
+
+fn clear_lane_transport_error_in_transaction(
+    connection: &Connection,
+    owner_identity_id: &str,
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+) -> crate::ImResult<()> {
+    connection
+        .execute(
+            "INSERT INTO sync_lane_transport_state(
+                 owner_identity_id, lane, last_transport_error, updated_at
+             ) VALUES (?1,?2,NULL,?3)
+             ON CONFLICT(owner_identity_id, lane) DO UPDATE SET
+                 last_transport_error=NULL, updated_at=excluded.updated_at",
+            params![owner_identity_id, lane.as_str(), unix_time_i64()],
+        )
+        .map_err(super::local_state_unavailable)?;
     Ok(())
 }
 
@@ -9261,6 +10617,805 @@ END;
             )
             .unwrap(),
             r#"["lanes.p5_device.v1"]"#
+        );
+    }
+
+    fn v1b_p5_handoff_input(
+        binding: &IdentityAccountBinding,
+        client_instance_id: &str,
+        event_id: &str,
+        position: &str,
+        raw_payload: serde_json::Value,
+    ) -> SyncLaneHandoffInput {
+        SyncLaneHandoffInput {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            account_id_snapshot: binding.account_id.clone(),
+            device_id_snapshot: binding.protocol_device_id.clone(),
+            auth_generation_snapshot: binding.device_auth_generation.clone(),
+            client_instance_id_snapshot: client_instance_id.to_owned(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            lane_epoch: "41".to_owned(),
+            position: position.to_owned(),
+            event_id: event_id.to_owned(),
+            event_type: "p5.delivery.created".to_owned(),
+            raw_payload,
+            group_did: None,
+            received_at: "2026-08-28T00:00:00Z".to_owned(),
+            source_created_at: None,
+            source_expires_at: None,
+        }
+    }
+
+    #[test]
+    fn v1b_handoff_atomic_duplicate_conflict_and_domain_cursor_independence() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let mut binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+        )
+        .unwrap();
+        let raw_payload = serde_json::json!({
+            "meta": {"sender_did": "did:example:peer", "message_id": "p5-v1b-1"},
+            "body": {"ciphertext_b64u": "AQ"}
+        });
+        let input = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "p5-v1b-1",
+            "1",
+            raw_payload.clone(),
+        );
+        assert_eq!(
+            commit_sync_lane_handoff(&db, &input).unwrap(),
+            SyncLaneHandoffOutcome::Inserted
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "1"
+        );
+
+        binding.device_auth_generation = "3".to_owned();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let mut replay = input.clone();
+        replay.auth_generation_snapshot = "3".to_owned();
+        assert_eq!(
+            commit_sync_lane_handoff(&db, &replay).unwrap(),
+            SyncLaneHandoffOutcome::Duplicate
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT auth_generation_snapshot FROM sync_lane_inbox",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "2"
+        );
+
+        let mut conflicting_payload = replay.clone();
+        conflicting_payload.raw_payload["body"]["ciphertext_b64u"] = serde_json::json!("different");
+        assert!(matches!(
+            commit_sync_lane_handoff(&db, &conflicting_payload),
+            Err(crate::ImError::Service { code: Some(code), .. }) if code == "LANE_INPUT_CONFLICT"
+        ));
+        let position_conflict = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "p5-v1b-other",
+            "1",
+            raw_payload,
+        );
+        assert!(matches!(
+            commit_sync_lane_handoff(&db, &position_conflict),
+            Err(crate::ImError::Service { code: Some(code), .. }) if code == "LANE_INPUT_CONFLICT"
+        ));
+
+        let input_id = stable_sync_lane_input_id(
+            &binding.owner_identity_id,
+            crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            "41",
+            "p5-v1b-1",
+        )
+        .unwrap();
+        write_sync_lane_domain_state(
+            &db,
+            &SyncLaneDomainState {
+                input_id,
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                scope: "did:example:peer".to_owned(),
+                status: SyncLaneDomainStatus::Applied,
+                retryable: false,
+                attempt_count: 1,
+                next_retry_at: None,
+                operation_ref: Some("p5-v1b-1".to_owned()),
+                last_error_code: None,
+            },
+            10,
+        )
+        .unwrap();
+        assert!(matches!(
+            write_sync_lane_domain_state(
+                &db,
+                &SyncLaneDomainState {
+                    input_id: stable_sync_lane_input_id(
+                        &binding.owner_identity_id,
+                        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                        "41",
+                        "p5-v1b-1",
+                    )
+                    .unwrap(),
+                    lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                    scope: "did:example:peer".to_owned(),
+                    status: SyncLaneDomainStatus::Pending,
+                    retryable: true,
+                    attempt_count: 2,
+                    next_retry_at: Some(12),
+                    operation_ref: Some("p5-v1b-1".to_owned()),
+                    last_error_code: Some("retry".to_owned()),
+                },
+                11,
+            ),
+            Err(crate::ImError::Service { code: Some(code), .. })
+                if code == "LANE_DOMAIN_STATE_CONFLICT"
+        ));
+        assert!(list_pending_sync_lane_inputs(
+            &db,
+            &binding.owner_identity_id,
+            crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            11,
+            10,
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "1"
+        );
+        assert_eq!(purge_closed_sync_lane_inputs(&db, 10, 10).unwrap(), 0);
+        assert_eq!(
+            purge_closed_sync_lane_inputs(&db, 10 + SYNC_LANE_CLOSED_RETENTION_SECONDS, 10,)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn v1b_handoff_cursor_failure_rolls_back_complete_input() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+        )
+        .unwrap();
+        db.execute_batch(
+            r#"
+CREATE TRIGGER fail_v1b_lane_cursor
+BEFORE UPDATE OF scan_seq ON lane_sync_state
+BEGIN
+    SELECT RAISE(ABORT, 'forced cursor failure');
+END;
+"#,
+        )
+        .unwrap();
+        let input = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "p5-v1b-crash",
+            "1",
+            serde_json::json!({"meta": {}, "body": {"ciphertext_b64u": "AQ"}}),
+        );
+        assert!(commit_sync_lane_handoff(&db, &input).is_err());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "0"
+        );
+    }
+
+    #[test]
+    fn v1b_handoff_capacity_limits_fail_closed_without_cursor_advance() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        let initial = LaneSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            stream_epoch: "41".to_owned(),
+            scan_seq: "0".to_owned(),
+            committed_seq: "0".to_owned(),
+        };
+        replace_lane_sync_states(&db, &binding.owner_identity_id, &[initial.clone()]).unwrap();
+
+        let transaction = db.unchecked_transaction().unwrap();
+        for index in 0..(SYNC_LANE_PENDING_ITEM_LIMIT - 1) {
+            transaction
+                .execute(
+                    "INSERT INTO sync_lane_inbox(
+                         input_id, owner_identity_id, lane, lane_epoch, position,
+                         event_id, event_type, raw_payload_json, payload_bytes,
+                         account_id_snapshot, device_id_snapshot, auth_generation_snapshot,
+                         client_instance_id_snapshot, received_at, created_at
+                     ) VALUES (?1,?2,'p5_device','41',?3,?4,
+                         'p5.delivery.created','{}',2,?5,?6,?7,?8,
+                         '2026-08-28T00:00:00Z',0)",
+                    params![
+                        format!("seed-item-{index}"),
+                        binding.owner_identity_id,
+                        (index + 100).to_string(),
+                        format!("seed-item-event-{index}"),
+                        binding.account_id,
+                        binding.protocol_device_id,
+                        binding.device_auth_generation,
+                        client_instance_id,
+                    ],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+        let exact_item_limit = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "item-limit-exact",
+            "5000",
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            commit_sync_lane_handoff(&db, &exact_item_limit).unwrap(),
+            SyncLaneHandoffOutcome::Inserted
+        );
+        let item_overflow = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "item-limit-overflow",
+            "5001",
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            commit_sync_lane_handoff(&db, &item_overflow),
+            Err(crate::ImError::Service { code: Some(code), .. }) if code == "LANE_STORAGE_PRESSURE"
+        ));
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "5000"
+        );
+        assert_eq!(
+            load_lane_transport_states(&db, &binding.owner_identity_id).unwrap()[0]
+                .last_transport_error
+                .as_deref(),
+            Some("lane_storage_pressure")
+        );
+
+        db.execute("DELETE FROM sync_lane_inbox", []).unwrap();
+        db.execute(
+            "UPDATE lane_sync_state SET scan_seq='0', committed_seq='0'
+             WHERE owner_identity_id=?1 AND lane='p5_device'",
+            [&binding.owner_identity_id],
+        )
+        .unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        for index in 0..64_i64 {
+            let payload_bytes = if index == 63 {
+                SYNC_LANE_INPUT_MAX_BYTES as i64 - 2
+            } else {
+                SYNC_LANE_INPUT_MAX_BYTES as i64
+            };
+            transaction
+                .execute(
+                    "INSERT INTO sync_lane_inbox(
+                         input_id, owner_identity_id, lane, lane_epoch, position,
+                         event_id, event_type, raw_payload_json, payload_bytes,
+                         account_id_snapshot, device_id_snapshot, auth_generation_snapshot,
+                         client_instance_id_snapshot, received_at, created_at
+                     ) VALUES (?1,?2,'p5_device','41',?3,?4,
+                         'p5.delivery.created','{}',?5,?6,?7,?8,?9,
+                         '2026-08-28T00:00:00Z',0)",
+                    params![
+                        format!("seed-byte-{index}"),
+                        binding.owner_identity_id,
+                        (index + 100).to_string(),
+                        format!("seed-byte-event-{index}"),
+                        payload_bytes,
+                        binding.account_id,
+                        binding.protocol_device_id,
+                        binding.device_auth_generation,
+                        client_instance_id,
+                    ],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+        let exact_byte_limit = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "byte-limit-exact",
+            "5000",
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            commit_sync_lane_handoff(&db, &exact_byte_limit).unwrap(),
+            SyncLaneHandoffOutcome::Inserted
+        );
+        assert_eq!(
+            load_lane_transport_states(&db, &binding.owner_identity_id).unwrap()[0]
+                .last_transport_error,
+            None
+        );
+        let byte_overflow = v1b_p5_handoff_input(
+            &binding,
+            &client_instance_id,
+            "byte-limit-overflow",
+            "5001",
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            commit_sync_lane_handoff(&db, &byte_overflow),
+            Err(crate::ImError::Service { code: Some(code), .. }) if code == "LANE_STORAGE_PRESSURE"
+        ));
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "5000"
+        );
+    }
+
+    #[test]
+    fn v1b_handoff_legacy_p6_blocker_migration_is_lossless_idempotent_and_cursor_neutral() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let _client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        replace_lane_sync_states(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                stream_epoch: "42".to_owned(),
+                scan_seq: "9".to_owned(),
+                committed_seq: "9".to_owned(),
+            }],
+        )
+        .unwrap();
+        for (event_id, event_seq, group_event_seq) in [
+            ("p6-migrate-valid", "7", Some("19")),
+            ("p6-migrate-invalid", "8", None),
+        ] {
+            db.execute(
+                "INSERT INTO p6_lane_blockers(
+                     owner_identity_id,event_id,stream_epoch,event_seq,event_type,
+                     group_did,group_event_seq,payload_json,attempt_count,
+                     last_error_code,created_at,updated_at
+                 ) VALUES (?1,?2,'42',?3,'p6.delivery.created',
+                     'did:example:group',?4,?5,1,'deferred',1,1)",
+                params![
+                    binding.owner_identity_id,
+                    event_id,
+                    event_seq,
+                    group_event_seq,
+                    serde_json::json!({
+                        "meta": {"profile": "anp.group.e2ee.v2"},
+                        "body": {"group_did": "did:example:group"}
+                    })
+                    .to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let first = migrate_legacy_p6_blockers_to_inbox(&db).unwrap();
+        assert_eq!(first.migrated, 1);
+        assert_eq!(first.repair_required, 1);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_p6_legacy_migration_repairs",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM p6_lane_blockers", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "9"
+        );
+
+        let second = migrate_legacy_p6_blockers_to_inbox(&db).unwrap();
+        assert_eq!(second.already_migrated, 1);
+        assert_eq!(second.repair_required, 1);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn v1b_handoff_zero_and_new_epoch_preserve_pending_responsibility() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        reconcile_sync_lane_capability_v1a(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "41".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+            &binding.device_auth_generation,
+            &client_instance_id,
+            r#"["lanes.p5_device.v1"]"#,
+        )
+        .unwrap();
+        commit_sync_lane_handoff(
+            &db,
+            &v1b_p5_handoff_input(
+                &binding,
+                &client_instance_id,
+                "p5-old-epoch",
+                "1",
+                serde_json::json!({"meta": {}, "body": {}}),
+            ),
+        )
+        .unwrap();
+        reconcile_sync_lane_capability_v1a(
+            &db,
+            &binding.owner_identity_id,
+            &[],
+            &binding.device_auth_generation,
+            &client_instance_id,
+            "[]",
+        )
+        .unwrap();
+        assert!(load_lane_sync_states(&db, &binding.owner_identity_id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            list_pending_sync_lane_inputs(
+                &db,
+                &binding.owner_identity_id,
+                crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                1,
+                10,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        reconcile_sync_lane_capability_v1a(
+            &db,
+            &binding.owner_identity_id,
+            &[LaneSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                stream_epoch: "43".to_owned(),
+                scan_seq: "0".to_owned(),
+                committed_seq: "0".to_owned(),
+            }],
+            &binding.device_auth_generation,
+            &client_instance_id,
+            r#"["lanes.p5_device.v1"]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            list_pending_sync_lane_inputs(
+                &db,
+                &binding.owner_identity_id,
+                crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                1,
+                10,
+            )
+            .unwrap()[0]
+                .lane_epoch,
+            "41"
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].stream_epoch,
+            "43"
+        );
+    }
+
+    #[test]
+    fn v1b_p5_accepted_transition_restart_bounded_drain_closes_without_relabel() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("v1b-p5-cutover.sqlite");
+        let input_id;
+        {
+            let db = Connection::open(&path).unwrap();
+            db.pragma_update(None, "foreign_keys", "ON").unwrap();
+            create_schema(&db).unwrap();
+            let mut binding = binding();
+            binding.current_did = "did:example:owner-old".to_owned();
+            upsert_identity_account_binding(&db, &binding).unwrap();
+            let client_instance_id =
+                load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+            replace_lane_sync_states(
+                &db,
+                &binding.owner_identity_id,
+                &[LaneSyncState {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                    stream_epoch: "41".to_owned(),
+                    scan_seq: "0".to_owned(),
+                    committed_seq: "0".to_owned(),
+                }],
+            )
+            .unwrap();
+            let input = v1b_p5_handoff_input(
+                &binding,
+                &client_instance_id,
+                "p5-before-cutover",
+                "1",
+                serde_json::json!({
+                    "meta": {
+                        "sender_did": "did:example:peer",
+                        "target": {"did": "did:example:owner-old"}
+                    },
+                    "body": {"ciphertext_b64u": "AQ"}
+                }),
+            );
+            input_id = stable_sync_lane_input_id(
+                &binding.owner_identity_id,
+                crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                "41",
+                "p5-before-cutover",
+            )
+            .unwrap();
+            commit_sync_lane_handoff(&db, &input).unwrap();
+
+            binding.current_did = "did:example:owner-new".to_owned();
+            binding.identity_generation = "100000000000000000000000000000000000002".to_owned();
+            binding.updated_at = 100;
+            upsert_identity_account_binding(&db, &binding).unwrap();
+            binding.current_did = "did:example:owner-newer".to_owned();
+            binding.identity_generation = "100000000000000000000000000000000000003".to_owned();
+            binding.updated_at = 101;
+            upsert_identity_account_binding(&db, &binding).unwrap();
+        }
+
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let cutover = load_p5_did_cutover(&db, "owner-1", "did:example:owner-old")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cutover.status, "draining");
+        let next_cutover = load_p5_did_cutover(&db, "owner-1", "did:example:owner-new")
+            .unwrap()
+            .unwrap();
+        assert_eq!(next_cutover.new_did, "did:example:owner-newer");
+        assert_eq!(next_cutover.status, "draining");
+        assert!(
+            !complete_p5_did_cutover_if_drained(&db, "owner-1", "did:example:owner-old", 101,)
+                .unwrap()
+        );
+        write_sync_lane_domain_state(
+            &db,
+            &SyncLaneDomainState {
+                input_id,
+                lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+                scope: "did:example:peer".to_owned(),
+                status: SyncLaneDomainStatus::RepairRequired,
+                retryable: false,
+                attempt_count: 1,
+                next_retry_at: None,
+                operation_ref: Some("p5-before-cutover".to_owned()),
+                last_error_code: Some("p5.old_did_retained_session_unavailable".to_owned()),
+            },
+            101,
+        )
+        .unwrap();
+        assert!(
+            complete_p5_did_cutover_if_drained(&db, "owner-1", "did:example:owner-old", 102,)
+                .unwrap()
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT json_extract(raw_payload_json,'$.meta.target.did')
+                 FROM sync_lane_inbox",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "did:example:owner-old"
+        );
+    }
+
+    #[test]
+    fn v1b_p6_external_crash_boundaries_restart_from_inbox_without_cursor_rewind() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("v1b-p6-crash.sqlite");
+        let binding = binding();
+        let input_ids;
+        {
+            let db = Connection::open(&path).unwrap();
+            db.pragma_update(None, "foreign_keys", "ON").unwrap();
+            create_schema(&db).unwrap();
+            upsert_identity_account_binding(&db, &binding).unwrap();
+            let client_instance_id =
+                load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+            replace_lane_sync_states(
+                &db,
+                &binding.owner_identity_id,
+                &[LaneSyncState {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                    stream_epoch: "42".to_owned(),
+                    scan_seq: "0".to_owned(),
+                    committed_seq: "0".to_owned(),
+                }],
+            )
+            .unwrap();
+            let mut ids = Vec::new();
+            for (position, event_id, event_type) in [
+                ("1", "p6-application", "p6.delivery.created"),
+                ("2", "p6-welcome", "p6.control.notice"),
+                ("3", "p6-commit", "p6.control.notice"),
+            ] {
+                let input = SyncLaneHandoffInput {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    account_id_snapshot: binding.account_id.clone(),
+                    device_id_snapshot: binding.protocol_device_id.clone(),
+                    auth_generation_snapshot: binding.device_auth_generation.clone(),
+                    client_instance_id_snapshot: client_instance_id.clone(),
+                    lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                    lane_epoch: "42".to_owned(),
+                    position: position.to_owned(),
+                    event_id: event_id.to_owned(),
+                    event_type: event_type.to_owned(),
+                    raw_payload: serde_json::json!({
+                        "meta": {"message_id": event_id},
+                        "body": {
+                            "group_did": "did:example:group",
+                            "notice_type": event_id.strip_prefix("p6-")
+                        }
+                    }),
+                    group_did: Some("did:example:group".to_owned()),
+                    received_at: "2026-08-28T00:00:00Z".to_owned(),
+                    source_created_at: None,
+                    source_expires_at: None,
+                };
+                commit_sync_lane_handoff(&db, &input).unwrap();
+                ids.push(
+                    stable_sync_lane_input_id(
+                        &binding.owner_identity_id,
+                        crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                        "42",
+                        event_id,
+                    )
+                    .unwrap(),
+                );
+            }
+            write_sync_lane_domain_state(
+                &db,
+                &SyncLaneDomainState {
+                    input_id: ids[1].clone(),
+                    lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                    scope: "did:example:group".to_owned(),
+                    status: SyncLaneDomainStatus::Processing,
+                    retryable: true,
+                    attempt_count: 1,
+                    next_retry_at: None,
+                    operation_ref: Some("p6:p6-welcome".to_owned()),
+                    last_error_code: None,
+                },
+                1,
+            )
+            .unwrap();
+            write_sync_lane_domain_state(
+                &db,
+                &SyncLaneDomainState {
+                    input_id: ids[2].clone(),
+                    lane: crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+                    scope: "did:example:group".to_owned(),
+                    status: SyncLaneDomainStatus::Applied,
+                    retryable: false,
+                    attempt_count: 1,
+                    next_retry_at: None,
+                    operation_ref: Some("p6:p6-commit".to_owned()),
+                    last_error_code: None,
+                },
+                1,
+            )
+            .unwrap();
+            input_ids = ids;
+        }
+
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let pending = list_pending_sync_lane_inputs(
+            &db,
+            &binding.owner_identity_id,
+            crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
+            2,
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|input| input.input_id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([input_ids[0].as_str(), input_ids[1].as_str()])
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            3
+        );
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
+            "3"
         );
     }
 

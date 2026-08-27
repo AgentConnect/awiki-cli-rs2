@@ -929,6 +929,8 @@ class DartMessageSyncDiagnostics {
   final List<DartMessageSyncDirtyDomain> dirtyDomains;
   final DartMessageSyncRetryState retryState;
   final String? nextRetryAt;
+  final List<DartMessageSyncLaneState> lanes;
+  final List<DartMessageSyncDomainState> domainStates;
 
   const DartMessageSyncDiagnostics({
     this.lastSuccessAt,
@@ -937,6 +939,8 @@ class DartMessageSyncDiagnostics {
     required this.dirtyDomains,
     required this.retryState,
     this.nextRetryAt,
+    required this.lanes,
+    required this.domainStates,
   });
 
   @override
@@ -946,7 +950,9 @@ class DartMessageSyncDiagnostics {
       pendingMutationCount.hashCode ^
       dirtyDomains.hashCode ^
       retryState.hashCode ^
-      nextRetryAt.hashCode;
+      nextRetryAt.hashCode ^
+      lanes.hashCode ^
+      domainStates.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -958,10 +964,91 @@ class DartMessageSyncDiagnostics {
           pendingMutationCount == other.pendingMutationCount &&
           dirtyDomains == other.dirtyDomains &&
           retryState == other.retryState &&
-          nextRetryAt == other.nextRetryAt;
+          nextRetryAt == other.nextRetryAt &&
+          lanes == other.lanes &&
+          domainStates == other.domainStates;
 }
 
 enum DartMessageSyncDirtyDomain { messages, readState }
+
+class DartMessageSyncDomainState {
+  final DartMessageSyncLane lane;
+  final String scope;
+  final bool retryable;
+  final String? operationRef;
+  final DartMessageSyncDomainStatus status;
+
+  const DartMessageSyncDomainState({
+    required this.lane,
+    required this.scope,
+    required this.retryable,
+    this.operationRef,
+    required this.status,
+  });
+
+  @override
+  int get hashCode =>
+      lane.hashCode ^
+      scope.hashCode ^
+      retryable.hashCode ^
+      operationRef.hashCode ^
+      status.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncDomainState &&
+          runtimeType == other.runtimeType &&
+          lane == other.lane &&
+          scope == other.scope &&
+          retryable == other.retryable &&
+          operationRef == other.operationRef &&
+          status == other.status;
+}
+
+enum DartMessageSyncDomainStatus {
+  pending,
+  processing,
+  applied,
+  terminal,
+  rejoinRequired,
+  repairRequired,
+  upgradeRequired,
+  actionRequired,
+}
+
+enum DartMessageSyncLane { p5Device, p6Group }
+
+class DartMessageSyncLaneState {
+  final DartMessageSyncLane lane;
+  final String committedCursor;
+  final bool pending;
+  final String? lastTransportError;
+
+  const DartMessageSyncLaneState({
+    required this.lane,
+    required this.committedCursor,
+    required this.pending,
+    this.lastTransportError,
+  });
+
+  @override
+  int get hashCode =>
+      lane.hashCode ^
+      committedCursor.hashCode ^
+      pending.hashCode ^
+      lastTransportError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncLaneState &&
+          runtimeType == other.runtimeType &&
+          lane == other.lane &&
+          committedCursor == other.committedCursor &&
+          pending == other.pending &&
+          lastTransportError == other.lastTransportError;
+}
 
 enum DartMessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
 

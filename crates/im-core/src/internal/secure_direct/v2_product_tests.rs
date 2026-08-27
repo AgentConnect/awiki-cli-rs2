@@ -1038,7 +1038,7 @@ pub(crate) async fn fresh_scoped_business_receive_for_projection_test(
 }
 
 #[tokio::test]
-async fn scoped_business_receive_rejects_wrong_peer_before_replay_commit() {
+async fn v1b_p5_business_success_replay_and_wrong_peer_fence() {
     let (wire, outcome) = fresh_scoped_business_receive_for_projection_test().await;
     assert_eq!(wire["receiver_did"], "did:example:service-forged");
     assert!(matches!(outcome, V2InboundProductOutcome::Business(_)));

@@ -3958,6 +3958,53 @@ extension on gen_message.DartMessageSyncRetryState {
   };
 }
 
+extension on gen_message.DartMessageSyncLane {
+  MessageSyncLane _toModel() => switch (this) {
+    gen_message.DartMessageSyncLane.p5Device => MessageSyncLane.p5Device,
+    gen_message.DartMessageSyncLane.p6Group => MessageSyncLane.p6Group,
+  };
+}
+
+extension on gen_message.DartMessageSyncLaneState {
+  MessageSyncLaneState _toModel() => MessageSyncLaneState(
+    lane: lane._toModel(),
+    committedCursor: committedCursor,
+    pending: pending,
+    lastTransportError: lastTransportError,
+  );
+}
+
+extension on gen_message.DartMessageSyncDomainStatus {
+  MessageSyncDomainStatus _toModel() => switch (this) {
+    gen_message.DartMessageSyncDomainStatus.pending =>
+      MessageSyncDomainStatus.pending,
+    gen_message.DartMessageSyncDomainStatus.processing =>
+      MessageSyncDomainStatus.processing,
+    gen_message.DartMessageSyncDomainStatus.applied =>
+      MessageSyncDomainStatus.applied,
+    gen_message.DartMessageSyncDomainStatus.terminal =>
+      MessageSyncDomainStatus.terminal,
+    gen_message.DartMessageSyncDomainStatus.rejoinRequired =>
+      MessageSyncDomainStatus.rejoinRequired,
+    gen_message.DartMessageSyncDomainStatus.repairRequired =>
+      MessageSyncDomainStatus.repairRequired,
+    gen_message.DartMessageSyncDomainStatus.upgradeRequired =>
+      MessageSyncDomainStatus.upgradeRequired,
+    gen_message.DartMessageSyncDomainStatus.actionRequired =>
+      MessageSyncDomainStatus.actionRequired,
+  };
+}
+
+extension on gen_message.DartMessageSyncDomainState {
+  MessageSyncDomainState _toModel() => MessageSyncDomainState(
+    lane: lane._toModel(),
+    scope: scope,
+    retryable: retryable,
+    operationRef: operationRef,
+    status: status._toModel(),
+  );
+}
+
 extension on gen_message.DartMessageSyncDiagnostics {
   MessageSyncDiagnostics _toModel() => MessageSyncDiagnostics(
     lastSuccessAt: lastSuccessAt,
@@ -3966,6 +4013,8 @@ extension on gen_message.DartMessageSyncDiagnostics {
     dirtyDomains: dirtyDomains.map((domain) => domain._toModel()).toList(),
     retryState: retryState._toModel(),
     nextRetryAt: nextRetryAt,
+    lanes: lanes.map((state) => state._toModel()).toList(),
+    domainStates: domainStates.map((state) => state._toModel()).toList(),
   );
 }
 

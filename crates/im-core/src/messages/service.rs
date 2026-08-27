@@ -1870,6 +1870,37 @@ fn sync_diagnostics_from_state(
         dirty_domains,
         retry_state,
         next_retry_at: state.next_retry_at.and_then(unix_seconds_to_rfc3339),
+        lanes: Vec::new(),
+        domain_states: Vec::new(),
+    }
+}
+
+fn public_sync_lane(
+    lane: crate::internal::wire::sync_v2::SyncLaneV3,
+) -> crate::messages::MessageSyncLane {
+    match lane {
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device => {
+            crate::messages::MessageSyncLane::P5Device
+        }
+        crate::internal::wire::sync_v2::SyncLaneV3::P6Group => {
+            crate::messages::MessageSyncLane::P6Group
+        }
+    }
+}
+
+fn public_sync_domain_status(
+    status: crate::internal::local_state::sync_v2::SyncLaneDomainStatus,
+) -> crate::messages::MessageSyncDomainStatus {
+    use crate::internal::local_state::sync_v2::SyncLaneDomainStatus as Local;
+    match status {
+        Local::Pending => crate::messages::MessageSyncDomainStatus::Pending,
+        Local::Processing => crate::messages::MessageSyncDomainStatus::Processing,
+        Local::Applied => crate::messages::MessageSyncDomainStatus::Applied,
+        Local::Terminal => crate::messages::MessageSyncDomainStatus::Terminal,
+        Local::RejoinRequired => crate::messages::MessageSyncDomainStatus::RejoinRequired,
+        Local::RepairRequired => crate::messages::MessageSyncDomainStatus::RepairRequired,
+        Local::UpgradeRequired => crate::messages::MessageSyncDomainStatus::UpgradeRequired,
+        Local::ActionRequired => crate::messages::MessageSyncDomainStatus::ActionRequired,
     }
 }
 
@@ -3538,8 +3569,52 @@ impl<'a> MessageService<'a> {
     pub async fn sync_diagnostics_async(&self) -> crate::ImResult<super::MessageSyncDiagnostics> {
         let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
         let db = self.client.core_inner().local_state_db().await?;
-        let state = db.load_sync_diagnostics(owner_identity_id).await?;
-        Ok(sync_diagnostics_from_state(state))
+        let state = db.load_sync_diagnostics(owner_identity_id.clone()).await?;
+        let lane_states = db
+            .load_all_lane_sync_states(owner_identity_id.clone())
+            .await?;
+        let transport_states = db
+            .load_lane_transport_states(owner_identity_id.clone())
+            .await?;
+        let domain_states = db
+            .load_sync_lane_domain_states(owner_identity_id.clone())
+            .await?;
+        let mut diagnostics = sync_diagnostics_from_state(state);
+        for lane_state in lane_states {
+            let last_transport_error = transport_states
+                .iter()
+                .find(|state| state.lane == lane_state.lane)
+                .and_then(|state| state.last_transport_error.clone());
+            let pending = !db
+                .list_pending_sync_lane_inputs(
+                    owner_identity_id.clone(),
+                    lane_state.lane,
+                    i64::MAX,
+                    1,
+                )
+                .await?
+                .is_empty();
+            diagnostics.lanes.push(super::MessageSyncLaneState {
+                lane: public_sync_lane(lane_state.lane),
+                committed_cursor: format!(
+                    "{}:{}",
+                    lane_state.stream_epoch, lane_state.committed_seq
+                ),
+                pending,
+                last_transport_error,
+            });
+        }
+        diagnostics.domain_states = domain_states
+            .into_iter()
+            .map(|state| super::MessageSyncDomainState {
+                lane: public_sync_lane(state.lane),
+                scope: state.scope,
+                retryable: state.retryable,
+                operation_ref: state.operation_ref,
+                status: public_sync_domain_status(state.status),
+            })
+            .collect();
+        Ok(diagnostics)
     }
 
     pub fn conversations(

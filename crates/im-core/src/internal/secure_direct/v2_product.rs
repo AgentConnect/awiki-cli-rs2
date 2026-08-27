@@ -2245,10 +2245,25 @@ pub(crate) enum V2InboundProductOutcome {
     SuppressedControl,
 }
 
+#[derive(Clone)]
 enum ValidatedInboundPlaintext {
     Business(V2InboundBusinessProjection),
     OwnSync(V2InboundOwnSyncProjection),
     SuppressedControl,
+}
+
+fn product_outcome_from_validated(
+    validated: &ValidatedInboundPlaintext,
+) -> V2InboundProductOutcome {
+    match validated {
+        ValidatedInboundPlaintext::Business(projection) => {
+            V2InboundProductOutcome::Business(projection.clone())
+        }
+        ValidatedInboundPlaintext::OwnSync(projection) => {
+            V2InboundProductOutcome::OwnSync(projection.clone())
+        }
+        ValidatedInboundPlaintext::SuppressedControl => V2InboundProductOutcome::SuppressedControl,
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2283,6 +2298,35 @@ pub(crate) async fn receive_for_client_scoped(
         &crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext,
     >,
 ) -> crate::ImResult<V2InboundProductOutcome> {
+    receive_for_client_scoped_with_commit(
+        core,
+        client,
+        enabled,
+        metadata,
+        body,
+        expected_peer_did,
+        delivery,
+        |_, _| Ok(()),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn receive_for_client_scoped_with_commit<C>(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    enabled: bool,
+    metadata: V2DirectMetadata,
+    body: V2DirectBody,
+    expected_peer_did: Option<&str>,
+    delivery: Option<
+        &crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext,
+    >,
+    commit: C,
+) -> crate::ImResult<V2InboundProductOutcome>
+where
+    C: FnOnce(&rusqlite::Transaction<'_>, &V2InboundProductOutcome) -> crate::ImResult<()>,
+{
     if !enabled {
         return Err(crate::ImError::unsupported(
             "awiki-multi-device-direct-disabled",
@@ -2319,7 +2363,15 @@ pub(crate) async fn receive_for_client_scoped(
         return outcome;
     }
     let mut host = CoreV2DirectProductHost { core, client };
-    receive_with_host_scoped(&context, &mut host, metadata, body, expected_peer_did).await
+    receive_with_host_scoped_with_commit(
+        &context,
+        &mut host,
+        metadata,
+        body,
+        expected_peer_did,
+        commit,
+    )
+    .await
 }
 
 pub(crate) async fn receive_with_host<H>(
@@ -2343,6 +2395,29 @@ pub(crate) async fn receive_with_host_scoped<H>(
 ) -> crate::ImResult<V2InboundProductOutcome>
 where
     H: V2DirectProductHost,
+{
+    receive_with_host_scoped_with_commit(
+        context,
+        host,
+        metadata,
+        body,
+        expected_peer_did,
+        |_, _| Ok(()),
+    )
+    .await
+}
+
+async fn receive_with_host_scoped_with_commit<H, C>(
+    context: &V2DirectProductContext,
+    host: &mut H,
+    metadata: V2DirectMetadata,
+    body: V2DirectBody,
+    expected_peer_did: Option<&str>,
+    commit: C,
+) -> crate::ImResult<V2InboundProductOutcome>
+where
+    H: V2DirectProductHost,
+    C: FnOnce(&rusqlite::Transaction<'_>, &V2InboundProductOutcome) -> crate::ImResult<()>,
 {
     let expected_peer_did = expected_peer_did
         .map(|value| required("expected_peer_did", value))
@@ -2378,6 +2453,7 @@ where
         &sender.e2ee_key_id,
     )?;
     let now = now_text();
+    let mut commit = Some(commit);
 
     match body {
         V2DirectBody::Init(init) => {
@@ -2399,7 +2475,8 @@ where
                 )
                 .await?;
             let decrypted = context.with_direct(|direct| {
-                direct.decrypt_inbound_init_validated(
+                let commit = commit.take().ok_or(crate::ImError::PermissionDenied)?;
+                direct.decrypt_inbound_init_validated_with_commit(
                     &binding,
                     &metadata,
                     &init,
@@ -2408,6 +2485,9 @@ where
                     &now,
                     |plaintext, _| {
                         validate_inbound_plaintext(plaintext, &metadata, expected_peer_did)
+                    },
+                    |transaction, validated| {
+                        commit(transaction, &product_outcome_from_validated(validated))
                     },
                 )
             })?;
@@ -2450,14 +2530,18 @@ where
         V2DirectBody::Cipher(cipher) => {
             if is_session_reply_operation_id(&metadata.operation_id) {
                 let established = context.with_direct(|direct| {
-                    direct.decrypt_inbound_validated(
+                    let commit = commit.take().ok_or(crate::ImError::PermissionDenied)?;
+                    direct.decrypt_inbound_validated_with_commit(
                         &binding,
                         &metadata,
                         &cipher,
                         &now,
-                        |plaintext, _| match classify_session_control(plaintext)? {
+                        |plaintext, _, _| match classify_session_control(plaintext)? {
                             Some(V2SessionControlKind::Established) => Ok(()),
                             _ => Err(crate::ImError::PermissionDenied),
+                        },
+                        |transaction, _| {
+                            commit(transaction, &V2InboundProductOutcome::ConsumedControl)
                         },
                     )
                 })?;
@@ -2471,13 +2555,17 @@ where
                 return Ok(V2InboundProductOutcome::ConsumedControl);
             }
             let decrypted = context.with_direct(|direct| {
-                direct.decrypt_inbound_validated(
+                let commit = commit.take().ok_or(crate::ImError::PermissionDenied)?;
+                direct.decrypt_inbound_validated_with_commit(
                     &binding,
                     &metadata,
                     &cipher,
                     &now,
-                    |plaintext, _| {
+                    |plaintext, _, _| {
                         validate_inbound_plaintext(plaintext, &metadata, expected_peer_did)
+                    },
+                    |transaction, validated| {
+                        commit(transaction, &product_outcome_from_validated(validated))
                     },
                 )
             })?;

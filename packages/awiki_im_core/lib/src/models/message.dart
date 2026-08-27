@@ -425,6 +425,49 @@ enum MessageSyncRetryState {
   permanentFailure,
 }
 
+enum MessageSyncLane { p5Device, p6Group }
+
+class MessageSyncLaneState {
+  const MessageSyncLaneState({
+    required this.lane,
+    required this.committedCursor,
+    required this.pending,
+    this.lastTransportError,
+  });
+
+  final MessageSyncLane lane;
+  final String committedCursor;
+  final bool pending;
+  final String? lastTransportError;
+}
+
+enum MessageSyncDomainStatus {
+  pending,
+  processing,
+  applied,
+  terminal,
+  rejoinRequired,
+  repairRequired,
+  upgradeRequired,
+  actionRequired,
+}
+
+class MessageSyncDomainState {
+  const MessageSyncDomainState({
+    required this.lane,
+    required this.scope,
+    required this.retryable,
+    this.operationRef,
+    required this.status,
+  });
+
+  final MessageSyncLane lane;
+  final String scope;
+  final bool retryable;
+  final String? operationRef;
+  final MessageSyncDomainStatus status;
+}
+
 class MessageSyncDiagnostics {
   const MessageSyncDiagnostics({
     this.lastSuccessAt,
@@ -433,6 +476,8 @@ class MessageSyncDiagnostics {
     this.dirtyDomains = const [],
     required this.retryState,
     this.nextRetryAt,
+    this.lanes = const [],
+    this.domainStates = const [],
   });
 
   final String? lastSuccessAt;
@@ -441,6 +486,8 @@ class MessageSyncDiagnostics {
   final List<MessageSyncDirtyDomain> dirtyDomains;
   final MessageSyncRetryState retryState;
   final String? nextRetryAt;
+  final List<MessageSyncLaneState> lanes;
+  final List<MessageSyncDomainState> domainStates;
 }
 
 class ConversationListSnapshot {

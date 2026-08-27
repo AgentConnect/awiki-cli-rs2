@@ -640,6 +640,45 @@ pub enum MessageSyncRetryState {
     PermanentFailure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncLane {
+    P5Device,
+    P6Group,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncLaneState {
+    pub lane: MessageSyncLane,
+    pub committed_cursor: String,
+    pub pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_transport_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncDomainStatus {
+    Pending,
+    Processing,
+    Applied,
+    Terminal,
+    RejoinRequired,
+    RepairRequired,
+    UpgradeRequired,
+    ActionRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncDomainState {
+    pub lane: MessageSyncLane,
+    pub scope: String,
+    pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_ref: Option<String>,
+    pub status: MessageSyncDomainStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSyncDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -650,6 +689,10 @@ pub struct MessageSyncDiagnostics {
     pub retry_state: MessageSyncRetryState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_retry_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lanes: Vec<MessageSyncLaneState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_states: Vec<MessageSyncDomainState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

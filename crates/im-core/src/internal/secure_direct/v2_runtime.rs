@@ -526,6 +526,32 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         now: &str,
         validator: impl FnOnce(&V2ApplicationPlaintext, &V2DirectSessionState) -> crate::ImResult<T>,
     ) -> crate::ImResult<V2ValidatedInboundOutcome<T>> {
+        self.decrypt_inbound_validated_with_commit(
+            binding,
+            metadata,
+            body,
+            now,
+            |plaintext, _, next_state| validator(plaintext, next_state),
+            |_, _| Ok(()),
+        )
+    }
+
+    /// Application Cipher validation with one secret-free caller update
+    /// committed atomically alongside ratchet and replay state.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decrypt_inbound_validated_with_commit<T>(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectCipherBody,
+        now: &str,
+        validator: impl FnOnce(
+            &V2ApplicationPlaintext,
+            &V2DirectSessionState,
+            &V2DirectSessionState,
+        ) -> crate::ImResult<T>,
+        commit: impl FnOnce(&rusqlite::Transaction<'_>, &T) -> crate::ImResult<()>,
+    ) -> crate::ImResult<V2ValidatedInboundOutcome<T>> {
         binding.validate().map_err(v2_error)?;
         metadata.validate().map_err(v2_error)?;
         body.validate().map_err(v2_error)?;
@@ -547,18 +573,20 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             .store
             .load_session(binding, &body.session_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
-        let mut next_state = stored.state;
+        let pre_state = stored.state;
+        let mut next_state = pre_state.clone();
         let plaintext =
             V2DirectE2eeSession::decrypt_follow_up(&mut next_state, binding, metadata, body)
                 .map_err(v2_error)?;
-        let validated = validator(&plaintext, &next_state)?;
-        match self.store.commit_inbound(
+        let validated = validator(&plaintext, &pre_state, &next_state)?;
+        match self.store.commit_inbound_with(
             &next_state,
             &metadata.message_id,
             &digest,
             None,
             V2SessionExpectation::Revision(stored.revision),
             now,
+            |transaction| commit(transaction, &validated),
         )? {
             V2InboundCommit::Applied => Ok(V2ValidatedInboundOutcome::Decrypted {
                 validated,
@@ -863,6 +891,32 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         now: &str,
         validator: impl FnOnce(&V2ApplicationPlaintext, &V2DirectSessionState) -> crate::ImResult<T>,
     ) -> crate::ImResult<V2ValidatedInboundOutcome<T>> {
+        self.decrypt_inbound_init_validated_with_commit(
+            binding,
+            metadata,
+            body,
+            local_static_to_ephemeral_dh,
+            sender_static_public,
+            now,
+            validator,
+            |_, _| Ok(()),
+        )
+    }
+
+    /// Application Init validation with one secret-free caller update
+    /// committed atomically alongside session, replay, and OPK consumption.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decrypt_inbound_init_validated_with_commit<T>(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectInitBody,
+        local_static_to_ephemeral_dh: &[u8; 32],
+        sender_static_public: &[u8; 32],
+        now: &str,
+        validator: impl FnOnce(&V2ApplicationPlaintext, &V2DirectSessionState) -> crate::ImResult<T>,
+        commit: impl FnOnce(&rusqlite::Transaction<'_>, &T) -> crate::ImResult<()>,
+    ) -> crate::ImResult<V2ValidatedInboundOutcome<T>> {
         binding.validate().map_err(v2_error)?;
         metadata.validate().map_err(v2_error)?;
         body.validate().map_err(v2_error)?;
@@ -909,13 +963,14 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             )
             .map_err(v2_error)?;
         let validated = validator(&plaintext, &next_state)?;
-        match self.store.commit_inbound(
+        match self.store.commit_inbound_with(
             &next_state,
             &metadata.message_id,
             &digest,
             consumed_opk_id.as_deref(),
             V2SessionExpectation::Absent,
             now,
+            |transaction| commit(transaction, &validated),
         )? {
             V2InboundCommit::Applied => Ok(V2ValidatedInboundOutcome::Decrypted {
                 validated,
@@ -1328,6 +1383,157 @@ mod tests {
                 .filter(|secret_ref| secret_ref.kind == SecretKind::DirectE2eeV2PendingOutbound)
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn v1b_p5_application_hook_commits_and_rolls_back_with_the_ratchet() {
+        let root = tempfile::tempdir().unwrap();
+        let connection = Connection::open(root.path().join("v1b-p5-hook.sqlite")).unwrap();
+        connection
+            .execute_batch("CREATE TABLE v1b_p5_hook(message_id TEXT PRIMARY KEY);")
+            .unwrap();
+        let (sender_state, responder_state) = established_pair();
+        let sender_store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            vault(&root.path().join("v1b-sender-vault"), 81),
+            scope(
+                "identity-alice-phone",
+                "did:example:alice",
+                "alice-phone",
+                "did:example:alice#phone-e2ee",
+            ),
+        )
+        .unwrap();
+        let responder_store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            vault(&root.path().join("v1b-responder-vault"), 82),
+            scope(
+                "identity-alice-laptop",
+                "did:example:alice",
+                "alice-laptop",
+                "did:example:alice#laptop-e2ee",
+            ),
+        )
+        .unwrap();
+        sender_store
+            .commit_inbound(
+                &sender_state,
+                "v1b-sender-setup",
+                "sha256:v1b-sender-setup",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-08-28T00:00:00Z",
+            )
+            .unwrap();
+        responder_store
+            .commit_inbound(
+                &responder_state,
+                "v1b-responder-setup",
+                "sha256:v1b-responder-setup",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-08-28T00:00:00Z",
+            )
+            .unwrap();
+        let sender = V2EstablishedDirectRuntime::new(&sender_store);
+        let responder = V2EstablishedDirectRuntime::new(&responder_store);
+        let plaintext = |message_id: &str| V2ApplicationPlaintext {
+            application_content_type: "text/plain".to_owned(),
+            logical_message_id: Some(message_id.to_owned()),
+            conversation_id: None,
+            reply_to_message_id: None,
+            annotations: None,
+            text: Some("hello".to_owned()),
+            payload: None,
+            payload_b64u: None,
+        };
+
+        let first = sender
+            .prepare_outbound(
+                &sender_state.binding,
+                "v1b-p5-hook-1",
+                &plaintext("logical-1"),
+                "2026-08-28T00:00:01Z",
+            )
+            .unwrap();
+        let before = responder_store
+            .load_session(&responder_state.binding, &responder_state.session_id)
+            .unwrap()
+            .unwrap();
+        responder
+            .decrypt_inbound_validated_with_commit(
+                &responder_state.binding,
+                &first.metadata,
+                first.cipher_body().unwrap(),
+                "2026-08-28T00:00:02Z",
+                |plaintext, _, _| Ok(plaintext.logical_message_id.clone().unwrap()),
+                |transaction, logical_message_id| {
+                    transaction
+                        .execute(
+                            "INSERT INTO v1b_p5_hook(message_id) VALUES (?1)",
+                            [logical_message_id],
+                        )
+                        .map(|_| ())
+                        .map_err(crate::internal::local_state::local_state_unavailable)
+                },
+            )
+            .unwrap();
+        let after = responder_store
+            .load_session(&responder_state.binding, &responder_state.session_id)
+            .unwrap()
+            .unwrap();
+        assert!(after.revision > before.revision);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM v1b_p5_hook", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+
+        let sender_current = sender_store
+            .load_session(&sender_state.binding, &sender_state.session_id)
+            .unwrap()
+            .unwrap();
+        let second = sender
+            .prepare_outbound(
+                &sender_current.state.binding,
+                "v1b-p5-hook-2",
+                &plaintext("logical-2"),
+                "2026-08-28T00:00:03Z",
+            )
+            .unwrap();
+        let before_failure = responder_store
+            .load_session(&responder_state.binding, &responder_state.session_id)
+            .unwrap()
+            .unwrap();
+        assert!(responder
+            .decrypt_inbound_validated_with_commit(
+                &responder_state.binding,
+                &second.metadata,
+                second.cipher_body().unwrap(),
+                "2026-08-28T00:00:04Z",
+                |plaintext, _, _| Ok(plaintext.logical_message_id.clone().unwrap()),
+                |_, _| Err(crate::ImError::LocalStateUnavailable {
+                    detail: "forced V1-B projection failure".to_owned(),
+                }),
+            )
+            .is_err());
+        let after_failure = responder_store
+            .load_session(&responder_state.binding, &responder_state.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_failure.revision, before_failure.revision);
+        assert_eq!(after_failure.state.recv_n, before_failure.state.recv_n);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM v1b_p5_hook", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
         );
     }
 

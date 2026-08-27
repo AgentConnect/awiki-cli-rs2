@@ -188,7 +188,7 @@ impl crate::internal::transport::AsyncAuthenticatedRpcTransport for LoopbackTran
 }
 
 #[tokio::test]
-async fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
+async fn v1b_p6_product_orchestrates_application_welcome_commit_and_replay() {
     let directory = TestDirectory::new("im-core-p6-v2-product");
     let fixture = make_did_fixture("alice-product", &["alice-a1", "alice-a2"]);
     let a1 = &fixture.devices[0];

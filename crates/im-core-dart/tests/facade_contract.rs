@@ -71,6 +71,8 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
             impact: im_core::identity::HandleRecoveryImpact {
                 local_ordinary_data_will_migrate: true,
                 other_devices_must_rejoin: true,
+                unsupported_e2ee_group_count: 0,
+                unsupported_did_only_group_count: 0,
             },
             reset_reference: Some(im_core::identity::HandleRecoveryResetReference {
                 account_user_id: "user-1".to_owned(),
@@ -125,7 +127,7 @@ fn dart_legacy_epoch_adoption_authority_mapping_preserves_opaque_provenance() {
 }
 
 #[test]
-fn dart_message_sync_diagnostics_mapping_is_typed_and_redacted() {
+fn v1b_dart_message_sync_diagnostics_mapping_separates_sync_and_domain_state() {
     let mapped = awiki_im_core::dto::message::DartMessageSyncDiagnostics::from(
         im_core::messages::MessageSyncDiagnostics {
             last_success_at: Some("2026-07-29T00:00:00Z".to_owned()),
@@ -137,6 +139,31 @@ fn dart_message_sync_diagnostics_mapping_is_typed_and_redacted() {
             ],
             retry_state: im_core::messages::MessageSyncRetryState::Scheduled,
             next_retry_at: Some("2026-07-29T00:01:00Z".to_owned()),
+            lanes: vec![im_core::messages::MessageSyncLaneState {
+                lane: im_core::messages::MessageSyncLane::P5Device,
+                committed_cursor: "41:7".to_owned(),
+                pending: true,
+                last_transport_error: Some("lane_storage_pressure".to_owned()),
+            }],
+            domain_states: [
+                im_core::messages::MessageSyncDomainStatus::Pending,
+                im_core::messages::MessageSyncDomainStatus::Processing,
+                im_core::messages::MessageSyncDomainStatus::Applied,
+                im_core::messages::MessageSyncDomainStatus::Terminal,
+                im_core::messages::MessageSyncDomainStatus::RejoinRequired,
+                im_core::messages::MessageSyncDomainStatus::RepairRequired,
+                im_core::messages::MessageSyncDomainStatus::UpgradeRequired,
+                im_core::messages::MessageSyncDomainStatus::ActionRequired,
+            ]
+            .into_iter()
+            .map(|status| im_core::messages::MessageSyncDomainState {
+                lane: im_core::messages::MessageSyncLane::P6Group,
+                scope: "did:example:group".to_owned(),
+                retryable: status == im_core::messages::MessageSyncDomainStatus::Pending,
+                operation_ref: Some("p6-operation".to_owned()),
+                status,
+            })
+            .collect(),
         },
     );
 
@@ -150,6 +177,8 @@ fn dart_message_sync_diagnostics_mapping_is_typed_and_redacted() {
         awiki_im_core::dto::message::DartMessageSyncRetryState::Scheduled
     );
     assert_eq!(mapped.dirty_domains.len(), 2);
+    assert_eq!(mapped.lanes.len(), 1);
+    assert_eq!(mapped.domain_states.len(), 8);
 }
 
 #[test]

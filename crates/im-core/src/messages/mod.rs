@@ -18,6 +18,7 @@ pub use self::dto::{
     MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
     MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
     MessageSendState, MessageSendStateKind, MessageSyncDiagnostics, MessageSyncDirtyDomain,
+    MessageSyncDomainState, MessageSyncDomainStatus, MessageSyncLane, MessageSyncLaneState,
     MessageSyncMode, MessageSyncOutcome, MessageSyncRequest, MessageSyncRetryState,
     MessageSyncStatus, MessageTarget, ReadWatermark, ScopedInboxToken,
     SendConversationPayloadRequest, SendConversationTextRequest, SendMessageRequest,

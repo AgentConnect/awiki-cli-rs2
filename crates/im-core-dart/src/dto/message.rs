@@ -360,6 +360,41 @@ pub enum DartMessageSyncRetryState {
     PermanentFailure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncLane {
+    P5Device,
+    P6Group,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageSyncLaneState {
+    pub lane: DartMessageSyncLane,
+    pub committed_cursor: String,
+    pub pending: bool,
+    pub last_transport_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncDomainStatus {
+    Pending,
+    Processing,
+    Applied,
+    Terminal,
+    RejoinRequired,
+    RepairRequired,
+    UpgradeRequired,
+    ActionRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageSyncDomainState {
+    pub lane: DartMessageSyncLane,
+    pub scope: String,
+    pub retryable: bool,
+    pub operation_ref: Option<String>,
+    pub status: DartMessageSyncDomainStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartMessageSyncDiagnostics {
     pub last_success_at: Option<String>,
@@ -368,6 +403,8 @@ pub struct DartMessageSyncDiagnostics {
     pub dirty_domains: Vec<DartMessageSyncDirtyDomain>,
     pub retry_state: DartMessageSyncRetryState,
     pub next_retry_at: Option<String>,
+    pub lanes: Vec<DartMessageSyncLaneState>,
+    pub domain_states: Vec<DartMessageSyncDomainState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

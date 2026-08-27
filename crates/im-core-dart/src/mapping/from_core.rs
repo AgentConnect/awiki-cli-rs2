@@ -45,7 +45,8 @@ use crate::dto::{
         DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
         DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
         DartMessageMetadataAttribute, DartMessagePage, DartMessageSyncDiagnostics,
-        DartMessageSyncDirtyDomain, DartMessageSyncMode, DartMessageSyncOutcome,
+        DartMessageSyncDirtyDomain, DartMessageSyncDomainState, DartMessageSyncDomainStatus,
+        DartMessageSyncLane, DartMessageSyncLaneState, DartMessageSyncMode, DartMessageSyncOutcome,
         DartMessageSyncRetryState, DartMessageSyncStatus, DartReadWatermark, DartSendMessageResult,
         DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
@@ -1966,6 +1967,53 @@ impl From<im_core::messages::MessageSyncRetryState> for DartMessageSyncRetryStat
     }
 }
 
+impl From<im_core::messages::MessageSyncLane> for DartMessageSyncLane {
+    fn from(value: im_core::messages::MessageSyncLane) -> Self {
+        match value {
+            im_core::messages::MessageSyncLane::P5Device => Self::P5Device,
+            im_core::messages::MessageSyncLane::P6Group => Self::P6Group,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncLaneState> for DartMessageSyncLaneState {
+    fn from(value: im_core::messages::MessageSyncLaneState) -> Self {
+        Self {
+            lane: value.lane.into(),
+            committed_cursor: value.committed_cursor,
+            pending: value.pending,
+            last_transport_error: value.last_transport_error,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDomainStatus> for DartMessageSyncDomainStatus {
+    fn from(value: im_core::messages::MessageSyncDomainStatus) -> Self {
+        match value {
+            im_core::messages::MessageSyncDomainStatus::Pending => Self::Pending,
+            im_core::messages::MessageSyncDomainStatus::Processing => Self::Processing,
+            im_core::messages::MessageSyncDomainStatus::Applied => Self::Applied,
+            im_core::messages::MessageSyncDomainStatus::Terminal => Self::Terminal,
+            im_core::messages::MessageSyncDomainStatus::RejoinRequired => Self::RejoinRequired,
+            im_core::messages::MessageSyncDomainStatus::RepairRequired => Self::RepairRequired,
+            im_core::messages::MessageSyncDomainStatus::UpgradeRequired => Self::UpgradeRequired,
+            im_core::messages::MessageSyncDomainStatus::ActionRequired => Self::ActionRequired,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDomainState> for DartMessageSyncDomainState {
+    fn from(value: im_core::messages::MessageSyncDomainState) -> Self {
+        Self {
+            lane: value.lane.into(),
+            scope: value.scope,
+            retryable: value.retryable,
+            operation_ref: value.operation_ref,
+            status: value.status.into(),
+        }
+    }
+}
+
 impl From<im_core::messages::MessageSyncDiagnostics> for DartMessageSyncDiagnostics {
     fn from(value: im_core::messages::MessageSyncDiagnostics) -> Self {
         Self {
@@ -1975,6 +2023,8 @@ impl From<im_core::messages::MessageSyncDiagnostics> for DartMessageSyncDiagnost
             dirty_domains: value.dirty_domains.into_iter().map(Into::into).collect(),
             retry_state: value.retry_state.into(),
             next_retry_at: value.next_retry_at,
+            lanes: value.lanes.into_iter().map(Into::into).collect(),
+            domain_states: value.domain_states.into_iter().map(Into::into).collect(),
         }
     }
 }

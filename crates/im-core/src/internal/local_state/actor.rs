@@ -177,6 +177,10 @@ enum LocalStateCommand {
         owner_identity_id: String,
         reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::LaneSyncState>>>,
     },
+    LoadAllLaneSyncStates {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::LaneSyncState>>>,
+    },
     LaneCapabilityNegotiationRequired {
         owner_identity_id: String,
         device_auth_generation: String,
@@ -205,6 +209,50 @@ enum LocalStateCommand {
     AdvanceLaneSyncState {
         state: super::sync_v2::LaneSyncState,
         reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    CommitSyncLaneHandoff {
+        input: super::sync_v2::SyncLaneHandoffInput,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncLaneHandoffOutcome>>,
+    },
+    ListPendingSyncLaneInputs {
+        owner_identity_id: String,
+        lane: crate::internal::wire::sync_v2::SyncLaneV3,
+        now: i64,
+        limit: u32,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::SyncLaneInboxRecord>>>,
+    },
+    WriteSyncLaneDomainState {
+        state: super::sync_v2::SyncLaneDomainState,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadSyncLaneDomainStates {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::SyncLaneDomainState>>>,
+    },
+    RegisterP5DidCutover {
+        cutover: super::sync_v2::P5DidCutover,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadP5DidCutover {
+        owner_identity_id: String,
+        old_did: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::P5DidCutover>>>,
+    },
+    CompleteP5DidCutoverIfDrained {
+        owner_identity_id: String,
+        old_did: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<bool>>,
+    },
+    LoadLaneTransportStates {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::sync_v2::SyncLaneTransportState>>>,
+    },
+    PurgeClosedSyncLaneInputs {
+        now: i64,
+        limit: u32,
+        reply: oneshot::Sender<crate::ImResult<usize>>,
     },
     MatchSyncLaneEventReceipt {
         receipt: super::sync_v2::SyncLaneEventReceipt,
@@ -1084,6 +1132,19 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn load_all_lane_sync_states(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Vec<super::sync_v2::LaneSyncState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadAllLaneSyncStates {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn lane_capability_negotiation_required(
         &self,
         owner_identity_id: impl Into<String>,
@@ -1160,6 +1221,125 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::AdvanceLaneSyncState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn commit_sync_lane_handoff(
+        &self,
+        input: super::sync_v2::SyncLaneHandoffInput,
+    ) -> crate::ImResult<super::sync_v2::SyncLaneHandoffOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CommitSyncLaneHandoff { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_pending_sync_lane_inputs(
+        &self,
+        owner_identity_id: impl Into<String>,
+        lane: crate::internal::wire::sync_v2::SyncLaneV3,
+        now: i64,
+        limit: u32,
+    ) -> crate::ImResult<Vec<super::sync_v2::SyncLaneInboxRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListPendingSyncLaneInputs {
+            owner_identity_id: owner_identity_id.into(),
+            lane,
+            now,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn write_sync_lane_domain_state(
+        &self,
+        state: super::sync_v2::SyncLaneDomainState,
+        now: i64,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::WriteSyncLaneDomainState { state, now, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_lane_domain_states(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Vec<super::sync_v2::SyncLaneDomainState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncLaneDomainStates {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn register_p5_did_cutover(
+        &self,
+        cutover: super::sync_v2::P5DidCutover,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RegisterP5DidCutover { cutover, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_p5_did_cutover(
+        &self,
+        owner_identity_id: impl Into<String>,
+        old_did: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::P5DidCutover>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadP5DidCutover {
+            owner_identity_id: owner_identity_id.into(),
+            old_did: old_did.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn complete_p5_did_cutover_if_drained(
+        &self,
+        owner_identity_id: impl Into<String>,
+        old_did: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<bool> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CompleteP5DidCutoverIfDrained {
+            owner_identity_id: owner_identity_id.into(),
+            old_did: old_did.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_lane_transport_states(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Vec<super::sync_v2::SyncLaneTransportState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadLaneTransportStates {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn purge_closed_sync_lane_inputs(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> crate::ImResult<usize> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::PurgeClosedSyncLaneInputs { now, limit, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -2196,7 +2376,13 @@ fn run_actor(
                 let _ = reply.send(result);
             }
             LocalStateCommand::UpsertIdentityAccountBinding { binding, reply } => {
-                let result = super::sync_v2::upsert_identity_account_binding(&connection, &binding);
+                let result = (|| {
+                    let transaction = connection
+                        .transaction()
+                        .map_err(super::local_state_unavailable)?;
+                    super::sync_v2::upsert_identity_account_binding(&transaction, &binding)?;
+                    transaction.commit().map_err(super::local_state_unavailable)
+                })();
                 let _ = reply.send(result);
             }
             LocalStateCommand::LoadIdentityAccountBinding {
@@ -2500,6 +2686,14 @@ fn run_actor(
                 let result = super::sync_v2::load_lane_sync_states(&connection, &owner_identity_id);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::LoadAllLaneSyncStates {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_all_lane_sync_states(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
             LocalStateCommand::LaneCapabilityNegotiationRequired {
                 owner_identity_id,
                 device_auth_generation,
@@ -2560,6 +2754,77 @@ fn run_actor(
             }
             LocalStateCommand::AdvanceLaneSyncState { state, reply } => {
                 let result = super::sync_v2::advance_lane_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CommitSyncLaneHandoff { input, reply } => {
+                let result = super::sync_v2::commit_sync_lane_handoff(&connection, &input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListPendingSyncLaneInputs {
+                owner_identity_id,
+                lane,
+                now,
+                limit,
+                reply,
+            } => {
+                let result = super::sync_v2::list_pending_sync_lane_inputs(
+                    &connection,
+                    &owner_identity_id,
+                    lane,
+                    now,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::WriteSyncLaneDomainState { state, now, reply } => {
+                let result = super::sync_v2::write_sync_lane_domain_state(&connection, &state, now);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncLaneDomainStates {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_sync_lane_domain_states(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RegisterP5DidCutover { cutover, reply } => {
+                let result = super::sync_v2::register_p5_did_cutover(&connection, &cutover);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadP5DidCutover {
+                owner_identity_id,
+                old_did,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_p5_did_cutover(&connection, &owner_identity_id, &old_did);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CompleteP5DidCutoverIfDrained {
+                owner_identity_id,
+                old_did,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::complete_p5_did_cutover_if_drained(
+                    &connection,
+                    &owner_identity_id,
+                    &old_did,
+                    now,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadLaneTransportStates {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_lane_transport_states(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::PurgeClosedSyncLaneInputs { now, limit, reply } => {
+                let result = super::sync_v2::purge_closed_sync_lane_inputs(&connection, now, limit);
                 let _ = reply.send(result);
             }
             LocalStateCommand::MatchSyncLaneEventReceipt { receipt, reply } => {

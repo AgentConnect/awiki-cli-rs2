@@ -243,19 +243,40 @@ pub(crate) fn build_bootstrap_params(
     identity: &WireIdentity,
     client_instance_id: &str,
 ) -> crate::ImResult<Value> {
+    build_bootstrap_params_with_lanes(identity, client_instance_id, &BTreeSet::new())
+}
+
+pub(crate) fn build_bootstrap_params_with_lanes(
+    identity: &WireIdentity,
+    client_instance_id: &str,
+    lanes: &BTreeSet<SyncLaneV3>,
+) -> crate::ImResult<Value> {
     let did = required_string("identity.did", identity.did.as_str())?;
     let client_instance_id = required_string("client_instance_id", client_instance_id)?;
-    Ok(json!({
+    let mut requested = Vec::new();
+    if lanes.contains(&SyncLaneV3::P5Device) {
+        requested.push(SYNC_CAPABILITY_P5_DEVICE_V1);
+    }
+    if lanes.contains(&SyncLaneV3::P6Group) {
+        requested.push(SYNC_CAPABILITY_P6_GROUP_V1);
+        requested.push(P6_DELIVERY_CONTEXT_CAPABILITY_V1);
+    }
+    let mut params = json!({
         "meta": common::local_meta(&did, SYNC_V2_PROFILE),
         "body": {
             "client_instance_id": client_instance_id,
             "capabilities": {
                 "sync_profile": SYNC_V2_PROFILE,
                 "event_schema_max": 1,
-                "requested_sync_capabilities": []
+                "requested_sync_capabilities": requested
             }
         }
-    }))
+    });
+    if lanes.contains(&SyncLaneV3::P6Group) {
+        params["body"]["capabilities"]["p6_delivery"] =
+            Value::String(P6_DELIVERY_CONTEXT_CAPABILITY_V1.to_owned());
+    }
+    Ok(params)
 }
 
 pub(crate) fn build_delta_params(
@@ -2412,6 +2433,43 @@ mod tests {
         .unwrap();
         assert!(delta["body"].get("lanes").is_none());
         assert!(delta["body"].get("p6_delivery").is_none());
+    }
+
+    #[test]
+    fn v1b_handoff_activation_requests_each_ready_lane_without_a_second_shape() {
+        let identity = WireIdentity {
+            did: "did:wba:example.test:users:alice:e1_owner".to_owned(),
+        };
+        let p5 = build_bootstrap_params_with_lanes(
+            &identity,
+            "core-installation-v1b",
+            &BTreeSet::from([SyncLaneV3::P5Device]),
+        )
+        .unwrap();
+        assert_eq!(
+            p5["body"]["capabilities"]["requested_sync_capabilities"],
+            json!([SYNC_CAPABILITY_P5_DEVICE_V1])
+        );
+        assert!(p5["body"]["capabilities"].get("p6_delivery").is_none());
+
+        let all = build_bootstrap_params_with_lanes(
+            &identity,
+            "core-installation-v1b",
+            &BTreeSet::from([SyncLaneV3::P5Device, SyncLaneV3::P6Group]),
+        )
+        .unwrap();
+        assert_eq!(
+            all["body"]["capabilities"]["requested_sync_capabilities"],
+            json!([
+                SYNC_CAPABILITY_P5_DEVICE_V1,
+                SYNC_CAPABILITY_P6_GROUP_V1,
+                P6_DELIVERY_CONTEXT_CAPABILITY_V1
+            ])
+        );
+        assert_eq!(
+            all["body"]["capabilities"]["p6_delivery"],
+            P6_DELIVERY_CONTEXT_CAPABILITY_V1
+        );
     }
 
     #[test]

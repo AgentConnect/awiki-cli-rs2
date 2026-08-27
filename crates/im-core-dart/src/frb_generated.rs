@@ -11408,6 +11408,10 @@ impl SseDecode for crate::dto::message::DartMessageSyncDiagnostics {
         let mut var_retryState =
             <crate::dto::message::DartMessageSyncRetryState>::sse_decode(deserializer);
         let mut var_nextRetryAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_lanes =
+            <Vec<crate::dto::message::DartMessageSyncLaneState>>::sse_decode(deserializer);
+        let mut var_domainStates =
+            <Vec<crate::dto::message::DartMessageSyncDomainState>>::sse_decode(deserializer);
         return crate::dto::message::DartMessageSyncDiagnostics {
             last_success_at: var_lastSuccessAt,
             mode: var_mode,
@@ -11415,6 +11419,8 @@ impl SseDecode for crate::dto::message::DartMessageSyncDiagnostics {
             dirty_domains: var_dirtyDomains,
             retry_state: var_retryState,
             next_retry_at: var_nextRetryAt,
+            lanes: var_lanes,
+            domain_states: var_domainStates,
         };
     }
 }
@@ -11427,6 +11433,71 @@ impl SseDecode for crate::dto::message::DartMessageSyncDirtyDomain {
             0 => crate::dto::message::DartMessageSyncDirtyDomain::Messages,
             1 => crate::dto::message::DartMessageSyncDirtyDomain::ReadState,
             _ => unreachable!("Invalid variant for DartMessageSyncDirtyDomain: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageSyncDomainState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_lane = <crate::dto::message::DartMessageSyncLane>::sse_decode(deserializer);
+        let mut var_scope = <String>::sse_decode(deserializer);
+        let mut var_retryable = <bool>::sse_decode(deserializer);
+        let mut var_operationRef = <Option<String>>::sse_decode(deserializer);
+        let mut var_status =
+            <crate::dto::message::DartMessageSyncDomainStatus>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageSyncDomainState {
+            lane: var_lane,
+            scope: var_scope,
+            retryable: var_retryable,
+            operation_ref: var_operationRef,
+            status: var_status,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageSyncDomainStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartMessageSyncDomainStatus::Pending,
+            1 => crate::dto::message::DartMessageSyncDomainStatus::Processing,
+            2 => crate::dto::message::DartMessageSyncDomainStatus::Applied,
+            3 => crate::dto::message::DartMessageSyncDomainStatus::Terminal,
+            4 => crate::dto::message::DartMessageSyncDomainStatus::RejoinRequired,
+            5 => crate::dto::message::DartMessageSyncDomainStatus::RepairRequired,
+            6 => crate::dto::message::DartMessageSyncDomainStatus::UpgradeRequired,
+            7 => crate::dto::message::DartMessageSyncDomainStatus::ActionRequired,
+            _ => unreachable!("Invalid variant for DartMessageSyncDomainStatus: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageSyncLane {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartMessageSyncLane::P5Device,
+            1 => crate::dto::message::DartMessageSyncLane::P6Group,
+            _ => unreachable!("Invalid variant for DartMessageSyncLane: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageSyncLaneState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_lane = <crate::dto::message::DartMessageSyncLane>::sse_decode(deserializer);
+        let mut var_committedCursor = <String>::sse_decode(deserializer);
+        let mut var_pending = <bool>::sse_decode(deserializer);
+        let mut var_lastTransportError = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageSyncLaneState {
+            lane: var_lane,
+            committed_cursor: var_committedCursor,
+            pending: var_pending,
+            last_transport_error: var_lastTransportError,
         };
     }
 }
@@ -12689,6 +12760,32 @@ impl SseDecode for Vec<crate::dto::message::DartMessageSyncDirtyDomain> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::dto::message::DartMessageSyncDirtyDomain>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::message::DartMessageSyncDomainState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::message::DartMessageSyncDomainState>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::message::DartMessageSyncLaneState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::message::DartMessageSyncLaneState>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -17285,6 +17382,8 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncDiagn
             self.dirty_domains.into_into_dart().into_dart(),
             self.retry_state.into_into_dart().into_dart(),
             self.next_retry_at.into_into_dart().into_dart(),
+            self.lanes.into_into_dart().into_dart(),
+            self.domain_states.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -17318,6 +17417,101 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncDirty
     for crate::dto::message::DartMessageSyncDirtyDomain
 {
     fn into_into_dart(self) -> crate::dto::message::DartMessageSyncDirtyDomain {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncDomainState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.lane.into_into_dart().into_dart(),
+            self.scope.into_into_dart().into_dart(),
+            self.retryable.into_into_dart().into_dart(),
+            self.operation_ref.into_into_dart().into_dart(),
+            self.status.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncDomainState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncDomainState>
+    for crate::dto::message::DartMessageSyncDomainState
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncDomainState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncDomainStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Pending => 0.into_dart(),
+            Self::Processing => 1.into_dart(),
+            Self::Applied => 2.into_dart(),
+            Self::Terminal => 3.into_dart(),
+            Self::RejoinRequired => 4.into_dart(),
+            Self::RepairRequired => 5.into_dart(),
+            Self::UpgradeRequired => 6.into_dart(),
+            Self::ActionRequired => 7.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncDomainStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncDomainStatus>
+    for crate::dto::message::DartMessageSyncDomainStatus
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncDomainStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncLane {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::P5Device => 0.into_dart(),
+            Self::P6Group => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncLane
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncLane>
+    for crate::dto::message::DartMessageSyncLane
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncLane {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncLaneState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.lane.into_into_dart().into_dart(),
+            self.committed_cursor.into_into_dart().into_dart(),
+            self.pending.into_into_dart().into_dart(),
+            self.last_transport_error.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncLaneState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncLaneState>
+    for crate::dto::message::DartMessageSyncLaneState
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncLaneState {
         self
     }
 }
@@ -20806,6 +21000,11 @@ impl SseEncode for crate::dto::message::DartMessageSyncDiagnostics {
         );
         <crate::dto::message::DartMessageSyncRetryState>::sse_encode(self.retry_state, serializer);
         <Option<String>>::sse_encode(self.next_retry_at, serializer);
+        <Vec<crate::dto::message::DartMessageSyncLaneState>>::sse_encode(self.lanes, serializer);
+        <Vec<crate::dto::message::DartMessageSyncDomainState>>::sse_encode(
+            self.domain_states,
+            serializer,
+        );
     }
 }
 
@@ -20822,6 +21021,65 @@ impl SseEncode for crate::dto::message::DartMessageSyncDirtyDomain {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageSyncDomainState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartMessageSyncLane>::sse_encode(self.lane, serializer);
+        <String>::sse_encode(self.scope, serializer);
+        <bool>::sse_encode(self.retryable, serializer);
+        <Option<String>>::sse_encode(self.operation_ref, serializer);
+        <crate::dto::message::DartMessageSyncDomainStatus>::sse_encode(self.status, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageSyncDomainStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartMessageSyncDomainStatus::Pending => 0,
+                crate::dto::message::DartMessageSyncDomainStatus::Processing => 1,
+                crate::dto::message::DartMessageSyncDomainStatus::Applied => 2,
+                crate::dto::message::DartMessageSyncDomainStatus::Terminal => 3,
+                crate::dto::message::DartMessageSyncDomainStatus::RejoinRequired => 4,
+                crate::dto::message::DartMessageSyncDomainStatus::RepairRequired => 5,
+                crate::dto::message::DartMessageSyncDomainStatus::UpgradeRequired => 6,
+                crate::dto::message::DartMessageSyncDomainStatus::ActionRequired => 7,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageSyncLane {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartMessageSyncLane::P5Device => 0,
+                crate::dto::message::DartMessageSyncLane::P6Group => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageSyncLaneState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartMessageSyncLane>::sse_encode(self.lane, serializer);
+        <String>::sse_encode(self.committed_cursor, serializer);
+        <bool>::sse_encode(self.pending, serializer);
+        <Option<String>>::sse_encode(self.last_transport_error, serializer);
     }
 }
 
@@ -21753,6 +22011,26 @@ impl SseEncode for Vec<crate::dto::message::DartMessageSyncDirtyDomain> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::dto::message::DartMessageSyncDirtyDomain>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::message::DartMessageSyncDomainState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::message::DartMessageSyncDomainState>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::message::DartMessageSyncLaneState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::message::DartMessageSyncLaneState>::sse_encode(item, serializer);
         }
     }
 }
