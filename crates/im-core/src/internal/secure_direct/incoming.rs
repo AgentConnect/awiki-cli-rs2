@@ -1,8 +1,6 @@
 use serde_json::{Map, Value};
 use std::future::Future;
 
-#[cfg(any(feature = "blocking", test))]
-use crate::internal::transport::AuthenticatedRpcTransport;
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport, RpcTransport};
 
 #[cfg(any(feature = "blocking", test))]
@@ -188,15 +186,10 @@ where
             },
         }
     });
-    let mut message_transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let rpc = Box::new(move |method: &str, params: Map<String, Value>| {
-        let value = AuthenticatedRpcTransport::authenticated_rpc(
-            &mut message_transport,
-            super::send::MESSAGE_RPC_ENDPOINT,
-            method,
-            Value::Object(params),
-        )?;
-        object_result(value)
+    let rpc = Box::new(|method: &str, _params: Map<String, Value>| {
+        Err(crate::ImError::TransportUnavailable {
+            detail: format!("historical direct E2EE reader does not call {method}"),
+        })
     });
     let prepared = match prepare_direct_secure_client(DirectSecureClientInput {
         owner_identity_id: identity_material.owner_identity_id,
@@ -235,34 +228,7 @@ where
             Ok(plaintext) => plaintext,
             Err(projection) => return projection,
         };
-    let mut control_warnings = Vec::new();
-    if mode == DirectDecryptMode::WithSideEffects {
-        if super::control::is_secure_ack_plaintext(&plaintext) {
-            control_warnings =
-                flush_secure_outbox_after_ack(client, &connection, &mut direct_client, &sender_did);
-        } else if super::control::is_secure_init_plaintext(&plaintext) {
-            control_warnings = send_ack_after_secure_init(
-                &mut direct_client,
-                &notification,
-                &sender_did,
-                &plaintext,
-            );
-            if control_warnings.is_empty() {
-                control_warnings = flush_secure_outbox_after_ack(
-                    client,
-                    &connection,
-                    &mut direct_client,
-                    &sender_did,
-                );
-            }
-        }
-    }
-    normalize_direct_realtime_plaintext_notification(
-        notification,
-        mode,
-        &mut plaintext,
-        control_warnings,
-    )
+    normalize_direct_realtime_plaintext_notification(notification, mode, &mut plaintext, Vec::new())
 }
 
 #[cfg(not(any(feature = "blocking", test)))]
@@ -461,7 +427,7 @@ pub(crate) async fn normalize_direct_e2ee_notification_with_async_processor_and_
     processor: &'a super::async_receive::AsyncDirectSecureIncomingProcessor<'a>,
     notification: Value,
     mode: DirectDecryptMode,
-    message_transport: &mut M,
+    _message_transport: &mut M,
     directory_transport: &mut D,
 ) -> DirectRealtimeAsyncProjectionOutcome
 where
@@ -519,24 +485,11 @@ where
             Ok(plaintext) => plaintext,
             Err(projection) => return DirectRealtimeAsyncProjectionOutcome::Projected(projection),
         };
-    let control_warnings =
-        match realtime_control_side_effect(&notification, &sender_did, &plaintext) {
-            Some(side_effect) if mode == DirectDecryptMode::WithSideEffects => {
-                async_direct_realtime_side_effect(
-                    client,
-                    message_transport,
-                    directory_transport,
-                    side_effect,
-                )
-                .await
-            }
-            _ => Vec::new(),
-        };
     let mut projection = normalize_direct_realtime_plaintext_notification(
         notification,
         mode,
         &mut plaintext,
-        control_warnings,
+        Vec::new(),
     );
     let replayed = result
         .replayed
@@ -623,45 +576,6 @@ where
             .await;
     }
     processor.process_cipher_if_ready(params).await
-}
-
-async fn async_direct_realtime_side_effect<M, D>(
-    client: &crate::core::ImClient,
-    message_transport: &mut M,
-    _directory_transport: &mut D,
-    side_effect: DirectRealtimeControlSideEffect,
-) -> Vec<String>
-where
-    M: AsyncAuthenticatedRpcTransport,
-    D: AsyncRpcTransport,
-{
-    match side_effect {
-        DirectRealtimeControlSideEffect::FlushOutboxAfterAck { peer_did } => {
-            async_flush_secure_outbox_after_ack(client, message_transport, &peer_did).await
-        }
-        DirectRealtimeControlSideEffect::SendAckAfterInit {
-            peer_did,
-            message_id,
-            ack_id,
-            payload,
-        } => {
-            let mut warnings = async_send_ack_after_secure_init(
-                client,
-                message_transport,
-                &peer_did,
-                &message_id,
-                &ack_id,
-                payload,
-            )
-            .await;
-            if warnings.is_empty() {
-                warnings.extend(
-                    async_flush_secure_outbox_after_ack(client, message_transport, &peer_did).await,
-                );
-            }
-            warnings
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -855,63 +769,6 @@ fn direct_realtime_params_and_sender(
     Ok((params, sender_did))
 }
 
-#[cfg(any(feature = "blocking", test))]
-fn flush_secure_outbox_after_ack(
-    client: &crate::core::ImClient,
-    connection: &rusqlite::Connection,
-    direct_client: &mut MessageServiceDirectSecureClient<'_>,
-    peer_did: &str,
-) -> Vec<String> {
-    if peer_did.trim().is_empty() {
-        return vec![
-            "Secure direct ACK did not include sender; queued outbox was not flushed".to_owned(),
-        ];
-    }
-    super::outbox::flush_queued_secure_outbox_with_sender(
-        connection,
-        &crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope::for_client(client),
-        peer_did,
-        |request| {
-            let send = match send_secure_outbox_request(direct_client, &request) {
-                Ok(outcome) => outcome,
-                Err(err) => super::outbox::SecureOutboxSendOutcome::Error(err.to_string()),
-            };
-            let session_id = match &send {
-                super::outbox::SecureOutboxSendOutcome::Success { .. } => {
-                    direct_client.current_session_id(&request.target_did)
-                }
-                super::outbox::SecureOutboxSendOutcome::Error(_) => String::new(),
-            };
-            super::outbox::SecureOutboxSendResult { send, session_id }
-        },
-    )
-}
-
-#[cfg(any(feature = "blocking", test))]
-fn send_ack_after_secure_init(
-    direct_client: &mut MessageServiceDirectSecureClient<'_>,
-    notification: &Value,
-    sender_did: &str,
-    plaintext: &Map<String, Value>,
-) -> Vec<String> {
-    let request = match ack_request_from_secure_init(notification, sender_did, plaintext) {
-        Ok(request) => request,
-        Err(warning) => return vec![warning],
-    };
-    match direct_client.send_json(
-        &request.peer_did,
-        request.payload,
-        &request.ack_id,
-        &request.ack_id,
-    ) {
-        Ok(_) => Vec::new(),
-        Err(err) => vec![format!(
-            "Failed to send secure direct ACK for {}: {err}",
-            request.message_id
-        )],
-    }
-}
-
 #[derive(Debug)]
 struct SecureInitAckRequest {
     peer_did: String,
@@ -991,228 +848,6 @@ fn realtime_decryptor_init_error(
             "Failed to initialize secure direct realtime decryptor: {err}"
         )],
     )
-}
-
-#[cfg(any(feature = "blocking", test))]
-fn send_secure_outbox_request(
-    direct_client: &mut MessageServiceDirectSecureClient<'_>,
-    request: &super::outbox::SecureOutboxSendRequest,
-) -> crate::ImResult<super::outbox::SecureOutboxSendOutcome> {
-    let operation_id = request.outbox_id.trim();
-    let raw = if request.original_type.trim() == "json" {
-        let payload =
-            request
-                .json_payload
-                .clone()
-                .ok_or_else(|| crate::ImError::Serialization {
-                    detail: "queued secure JSON payload was not parsed".to_owned(),
-                })?;
-        direct_client.send_json(&request.target_did, payload, operation_id, operation_id)?
-    } else {
-        direct_client.send_text(
-            &request.target_did,
-            &request.plaintext,
-            operation_id,
-            operation_id,
-        )?
-    };
-    Ok(super::outbox::SecureOutboxSendOutcome::Success {
-        message_id: default_string(
-            &string_value(raw.get("message_id")),
-            &default_string(operation_id, "secure-outbox-message"),
-        ),
-        operation_id: default_string(&string_value(raw.get("operation_id")), operation_id),
-        delivery_state: default_string(&string_value(raw.get("delivery_state")), "accepted"),
-        accepted_at: string_value(raw.get("accepted_at").or_else(|| raw.get("finalized_at"))),
-    })
-}
-
-async fn async_send_ack_after_secure_init<M>(
-    client: &crate::core::ImClient,
-    message_transport: &mut M,
-    peer_did: &str,
-    message_id: &str,
-    ack_id: &str,
-    payload: Map<String, Value>,
-) -> Vec<String>
-where
-    M: AsyncAuthenticatedRpcTransport,
-{
-    let peer_did = peer_did.trim();
-    if peer_did.is_empty() {
-        return vec!["Secure direct init did not include sender; ACK was not sent".to_owned()];
-    }
-    let db = match client.core_inner().local_state_db().await {
-        Ok(db) => db,
-        Err(err) => {
-            return compact_warnings(vec![format!(
-                "Failed to open local state for secure direct ACK: {err}"
-            )])
-        }
-    };
-    match super::async_send::send_established_follow_up_payload_async(
-        client,
-        &db,
-        message_transport,
-        super::async_send::AsyncDirectSecureFollowUpSend {
-            target_did: peer_did.to_owned(),
-            operation_id: ack_id.trim().to_owned(),
-            message_id: ack_id.trim().to_owned(),
-            plaintext: anp::direct_e2ee::ApplicationPlaintext::new_json(
-                "application/json",
-                Value::Object(payload),
-            ),
-        },
-    )
-    .await
-    {
-        Ok(_) => Vec::new(),
-        Err(err) => compact_warnings(vec![format!(
-            "Failed to send secure direct ACK for {}: {err}",
-            message_id.trim()
-        )]),
-    }
-}
-
-async fn async_flush_secure_outbox_after_ack<M>(
-    client: &crate::core::ImClient,
-    message_transport: &mut M,
-    peer_did: &str,
-) -> Vec<String>
-where
-    M: AsyncAuthenticatedRpcTransport,
-{
-    if peer_did.trim().is_empty() {
-        return vec![
-            "Secure direct ACK did not include sender; queued outbox was not flushed".to_owned(),
-        ];
-    }
-    let db = match client.core_inner().local_state_db().await {
-        Ok(db) => db,
-        Err(err) => {
-            return compact_warnings(vec![format!(
-                "Failed to open local state for secure outbox flush: {err}"
-            )])
-        }
-    };
-    let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope::for_client(client);
-    let rows = match db
-        .list_e2ee_outbox(scope.clone(), Some("queued".to_owned()))
-        .await
-    {
-        Ok(rows) => rows,
-        Err(err) => {
-            return compact_warnings(vec![format!("Failed to list secure outbox: {err}")]);
-        }
-    };
-    let mut rows = rows
-        .iter()
-        .filter_map(super::outbox::queued_secure_outbox_row_from_record)
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
-        return Vec::new();
-    }
-
-    let mut warnings = Vec::new();
-    rows.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-    let peer_filter = peer_did.trim().to_owned();
-    for row in rows {
-        if !peer_filter.is_empty() && row.peer_did != peer_filter {
-            continue;
-        }
-        let preflight = super::outbox::flush_queued_secure_outbox_rows_plan(
-            &scope.owner_identity_id,
-            &scope.owner_did,
-            &scope.credential_name,
-            "",
-            std::slice::from_ref(&row),
-            |_| super::outbox::SecureOutboxFlushRowOutcome {
-                send: super::outbox::SecureOutboxSendOutcome::Error("preflight".to_owned()),
-                ..super::outbox::SecureOutboxFlushRowOutcome::default()
-            },
-        );
-        let Some(request) = super::outbox::send_request_from_plan(&preflight) else {
-            warnings.extend(
-                super::outbox::execute_secure_outbox_flush_plan_async(&db, &scope, preflight).await,
-            );
-            continue;
-        };
-        let result =
-            async_send_secure_outbox_request(client, &db, message_transport, request).await;
-        let plan = super::outbox::flush_queued_secure_outbox_rows_plan(
-            &scope.owner_identity_id,
-            &scope.owner_did,
-            &scope.credential_name,
-            "",
-            std::slice::from_ref(&row),
-            |_| super::outbox::SecureOutboxFlushRowOutcome {
-                send: result.send.clone(),
-                session_id: result.session_id.clone(),
-                mark_sent: super::outbox::MarkSentOutcome::Success,
-                store_message: super::outbox::StoreMessageOutcome::Success,
-            },
-        );
-        warnings
-            .extend(super::outbox::execute_secure_outbox_flush_plan_async(&db, &scope, plan).await);
-    }
-    compact_warnings(warnings)
-}
-
-async fn async_send_secure_outbox_request<M>(
-    client: &crate::core::ImClient,
-    db: &crate::internal::local_state::actor::LocalStateDb,
-    message_transport: &mut M,
-    request: super::outbox::SecureOutboxSendRequest,
-) -> super::outbox::SecureOutboxSendResult
-where
-    M: AsyncAuthenticatedRpcTransport,
-{
-    let operation_id = request.outbox_id.trim().to_owned();
-    let plaintext = if request.original_type.trim() == "json" {
-        match request.json_payload.clone() {
-            Some(payload) => anp::direct_e2ee::ApplicationPlaintext::new_json(
-                "application/json",
-                Value::Object(payload),
-            ),
-            None => {
-                return super::outbox::SecureOutboxSendResult {
-                    send: super::outbox::SecureOutboxSendOutcome::Error(
-                        "queued secure JSON payload was not parsed".to_owned(),
-                    ),
-                    session_id: String::new(),
-                }
-            }
-        }
-    } else {
-        anp::direct_e2ee::ApplicationPlaintext::new_text("text/plain", &request.plaintext)
-    };
-    match super::async_send::send_established_follow_up_payload_async(
-        client,
-        db,
-        message_transport,
-        super::async_send::AsyncDirectSecureFollowUpSend {
-            target_did: request.target_did,
-            operation_id: operation_id.clone(),
-            message_id: operation_id,
-            plaintext,
-        },
-    )
-    .await
-    {
-        Ok(result) => super::outbox::SecureOutboxSendResult {
-            session_id: result.session_id,
-            send: super::outbox::SecureOutboxSendOutcome::Success {
-                message_id: result.message_id,
-                operation_id: result.operation_id,
-                delivery_state: result.delivery_state,
-                accepted_at: result.accepted_at,
-            },
-        },
-        Err(err) => super::outbox::SecureOutboxSendResult {
-            send: super::outbox::SecureOutboxSendOutcome::Error(err.to_string()),
-            session_id: String::new(),
-        },
-    }
 }
 
 #[allow(dead_code)]

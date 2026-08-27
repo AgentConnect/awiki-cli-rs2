@@ -5,6 +5,15 @@ use napi_derive::napi;
 use crate::error::{SafeError, SafeResult};
 
 #[napi(object)]
+#[derive(Clone)]
+pub struct NodeClientVersionInfo {
+    pub product: String,
+    pub release: String,
+    pub version: String,
+    pub build: Option<u32>,
+}
+
+#[napi(object)]
 pub struct NodeOpenOptions {
     pub state_root: String,
     pub service_base_url: String,
@@ -14,6 +23,7 @@ pub struct NodeOpenOptions {
     pub mail_service_endpoint: Option<String>,
     pub anp_service_endpoint: Option<String>,
     pub anp_service_did: Option<String>,
+    pub client_version_info: Option<NodeClientVersionInfo>,
     pub operation_timeout_ms: Option<u32>,
     pub sync_timeout_ms: Option<u32>,
     pub multi_device_device_revoke_enabled: Option<bool>,
@@ -33,6 +43,7 @@ impl Clone for NodeOpenOptions {
             mail_service_endpoint: self.mail_service_endpoint.clone(),
             anp_service_endpoint: self.anp_service_endpoint.clone(),
             anp_service_did: self.anp_service_did.clone(),
+            client_version_info: self.client_version_info.clone(),
             operation_timeout_ms: self.operation_timeout_ms,
             sync_timeout_ms: self.sync_timeout_ms,
             multi_device_device_revoke_enabled: self.multi_device_device_revoke_enabled,
@@ -720,27 +731,6 @@ pub struct NodeGroupMemberPage {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[napi(object)]
-pub struct NodeGroupRebindRecoverySummary {
-    pub processed: u32,
-    pub completed: u32,
-    pub pending: u32,
-    pub blocked: u32,
-    pub send_paused_groups: Vec<String>,
-    pub items: Vec<NodeGroupRebindRecoveryItem>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[napi(object)]
-pub struct NodeGroupRebindRecoveryItem {
-    pub group_did: String,
-    pub layer: String,
-    pub phase: String,
-    pub blocked: bool,
-}
-
 #[napi(object)]
 pub struct NodePageInput {
     pub cursor: Option<String>,
@@ -954,9 +944,6 @@ pub struct NodeHandleRecoveryAttestationResult {
 pub struct NodeHandleRecoveryImpact {
     pub local_ordinary_data_will_migrate: bool,
     pub other_devices_must_rejoin: bool,
-    #[napi(js_name = "unsupportedE2eeGroupCount")]
-    pub unsupported_e2ee_group_count: u32,
-    pub unsupported_did_only_group_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1555,33 +1542,6 @@ pub(crate) fn group_member_page(value: im_core::groups::GroupReadResult) -> Node
     }
 }
 
-pub(crate) fn rebind_recovery_summary(
-    value: im_core::groups::GroupRebindRecoverySummary,
-) -> NodeGroupRebindRecoverySummary {
-    NodeGroupRebindRecoverySummary {
-        processed: value.processed,
-        completed: value.completed,
-        pending: value.pending,
-        blocked: value.blocked,
-        send_paused_groups: value
-            .send_paused_groups
-            .into_iter()
-            .map(|group| group.as_str().to_owned())
-            .collect(),
-        items: value
-            .items
-            .into_iter()
-            .map(|item| NodeGroupRebindRecoveryItem {
-                group_did: item.group.as_str().to_owned(),
-                layer: item.layer,
-                phase: item.phase,
-                blocked: item.blocked,
-            })
-            .collect(),
-        warnings: value.warnings,
-    }
-}
-
 pub(crate) fn recovery_otp_result(
     value: im_core::identity::HandleRecoveryOtpResult,
 ) -> NodeHandleRecoveryOtpResult {
@@ -1614,8 +1574,6 @@ pub(crate) fn recovery_progress(
         impact: NodeHandleRecoveryImpact {
             local_ordinary_data_will_migrate: value.impact.local_ordinary_data_will_migrate,
             other_devices_must_rejoin: value.impact.other_devices_must_rejoin,
-            unsupported_e2ee_group_count: value.impact.unsupported_e2ee_group_count,
-            unsupported_did_only_group_count: value.impact.unsupported_did_only_group_count,
         },
     }
 }

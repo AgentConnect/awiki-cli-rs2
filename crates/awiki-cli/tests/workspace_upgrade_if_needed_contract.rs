@@ -1,11 +1,7 @@
 use anp::authentication::{create_did_wba_document, DidDocumentOptions, DidProfile};
 use awiki_cli::{workspace_config, workspace_upgrade};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LEGACY_V6_TABLES_SQL: &str = r#"
@@ -332,13 +328,10 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
 }
 
 #[test]
-fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
+fn workspace_upgrade_if_needed_preserves_imported_k1_identity_without_online_replacement() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-k1-import").expect("temp workspace");
-    let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","result":{"handle":"legacy","full_handle":"legacy.example.test","access_token":"jwt-replaced"},"id":"req-1"}"#,
-    )]);
     let mut resolved = test_resolved(workspace.path());
-    resolved.service_base_url = server.base_url();
+    resolved.service_base_url = "http://127.0.0.1:9".to_string();
     let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
         .expect("create legacy settings dir");
@@ -346,8 +339,8 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
         &paths.legacy_settings_path,
         format!(
             r#"{{"user_service_url":"{}","molt_message_url":"{}","did_domain":"example.test","message_transport":{{"receive_mode":"websocket"}}}}"#,
-            server.base_url(),
-            server.base_url()
+            resolved.service_base_url,
+            resolved.service_base_url
         ),
     )
     .expect("write legacy settings");
@@ -357,7 +350,7 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.5");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("imported handle k1 replacement should complete through v4");
+        .expect("imported K1 history should complete local upgrade through v4");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
@@ -368,33 +361,19 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should clear after imported k1 replacement"
-    );
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
-    assert_contains(&requests[0], "Authorization: Bearer legacy-token\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
-    assert_eq!(body["method"], "replace_did");
-    let new_did = body["params"]["new_did_document"]["id"]
-        .as_str()
-        .expect("new did");
-    assert!(
-        new_did.starts_with("did:wba:example.test:legacy:e1_"),
-        "new DID should preserve imported handle path and use e1 suffix: {new_did}"
+        "journal should clear after imported K1 local migration"
     );
 
     let stored = read_stored_identity(&resolved, "legacy");
-    assert_eq!(stored["did"], new_did);
+    assert_eq!(stored["did"], old_did);
     assert_eq!(stored["handle"], "legacy");
     assert_eq!(stored["full_handle"], "legacy.example.test");
     let auth = read_stored_auth(&resolved, "legacy");
-    assert_eq!(auth["jwt_token"], "jwt-replaced");
-    let backup_manifest = read_single_replace_did_backup_manifest(&resolved);
-    assert_eq!(backup_manifest["identity_name"], "legacy");
-    assert_eq!(backup_manifest["old_did"], old_did);
-    assert_eq!(backup_manifest["planned_new_did"], new_did);
+    assert_eq!(auth["jwt_token"], "legacy-token");
+    assert!(!Path::new(&resolved.paths.identity_dir)
+        .join(".legacy-backup")
+        .join("replace-did")
+        .exists());
 
     let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open upgraded db");
     let (owner_identity_id, owner_did, conversation_id, thread_id, content): (
@@ -410,9 +389,9 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .expect("imported legacy message");
-    let new_identity_id = new_did.rsplit(':').next().unwrap_or(new_did);
-    assert_eq!(owner_identity_id, new_identity_id);
-    assert_eq!(owner_did, new_did);
+    let historical_identity_id = old_did.rsplit(':').next().unwrap_or(&old_did);
+    assert_eq!(owner_identity_id, historical_identity_id);
+    assert_eq!(owner_did, old_did);
     assert_eq!(conversation_id, "dm:did:wba:example.test:user:e1_peer");
     assert_eq!(thread_id, conversation_id);
     assert_eq!(content, "legacy hello");
@@ -656,19 +635,16 @@ fn workspace_upgrade_if_needed_applies_v1_to_v4_without_current_k1_dids() {
 }
 
 #[test]
-fn workspace_upgrade_if_needed_replaces_v2_to_v4_current_k1_dids_like_go() {
+fn workspace_upgrade_if_needed_preserves_v2_k1_identity_without_online_replacement() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v2-v3-k1").expect("temp workspace");
-    let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","result":{"handle":"legacy","full_handle":"legacy.example.test","access_token":"jwt-replaced"},"id":"req-1"}"#,
-    )]);
     let mut resolved = test_resolved(workspace.path());
-    resolved.service_base_url = server.base_url();
+    resolved.service_base_url = "http://127.0.0.1:9".to_string();
     let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(
         &paths.config_file,
         format!(
             "schema_version: 1\nservices:\n  service_base_url: {}\n  did_domain: example.test\n",
-            server.base_url()
+            resolved.service_base_url
         ),
     )
     .expect("write config");
@@ -689,7 +665,7 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v4_current_k1_dids_like_go() {
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.8");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("current k1 identities should be replaced during v2 to v4");
+        .expect("current K1 identities should remain historical during v2 to v4");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
@@ -709,55 +685,37 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v4_current_k1_dids_like_go() {
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after successful v2 to v4"
-    );
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
-    assert_contains(&requests[0], "Authorization: Bearer jwt-legacy\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
-    assert_eq!(body["method"], "replace_did");
-    let new_did = body["params"]["new_did_document"]["id"]
-        .as_str()
-        .expect("new did in request");
-    assert!(
-        new_did.starts_with("did:wba:example.test:legacy:e1_"),
-        "new DID should preserve handle path and use e1 suffix: {new_did}"
+        "journal should be cleared after local-only v2 to v4"
     );
 
     let stored = read_stored_identity(&resolved, "legacy");
-    assert_eq!(stored["did"], new_did);
+    assert_eq!(stored["did"], old_did);
     assert_eq!(stored["handle"], "legacy");
     assert_eq!(stored["full_handle"], "legacy.example.test");
     let auth = read_stored_auth(&resolved, "legacy");
-    assert_eq!(auth["jwt_token"], "jwt-replaced");
-    let backup_manifest = read_single_replace_did_backup_manifest(&resolved);
-    assert_eq!(backup_manifest["identity_name"], "legacy");
-    assert_eq!(backup_manifest["old_did"], old_did);
-    assert_eq!(backup_manifest["planned_new_did"], new_did);
+    assert_eq!(auth["jwt_token"], "jwt-legacy");
+    assert!(!Path::new(&resolved.paths.identity_dir)
+        .join(".legacy-backup")
+        .join("replace-did")
+        .exists());
 
     let guard = workspace_upgrade::acquire_file_lock(&paths.lock_path, "1.2.9")
-        .expect("upgrade_if_needed should release the OS lock after v2 to v4 replacement");
+        .expect("upgrade_if_needed should release the OS lock after v2 to v4");
     guard.release().expect("release lock");
 }
 
 #[test]
-fn workspace_upgrade_if_needed_records_v2_to_v4_k1_replacement_failures_as_warnings_like_go() {
+fn workspace_upgrade_if_needed_never_contacts_service_for_v2_k1_identity() {
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v2-v3-k1-warning").expect("temp workspace");
-    let server = TestServer::new(vec![TestResponse {
-        status: 500,
-        body: "replace unavailable".to_string(),
-    }]);
     let mut resolved = test_resolved(workspace.path());
-    resolved.service_base_url = server.base_url();
+    resolved.service_base_url = "http://127.0.0.1:9".to_string();
     let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(
         &paths.config_file,
         format!(
             "schema_version: 1\nservices:\n  service_base_url: {}\n  did_domain: example.test\n",
-            server.base_url()
+            resolved.service_base_url
         ),
     )
     .expect("write config");
@@ -778,18 +736,13 @@ fn workspace_upgrade_if_needed_records_v2_to_v4_k1_replacement_failures_as_warni
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.11");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("replacement failure should be captured as a warning");
+        .expect("retired online replacement must not contact the service");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved despite warning");
+        .expect("meta saved after local-only upgrade");
     assert_eq!(meta.workspace_schema_version, 4);
-    assert_eq!(meta.warnings.len(), 1);
-    assert_contains(
-        &meta.warnings[0],
-        &format!("Automatic DID replacement failed for identity legacy ({old_did}):"),
-    );
-    assert_contains(&meta.warnings[0], "service http error 500");
+    assert!(meta.warnings.is_empty());
     assert_eq!(
         context
             .current_meta
@@ -856,7 +809,7 @@ fn workspace_upgrade_if_needed_completes_v2_to_v4_when_current_identity_index_ha
 }
 
 #[test]
-fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fails_like_go() {
+fn workspace_upgrade_if_needed_does_not_construct_identity_service_for_v2_to_v3() {
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v2-v3-e1-ca").expect("temp workspace");
     let mut resolved = test_resolved(workspace.path());
@@ -894,24 +847,19 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.12");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("service-construction failure should be captured as a warning");
+        .expect("local-only v2 to v3 must not parse service TLS configuration");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after v2 to v4");
     assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.app_version, "1.2.12");
-    assert_eq!(meta.warnings.len(), 1);
-    assert_contains(
-        &meta.warnings[0],
-        "Automatic k1 to e1 DID replacement was skipped: invalid ca bundle:",
-    );
-    assert_contains(&meta.warnings[0], &path_string(&invalid_ca));
+    assert!(meta.warnings.is_empty());
     assert_eq!(
         context
             .current_meta
             .as_ref()
-            .expect("context meta after service-construction warning")
+            .expect("context meta after local-only upgrade")
             .warnings,
         meta.warnings
     );
@@ -919,7 +867,7 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after completed v2 to v4 with warning"
+        "journal should be cleared after completed local-only v2 to v4"
     );
 }
 
@@ -1280,27 +1228,6 @@ fn write_json(path: &Path, value: &Value) {
     .unwrap_or_else(|err| panic!("write {path:?}: {err}"));
 }
 
-fn read_single_replace_did_backup_manifest(resolved: &workspace_config::Resolved) -> Value {
-    let backup_root = Path::new(&resolved.paths.identity_dir)
-        .join(".legacy-backup")
-        .join("replace-did");
-    let entries = std::fs::read_dir(&backup_root)
-        .unwrap_or_else(|err| panic!("read backup root {backup_root:?}: {err}"));
-    let manifests = entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_type()
-                .map(|file_type| file_type.is_dir())
-                .unwrap_or(false)
-        })
-        .map(|entry| entry.path().join("backup_manifest.json"))
-        .collect::<Vec<_>>();
-    assert_eq!(manifests.len(), 1, "expected one replacement backup");
-    serde_json::from_slice(&std::fs::read(&manifests[0]).expect("read backup manifest"))
-        .expect("parse backup manifest")
-}
-
 fn assert_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
@@ -1315,149 +1242,9 @@ fn assert_not_contains(haystack: &str, needle: &str) {
     );
 }
 
-fn request_body(raw: &str) -> &str {
-    raw.split("\r\n\r\n").nth(1).unwrap_or_default()
-}
-
 fn read_upgrade_lock_metadata(path: &Path) -> Value {
     let raw = std::fs::read(path).expect("read lock metadata");
     serde_json::from_slice(&raw).expect("parse lock metadata")
-}
-
-struct TestResponse {
-    status: u16,
-    body: String,
-}
-
-impl TestResponse {
-    fn ok(body: &str) -> Self {
-        Self {
-            status: 200,
-            body: body.to_string(),
-        }
-    }
-}
-
-struct TestServer {
-    address: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    join: Option<thread::JoinHandle<()>>,
-}
-
-impl TestServer {
-    fn new(responses: Vec<TestResponse>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
-        listener
-            .set_nonblocking(true)
-            .expect("set test server nonblocking");
-        let address = format!("http://{}", listener.local_addr().expect("local addr"));
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let server_requests = Arc::clone(&requests);
-        let join = thread::spawn(move || {
-            for response in responses {
-                let Some(stream) = accept_with_timeout(&listener) else {
-                    break;
-                };
-                handle_connection(stream, &server_requests, response);
-            }
-        });
-        Self {
-            address,
-            requests,
-            join: Some(join),
-        }
-    }
-
-    fn base_url(&self) -> String {
-        self.address.clone()
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().expect("requests lock").clone()
-    }
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
-    }
-}
-
-fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let start = std::time::Instant::now();
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .expect("set test stream blocking");
-                return Some(stream);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                // Parallel workspace tests can delay the debug CLI process startup on macOS.
-                if start.elapsed() > std::time::Duration::from_secs(30) {
-                    return None;
-                }
-                thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    }
-}
-
-fn handle_connection(
-    mut stream: TcpStream,
-    requests: &Arc<Mutex<Vec<String>>>,
-    response: TestResponse,
-) {
-    let mut buffer = [0u8; 16384];
-    let mut raw = Vec::new();
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-        .expect("set read timeout");
-    loop {
-        let read = stream.read(&mut buffer).expect("read request");
-        if read == 0 {
-            break;
-        }
-        raw.extend_from_slice(&buffer[..read]);
-        if request_complete(&raw) {
-            break;
-        }
-    }
-    let request = String::from_utf8_lossy(&raw).into_owned();
-    requests.lock().expect("requests lock").push(request);
-    let body = response.body;
-    let status_text = if response.status == 200 {
-        "OK"
-    } else {
-        "Internal Server Error"
-    };
-    let raw_response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        response.status,
-        status_text,
-        body.len(),
-        body
-    );
-    stream
-        .write_all(raw_response.as_bytes())
-        .expect("write response");
-}
-
-fn request_complete(raw: &[u8]) -> bool {
-    let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&raw[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length:"))
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    raw.len() >= header_end + 4 + content_length
 }
 
 struct EnvGuard {

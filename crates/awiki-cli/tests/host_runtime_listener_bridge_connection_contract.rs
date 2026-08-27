@@ -100,7 +100,7 @@ fn bridge_connection_fetches_group_create_service_did_before_building_rpc() {
         vec![
             "ensure_session:alice",
             "fetch_service_did:alice",
-            "send_rpc:alice:group.create:anp.group.base.v1",
+            "send_rpc:alice:group.create:anp.group.base.v2",
         ]
     );
 }

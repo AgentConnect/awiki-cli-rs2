@@ -133,11 +133,11 @@ mod tests {
     fn secure_direct_key_material_scanner_rejects_runtime_secret_path_reads() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let files = [
-            "src/internal/secure_direct/prepare.rs",
-            "src/internal/secure_direct/send.rs",
             "src/internal/secure_direct/incoming.rs",
-            "src/internal/secure_direct/async_send.rs",
             "src/internal/secure_direct/async_receive.rs",
+            "src/internal/secure_direct/v2_prekey_runtime.rs",
+            "src/internal/secure_direct/v2_product.rs",
+            "src/internal/secure_direct/v2_runtime.rs",
         ];
         let forbidden = [
             "runtime.private_key_path",

@@ -161,7 +161,6 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.bind" => app.run_id_bind(command),
         "id.refresh-token" => app.run_id_refresh_token(),
         "id.resolve" => app.run_id_resolve(command),
-        "id.replace-did" => app.run_id_replace_did(command),
         "id.profile.get" => app.run_id_profile_get(command),
         "id.profile.set" => app.run_id_profile_set(command),
         "id.device.list"
@@ -180,11 +179,6 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "msg.history" => app.run_msg_history(command),
         "msg.mark-read" => app.run_msg_mark_read(command),
         "msg.secure.status" => app.run_msg_secure_status(command),
-        "msg.secure.init" => app.run_msg_secure_init(command),
-        "msg.secure.repair" => app.run_msg_secure_repair(command),
-        "msg.secure.failed" => app.run_msg_secure_failed(),
-        "msg.secure.retry" => app.run_msg_secure_retry(command),
-        "msg.secure.drop" => app.run_msg_secure_drop(command),
         "mail.inbox" => app.run_mail_inbox(command),
         "mail.read" => app.run_mail_read(command),
         "mail.mark-read" => app.run_mail_mark_read(command),
@@ -207,12 +201,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "group.secure.diagnostics" => app.run_group_secure_diagnostics(),
         "group.e2ee.status" => app.run_group_e2ee_status_alias(command),
         "group.e2ee.publish-key-package" => app.run_group_e2ee_publish_key_package(command),
-        "group.e2ee.pending" => app.run_group_e2ee_pending(command),
         "group.e2ee.repair" => app.run_group_e2ee_repair_alias(command),
-        "group.e2ee.update-key" => app.run_group_e2ee_update_key(command),
-        "group.e2ee.rejoin" => app.run_group_e2ee_rejoin(command),
-        "group.e2ee.recover-member" => app.run_group_e2ee_recover_member(command),
-        "group.e2ee.process-leave-request" => app.run_group_e2ee_process_leave_request(command),
         "people.follow" => app.run_people_follow(command),
         "people.unfollow" => app.run_people_unfollow(command),
         "people.status" => app.run_people_status(command),
@@ -308,7 +297,6 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "msg.history" => app.run_msg_history_async(command).await,
         "msg.mark-read" => app.run_msg_mark_read_async(command).await,
         "msg.secure.status" => app.run_msg_secure_status_async(command).await,
-        "msg.secure.repair" => app.run_msg_secure_repair_async(command).await,
         "id.register" => app.run_id_register_async(command).await,
         "id.list" => app.run_id_list_async().await,
         "id.current" => app.run_id_current_async().await,
@@ -349,14 +337,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "group.e2ee.publish-key-package" => {
             app.run_group_e2ee_publish_key_package_async(command).await
         }
-        "group.e2ee.process-leave-request" => {
-            app.run_group_e2ee_process_leave_request_async(command)
-                .await
-        }
         "group.e2ee.repair" => app.run_group_e2ee_repair_alias_async(command).await,
-        "group.e2ee.update-key" => app.run_group_e2ee_update_key_async(command).await,
-        "group.e2ee.rejoin" => app.run_group_e2ee_rejoin_async(command).await,
-        "group.e2ee.recover-member" => app.run_group_e2ee_recover_member_async(command).await,
         "people.follow" => app.run_people_follow_async(command).await,
         "people.unfollow" => app.run_people_unfollow_async(command).await,
         "people.status" => app.run_people_status_async(command).await,

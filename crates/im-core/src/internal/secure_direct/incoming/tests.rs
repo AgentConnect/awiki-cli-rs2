@@ -278,119 +278,6 @@ fn realtime_notification_normalizer_drops_secure_control_plaintexts() {
     assert!(projection.warnings.is_empty());
 }
 
-#[tokio::test]
-async fn realtime_notification_async_side_effect_flushes_outbox_after_ack_via_actor() {
-    let temp = tempfile::tempdir().unwrap();
-    let sqlite_path = temp.path().join("local").join("im.sqlite");
-    let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope {
-        owner_identity_id: "alice-id".to_owned(),
-        owner_did: "did:example:alice".to_owned(),
-        credential_name: "alice".to_owned(),
-    };
-    {
-        let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
-        crate::internal::store::e2ee_outbox::queue_e2ee_outbox(
-            &connection,
-            crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
-                outbox_id: "outbox-ack-flush".to_owned(),
-                owner_identity_id: scope.owner_identity_id.clone(),
-                owner_did: scope.owner_did.clone(),
-                credential_name: scope.credential_name.clone(),
-                peer_did: "did:example:bob".to_owned(),
-                original_type: "text".to_owned(),
-                plaintext: "queued after ack".to_owned(),
-                local_status: "queued".to_owned(),
-                created_at: "2026-05-24T00:00:00Z".to_owned(),
-                updated_at: "2026-05-24T00:00:00Z".to_owned(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    }
-    let db = crate::internal::local_state::actor::LocalStateDb::open(sqlite_path.clone())
-        .await
-        .unwrap();
-
-    let projection = maybe_normalize_direct_e2ee_notification_with_processor_async(
-        secure_direct_notification("ack-session-1", "ACK-CIPHER"),
-        DirectDecryptMode::WithSideEffects,
-        |_params| {
-            Ok(Map::from_iter([
-                ("state".to_owned(), json!("decrypted")),
-                (
-                    "plaintext".to_owned(),
-                    json!({
-                        "application_content_type": "application/json",
-                        "payload": {
-                            "system_type": super::super::control::SECURE_ACK_SYSTEM_TYPE,
-                            "session_id": "session-1",
-                            "acked_message_id": "msg-secure"
-                        }
-                    }),
-                ),
-            ]))
-        },
-        |side_effect| {
-            let db = db.clone();
-            let scope = scope.clone();
-            async move {
-                let DirectRealtimeControlSideEffect::FlushOutboxAfterAck { peer_did } = side_effect
-                else {
-                    return vec!["unexpected side effect".to_owned()];
-                };
-                super::super::outbox::flush_queued_secure_outbox_with_sender_async(
-                    &db,
-                    &scope,
-                    &peer_did,
-                    |request| async move {
-                        assert_eq!(request.outbox_id, "outbox-ack-flush");
-                        assert_eq!(request.target_did, "did:example:bob");
-                        assert_eq!(request.plaintext, "queued after ack");
-                        super::super::outbox::SecureOutboxSendResult {
-                            session_id: "session-after-ack".to_owned(),
-                            send: super::super::outbox::SecureOutboxSendOutcome::Success {
-                                message_id: "msg-after-ack".to_owned(),
-                                operation_id: "outbox-ack-flush".to_owned(),
-                                delivery_state: "accepted".to_owned(),
-                                accepted_at: "2026-05-24T00:00:01Z".to_owned(),
-                            },
-                        }
-                    },
-                )
-                .await
-            }
-        },
-    )
-    .await;
-
-    assert_eq!(
-        projection.decision,
-        DirectRealtimeNotificationDecision::DroppedControl
-    );
-    assert!(projection.notification.is_none());
-    assert!(projection.warnings.is_empty());
-
-    let sent = db
-        .list_e2ee_outbox(scope.clone(), Some("sent".to_owned()))
-        .await
-        .unwrap();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].session_id, "session-after-ack");
-    assert_eq!(sent[0].sent_msg_id, "msg-after-ack");
-    db.shutdown().await.unwrap();
-
-    let connection = rusqlite::Connection::open(sqlite_path).unwrap();
-    let (content, is_e2ee): (String, i64) = connection
-        .query_row(
-            "SELECT content, is_e2ee FROM messages WHERE msg_id = 'msg-after-ack'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(content, "queued after ack");
-    assert_eq!(is_e2ee, 1);
-}
-
 #[test]
 fn secure_init_ack_request_uses_realtime_wire_session_without_public_projection() {
     let plaintext = Map::from_iter([
@@ -562,7 +449,7 @@ async fn realtime_notification_client_async_normalizer_falls_back_without_establ
 }
 
 #[tokio::test]
-async fn realtime_notification_client_async_normalizer_sends_ack_after_secure_init_control() {
+async fn historical_realtime_reader_drops_init_control_without_sending_v1_ack() {
     let fixture = super::super::async_receive::test_support::Fixture::new();
     let client = fixture.client();
     let exchange = super::super::async_receive::test_support::established_exchange();
@@ -641,18 +528,13 @@ async fn realtime_notification_client_async_normalizer_sends_ack_after_secure_in
     assert!(projection.notification.is_none());
     assert!(projection.warnings.is_empty());
     let calls = calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(
-        calls[0].pointer("/meta/content_type"),
-        Some(&json!("application/anp-direct-cipher+json"))
-    );
-    assert!(!calls[0].to_string().contains("awiki.direct.secure_ack.v1"));
+    assert!(calls.is_empty());
     let saved = db
         .get_direct_secure_session("alice-id", "did:example:bob")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.revision, 2);
+    assert_eq!(saved.revision, 1);
 }
 
 #[tokio::test]
@@ -845,7 +727,7 @@ impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingAsy
         method: &str,
         params: Value,
     ) -> crate::ImResult<Value> {
-        assert_eq!(endpoint, super::super::send::MESSAGE_RPC_ENDPOINT);
+        assert_eq!(endpoint, "/im/rpc");
         assert_eq!(method, "direct.send");
         self.calls.lock().unwrap().push(params);
         Ok(json!({

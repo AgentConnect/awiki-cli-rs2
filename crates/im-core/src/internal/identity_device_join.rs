@@ -2678,16 +2678,6 @@ fn promote_join_identity_local(
                 .to_string(),
             "{}",
         )?;
-        // Group repair has its own durable journal and retry lifecycle. A
-        // queueing failure must not roll back an already-applied identity.
-        let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
-            &core.inner().sdk_paths().local_state.sqlite_path,
-            &marker.owner_identity_id,
-            &marker.handle,
-            std::slice::from_ref(&marker.previous_did),
-            &marker.current_did,
-            &marker.binding_generation,
-        );
         let committed = identity_store.load_index()?;
         return ensure_existing_join_identity_is_rootless(
             &committed,

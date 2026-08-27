@@ -1,5 +1,5 @@
 pub use crate::internal::identity_wire::{
-    ProfileUpdateCall, RegisterRpcParams, ReplaceDidRpcParams, RestCall, RpcCall, TransportProfile,
+    ProfileUpdateCall, RegisterRpcParams, RestCall, RpcCall, TransportProfile,
     UpdateDocumentRpcParams, UpdateProfileParams,
 };
 
@@ -30,10 +30,6 @@ pub fn build_update_profile_payload(
 
 pub fn build_register_rpc_call(params: RegisterRpcParams) -> crate::ImResult<RpcCall> {
     crate::internal::identity_wire::registration::build_register_rpc_call(params)
-}
-
-pub fn build_replace_did_rpc_call(params: ReplaceDidRpcParams) -> RpcCall {
-    crate::internal::identity_wire::replace_did::build_replace_did_rpc_call(params)
 }
 
 pub fn build_update_document_rpc_call(params: UpdateDocumentRpcParams) -> RpcCall {
@@ -123,45 +119,6 @@ pub trait BridgeIdentityRpcTransport {
     ) -> crate::ImResult<serde_json::Value>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReplaceDidBackupBridgeResult {
-    pub backup_path: String,
-    pub manifest: crate::identity::ReplaceDidBackupManifestPreview,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReplaceDidLocalIdentityUpdate {
-    pub identity: crate::identity::IdentitySummary,
-    pub new_did: crate::ids::Did,
-}
-
-pub trait BridgeReplaceDidExecution {
-    fn create_replace_did_backup(
-        &mut self,
-        plan: &crate::identity::ReplaceDidPlan,
-    ) -> crate::ImResult<ReplaceDidBackupBridgeResult>;
-
-    fn remote_replace_did(
-        &mut self,
-        endpoint: &str,
-        method: &str,
-        params: serde_json::Value,
-    ) -> crate::ImResult<serde_json::Value>;
-
-    fn replace_local_identity(
-        &mut self,
-        request: &crate::identity::ReplaceDidExecutionRequest,
-        remote_result: &serde_json::Value,
-    ) -> crate::ImResult<ReplaceDidLocalIdentityUpdate>;
-
-    fn rebind_local_identity_state(
-        &mut self,
-        owner_identity_id: &crate::ids::IdentityId,
-        old_did: &crate::ids::Did,
-        new_did: &crate::ids::Did,
-    ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState>;
-}
-
 #[doc(hidden)]
 pub fn bind_contact_with_bridge<P, T>(
     client: &crate::core::ImClient,
@@ -206,20 +163,6 @@ where
         raw_status: result.raw_status,
         raw_send: result.raw_send,
     })
-}
-
-#[doc(hidden)]
-pub fn replace_did_with_bridge<B>(
-    client: &crate::core::ImClient,
-    request: crate::identity::ReplaceDidExecutionRequest,
-    bridge: B,
-) -> crate::ImResult<crate::identity::ReplaceDidExecutionResult>
-where
-    B: BridgeReplaceDidExecution,
-{
-    client
-        .identity()
-        .replace_did_with_runtime(request, CompatReplaceDidExecutionBridge(bridge))
 }
 
 struct CompatIdentitySessionProvider<P>(P);
@@ -278,8 +221,6 @@ where
 
 struct CompatIdentityRpcTransport<T>(T);
 
-struct CompatReplaceDidExecutionBridge<B>(B);
-
 impl<T> crate::internal::transport::RpcTransport for CompatIdentityRpcTransport<T>
 where
     T: BridgeIdentityRpcTransport,
@@ -291,59 +232,5 @@ where
         params: serde_json::Value,
     ) -> crate::ImResult<serde_json::Value> {
         self.0.rpc(endpoint, method, params)
-    }
-}
-
-impl<B> crate::internal::identity_replace_did_execution::ReplaceDidExecutionBridge
-    for CompatReplaceDidExecutionBridge<B>
-where
-    B: BridgeReplaceDidExecution,
-{
-    fn create_backup(
-        &mut self,
-        plan: &crate::identity::ReplaceDidPlan,
-    ) -> crate::ImResult<crate::internal::identity_replace_did_execution::ReplaceDidBackupResult>
-    {
-        let result = self.0.create_replace_did_backup(plan)?;
-        Ok(
-            crate::internal::identity_replace_did_execution::ReplaceDidBackupResult {
-                backup_path: result.backup_path,
-                manifest: result.manifest,
-            },
-        )
-    }
-
-    fn remote_replace_did(
-        &mut self,
-        endpoint: &str,
-        method: &str,
-        params: serde_json::Value,
-    ) -> crate::ImResult<serde_json::Value> {
-        self.0.remote_replace_did(endpoint, method, params)
-    }
-
-    fn replace_local_identity(
-        &mut self,
-        request: &crate::identity::ReplaceDidExecutionRequest,
-        remote_result: &serde_json::Value,
-    ) -> crate::ImResult<crate::internal::identity_replace_did_execution::ReplaceDidLocalUpdate>
-    {
-        let result = self.0.replace_local_identity(request, remote_result)?;
-        Ok(
-            crate::internal::identity_replace_did_execution::ReplaceDidLocalUpdate {
-                identity: result.identity,
-                new_did: result.new_did,
-            },
-        )
-    }
-
-    fn rebind_local_state(
-        &mut self,
-        owner_identity_id: &crate::ids::IdentityId,
-        old_did: &crate::ids::Did,
-        new_did: &crate::ids::Did,
-    ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
-        self.0
-            .rebind_local_identity_state(owner_identity_id, old_did, new_did)
     }
 }

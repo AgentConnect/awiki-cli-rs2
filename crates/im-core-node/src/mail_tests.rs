@@ -15,6 +15,7 @@ fn open_options() -> NodeOpenOptions {
         mail_service_endpoint: None,
         anp_service_endpoint: None,
         anp_service_did: None,
+        client_version_info: None,
         operation_timeout_ms: None,
         sync_timeout_ms: None,
         multi_device_device_revoke_enabled: None,

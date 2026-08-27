@@ -106,7 +106,6 @@ Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶�
 | `cli_shell/group_handlers.rs` | group create / join / member / list / update 等命令 handler，主要转 `m_core_cli_adapter`。 |
 | `cli_shell/handle_helpers.rs` | handle 标准化、补全、输入边界 helper。 |
 | `cli_shell/identity_register_handlers.rs` | `id register` 的非 argv 手机号/验证码 stdin 输入与闭合校验。 |
-| `cli_shell/id_replace_did_handlers.rs` | `id replace-did` handler，计划/执行边界和 warning 输出。 |
 | `cli_shell/mail_handlers.rs` | mail 命令 handler，转 `im-core` email API。 |
 | `cli_shell/msg_handlers.rs` | msg send / inbox / history / mark-read / secure 等命令 handler。 |
 | `cli_shell/page_handlers.rs` | page 命令 handler，转 `im-core` content/page RPC。 |
@@ -132,7 +131,6 @@ Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶�
 | `m_core_cli_adapter/error.rs` | `im-core` error 到 CLI `ExitError` / envelope 的映射。 |
 | `m_core_cli_adapter/groups.rs` | group lifecycle / members / messages 到 `im-core` group API 的适配。 |
 | `m_core_cli_adapter/identity.rs` | id register / bind / recover / profile / resolve / refresh 等到 `im-core` identity API 的适配。 |
-| `m_core_cli_adapter/identity_replace_did_plan.rs` | replace-did 的 dry-run / plan DTO 构造。 |
 | `m_core_cli_adapter/message_result.rs` | message send / inbox / history / mark-read 结果转换和兼容输出。 |
 | `m_core_cli_adapter/messages.rs` | msg 命令主体适配：发送、收件箱、历史、附件、mark-read、secure 策略；direct send 返回本地 peer-scope `ThreadRef::Thread` 时仍按 direct delivery 渲染，并从 metadata 恢复目标 handle/DID。 |
 | `m_core_cli_adapter/messages_tests.rs` | `messages.rs` 的 test-only 单元测试实现，避免大段测试夹在业务实现文件中。 |
@@ -221,7 +219,6 @@ Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶�
 | `workspace_upgrade/meta.rs` | workspace schema metadata 读写。 |
 | `workspace_upgrade/migration_v0_to_v1.rs` | v0 -> v1：legacy config / identity / SQLite 导入和当前 schema 初始化。 |
 | `workspace_upgrade/migration_v1_to_v2.rs` | v1 -> v2：旧 listener / service / skill artifacts 清理。 |
-| `workspace_upgrade/migration_v2_to_v3.rs` | v2 -> v3：K1 DID 替换/重绑相关迁移。 |
 | `workspace_upgrade/settings.rs` | 旧 settings / config 解析和导入。 |
 | `workspace_upgrade/types.rs` | upgrade context、detection、inspection、migration result 等类型。 |
 | `workspace_upgrade/upgrader.rs` | migration plan、执行器、`upgrade_if_needed` 总控。 |
@@ -236,7 +233,6 @@ Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶�
 | `workspace_upgrade/legacy_identity/key_compat.rs` | 老 ANP / key PEM 格式兼容读取和转换。 |
 | `workspace_upgrade/legacy_identity/types.rs` | legacy identity 迁移/导入所需 DTO 和 error 类型。 |
 | `workspace_upgrade/legacy_identity/service.rs` | 迁移/导入需要的旧 identity service 边界。 |
-| `workspace_upgrade/legacy_identity/replace_did.rs` | workspace v2->v3 / replace-did 迁移相关 DID 替换和备份。 |
 | `workspace_upgrade/legacy_identity/client.rs` | legacy identity 迁移场景里需要的旧 client wrapper。 |
 | `workspace_upgrade/legacy_identity/wire.rs` | legacy identity wire DTO / 序列化兼容。 |
 | `workspace_upgrade/legacy_identity/did.rs` | legacy DID 生成/解析/兼容 helper。 |

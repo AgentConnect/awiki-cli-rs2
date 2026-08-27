@@ -15,13 +15,6 @@ pub(crate) struct DirectSecureLocalStatus {
     pub(crate) warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DirectSecureRepairPlan {
-    pub(crate) status: DirectSecureLocalStatus,
-    pub(crate) removed_session: bool,
-    pub(crate) requeued_outbox_count: u32,
-}
-
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectSecureStatusScope {
@@ -67,16 +60,6 @@ pub(crate) async fn direct_status_for_client_async(
 ) -> crate::ImResult<DirectSecureLocalStatus> {
     let db = client.core_inner().local_state_db().await?;
     db.direct_secure_status(DirectSecureStatusScope::for_client(client), peer)
-        .await
-}
-
-#[cfg(feature = "sqlite")]
-pub(crate) async fn repair_direct_for_client_async(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-) -> crate::ImResult<DirectSecureRepairPlan> {
-    let db = client.core_inner().local_state_db().await?;
-    db.direct_secure_repair(DirectSecureStatusScope::for_client(client), peer)
         .await
 }
 
@@ -199,76 +182,6 @@ pub(crate) async fn direct_status_for_client_async(
     direct_status_for_client(client, peer)
 }
 
-#[cfg(all(feature = "sqlite", feature = "blocking"))]
-pub(crate) fn repair_direct_for_client(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-) -> crate::ImResult<DirectSecureRepairPlan> {
-    let connection = crate::internal::local_state::open_writable(
-        &client.core_inner().sdk_paths().local_state.sqlite_path,
-    )?;
-    repair_direct_for_scope(
-        &connection,
-        &DirectSecureStatusScope::for_client(client),
-        peer,
-    )
-}
-
-#[cfg(all(feature = "sqlite", not(feature = "blocking")))]
-pub(crate) fn repair_direct_for_client(
-    _client: &crate::core::ImClient,
-    _peer: crate::ids::PeerRef,
-) -> crate::ImResult<DirectSecureRepairPlan> {
-    Err(crate::ImError::unsupported("sync-direct-secure-repair"))
-}
-
-#[cfg(feature = "sqlite")]
-pub(crate) fn repair_direct_for_scope(
-    connection: &rusqlite::Connection,
-    scope: &DirectSecureStatusScope,
-    peer: crate::ids::PeerRef,
-) -> crate::ImResult<DirectSecureRepairPlan> {
-    let owner_identity_id = scope.owner_identity_id.as_str();
-    let owner_did = scope.owner_did.as_str();
-    let resolved_peer = resolve_peer_did(connection, owner_identity_id, owner_did, &peer)?;
-    let mut removed_session = false;
-    let mut requeued_outbox_count = 0;
-
-    if let Some(peer_did) = resolved_peer.as_ref() {
-        let store = SqliteDirectSecureStateStore::new(connection)?;
-        removed_session = store.delete_session_by_peer(owner_identity_id, peer_did.as_str())?;
-        requeued_outbox_count =
-            requeue_failed_outbox(connection, owner_identity_id, peer_did.as_str())?;
-    }
-
-    let status = direct_status_for_scope(connection, scope, peer)?;
-    Ok(DirectSecureRepairPlan {
-        status,
-        removed_session,
-        requeued_outbox_count,
-    })
-}
-
-#[cfg(not(feature = "sqlite"))]
-pub(crate) async fn repair_direct_for_client_async(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-) -> crate::ImResult<DirectSecureRepairPlan> {
-    repair_direct_for_client(client, peer)
-}
-
-#[cfg(not(feature = "sqlite"))]
-pub(crate) fn repair_direct_for_client(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-) -> crate::ImResult<DirectSecureRepairPlan> {
-    Ok(DirectSecureRepairPlan {
-        status: direct_status_for_client(client, peer)?,
-        removed_session: false,
-        requeued_outbox_count: 0,
-    })
-}
-
 #[cfg(feature = "sqlite")]
 fn resolve_peer_did(
     connection: &rusqlite::Connection,
@@ -320,35 +233,6 @@ WHERE owner_identity_id = ?1
     Ok(count.max(0) as u32)
 }
 
-#[cfg(feature = "sqlite")]
-fn requeue_failed_outbox(
-    connection: &rusqlite::Connection,
-    owner_identity_id: &str,
-    peer_did: &str,
-) -> crate::ImResult<u32> {
-    let changed = connection
-        .execute(
-            r#"
-UPDATE e2ee_outbox
-SET local_status = 'queued',
-    retry_hint = NULL,
-    updated_at = ?3
-WHERE owner_identity_id = ?1
-  AND peer_did = ?2
-  AND local_status = 'failed'"#,
-            params![owner_identity_id.trim(), peer_did.trim(), now_utc_like()],
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
-    Ok(changed as u32)
-}
-
-#[cfg(feature = "sqlite")]
-fn now_utc_like() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
-}
-
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use rusqlite::Connection;
@@ -391,78 +275,6 @@ mod tests {
         );
         assert!(status.problem.is_none());
         assert!(!format!("{status:?}").contains("secret-session-id"));
-    }
-
-    #[test]
-    fn secure_direct_repair_deletes_peer_session_and_requeues_failed_outbox() {
-        let root = unique_temp_root("direct-repair");
-        let core = crate::ImCore::new(test_config(), test_paths(&root)).unwrap();
-        write_identity_fixture(&root, "alice", "did:example:alice");
-        let client = core
-            .client(crate::IdentitySelector::LocalAlias("alice".to_owned()))
-            .unwrap();
-        let db = crate::internal::local_state::open_writable(
-            &client.core_inner().sdk_paths().local_state.sqlite_path,
-        )
-        .unwrap();
-        let store = SqliteDirectSecureStateStore::new(&db).unwrap();
-        store
-            .upsert_session(&DirectSessionRecord {
-                owner_identity_id: "alice-id".to_owned(),
-                owner_did: "did:example:alice".to_owned(),
-                peer_did: "did:example:bob".to_owned(),
-                session_id: "session-to-reset".to_owned(),
-                state_blob: serde_json::to_vec(&test_session()).unwrap(),
-                metadata_json: "{}".to_owned(),
-                revision: 0,
-                created_at: "2026-05-24T00:00:00Z".to_owned(),
-                updated_at: "2026-05-24T00:00:00Z".to_owned(),
-            })
-            .unwrap();
-        db.execute(
-            r#"
-INSERT INTO e2ee_outbox
-    (outbox_id, owner_identity_id, owner_did, peer_did, plaintext, local_status, created_at, updated_at, credential_name)
-VALUES
-    ('outbox-1', 'alice-id', 'did:example:alice', 'did:example:bob', 'redacted', 'failed', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z', 'alice'),
-    ('outbox-1', 'other-id', 'did:example:alice', 'did:example:bob', 'other secret', 'failed', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z', 'other')"#,
-            [],
-        )
-        .unwrap();
-        let plan = repair_direct_for_scope(
-            &db,
-            &DirectSecureStatusScope::for_client(&client),
-            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
-        )
-        .unwrap();
-
-        assert!(plan.removed_session);
-        assert_eq!(plan.requeued_outbox_count, 1);
-        assert_eq!(
-            plan.status.state,
-            crate::secure::DirectSecureState::Preparing
-        );
-        assert!(SqliteDirectSecureStateStore::new(&db)
-            .unwrap()
-            .get_session("alice-id", "did:example:bob")
-            .unwrap()
-            .is_none());
-        let status = db
-            .query_row(
-                "SELECT local_status FROM e2ee_outbox WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-1'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap();
-        assert_eq!(status, "queued");
-        let other_status = db
-            .query_row(
-                "SELECT local_status FROM e2ee_outbox WHERE owner_identity_id = 'other-id' AND outbox_id = 'outbox-1'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap();
-        assert_eq!(other_status, "failed");
     }
 
     fn test_client_and_db(prefix: &str) -> (crate::core::ImClient, Connection) {

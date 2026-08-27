@@ -186,40 +186,6 @@ class JoinGroupRequest {
   final String? identityHandle;
 }
 
-class GroupRebindRecoveryItem {
-  const GroupRebindRecoveryItem({
-    required this.groupDid,
-    required this.layer,
-    required this.phase,
-    required this.blocked,
-  });
-
-  final String groupDid;
-  final String layer;
-  final String phase;
-  final bool blocked;
-}
-
-class GroupRebindRecoverySummary {
-  const GroupRebindRecoverySummary({
-    required this.processed,
-    required this.completed,
-    required this.pending,
-    required this.blocked,
-    this.sendPausedGroupDids = const [],
-    this.items = const [],
-    this.warnings = const [],
-  });
-
-  final int processed;
-  final int completed;
-  final int pending;
-  final int blocked;
-  final List<String> sendPausedGroupDids;
-  final List<GroupRebindRecoveryItem> items;
-  final List<String> warnings;
-}
-
 class GroupReadResult {
   const GroupReadResult({
     this.group,

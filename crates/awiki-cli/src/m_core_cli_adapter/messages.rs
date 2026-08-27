@@ -879,51 +879,6 @@ pub async fn direct_secure_status_via_im_core_async(
     })
 }
 
-pub fn direct_secure_repair_via_im_core(
-    client: &im_core::ImClient,
-    peer: String,
-    default_domain: &str,
-) -> Result<CommandResult, MessageAdapterError> {
-    require_messaging_ready(client)?;
-    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
-    let repair = client
-        .secure()
-        .direct(peer_ref)
-        .repair()
-        .map_err(im_error_to_message_error)?;
-    let warnings = repair.warnings.clone();
-    Ok(CommandResult {
-        data: json!({
-            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
-        }),
-        summary: "Repaired direct secure state".to_string(),
-        warnings: compact_warnings(warnings),
-    })
-}
-
-pub async fn direct_secure_repair_via_im_core_async(
-    client: &im_core::ImClient,
-    peer: String,
-    default_domain: &str,
-) -> Result<CommandResult, MessageAdapterError> {
-    require_messaging_ready(client)?;
-    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
-    let repair = client
-        .secure()
-        .direct(peer_ref)
-        .repair_async()
-        .await
-        .map_err(im_error_to_message_error)?;
-    let warnings = repair.warnings.clone();
-    Ok(CommandResult {
-        data: json!({
-            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
-        }),
-        summary: "Repaired direct secure state".to_string(),
-        warnings: compact_warnings(warnings),
-    })
-}
-
 fn message_target(
     command: &ParsedCommand,
     default_domain: &str,

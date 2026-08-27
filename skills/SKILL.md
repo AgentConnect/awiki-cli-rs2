@@ -134,7 +134,6 @@ When the command surface is unclear, use these methods to explore:
 - Currently supported output formats: `json`, `pretty`, `table`, `ndjson`.
 - Use `--jq` to filter the JSON envelope instead of assuming other response shapes.
 - For commands with side effects, prefer `--dry-run` before actually writing, unless the user explicitly asks to execute directly.
-- `id replace-did` is a dangerous diagnostic command: do not run it proactively. Use it only when the user explicitly requests replacing the DID of a specific identity, include the required `--diagnostic` gate, and prefer `--dry-run` plus confirmation of the `--identity <identity>` target first.
 
 ## Identity and Display Rules
 

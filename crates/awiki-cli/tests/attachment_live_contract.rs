@@ -265,7 +265,7 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     );
     let send_body = json_body(&requests[4]);
     assert_eq!(send_body["method"], "group.send");
-    assert_eq!(send_body["params"]["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(send_body["params"]["meta"]["profile"], "anp.group.base.v2");
     assert_eq!(
         send_body["params"]["meta"]["target"],
         json!({"kind": "group", "did": group_did})

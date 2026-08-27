@@ -1790,14 +1790,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
     // Group journal without holding the joined-device identity transition
     // open after restart.
     let group_did = "did:wba:awiki.test:groups:engineering";
-    let group_job_id = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
-        "alice.awiki.test",
-        previous_did.as_str(),
-        current_did.as_str(),
-        "8",
-        group_did,
-    )
-    .unwrap();
+    let group_job_id = "historical-group-rebind-job";
     let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
         .unwrap();
     db.execute(
@@ -1906,23 +1899,19 @@ VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
         .unwrap_err(),
         crate::ImError::PermissionDenied
     );
-    assert_eq!(
-        crate::internal::group_rebind_recovery::handle_recovery_job_counts(
-            &candidate_paths.local_state.sqlite_path,
-            &owner_id,
-            "alice.awiki.test",
-            previous_did.as_str(),
-            current_did.as_str(),
-            "8",
-        )
-        .unwrap(),
-        (0, 1),
-    );
     let db = rusqlite::Connection::open_with_flags(
         &candidate_paths.local_state.sqlite_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
+    let legacy_group_journal: (String, i64) = db
+        .query_row(
+            "SELECT phase,attempt_count FROM group_rebind_outbox WHERE job_id=?1",
+            [group_job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(legacy_group_journal, ("blocked".to_owned(), 0));
     let binding = db
         .query_row(
             "SELECT account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation FROM identity_account_bindings WHERE owner_identity_id=?1",

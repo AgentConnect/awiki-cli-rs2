@@ -61,33 +61,6 @@ fn group_join_contract_attaches_the_current_handle_without_public_input() {
 }
 
 #[test]
-fn group_rebind_summary_exposes_only_product_safe_journal_fields() {
-    let value = rebind_recovery_summary(im_core::groups::GroupRebindRecoverySummary {
-        processed: 2,
-        completed: 1,
-        pending: 1,
-        blocked: 0,
-        send_paused_groups: vec![im_core::ids::GroupRef::parse(
-            "did:wba:awiki.info:groups:release-crew",
-        )
-        .unwrap()],
-        items: vec![im_core::groups::GroupRebindRecoveryItem {
-            group: im_core::ids::GroupRef::parse("did:wba:awiki.info:groups:release-crew").unwrap(),
-            layer: "p4".to_owned(),
-            phase: "pending".to_owned(),
-            blocked: false,
-        }],
-        warnings: vec!["private transport detail".to_owned()],
-    });
-
-    assert_eq!(value.send_paused_groups.len(), 1);
-    assert_eq!(value.items.len(), 1);
-    assert_eq!(value.items[0].group_did, value.send_paused_groups[0]);
-    assert_eq!(value.items[0].layer, "p4");
-    assert_eq!(value.items[0].phase, "pending");
-}
-
-#[test]
 fn created_group_uses_core_canonical_conversation_identity() {
     let group = im_core::groups::GroupSnapshot {
         id: Some("server-group-1".to_owned()),

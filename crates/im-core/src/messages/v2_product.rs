@@ -1032,7 +1032,7 @@ mod tests {
         .unwrap();
         let encoded = serde_json::to_string(&params).unwrap();
 
-        assert_eq!(params["meta"]["profile"], "anp.group.base.v1");
+        assert_eq!(params["meta"]["profile"], "anp.group.base.v2");
         assert!(params["meta"].get("anp_version").is_none());
         assert_eq!(params["meta"]["target"]["did"], "did:example:group");
         assert_eq!(params["body"]["include_policy"], false);

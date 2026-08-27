@@ -12,10 +12,6 @@ use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::message_result::CommandResult;
 
-pub use super::identity_replace_did_plan::{
-    replace_did_plan_command_request, replace_did_plan_via_im_core, ReplaceDidPlanCommandRequest,
-};
-
 fn identity_raw_response(result: &impl IdentityRawResponse) -> Value {
     result.raw_response().cloned().unwrap_or(Value::Null)
 }

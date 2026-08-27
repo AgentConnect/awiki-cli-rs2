@@ -183,34 +183,6 @@ pub struct GroupJoinRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupRebindMemberRequest {
-    pub group: crate::ids::GroupRef,
-    pub member_handle: crate::ids::Handle,
-    pub previous_member_did: crate::ids::Did,
-    pub new_member_did: crate::ids::Did,
-    pub handle_binding_generation: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupRebindRecoverySummary {
-    pub processed: u32,
-    pub completed: u32,
-    pub pending: u32,
-    pub blocked: u32,
-    pub send_paused_groups: Vec<crate::ids::GroupRef>,
-    pub items: Vec<GroupRebindRecoveryItem>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupRebindRecoveryItem {
-    pub group: crate::ids::GroupRef,
-    pub layer: String,
-    pub phase: String,
-    pub blocked: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupLeaveRequest {
     pub group: crate::ids::GroupRef,
     pub reason_text: Option<String>,
@@ -247,28 +219,6 @@ pub struct GroupKeyPackagePublishResult {
     pub group: Option<crate::ids::GroupRef>,
     pub raw_response: Value,
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupE2eeProcessLeaveRequest {
-    pub group: crate::ids::GroupRef,
-    pub member: GroupMemberRef,
-    pub leave_request_id: String,
-    pub reason_text: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupE2eeUpdateKeyRequest {
-    pub group: crate::ids::GroupRef,
-    pub member: GroupMemberRef,
-    pub device_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupE2eeRecoverMemberRequest {
-    pub group: crate::ids::GroupRef,
-    pub member: GroupMemberRef,
-    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

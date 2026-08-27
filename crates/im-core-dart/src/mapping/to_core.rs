@@ -677,6 +677,7 @@ impl DartCreateGroupRequest {
     pub fn into_core(self) -> Result<im_core::groups::GroupCreateRequest, DartImError> {
         Ok(im_core::groups::GroupCreateRequest {
             name: self.name,
+            initial_members: Vec::new(),
             creator_handle: crate::api::groups::identity_handle(
                 self.identity_mode,
                 self.identity_handle,

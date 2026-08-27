@@ -1630,7 +1630,7 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         direct["body"]["payload"].clone(),
     )
     .expect("group attachment params");
-    assert_eq!(group["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(group["meta"]["profile"], "anp.group.base.v2");
     assert_eq!(
         group["meta"]["target"],
         json!({ "kind": "group", "did": "did:wba:awiki.ai:groups:test:e1_group" })

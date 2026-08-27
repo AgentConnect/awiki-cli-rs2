@@ -25,7 +25,6 @@ import {
   type GroupInput,
   type GroupMemberPage,
   type GroupMembersInput,
-  type GroupRebindRecoverySummary,
   type HandleRecoveryOperationInput,
   type HandleRecoveryOperationSummary,
   type HandleRecoveryAttestationResult,
@@ -259,10 +258,6 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.removeGroupMember(input))
   }
 
-  public resumeGroupRebindRecovery(limit?: number): Promise<GroupRebindRecoverySummary> {
-    return call(() => this.native.resumeGroupRebindRecovery(limit))
-  }
-
   public syncNow(input?: SyncOptions): Promise<SyncResult> {
     return call(() => this.native.syncNow(input))
   }
@@ -391,13 +386,6 @@ function copyHeaders(headers: readonly ExternalHttpHeader[]): ExternalHttpHeader
   return headers.map(header => ({ name: header.name, value: header.value }))
 }
 
-function nativeUint32(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 0xffff_ffff) {
-    throw new Error('invalid native unsigned integer')
-  }
-  return value as number
-}
-
 function copyPreparedRegistrationJoinProgress(
   value: PreparedRegistrationJoinProgress,
 ): PreparedRegistrationJoinProgress {
@@ -415,8 +403,6 @@ function copyPreparedRegistrationJoinProgress(
 
 /** Copy the raw binding object so the public SDK never leaks N-API naming details. */
 function copyHandleRecoveryProgress(value: NativeHandleRecoveryProgress): HandleRecoveryProgress {
-  const unsupportedE2eeGroupCount = value.impact.unsupportedE2eeGroupCount
-    ?? value.impact.unsupportedE2EeGroupCount
   return {
     operationId: value.operationId,
     ownerIdentityId: value.ownerIdentityId,
@@ -429,8 +415,6 @@ function copyHandleRecoveryProgress(value: NativeHandleRecoveryProgress): Handle
     impact: {
       localOrdinaryDataWillMigrate: value.impact.localOrdinaryDataWillMigrate,
       otherDevicesMustRejoin: value.impact.otherDevicesMustRejoin,
-      unsupportedE2eeGroupCount: nativeUint32(unsupportedE2eeGroupCount),
-      unsupportedDidOnlyGroupCount: nativeUint32(value.impact.unsupportedDidOnlyGroupCount),
     },
   }
 }

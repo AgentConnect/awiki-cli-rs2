@@ -516,21 +516,6 @@ enum LocalStateCommand {
             crate::ImResult<crate::internal::secure_direct::status::DirectSecureLocalStatus>,
         >,
     },
-    DirectSecureRepair {
-        scope: crate::internal::secure_direct::status::DirectSecureStatusScope,
-        peer: crate::ids::PeerRef,
-        reply: oneshot::Sender<
-            crate::ImResult<crate::internal::secure_direct::status::DirectSecureRepairPlan>,
-        >,
-    },
-    PrepareDirectSecurePrekeys {
-        input: crate::internal::secure_direct::prepare::DirectSecurePrekeyPrepareInput,
-        reply: oneshot::Sender<
-            crate::ImResult<
-                crate::internal::secure_direct::prepare::DirectSecurePrekeyPrepareResult,
-            >,
-        >,
-    },
     GetDirectSecureSession {
         owner_identity_id: String,
         peer_did: String,
@@ -1934,28 +1919,6 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
-    pub(crate) async fn direct_secure_repair(
-        &self,
-        scope: crate::internal::secure_direct::status::DirectSecureStatusScope,
-        peer: crate::ids::PeerRef,
-    ) -> crate::ImResult<crate::internal::secure_direct::status::DirectSecureRepairPlan> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::DirectSecureRepair { scope, peer, reply })
-            .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
-    pub(crate) async fn prepare_direct_secure_prekeys(
-        &self,
-        input: crate::internal::secure_direct::prepare::DirectSecurePrekeyPrepareInput,
-    ) -> crate::ImResult<crate::internal::secure_direct::prepare::DirectSecurePrekeyPrepareResult>
-    {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::PrepareDirectSecurePrekeys { input, reply })
-            .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
     pub(crate) async fn get_direct_secure_session(
         &self,
         owner_identity_id: impl Into<String>,
@@ -3117,22 +3080,6 @@ fn run_actor(
                     &scope,
                     peer,
                 );
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::DirectSecureRepair { scope, peer, reply } => {
-                let result = crate::internal::secure_direct::status::repair_direct_for_scope(
-                    &connection,
-                    &scope,
-                    peer,
-                );
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::PrepareDirectSecurePrekeys { input, reply } => {
-                let result =
-                    crate::internal::secure_direct::prepare::prepare_direct_prekeys_for_connection(
-                        &connection,
-                        input,
-                    );
                 let _ = reply.send(result);
             }
             LocalStateCommand::GetDirectSecureSession {

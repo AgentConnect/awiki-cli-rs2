@@ -13,7 +13,7 @@ const DEFAULT_ANP_SERVICE_PATH: &str = "/anp-im/rpc";
 const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
     "anp.core.binding.v1",
     "anp.direct.base.v1",
-    "anp.group.base.v1",
+    "anp.group.base.v2",
     "anp.attachment.v1",
 ];
 const AGENT_MESSAGE_SERVICE_SECURITY_PROFILES: &[&str] = &["transport-protected"];

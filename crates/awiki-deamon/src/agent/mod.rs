@@ -323,7 +323,7 @@ pub fn generate_agent_identity(
             .with_profiles([
                 "anp.core.binding.v1",
                 "anp.direct.base.v1",
-                "anp.group.base.v1",
+                "anp.group.base.v2",
                 "anp.attachment.v1",
             ])
             .with_security_profiles(["transport-protected"]),
@@ -519,6 +519,18 @@ mod tests {
                 handle_service["serviceEndpoint"],
                 "https://awiki.info/.well-known/handle/codex-1"
             );
+            let message_service = services
+                .iter()
+                .find(|service| service["id"] == format!("{}#message", generated.did))
+                .expect("generated agent DID document should declare its Message Service");
+            assert!(message_service["profiles"]
+                .as_array()
+                .expect("Message Service profiles")
+                .contains(&serde_json::Value::String("anp.group.base.v2".to_owned())));
+            assert!(!message_service["profiles"]
+                .as_array()
+                .expect("Message Service profiles")
+                .contains(&serde_json::Value::String("anp.group.base.v1".to_owned())));
             assert!(anp::authentication::validate_did_document_binding(
                 &generated.did_document,
                 true,

@@ -175,8 +175,6 @@ pub enum HandleRecoveryTransitionSourceKind {
 pub struct HandleRecoveryImpact {
     pub local_ordinary_data_will_migrate: bool,
     pub other_devices_must_rejoin: bool,
-    pub unsupported_e2ee_group_count: u32,
-    pub unsupported_did_only_group_count: u32,
 }
 
 impl HandleRecoveryErrorCode {

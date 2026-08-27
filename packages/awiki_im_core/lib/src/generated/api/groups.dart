@@ -36,14 +36,6 @@ Future<DartGroupReadResult> joinGroupWithIdentity({
   request: request,
 );
 
-Future<DartGroupRebindRecoverySummary> resumeGroupRebindRecovery({
-  required ArcDartImClient client,
-  required int limit,
-}) => RustLib.instance.api.crateApiGroupsResumeGroupRebindRecovery(
-  client: client,
-  limit: limit,
-);
-
 Future<DartGroupReadResult> getGroup({
   required ArcDartImClient client,
   required String groupDid,

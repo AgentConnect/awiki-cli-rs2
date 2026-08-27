@@ -352,9 +352,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartSecureDelivery dco_decode_box_autoadd_dart_secure_delivery(dynamic raw);
-
-  @protected
   DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw);
 
   @protected
@@ -620,16 +617,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw);
 
   @protected
-  DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(
-    dynamic raw,
-  );
-
-  @protected
-  DartDirectSecureRepairResult dco_decode_dart_direct_secure_repair_result(
-    dynamic raw,
-  );
-
-  @protected
   DartDirectSecureState dco_decode_dart_direct_secure_state(dynamic raw);
 
   @protected
@@ -699,16 +686,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw);
-
-  @protected
-  DartGroupRebindRecoveryItem dco_decode_dart_group_rebind_recovery_item(
-    dynamic raw,
-  );
-
-  @protected
-  DartGroupRebindRecoverySummary dco_decode_dart_group_rebind_recovery_summary(
-    dynamic raw,
-  );
 
   @protected
   DartGroupSecureLocalReadiness dco_decode_dart_group_secure_local_readiness(
@@ -1041,21 +1018,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartScopedInboxToken dco_decode_dart_scoped_inbox_token(dynamic raw);
 
   @protected
-  DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw);
-
-  @protected
   DartSecureInboxPreparation dco_decode_dart_secure_inbox_preparation(
     dynamic raw,
   );
-
-  @protected
-  DartSecureOutboxEntry dco_decode_dart_secure_outbox_entry(dynamic raw);
-
-  @protected
-  DartSecureOutboxResult dco_decode_dart_secure_outbox_result(dynamic raw);
-
-  @protected
-  DartSecureOutboxStatus dco_decode_dart_secure_outbox_status(dynamic raw);
 
   @protected
   DartSecureProblem dco_decode_dart_secure_problem(dynamic raw);
@@ -1194,10 +1159,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
 
   @protected
-  List<DartGroupRebindRecoveryItem>
-  dco_decode_list_dart_group_rebind_recovery_item(dynamic raw);
-
-  @protected
   List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
 
   @protected
@@ -1224,11 +1185,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
-    dynamic raw,
-  );
-
-  @protected
-  List<DartSecureOutboxEntry> dco_decode_list_dart_secure_outbox_entry(
     dynamic raw,
   );
 
@@ -1354,11 +1310,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRealtimeSyncHint? dco_decode_opt_box_autoadd_dart_realtime_sync_hint(
-    dynamic raw,
-  );
-
-  @protected
-  DartSecureDelivery? dco_decode_opt_box_autoadd_dart_secure_delivery(
     dynamic raw,
   );
 
@@ -1735,11 +1686,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartSecureDelivery sse_decode_box_autoadd_dart_secure_delivery(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   DartSecureProblem sse_decode_box_autoadd_dart_secure_problem(
     SseDeserializer deserializer,
   );
@@ -2065,16 +2011,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartDirectSecurePrepareResult sse_decode_dart_direct_secure_prepare_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartDirectSecureRepairResult sse_decode_dart_direct_secure_repair_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   DartDirectSecureState sse_decode_dart_direct_secure_state(
     SseDeserializer deserializer,
   );
@@ -2166,16 +2102,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupReadResult sse_decode_dart_group_read_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartGroupRebindRecoveryItem sse_decode_dart_group_rebind_recovery_item(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartGroupRebindRecoverySummary sse_decode_dart_group_rebind_recovery_summary(
     SseDeserializer deserializer,
   );
 
@@ -2606,27 +2532,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartSecureDelivery sse_decode_dart_secure_delivery(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   DartSecureInboxPreparation sse_decode_dart_secure_inbox_preparation(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartSecureOutboxEntry sse_decode_dart_secure_outbox_entry(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartSecureOutboxResult sse_decode_dart_secure_outbox_result(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartSecureOutboxStatus sse_decode_dart_secure_outbox_status(
     SseDeserializer deserializer,
   );
 
@@ -2807,10 +2713,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<DartGroupRebindRecoveryItem>
-  sse_decode_list_dart_group_rebind_recovery_item(SseDeserializer deserializer);
-
-  @protected
   List<DartGroupSummary> sse_decode_list_dart_group_summary(
     SseDeserializer deserializer,
   );
@@ -2845,11 +2747,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<DartSecureOutboxEntry> sse_decode_list_dart_secure_outbox_entry(
     SseDeserializer deserializer,
   );
 
@@ -3001,11 +2898,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRealtimeSyncHint? sse_decode_opt_box_autoadd_dart_realtime_sync_hint(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartSecureDelivery? sse_decode_opt_box_autoadd_dart_secure_delivery(
     SseDeserializer deserializer,
   );
 
@@ -3432,12 +3324,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_dart_secure_delivery(
-    DartSecureDelivery self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_dart_secure_problem(
     DartSecureProblem self,
     SseSerializer serializer,
@@ -3822,18 +3708,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_dart_direct_secure_prepare_result(
-    DartDirectSecurePrepareResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_direct_secure_repair_result(
-    DartDirectSecureRepairResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_dart_direct_secure_state(
     DartDirectSecureState self,
     SseSerializer serializer,
@@ -3950,18 +3824,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_group_read_result(
     DartGroupReadResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_group_rebind_recovery_item(
-    DartGroupRebindRecoveryItem self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_group_rebind_recovery_summary(
-    DartGroupRebindRecoverySummary self,
     SseSerializer serializer,
   );
 
@@ -4485,32 +4347,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_dart_secure_delivery(
-    DartSecureDelivery self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_dart_secure_inbox_preparation(
     DartSecureInboxPreparation self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_secure_outbox_entry(
-    DartSecureOutboxEntry self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_secure_outbox_result(
-    DartSecureOutboxResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_secure_outbox_status(
-    DartSecureOutboxStatus self,
     SseSerializer serializer,
   );
 
@@ -4731,12 +4569,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_dart_group_rebind_recovery_item(
-    List<DartGroupRebindRecoveryItem> self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_list_dart_group_summary(
     List<DartGroupSummary> self,
     SseSerializer serializer,
@@ -4781,12 +4613,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_relationship_list_item(
     List<DartRelationshipListItem> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_secure_outbox_entry(
-    List<DartSecureOutboxEntry> self,
     SseSerializer serializer,
   );
 
@@ -4953,12 +4779,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_realtime_sync_hint(
     DartRealtimeSyncHint? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_secure_delivery(
-    DartSecureDelivery? self,
     SseSerializer serializer,
   );
 

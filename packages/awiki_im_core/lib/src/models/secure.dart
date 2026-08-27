@@ -1,5 +1,3 @@
-import 'message.dart';
-
 enum DirectSecureState {
   ready,
   preparing,
@@ -25,36 +23,6 @@ class DirectSecureStatus {
   final DirectSecureState state;
   final bool canSendSecure;
   final int pendingOutboxCount;
-  final SecureProblem? problem;
-  final List<String> warnings;
-}
-
-class DirectSecurePrepareResult {
-  const DirectSecurePrepareResult({
-    required this.peer,
-    required this.state,
-    required this.canSendSecure,
-    this.warnings = const [],
-  });
-
-  final String peer;
-  final DirectSecureState state;
-  final bool canSendSecure;
-  final List<String> warnings;
-}
-
-class DirectSecureRepairResult {
-  const DirectSecureRepairResult({
-    required this.peer,
-    required this.state,
-    required this.repaired,
-    this.problem,
-    this.warnings = const [],
-  });
-
-  final String peer;
-  final DirectSecureState state;
-  final bool repaired;
   final SecureProblem? problem;
   final List<String> warnings;
 }
@@ -143,51 +111,6 @@ class GroupSecureRepairResult {
   final int remainingDevices;
   final SecureProblem? problem;
   final List<String> warnings;
-}
-
-class SecureOutboxEntry {
-  const SecureOutboxEntry({
-    required this.id,
-    required this.target,
-    required this.messageKind,
-    required this.status,
-    required this.attemptCount,
-    this.lastError,
-    this.createdAt,
-    this.updatedAt,
-  });
-
-  final String id;
-  final MessageTarget target;
-  final String messageKind;
-  final SecureOutboxStatus status;
-  final int attemptCount;
-  final SecureProblem? lastError;
-  final String? createdAt;
-  final String? updatedAt;
-}
-
-enum SecureOutboxStatus { queued, sending, failed, sent, dropped }
-
-class SecureOutboxResult {
-  const SecureOutboxResult({
-    required this.id,
-    required this.status,
-    this.delivery,
-    this.warnings = const [],
-  });
-
-  final String id;
-  final SecureOutboxStatus status;
-  final SecureDelivery? delivery;
-  final List<String> warnings;
-}
-
-class SecureDelivery {
-  const SecureDelivery({this.messageId, required this.state});
-
-  final String? messageId;
-  final String state;
 }
 
 class SecureProblem {

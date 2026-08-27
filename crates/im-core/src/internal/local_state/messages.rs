@@ -424,7 +424,6 @@ pub(crate) fn upsert_message(
         .map_err(super::local_state_unavailable)?;
     let result = (|| {
         let _ = upsert_message_record(connection, record)?;
-        let _ = crate::internal::group_rebind_recovery::project_rebind_event(connection, record)?;
         Ok(())
     })();
     match result {
@@ -1555,7 +1554,6 @@ pub(crate) fn upsert_messages_with_touched(
     let mut touched = BTreeSet::new();
     for record in records {
         touched.extend(upsert_message_record(connection, record)?);
-        let _ = crate::internal::group_rebind_recovery::project_rebind_event(connection, record)?;
     }
     Ok(touched)
 }
@@ -5086,7 +5084,7 @@ FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'wire-message-1'
     }
 
     #[test]
-    fn local_state_message_upsert_rolls_back_all_projections_on_post_write_failure() {
+    fn historical_rebind_event_is_stored_without_creating_a_legacy_rebind_job() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         crate::internal::local_state::groups::upsert_group(
@@ -5102,21 +5100,10 @@ FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'wire-message-1'
             },
         )
         .unwrap();
-        let baseline_counts = [
-            "messages",
-            "conversation_summaries",
-            "conversation_registry",
-        ]
-        .map(|table| {
-            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .unwrap()
-        });
-        let error = upsert_message(
+        upsert_message(
             &db,
             &MessageRecord {
-                msg_id: "bad-rebind".to_owned(),
+                msg_id: "historical-rebind".to_owned(),
                 owner_identity_id: "owner-id".to_owned(),
                 owner_did: "did:example:owner".to_owned(),
                 conversation_id: "group:group-1".to_owned(),
@@ -5139,26 +5126,21 @@ FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'wire-message-1'
                 ..MessageRecord::default()
             },
         )
-        .unwrap_err();
-        assert!(error.to_string().contains("generation"));
-        for (table, baseline) in [
-            "messages",
-            "conversation_summaries",
-            "conversation_registry",
-        ]
-        .into_iter()
-        .zip(baseline_counts)
-        {
-            let count: i64 = db
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })
-                .unwrap();
-            assert_eq!(
-                count, baseline,
-                "{table} must roll back with the failed upsert"
-            );
-        }
+        .unwrap();
+        let stored: String = db
+            .query_row(
+                "SELECT content FROM messages WHERE msg_id='historical-rebind'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.contains("member_credential_rebound"));
+        let legacy_jobs: i64 = db
+            .query_row("SELECT COUNT(*) FROM group_rebind_p6_jobs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(legacy_jobs, 0);
     }
     use rusqlite::Connection;
 

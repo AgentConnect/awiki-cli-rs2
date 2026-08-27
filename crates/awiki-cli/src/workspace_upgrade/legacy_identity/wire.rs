@@ -1,8 +1,6 @@
 use super::auth::{HttpError, RpcError};
-use super::service::CommandResult;
-use super::types::IdentitySummary;
 use crate::cli_http::Profile;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fmt;
 
 pub const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/v1/did-auth/rpc";
@@ -62,69 +60,5 @@ impl From<HttpError> for ServiceError {
             message: value.message,
             data: None,
         }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ReplaceDidRpcParams {
-    pub new_did_document: Value,
-    pub is_public: Option<bool>,
-    pub is_agent: Option<bool>,
-    pub role: Option<String>,
-    pub endpoint_url: Option<String>,
-}
-
-pub fn build_replace_did_rpc_call(params: ReplaceDidRpcParams) -> RpcCall {
-    legacy_rpc_call(im_core::compat::identity::build_replace_did_rpc_call(
-        im_core::compat::identity::ReplaceDidRpcParams {
-            new_did_document: params.new_did_document,
-            is_public: params.is_public,
-            is_agent: params.is_agent,
-            role: params.role,
-            endpoint_url: params.endpoint_url,
-        },
-    ))
-}
-
-pub fn replace_did_result(
-    identity: &IdentitySummary,
-    old_did: &str,
-    did: &str,
-    backup_path: &str,
-    result: Value,
-) -> CommandResult {
-    CommandResult {
-        data: json!({
-            "action": "replace_did",
-            "identity": identity,
-            "old_did": old_did,
-            "did": did,
-            "backup_path": backup_path,
-            "result": result,
-        }),
-        summary: format!(
-            "Identity {} DID replaced successfully",
-            identity.identity_name
-        ),
-        warnings: Vec::new(),
-    }
-}
-
-fn legacy_rpc_call(call: im_core::compat::identity::RpcCall) -> RpcCall {
-    RpcCall {
-        endpoint: call.endpoint,
-        method: call.method,
-        profile: legacy_transport_profile(call.profile),
-        params: call.params,
-    }
-}
-
-fn legacy_transport_profile(profile: im_core::compat::identity::TransportProfile) -> Profile {
-    match profile {
-        im_core::compat::identity::TransportProfile::BridgeFastPath => Profile::BridgeFastPath,
-        im_core::compat::identity::TransportProfile::HealthProbe => Profile::HealthProbe,
-        im_core::compat::identity::TransportProfile::AuthRefresh => Profile::AuthRefresh,
-        im_core::compat::identity::TransportProfile::RpcDefault => Profile::RpcDefault,
-        im_core::compat::identity::TransportProfile::RpcReadHeavy => Profile::RpcReadHeavy,
     }
 }

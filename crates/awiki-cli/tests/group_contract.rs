@@ -467,7 +467,11 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
         workspace.path(),
     ));
     assert_eq!(members["summary"], "Loaded 1 group members");
-    assert_eq!(members["data"]["members"][0]["member_handle"], "bob");
+    assert_eq!(
+        members["data"]["members"][0]["member_did"],
+        "did:wba:awiki.ai:bob:e1_bob"
+    );
+    assert!(members["data"]["members"][0].get("member_handle").is_none());
 
     let messages = success_json(&awiki_cmd(
         &[
@@ -669,7 +673,7 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
             "group.leave",
         ]
     );
-    assert_eq!(bodies[0]["params"]["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(bodies[0]["params"]["meta"]["profile"], "anp.group.base.v2");
     assert_eq!(
         bodies[0]["params"]["meta"]["target"],
         json!({"kind":"service","did":"did:wba:127.0.0.1"})
@@ -682,15 +686,13 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         bodies[0]["params"]["body"]["group_policy"]["message_security_profile"],
         "transport-protected"
     );
-    assert_eq!(
-        bodies[0]["params"]["body"]["creator_handle"],
-        "alice.awiki.ai"
-    );
+    assert!(bodies[0]["params"]["body"].get("creator_handle").is_none());
     assert_eq!(
         bodies[0]["params"]["auth"]["scheme"],
         "anp-rfc9421-origin-proof-v1"
     );
     assert_eq!(bodies[3]["params"]["body"]["reason_text"], "join me");
+    assert!(bodies[3]["params"]["body"].get("member_handle").is_none());
     assert_eq!(
         bodies[3]["params"]["meta"]["target"],
         json!({"kind":"group","did":group_did})
@@ -992,8 +994,8 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     assert_eq!(add["summary"], "Added member to group");
     assert_eq!(add["data"]["group"]["group_did"], group_did);
     assert_eq!(add["data"]["member"]["did"], bob_did);
-    assert_eq!(add["data"]["member"]["handle"], "bob");
-    assert_eq!(add["data"]["members"][0]["member_handle"], "bob");
+    assert!(add["data"]["member"].get("handle").is_none());
+    assert!(add["data"]["members"][0].get("member_handle").is_none());
 
     let remove = success_json(&awiki_cmd(
         &[
@@ -1072,8 +1074,8 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         ]
     );
     assert_eq!(bodies[0]["params"]["handle"], "bob.awiki.ai");
-    assert_eq!(bodies[3]["params"]["body"]["member_handle"], "bob.awiki.ai");
-    assert!(bodies[3]["params"]["body"].get("member_did").is_none());
+    assert!(bodies[3]["params"]["body"].get("member_handle").is_none());
+    assert_eq!(bodies[3]["params"]["body"]["member_did"], bob_did);
     assert_eq!(bodies[3]["params"]["body"]["role"], "admin");
     assert!(bodies[3]["params"]["body"].get("reason_text").is_none());
     assert_eq!(
@@ -1105,7 +1107,7 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         );
         assert_eq!(
             bodies[index]["params"]["meta"]["profile"],
-            "anp.group.base.v1"
+            "anp.group.base.v2"
         );
     }
     let db = open_local_state(workspace.path());
@@ -1282,25 +1284,6 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(recovery_alias["data"]["plan"]["purpose"], "recovery");
     assert_eq!(recovery_alias["data"]["plan"]["recovery"], true);
 
-    let pending = success_json(&awiki_internal_cmd(
-        &[
-            "--identity",
-            "alice",
-            "group",
-            "e2ee",
-            "pending",
-            "--dry-run",
-            "--group",
-            group,
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(pending["summary"], "Dry run: group e2ee pending planned");
-    assert_eq!(pending["data"]["plan"]["action"], "group.e2ee.pending");
-    assert_eq!(pending["data"]["plan"]["provider"], "internal");
-    assert_eq!(pending["data"]["plan"]["group"], group);
-    assert_group_e2ee_plan_is_redacted(&pending["data"]["plan"]);
-
     let repair = success_json(&awiki_internal_cmd(
         &[
             "--identity",
@@ -1324,121 +1307,6 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         &repair,
         "group e2ee repair is deprecated; use group secure repair.",
     );
-
-    let process_leave = success_json(&awiki_internal_cmd(
-        &[
-            "--identity",
-            "alice",
-            "group",
-            "e2ee",
-            "process-leave-request",
-            "--dry-run",
-            "--group",
-            group,
-            "--member",
-            "bob",
-            "--leave-request-id",
-            "lr-bob-1",
-            "--reason",
-            "owner remove",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(
-        process_leave["summary"],
-        "Dry run: group e2ee leave request process planned"
-    );
-    let process_plan = &process_leave["data"]["plan"];
-    assert_eq!(process_plan["action"], "group.e2ee.process_leave_request");
-    assert_eq!(process_plan["member"], "bob");
-    assert_eq!(process_plan["leave_request_id"], "lr-bob-1");
-    assert_eq!(process_plan["request"]["LeaveRequestID"], "lr-bob-1");
-    assert_eq!(process_plan["request"]["ReasonText"], "owner remove");
-    assert_group_e2ee_plan_is_redacted(process_plan);
-
-    let recover = success_json(&awiki_internal_cmd(
-        &[
-            "--identity",
-            "alice",
-            "group",
-            "e2ee",
-            "recover-member",
-            "--dry-run",
-            "--group",
-            group,
-            "--member",
-            "bob",
-            "--device",
-            "bob-main",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(
-        recover["summary"],
-        "Dry run: group e2ee recover-member planned"
-    );
-    assert_eq!(
-        recover["data"]["plan"]["action"],
-        "group.e2ee.recover_member"
-    );
-    assert_eq!(recover["data"]["plan"]["p4_membership_mutate"], false);
-    assert!(recover["data"]["plan"]["orchestration"]
-        .as_array()
-        .unwrap()
-        .contains(&Value::String(
-            "hidden group.e2ee.recover_member".to_string()
-        )));
-    assert_group_e2ee_plan_is_redacted(&recover["data"]["plan"]);
-
-    let update = success_json(&awiki_internal_cmd(
-        &[
-            "--identity",
-            "alice",
-            "group",
-            "e2ee",
-            "update-key",
-            "--dry-run",
-            "--group",
-            group,
-            "--member",
-            "bob",
-            "--device",
-            "bob-main",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(update["summary"], "Dry run: group e2ee update-key planned");
-    assert_eq!(update["data"]["plan"]["action"], "group.e2ee.update_key");
-    assert_eq!(update["data"]["plan"]["key_package_purpose"], "update");
-    assert_eq!(update["data"]["plan"]["hidden_awiki_extension"], true);
-    assert_eq!(update["data"]["plan"]["p4_membership_mutate"], false);
-    assert_group_e2ee_plan_is_redacted(&update["data"]["plan"]);
-
-    let rejoin = success_json(&awiki_internal_cmd(
-        &[
-            "--identity",
-            "alice",
-            "group",
-            "e2ee",
-            "rejoin",
-            "--dry-run",
-            "--group",
-            group,
-            "--member",
-            "bob",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(rejoin["summary"], "Dry run: group e2ee rejoin planned");
-    assert_eq!(rejoin["data"]["plan"]["action"], "group.e2ee.rejoin");
-    assert_eq!(
-        rejoin["data"]["plan"]["canonical_command"],
-        "group add --e2ee"
-    );
-    assert_eq!(rejoin["data"]["plan"]["role"], "member");
-    assert_eq!(rejoin["data"]["plan"]["key_package_purpose"], "normal");
-    assert_eq!(rejoin["data"]["plan"]["external_commit"], false);
-    assert_eq!(rejoin["data"]["plan"]["p4_membership_mutate"], true);
 }
 
 fn assert_group_e2ee_plan_is_redacted(plan: &Value) {
@@ -1455,64 +1323,22 @@ fn assert_group_e2ee_plan_is_redacted(plan: &Value) {
 }
 
 #[test]
-fn group_e2ee_live_commands_are_cutover_unsupported() {
+fn removed_group_e2ee_v1_commands_are_absent() {
     let workspace = TempDir::new().expect("workspace");
-    let group = "did:wba:awiki.ai:groups:demo:e1_group";
-    let commands = [
-        (
-            "group.e2ee.publish-key-package",
-            vec!["group", "e2ee", "publish-key-package", "--group", group],
-        ),
-        (
-            "group.e2ee.pending",
-            vec!["group", "e2ee", "pending", "--group", group],
-        ),
-        (
-            "group.e2ee.process-leave-request",
-            vec![
-                "group",
-                "e2ee",
-                "process-leave-request",
-                "--group",
-                group,
-                "--member",
-                "bob",
-            ],
-        ),
-        (
-            "group.e2ee.recover-member",
-            vec![
-                "group",
-                "e2ee",
-                "recover-member",
-                "--group",
-                group,
-                "--member",
-                "bob",
-            ],
-        ),
-        (
-            "group.e2ee.update-key",
-            vec![
-                "group",
-                "e2ee",
-                "update-key",
-                "--group",
-                group,
-                "--member",
-                "bob",
-            ],
-        ),
-        (
-            "group.e2ee.rejoin",
-            vec![
-                "group", "e2ee", "rejoin", "--group", group, "--member", "bob",
-            ],
-        ),
-    ];
-    for (command, args) in commands {
-        let output = awiki_cmd(&args, workspace.path());
-        assert_group_e2ee_unsupported(&output, command);
+    for command in [
+        "pending",
+        "process-leave-request",
+        "recover-member",
+        "update-key",
+        "rejoin",
+    ] {
+        let output = awiki_cmd(&["group", "e2ee", command], workspace.path());
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
+        assert!(envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unknown command")));
     }
 }
 
@@ -1528,26 +1354,16 @@ fn group_e2ee_schema_exposes_hidden_and_side_effect_contracts() {
         .collect();
     assert!(children.contains(&"group.e2ee.status"));
     assert!(children.contains(&"group.e2ee.publish-key-package"));
-    assert!(children.contains(&"group.e2ee.pending"));
     assert!(children.contains(&"group.e2ee.repair"));
-    assert!(children.contains(&"group.e2ee.update-key"));
-    assert!(children.contains(&"group.e2ee.rejoin"));
-    assert!(children.contains(&"group.e2ee.recover-member"));
-    assert!(children.contains(&"group.e2ee.process-leave-request"));
-
-    let update = success_json(&awiki_cmd(
-        &["schema", "group", "e2ee", "update-key"],
-        workspace.path(),
-    ));
-    assert_eq!(update["data"]["command"]["hidden"], true);
-    assert_eq!(update["data"]["command"]["side_effect"], true);
-
-    let rejoin = success_json(&awiki_cmd(
-        &["schema", "group", "e2ee", "rejoin"],
-        workspace.path(),
-    ));
-    assert_eq!(rejoin["data"]["command"]["hidden"], true);
-    assert_eq!(rejoin["data"]["command"]["flags"][2]["default"], "member");
+    for removed in [
+        "group.e2ee.pending",
+        "group.e2ee.update-key",
+        "group.e2ee.rejoin",
+        "group.e2ee.recover-member",
+        "group.e2ee.process-leave-request",
+    ] {
+        assert!(!children.contains(&removed));
+    }
 
     let publish = success_json(&awiki_cmd(
         &["schema", "group", "e2ee", "publish-key-package"],
@@ -1712,19 +1528,6 @@ fn assert_code(output: &Output, expected: i32) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn assert_group_e2ee_unsupported(output: &Output, command: &str) {
-    assert_code(output, 2);
-    let envelope = error_json(output);
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    if command.starts_with("group.e2ee.") {
-        assert_eq!(envelope["error"]["code"], "internal_command");
-    } else {
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["capability"], "group e2ee");
-        assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
-    }
 }
 
 fn assert_contains(value: &Value, needle: &str) {

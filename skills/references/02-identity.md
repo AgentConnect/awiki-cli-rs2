@@ -10,7 +10,6 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 
 - Status: **implemented**
 - Current public binary: `awiki-cli`
-- Dangerous public command exists: `id replace-did`
 - External explanations should remain **handle-first**
 
 ## When to Use
@@ -20,7 +19,6 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Bind contact methods such as phone numbers or email addresses
 - Switch the default identity
 - Read or update DID profile
-- Carefully replace the protocol-level DID corresponding to a local identity
 
 ## Core Concepts
 
@@ -44,7 +42,6 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Need to switch the default identity -> use `awiki-cli id use <identity>`
 - Token state is abnormal, or the current identity authentication needs to be reacquired -> use `awiki-cli [--identity <identity>] id refresh-token`
 - Need to inspect public profile data -> use `awiki-cli id profile get ...`
-- Use `awiki-cli --diagnostic --identity <identity> id replace-did` only when there is a clear need to rotate/replace the DID for a specific handle identity; it must be dry-run first and the target identity must be confirmed
 
 ## Canonical Commands
 
@@ -57,7 +54,6 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - `awiki-cli id bind (--phone <phone> [--otp <code>] | --email <email> [--wait])`
 - `awiki-cli id resolve (--handle <handle> | --did <did>)`
 - `awiki-cli id recover --handle <handle> --phone <phone> --otp <code>`
-- `awiki-cli --diagnostic --identity <identity> id replace-did [--is-public] [--is-agent] [--role <role>] [--endpoint-url <url>]`
 - `awiki-cli id profile get [--self | --handle <handle> | --did <did>]`
 - `awiki-cli id profile set [--display-name ...] [--bio ...] [--tags ...] [--markdown ...] [--markdown-file ...]`
 - `awiki-cli --migration id import-v1 [--name <identity> | --all]`
@@ -93,20 +89,6 @@ Recommended usage:
 2. `awiki-cli --identity <identity> id refresh-token --dry-run`
 3. After a human confirms the target identity, run `awiki-cli --identity <identity> id refresh-token`
 
-### Dangerous: Replace the DID
-
-`id replace-did` generates a new e1 DID and new key material for the specified identity, then uses the remote `did-auth.replace_did` call to replace the old DID. This operation first backs up the old DID document, old private key, and old identity directory to local `.legacy-backup/replace-did/`, then updates the local identity store, DID document, private-key file, and rebinds the local SQLite `owner_did`. Using the wrong target may cause identity, message history, or notification-routing confusion.
-
-The contents under `.legacy-backup/replace-did/` still contain sensitive material such as the old private key and old JWT. Do not upload, paste, or share them.
-
-Use it only when the user explicitly requests DID replacement:
-
-1. `awiki-cli id list`
-2. `awiki-cli --diagnostic --identity <identity> id replace-did --dry-run`
-3. After a human confirms the target identity, old DID, and impact scope, run `awiki-cli --diagnostic --identity <identity> id replace-did`
-
-Do not proactively use this command during ordinary registration, recovery, profile updates, or messaging tasks.
-
 ## Side Effects and Confirmation
 
 - Require explicit confirmation:
@@ -117,9 +99,7 @@ Do not proactively use this command during ordinary registration, recovery, prof
   - `id use`
   - `id profile set`
   - `id import-v1`
-  - Dangerous command `id replace-did`
 - Prefer `--dry-run` when a write operation supports it
-- For `id replace-did`, `--identity <identity>` must be treated as the target-selection mechanism; if omitted, it affects the default identity and is therefore easier to misuse
 
 ## Error Handling
 
@@ -131,8 +111,6 @@ Do not proactively use this command during ordinary registration, recovery, prof
 ## Implementation Notes
 
 - `id import-v1` requires the global `--migration` gate
-- `id replace-did` is a public but dangerous maintenance command; it applies only to handle-backed DIDs and generates a new e1 DID to replace the old DID
-- `id replace-did` requires the global `--diagnostic` gate
 - External explanations should remain handle-first
 - The public contract of this reference does not include `user_id`
 

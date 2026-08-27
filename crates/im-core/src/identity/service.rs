@@ -244,45 +244,4 @@ impl<'a> IdentityService<'a> {
         .email_status_async(email)
         .await
     }
-
-    pub fn replace_did_plan(
-        &self,
-        request: super::ReplaceDidPlanRequest,
-    ) -> crate::ImResult<super::ReplaceDidPlan> {
-        crate::internal::identity_replace_did_plan::plan_replace_did_for_client(
-            self.client,
-            request,
-        )
-    }
-
-    pub async fn replace_did_plan_async(
-        &self,
-        request: super::ReplaceDidPlanRequest,
-    ) -> crate::ImResult<super::ReplaceDidPlan> {
-        let client = self.client.clone();
-        crate::internal::runtime::worker::run_blocking(move || {
-            crate::internal::identity_replace_did_plan::plan_replace_did_for_client(
-                &client, request,
-            )
-        })
-        .await
-        .map_err(|err| crate::ImError::Internal {
-            message: err.to_string(),
-        })?
-    }
-
-    pub(crate) fn replace_did_with_runtime<B>(
-        &self,
-        request: super::ReplaceDidExecutionRequest,
-        bridge: B,
-    ) -> crate::ImResult<super::ReplaceDidExecutionResult>
-    where
-        B: crate::internal::identity_replace_did_execution::ReplaceDidExecutionBridge,
-    {
-        crate::internal::identity_replace_did_execution::ReplaceDidExecutionRuntime::new(
-            self.client,
-            bridge,
-        )
-        .execute(request)
-    }
 }

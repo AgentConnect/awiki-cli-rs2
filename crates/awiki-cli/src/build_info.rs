@@ -7,7 +7,7 @@ pub const VERSION: &str = match option_env!("AWIKI_CLI_VERSION") {
 
 pub const RELEASE: &str = match option_env!("AWIKI_CLI_RELEASE") {
     Some(release) => release,
-    None => "0714",
+    None => "0815",
 };
 
 pub const PRODUCT: &str = "awiki-cli";
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn client_version_metadata_has_fixed_cli_product_and_release() {
         assert_eq!(PRODUCT, "awiki-cli");
-        assert_eq!(RELEASE, option_env!("AWIKI_CLI_RELEASE").unwrap_or("0714"));
+        assert_eq!(RELEASE, option_env!("AWIKI_CLI_RELEASE").unwrap_or("0815"));
     }
 
     #[test]

@@ -7,7 +7,6 @@ use super::lock::{acquire_file_lock, LockError};
 use super::meta::{load_meta, save_meta, MetaError};
 use super::migration_v0_to_v1;
 use super::migration_v1_to_v2;
-use super::migration_v2_to_v3;
 use super::migration_v3_to_v4;
 use super::resolve_paths;
 use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
@@ -474,7 +473,7 @@ fn workspace_v2_to_v3_migration() -> WorkspaceMigration {
     WorkspaceMigration {
         from: 2,
         to: 3,
-        name: "workspace_2_to_3_replace_existing_k1_handle_dids",
+        name: "workspace_2_to_3_retire_k1_online_replacement",
     }
 }
 
@@ -520,7 +519,6 @@ impl Migration for WorkspaceMigration {
                 .iter()
                 .map(|summary| (summary.identity_name.clone(), summary.did.clone()))
                 .collect::<Vec<_>>();
-            migration_v2_to_v3::replace_k1_dids_for_summaries(context, imported.imported)?;
             migration_v0_to_v1::import_legacy_sqlite_with_historical_dids(
                 context,
                 historical_owner_dids,
@@ -540,7 +538,7 @@ impl Migration for WorkspaceMigration {
             return migration_v1_to_v2::apply_workspace_v1_to_v2_cleanup(context);
         }
         if self.from == 2 && self.to == 3 {
-            return migration_v2_to_v3::apply_workspace_v2_to_v3_replace_existing_k1_dids(context);
+            return Ok(());
         }
         if self.from == 3 && self.to == 4 {
             return migration_v3_to_v4::apply_workspace_v3_to_v4_owner_identity_local_state(
@@ -558,9 +556,7 @@ impl Migration for WorkspaceMigration {
             return Ok(());
         }
         if self.from == 2 && self.to == 3 {
-            return migration_v2_to_v3::validate_workspace_v2_to_v3_replace_existing_k1_dids(
-                context,
-            );
+            return Ok(());
         }
         if self.from == 3 && self.to == 4 {
             return migration_v3_to_v4::validate_workspace_v3_to_v4_owner_identity_local_state(

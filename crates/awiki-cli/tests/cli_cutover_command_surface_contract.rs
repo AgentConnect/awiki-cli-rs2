@@ -127,7 +127,6 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "msg.attachment.download",
         "msg.secure",
         "msg.secure.status",
-        "msg.secure.repair",
         "mail",
         "mail.account",
         "mail.attachment",
@@ -215,20 +214,6 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
 
 #[test]
 fn cutover_classifier_marks_unsupported_and_internal_commands() {
-    assert_eq!(
-        command_catalog::cutover_status("msg.secure.init"),
-        CutoverStatus::Unsupported {
-            capability: "secure-direct",
-            phase: "Phase 6",
-        }
-    );
-    assert_eq!(
-        command_catalog::cutover_status("msg.secure.outbox.list"),
-        CutoverStatus::Unsupported {
-            capability: "secure-direct",
-            phase: "Phase 6",
-        }
-    );
     assert_eq!(
         command_catalog::cutover_status("people.search"),
         CutoverStatus::Unsupported {
@@ -407,7 +392,6 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "msg.inbox",
         "msg.attachment.download",
         "msg.secure.status",
-        "msg.secure.repair",
         "mail.inbox",
         "mail.attachment.download",
         "group.create",
@@ -429,10 +413,6 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
     }
 
     for command in [
-        "msg.secure.init",
-        "msg.secure.failed",
-        "msg.secure.retry",
-        "msg.secure.drop",
         "people.search",
         "runtime.heartbeat.status",
         "group.e2ee.status",

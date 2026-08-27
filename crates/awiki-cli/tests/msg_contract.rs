@@ -39,23 +39,7 @@ fn msg_schema_exposes_go_command_surface() {
         .iter()
         .map(|child| child["name"].as_str().unwrap())
         .collect();
-    for expected in ["msg.secure.repair", "msg.secure.status"] {
-        assert!(
-            secure_children.contains(&expected),
-            "msg secure children should include {expected}: {secure_children:?}"
-        );
-    }
-    for hidden in [
-        "msg.secure.drop",
-        "msg.secure.failed",
-        "msg.secure.init",
-        "msg.secure.retry",
-    ] {
-        assert!(
-            !secure_children.contains(&hidden),
-            "msg secure default schema children should hide {hidden}: {secure_children:?}"
-        );
-    }
+    assert_eq!(secure_children, ["msg.secure.status"]);
 }
 
 #[test]
@@ -655,91 +639,28 @@ fn msg_inbox_default_cutover_rejects_filters_and_mark_read_side_effect() {
 }
 
 #[test]
-fn msg_secure_status_and_repair_are_supported_while_low_level_commands_remain_unsupported() {
+fn msg_secure_status_is_the_only_public_direct_control_surface() {
     let workspace = TempDir::new().expect("workspace");
 
-    for (args, action) in [
-        (
-            vec![
-                "--dry-run",
-                "--identity",
-                "alice",
-                "msg",
-                "secure",
-                "status",
-                "--with",
-                "bob",
-            ],
-            "secure.direct.status",
-        ),
-        (
-            vec![
-                "--dry-run",
-                "--identity",
-                "alice",
-                "msg",
-                "secure",
-                "repair",
-                "--with",
-                "bob",
-            ],
-            "secure.direct.repair",
-        ),
-    ] {
-        let output = success_json(&awiki_cmd(&args, workspace.path()));
-        assert_eq!(output["data"]["plan"]["action"], action);
-        assert_eq!(output["data"]["plan"]["with"], "bob");
-        assert_eq!(
-            output["data"]["plan"]["target"],
-            json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
-        );
-    }
-
-    for args in [
-        vec![
+    let output = success_json(&awiki_cmd(
+        &[
             "--dry-run",
             "--identity",
             "alice",
             "msg",
             "secure",
-            "init",
+            "status",
             "--with",
             "bob",
         ],
-        vec![
-            "--dry-run",
-            "--identity",
-            "alice",
-            "msg",
-            "secure",
-            "failed",
-        ],
-        vec![
-            "--dry-run",
-            "--identity",
-            "alice",
-            "msg",
-            "secure",
-            "retry",
-            "outbox-1",
-        ],
-        vec![
-            "--dry-run",
-            "--identity",
-            "alice",
-            "msg",
-            "secure",
-            "drop",
-            "outbox-1",
-        ],
-    ] {
-        let output = awiki_cmd(&args, workspace.path());
-        assert_code(&output, 2);
-        let envelope = error_json(&output);
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
-        assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
-    }
+        workspace.path(),
+    ));
+    assert_eq!(output["data"]["plan"]["action"], "secure.direct.status");
+    assert_eq!(output["data"]["plan"]["with"], "bob");
+    assert_eq!(
+        output["data"]["plan"]["target"],
+        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+    );
 }
 
 #[test]
@@ -956,22 +877,6 @@ fn msg_required_flag_errors_match_go_cobra_boundary() {
     assert_contains(
         &envelope["error"]["message"],
         "attachment download requires either --with or --group",
-    );
-
-    let init = awiki_cmd(&["--dry-run", "msg", "secure", "init"], workspace.path());
-    assert_code(&init, 2);
-    let envelope = error_json(&init);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], "msg.secure.init");
-    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
-
-    let repair = awiki_cmd(&["--dry-run", "msg", "secure", "repair"], workspace.path());
-    assert_code(&repair, 2);
-    let envelope = error_json(&repair);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(
-        &envelope["error"]["message"],
-        "msg secure repair requires --with.",
     );
 }
 

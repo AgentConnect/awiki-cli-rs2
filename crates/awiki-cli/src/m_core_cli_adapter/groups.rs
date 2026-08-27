@@ -8,7 +8,7 @@ use im_core::prelude::{
     GroupListRequest, GroupMember, GroupMemberMutationRequest, GroupMemberRef,
     GroupMemberResolution, GroupMembersRequest, GroupMessagesRequest, GroupPolicyPatch,
     GroupProfilePatch, GroupRef, GroupSnapshot, GroupSummary,
-    GroupUpdateRequest as SdkGroupUpdateRequest, Handle, Message, PageLimit,
+    GroupUpdateRequest as SdkGroupUpdateRequest, Message, PageLimit,
 };
 use serde_json::{json, Value};
 
@@ -96,43 +96,8 @@ pub struct GroupKeyPackagePublishRequest {
     pub device: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GroupE2eeProcessLeaveRequest {
-    pub identity_name: String,
-    pub group: String,
-    pub member: String,
-    pub leave_request_id: String,
-    pub reason_text: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GroupE2eeMemberKeyRequest {
-    pub identity_name: String,
-    pub group: String,
-    pub member: String,
-    pub device: String,
-}
-
 fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
     result.response_json().cloned().unwrap_or(Value::Null)
-}
-
-fn group_compat_handle(handle: Option<Handle>) -> Result<Option<Handle>, MessageAdapterError> {
-    let vnext_enabled = group_vnext_enabled()?;
-    Ok(select_group_compat_handle(handle, vnext_enabled))
-}
-
-fn group_vnext_enabled() -> Result<bool, MessageAdapterError> {
-    crate::m_core_cli_adapter::vault::did_transition_vnext_hidden_rollout_enabled()
-        .map_err(|error| MessageAdapterError::Internal(error.to_string()))
-}
-
-fn select_group_compat_handle(handle: Option<Handle>, vnext_enabled: bool) -> Option<Handle> {
-    if vnext_enabled {
-        None
-    } else {
-        handle
-    }
 }
 
 pub fn create_group_via_im_core(
@@ -143,10 +108,9 @@ pub fn create_group_via_im_core(
     if request.name.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
-    let creator_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .create(group_create_request(request, creator_handle)?)
+        .create(group_create_request(request)?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
@@ -173,10 +137,9 @@ pub async fn create_group_via_im_core_async(
     if request.name.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
-    let creator_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .create_async(group_create_request(request, creator_handle)?)
+        .create_async(group_create_request(request)?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -205,10 +168,9 @@ pub fn join_group_via_im_core(
         return Err(MessageAdapterError::GroupRequired);
     }
     let requested_group = request.group.clone();
-    let member_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .join(group_join_request(request, member_handle)?)
+        .join(group_join_request(request)?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or(requested_group);
@@ -235,10 +197,9 @@ pub async fn join_group_via_im_core_async(
         return Err(MessageAdapterError::GroupRequired);
     }
     let requested_group = request.group.clone();
-    let member_handle = group_compat_handle(client.handle().cloned())?;
     let result = client
         .groups()
-        .join_async(group_join_request(request, member_handle)?)
+        .join_async(group_join_request(request)?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -966,213 +927,15 @@ pub async fn publish_group_key_package_via_im_core_async(
     })
 }
 
-pub fn process_group_e2ee_leave_request_via_im_core(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    request: GroupE2eeProcessLeaveRequest,
-) -> Result<CommandResult, MessageAdapterError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageAdapterError::GroupRequired);
-    }
-    if request.member.trim().is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    if request.leave_request_id.trim().is_empty() {
-        return Err(MessageAdapterError::Internal(
-            "group e2ee process-leave-request requires leave_request_id".to_string(),
-        ));
-    }
-    let result = client
-        .groups()
-        .process_e2ee_leave_request(im_core::groups::GroupE2eeProcessLeaveRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
-                .map_err(im_error_to_message_error)?,
-            leave_request_id: request.leave_request_id,
-            reason_text: optional_string(&request.reason_text),
-        })
-        .map_err(im_error_to_message_error)?;
-    let raw = group_raw_response(&result);
-    let members = group_members_to_cli_json(&result, &raw)?;
-    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
-    Ok(CommandResult {
-        data: json!({
-            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
-            "members": members,
-            "delivery": raw,
-            "member": resolved_member,
-        }),
-        summary: "Processed group E2EE leave request".to_string(),
-        warnings: compact_warnings(result.warnings),
-    })
-}
-
-pub async fn process_group_e2ee_leave_request_via_im_core_async(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    request: GroupE2eeProcessLeaveRequest,
-) -> Result<CommandResult, MessageAdapterError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageAdapterError::GroupRequired);
-    }
-    if request.member.trim().is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    if request.leave_request_id.trim().is_empty() {
-        return Err(MessageAdapterError::Internal(
-            "group e2ee process-leave-request requires leave_request_id".to_string(),
-        ));
-    }
-    let result = client
-        .groups()
-        .process_e2ee_leave_request_async(im_core::groups::GroupE2eeProcessLeaveRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
-                .map_err(im_error_to_message_error)?,
-            leave_request_id: request.leave_request_id,
-            reason_text: optional_string(&request.reason_text),
-        })
-        .await
-        .map_err(im_error_to_message_error)?;
-    let raw = group_raw_response(&result);
-    let members = group_members_to_cli_json(&result, &raw)?;
-    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
-    Ok(CommandResult {
-        data: json!({
-            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
-            "members": members,
-            "delivery": raw,
-            "member": resolved_member,
-        }),
-        summary: "Processed group E2EE leave request".to_string(),
-        warnings: compact_warnings(result.warnings),
-    })
-}
-
-pub fn update_group_e2ee_key_via_im_core(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    request: GroupE2eeMemberKeyRequest,
-) -> Result<CommandResult, MessageAdapterError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageAdapterError::GroupRequired);
-    }
-    if request.member.trim().is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    let result = client
-        .groups()
-        .update_member_key(im_core::groups::GroupE2eeUpdateKeyRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
-                .map_err(im_error_to_message_error)?,
-            device_id: optional_string(&request.device),
-        })
-        .map_err(im_error_to_message_error)?;
-    group_e2ee_key_command_result("Updated group E2EE member key", request.group, result)
-}
-
-pub async fn update_group_e2ee_key_via_im_core_async(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    request: GroupE2eeMemberKeyRequest,
-) -> Result<CommandResult, MessageAdapterError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageAdapterError::GroupRequired);
-    }
-    if request.member.trim().is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    let result = client
-        .groups()
-        .update_member_key_async(im_core::groups::GroupE2eeUpdateKeyRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
-                .map_err(im_error_to_message_error)?,
-            device_id: optional_string(&request.device),
-        })
-        .await
-        .map_err(im_error_to_message_error)?;
-    group_e2ee_key_command_result("Updated group E2EE member key", request.group, result)
-}
-
-pub fn recover_group_e2ee_member_via_im_core(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    request: GroupE2eeMemberKeyRequest,
-) -> Result<CommandResult, MessageAdapterError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageAdapterError::GroupRequired);
-    }
-    if request.member.trim().is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    let result = client
-        .groups()
-        .recover_member(im_core::groups::GroupE2eeRecoverMemberRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
-                .map_err(im_error_to_message_error)?,
-            device_id: optional_string(&request.device),
-        })
-        .map_err(im_error_to_message_error)?;
-    group_e2ee_key_command_result("Recovered group E2EE member", request.group, result)
-}
-
-pub async fn recover_group_e2ee_member_via_im_core_async(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    request: GroupE2eeMemberKeyRequest,
-) -> Result<CommandResult, MessageAdapterError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageAdapterError::GroupRequired);
-    }
-    if request.member.trim().is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    let result = client
-        .groups()
-        .recover_member_async(im_core::groups::GroupE2eeRecoverMemberRequest {
-            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
-                .map_err(im_error_to_message_error)?,
-            device_id: optional_string(&request.device),
-        })
-        .await
-        .map_err(im_error_to_message_error)?;
-    group_e2ee_key_command_result("Recovered group E2EE member", request.group, result)
-}
-
-fn group_e2ee_key_command_result(
-    summary: &str,
-    group: String,
-    result: im_core::groups::GroupReadResult,
-) -> Result<CommandResult, MessageAdapterError> {
-    let raw = group_raw_response(&result);
-    let members = group_members_to_cli_json(&result, &raw)?;
-    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref())?;
-    Ok(CommandResult {
-        data: json!({
-            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": group })),
-            "members": members,
-            "delivery": raw,
-            "member": resolved_member,
-        }),
-        summary: summary.to_string(),
-        warnings: compact_warnings(result.warnings),
-    })
-}
-
 fn group_create_request(
     request: GroupCreateRequest,
-    creator_handle: Option<Handle>,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
     let secure_required = request.secure_required
         || request.e2ee
         || request.message_security_profile.trim() == GROUP_E2EE_SECURITY_PROFILE;
     Ok(SdkGroupCreateRequest {
         name: request.name,
-        creator_handle,
+        creator_handle: None,
         initial_members: Vec::new(),
         description: optional_string(&request.description),
         avatar_uri: optional_string(&request.avatar_uri),
@@ -1203,11 +966,10 @@ fn group_create_request(
 
 fn group_join_request(
     request: GroupJoinRequest,
-    member_handle: Option<Handle>,
 ) -> Result<SdkGroupJoinRequest, MessageAdapterError> {
     Ok(SdkGroupJoinRequest {
         group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-        member_handle,
+        member_handle: None,
         reason_text: optional_string(&request.reason_text),
     })
 }
@@ -1291,17 +1053,12 @@ fn group_members_to_cli_json(
     result: &GroupReadResult,
     raw: &Value,
 ) -> Result<Vec<Value>, MessageAdapterError> {
-    let vnext_enabled = group_vnext_enabled()?;
     if !result.members.is_empty() {
-        return Ok(result
-            .members
-            .iter()
-            .map(|member| group_member_to_json(member, vnext_enabled))
-            .collect());
+        return Ok(result.members.iter().map(group_member_to_json).collect());
     }
     Ok(values_from_array(raw.get("members"))
         .into_iter()
-        .map(|member| normalize_group_member_json(member, vnext_enabled))
+        .map(normalize_group_member_json)
         .collect())
 }
 
@@ -1387,65 +1144,26 @@ fn group_summary_to_json(group: &GroupSummary) -> Value {
     })
 }
 
-fn group_member_to_json(member: &GroupMember, vnext_enabled: bool) -> Value {
+fn group_member_to_json(member: &GroupMember) -> Value {
     let did = member.did.as_ref().map(Did::as_str).unwrap_or_default();
-    let mut value = json!({
+    json!({
         "member_did": did,
         "did": did,
         "role": member.role,
         "status": member.status,
         "joined_at": member.joined_at,
-    });
-    if vnext_enabled {
-        return value;
-    }
-    let handle = member
-        .handle
-        .as_ref()
-        .map(Handle::as_str)
-        .map(normalize_handle_value)
-        .unwrap_or_default();
-    value["member_handle"] = Value::String(handle.clone());
-    value["handle"] = Value::String(handle);
-    value
+    })
 }
 
 fn group_member_resolution_json(
     member: Option<&GroupMemberResolution>,
 ) -> Result<Value, MessageAdapterError> {
-    Ok(group_member_resolution_json_for_mode(
-        member,
-        group_vnext_enabled()?,
-    ))
+    Ok(json!({
+        "did": member.map(|value| value.did.as_str()).unwrap_or_default(),
+    }))
 }
 
-fn group_member_resolution_json_for_mode(
-    member: Option<&GroupMemberResolution>,
-    vnext_enabled: bool,
-) -> Value {
-    if vnext_enabled {
-        return json!({
-            "did": member.map(|value| value.did.as_str()).unwrap_or_default(),
-        });
-    }
-    match member {
-        Some(member) => json!({
-            "did": member.did.as_str(),
-            "handle": member
-                .handle
-                .as_ref()
-                .map(Handle::as_str)
-                .map(normalize_handle_value)
-                .unwrap_or_default(),
-        }),
-        None => json!({
-            "did": "",
-            "handle": "",
-        }),
-    }
-}
-
-fn normalize_group_member_json(mut member: Value, vnext_enabled: bool) -> Value {
+fn normalize_group_member_json(mut member: Value) -> Value {
     let Some(object) = member.as_object_mut() else {
         return member;
     };
@@ -1464,24 +1182,8 @@ fn normalize_group_member_json(mut member: Value, vnext_enabled: bool) -> Value 
             .entry("did".to_string())
             .or_insert_with(|| Value::String(did));
     }
-    if vnext_enabled {
-        for key in ["handle", "member_handle", "agent_handle"] {
-            object.remove(key);
-        }
-        return member;
-    }
-    let handle = normalize_handle_value(&default_string(
-        &string_value(object.get("handle")),
-        &default_string(
-            &string_value(object.get("member_handle")),
-            &string_value(object.get("agent_handle")),
-        ),
-    ));
-    if !handle.is_empty() {
-        object.insert("member_handle".to_string(), Value::String(handle.clone()));
-        object
-            .entry("handle".to_string())
-            .or_insert_with(|| Value::String(handle));
+    for key in ["handle", "member_handle", "agent_handle"] {
+        object.remove(key);
     }
     member
 }
@@ -1931,68 +1633,33 @@ mod group_message_projection_tests {
     use serde_json::json;
 
     use super::{
-        group_create_request, group_join_request, group_member_resolution_json_for_mode,
+        group_create_request, group_join_request, group_member_resolution_json,
         group_member_to_json, im_error_to_message_error, is_attachment_manifest_payload,
         normalize_group_member_json, normalize_group_snapshot, required_group_member_page_binding,
-        select_group_compat_handle, GroupCreateRequest, GroupJoinRequest,
+        GroupCreateRequest, GroupJoinRequest,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
     use im_core::groups::{GroupMember, GroupMemberResolution};
 
     #[test]
-    fn group_create_request_preserves_selected_handle_mode_and_none_compatibility() {
+    fn group_create_request_is_did_only() {
         let request = GroupCreateRequest {
-            name: "Handle group".to_owned(),
+            name: "DID-only group".to_owned(),
             ..GroupCreateRequest::default()
         };
-        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
-
-        assert_eq!(
-            group_create_request(request.clone(), Some(handle.clone()))
-                .unwrap()
-                .creator_handle,
-            Some(handle)
-        );
-        assert_eq!(
-            group_create_request(request, None).unwrap().creator_handle,
-            None
-        );
-    }
-
-    #[test]
-    fn vnext_group_requests_drop_only_the_adapter_injected_compat_handle() {
-        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
-
-        let legacy_handle = select_group_compat_handle(Some(handle.clone()), false);
-        assert_eq!(legacy_handle, Some(handle.clone()));
-        let vnext_handle = select_group_compat_handle(Some(handle), true);
-        assert_eq!(vnext_handle, None);
-        assert_eq!(select_group_compat_handle(None, false), None);
-        assert_eq!(select_group_compat_handle(None, true), None);
-
-        let create = group_create_request(
-            GroupCreateRequest {
-                name: "DID-only group".to_owned(),
-                ..GroupCreateRequest::default()
-            },
-            vnext_handle.clone(),
-        )
-        .unwrap();
+        let create = group_create_request(request).unwrap();
         assert!(create.creator_handle.is_none());
 
-        let join = group_join_request(
-            GroupJoinRequest {
-                group: "did:wba:example.com:groups:demo:e1".to_owned(),
-                ..GroupJoinRequest::default()
-            },
-            vnext_handle,
-        )
+        let join = group_join_request(GroupJoinRequest {
+            group: "did:wba:example.com:groups:demo:e1".to_owned(),
+            ..GroupJoinRequest::default()
+        })
         .unwrap();
         assert!(join.member_handle.is_none());
     }
 
     #[test]
-    fn vnext_group_member_projection_is_did_only_and_legacy_keeps_handle() {
+    fn group_member_projection_is_did_only() {
         let did = im_core::ids::Did::parse("did:wba:example.com:users:alice:e1_demo").unwrap();
         let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
         let member = GroupMember {
@@ -2008,24 +1675,17 @@ mod group_message_projection_tests {
             subject_type: None,
         };
 
-        let vnext = group_member_to_json(&member, true);
+        let vnext = group_member_to_json(&member);
         assert_eq!(vnext["did"], did.as_str());
         assert!(vnext.get("handle").is_none());
         assert!(vnext.get("member_handle").is_none());
 
-        let legacy = group_member_to_json(&member, false);
-        assert_eq!(legacy["handle"], "alice");
-        assert_eq!(legacy["member_handle"], "alice");
-
-        let raw_vnext = normalize_group_member_json(
-            json!({
-                "agent_did": did.as_str(),
-                "handle": handle.as_str(),
-                "member_handle": handle.as_str(),
-                "agent_handle": handle.as_str(),
-            }),
-            true,
-        );
+        let raw_vnext = normalize_group_member_json(json!({
+            "agent_did": did.as_str(),
+            "handle": handle.as_str(),
+            "member_handle": handle.as_str(),
+            "agent_handle": handle.as_str(),
+        }));
         assert_eq!(raw_vnext["did"], did.as_str());
         for key in ["handle", "member_handle", "agent_handle"] {
             assert!(raw_vnext.get(key).is_none(), "vNext exposed {key}");
@@ -2035,30 +1695,19 @@ mod group_message_projection_tests {
             did: did.clone(),
             handle: Some(handle),
         };
-        let resolved_vnext = group_member_resolution_json_for_mode(Some(&resolution), true);
+        let resolved_vnext = group_member_resolution_json(Some(&resolution)).unwrap();
         assert_eq!(resolved_vnext["did"], did.as_str());
         assert!(resolved_vnext.get("handle").is_none());
     }
 
     #[test]
-    fn group_join_request_preserves_selected_handle_mode_and_none_compatibility() {
+    fn group_join_request_is_did_only() {
         let request = GroupJoinRequest {
             group: "did:example:group".to_owned(),
             reason_text: "join".to_owned(),
             ..GroupJoinRequest::default()
         };
-        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
-
-        assert_eq!(
-            group_join_request(request.clone(), Some(handle.clone()))
-                .unwrap()
-                .member_handle,
-            Some(handle)
-        );
-        assert_eq!(
-            group_join_request(request, None).unwrap().member_handle,
-            None
-        );
+        assert!(group_join_request(request).unwrap().member_handle.is_none());
     }
 
     #[test]

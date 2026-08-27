@@ -638,22 +638,15 @@ enum DartHandleRecoveryErrorCode {
 class DartHandleRecoveryImpact {
   final bool localOrdinaryDataWillMigrate;
   final bool otherDevicesMustRejoin;
-  final int unsupportedE2EeGroupCount;
-  final int unsupportedDidOnlyGroupCount;
 
   const DartHandleRecoveryImpact({
     required this.localOrdinaryDataWillMigrate,
     required this.otherDevicesMustRejoin,
-    required this.unsupportedE2EeGroupCount,
-    required this.unsupportedDidOnlyGroupCount,
   });
 
   @override
   int get hashCode =>
-      localOrdinaryDataWillMigrate.hashCode ^
-      otherDevicesMustRejoin.hashCode ^
-      unsupportedE2EeGroupCount.hashCode ^
-      unsupportedDidOnlyGroupCount.hashCode;
+      localOrdinaryDataWillMigrate.hashCode ^ otherDevicesMustRejoin.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -661,9 +654,7 @@ class DartHandleRecoveryImpact {
       other is DartHandleRecoveryImpact &&
           runtimeType == other.runtimeType &&
           localOrdinaryDataWillMigrate == other.localOrdinaryDataWillMigrate &&
-          otherDevicesMustRejoin == other.otherDevicesMustRejoin &&
-          unsupportedE2EeGroupCount == other.unsupportedE2EeGroupCount &&
-          unsupportedDidOnlyGroupCount == other.unsupportedDidOnlyGroupCount;
+          otherDevicesMustRejoin == other.otherDevicesMustRejoin;
 }
 
 enum DartHandleRecoveryKeyState {

@@ -13,7 +13,7 @@ fn group_send_payload_matches_go_contract() {
     .expect("group send payload");
 
     assert_eq!(payload.method, "group.send");
-    assert_eq!(payload.meta["profile"], "anp.group.base.v1");
+    assert_eq!(payload.meta["profile"], "anp.group.base.v2");
     assert_eq!(payload.meta["security_profile"], "transport-protected");
     assert_eq!(
         payload.meta["sender_did"],

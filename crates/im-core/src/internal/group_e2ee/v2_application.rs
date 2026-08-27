@@ -6,7 +6,7 @@
 //! exposes only its non-secret grant ref as AWiki-local delivery metadata.
 
 use anp::group_e2ee::V2GroupApplicationPlaintext;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// A prepared P6 v2 application body and its secret-free local projection.
 ///
@@ -142,11 +142,10 @@ impl V2ProductApplication {
                 text: None,
                 payload: Some(committed.redacted_manifest.clone()),
             },
-            client_context: Some(
-                crate::internal::secure_direct::send::attachment_client_context(
-                    committed.grant_ref.clone(),
-                ),
-            ),
+            client_context: Some(Value::Object(Map::from_iter([(
+                "attachment_grant_refs".to_owned(),
+                Value::Array(vec![committed.grant_ref.clone()]),
+            )]))),
         })
     }
 

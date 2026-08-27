@@ -1455,32 +1455,6 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
-    pub async fn resume_group_rebind_recovery(
-        &self,
-        limit: Option<u32>,
-    ) -> napi::Result<NodeGroupRebindRecoverySummary> {
-        napi_result(self.resume_group_rebind_recovery_inner(limit).await)
-    }
-
-    async fn resume_group_rebind_recovery_inner(
-        &self,
-        limit: Option<u32>,
-    ) -> SafeResult<NodeGroupRebindRecoverySummary> {
-        let operation = self.inner.operation().await?;
-        let client = operation.client()?;
-        let value = self
-            .inner
-            .wait_im(
-                client
-                    .groups()
-                    .resume_rebind_recovery_async(limit.unwrap_or(100)),
-                self.inner.operation_timeout,
-            )
-            .await?;
-        Ok(crate::dto::rebind_recovery_summary(value))
-    }
-
-    #[napi(catch_unwind)]
     pub async fn sync_now(&self, input: Option<NodeSyncOptions>) -> napi::Result<NodeSyncResult> {
         napi_result(self.sync_now_inner(input).await)
     }
@@ -2175,12 +2149,6 @@ impl NativeImCoreNodeClient {
                 self.inner.operation_timeout,
             )
             .await?;
-        self.inner
-            .wait_im(
-                client.groups().resume_rebind_recovery_async(100),
-                self.inner.operation_timeout,
-            )
-            .await?;
         environment.client = Some(client);
         Ok(())
     }
@@ -2392,6 +2360,19 @@ pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCo
         .anp_service_did
         .clone()
         .map(im_core::ids::Did::parse)
+        .transpose()
+        .map_err(SafeError::from_im)?;
+    config.client_version_info = options
+        .client_version_info
+        .as_ref()
+        .map(|value| {
+            im_core::ClientVersionInfo::new(
+                &value.product,
+                &value.release,
+                &value.version,
+                value.build.map(u64::from),
+            )
+        })
         .transpose()
         .map_err(SafeError::from_im)?;
     config.transport_policy = im_core::MessageTransportPolicy::RealtimePreferred;
@@ -2843,6 +2824,7 @@ mod tests {
             mail_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
+            client_version_info: None,
             operation_timeout_ms: Some(1_000),
             sync_timeout_ms: Some(100),
             multi_device_device_revoke_enabled: None,
@@ -2850,6 +2832,27 @@ mod tests {
             multi_device_audience: None,
             external_http_allow_insecure_loopback_for_testing: None,
         }
+    }
+
+    #[test]
+    fn node_open_options_forward_candidate_client_version_to_core() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut options = options(temp.path());
+        options.client_version_info = Some(crate::dto::NodeClientVersionInfo {
+            product: "awiki-daemon".to_owned(),
+            release: "0815".to_owned(),
+            version: "0.1.91".to_owned(),
+            build: None,
+        });
+
+        let config = core_config(&options).unwrap();
+        assert_eq!(
+            config
+                .client_version_info
+                .as_ref()
+                .map(im_core::ClientVersionInfo::header_value),
+            Some("awiki-daemon/0815/0.1.91".to_owned()),
+        );
     }
 
     #[tokio::test]

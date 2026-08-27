@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
 
 #[test]
-fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported() {
+fn msg_secure_status_reads_legacy_state_without_mutating_historical_outbox() {
     let workspace = TempDir::new("msg-secure-status-im-core").expect("workspace");
     let alice = save_ready_identity(workspace.path(), "alice-secure", "alice", true);
     let bob = save_ready_identity(workspace.path(), "bob-secure", "bob", false);
@@ -70,38 +70,6 @@ fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported
         status["data"]["status"]["problem"]["code"],
         "PeerKeysUnavailable"
     );
-
-    for (args, command) in [
-        (
-            &["--identity", "alice-secure", "msg", "secure", "failed"][..],
-            "msg.secure.failed",
-        ),
-        (
-            &[
-                "--identity",
-                "alice-secure",
-                "msg",
-                "secure",
-                "retry",
-                "alice-failed",
-            ][..],
-            "msg.secure.retry",
-        ),
-        (
-            &[
-                "--identity",
-                "alice-secure",
-                "msg",
-                "secure",
-                "drop",
-                "alice-failed",
-            ][..],
-            "msg.secure.drop",
-        ),
-    ] {
-        let output = awiki_cmd(args, workspace.path());
-        assert_secure_direct_unsupported(&output, command);
-    }
 
     let rows = query_rows(
         workspace.path(),
@@ -244,32 +212,6 @@ fn success_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope")
-}
-
-fn assert_secure_direct_unsupported(output: &Output, command: &str) {
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "stdout should be empty: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let envelope: Value =
-        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
-    assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
-    );
 }
 
 struct TempDir {

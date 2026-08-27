@@ -221,26 +221,6 @@ fn identity_register_recover_and_replace_rpc_params_match_go_service() {
             "endpoint_url": "https://example.com/agent",
         })
     );
-
-    let replace = identity::build_replace_did_rpc_call(identity::ReplaceDidRpcParams {
-        new_did_document: did_document(),
-        is_public: Some(false),
-        is_agent: Some(true),
-        role: Some(" ".to_string()),
-        endpoint_url: Some(" https://example.com/agent ".to_string()),
-    });
-    assert_eq!(replace.endpoint, identity::DID_AUTH_RPC_ENDPOINT);
-    assert_eq!(replace.method, "replace_did");
-    assert_eq!(
-        replace.params,
-        json!({
-            "new_did_document": did_document(),
-            "is_public": false,
-            "is_agent": true,
-            "role": Value::Null,
-            "endpoint_url": "https://example.com/agent",
-        })
-    );
 }
 
 #[test]

@@ -15,7 +15,6 @@ import type {
   GroupInput,
   GroupMemberPage,
   GroupMembersInput,
-  GroupRebindRecoverySummary,
   HandleRecoveryOperationInput,
   HandleRecoveryOperationSummary,
   HandleRecoveryAttestationResult,
@@ -79,10 +78,6 @@ export interface NativeHandleRecoveryProgress {
   readonly impact: {
     readonly localOrdinaryDataWillMigrate: boolean
     readonly otherDevicesMustRejoin: boolean
-    readonly unsupportedE2eeGroupCount?: number
-    /** Compatibility with native packages built before the explicit N-API field name. */
-    readonly unsupportedE2EeGroupCount?: number
-    readonly unsupportedDidOnlyGroupCount: number
   }
 }
 
@@ -137,7 +132,6 @@ export interface NativeImCoreNodeClient {
   leaveGroup(input: GroupInput): Promise<void>
   listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage>
   removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
-  resumeGroupRebindRecovery(limit?: number): Promise<GroupRebindRecoverySummary>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   startRealtime(input?: RealtimeOptions): Promise<NativeRealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>

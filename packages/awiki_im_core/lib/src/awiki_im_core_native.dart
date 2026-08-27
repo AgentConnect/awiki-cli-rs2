@@ -1778,19 +1778,6 @@ class GroupApi {
     return result._toModel();
   }
 
-  Future<GroupRebindRecoverySummary> resumeRebindRecovery({
-    int limit = 100,
-  }) async {
-    _client._ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_groups.resumeGroupRebindRecovery(
-        client: _client._inner,
-        limit: limit,
-      ),
-    );
-    return result._toModel();
-  }
-
   Future<GroupReadResult> getGroup(String groupDid) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -2200,7 +2187,6 @@ class SecureApi {
   GroupSecureConversation group(String group) =>
       GroupSecureConversation._(_client, group);
 
-  SecureOutboxApi get outbox => SecureOutboxApi._(_client);
 }
 
 class DirectSecureConversation {
@@ -2217,21 +2203,6 @@ class DirectSecureConversation {
     return status._toModel();
   }
 
-  Future<DirectSecurePrepareResult> prepare() async {
-    _client._ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_secure.secureDirectPrepare(client: _client._inner, peer: peer),
-    );
-    return result._toModel();
-  }
-
-  Future<DirectSecureRepairResult> repair() async {
-    _client._ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_secure.secureDirectRepair(client: _client._inner, peer: peer),
-    );
-    return result._toModel();
-  }
 }
 
 class GroupSecureConversation {
@@ -2260,42 +2231,6 @@ class GroupSecureConversation {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_secure.secureGroupRepair(client: _client._inner, group: group),
-    );
-    return result._toModel();
-  }
-}
-
-class SecureOutboxApi {
-  SecureOutboxApi._(this._client);
-
-  final AwikiImClient _client;
-
-  Future<List<SecureOutboxEntry>> listFailed() async {
-    _client._ensureNotDisposed();
-    final entries = await _mapNativeErrors(
-      () => gen_secure.secureOutboxListFailed(client: _client._inner),
-    );
-    return entries.map((entry) => entry._toModel()).toList();
-  }
-
-  Future<SecureOutboxResult> retry(String outboxId) async {
-    _client._ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_secure.secureOutboxRetry(
-        client: _client._inner,
-        outboxId: outboxId,
-      ),
-    );
-    return result._toModel();
-  }
-
-  Future<SecureOutboxResult> drop(String outboxId) async {
-    _client._ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_secure.secureOutboxDrop(
-        client: _client._inner,
-        outboxId: outboxId,
-      ),
     );
     return result._toModel();
   }
@@ -2854,8 +2789,6 @@ extension on gen_identity.DartHandleRecoveryImpact {
   HandleRecoveryImpact _toModel() => HandleRecoveryImpact(
     localOrdinaryDataWillMigrate: localOrdinaryDataWillMigrate,
     otherDevicesMustRejoin: otherDevicesMustRejoin,
-    unsupportedE2eeGroupCount: unsupportedE2EeGroupCount,
-    unsupportedDidOnlyGroupCount: unsupportedDidOnlyGroupCount,
   );
 }
 
@@ -4147,27 +4080,6 @@ extension on gen_group_dto.DartGroupReadResult {
   );
 }
 
-extension on gen_group_dto.DartGroupRebindRecoveryItem {
-  GroupRebindRecoveryItem _toModel() => GroupRebindRecoveryItem(
-    groupDid: groupDid,
-    layer: layer,
-    phase: phase,
-    blocked: blocked,
-  );
-}
-
-extension on gen_group_dto.DartGroupRebindRecoverySummary {
-  GroupRebindRecoverySummary _toModel() => GroupRebindRecoverySummary(
-    processed: processed,
-    completed: completed,
-    pending: pending,
-    blocked: blocked,
-    sendPausedGroupDids: sendPausedGroupDids,
-    items: items.map((item) => item._toModel()).toList(),
-    warnings: warnings,
-  );
-}
-
 extension on gen_realtime_dto.DartRealtimeCapability {
   RealtimeCapability _toModel() => RealtimeCapability(
     statusSupported: statusSupported,
@@ -4209,25 +4121,6 @@ extension on gen_secure_dto.DartDirectSecureStatus {
     state: state._toModel(),
     canSendSecure: canSendSecure,
     pendingOutboxCount: pendingOutboxCount,
-    problem: problem?._toModel(),
-    warnings: warnings,
-  );
-}
-
-extension on gen_secure_dto.DartDirectSecurePrepareResult {
-  DirectSecurePrepareResult _toModel() => DirectSecurePrepareResult(
-    peer: peer,
-    state: state._toModel(),
-    canSendSecure: canSendSecure,
-    warnings: warnings,
-  );
-}
-
-extension on gen_secure_dto.DartDirectSecureRepairResult {
-  DirectSecureRepairResult _toModel() => DirectSecureRepairResult(
-    peer: peer,
-    state: state._toModel(),
-    repaired: repaired,
     problem: problem?._toModel(),
     warnings: warnings,
   );
@@ -4297,43 +4190,6 @@ extension on gen_secure_dto.DartGroupSecureRepairResult {
   );
 }
 
-extension on gen_secure_dto.DartSecureOutboxStatus {
-  SecureOutboxStatus _toModel() => switch (this) {
-    gen_secure_dto.DartSecureOutboxStatus.queued => SecureOutboxStatus.queued,
-    gen_secure_dto.DartSecureOutboxStatus.sending => SecureOutboxStatus.sending,
-    gen_secure_dto.DartSecureOutboxStatus.failed => SecureOutboxStatus.failed,
-    gen_secure_dto.DartSecureOutboxStatus.sent => SecureOutboxStatus.sent,
-    gen_secure_dto.DartSecureOutboxStatus.dropped => SecureOutboxStatus.dropped,
-  };
-}
-
-extension on gen_secure_dto.DartSecureOutboxEntry {
-  SecureOutboxEntry _toModel() => SecureOutboxEntry(
-    id: id,
-    target: target._toModel(),
-    messageKind: messageKind,
-    status: status._toModel(),
-    attemptCount: attemptCount,
-    lastError: lastError?._toModel(),
-    createdAt: createdAt,
-    updatedAt: updatedAt,
-  );
-}
-
-extension on gen_secure_dto.DartSecureOutboxResult {
-  SecureOutboxResult _toModel() => SecureOutboxResult(
-    id: id,
-    status: status._toModel(),
-    delivery: delivery?._toModel(),
-    warnings: warnings,
-  );
-}
-
-extension on gen_secure_dto.DartSecureDelivery {
-  SecureDelivery _toModel() =>
-      SecureDelivery(messageId: messageId, state: state);
-}
-
 extension on gen_secure_dto.DartSecureProblem {
   SecureProblem _toModel() => SecureProblem(
     code: code._toModel(),
@@ -4362,13 +4218,6 @@ extension on gen_secure_dto.DartSecureProblemCode {
       SecureProblemCode.unsupported,
     gen_secure_dto.DartSecureProblemCode.unknown => SecureProblemCode.unknown,
   };
-}
-
-extension on gen_message.DartMessageTarget {
-  MessageTarget _toModel() => when(
-    direct: (peer) => MessageTarget.direct(peer),
-    group: (group) => MessageTarget.group(group),
-  );
 }
 
 extension on gen_identity.DartRootKeyTransferPreparation {

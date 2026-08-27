@@ -9,6 +9,13 @@ export interface ImCoreNodeOpenOptions {
   readonly mailServiceEndpoint?: string
   readonly anpServiceEndpoint?: string
   readonly anpServiceDid?: string
+  /** Candidate build identity sent by Core on local-product User/Message requests. */
+  readonly clientVersionInfo?: {
+    readonly product: 'awiki-me' | 'awiki-cli' | 'awiki-daemon'
+    readonly release: string
+    readonly version: string
+    readonly build?: number
+  }
   /** Default timeout for one operation, from 1 to 600000 milliseconds. */
   readonly operationTimeoutMs?: number
   /** Timeout for bounded synchronization before list reads. */
@@ -536,24 +543,6 @@ export interface GroupMemberPage {
   readonly warnings: readonly string[]
 }
 
-export interface GroupRebindRecoverySummary {
-  readonly processed: number
-  readonly completed: number
-  readonly pending: number
-  readonly blocked: number
-  readonly sendPausedGroups: readonly string[]
-  readonly items: readonly GroupRebindRecoveryItem[]
-  readonly warnings: readonly string[]
-}
-
-/** Secret-free durable state for one group's membership convergence. */
-export interface GroupRebindRecoveryItem {
-  readonly groupDid: string
-  readonly layer: string
-  readonly phase: string
-  readonly blocked: boolean
-}
-
 /** Local-only batch lookup used to hydrate message sender labels without network I/O. */
 export interface DisplayProfileBatchInput {
   readonly peers: readonly string[]
@@ -790,8 +779,6 @@ export type HandleRecoveryPhase =
 export interface HandleRecoveryImpact {
   readonly localOrdinaryDataWillMigrate: boolean
   readonly otherDevicesMustRejoin: boolean
-  readonly unsupportedE2eeGroupCount: number
-  readonly unsupportedDidOnlyGroupCount: number
 }
 
 /** Durable recovery status. Hosts resume uncertain states instead of repeating activation. */
@@ -965,7 +952,6 @@ export interface ImCoreNodeClient {
   leaveGroup(input: GroupInput): Promise<void>
   listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage>
   removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
-  resumeGroupRebindRecovery(limit?: number): Promise<GroupRebindRecoverySummary>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   /** Starts the single Core-owned realtime session for this client. */
   startRealtime(input?: RealtimeOptions): Promise<RealtimeSession>

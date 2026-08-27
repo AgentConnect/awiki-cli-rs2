@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SecureOutboxId(String);
+pub(crate) struct SecureOutboxId(String);
 
 impl SecureOutboxId {
-    pub fn parse(input: impl AsRef<str>) -> crate::ImResult<Self> {
+    pub(crate) fn parse(input: impl AsRef<str>) -> crate::ImResult<Self> {
         let value = input.as_ref().trim();
         if value.is_empty() {
             return Err(crate::ImError::invalid_input(
@@ -15,7 +15,7 @@ impl SecureOutboxId {
         Ok(Self(value.to_owned()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -39,24 +39,6 @@ pub enum DirectSecureState {
     NeedsRepair,
     Unavailable,
     Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DirectSecurePrepareResult {
-    pub peer: crate::ids::PeerRef,
-    pub state: DirectSecureState,
-    pub can_send_secure: bool,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DirectSecureRepairResult {
-    pub peer: crate::ids::PeerRef,
-    pub state: DirectSecureState,
-    pub repaired: bool,
-    pub problem: Option<SecureProblem>,
-    pub prepared_local_send_state: bool,
-    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,7 +99,7 @@ pub struct GroupSecureRepairResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecureOutboxEntry {
+pub(crate) struct SecureOutboxEntry {
     pub id: SecureOutboxId,
     pub target: crate::messages::MessageTarget,
     pub message_kind: String,
@@ -129,7 +111,7 @@ pub struct SecureOutboxEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SecureOutboxStatus {
+pub(crate) enum SecureOutboxStatus {
     Queued,
     Sending,
     Failed,
@@ -138,7 +120,7 @@ pub enum SecureOutboxStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecureOutboxResult {
+pub(crate) struct SecureOutboxResult {
     pub id: SecureOutboxId,
     pub status: SecureOutboxStatus,
     pub delivery: Option<SecureDelivery>,
@@ -146,7 +128,7 @@ pub struct SecureOutboxResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecureDelivery {
+pub(crate) struct SecureDelivery {
     pub message_id: Option<crate::ids::MessageId>,
     pub state: crate::messages::DeliveryState,
 }

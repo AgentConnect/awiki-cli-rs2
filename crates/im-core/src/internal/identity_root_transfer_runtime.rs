@@ -297,10 +297,15 @@ pub(crate) async fn prepare_root_key_transfer(
 }
 
 fn generate_root_key_transfer_message_id() -> String {
-    let generated = crate::internal::secure_direct::send::generate_message_id();
+    let mut bytes = [0_u8; 16];
+    use rand::RngCore as _;
+    rand::thread_rng().fill_bytes(&mut bytes);
     format!(
         "{ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX}{}",
-        generated.strip_prefix("msg-").unwrap_or(generated.as_str())
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     )
 }
 

@@ -8,7 +8,6 @@ pub(crate) mod handle_recovery;
 pub(crate) mod profile;
 pub(crate) mod registration;
 pub(crate) mod relationships;
-pub(crate) mod replace_did;
 pub(crate) mod update_document;
 
 use serde_json::{json, Value};

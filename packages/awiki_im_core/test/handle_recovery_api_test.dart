@@ -36,15 +36,13 @@ void main() {
       impact: HandleRecoveryImpact(
         localOrdinaryDataWillMigrate: true,
         otherDevicesMustRejoin: true,
-        unsupportedE2eeGroupCount: 2,
-        unsupportedDidOnlyGroupCount: 3,
       ),
       registryEpochReset: reset,
     );
 
     expect(progress.registryEpochReset?.sourceId, progress.operationId);
-    expect(progress.impact.unsupportedE2eeGroupCount, 2);
-    expect(progress.impact.unsupportedDidOnlyGroupCount, 3);
+    expect(progress.impact.localOrdinaryDataWillMigrate, isTrue);
+    expect(progress.impact.otherDevicesMustRejoin, isTrue);
   });
 
   test('Recovery failure mapping is a closed public enum', () {

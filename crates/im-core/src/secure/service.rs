@@ -20,12 +20,6 @@ impl<'a> SecureService<'a> {
             group,
         }
     }
-
-    pub fn outbox(&self) -> SecureOutboxService<'a> {
-        SecureOutboxService {
-            client: self.client,
-        }
-    }
 }
 
 pub struct DirectSecureConversation<'a> {
@@ -60,151 +54,6 @@ impl DirectSecureConversation<'_> {
             .await?,
         )
     }
-
-    pub fn prepare(&self) -> crate::ImResult<super::DirectSecurePrepareResult> {
-        #[cfg(feature = "blocking")]
-        {
-            let plan = crate::internal::secure_direct::prepare::prepare_direct_for_client(
-                self.client,
-                self.peer.clone(),
-            )?;
-            direct_prepare_to_dto(plan)
-        }
-        #[cfg(not(feature = "blocking"))]
-        {
-            let _ = self.client.current_identity();
-            Err(crate::ImError::unsupported("sync-direct-secure-prepare"))
-        }
-    }
-
-    pub async fn prepare_async(&self) -> crate::ImResult<super::DirectSecurePrepareResult> {
-        let plan = crate::internal::secure_direct::prepare::prepare_direct_for_client_async(
-            self.client,
-            self.peer.clone(),
-        )
-        .await?;
-        direct_prepare_to_dto(plan)
-    }
-
-    pub fn repair(&self) -> crate::ImResult<super::DirectSecureRepairResult> {
-        #[cfg(feature = "blocking")]
-        {
-            direct_repair_for_client(self.client, self.peer.clone())
-        }
-        #[cfg(not(feature = "blocking"))]
-        {
-            let _ = self.client.current_identity();
-            Err(crate::ImError::unsupported("sync-direct-secure-repair"))
-        }
-    }
-
-    pub async fn repair_async(&self) -> crate::ImResult<super::DirectSecureRepairResult> {
-        let client = self.client.clone();
-        let peer = self.peer.clone();
-        let plan =
-            crate::internal::secure_direct::status::repair_direct_for_client_async(&client, peer)
-                .await?;
-        direct_repair_plan_to_dto_with_prepare(self.client, self.peer.clone(), plan).await
-    }
-}
-
-fn direct_prepare_to_dto(
-    plan: crate::internal::secure_direct::prepare::DirectSecurePreparePlan,
-) -> crate::ImResult<super::DirectSecurePrepareResult> {
-    let mut warnings = plan.status.warnings;
-    if plan.prepared_local_send_state {
-        warnings.push("direct E2EE local send state prepared".to_owned());
-    }
-    Ok(super::DirectSecurePrepareResult {
-        peer: plan.status.peer,
-        state: plan.status.state,
-        can_send_secure: plan.status.can_send_secure,
-        warnings,
-    })
-}
-
-fn direct_repair_for_client(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-) -> crate::ImResult<super::DirectSecureRepairResult> {
-    #[cfg(feature = "blocking")]
-    {
-        let plan =
-            crate::internal::secure_direct::status::repair_direct_for_client(client, peer.clone())?;
-        direct_repair_plan_to_dto(client, peer, plan)
-    }
-    #[cfg(not(feature = "blocking"))]
-    {
-        let _ = (client, peer);
-        Err(crate::ImError::unsupported("sync-direct-secure-repair"))
-    }
-}
-
-async fn direct_repair_plan_to_dto_with_prepare(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-    plan: crate::internal::secure_direct::status::DirectSecureRepairPlan,
-) -> crate::ImResult<super::DirectSecureRepairResult> {
-    let prepare_result =
-        crate::internal::secure_direct::prepare::prepare_direct_for_client_async(client, peer)
-            .await;
-    Ok(direct_repair_plan_to_dto_with_prepare_result(
-        plan,
-        prepare_result,
-    ))
-}
-
-fn direct_repair_plan_to_dto(
-    client: &crate::core::ImClient,
-    peer: crate::ids::PeerRef,
-    plan: crate::internal::secure_direct::status::DirectSecureRepairPlan,
-) -> crate::ImResult<super::DirectSecureRepairResult> {
-    Ok(direct_repair_plan_to_dto_with_prepare_result(
-        plan,
-        crate::internal::secure_direct::prepare::prepare_direct_for_client(client, peer),
-    ))
-}
-
-fn direct_repair_plan_to_dto_with_prepare_result(
-    plan: crate::internal::secure_direct::status::DirectSecureRepairPlan,
-    prepare_result: crate::ImResult<
-        crate::internal::secure_direct::prepare::DirectSecurePreparePlan,
-    >,
-) -> super::DirectSecureRepairResult {
-    let mut warnings = plan.status.warnings;
-    let mut state = plan.status.state;
-    let mut problem = plan.status.problem;
-    let mut prepared_local_send_state = false;
-    match prepare_result {
-        Ok(prepare_plan) => {
-            warnings.extend(prepare_plan.status.warnings);
-            prepared_local_send_state = prepare_plan.prepared_local_send_state;
-            if prepared_local_send_state {
-                state = prepare_plan.status.state;
-                problem = prepare_plan.status.problem;
-                warnings.push("direct E2EE local send state prepared".to_owned());
-            }
-        }
-        Err(err) => {
-            warnings.push(format!("direct E2EE prekey preparation failed: {err}"));
-        }
-    }
-    if plan.requeued_outbox_count > 0 {
-        warnings.push(format!(
-            "{} failed secure outbox item(s) were moved back to queued",
-            plan.requeued_outbox_count
-        ));
-    }
-    super::DirectSecureRepairResult {
-        peer: plan.status.peer,
-        state,
-        repaired: plan.removed_session
-            || plan.requeued_outbox_count > 0
-            || prepared_local_send_state,
-        problem,
-        prepared_local_send_state,
-        warnings,
-    }
 }
 
 fn direct_status_to_dto(
@@ -230,58 +79,35 @@ impl GroupSecureConversation<'_> {
     pub fn status(&self) -> crate::ImResult<super::GroupSecureStatus> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
-            if self.client.core_inner().group_e2ee_v2_enabled() {
-                let authoritative =
-                    match crate::internal::group_runtime::read::GroupReadRuntime::new(
-                        self.client,
-                        crate::internal::auth::session::FileSessionProvider::new(self.client),
-                        crate::internal::transport::CoreHttpTransport::new(self.client),
-                    )
-                    .get_with_policy(self.group.clone())
-                    {
-                        Ok(authoritative) => authoritative,
-                        Err(err) => {
-                            return Ok(group_status_unavailable(self.group.clone(), err));
-                        }
-                    };
-                let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(
-                    self.client,
-                ) {
-                    Ok(runtime) => runtime,
-                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
-                };
-                let status =
-                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
-                        .status(self.group.clone());
-                return match status
-                    .and_then(|status| overlay_group_maintenance_status(status, &authoritative))
-                {
-                    Ok(status) => Ok(status),
-                    Err(err) if group_status_can_downgrade_error(&err) => {
-                        Ok(group_status_unavailable(self.group.clone(), err))
-                    }
-                    Err(err) => Err(err),
-                };
+            if !self.client.core_inner().group_e2ee_v2_enabled() {
+                return Ok(group_status_unavailable(
+                    self.group.clone(),
+                    crate::ImError::unsupported("group-e2ee-v2"),
+                ));
             }
-            let provider =
-                match crate::internal::group_e2ee::storage::native_provider_for_client(self.client)
-                {
-                    Ok(provider) => provider,
-                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
-                };
-            let status = crate::internal::group_e2ee::status::GroupE2eeStatusRuntime::new(
+            let authoritative = match crate::internal::group_runtime::read::GroupReadRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
                 crate::internal::transport::CoreHttpTransport::new(self.client),
-                provider,
             )
-            .status(crate::internal::group_e2ee::status::GroupE2eeStatusInput {
-                group: self.group.clone(),
-                credentials: None,
-                notice_limit: 50,
-            });
-            match status {
-                Ok(status) => group_status_to_dto(status),
+            .get_with_policy(self.group.clone())
+            {
+                Ok(authoritative) => authoritative,
+                Err(err) => {
+                    return Ok(group_status_unavailable(self.group.clone(), err));
+                }
+            };
+            let runtime =
+                match crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client) {
+                    Ok(runtime) => runtime,
+                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
+                };
+            let status =
+                crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                    .status(self.group.clone());
+            match status.and_then(|status| overlay_group_maintenance_status(status, &authoritative))
+            {
+                Ok(status) => Ok(status),
                 Err(err) if group_status_can_downgrade_error(&err) => {
                     Ok(group_status_unavailable(self.group.clone(), err))
                 }
@@ -328,66 +154,42 @@ impl GroupSecureConversation<'_> {
     pub async fn status_async(&self) -> crate::ImResult<super::GroupSecureStatus> {
         #[cfg(feature = "group-e2ee")]
         {
-            if self.client.core_inner().group_e2ee_v2_enabled() {
-                let authoritative =
-                    match crate::internal::group_runtime::read::GroupReadRuntime::new(
-                        self.client,
-                        crate::internal::auth::session::FileSessionProvider::new(self.client),
-                        crate::internal::transport::CoreHttpTransport::new(self.client),
-                    )
-                    .get_with_policy_async(self.group.clone())
-                    .await
-                    {
-                        Ok(authoritative) => authoritative,
-                        Err(err) => {
-                            return Ok(group_status_unavailable(self.group.clone(), err));
-                        }
-                    };
-                let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(
-                    self.client,
-                ) {
-                    Ok(runtime) => runtime,
-                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
-                };
-                let group = self.group.clone();
-                let status = crate::internal::runtime::worker::run_blocking(move || {
-                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
-                        .status(group)
-                })
-                .await
-                .map_err(|err| crate::ImError::Internal {
-                    message: format!("P6 v2 status worker failed: {err}"),
-                })?;
-                return match status
-                    .and_then(|status| overlay_group_maintenance_status(status, &authoritative))
-                {
-                    Ok(status) => Ok(status),
-                    Err(err) if group_status_can_downgrade_error(&err) => {
-                        Ok(group_status_unavailable(self.group.clone(), err))
-                    }
-                    Err(err) => Err(err),
-                };
+            if !self.client.core_inner().group_e2ee_v2_enabled() {
+                return Ok(group_status_unavailable(
+                    self.group.clone(),
+                    crate::ImError::unsupported("group-e2ee-v2"),
+                ));
             }
-            let provider =
-                match crate::internal::group_e2ee::storage::native_provider_for_client(self.client)
-                {
-                    Ok(provider) => provider,
-                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
-                };
-            let status = crate::internal::group_e2ee::status::GroupE2eeStatusRuntime::new(
+            let authoritative = match crate::internal::group_runtime::read::GroupReadRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
                 crate::internal::transport::CoreHttpTransport::new(self.client),
-                provider,
             )
-            .status_async(crate::internal::group_e2ee::status::GroupE2eeStatusInput {
-                group: self.group.clone(),
-                credentials: None,
-                notice_limit: 50,
+            .get_with_policy_async(self.group.clone())
+            .await
+            {
+                Ok(authoritative) => authoritative,
+                Err(err) => {
+                    return Ok(group_status_unavailable(self.group.clone(), err));
+                }
+            };
+            let runtime =
+                match crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client) {
+                    Ok(runtime) => runtime,
+                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
+                };
+            let group = self.group.clone();
+            let status = crate::internal::runtime::worker::run_blocking(move || {
+                crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                    .status(group)
             })
-            .await;
-            match status {
-                Ok(status) => group_status_to_dto(status),
+            .await
+            .map_err(|err| crate::ImError::Internal {
+                message: format!("P6 v2 status worker failed: {err}"),
+            })?;
+            match status.and_then(|status| overlay_group_maintenance_status(status, &authoritative))
+            {
+                Ok(status) => Ok(status),
                 Err(err) if group_status_can_downgrade_error(&err) => {
                     Ok(group_status_unavailable(self.group.clone(), err))
                 }
@@ -429,49 +231,30 @@ impl GroupSecureConversation<'_> {
     pub fn repair(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
-            if self.client.core_inner().group_e2ee_v2_enabled() {
-                let roster =
-                    crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster(
-                        self.client,
-                        self.group.clone(),
-                    )?;
-                let runtime =
-                    crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
-                let mut result =
-                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
-                        .repair(
-                            self.group.clone(),
-                            format!(
-                                "im-core-p6-v2-repair-{}",
-                                crate::internal::wire::common::generate_operation_id()
-                            ),
-                        )?;
-                result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
-                result.removed_devices = u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
-                result.remaining_devices =
-                    u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
-                result.repaired |= roster.added_devices > 0
-                    || roster.removed_devices > 0
-                    || roster.repaired_wal_entries > 0;
-                return Ok(result);
+            if !self.client.core_inner().group_e2ee_v2_enabled() {
+                return Err(crate::ImError::unsupported("group-e2ee-v2"));
             }
-            let provider =
-                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
-            group_repair_to_dto(
-                crate::internal::group_e2ee::repair::GroupE2eeRepairRuntime::new(
-                    self.client,
-                    crate::internal::auth::session::FileSessionProvider::new(self.client),
-                    crate::internal::transport::CoreHttpTransport::new(self.client),
-                    provider,
-                )
-                .repair(
-                    crate::internal::group_e2ee::repair::GroupE2eeRepairInput {
-                        group: self.group.clone(),
-                        credentials: None,
-                        notice_limit: 50,
-                    },
-                )?,
-            )
+            let roster = crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster(
+                self.client,
+                self.group.clone(),
+            )?;
+            let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+            let mut result =
+                crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                    .repair(
+                        self.group.clone(),
+                        format!(
+                            "im-core-p6-v2-repair-{}",
+                            crate::internal::wire::common::generate_operation_id()
+                        ),
+                    )?;
+            result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
+            result.removed_devices = u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
+            result.remaining_devices = u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
+            result.repaired |= roster.added_devices > 0
+                || roster.removed_devices > 0
+                || roster.repaired_wal_entries > 0;
+            Ok(result)
         }
         #[cfg(all(feature = "group-e2ee", not(feature = "blocking")))]
         {
@@ -487,47 +270,30 @@ impl GroupSecureConversation<'_> {
     pub async fn repair_async(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
         #[cfg(feature = "group-e2ee")]
         {
-            if self.client.core_inner().group_e2ee_v2_enabled() {
-                let request_id = format!(
-                    "im-core-p6-v2-repair-{}",
-                    crate::internal::wire::common::generate_operation_id()
-                );
-                let roster =
-                    crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
-                        self.client,
-                        self.group.clone(),
-                    )
-                    .await?;
-                let runtime =
-                    crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
-                let mut result =
-                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
-                        .repair(self.group.clone(), request_id)?;
-                result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
-                result.removed_devices = u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
-                result.remaining_devices =
-                    u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
-                result.repaired |= roster.added_devices > 0
-                    || roster.removed_devices > 0
-                    || roster.repaired_wal_entries > 0;
-                return Ok(result);
+            if !self.client.core_inner().group_e2ee_v2_enabled() {
+                return Err(crate::ImError::unsupported("group-e2ee-v2"));
             }
-            let provider =
-                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
-            group_repair_to_dto(
-                crate::internal::group_e2ee::repair::GroupE2eeRepairRuntime::new(
+            let request_id = format!(
+                "im-core-p6-v2-repair-{}",
+                crate::internal::wire::common::generate_operation_id()
+            );
+            let roster =
+                crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
                     self.client,
-                    crate::internal::auth::session::FileSessionProvider::new(self.client),
-                    crate::internal::transport::CoreHttpTransport::new(self.client),
-                    provider,
+                    self.group.clone(),
                 )
-                .repair_async(crate::internal::group_e2ee::repair::GroupE2eeRepairInput {
-                    group: self.group.clone(),
-                    credentials: None,
-                    notice_limit: 50,
-                })
-                .await?,
-            )
+                .await?;
+            let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+            let mut result =
+                crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                    .repair(self.group.clone(), request_id)?;
+            result.added_devices = u32::try_from(roster.added_devices).unwrap_or(u32::MAX);
+            result.removed_devices = u32::try_from(roster.removed_devices).unwrap_or(u32::MAX);
+            result.remaining_devices = u32::try_from(roster.remaining_devices).unwrap_or(u32::MAX);
+            result.repaired |= roster.added_devices > 0
+                || roster.removed_devices > 0
+                || roster.repaired_wal_entries > 0;
+            Ok(result)
         }
         #[cfg(not(feature = "group-e2ee"))]
         {
@@ -671,43 +437,12 @@ fn group_status_problem_code(err: &crate::ImError) -> super::SecureProblemCode {
     }
 }
 
-#[cfg(feature = "group-e2ee")]
-fn group_status_to_dto(
-    status: crate::internal::group_e2ee::status::GroupE2eeStatusResult,
-) -> crate::ImResult<super::GroupSecureStatus> {
-    Ok(super::GroupSecureStatus {
-        group: status.group,
-        state: status.state,
-        can_send_secure: status.can_send_secure,
-        local_readiness: status.local_readiness,
-        pending_work: status.pending_work,
-        problem: status.problem,
-        warnings: status.warnings,
-    })
-}
-
-#[cfg(feature = "group-e2ee")]
-fn group_repair_to_dto(
-    result: crate::internal::group_e2ee::repair::GroupE2eeRepairResult,
-) -> crate::ImResult<super::GroupSecureRepairResult> {
-    Ok(super::GroupSecureRepairResult {
-        group: result.group,
-        state: result.state,
-        repaired: result.repaired,
-        added_devices: 0,
-        removed_devices: 0,
-        remaining_devices: 0,
-        problem: result.problem,
-        warnings: result.warnings,
-    })
-}
-
-pub struct SecureOutboxService<'a> {
+pub(crate) struct SecureOutboxService<'a> {
     client: &'a crate::core::ImClient,
 }
 
 impl SecureOutboxService<'_> {
-    pub fn list_failed(&self) -> crate::ImResult<Vec<super::SecureOutboxEntry>> {
+    pub(crate) fn list_failed(&self) -> crate::ImResult<Vec<super::SecureOutboxEntry>> {
         #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let connection = crate::internal::local_state::open_writable(
@@ -737,7 +472,7 @@ impl SecureOutboxService<'_> {
         }
     }
 
-    pub async fn list_failed_async(&self) -> crate::ImResult<Vec<super::SecureOutboxEntry>> {
+    pub(crate) async fn list_failed_async(&self) -> crate::ImResult<Vec<super::SecureOutboxEntry>> {
         #[cfg(feature = "sqlite")]
         {
             let db = self.client.core_inner().local_state_db().await?;
@@ -756,7 +491,7 @@ impl SecureOutboxService<'_> {
         }
     }
 
-    pub fn retry(
+    pub(crate) fn retry(
         &self,
         outbox_id: super::SecureOutboxId,
     ) -> crate::ImResult<super::SecureOutboxResult> {
@@ -789,7 +524,7 @@ impl SecureOutboxService<'_> {
         }
     }
 
-    pub async fn retry_async(
+    pub(crate) async fn retry_async(
         &self,
         outbox_id: super::SecureOutboxId,
     ) -> crate::ImResult<super::SecureOutboxResult> {
@@ -811,7 +546,7 @@ impl SecureOutboxService<'_> {
         }
     }
 
-    pub fn drop(
+    pub(crate) fn drop(
         &self,
         outbox_id: super::SecureOutboxId,
     ) -> crate::ImResult<super::SecureOutboxResult> {
@@ -844,7 +579,7 @@ impl SecureOutboxService<'_> {
         }
     }
 
-    pub async fn drop_async(
+    pub(crate) async fn drop_async(
         &self,
         outbox_id: super::SecureOutboxId,
     ) -> crate::ImResult<super::SecureOutboxResult> {

@@ -922,91 +922,6 @@ impl App {
         self.render_message_result("awiki-cli msg secure status", &resolved, result)
     }
 
-    pub fn run_msg_secure_init(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.init")
-    }
-
-    pub fn run_msg_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config_for_workspace()?;
-        let peer = required_peer_flag(command, "msg secure repair")?;
-        if self.globals.dry_run {
-            return self.render_msg_secure_plan(
-                "awiki-cli msg secure repair",
-                &resolved,
-                "secure.direct.repair",
-                &peer,
-                "Dry run: direct secure repair planned",
-            );
-        }
-        let client = crate::m_core_cli_adapter::build_im_client(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )?;
-        let result = crate::m_core_cli_adapter::messages::direct_secure_repair_via_im_core(
-            &client,
-            peer,
-            &resolved.did_domain,
-        )
-        .map_err(|err| {
-            message_exit(
-                err,
-                "Ensure the active identity is ready and local secure state is available.",
-            )
-        })?;
-        self.render_message_result("awiki-cli msg secure repair", &resolved, result)
-    }
-
-    pub async fn run_msg_secure_repair_async(
-        &self,
-        command: &ParsedCommand,
-    ) -> Result<(), ExitError> {
-        let resolved = self.resolve_config_for_workspace()?;
-        let peer = required_peer_flag(command, "msg secure repair")?;
-        if self.globals.dry_run {
-            return self.render_msg_secure_plan(
-                "awiki-cli msg secure repair",
-                &resolved,
-                "secure.direct.repair",
-                &peer,
-                "Dry run: direct secure repair planned",
-            );
-        }
-        let client = crate::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
-        )
-        .await?;
-        let result = crate::m_core_cli_adapter::messages::direct_secure_repair_via_im_core_async(
-            &client,
-            peer,
-            &resolved.did_domain,
-        )
-        .await
-        .map_err(|err| {
-            message_exit(
-                err,
-                "Ensure the active identity is ready and local secure state is available.",
-            )
-        })?;
-        self.render_message_result("awiki-cli msg secure repair", &resolved, result)
-    }
-
-    pub fn run_msg_secure_failed(&self) -> Result<(), ExitError> {
-        Err(super::unsupported::unsupported_cutover_command(
-            "msg.secure.failed",
-            "secure-direct",
-            "Phase 6",
-        ))
-    }
-
-    pub fn run_msg_secure_retry(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.retry")
-    }
-
-    pub fn run_msg_secure_drop(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.drop")
-    }
-
     fn render_message_result(
         &self,
         command: &str,
@@ -1057,17 +972,6 @@ fn message_transport_policy(runtime_mode: &str, has_attachment: bool) -> String 
         "http" | "" => "http_only".to_string(),
         _ => "auto".to_string(),
     }
-}
-
-fn unsupported_secure_command(
-    _command: &ParsedCommand,
-    command_name: &str,
-) -> Result<(), ExitError> {
-    Err(super::unsupported::unsupported_cutover_command(
-        command_name,
-        "secure-direct",
-        "Phase 6",
-    ))
 }
 
 fn required_peer_flag(command: &ParsedCommand, command_name: &str) -> Result<String, ExitError> {

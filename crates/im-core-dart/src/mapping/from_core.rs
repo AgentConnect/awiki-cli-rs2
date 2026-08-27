@@ -11,10 +11,7 @@ use crate::dto::{
         DartEmailMessageSummaryPage, DartEmailNotification, DartEmailNotificationPage,
         DartSendEmailResult,
     },
-    group::{
-        DartGroupMember, DartGroupReadResult, DartGroupRebindRecoveryItem,
-        DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
-    },
+    group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
     identity::{
         DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPublicPackage,
@@ -55,11 +52,9 @@ use crate::dto::{
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint, DartSyncDomain},
     secure::{
-        DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
-        DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
-        DartGroupSecurePrepareResult, DartGroupSecureRepairResult, DartGroupSecureState,
-        DartGroupSecureStatus, DartSecureDelivery, DartSecureOutboxEntry, DartSecureOutboxResult,
-        DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
+        DartDirectSecureState, DartDirectSecureStatus, DartGroupSecureLocalReadiness,
+        DartGroupSecurePendingWork, DartGroupSecurePrepareResult, DartGroupSecureRepairResult,
+        DartGroupSecureState, DartGroupSecureStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
 
@@ -136,8 +131,6 @@ impl From<im_core::identity::HandleRecoveryImpact> for DartHandleRecoveryImpact 
         Self {
             local_ordinary_data_will_migrate: value.local_ordinary_data_will_migrate,
             other_devices_must_rejoin: value.other_devices_must_rejoin,
-            unsupported_e2ee_group_count: value.unsupported_e2ee_group_count,
-            unsupported_did_only_group_count: value.unsupported_did_only_group_count,
         }
     }
 }
@@ -1733,29 +1726,6 @@ impl From<im_core::secure::DirectSecureStatus> for DartDirectSecureStatus {
     }
 }
 
-impl From<im_core::secure::DirectSecurePrepareResult> for DartDirectSecurePrepareResult {
-    fn from(value: im_core::secure::DirectSecurePrepareResult) -> Self {
-        Self {
-            peer: value.peer.as_str().to_string(),
-            state: value.state.into(),
-            can_send_secure: value.can_send_secure,
-            warnings: value.warnings,
-        }
-    }
-}
-
-impl From<im_core::secure::DirectSecureRepairResult> for DartDirectSecureRepairResult {
-    fn from(value: im_core::secure::DirectSecureRepairResult) -> Self {
-        Self {
-            peer: value.peer.as_str().to_string(),
-            state: value.state.into(),
-            repaired: value.repaired,
-            problem: value.problem.map(Into::into),
-            warnings: value.warnings,
-        }
-    }
-}
-
 impl From<im_core::secure::GroupSecureState> for DartGroupSecureState {
     fn from(value: im_core::secure::GroupSecureState) -> Self {
         match value {
@@ -1826,53 +1796,6 @@ impl From<im_core::secure::GroupSecureRepairResult> for DartGroupSecureRepairRes
             remaining_devices: value.remaining_devices,
             problem: value.problem.map(Into::into),
             warnings: value.warnings,
-        }
-    }
-}
-
-impl From<im_core::secure::SecureOutboxStatus> for DartSecureOutboxStatus {
-    fn from(value: im_core::secure::SecureOutboxStatus) -> Self {
-        match value {
-            im_core::secure::SecureOutboxStatus::Queued => Self::Queued,
-            im_core::secure::SecureOutboxStatus::Sending => Self::Sending,
-            im_core::secure::SecureOutboxStatus::Failed => Self::Failed,
-            im_core::secure::SecureOutboxStatus::Sent => Self::Sent,
-            im_core::secure::SecureOutboxStatus::Dropped => Self::Dropped,
-        }
-    }
-}
-
-impl From<im_core::secure::SecureOutboxEntry> for DartSecureOutboxEntry {
-    fn from(value: im_core::secure::SecureOutboxEntry) -> Self {
-        Self {
-            id: value.id.as_str().to_string(),
-            target: value.target.into(),
-            message_kind: value.message_kind,
-            status: value.status.into(),
-            attempt_count: value.attempt_count,
-            last_error: value.last_error.map(Into::into),
-            created_at: value.created_at,
-            updated_at: value.updated_at,
-        }
-    }
-}
-
-impl From<im_core::secure::SecureOutboxResult> for DartSecureOutboxResult {
-    fn from(value: im_core::secure::SecureOutboxResult) -> Self {
-        Self {
-            id: value.id.as_str().to_string(),
-            status: value.status.into(),
-            delivery: value.delivery.map(Into::into),
-            warnings: value.warnings,
-        }
-    }
-}
-
-impl From<im_core::secure::SecureDelivery> for DartSecureDelivery {
-    fn from(value: im_core::secure::SecureDelivery) -> Self {
-        Self {
-            message_id: value.message_id.map(|id| id.as_str().to_string()),
-            state: delivery_state_to_string(value.state),
         }
     }
 }
@@ -2132,35 +2055,6 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
             page_group_did: value.page_group.map(|group| group.as_str().to_owned()),
             group_state_version: value.group_state_version,
             source: value.source,
-            warnings: value.warnings,
-        }
-    }
-}
-
-impl From<im_core::groups::GroupRebindRecoveryItem> for DartGroupRebindRecoveryItem {
-    fn from(value: im_core::groups::GroupRebindRecoveryItem) -> Self {
-        Self {
-            group_did: value.group.as_str().to_owned(),
-            layer: value.layer,
-            phase: value.phase,
-            blocked: value.blocked,
-        }
-    }
-}
-
-impl From<im_core::groups::GroupRebindRecoverySummary> for DartGroupRebindRecoverySummary {
-    fn from(value: im_core::groups::GroupRebindRecoverySummary) -> Self {
-        Self {
-            processed: value.processed,
-            completed: value.completed,
-            pending: value.pending,
-            blocked: value.blocked,
-            send_paused_group_dids: value
-                .send_paused_groups
-                .into_iter()
-                .map(|group| group.as_str().to_owned())
-                .collect(),
-            items: value.items.into_iter().map(Into::into).collect(),
             warnings: value.warnings,
         }
     }

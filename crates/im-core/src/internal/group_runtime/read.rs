@@ -58,14 +58,11 @@ where
             "group-read-{}",
             crate::internal::wire::common::generate_operation_id()
         );
-        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params_for_gate(
+        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params(
             self.client.did().as_str(),
             group.as_str(),
             &operation_id,
             true,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         let authoritative = self.transport.authenticated_rpc(
             MESSAGE_RPC_ENDPOINT,
@@ -188,14 +185,11 @@ where
             "group-read-{}",
             crate::internal::wire::common::generate_operation_id()
         );
-        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params_for_gate(
+        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params(
             self.client.did().as_str(),
             group.as_str(),
             &operation_id,
             true,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         let authoritative = self
             .transport
@@ -642,7 +636,7 @@ mod tests {
         assert!(calls[0].params["body"].get("include_policy").is_none());
         assert_eq!(calls[1].method, "group.get_info");
         assert_eq!(calls[1].endpoint, MESSAGE_RPC_ENDPOINT);
-        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v1");
+        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v2");
         assert!(calls[1].params["meta"].get("anp_version").is_none());
         assert_eq!(
             calls[1].params["meta"]["target"],
@@ -700,7 +694,7 @@ mod tests {
         assert_eq!(calls[0].method, "group.get");
         assert!(calls[0].params["body"].get("include_policy").is_none());
         assert_eq!(calls[1].method, "group.get_info");
-        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v1");
+        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v2");
         assert!(calls[1].params["meta"].get("anp_version").is_none());
         assert_eq!(calls[1].params["body"]["include_policy"], true);
         assert_eq!(calls[1].params["body"]["include_member_list"], false);

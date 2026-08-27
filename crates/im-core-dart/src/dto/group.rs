@@ -76,25 +76,6 @@ pub struct DartJoinGroupRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartGroupRebindRecoveryItem {
-    pub group_did: String,
-    pub layer: String,
-    pub phase: String,
-    pub blocked: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartGroupRebindRecoverySummary {
-    pub processed: u32,
-    pub completed: u32,
-    pub pending: u32,
-    pub blocked: u32,
-    pub send_paused_group_dids: Vec<String>,
-    pub items: Vec<DartGroupRebindRecoveryItem>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupReadResult {
     pub group: Option<DartGroupSnapshot>,
     pub groups: Vec<DartGroupSummary>,

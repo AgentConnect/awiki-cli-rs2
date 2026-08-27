@@ -71,8 +71,6 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
             impact: im_core::identity::HandleRecoveryImpact {
                 local_ordinary_data_will_migrate: true,
                 other_devices_must_rejoin: true,
-                unsupported_e2ee_group_count: 2,
-                unsupported_did_only_group_count: 3,
             },
             reset_reference: Some(im_core::identity::HandleRecoveryResetReference {
                 account_user_id: "user-1".to_owned(),
@@ -102,7 +100,8 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
     assert_eq!(reset.owner_identity_id, "owner-1");
     assert_eq!(reset.binding_generation, "8");
     assert_eq!(reset.source_id, "operation-1");
-    assert_eq!(mapped.impact.unsupported_e2ee_group_count, 2);
+    assert!(mapped.impact.local_ordinary_data_will_migrate);
+    assert!(mapped.impact.other_devices_must_rejoin);
 }
 
 #[test]
@@ -1119,30 +1118,6 @@ fn dart_inbox_history_options_map_to_im_core_optional_params() {
         Some(im_core::messages::InboxAuth::ScopedInboxToken { token })
             if token.token == "token-1"
     ));
-}
-
-#[test]
-fn secure_outbox_entry_does_not_expose_plaintext_or_crypto_material() {
-    let entry = awiki_im_core::dto::secure::DartSecureOutboxEntry {
-        id: "outbox-1".to_string(),
-        target: awiki_im_core::dto::message::DartMessageTarget::Direct {
-            peer: "did:example:bob".to_string(),
-        },
-        message_kind: "text".to_string(),
-        status: awiki_im_core::dto::secure::DartSecureOutboxStatus::Failed,
-        attempt_count: 2,
-        last_error: Some(awiki_im_core::dto::secure::DartSecureProblem {
-            code: awiki_im_core::dto::secure::DartSecureProblemCode::PeerKeysUnavailable,
-            message: "peer keys unavailable".to_string(),
-            retryable: true,
-        }),
-        created_at: Some("2026-05-24T00:00:00Z".to_string()),
-        updated_at: Some("2026-05-24T00:01:00Z".to_string()),
-    };
-
-    assert_eq!(entry.id, "outbox-1");
-    assert_eq!(entry.message_kind, "text");
-    assert_eq!(entry.attempt_count, 2);
 }
 
 #[test]

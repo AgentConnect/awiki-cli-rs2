@@ -11,6 +11,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const LEGACY_E2EE_PREFIX: &str = "e2ee_";
 
 #[test]
+fn generated_migration_identity_advertises_only_the_current_group_profile() {
+    let generated = generate_identity("legacy-import.example", "", "").expect("generated identity");
+    let message_service = generated.did_document["service"]
+        .as_array()
+        .expect("DID services")
+        .iter()
+        .find(|service| service["type"] == "ANPMessageService")
+        .expect("Message Service");
+    let profiles = message_service["profiles"].as_array().expect("profiles");
+
+    assert!(profiles.contains(&json!("anp.group.base.v2")));
+    assert!(!profiles.contains(&json!("anp.group.base.v1")));
+}
+
+#[test]
 fn scan_legacy_detects_indexed_flat_invalid_and_orphan_artifacts_like_go() {
     let workspace = TempDir::new("scan-legacy").expect("workspace");
     let manager = identity_manager(workspace.path());

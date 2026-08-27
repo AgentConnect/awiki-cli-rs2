@@ -1,5 +1,3 @@
-use crate::dto::message::DartMessageTarget;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartDirectSecureState {
     Ready,
@@ -17,23 +15,6 @@ pub struct DartDirectSecureStatus {
     pub state: DartDirectSecureState,
     pub can_send_secure: bool,
     pub pending_outbox_count: u32,
-    pub problem: Option<DartSecureProblem>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartDirectSecurePrepareResult {
-    pub peer: String,
-    pub state: DartDirectSecureState,
-    pub can_send_secure: bool,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartDirectSecureRepairResult {
-    pub peer: String,
-    pub state: DartDirectSecureState,
-    pub repaired: bool,
     pub problem: Option<DartSecureProblem>,
     pub warnings: Vec<String>,
 }
@@ -90,41 +71,6 @@ pub struct DartGroupSecureRepairResult {
     pub remaining_devices: u32,
     pub problem: Option<DartSecureProblem>,
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartSecureOutboxEntry {
-    pub id: String,
-    pub target: DartMessageTarget,
-    pub message_kind: String,
-    pub status: DartSecureOutboxStatus,
-    pub attempt_count: u32,
-    pub last_error: Option<DartSecureProblem>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DartSecureOutboxStatus {
-    Queued,
-    Sending,
-    Failed,
-    Sent,
-    Dropped,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartSecureOutboxResult {
-    pub id: String,
-    pub status: DartSecureOutboxStatus,
-    pub delivery: Option<DartSecureDelivery>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartSecureDelivery {
-    pub message_id: Option<String>,
-    pub state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

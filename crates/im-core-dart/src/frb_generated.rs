@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 762910784;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -288522124;
 
 // Section: executor
 
@@ -6348,68 +6348,6 @@ fn wire__crate__api__identity__resume_authorized_join_activation_impl(
         },
     )
 }
-fn wire__crate__api__groups__resume_group_rebind_recovery_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "resume_group_rebind_recovery",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_client = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
-            >>::sse_decode(&mut deserializer);
-            let api_limit = <u32>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::dto::error::DartImError>(
-                    (move || async move {
-                        let mut api_client_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_client,
-                                    0,
-                                    false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => {
-                                    api_client_guard =
-                                        Some(api_client.lockable_decode_async_ref().await)
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                        let api_client_guard = api_client_guard.unwrap();
-                        let output_ok = crate::api::groups::resume_group_rebind_recovery(
-                            &*api_client_guard,
-                            api_limit,
-                        )
-                        .await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
 fn wire__crate__api__identity__resume_handle_recovery_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -6641,126 +6579,6 @@ fn wire__crate__api__identity__revoke_device_impl(
                             api_user_presence_confirmed,
                         )
                         .await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__secure__secure_direct_prepare_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "secure_direct_prepare",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_client = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
-            >>::sse_decode(&mut deserializer);
-            let api_peer = <String>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::dto::error::DartImError>(
-                    (move || async move {
-                        let mut api_client_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_client,
-                                    0,
-                                    false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => {
-                                    api_client_guard =
-                                        Some(api_client.lockable_decode_async_ref().await)
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                        let api_client_guard = api_client_guard.unwrap();
-                        let output_ok =
-                            crate::api::secure::secure_direct_prepare(&*api_client_guard, api_peer)
-                                .await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__secure__secure_direct_repair_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "secure_direct_repair",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_client = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
-            >>::sse_decode(&mut deserializer);
-            let api_peer = <String>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::dto::error::DartImError>(
-                    (move || async move {
-                        let mut api_client_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_client,
-                                    0,
-                                    false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => {
-                                    api_client_guard =
-                                        Some(api_client.lockable_decode_async_ref().await)
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                        let api_client_guard = api_client_guard.unwrap();
-                        let output_ok =
-                            crate::api::secure::secure_direct_repair(&*api_client_guard, api_peer)
-                                .await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -7001,189 +6819,6 @@ fn wire__crate__api__secure__secure_group_status_impl(
                         let output_ok =
                             crate::api::secure::secure_group_status(&*api_client_guard, api_group)
                                 .await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__secure__secure_outbox_drop_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "secure_outbox_drop",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_client = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
-            >>::sse_decode(&mut deserializer);
-            let api_outbox_id = <String>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::dto::error::DartImError>(
-                    (move || async move {
-                        let mut api_client_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_client,
-                                    0,
-                                    false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => {
-                                    api_client_guard =
-                                        Some(api_client.lockable_decode_async_ref().await)
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                        let api_client_guard = api_client_guard.unwrap();
-                        let output_ok = crate::api::secure::secure_outbox_drop(
-                            &*api_client_guard,
-                            api_outbox_id,
-                        )
-                        .await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__secure__secure_outbox_list_failed_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "secure_outbox_list_failed",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_client = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
-            >>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::dto::error::DartImError>(
-                    (move || async move {
-                        let mut api_client_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_client,
-                                    0,
-                                    false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => {
-                                    api_client_guard =
-                                        Some(api_client.lockable_decode_async_ref().await)
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                        let api_client_guard = api_client_guard.unwrap();
-                        let output_ok =
-                            crate::api::secure::secure_outbox_list_failed(&*api_client_guard)
-                                .await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__secure__secure_outbox_retry_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "secure_outbox_retry",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_client = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
-            >>::sse_decode(&mut deserializer);
-            let api_outbox_id = <String>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::dto::error::DartImError>(
-                    (move || async move {
-                        let mut api_client_guard = None;
-                        let decode_indices_ =
-                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
-                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                    &api_client,
-                                    0,
-                                    false,
-                                )],
-                            );
-                        for i in decode_indices_ {
-                            match i {
-                                0 => {
-                                    api_client_guard =
-                                        Some(api_client.lockable_decode_async_ref().await)
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-                        let api_client_guard = api_client_guard.unwrap();
-                        let output_ok = crate::api::secure::secure_outbox_retry(
-                            &*api_client_guard,
-                            api_outbox_id,
-                        )
-                        .await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -10041,41 +9676,6 @@ impl SseDecode for crate::dto::config::DartDeviceVaultRootKey {
     }
 }
 
-impl SseDecode for crate::dto::secure::DartDirectSecurePrepareResult {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_peer = <String>::sse_decode(deserializer);
-        let mut var_state = <crate::dto::secure::DartDirectSecureState>::sse_decode(deserializer);
-        let mut var_canSendSecure = <bool>::sse_decode(deserializer);
-        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
-        return crate::dto::secure::DartDirectSecurePrepareResult {
-            peer: var_peer,
-            state: var_state,
-            can_send_secure: var_canSendSecure,
-            warnings: var_warnings,
-        };
-    }
-}
-
-impl SseDecode for crate::dto::secure::DartDirectSecureRepairResult {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_peer = <String>::sse_decode(deserializer);
-        let mut var_state = <crate::dto::secure::DartDirectSecureState>::sse_decode(deserializer);
-        let mut var_repaired = <bool>::sse_decode(deserializer);
-        let mut var_problem =
-            <Option<crate::dto::secure::DartSecureProblem>>::sse_decode(deserializer);
-        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
-        return crate::dto::secure::DartDirectSecureRepairResult {
-            peer: var_peer,
-            state: var_state,
-            repaired: var_repaired,
-            problem: var_problem,
-            warnings: var_warnings,
-        };
-    }
-}
-
 impl SseDecode for crate::dto::secure::DartDirectSecureState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10482,45 +10082,6 @@ impl SseDecode for crate::dto::group::DartGroupReadResult {
     }
 }
 
-impl SseDecode for crate::dto::group::DartGroupRebindRecoveryItem {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_groupDid = <String>::sse_decode(deserializer);
-        let mut var_layer = <String>::sse_decode(deserializer);
-        let mut var_phase = <String>::sse_decode(deserializer);
-        let mut var_blocked = <bool>::sse_decode(deserializer);
-        return crate::dto::group::DartGroupRebindRecoveryItem {
-            group_did: var_groupDid,
-            layer: var_layer,
-            phase: var_phase,
-            blocked: var_blocked,
-        };
-    }
-}
-
-impl SseDecode for crate::dto::group::DartGroupRebindRecoverySummary {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_processed = <u32>::sse_decode(deserializer);
-        let mut var_completed = <u32>::sse_decode(deserializer);
-        let mut var_pending = <u32>::sse_decode(deserializer);
-        let mut var_blocked = <u32>::sse_decode(deserializer);
-        let mut var_sendPausedGroupDids = <Vec<String>>::sse_decode(deserializer);
-        let mut var_items =
-            <Vec<crate::dto::group::DartGroupRebindRecoveryItem>>::sse_decode(deserializer);
-        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
-        return crate::dto::group::DartGroupRebindRecoverySummary {
-            processed: var_processed,
-            completed: var_completed,
-            pending: var_pending,
-            blocked: var_blocked,
-            send_paused_group_dids: var_sendPausedGroupDids,
-            items: var_items,
-            warnings: var_warnings,
-        };
-    }
-}
-
 impl SseDecode for crate::dto::secure::DartGroupSecureLocalReadiness {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10749,13 +10310,9 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryImpact {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_localOrdinaryDataWillMigrate = <bool>::sse_decode(deserializer);
         let mut var_otherDevicesMustRejoin = <bool>::sse_decode(deserializer);
-        let mut var_unsupportedE2EeGroupCount = <u32>::sse_decode(deserializer);
-        let mut var_unsupportedDidOnlyGroupCount = <u32>::sse_decode(deserializer);
         return crate::dto::identity::DartHandleRecoveryImpact {
             local_ordinary_data_will_migrate: var_localOrdinaryDataWillMigrate,
             other_devices_must_rejoin: var_otherDevicesMustRejoin,
-            unsupported_e2ee_group_count: var_unsupportedE2EeGroupCount,
-            unsupported_did_only_group_count: var_unsupportedDidOnlyGroupCount,
         };
     }
 }
@@ -12288,18 +11845,6 @@ impl SseDecode for crate::dto::message::DartScopedInboxToken {
     }
 }
 
-impl SseDecode for crate::dto::secure::DartSecureDelivery {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_messageId = <Option<String>>::sse_decode(deserializer);
-        let mut var_state = <String>::sse_decode(deserializer);
-        return crate::dto::secure::DartSecureDelivery {
-            message_id: var_messageId,
-            state: var_state,
-        };
-    }
-}
-
 impl SseDecode for crate::dto::message::DartSecureInboxPreparation {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -12308,63 +11853,6 @@ impl SseDecode for crate::dto::message::DartSecureInboxPreparation {
         return crate::dto::message::DartSecureInboxPreparation {
             warnings: var_warnings,
             authorization_context_changed: var_authorizationContextChanged,
-        };
-    }
-}
-
-impl SseDecode for crate::dto::secure::DartSecureOutboxEntry {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_id = <String>::sse_decode(deserializer);
-        let mut var_target = <crate::dto::message::DartMessageTarget>::sse_decode(deserializer);
-        let mut var_messageKind = <String>::sse_decode(deserializer);
-        let mut var_status = <crate::dto::secure::DartSecureOutboxStatus>::sse_decode(deserializer);
-        let mut var_attemptCount = <u32>::sse_decode(deserializer);
-        let mut var_lastError =
-            <Option<crate::dto::secure::DartSecureProblem>>::sse_decode(deserializer);
-        let mut var_createdAt = <Option<String>>::sse_decode(deserializer);
-        let mut var_updatedAt = <Option<String>>::sse_decode(deserializer);
-        return crate::dto::secure::DartSecureOutboxEntry {
-            id: var_id,
-            target: var_target,
-            message_kind: var_messageKind,
-            status: var_status,
-            attempt_count: var_attemptCount,
-            last_error: var_lastError,
-            created_at: var_createdAt,
-            updated_at: var_updatedAt,
-        };
-    }
-}
-
-impl SseDecode for crate::dto::secure::DartSecureOutboxResult {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_id = <String>::sse_decode(deserializer);
-        let mut var_status = <crate::dto::secure::DartSecureOutboxStatus>::sse_decode(deserializer);
-        let mut var_delivery =
-            <Option<crate::dto::secure::DartSecureDelivery>>::sse_decode(deserializer);
-        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
-        return crate::dto::secure::DartSecureOutboxResult {
-            id: var_id,
-            status: var_status,
-            delivery: var_delivery,
-            warnings: var_warnings,
-        };
-    }
-}
-
-impl SseDecode for crate::dto::secure::DartSecureOutboxStatus {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut inner = <i32>::sse_decode(deserializer);
-        return match inner {
-            0 => crate::dto::secure::DartSecureOutboxStatus::Queued,
-            1 => crate::dto::secure::DartSecureOutboxStatus::Sending,
-            2 => crate::dto::secure::DartSecureOutboxStatus::Failed,
-            3 => crate::dto::secure::DartSecureOutboxStatus::Sent,
-            4 => crate::dto::secure::DartSecureOutboxStatus::Dropped,
-            _ => unreachable!("Invalid variant for DartSecureOutboxStatus: {}", inner),
         };
     }
 }
@@ -13111,18 +12599,6 @@ impl SseDecode for Vec<crate::dto::group::DartGroupMember> {
     }
 }
 
-impl SseDecode for Vec<crate::dto::group::DartGroupRebindRecoveryItem> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(<crate::dto::group::DartGroupRebindRecoveryItem>::sse_decode(deserializer));
-        }
-        return ans_;
-    }
-}
-
 impl SseDecode for Vec<crate::dto::group::DartGroupSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -13224,20 +12700,6 @@ impl SseDecode for Vec<crate::dto::directory::DartRelationshipListItem> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::dto::directory::DartRelationshipListItem>::sse_decode(deserializer));
-        }
-        return ans_;
-    }
-}
-
-impl SseDecode for Vec<crate::dto::secure::DartSecureOutboxEntry> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(<crate::dto::secure::DartSecureOutboxEntry>::sse_decode(
-                deserializer,
-            ));
         }
         return ans_;
     }
@@ -13601,19 +13063,6 @@ impl SseDecode for Option<crate::dto::realtime::DartRealtimeSyncHint> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::dto::realtime::DartRealtimeSyncHint>::sse_decode(
-                deserializer,
-            ));
-        } else {
-            return None;
-        }
-    }
-}
-
-impl SseDecode for Option<crate::dto::secure::DartSecureDelivery> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        if (<bool>::sse_decode(deserializer)) {
-            return Some(<crate::dto::secure::DartSecureDelivery>::sse_decode(
                 deserializer,
             ));
         } else {
@@ -14125,155 +13574,133 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        105 => wire__crate__api__groups__resume_group_rebind_recovery_impl(
+        105 => wire__crate__api__identity__resume_handle_recovery_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        106 => wire__crate__api__identity__resume_handle_recovery_impl(
+        106 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        107 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        108 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        109 => wire__crate__api__identity__revoke_device_impl(port, ptr, rust_vec_len, data_len),
-        110 => {
-            wire__crate__api__secure__secure_direct_prepare_impl(port, ptr, rust_vec_len, data_len)
-        }
-        111 => {
-            wire__crate__api__secure__secure_direct_repair_impl(port, ptr, rust_vec_len, data_len)
-        }
-        112 => {
+        108 => wire__crate__api__identity__revoke_device_impl(port, ptr, rust_vec_len, data_len),
+        109 => {
             wire__crate__api__secure__secure_direct_status_impl(port, ptr, rust_vec_len, data_len)
         }
-        113 => {
+        110 => {
             wire__crate__api__secure__secure_group_prepare_impl(port, ptr, rust_vec_len, data_len)
         }
-        114 => {
+        111 => {
             wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len)
         }
-        115 => {
+        112 => {
             wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len)
         }
-        116 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
-        117 => wire__crate__api__secure__secure_outbox_list_failed_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        118 => {
-            wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len)
-        }
-        119 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
-        120 => {
+        113 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
+        114 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        121 => wire__crate__api__attachments__send_conversation_attachment_impl(
+        115 => wire__crate__api__attachments__send_conversation_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        122 => wire__crate__api__messages__send_conversation_payload_impl(
+        116 => wire__crate__api__messages__send_conversation_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        123 => wire__crate__api__messages__send_conversation_text_impl(
+        117 => wire__crate__api__messages__send_conversation_text_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        124 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
-        125 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        126 => wire__crate__api__identity__start_device_join_verification_impl(
+        118 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
+        119 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        120 => wire__crate__api__identity__start_device_join_verification_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        127 => wire__crate__api__messages__stop_conversation_patch_session_impl(
+        121 => wire__crate__api__messages__stop_conversation_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        128 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
+        122 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        129 => wire__crate__api__messages__sync_conversation_after_impl(
+        123 => wire__crate__api__messages__sync_conversation_after_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        130 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
-        131 => wire__crate__api__messages__sync_diagnostics_impl(port, ptr, rust_vec_len, data_len),
-        132 => wire__crate__api__messages__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        133 => {
+        124 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
+        125 => wire__crate__api__messages__sync_diagnostics_impl(port, ptr, rust_vec_len, data_len),
+        126 => wire__crate__api__messages__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        127 => {
             wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len)
         }
-        134 => wire__crate__api__messages__thread_message_patch_stream_impl(
+        128 => wire__crate__api__messages__thread_message_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        135 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        136 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        137 => wire__crate__api__identity__update_display_name_projection_impl(
+        129 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        130 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        131 => wire__crate__api__identity__update_display_name_projection_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        138 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        139 => wire__crate__api__identity__upgrade_legacy_identity_impl(
+        132 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        133 => wire__crate__api__identity__upgrade_legacy_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        140 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
+        134 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        141 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        142 => wire__crate__api__identity__verify_identity_vault_impl(
+        135 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        136 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        143 => wire__crate__api__messages__watch_conversation_patches_impl(
+        137 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        144 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        138 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        145 => {
+        139 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -15697,53 +15124,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::config::DartDeviceVaultRootKe
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartDirectSecurePrepareResult {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.peer.into_into_dart().into_dart(),
-            self.state.into_into_dart().into_dart(),
-            self.can_send_secure.into_into_dart().into_dart(),
-            self.warnings.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::secure::DartDirectSecurePrepareResult
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartDirectSecurePrepareResult>
-    for crate::dto::secure::DartDirectSecurePrepareResult
-{
-    fn into_into_dart(self) -> crate::dto::secure::DartDirectSecurePrepareResult {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartDirectSecureRepairResult {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.peer.into_into_dart().into_dart(),
-            self.state.into_into_dart().into_dart(),
-            self.repaired.into_into_dart().into_dart(),
-            self.problem.into_into_dart().into_dart(),
-            self.warnings.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::secure::DartDirectSecureRepairResult
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartDirectSecureRepairResult>
-    for crate::dto::secure::DartDirectSecureRepairResult
-{
-    fn into_into_dart(self) -> crate::dto::secure::DartDirectSecureRepairResult {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartDirectSecureState {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -16240,55 +15620,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupReadResult>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupRebindRecoveryItem {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.group_did.into_into_dart().into_dart(),
-            self.layer.into_into_dart().into_dart(),
-            self.phase.into_into_dart().into_dart(),
-            self.blocked.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::group::DartGroupRebindRecoveryItem
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupRebindRecoveryItem>
-    for crate::dto::group::DartGroupRebindRecoveryItem
-{
-    fn into_into_dart(self) -> crate::dto::group::DartGroupRebindRecoveryItem {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupRebindRecoverySummary {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.processed.into_into_dart().into_dart(),
-            self.completed.into_into_dart().into_dart(),
-            self.pending.into_into_dart().into_dart(),
-            self.blocked.into_into_dart().into_dart(),
-            self.send_paused_group_dids.into_into_dart().into_dart(),
-            self.items.into_into_dart().into_dart(),
-            self.warnings.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::group::DartGroupRebindRecoverySummary
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupRebindRecoverySummary>
-    for crate::dto::group::DartGroupRebindRecoverySummary
-{
-    fn into_into_dart(self) -> crate::dto::group::DartGroupRebindRecoverySummary {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartGroupSecureLocalReadiness {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -16559,12 +15890,6 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRecoveryI
                 .into_into_dart()
                 .into_dart(),
             self.other_devices_must_rejoin.into_into_dart().into_dart(),
-            self.unsupported_e2ee_group_count
-                .into_into_dart()
-                .into_dart(),
-            self.unsupported_did_only_group_count
-                .into_into_dart()
-                .into_dart(),
         ]
         .into_dart()
     }
@@ -18538,27 +17863,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartScopedInboxToken
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureDelivery {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.message_id.into_into_dart().into_dart(),
-            self.state.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::secure::DartSecureDelivery
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureDelivery>
-    for crate::dto::secure::DartSecureDelivery
-{
-    fn into_into_dart(self) -> crate::dto::secure::DartSecureDelivery {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSecureInboxPreparation {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -18578,80 +17882,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSecureInboxPrepa
     for crate::dto::message::DartSecureInboxPreparation
 {
     fn into_into_dart(self) -> crate::dto::message::DartSecureInboxPreparation {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureOutboxEntry {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.id.into_into_dart().into_dart(),
-            self.target.into_into_dart().into_dart(),
-            self.message_kind.into_into_dart().into_dart(),
-            self.status.into_into_dart().into_dart(),
-            self.attempt_count.into_into_dart().into_dart(),
-            self.last_error.into_into_dart().into_dart(),
-            self.created_at.into_into_dart().into_dart(),
-            self.updated_at.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::secure::DartSecureOutboxEntry
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureOutboxEntry>
-    for crate::dto::secure::DartSecureOutboxEntry
-{
-    fn into_into_dart(self) -> crate::dto::secure::DartSecureOutboxEntry {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureOutboxResult {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.id.into_into_dart().into_dart(),
-            self.status.into_into_dart().into_dart(),
-            self.delivery.into_into_dart().into_dart(),
-            self.warnings.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::secure::DartSecureOutboxResult
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureOutboxResult>
-    for crate::dto::secure::DartSecureOutboxResult
-{
-    fn into_into_dart(self) -> crate::dto::secure::DartSecureOutboxResult {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureOutboxStatus {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        match self {
-            Self::Queued => 0.into_dart(),
-            Self::Sending => 1.into_dart(),
-            Self::Failed => 2.into_dart(),
-            Self::Sent => 3.into_dart(),
-            Self::Dropped => 4.into_dart(),
-            _ => unreachable!(),
-        }
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::dto::secure::DartSecureOutboxStatus
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureOutboxStatus>
-    for crate::dto::secure::DartSecureOutboxStatus
-{
-    fn into_into_dart(self) -> crate::dto::secure::DartSecureOutboxStatus {
         self
     }
 }
@@ -20291,27 +19521,6 @@ impl SseEncode for crate::dto::config::DartDeviceVaultRootKey {
     }
 }
 
-impl SseEncode for crate::dto::secure::DartDirectSecurePrepareResult {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.peer, serializer);
-        <crate::dto::secure::DartDirectSecureState>::sse_encode(self.state, serializer);
-        <bool>::sse_encode(self.can_send_secure, serializer);
-        <Vec<String>>::sse_encode(self.warnings, serializer);
-    }
-}
-
-impl SseEncode for crate::dto::secure::DartDirectSecureRepairResult {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.peer, serializer);
-        <crate::dto::secure::DartDirectSecureState>::sse_encode(self.state, serializer);
-        <bool>::sse_encode(self.repaired, serializer);
-        <Option<crate::dto::secure::DartSecureProblem>>::sse_encode(self.problem, serializer);
-        <Vec<String>>::sse_encode(self.warnings, serializer);
-    }
-}
-
 impl SseEncode for crate::dto::secure::DartDirectSecureState {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -20581,29 +19790,6 @@ impl SseEncode for crate::dto::group::DartGroupReadResult {
     }
 }
 
-impl SseEncode for crate::dto::group::DartGroupRebindRecoveryItem {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.group_did, serializer);
-        <String>::sse_encode(self.layer, serializer);
-        <String>::sse_encode(self.phase, serializer);
-        <bool>::sse_encode(self.blocked, serializer);
-    }
-}
-
-impl SseEncode for crate::dto::group::DartGroupRebindRecoverySummary {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <u32>::sse_encode(self.processed, serializer);
-        <u32>::sse_encode(self.completed, serializer);
-        <u32>::sse_encode(self.pending, serializer);
-        <u32>::sse_encode(self.blocked, serializer);
-        <Vec<String>>::sse_encode(self.send_paused_group_dids, serializer);
-        <Vec<crate::dto::group::DartGroupRebindRecoveryItem>>::sse_encode(self.items, serializer);
-        <Vec<String>>::sse_encode(self.warnings, serializer);
-    }
-}
-
 impl SseEncode for crate::dto::secure::DartGroupSecureLocalReadiness {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -20764,8 +19950,6 @@ impl SseEncode for crate::dto::identity::DartHandleRecoveryImpact {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <bool>::sse_encode(self.local_ordinary_data_will_migrate, serializer);
         <bool>::sse_encode(self.other_devices_must_rejoin, serializer);
-        <u32>::sse_encode(self.unsupported_e2ee_group_count, serializer);
-        <u32>::sse_encode(self.unsupported_did_only_group_count, serializer);
     }
 }
 
@@ -21939,62 +21123,11 @@ impl SseEncode for crate::dto::message::DartScopedInboxToken {
     }
 }
 
-impl SseEncode for crate::dto::secure::DartSecureDelivery {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <Option<String>>::sse_encode(self.message_id, serializer);
-        <String>::sse_encode(self.state, serializer);
-    }
-}
-
 impl SseEncode for crate::dto::message::DartSecureInboxPreparation {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<String>>::sse_encode(self.warnings, serializer);
         <bool>::sse_encode(self.authorization_context_changed, serializer);
-    }
-}
-
-impl SseEncode for crate::dto::secure::DartSecureOutboxEntry {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.id, serializer);
-        <crate::dto::message::DartMessageTarget>::sse_encode(self.target, serializer);
-        <String>::sse_encode(self.message_kind, serializer);
-        <crate::dto::secure::DartSecureOutboxStatus>::sse_encode(self.status, serializer);
-        <u32>::sse_encode(self.attempt_count, serializer);
-        <Option<crate::dto::secure::DartSecureProblem>>::sse_encode(self.last_error, serializer);
-        <Option<String>>::sse_encode(self.created_at, serializer);
-        <Option<String>>::sse_encode(self.updated_at, serializer);
-    }
-}
-
-impl SseEncode for crate::dto::secure::DartSecureOutboxResult {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.id, serializer);
-        <crate::dto::secure::DartSecureOutboxStatus>::sse_encode(self.status, serializer);
-        <Option<crate::dto::secure::DartSecureDelivery>>::sse_encode(self.delivery, serializer);
-        <Vec<String>>::sse_encode(self.warnings, serializer);
-    }
-}
-
-impl SseEncode for crate::dto::secure::DartSecureOutboxStatus {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(
-            match self {
-                crate::dto::secure::DartSecureOutboxStatus::Queued => 0,
-                crate::dto::secure::DartSecureOutboxStatus::Sending => 1,
-                crate::dto::secure::DartSecureOutboxStatus::Failed => 2,
-                crate::dto::secure::DartSecureOutboxStatus::Sent => 3,
-                crate::dto::secure::DartSecureOutboxStatus::Dropped => 4,
-                _ => {
-                    unimplemented!("");
-                }
-            },
-            serializer,
-        );
     }
 }
 
@@ -22547,16 +21680,6 @@ impl SseEncode for Vec<crate::dto::group::DartGroupMember> {
     }
 }
 
-impl SseEncode for Vec<crate::dto::group::DartGroupRebindRecoveryItem> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::dto::group::DartGroupRebindRecoveryItem>::sse_encode(item, serializer);
-        }
-    }
-}
-
 impl SseEncode for Vec<crate::dto::group::DartGroupSummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -22637,16 +21760,6 @@ impl SseEncode for Vec<crate::dto::directory::DartRelationshipListItem> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::dto::directory::DartRelationshipListItem>::sse_encode(item, serializer);
-        }
-    }
-}
-
-impl SseEncode for Vec<crate::dto::secure::DartSecureOutboxEntry> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::dto::secure::DartSecureOutboxEntry>::sse_encode(item, serializer);
         }
     }
 }
@@ -22935,16 +22048,6 @@ impl SseEncode for Option<crate::dto::realtime::DartRealtimeSyncHint> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::realtime::DartRealtimeSyncHint>::sse_encode(value, serializer);
-        }
-    }
-}
-
-impl SseEncode for Option<crate::dto::secure::DartSecureDelivery> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.is_some(), serializer);
-        if let Some(value) = self {
-            <crate::dto::secure::DartSecureDelivery>::sse_encode(value, serializer);
         }
     }
 }

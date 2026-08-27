@@ -119,57 +119,6 @@ fn msg_send_secure_on_alias_dry_run_reaches_im_core_secure_plan() {
 }
 
 #[test]
-fn msg_secure_init_is_stable_unsupported_without_secure_direct_legacy_path() {
-    let workspace = TempDir::new("msg-live-secure-init").expect("workspace");
-    write_msg_config(workspace.path(), "https://placeholder.invalid");
-    register_generated_msg_identity(workspace.path(), "alice-init", "alice", "jwt-alice");
-    let bob = register_generated_msg_identity(workspace.path(), "bob-init", "bob", "jwt-bob");
-    let server = TestServer::new(vec![]);
-    write_msg_config(workspace.path(), &server.base_url());
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-init",
-            "msg",
-            "secure",
-            "init",
-            "--with",
-            &bob.did,
-        ],
-        workspace.path(),
-    );
-
-    assert_secure_direct_unsupported(&output, "msg.secure.init");
-    assert_eq!(server.requests().len(), 0);
-}
-
-#[test]
-fn msg_secure_retry_is_stable_unsupported_without_secure_direct_legacy_path() {
-    let workspace = TempDir::new("msg-live-secure-retry").expect("workspace");
-    write_msg_config(workspace.path(), "https://placeholder.invalid");
-    register_generated_msg_identity(workspace.path(), "alice-retry", "alice", "jwt-alice");
-    register_generated_msg_identity(workspace.path(), "bob-retry", "bob", "jwt-bob");
-    let server = TestServer::new(vec![]);
-    write_msg_config(workspace.path(), &server.base_url());
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-retry",
-            "msg",
-            "secure",
-            "retry",
-            "retry-live-1",
-        ],
-        workspace.path(),
-    );
-
-    assert_secure_direct_unsupported(&output, "msg.secure.retry");
-    assert_eq!(server.requests().len(), 0);
-}
-
-#[test]
 fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     let workspace = TempDir::new("msg-live-read").expect("workspace");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
@@ -663,10 +612,6 @@ fn error_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stderr).expect("error JSON")
-}
-
-fn assert_secure_direct_unsupported(output: &Output, command: &str) {
-    assert_unsupported_capability(output, command, "secure-direct", "Phase 6");
 }
 
 fn assert_unsupported_capability(

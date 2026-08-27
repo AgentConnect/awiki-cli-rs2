@@ -20,7 +20,7 @@ fn agent_message_service_advertises_group_profile() {
         serde_json::json!([
             "anp.core.binding.v1",
             "anp.direct.base.v1",
-            "anp.group.base.v1",
+            "anp.group.base.v2",
             "anp.attachment.v1"
         ])
     );

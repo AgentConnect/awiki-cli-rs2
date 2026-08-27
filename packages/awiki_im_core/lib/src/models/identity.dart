@@ -150,14 +150,10 @@ class HandleRecoveryImpact {
   const HandleRecoveryImpact({
     required this.localOrdinaryDataWillMigrate,
     required this.otherDevicesMustRejoin,
-    required this.unsupportedE2eeGroupCount,
-    required this.unsupportedDidOnlyGroupCount,
   });
 
   final bool localOrdinaryDataWillMigrate;
   final bool otherDevicesMustRejoin;
-  final int unsupportedE2eeGroupCount;
-  final int unsupportedDidOnlyGroupCount;
 }
 
 class HandleRecoveryRegistryEpochReset {

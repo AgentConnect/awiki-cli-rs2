@@ -10,6 +10,11 @@ const options: ImCoreNodeOpenOptions = {
   stateRoot: '/tmp/awiki-im-core-node-types',
   serviceBaseUrl: 'https://awiki.info',
   didDomain: 'awiki.info',
+  clientVersionInfo: {
+    product: 'awiki-daemon',
+    release: '0815',
+    version: '0.1.91',
+  },
   mailServiceEndpoint: 'https://mail.awiki.info',
 }
 

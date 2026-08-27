@@ -82,7 +82,7 @@ fn msg_send_group_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-alice\r\n");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "group.send");
-    assert_eq!(body["params"]["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(body["params"]["meta"]["profile"], "anp.group.base.v2");
     assert_eq!(
         body["params"]["meta"]["target"],
         json!({"kind": "group", "did": GROUP_DID})

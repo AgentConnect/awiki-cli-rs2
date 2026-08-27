@@ -40,7 +40,6 @@ fn user_command_examples_include_required_diagnostic_and_migration_gates() {
 
     let gated_commands = [
         ("id import-v1", "--migration"),
-        ("id replace-did", "--diagnostic"),
         ("debug db handle-history", "--diagnostic"),
         ("debug db import-v1", "--migration"),
     ];

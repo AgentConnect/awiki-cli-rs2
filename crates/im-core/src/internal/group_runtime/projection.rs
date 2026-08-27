@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn group_member_record_preserves_full_protocol_handle_anchor() {
+    fn historical_handle_member_projection_does_not_enqueue_legacy_rebind_work() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         let result = crate::groups::GroupReadResult::from_raw_response(
@@ -1043,32 +1043,27 @@ mod tests {
         .unwrap();
         project_group_members_with_connection(&mut db, &scope(), "did:example:group", &result)
             .unwrap();
-        assert_eq!(
-            crate::internal::group_rebind_recovery::enqueue_recovery_jobs_for_connection(
-                &mut db,
-                "owner-identity",
-                "alice.example.com",
-                &["did:wba:example.com:alice:e1_old".to_owned()],
-                "did:wba:example.com:alice:e1_new",
-                "8",
-            )
-            .unwrap(),
-            1
-        );
-        let persisted: (String, String) = db
+        let persisted: (String, String, String) = db
             .query_row(
-                "SELECT gm.anchor_value,o.member_handle FROM group_members gm JOIN group_rebind_outbox o ON o.group_did = gm.group_id",
+                "SELECT anchor_value,member_handle,handle_binding_generation FROM group_members",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(
             persisted,
             (
                 "alice.example.com".to_owned(),
-                "alice.example.com".to_owned()
+                "alice.example.com".to_owned(),
+                "7".to_owned(),
             )
         );
+        let legacy_jobs: i64 = db
+            .query_row("SELECT COUNT(*) FROM group_rebind_outbox", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(legacy_jobs, 0);
     }
 
     fn assert_partial_handle_pair_preserves_existing_snapshot(member: Value) {

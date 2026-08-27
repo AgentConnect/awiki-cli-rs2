@@ -31,8 +31,7 @@ pub use crate::external_http_auth::{
     ExternalHttpRequest, ExternalHttpResponse, EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES,
 };
 pub use crate::groups::{
-    GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupE2eeProcessLeaveRequest,
-    GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupInitialMemberRequest,
+    GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupInitialMemberRequest,
     GroupJoinRequest, GroupKeyPackagePublishRequest, GroupKeyPackagePublishResult,
     GroupKeyPackagePurpose, GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit,
     GroupMemberMutationRequest, GroupMemberRef, GroupMemberResolution, GroupMemberRole,
@@ -99,11 +98,10 @@ pub use crate::realtime::{
     UnknownNotificationEvent,
 };
 pub use crate::secure::{
-    DirectSecureConversation, DirectSecurePrepareResult, DirectSecureRepairResult,
-    DirectSecureState, DirectSecureStatus, GroupSecureConversation, GroupSecureLocalReadiness,
-    GroupSecurePendingWork, GroupSecurePrepareResult, GroupSecureRepairResult, GroupSecureState,
-    GroupSecureStatus, SecureDelivery, SecureOutboxEntry, SecureOutboxId, SecureOutboxResult,
-    SecureOutboxService, SecureOutboxStatus, SecureProblem, SecureProblemCode, SecureService,
+    DirectSecureConversation, DirectSecureState, DirectSecureStatus, GroupSecureConversation,
+    GroupSecureLocalReadiness, GroupSecurePendingWork, GroupSecurePrepareResult,
+    GroupSecureRepairResult, GroupSecureState, GroupSecureStatus, SecureProblem, SecureProblemCode,
+    SecureService,
 };
 pub use crate::site::{
     SiteDomain, SitePageDocument, SitePageDraft, SitePageQuery, SitePageRef, SitePageUpdate,

@@ -24,12 +24,9 @@ pub use self::dto::{
     IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
     IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile,
     LegacyRegistryEpochAdoptionAuthority, LegacyUpgradeStatus, Profile, ProfileAttribute,
-    ProfilePatch, RegisterHandleRequest, RegistrationMethod, ReplaceDidAffectedLocalState,
-    ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan, ReplaceDidExecutionRequest,
-    ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity, ReplaceDidLocalRebindPlan,
-    ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
-    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
-    VNextAgentLegacyUpgradeSession, VerificationInput, DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3,
+    ProfilePatch, RegisterHandleRequest, RegistrationMethod, VNextAgentBootstrapMaterial,
+    VNextAgentLegacyUpgradeReconciliation, VNextAgentLegacyUpgradeSession, VerificationInput,
+    DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3,
 };
 pub(crate) use self::dto::{
     DaemonSubkeyPrivatePackage, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1, DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,

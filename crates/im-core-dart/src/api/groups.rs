@@ -3,8 +3,7 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     group::{
-        DartCreateGroupRequest, DartGroupIdentityMode, DartGroupReadResult,
-        DartGroupRebindRecoverySummary, DartJoinGroupRequest,
+        DartCreateGroupRequest, DartGroupIdentityMode, DartGroupReadResult, DartJoinGroupRequest,
     },
 };
 
@@ -56,19 +55,6 @@ pub async fn join_group_with_identity(
             member_handle: identity_handle(request.identity_mode, request.identity_handle)?,
             reason_text: None,
         })
-        .await
-        .map(Into::into)
-        .map_err(DartImError::from)
-}
-
-pub async fn resume_group_rebind_recovery(
-    client: &Arc<crate::api::client::DartImClient>,
-    limit: u32,
-) -> Result<DartGroupRebindRecoverySummary, DartImError> {
-    let inner = client.clone_inner()?;
-    inner
-        .groups()
-        .resume_rebind_recovery_async(limit)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

@@ -56,13 +56,10 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload_for_gate(
+        let payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
             service_did,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -73,12 +70,9 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_join_payload_for_gate(
+        let payload = crate::internal::wire::group::build_group_join_payload(
             self.client.did().as_str(),
             &request,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -94,9 +88,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -107,12 +98,9 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_add_member_payload_for_gate(
+        let payload = crate::internal::wire::group::build_group_add_member_payload(
             self.client.did().as_str(),
             &request,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -128,22 +116,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
-        )?;
-        self.signed_group_rpc(payload, credentials)
-    }
-
-    pub(crate) fn rebind_member(
-        mut self,
-        request: crate::groups::GroupRebindMemberRequest,
-        credentials: Option<GroupLifecycleCredentials>,
-    ) -> crate::ImResult<crate::groups::GroupReadResult> {
-        self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_rebind_member_payload(
-            self.client.did().as_str(),
-            &request,
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -159,9 +131,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -177,9 +146,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -249,13 +215,10 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload_for_gate(
+        let payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
             service_did,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -266,12 +229,9 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_join_payload_for_gate(
+        let payload = crate::internal::wire::group::build_group_join_payload(
             self.client.did().as_str(),
             &request,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -287,9 +247,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -300,12 +257,9 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_add_member_payload_for_gate(
+        let payload = crate::internal::wire::group::build_group_add_member_payload(
             self.client.did().as_str(),
             &request,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -321,45 +275,7 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
-        self.signed_group_rpc_async(payload, credentials).await
-    }
-
-    pub(crate) async fn rebind_member_async(
-        mut self,
-        request: crate::groups::GroupRebindMemberRequest,
-        credentials: Option<GroupLifecycleCredentials>,
-    ) -> crate::ImResult<crate::groups::GroupReadResult> {
-        self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_rebind_member_payload(
-            self.client.did().as_str(),
-            &request,
-        )?;
-        self.signed_group_rpc_async(payload, credentials).await
-    }
-
-    pub(crate) async fn rebind_member_with_operation_id_async(
-        mut self,
-        request: crate::groups::GroupRebindMemberRequest,
-        operation_id: &str,
-        credentials: Option<GroupLifecycleCredentials>,
-    ) -> crate::ImResult<crate::groups::GroupReadResult> {
-        self.ensure_group_session_async().await?;
-        let mut payload = crate::internal::wire::group::build_group_rebind_member_payload(
-            self.client.did().as_str(),
-            &request,
-        )?;
-        let operation_id = operation_id.trim();
-        if operation_id.is_empty() {
-            return Err(crate::ImError::invalid_input(
-                Some("operation_id".to_owned()),
-                "durable rebind operation ID is required",
-            ));
-        }
-        payload.meta["operation_id"] = serde_json::Value::String(operation_id.to_owned());
         self.signed_group_rpc_async(payload, credentials).await
     }
 
@@ -374,9 +290,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -392,9 +305,6 @@ where
                 self.client.did().as_str(),
                 &request,
             )?,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
         )?;
         self.signed_group_rpc_async(payload, credentials).await
     }
@@ -576,7 +486,7 @@ mod tests {
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[0].method, "group.create");
         assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
-        assert_eq!(calls[0].params["meta"]["profile"], "anp.group.base.v1");
+        assert_eq!(calls[0].params["meta"]["profile"], "anp.group.base.v2");
         assert_eq!(
             calls[0].params["meta"]["target"],
             json!({"kind":"service","did":"did:example:service"})
@@ -698,7 +608,7 @@ mod tests {
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[0].method, "group.create");
         assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
-        assert_eq!(calls[0].params["meta"]["profile"], "anp.group.base.v1");
+        assert_eq!(calls[0].params["meta"]["profile"], "anp.group.base.v2");
         assert_eq!(
             calls[0].params["meta"]["target"],
             json!({"kind":"service","did":"did:example:service"})

@@ -2246,7 +2246,7 @@ pub(crate) async fn activate_authorized_join(
                 },
             )
             .await?;
-        advance_joined_rebind(core, &join.session.join_session_id, &join.session.did).await?;
+        advance_joined_transition(core, &join.session.join_session_id).await?;
         let marker = crate::internal::identity_transition_pending::load_joined_device(
             &core.inner().sdk_paths().local_state.sqlite_path,
             &join.session.join_session_id,
@@ -2406,7 +2406,7 @@ pub(crate) async fn begin_prepared_registration_device_join(
         join
     };
     if is_rebind {
-        advance_joined_rebind(core, &join.session.join_session_id, &join.session.did).await?;
+        advance_joined_transition(core, &join.session.join_session_id).await?;
     }
     let reset_reference = if is_rebind {
         crate::internal::identity_transition_pending::load_joined_device(
@@ -2508,7 +2508,7 @@ pub(crate) async fn resume_authorized_join_activation(
         .poll_new_device_join(join_session_id)
         .await?;
     if recovery_marker.is_some() {
-        advance_joined_rebind(core, join_session_id, &join.session.did).await?;
+        advance_joined_transition(core, join_session_id).await?;
     }
     let reset_reference = crate::internal::identity_transition_pending::load_joined_device(
         &core.inner().sdk_paths().local_state.sqlite_path,
@@ -2523,10 +2523,9 @@ pub(crate) async fn resume_authorized_join_activation(
     })
 }
 
-async fn advance_joined_rebind(
+async fn advance_joined_transition(
     core: &crate::core::ImCore,
     join_session_id: &str,
-    did: &crate::ids::Did,
 ) -> crate::ImResult<()> {
     let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
     let Some(marker) = crate::internal::identity_transition_pending::load_joined_device(
@@ -2543,12 +2542,6 @@ async fn advance_joined_rebind(
         == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
     {
         mark_joined_transition_applied(core, &marker)?;
-    }
-    if let Ok(client) = core
-        .client_async(crate::identity::IdentitySelector::Did(did.clone()))
-        .await
-    {
-        let _ = client.groups().resume_rebind_recovery_async(100).await;
     }
     Ok(())
 }
@@ -2653,16 +2646,6 @@ fn progress_v4(
         .map(reset_reference_from_marker)
         .transpose()?;
     let result = pending.remote_result.as_ref();
-    let (unsupported_e2ee_group_count, unsupported_did_only_group_count) =
-        if !pending.fresh_local_state {
-            crate::internal::group_rebind_recovery::recovery_impact_counts(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &pending.owner_identity_id,
-                &pending.local_previous_did,
-            )?
-        } else {
-            (0, 0)
-        };
     Ok(HandleRecoveryProgress {
         operation_id: pending.operation_id.clone(),
         owner_identity_id: crate::ids::IdentityId::parse(&pending.owner_identity_id)?,
@@ -2693,8 +2676,6 @@ fn progress_v4(
         impact: HandleRecoveryImpact {
             local_ordinary_data_will_migrate: !pending.fresh_local_state,
             other_devices_must_rejoin: true,
-            unsupported_e2ee_group_count,
-            unsupported_did_only_group_count,
         },
         reset_reference,
         failure_code: pending

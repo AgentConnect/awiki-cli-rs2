@@ -47,8 +47,6 @@ pub(crate) mod identity_provider;
 pub(crate) mod identity_registration_join_preparation;
 pub(crate) mod identity_registration_pending;
 pub(crate) mod identity_registration_runtime;
-pub(crate) mod identity_replace_did_execution;
-pub(crate) mod identity_replace_did_plan;
 pub(crate) mod identity_retirement;
 pub(crate) mod identity_root_import_completion;
 #[cfg(feature = "sqlite")]

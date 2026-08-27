@@ -107,15 +107,7 @@ fn group_e2ee_internal_dry_run_plans_remain_queryable() {
             "group.e2ee.publish-key-package",
             "group.e2ee.publish_key_package",
         ),
-        ("group.e2ee.pending", "group.e2ee.pending"),
         ("group.e2ee.repair", "secure.group.repair"),
-        ("group.e2ee.update-key", "group.e2ee.update_key"),
-        ("group.e2ee.rejoin", "group.e2ee.rejoin"),
-        ("group.e2ee.recover-member", "group.e2ee.recover_member"),
-        (
-            "group.e2ee.process-leave-request",
-            "group.e2ee.process_leave_request",
-        ),
     ];
 
     for (command, action) in cases {
@@ -144,16 +136,25 @@ fn group_e2ee_internal_live_commands_enter_supported_im_core_boundary() {
         let output = awiki_internal_cmd(&args, workspace.path());
         assert_identity_required(&output, command);
     }
+}
 
+#[test]
+fn removed_group_e2ee_v1_commands_are_absent() {
+    let workspace = TempDir::new("group-e2ee-v1-removed").expect("workspace");
     for command in [
-        "group.e2ee.pending",
-        "group.e2ee.update-key",
-        "group.e2ee.rejoin",
-        "group.e2ee.recover-member",
-        "group.e2ee.process-leave-request",
+        "pending",
+        "update-key",
+        "rejoin",
+        "recover-member",
+        "process-leave-request",
     ] {
-        let output = awiki_internal_cmd(&group_e2ee_args(command, false), workspace.path());
-        assert_unsupported_capability(&output, command, "group e2ee", "Phase 6");
+        let output = awiki_internal_cmd(&["group", "e2ee", command], workspace.path());
+        assert_eq!(output.status.code(), Some(2));
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
+        assert!(envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unknown command")));
     }
 }
 
@@ -196,17 +197,10 @@ fn msg_group_secure_send_alias_dry_run_forwards_to_required_without_legacy_e2ee_
 }
 
 fn low_level_group_e2ee_commands(dry_run: bool) -> Vec<(Vec<&'static str>, &'static str)> {
-    [
-        "group.e2ee.publish-key-package",
-        "group.e2ee.pending",
-        "group.e2ee.update-key",
-        "group.e2ee.rejoin",
-        "group.e2ee.recover-member",
-        "group.e2ee.process-leave-request",
-    ]
-    .into_iter()
-    .map(|command| (group_e2ee_args(command, dry_run), command))
-    .collect()
+    ["group.e2ee.publish-key-package"]
+        .into_iter()
+        .map(|command| (group_e2ee_args(command, dry_run), command))
+        .collect()
 }
 
 fn supported_live_group_e2ee_commands() -> Vec<(Vec<&'static str>, &'static str)> {
@@ -231,42 +225,7 @@ fn group_e2ee_args(command: &str, dry_run: bool) -> Vec<&'static str> {
             "--device",
             PROTOCOL_DEVICE_ID,
         ],
-        "group.e2ee.pending" => vec!["group", "e2ee", "pending", "--group", GROUP_DID],
         "group.e2ee.repair" => vec!["group", "e2ee", "repair", "--group", GROUP_DID],
-        "group.e2ee.update-key" => vec![
-            "group",
-            "e2ee",
-            "update-key",
-            "--group",
-            GROUP_DID,
-            "--member",
-            MEMBER_DID,
-            "--device",
-            PROTOCOL_DEVICE_ID,
-        ],
-        "group.e2ee.rejoin" => vec![
-            "group", "e2ee", "rejoin", "--group", GROUP_DID, "--member", MEMBER_DID,
-        ],
-        "group.e2ee.recover-member" => vec![
-            "group",
-            "e2ee",
-            "recover-member",
-            "--group",
-            GROUP_DID,
-            "--member",
-            MEMBER_DID,
-            "--device",
-            PROTOCOL_DEVICE_ID,
-        ],
-        "group.e2ee.process-leave-request" => vec![
-            "group",
-            "e2ee",
-            "process-leave-request",
-            "--group",
-            GROUP_DID,
-            "--member",
-            MEMBER_DID,
-        ],
         _ => panic!("unknown group e2ee command: {command}"),
     };
     if dry_run {
@@ -328,33 +287,6 @@ fn assert_internal_command(output: &Output, command: &str) {
     assert_eq!(
         envelope["error"]["details"]["required_gate"],
         "AWIKI_CLI_INTERNAL_ENTRY=1"
-    );
-}
-
-fn assert_unsupported_capability(
-    output: &Output,
-    command: &str,
-    capability: &str,
-    required_phase: &str,
-) {
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let envelope = error_json(output);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], capability);
-    assert_eq!(
-        envelope["error"]["details"]["required_phase"],
-        required_phase
-    );
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
     );
 }
 

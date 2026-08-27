@@ -625,7 +625,7 @@ fn group_base_meta(sender_did: &str, target: Option<(&str, &str)>) -> Value {
     let mut meta = Map::new();
     meta.insert(
         "profile".to_string(),
-        Value::String("anp.group.base.v1".to_string()),
+        Value::String("anp.group.base.v2".to_string()),
     );
     meta.insert(
         "security_profile".to_string(),

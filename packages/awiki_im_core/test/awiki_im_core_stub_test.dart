@@ -246,37 +246,6 @@ void main() {
     },
   );
 
-  test('group recovery summary keeps per-group P4 and P6 partial states', () {
-    const summary = GroupRebindRecoverySummary(
-      processed: 2,
-      completed: 1,
-      pending: 1,
-      blocked: 0,
-      sendPausedGroupDids: ['did:example:group'],
-      items: [
-        GroupRebindRecoveryItem(
-          groupDid: 'did:example:group',
-          layer: 'p4',
-          phase: 'completed',
-          blocked: false,
-        ),
-        GroupRebindRecoveryItem(
-          groupDid: 'did:example:group',
-          layer: 'p6',
-          phase: 'awaiting_owner',
-          blocked: false,
-        ),
-      ],
-      warnings: ['group encryption recovery is pending'],
-    );
-
-    expect(summary.completed, 1);
-    expect(summary.pending, 1);
-    expect(summary.items.map((item) => item.layer), ['p4', 'p6']);
-    expect(summary.sendPausedGroupDids, ['did:example:group']);
-    expect(_resumeRebindRecoveryApiShape, isA<Function>());
-  });
-
   test('thread mark-read model exposes best-effort state', () {
     const result = MarkThreadReadResult(
       updatedCount: 1,
@@ -556,14 +525,6 @@ void main() {
     );
     expect(group.pendingWork.pendingNotices, 0);
 
-    const outbox = SecureOutboxEntry(
-      id: 'outbox-1',
-      target: MessageTarget.direct('did:example:bob'),
-      messageKind: 'text',
-      status: SecureOutboxStatus.failed,
-      attemptCount: 1,
-    );
-    expect(outbox.status, SecureOutboxStatus.failed);
   });
 }
 
@@ -665,8 +626,4 @@ Future<GroupReadResult> _joinGroupWithIdentityApiShape(GroupApi api) {
       identityHandle: 'alice.example.com',
     ),
   );
-}
-
-Future<GroupRebindRecoverySummary> _resumeRebindRecoveryApiShape(GroupApi api) {
-  return api.resumeRebindRecovery(limit: 100);
 }

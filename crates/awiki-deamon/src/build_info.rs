@@ -1,7 +1,7 @@
 pub const PRODUCT: &str = "awiki-daemon";
 pub const RELEASE: &str = match option_env!("AWIKI_DAEMON_RELEASE") {
     Some(release) => release,
-    None => "0714",
+    None => "0815",
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -18,7 +18,7 @@ mod tests {
         assert_eq!(PRODUCT, "awiki-daemon");
         assert_eq!(
             RELEASE,
-            option_env!("AWIKI_DAEMON_RELEASE").unwrap_or("0714")
+            option_env!("AWIKI_DAEMON_RELEASE").unwrap_or("0815")
         );
         assert_eq!(
             client_version_info().unwrap().header_value(),

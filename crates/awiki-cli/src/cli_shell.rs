@@ -22,7 +22,6 @@ mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
-mod id_replace_did_handlers;
 mod identity_register_handlers;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{

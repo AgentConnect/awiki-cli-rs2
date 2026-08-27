@@ -752,26 +752,7 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .unwrap()
         .contains(&json!("auth.json")));
 
-    let schema = success_json(&awiki_cmd(
-        &["schema", "id", "replace-did"],
-        workspace.path(),
-    ));
-    assert_eq!(schema["data"]["command"]["hidden"], true);
-    assert_eq!(schema["data"]["command"]["side_effect"], true);
-    assert_eq!(
-        schema["data"]["command"]["cutover"]["status"],
-        "diagnostic_only"
-    );
-    assert_eq!(
-        schema["data"]["command"]["cutover"]["default_surface"],
-        false
-    );
-    assert!(schema["data"]["command"]["short"]
-        .as_str()
-        .unwrap()
-        .contains("Danger"));
-
-    let alice = write_ready_identity(
+    write_ready_identity(
         &workspace.path().join(".awiki-cli"),
         TestIdentityOptions {
             identity_name: "alice",
@@ -787,69 +768,6 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         workspace.path(),
         None,
     ));
-
-    let replace = success_json(&awiki_cmd(
-        &[
-            "--diagnostic",
-            "--identity",
-            "alice",
-            "id",
-            "replace-did",
-            "--dry-run",
-            "--is-public=false",
-            "--role",
-            "",
-            "--endpoint-url",
-            "https://example.com/agent",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(replace["data"]["plan"]["action"], "replace_did");
-    assert_eq!(replace["data"]["plan"]["dangerous"], true);
-    assert_eq!(replace["data"]["plan"]["identity"]["local_alias"], "alice");
-    assert_eq!(replace["data"]["plan"]["identity"]["did"], alice.did);
-    assert_eq!(
-        replace["data"]["plan"]["remote_replace_did_call_preview"]["params"]["is_public"],
-        false
-    );
-    assert_eq!(
-        replace["data"]["plan"]["remote_replace_did_call_preview"]["params"]["role"],
-        Value::Null
-    );
-    assert_eq!(
-        replace["data"]["plan"]["remote_replace_did_call_preview"]["params"]["endpoint_url"],
-        "https://example.com/agent"
-    );
-    assert_eq!(
-        replace["data"]["plan"]["remote_replace_did_call_preview"]["method"],
-        "replace_did"
-    );
-    assert_eq!(
-        replace["data"]["plan"]["backup_plan"]["manifest_preview"]["old_did"],
-        alice.did
-    );
-    assert_eq!(
-        replace["data"]["plan"]["local_rebind_plan"]["old_owner_did"],
-        alice.did
-    );
-    assert_eq!(
-        replace["data"]["plan"]["local_rebind_plan"]["dry_run_only"],
-        true
-    );
-    assert!(replace["data"]["plan"]["local_writes"]
-        .as_array()
-        .unwrap()
-        .contains(&json!(".legacy-backup/replace-did")));
-    assert!(replace["data"]["plan"]["rollback_notes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|note| note.as_str().unwrap().contains("backup manifest")));
-    assert!(replace["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|warning| warning.as_str().unwrap().contains("Dangerous command")));
 
     let profile_schema = success_json(&awiki_cmd(&["schema", "id", "profile"], workspace.path()));
     let children: Vec<_> = profile_schema["data"]["children"]

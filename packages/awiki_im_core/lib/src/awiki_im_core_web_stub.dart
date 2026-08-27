@@ -498,7 +498,6 @@ class SecureApi {
 
   GroupSecureConversation group(String group) => GroupSecureConversation._();
 
-  SecureOutboxApi get outbox => SecureOutboxApi._();
 }
 
 class DirectSecureConversation {
@@ -508,13 +507,6 @@ class DirectSecureConversation {
     throw _unsupported();
   }
 
-  Future<DirectSecurePrepareResult> prepare() async {
-    throw _unsupported();
-  }
-
-  Future<DirectSecureRepairResult> repair() async {
-    throw _unsupported();
-  }
 }
 
 class GroupSecureConversation {
@@ -529,22 +521,6 @@ class GroupSecureConversation {
   }
 
   Future<GroupSecureRepairResult> repair() async {
-    throw _unsupported();
-  }
-}
-
-class SecureOutboxApi {
-  SecureOutboxApi._();
-
-  Future<List<SecureOutboxEntry>> listFailed() async {
-    throw _unsupported();
-  }
-
-  Future<SecureOutboxResult> retry(String outboxId) async {
-    throw _unsupported();
-  }
-
-  Future<SecureOutboxResult> drop(String outboxId) async {
     throw _unsupported();
   }
 }

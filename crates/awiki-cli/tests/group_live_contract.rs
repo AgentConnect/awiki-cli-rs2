@@ -119,7 +119,9 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
     assert_eq!(envelope["data"]["group"], group_did);
     assert_eq!(envelope["data"]["total"], 1);
     assert_eq!(envelope["data"]["members"][0]["member_did"], bob_did);
-    assert_eq!(envelope["data"]["members"][0]["member_handle"], "bob");
+    assert!(envelope["data"]["members"][0]
+        .get("member_handle")
+        .is_none());
     assert_eq!(envelope["data"]["members"][0]["role"], "member");
     assert_eq!(envelope["data"]["source"], "remote_http");
 
@@ -374,7 +376,7 @@ fn msg_send_group_live_posts_group_send_and_maps_message_id_suffix_like_go() {
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-alice\r\n");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "group.send");
-    assert_eq!(body["params"]["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(body["params"]["meta"]["profile"], "anp.group.base.v2");
     assert_eq!(
         body["params"]["meta"]["target"],
         json!({"kind": "group", "did": group_did})

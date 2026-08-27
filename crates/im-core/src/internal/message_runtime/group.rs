@@ -60,14 +60,7 @@ where
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
 
         let message_type = body.message_type();
-        let mut payload = build_group_payload(
-            self.client.did().as_str(),
-            group.as_str(),
-            &body,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
-        )?;
+        let mut payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
         apply_delivery_overrides(&mut payload.meta, &input.request);
         let credentials = match input.credentials {
             Some(credentials) => credentials,
@@ -127,14 +120,7 @@ where
             .await?;
 
         let message_type = body.message_type();
-        let mut payload = build_group_payload(
-            self.client.did().as_str(),
-            group.as_str(),
-            &body,
-            self.client
-                .core_inner()
-                .did_transition_vnext_hidden_rollout_enabled(),
-        )?;
+        let mut payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
         apply_delivery_overrides(&mut payload.meta, &input.request);
         let credentials = match input.credentials {
             Some(credentials) => credentials,
@@ -347,7 +333,6 @@ fn build_group_payload(
     sender_did: &str,
     group_did: &str,
     body: &OutgoingGroupBody,
-    v2_enabled: bool,
 ) -> crate::ImResult<crate::internal::wire::direct::DirectPayload> {
     let payload = match body {
         OutgoingGroupBody::Text { text, kind } => {
@@ -368,7 +353,7 @@ fn build_group_payload(
             )
         }
     }?;
-    crate::internal::wire::group::use_group_base_v2(payload, v2_enabled)
+    crate::internal::wire::group::use_group_base_v2(payload)
 }
 
 fn validate_plain_security(security: &crate::messages::MessageSecurityMode) -> crate::ImResult<()> {
