@@ -2186,7 +2186,6 @@ class SecureApi {
 
   GroupSecureConversation group(String group) =>
       GroupSecureConversation._(_client, group);
-
 }
 
 class DirectSecureConversation {
@@ -2202,7 +2201,6 @@ class DirectSecureConversation {
     );
     return status._toModel();
   }
-
 }
 
 class GroupSecureConversation {
@@ -3889,6 +3887,7 @@ extension on gen_message.DartMessageSyncStatus {
       MessageSyncStatus.retryableFailure,
     gen_message.DartMessageSyncStatus.authRevoked =>
       MessageSyncStatus.authRevoked,
+    gen_message.DartMessageSyncStatus.blocked => MessageSyncStatus.blocked,
   };
 }
 

@@ -19,6 +19,7 @@ pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     session_provider: P,
     transport: T,
     directory_transport: R,
+    run_deadline: StdDuration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -562,7 +563,14 @@ impl<'a, P, T, R> MessageSyncRuntimeV2<'a, P, T, R> {
             session_provider,
             transport,
             directory_transport,
+            run_deadline: SYNC_RUN_DEADLINE,
         }
+    }
+
+    #[cfg(test)]
+    fn with_run_deadline_for_test(mut self, run_deadline: StdDuration) -> Self {
+        self.run_deadline = run_deadline;
+        self
     }
 }
 
@@ -585,38 +593,50 @@ where
             .begin_message_sync_run(&binding.owner_identity_id, unix_time_i64())
             .await?;
         let run_started = Instant::now();
-        let mut device_epoch_refresh_attempted = false;
-        let final_result = loop {
-            match self
-                .sync_now_once(&request, run.run_generation, run_started)
-                .await
-            {
-                Err(error)
-                    if !device_epoch_refresh_attempted && is_device_epoch_rejection(&error) =>
+        let run_deadline = self.run_deadline;
+        let final_result = match tokio::time::timeout(run_deadline, async {
+            let mut device_epoch_refresh_attempted = false;
+            loop {
+                match self
+                    .sync_now_once(&request, run.run_generation, run_started)
+                    .await
                 {
-                    device_epoch_refresh_attempted = true;
-                    self.refresh_session_and_lane_epoch().await?;
-                }
-                Ok((mut outcome, Some(_error))) if !device_epoch_refresh_attempted => {
-                    self.refresh_session_and_lane_epoch().await?;
-                    let binding = self.client.active_sync_account_binding().await?;
-                    let owner_lock = owner_sync_lock(&binding.owner_identity_id);
-                    let _owner_guard = owner_lock.lock().await;
-                    let db = self.client.core_inner().local_state_db().await?;
-                    match self.drain_read_outbox(&db, &binding).await {
-                        Ok(None) => break Ok(outcome),
-                        Ok(Some(error)) => break Err(error),
-                        Err(_) => {
-                            outcome
-                                .warnings
-                                .push("sync.read_state_writeback_deferred".to_owned());
-                            break Ok(outcome);
+                    Err(error)
+                        if !device_epoch_refresh_attempted && is_device_epoch_rejection(&error) =>
+                    {
+                        device_epoch_refresh_attempted = true;
+                        self.refresh_session_and_lane_epoch().await?;
+                    }
+                    Ok((mut outcome, Some(_error))) if !device_epoch_refresh_attempted => {
+                        self.refresh_session_and_lane_epoch().await?;
+                        let binding = self.client.active_sync_account_binding().await?;
+                        let owner_lock = owner_sync_lock(&binding.owner_identity_id);
+                        let _owner_guard = owner_lock.lock().await;
+                        let db = self.client.core_inner().local_state_db().await?;
+                        match self.drain_read_outbox(&db, &binding).await {
+                            Ok(None) => break Ok(outcome),
+                            Ok(Some(error)) => break Err(error),
+                            Err(_) => {
+                                outcome
+                                    .warnings
+                                    .push("sync.read_state_writeback_deferred".to_owned());
+                                break Ok(outcome);
+                            }
                         }
                     }
+                    Ok((_outcome, Some(error))) => break Err(error),
+                    Ok((outcome, None)) => break Ok(outcome),
+                    Err(error) => break Err(error),
                 }
-                Ok((_outcome, Some(error))) => break Err(error),
-                Ok((outcome, None)) => break Ok(outcome),
-                Err(error) => break Err(error),
+            }
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                let mut outcome = empty_outcome();
+                outcome.warnings.push("sync.budget_exhausted".to_owned());
+                Ok(outcome)
             }
         };
         let budget_pending = final_result.as_ref().is_ok_and(|outcome| {
@@ -625,6 +645,15 @@ where
                 .iter()
                 .any(|warning| warning == "sync.budget_exhausted")
         });
+        let classified_failure = final_result.as_ref().err().and_then(failure_outcome);
+        let error_retryable = final_result.is_err()
+            && !classified_failure.as_ref().is_some_and(|outcome| {
+                matches!(
+                    outcome.status,
+                    crate::messages::MessageSyncStatus::Blocked
+                        | crate::messages::MessageSyncStatus::AuthRevoked
+                )
+            });
         let now = unix_time_i64();
         let last_result_json = match &final_result {
             Ok(outcome) => json!({
@@ -635,7 +664,10 @@ where
                 "elapsed_ms": run_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             }),
             Err(error) => json!({
-                "status": "retryable_failure",
+                "status": classified_failure
+                    .as_ref()
+                    .map(|outcome| outcome.status)
+                    .unwrap_or(crate::messages::MessageSyncStatus::RetryableFailure),
                 "error": error.to_string(),
                 "elapsed_ms": run_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             }),
@@ -644,9 +676,9 @@ where
         let current_generation = db
             .finish_message_sync_run(crate::internal::local_state::sync_v2::MessageSyncRunState {
                 owner_identity_id: run.owner_identity_id,
-                sync_pending: budget_pending || final_result.is_err(),
+                sync_pending: budget_pending || error_retryable,
                 run_generation: run.run_generation,
-                next_retry_at: final_result.as_ref().err().map(|_| now.saturating_add(1)),
+                next_retry_at: error_retryable.then(|| now.saturating_add(1)),
                 last_result_json: Some(last_result_json),
                 updated_at: now,
             })
@@ -799,6 +831,7 @@ where
                             &binding,
                             &state,
                             &recovery,
+                            None,
                             run_generation,
                             &mut result,
                         )
@@ -1810,6 +1843,9 @@ where
         binding: &crate::identity::ActiveSyncAccountBinding,
         previous: &crate::internal::local_state::sync_v2::MessageSyncState,
         recovery: &crate::internal::wire::sync_v2::SyncRecoveryV2,
+        lane_capability_reconcile: Option<
+            crate::internal::local_state::sync_v2::LaneCapabilityReconcileInputV1a,
+        >,
         run_generation: i64,
         result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
@@ -1943,6 +1979,7 @@ where
                     snapshot_scan_seq: snapshot.snapshot_cursor.scan_seq.clone(),
                     server_time: snapshot.server_time.clone(),
                     server_cutoff: snapshot.server_cutoff.clone(),
+                    lane_capability_reconcile,
                     events,
                     groups,
                     read_states,
@@ -2086,15 +2123,28 @@ where
                 metadata_json: None,
                 updated_at: now,
             };
+            let lane_capability_reconcile = Some(
+                crate::internal::local_state::sync_v2::LaneCapabilityReconcileInputV1a {
+                    client_instance_id: client_instance_id.clone(),
+                    negotiated_capabilities_json: negotiated_lane_capabilities_json(
+                        lane_bootstrap,
+                    )?,
+                    lane_states: lane_states_from_bootstrap(
+                        &binding.owner_identity_id,
+                        lane_bootstrap,
+                    ),
+                },
+            );
             let state = self
-                .recover_snapshot(db, binding, &previous, recovery, run_generation, result)
-                .await?;
-            db.replace_lane_sync_states(
-                &binding.owner_identity_id,
-                lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap),
-            )
-            .await?;
-            record_explicit_lane_negotiation(db, binding, &client_instance_id, lane_bootstrap)
+                .recover_snapshot(
+                    db,
+                    binding,
+                    &previous,
+                    recovery,
+                    lane_capability_reconcile,
+                    run_generation,
+                    result,
+                )
                 .await?;
             return Ok(state);
         }
@@ -2162,17 +2212,14 @@ where
                     updated_at: now,
                 },
                 state: state.clone(),
+                client_instance_id: client_instance_id.clone(),
+                negotiated_capabilities_json: negotiated_lane_capabilities_json(
+                    &bootstrap.lane_bootstrap,
+                )?,
                 groups,
                 read_states,
                 lane_states,
             },
-        )
-        .await?;
-        record_explicit_lane_negotiation(
-            db,
-            binding,
-            &client_instance_id,
-            &bootstrap.lane_bootstrap,
         )
         .await?;
         Ok(state)
@@ -2317,18 +2364,38 @@ where
         ));
     }
     let states = lane_states_from_bootstrap(&binding.owner_identity_id, lane_bootstrap);
-    db.replace_lane_sync_states(&binding.owner_identity_id, states.clone())
-        .await?;
-    record_explicit_lane_negotiation(db, binding, &client_instance_id, lane_bootstrap).await?;
+    reconcile_explicit_lane_negotiation(
+        db,
+        binding,
+        &client_instance_id,
+        lane_bootstrap,
+        states.clone(),
+    )
+    .await?;
     Ok(lane_state_map(states))
 }
 
-async fn record_explicit_lane_negotiation(
+async fn reconcile_explicit_lane_negotiation(
     db: &crate::internal::local_state::actor::LocalStateDb,
     binding: &crate::identity::ActiveSyncAccountBinding,
     client_instance_id: &str,
     lanes: &crate::internal::wire::sync_v2::SyncLaneBootstrapV3,
+    states: Vec<crate::internal::local_state::sync_v2::LaneSyncState>,
 ) -> crate::ImResult<()> {
+    let capabilities = negotiated_lane_capabilities_json(lanes)?;
+    db.reconcile_sync_lane_capability_v1a(
+        &binding.owner_identity_id,
+        states,
+        &binding.device_auth_generation,
+        client_instance_id,
+        capabilities,
+    )
+    .await
+}
+
+fn negotiated_lane_capabilities_json(
+    lanes: &crate::internal::wire::sync_v2::SyncLaneBootstrapV3,
+) -> crate::ImResult<String> {
     let capabilities = [
         crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
         crate::internal::wire::sync_v2::SyncLaneV3::P6Group,
@@ -2343,13 +2410,7 @@ async fn record_explicit_lane_negotiation(
             format!("failed to encode negotiated lane state: {error}"),
         )
     })?;
-    db.record_sync_lane_capability_negotiation_v1a(
-        &binding.owner_identity_id,
-        &binding.device_auth_generation,
-        client_instance_id,
-        capabilities,
-    )
-    .await
+    Ok(capabilities)
 }
 
 async fn require_current_sync_run_generation(
@@ -3658,6 +3719,43 @@ pub(crate) fn failure_outcome(
                 "SYNC_RECOVERY_REQUIRED".to_owned(),
             )
         }
+        crate::ImError::Service { data, .. }
+            if data
+                .as_ref()
+                .and_then(|value| value.get("local_action"))
+                .and_then(Value::as_str)
+                == Some("device_reprovision_required") =>
+        {
+            (
+                crate::messages::MessageSyncStatus::Blocked,
+                "device_reprovision_required".to_owned(),
+            )
+        }
+        crate::ImError::Service { data, .. }
+            if data
+                .as_ref()
+                .and_then(|value| value.get("local_action"))
+                .and_then(Value::as_str)
+                == Some("server_repair_required") =>
+        {
+            (
+                crate::messages::MessageSyncStatus::Blocked,
+                "server_repair_required".to_owned(),
+            )
+        }
+        crate::ImError::Service { code, .. }
+            if matches!(
+                code.as_deref(),
+                Some(
+                    "sync.client_upgrade_required" | "sync.invalid_request" | "sync.invalid_cursor"
+                )
+            ) =>
+        {
+            (
+                crate::messages::MessageSyncStatus::Blocked,
+                code.clone().unwrap_or_else(|| "SYNC_BLOCKED".to_owned()),
+            )
+        }
         crate::ImError::Service { code, .. }
             if matches!(
                 code.as_deref(),
@@ -3700,6 +3798,9 @@ pub(crate) fn failure_outcome(
             if status == crate::messages::MessageSyncStatus::RetryableFailure =>
         {
             vec!["sync.retry.service_unavailable".to_owned()]
+        }
+        _ if status == crate::messages::MessageSyncStatus::Blocked => {
+            vec!["sync.blocked.action_required".to_owned()]
         }
         _ => Vec::new(),
     };
@@ -3919,6 +4020,49 @@ mod tests {
             assert_eq!(outcome.error_code.as_deref(), Some("INTERNAL_ERROR"));
             assert_eq!(outcome.warnings, ["sync.retry.service_unavailable"]);
         }
+    }
+
+    #[test]
+    fn v1a_failure_outcome_blocks_client_upgrade_and_reprovision_actions() {
+        let upgrade = failure_outcome(&crate::ImError::Service {
+            status_code: Some(409),
+            code: Some("sync.client_upgrade_required".to_owned()),
+            message: "upgrade required".to_owned(),
+            data: None,
+        })
+        .expect("client upgrade must produce a typed outcome");
+        assert_eq!(upgrade.status, crate::messages::MessageSyncStatus::Blocked);
+        assert_eq!(
+            upgrade.error_code.as_deref(),
+            Some("sync.client_upgrade_required")
+        );
+        assert_eq!(upgrade.warnings, ["sync.blocked.action_required"]);
+
+        let reprovision = failure_outcome(&crate::ImError::Service {
+            status_code: Some(409),
+            code: Some("sync.device_binding_mismatch".to_owned()),
+            message: "new installation requires a new device".to_owned(),
+            data: Some(json!({"local_action": "device_reprovision_required"})),
+        })
+        .expect("device reprovision must produce a typed outcome");
+        assert_eq!(
+            reprovision.status,
+            crate::messages::MessageSyncStatus::Blocked
+        );
+        assert_eq!(
+            reprovision.error_code.as_deref(),
+            Some("device_reprovision_required")
+        );
+
+        let repair = failure_outcome(&crate::ImError::Service {
+            status_code: Some(409),
+            code: Some("sync.invalid_cursor".to_owned()),
+            message: "required control event blocks recovery".to_owned(),
+            data: Some(json!({"local_action": "server_repair_required"})),
+        })
+        .expect("server repair must produce a typed outcome");
+        assert_eq!(repair.status, crate::messages::MessageSyncStatus::Blocked);
+        assert_eq!(repair.error_code.as_deref(), Some("server_repair_required"));
     }
 
     #[test]
@@ -4358,6 +4502,26 @@ mod tests {
             self.responses
                 .pop_front()
                 .expect("queued sync snapshot response")
+        }
+    }
+
+    struct HangingSyncSnapshotTransport {
+        calls: Rc<RefCell<Vec<SyncSnapshotCall>>>,
+    }
+
+    impl AsyncAuthenticatedRpcTransport for HangingSyncSnapshotTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            assert_eq!(endpoint, MESSAGE_RPC_ENDPOINT);
+            self.calls.borrow_mut().push(SyncSnapshotCall {
+                method: method.to_owned(),
+                params,
+            });
+            std::future::pending().await
         }
     }
 
@@ -5305,10 +5469,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v1a_serialized_discovery_bootstrap_and_delta_run_with_zero_secure_lanes() {
+    async fn v1a_serialized_empty_renegotiation_preserves_history_and_polls_no_secure_lanes() {
+        use crate::internal::wire::sync_v2::SyncLaneV3;
+
         let fixture = SyncSnapshotFixture::new("v1a-explicit-zero");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
+        seed_legacy_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .replace_lane_sync_states(
+                &binding.owner_identity_id,
+                vec![
+                    crate::internal::local_state::sync_v2::LaneSyncState {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        lane: SyncLaneV3::P5Device,
+                        stream_epoch: "41".to_owned(),
+                        scan_seq: "7".to_owned(),
+                        committed_seq: "7".to_owned(),
+                    },
+                    crate::internal::local_state::sync_v2::LaneSyncState {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        lane: SyncLaneV3::P6Group,
+                        stream_epoch: "42".to_owned(),
+                        scan_seq: "9".to_owned(),
+                        committed_seq: "9".to_owned(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
         let calls = Rc::new(RefCell::new(Vec::new()));
         let transport = SyncSnapshotTransport::queued(
             Rc::clone(&calls),
@@ -5358,6 +5551,23 @@ mod tests {
         );
         assert!(calls[2].params["body"].get("lanes").is_none());
         assert!(calls[2].params["body"].get("p6_delivery").is_none());
+        let db = client.core_inner().local_state_db().await.unwrap();
+        assert!(db
+            .load_lane_sync_states(binding.owner_identity_id.clone())
+            .await
+            .unwrap()
+            .is_empty());
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM lane_sync_state WHERE owner_identity_id = ?1",
+                    [&binding.owner_identity_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -5420,6 +5630,91 @@ mod tests {
         assert_eq!(lane_states.len(), 1);
         assert_eq!(lane_states[0].lane, SyncLaneV3::P5Device);
         assert_eq!(lane_states[0].scan_seq, "0");
+    }
+
+    #[tokio::test]
+    async fn v1a_run_deadline_cancels_hung_rpc_and_releases_the_owner_lock() {
+        let fixture = SyncSnapshotFixture::new("v1a-run-deadline");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        seed_lane_states(&client, &binding, &[]).await;
+
+        let hanging_calls = Rc::new(RefCell::new(Vec::new()));
+        let timed_out = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            HangingSyncSnapshotTransport {
+                calls: Rc::clone(&hanging_calls),
+            },
+            NoopAsyncDirectoryTransport,
+        )
+        .with_run_deadline_for_test(StdDuration::from_millis(500))
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert!(timed_out
+            .warnings
+            .contains(&"sync.budget_exhausted".to_owned()));
+        assert_eq!(hanging_calls.borrow()[0].method, "sync.delta");
+
+        let resumed_calls = Rc::new(RefCell::new(Vec::new()));
+        let resumed = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&resumed_calls),
+                vec![Ok(sync_snapshot_delta("1", "0", Vec::new()))],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .with_run_deadline_for_test(StdDuration::from_secs(2))
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_eq!(resumed.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(resumed_calls.borrow()[0].method, "sync.delta");
+    }
+
+    #[tokio::test]
+    async fn v1a_blocked_wire_error_clears_durable_retry_schedule() {
+        let fixture = SyncSnapshotFixture::new("v1a-blocked-error");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        seed_lane_states(&client, &binding, &[]).await;
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::new(RefCell::new(Vec::new())),
+                vec![Err(crate::ImError::Service {
+                    status_code: Some(409),
+                    code: Some("sync.client_upgrade_required".to_owned()),
+                    message: "upgrade required".to_owned(),
+                    data: None,
+                })],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .expect_err("client upgrade must stop the run");
+        assert_eq!(
+            failure_outcome(&error).unwrap().status,
+            crate::messages::MessageSyncStatus::Blocked
+        );
+        let run = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_message_sync_run_state(binding.owner_identity_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!run.sync_pending);
+        assert_eq!(run.next_retry_at, None);
     }
 
     #[tokio::test]

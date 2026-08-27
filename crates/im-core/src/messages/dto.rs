@@ -540,6 +540,7 @@ pub enum MessageSyncStatus {
     RecoveryRequired,
     RetryableFailure,
     AuthRevoked,
+    Blocked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

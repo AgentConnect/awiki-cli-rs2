@@ -11510,6 +11510,7 @@ impl SseDecode for crate::dto::message::DartMessageSyncStatus {
             2 => crate::dto::message::DartMessageSyncStatus::RecoveryRequired,
             3 => crate::dto::message::DartMessageSyncStatus::RetryableFailure,
             4 => crate::dto::message::DartMessageSyncStatus::AuthRevoked,
+            5 => crate::dto::message::DartMessageSyncStatus::Blocked,
             _ => unreachable!("Invalid variant for DartMessageSyncStatus: {}", inner),
         };
     }
@@ -17428,6 +17429,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncStatu
             Self::RecoveryRequired => 2.into_dart(),
             Self::RetryableFailure => 3.into_dart(),
             Self::AuthRevoked => 4.into_dart(),
+            Self::Blocked => 5.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -20897,6 +20899,7 @@ impl SseEncode for crate::dto::message::DartMessageSyncStatus {
                 crate::dto::message::DartMessageSyncStatus::RecoveryRequired => 2,
                 crate::dto::message::DartMessageSyncStatus::RetryableFailure => 3,
                 crate::dto::message::DartMessageSyncStatus::AuthRevoked => 4,
+                crate::dto::message::DartMessageSyncStatus::Blocked => 5,
                 _ => {
                     unimplemented!("");
                 }

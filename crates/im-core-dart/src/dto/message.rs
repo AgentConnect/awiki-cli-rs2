@@ -306,6 +306,7 @@ pub enum DartMessageSyncStatus {
     RecoveryRequired,
     RetryableFailure,
     AuthRevoked,
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1048,6 +1048,7 @@ enum DartMessageSyncStatus {
   recoveryRequired,
   retryableFailure,
   authRevoked,
+  blocked,
 }
 
 @freezed

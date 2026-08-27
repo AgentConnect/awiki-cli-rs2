@@ -1894,6 +1894,7 @@ impl From<im_core::messages::MessageSyncStatus> for DartMessageSyncStatus {
             im_core::messages::MessageSyncStatus::Changed => Self::Changed,
             im_core::messages::MessageSyncStatus::RecoveryRequired => Self::RecoveryRequired,
             im_core::messages::MessageSyncStatus::RetryableFailure => Self::RetryableFailure,
+            im_core::messages::MessageSyncStatus::Blocked => Self::Blocked,
             im_core::messages::MessageSyncStatus::AuthRevoked => Self::AuthRevoked,
         }
     }
@@ -2313,6 +2314,10 @@ mod tests {
         assert_eq!(mapped.status, DartMessageSyncStatus::Changed);
         assert_eq!(mapped.pages_fetched, 20);
         assert_eq!(mapped.warnings, ["sync.budget_exhausted"]);
+        assert_eq!(
+            DartMessageSyncStatus::from(im_core::messages::MessageSyncStatus::Blocked),
+            DartMessageSyncStatus::Blocked
+        );
     }
 
     #[test]

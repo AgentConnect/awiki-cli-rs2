@@ -189,6 +189,14 @@ enum LocalStateCommand {
         negotiated_capabilities_json: String,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    ReconcileSyncLaneCapabilityV1a {
+        owner_identity_id: String,
+        states: Vec<super::sync_v2::LaneSyncState>,
+        device_auth_generation: String,
+        client_instance_id: String,
+        negotiated_capabilities_json: String,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     ReplaceLaneSyncStates {
         owner_identity_id: String,
         states: Vec<super::sync_v2::LaneSyncState>,
@@ -1119,6 +1127,27 @@ impl LocalStateDb {
         self.send(LocalStateCommand::ReplaceLaneSyncStates {
             owner_identity_id: owner_identity_id.into(),
             states,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn reconcile_sync_lane_capability_v1a(
+        &self,
+        owner_identity_id: impl Into<String>,
+        states: Vec<super::sync_v2::LaneSyncState>,
+        device_auth_generation: impl Into<String>,
+        client_instance_id: impl Into<String>,
+        negotiated_capabilities_json: impl Into<String>,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ReconcileSyncLaneCapabilityV1a {
+            owner_identity_id: owner_identity_id.into(),
+            states,
+            device_auth_generation: device_auth_generation.into(),
+            client_instance_id: client_instance_id.into(),
+            negotiated_capabilities_json: negotiated_capabilities_json.into(),
             reply,
         })
         .await?;
@@ -2493,6 +2522,24 @@ fn run_actor(
                 let result = super::sync_v2::record_sync_lane_capability_negotiation_v1a(
                     &connection,
                     &owner_identity_id,
+                    &device_auth_generation,
+                    &client_instance_id,
+                    &negotiated_capabilities_json,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ReconcileSyncLaneCapabilityV1a {
+                owner_identity_id,
+                states,
+                device_auth_generation,
+                client_instance_id,
+                negotiated_capabilities_json,
+                reply,
+            } => {
+                let result = super::sync_v2::reconcile_sync_lane_capability_v1a(
+                    &connection,
+                    &owner_identity_id,
+                    &states,
                     &device_auth_generation,
                     &client_instance_id,
                     &negotiated_capabilities_json,

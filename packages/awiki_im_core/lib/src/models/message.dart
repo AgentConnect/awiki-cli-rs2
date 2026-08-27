@@ -368,6 +368,7 @@ enum MessageSyncStatus {
   recoveryRequired,
   retryableFailure,
   authRevoked,
+  blocked,
 }
 
 enum CommittedMessageSource { liveDelta }

@@ -543,6 +543,8 @@ pub(crate) struct SyncCleanupOutcome {
 pub(crate) struct BootstrapApplyInputV2 {
     pub(crate) binding: IdentityAccountBinding,
     pub(crate) state: MessageSyncState,
+    pub(crate) client_instance_id: String,
+    pub(crate) negotiated_capabilities_json: String,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
     pub(crate) read_states: Vec<ReadStateApplyV2>,
     pub(crate) lane_states: Vec<LaneSyncState>,
@@ -682,9 +684,17 @@ pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) snapshot_scan_seq: String,
     pub(crate) server_time: String,
     pub(crate) server_cutoff: String,
+    pub(crate) lane_capability_reconcile: Option<LaneCapabilityReconcileInputV1a>,
     pub(crate) events: Vec<DeltaApplyEventV2>,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
     pub(crate) read_states: Vec<ReadStateApplyV2>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaneCapabilityReconcileInputV1a {
+    pub(crate) client_instance_id: String,
+    pub(crate) negotiated_capabilities_json: String,
+    pub(crate) lane_states: Vec<LaneSyncState>,
 }
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
@@ -1036,6 +1046,13 @@ pub(crate) fn apply_bootstrap_v2(
         &input.binding.owner_identity_id,
         &input.lane_states,
     )?;
+    record_sync_lane_capability_negotiation_v1a(
+        &transaction,
+        &input.binding.owner_identity_id,
+        &input.binding.device_auth_generation,
+        &input.client_instance_id,
+        &input.negotiated_capabilities_json,
+    )?;
     for group in input.groups {
         validate_group_owner(&group, &input.binding.owner_identity_id)?;
         super::groups::upsert_group(&transaction, group)?;
@@ -1223,6 +1240,28 @@ ON CONFLICT(owner_identity_id) DO UPDATE SET
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+pub(crate) fn reconcile_sync_lane_capability_v1a(
+    connection: &Connection,
+    owner_identity_id: &str,
+    states: &[LaneSyncState],
+    device_auth_generation: &str,
+    client_instance_id: &str,
+    negotiated_capabilities_json: &str,
+) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    replace_lane_sync_states_in_transaction(&transaction, owner_identity_id, states)?;
+    record_sync_lane_capability_negotiation_v1a(
+        &transaction,
+        owner_identity_id,
+        device_auth_generation,
+        client_instance_id,
+        negotiated_capabilities_json,
+    )?;
+    transaction.commit().map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn load_lane_sync_states(
@@ -2524,6 +2563,21 @@ pub(crate) fn apply_snapshot_v2(
             &input.owner_identity_id,
             &input.owner_did,
             &read_state,
+        )?;
+    }
+
+    if let Some(reconcile) = &input.lane_capability_reconcile {
+        replace_lane_sync_states_in_transaction(
+            &transaction,
+            &input.owner_identity_id,
+            &reconcile.lane_states,
+        )?;
+        record_sync_lane_capability_negotiation_v1a(
+            &transaction,
+            &input.owner_identity_id,
+            &input.device_auth_generation,
+            &reconcile.client_instance_id,
+            &reconcile.negotiated_capabilities_json,
         )?;
     }
 
@@ -6732,6 +6786,7 @@ mod tests {
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-08-27T01:00:00Z".to_owned(),
                 server_cutoff: "2026-08-25T01:00:00Z".to_owned(),
+                lane_capability_reconcile: None,
                 events: Vec::new(),
                 groups: Vec::new(),
                 read_states: Vec::new(),
@@ -6811,6 +6866,8 @@ mod tests {
             BootstrapApplyInputV2 {
                 binding: binding.clone(),
                 state,
+                client_instance_id: "core-installation-v1a".to_owned(),
+                negotiated_capabilities_json: "[]".to_owned(),
                 groups: vec![invalid_group],
                 read_states: Vec::new(),
                 lane_states: Vec::new(),
@@ -7668,6 +7725,7 @@ mod tests {
                 snapshot_scan_seq: "50".to_owned(),
                 server_time: "2026-07-28T10:00:01Z".to_owned(),
                 server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+                lane_capability_reconcile: None,
                 events: Vec::new(),
                 groups: Vec::new(),
                 read_states: vec![remote_read],
@@ -8502,6 +8560,7 @@ mod tests {
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-07-31T10:00:02Z".to_owned(),
                 server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+                lane_capability_reconcile: None,
                 events: vec![DeltaApplyEventV2 {
                     event_id: "snapshot-event-20".to_owned(),
                     event_seq: "20".to_owned(),
@@ -8631,6 +8690,7 @@ mod tests {
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-07-28T10:00:02Z".to_owned(),
                 server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+                lane_capability_reconcile: None,
                 events: Vec::new(),
                 groups: Vec::new(),
                 read_states: Vec::new(),
@@ -8734,6 +8794,7 @@ mod tests {
             snapshot_scan_seq: "20".to_owned(),
             server_time: "2026-07-23T02:00:01Z".to_owned(),
             server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+            lane_capability_reconcile: None,
             events,
             groups: Vec::new(),
             read_states: Vec::new(),
@@ -9015,11 +9076,10 @@ INSERT INTO sync_lane_capability_state(
             scan_seq: "0".to_owned(),
             committed_seq: "0".to_owned(),
         };
-        replace_lane_sync_states(&db, &binding.owner_identity_id, &[p5.clone(), p6.clone()])
-            .unwrap();
-        record_sync_lane_capability_negotiation_v1a(
+        reconcile_sync_lane_capability_v1a(
             &db,
             &binding.owner_identity_id,
+            &[p5.clone(), p6.clone()],
             &binding.device_auth_generation,
             &client_instance_id,
             r#"["lanes.p5_device.v1","lanes.p6_group.v1"]"#,
@@ -9049,10 +9109,10 @@ INSERT INTO sync_lane_capability_state(
         };
         record_p6_lane_blocker_and_advance(&db, &blocker, &p6_advanced).unwrap();
 
-        replace_lane_sync_states(&db, &binding.owner_identity_id, &[]).unwrap();
-        record_sync_lane_capability_negotiation_v1a(
+        reconcile_sync_lane_capability_v1a(
             &db,
             &binding.owner_identity_id,
+            &[],
             &binding.device_auth_generation,
             &client_instance_id,
             "[]",
@@ -9080,15 +9140,10 @@ INSERT INTO sync_lane_capability_state(
         let mut p5_reactivated = p5;
         p5_reactivated.scan_seq = "4".to_owned();
         p5_reactivated.committed_seq = "4".to_owned();
-        replace_lane_sync_states(
+        reconcile_sync_lane_capability_v1a(
             &db,
             &binding.owner_identity_id,
             std::slice::from_ref(&p5_reactivated),
-        )
-        .unwrap();
-        record_sync_lane_capability_negotiation_v1a(
-            &db,
-            &binding.owner_identity_id,
             &binding.device_auth_generation,
             &client_instance_id,
             r#"["lanes.p5_device.v1"]"#,
@@ -9141,6 +9196,71 @@ INSERT INTO sync_lane_capability_state(
             })
             .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn v1a_lane_capability_reconcile_rolls_back_cursor_when_capability_write_fails() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let client_instance_id =
+            load_or_create_sync_client_instance_id(&db, &binding.owner_identity_id).unwrap();
+        let initial = LaneSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            lane: crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+            stream_epoch: "41".to_owned(),
+            scan_seq: "3".to_owned(),
+            committed_seq: "3".to_owned(),
+        };
+        reconcile_sync_lane_capability_v1a(
+            &db,
+            &binding.owner_identity_id,
+            std::slice::from_ref(&initial),
+            &binding.device_auth_generation,
+            &client_instance_id,
+            r#"["lanes.p5_device.v1"]"#,
+        )
+        .unwrap();
+        db.execute_batch(
+            r#"
+CREATE TRIGGER fail_v1a_capability_update
+BEFORE UPDATE OF negotiated_capabilities_json ON sync_lane_capability_state
+BEGIN
+    SELECT RAISE(ABORT, 'forced capability write failure');
+END;
+"#,
+        )
+        .unwrap();
+
+        let mut advanced = initial.clone();
+        advanced.scan_seq = "4".to_owned();
+        advanced.committed_seq = "4".to_owned();
+        assert!(reconcile_sync_lane_capability_v1a(
+            &db,
+            &binding.owner_identity_id,
+            std::slice::from_ref(&advanced),
+            &binding.device_auth_generation,
+            &client_instance_id,
+            "[]",
+        )
+        .is_err());
+
+        assert_eq!(
+            load_lane_sync_states(&db, &binding.owner_identity_id).unwrap(),
+            [initial]
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT negotiated_capabilities_json FROM sync_lane_capability_state
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            r#"["lanes.p5_device.v1"]"#
         );
     }
 
