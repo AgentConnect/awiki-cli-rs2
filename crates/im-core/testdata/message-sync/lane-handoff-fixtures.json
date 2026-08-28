@@ -1,0 +1,398 @@
+{
+  "profile": "awiki.message-sync.explicit-negotiation.v1",
+  "payload_limit_bytes": 1048576,
+  "lane_pending_item_limit": 4096,
+  "lane_pending_total_bytes": 67108864,
+  "closed_retention_seconds": 604800,
+  "cases": [
+    {
+      "name": "p5-positive",
+      "serialized_delta": {
+        "mode": "delta",
+        "server_time": "2026-08-27T00:00:01Z",
+        "events": [],
+        "next_cursor": {"stream_epoch": "1", "scan_seq": "0"},
+        "has_more": false,
+        "recovery": null,
+        "warnings": [],
+        "lanes": {
+          "p5_device": {
+            "events": [{
+              "event_type": "p5.delivery.created",
+              "delivery_id": "p5-delivery-7",
+              "seq": "7",
+              "envelope": {
+                "meta": {
+                  "profile": "anp.direct.e2ee.v2",
+                  "security_profile": "direct-e2ee",
+                  "message_id": "p5-delivery-7",
+                  "sender_did": "did:wba:example.test:users:bob:e1_sender",
+                  "sender_device_id": "bob-phone",
+                  "recipient_device_id": "alice-phone",
+                  "target": {"kind": "agent", "did": "did:wba:example.test:users:alice:e1_owner"}
+                },
+                "body": {"ciphertext_b64u": "fixture-p5-ciphertext"}
+              }
+            }],
+            "next_cursor": {"stream_epoch": "1", "scan_seq": "7"},
+            "has_more": false
+          }
+        }
+      },
+      "envelope": {
+        "lane_kind": "p5_device",
+        "lane_epoch": "1",
+        "position": "7",
+        "event_id": "p5-delivery-7",
+        "event_type": "p5.delivery.created",
+        "raw_payload": {
+          "meta": {
+            "profile": "anp.direct.e2ee.v2",
+            "security_profile": "direct-e2ee",
+            "message_id": "p5-delivery-7",
+            "sender_did": "did:wba:example.test:users:bob:e1_sender",
+            "sender_device_id": "bob-phone",
+            "recipient_device_id": "alice-phone",
+            "target": {"kind": "agent", "did": "did:wba:example.test:users:alice:e1_owner"}
+          },
+          "body": {"ciphertext_b64u": "fixture-p5-ciphertext"}
+        },
+        "replica_binding": {
+          "owner_identity_id": "owner-alice",
+          "account_id": "acct-alice",
+          "device_id": "alice-phone",
+          "auth_generation": "3",
+          "client_instance_id": "client-a"
+        },
+        "received_at": "2026-08-27T00:00:02Z"
+      },
+      "expected": "commit"
+    },
+    {
+      "name": "p6-positive",
+      "serialized_delta": {
+        "mode": "delta",
+        "server_time": "2026-08-27T00:00:01Z",
+        "events": [],
+        "next_cursor": {"stream_epoch": "1", "scan_seq": "0"},
+        "has_more": false,
+        "recovery": null,
+        "warnings": [],
+        "lanes": {
+          "p6_group": {
+            "events": [{
+              "event_type": "p6.delivery.created",
+              "delivery_id": "p6-commit-11",
+              "seq": "11",
+              "group_did": "did:wba:example.test:groups:team",
+              "group_event_seq": "19",
+              "envelope": {
+                "meta": {
+                  "profile": "anp.group.e2ee.v2",
+                  "security_profile": "group-e2ee",
+                  "message_id": "p6-commit-11",
+                  "recipient_device_id": "alice-phone"
+                },
+                "body": {
+                  "group_did": "did:wba:example.test:groups:team",
+                  "group_event_seq": "19",
+                  "group_cipher_object": {"private_message_b64u": "fixture-p6-commit"}
+                }
+              }
+            }],
+            "next_cursor": {"stream_epoch": "2", "scan_seq": "11"},
+            "has_more": false
+          }
+        }
+      },
+      "envelope": {
+        "lane_kind": "p6_group",
+        "lane_epoch": "2",
+        "position": "11",
+        "event_id": "p6-commit-11",
+        "event_type": "p6.delivery.created",
+        "raw_payload": {
+          "meta": {
+            "profile": "anp.group.e2ee.v2",
+            "security_profile": "group-e2ee",
+            "message_id": "p6-commit-11",
+            "recipient_device_id": "alice-phone"
+          },
+          "body": {
+            "group_did": "did:wba:example.test:groups:team",
+            "group_event_seq": "19",
+            "group_cipher_object": {"private_message_b64u": "fixture-p6-commit"}
+          }
+        },
+        "replica_binding": {
+          "owner_identity_id": "owner-alice",
+          "account_id": "acct-alice",
+          "device_id": "alice-phone",
+          "auth_generation": "3",
+          "client_instance_id": "client-a"
+        },
+        "received_at": "2026-08-27T00:00:02Z"
+      },
+      "expected": "commit"
+    },
+    {
+      "name": "p6-control-positive",
+      "serialized_delta": {
+        "mode": "delta",
+        "server_time": "2026-08-27T00:00:01Z",
+        "events": [],
+        "next_cursor": {"stream_epoch": "1", "scan_seq": "0"},
+        "has_more": false,
+        "recovery": null,
+        "warnings": [],
+        "lanes": {
+          "p6_group": {
+            "events": [{
+              "event_type": "p6.control.notice",
+              "notice_id": "p6-notice-12",
+              "seq": "12",
+              "group_did": "did:wba:example.test:groups:team",
+              "notice": {
+                "meta": {
+                  "profile": "anp.group.e2ee.v2",
+                  "security_profile": "transport-protected",
+                  "message_id": "p6-notice-12"
+                },
+                "body": {
+                  "notice_id": "p6-notice-12",
+                  "notice_type": "commit-delivery",
+                  "group_did": "did:wba:example.test:groups:team"
+                }
+              }
+            }],
+            "next_cursor": {"stream_epoch": "2", "scan_seq": "12"},
+            "has_more": false
+          }
+        }
+      },
+      "envelope": {
+        "lane_kind": "p6_group",
+        "lane_epoch": "2",
+        "position": "12",
+        "event_id": "p6-notice-12",
+        "event_type": "p6.control.notice",
+        "raw_payload": {
+          "meta": {
+            "profile": "anp.group.e2ee.v2",
+            "security_profile": "transport-protected",
+            "message_id": "p6-notice-12"
+          },
+          "body": {
+            "notice_id": "p6-notice-12",
+            "notice_type": "commit-delivery",
+            "group_did": "did:wba:example.test:groups:team"
+          }
+        },
+        "replica_binding": {
+          "owner_identity_id": "owner-alice",
+          "account_id": "acct-alice",
+          "device_id": "alice-phone",
+          "auth_generation": "3",
+          "client_instance_id": "client-a"
+        },
+        "received_at": "2026-08-27T00:00:02Z"
+      },
+      "expected": "commit"
+    },
+    {
+      "name": "same-event-duplicate",
+      "same_as": "p5-positive",
+      "expected": "duplicate_noop"
+    },
+    {
+      "name": "same-event-conflicting-payload",
+      "same_identity_as": "p5-positive",
+      "replacement_raw_payload": {"ciphertext_b64u": "different-ciphertext"},
+      "expected": "lane_input_conflict",
+      "cursor_advances": false
+    },
+    {
+      "name": "unsupported-envelope-version",
+      "envelope_version": 2,
+      "expected": "fail_closed",
+      "cursor_advances": false
+    },
+    {
+      "name": "payload-limit-minus-one",
+      "generated_raw_payload_bytes": 1048575,
+      "expected": "commit"
+    },
+    {
+      "name": "payload-limit",
+      "generated_raw_payload_bytes": 1048576,
+      "expected": "commit"
+    },
+    {
+      "name": "payload-limit-plus-one",
+      "generated_raw_payload_bytes": 1048577,
+      "expected": "fail_closed",
+      "cursor_advances": false
+    },
+    {
+      "name": "lane-item-limit-minus-one",
+      "preexisting_pending_items": 4095,
+      "new_input_bytes": 1,
+      "expected": "commit"
+    },
+    {
+      "name": "lane-item-limit",
+      "preexisting_pending_items": 4096,
+      "new_input_bytes": 1,
+      "expected": "lane_storage_pressure",
+      "cursor_advances": false
+    },
+    {
+      "name": "lane-item-limit-plus-one",
+      "preexisting_pending_items": 4097,
+      "expected": "lane_storage_pressure",
+      "cursor_advances": false
+    },
+    {
+      "name": "lane-byte-limit-minus-one",
+      "preexisting_pending_bytes": 67108862,
+      "new_input_bytes": 1,
+      "expected": "commit"
+    },
+    {
+      "name": "lane-byte-limit",
+      "preexisting_pending_bytes": 67108863,
+      "new_input_bytes": 1,
+      "expected": "commit"
+    },
+    {
+      "name": "lane-byte-limit-plus-one",
+      "preexisting_pending_bytes": 67108864,
+      "new_input_bytes": 1,
+      "expected": "lane_storage_pressure",
+      "cursor_advances": false
+    },
+    {
+      "name": "inbox-write-failure",
+      "inject": "sync_lane_inbox_write_failure",
+      "expected": "rollback",
+      "cursor_advances": false
+    },
+    {
+      "name": "ack-response-lost",
+      "inject": "response_lost_after_commit",
+      "expected_retry": "duplicate_noop",
+      "cursor_advances_once": true
+    },
+    {
+      "name": "zero-partial-rebootstrap-preserves-local-responsibility",
+      "preexisting": {
+        "lane_cursors": ["p5_device", "p6_group"],
+        "legacy_blocker": true,
+        "domain_sentinel": true
+      },
+      "renegotiated_capabilities": [],
+      "expected_active_poll_lanes": [],
+      "expected_preserved": [
+        "lane_cursors",
+        "legacy_blocker",
+        "domain_sentinel"
+      ]
+    },
+    {
+      "name": "consumer-pending-after-sync-commit",
+      "consumer_state": "pending",
+      "expected": "sync_committed"
+    },
+    {
+      "name": "consumer-outcome-cannot-change-cursor",
+      "consumer_state": "repair_required",
+      "attempted_cursor_mutation": true,
+      "expected": "consumer_cursor_write_rejected"
+    },
+    {
+      "name": "legacy-p6-blocker-lossless-rebuild",
+      "legacy_columns": [
+        "event_id",
+        "stream_epoch",
+        "event_seq",
+        "event_type",
+        "group_did",
+        "group_event_seq",
+        "payload_json"
+      ],
+      "payload_json_is_complete_raw_payload": true,
+      "expected": "migrate_without_cursor_advance"
+    },
+    {
+      "name": "legacy-p6-blocker-incomplete-rebuild",
+      "missing": ["group_event_seq"],
+      "event_type": "p6.delivery.created",
+      "expected": "repair_required",
+      "legacy_row_retained": true
+    },
+    {
+      "name": "ordinary-failure-p5-p6-handoff-isolation",
+      "ordinary": "required_hydration_failure",
+      "p5": "transport_valid",
+      "p6": "transport_valid",
+      "expected": {
+        "ordinary_cursor_advances": false,
+        "p5_handoff_commits": true,
+        "p6_handoff_commits": true
+      }
+    },
+    {
+      "name": "p5-domain-outcomes",
+      "statuses": ["applied", "terminal", "repair_required", "upgrade_required"],
+      "scope": "peer",
+      "cursor_mutable_by_consumer": false
+    },
+    {
+      "name": "p6-domain-outcomes",
+      "inputs": ["application", "welcome", "commit", "self_remove"],
+      "statuses": [
+        "applied",
+        "terminal",
+        "rejoin_required",
+        "repair_required",
+        "upgrade_required",
+        "action_required"
+      ],
+      "scope": "group",
+      "cursor_mutable_by_consumer": false
+    },
+    {
+      "name": "p6-action-required-cas-resume",
+      "p4_state": "applied",
+      "p6_phase": "action_required",
+      "next_attempt_at": null,
+      "ordinary_reconciler_can_resume": false,
+      "authoritative_cas_can_resume": true
+    },
+    {
+      "name": "old-did-accepted-backlog-cutover",
+      "new_enqueue_to_old_did": false,
+      "accepted_input_identity_relabelled": false,
+      "allowed_final_states": ["applied", "terminal", "repair_required", "upgrade_required"],
+      "retention_extended": false
+    },
+    {
+      "name": "additional-device-future-only",
+      "old_device_revoked": false,
+      "secret_state_copied": false,
+      "history_copied": false,
+      "new_device_delivery_scope": "future_after_provision"
+    },
+    {
+      "name": "replacement-device-authority-required",
+      "old_device_revoked": "only_by_identity_authority",
+      "ambiguous_intent": "device_reprovision_required"
+    },
+    {
+      "name": "sync-domain-dto-separation",
+      "sync_fields": ["lane", "committed_cursor", "pending", "last_transport_error"],
+      "domain_fields": ["lane", "scope", "retryable", "operation_ref", "status"],
+      "forbidden_public_fields": ["raw_payload", "ciphertext", "token", "secret"]
+    }
+  ]
+}
