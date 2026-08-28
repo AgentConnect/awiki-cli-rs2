@@ -5167,34 +5167,20 @@ mod group_e2ee_public_send_tests {
 
         assert!(matches!(
             result,
-            Err(crate::ImError::UnsupportedCapability { capability }) if capability == "sync-group-e2ee-send"
+            Err(crate::ImError::UnsupportedCapability { capability }) if capability == "group-e2ee-v2"
         ));
     }
 
     #[tokio::test]
-    async fn public_group_e2ee_send_async_uses_async_transport_and_db_actor_projection() {
+    async fn public_group_e2ee_send_async_rejects_legacy_identity_before_transport() {
         let fixture = Fixture::new();
-        let server = RpcTestServer::spawn(vec![
-            json!({
-                "group_state_ref": {
-                    "group_did": fixture.group_did,
-                    "group_state_version": "service-state-async-1"
-                }
-            }),
-            json!({
-                "accepted": true,
-                "final_acceptance": true,
-                "group_did": fixture.group_did,
-                "message_id": "server-message-async-id",
-                "operation_id": "op-public-group-e2ee-async",
-                "group_event_seq": "92",
-                "group_state_version": "service-state-async-2",
-                "accepted_at": "2026-05-21T00:00:00Z"
-            }),
-        ]);
-        let core = crate::core::ImCore::open(fixture.config(server.base_url()), fixture.paths())
-            .await
-            .unwrap();
+        let core = crate::core::ImCore::open_with_options(
+            fixture.config("https://example.test".to_owned()),
+            fixture.paths(),
+            crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(true),
+        )
+        .await
+        .unwrap();
         let client = core
             .client_async(crate::identity::IdentitySelector::LocalAlias(
                 "alice".to_owned(),
@@ -5223,30 +5209,9 @@ mod group_e2ee_public_send_tests {
                 },
                 delegated_signing: None,
             })
-            .await
-            .unwrap();
+            .await;
 
-        assert_eq!(result.message.metadata.server_sequence, Some(92));
-        let requests = server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].rpc_method, "group.e2ee.head");
-        assert_eq!(requests[0].params["body"]["group_did"], fixture.group_did);
-        assert_eq!(requests[1].rpc_method, "group.e2ee.send");
-        assert_eq!(
-            requests[1].params["meta"]["content_type"],
-            anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
-        );
-        let encoded_send = serde_json::to_string(&requests[1].params).unwrap();
-        assert!(!encoded_send.contains("async group secret"));
-
-        let stored = stored_group_message(&fixture, &client, result.message.id.as_str());
-        assert_eq!(stored.thread_id, format!("group:{}", fixture.group_did));
-        assert_eq!(stored.group_did, fixture.group_did);
-        assert_eq!(stored.content, "async group secret");
-        assert!(stored.is_e2ee);
-        assert_eq!(stored.server_seq, Some(92));
-        let metadata: Value = serde_json::from_str(&stored.metadata).unwrap();
-        assert_eq!(metadata["security"], "group-e2ee");
+        assert_eq!(result.unwrap_err(), crate::ImError::PermissionDenied);
     }
 
     #[test]

@@ -125,8 +125,9 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
-        TestResponse::empty_secure_inbox(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
@@ -175,6 +176,22 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         &["--identity", "bob", "msg", "inbox", "--scope", "direct"],
         workspace.path(),
     );
+    if !inbox.status.success() {
+        panic!(
+            "inbox failed after methods {:?}",
+            server
+                .requests()
+                .iter()
+                .map(
+                    |request| serde_json::from_str::<Value>(request_body(request)).unwrap()
+                        ["method"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                )
+                .collect::<Vec<_>>()
+        );
+    }
     assert_success(&inbox);
     let inbox_json = success_json(&inbox);
     assert_eq!(inbox_json["summary"], "Loaded 1 inbox messages");
@@ -194,6 +211,22 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         ],
         workspace.path(),
     );
+    if !history.status.success() {
+        panic!(
+            "history failed after methods {:?}",
+            server
+                .requests()
+                .iter()
+                .map(
+                    |request| serde_json::from_str::<Value>(request_body(request)).unwrap()
+                        ["method"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                )
+                .collect::<Vec<_>>()
+        );
+    }
     assert_success(&history);
     let history_json = success_json(&history);
     assert_eq!(history_json["summary"], "Loaded 1 direct history messages");
@@ -221,28 +254,14 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert!(methods.starts_with(&[
         "register".to_owned(),
         "direct.e2ee.publish_prekey_bundle".to_owned(),
+        "anp.get_capabilities".to_owned(),
         "sync.bootstrap".to_owned(),
-        "inbox.get".to_owned(),
+        "anp.get_capabilities".to_owned(),
         "sync.bootstrap".to_owned(),
         "sync.delta".to_owned(),
         "message.get_batch".to_owned(),
     ]));
-    assert_eq!(
-        methods
-            .iter()
-            .filter(|method| method.as_str() == "inbox.get")
-            .count(),
-        1
-    );
-    let secure_inbox = requests
-        .iter()
-        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
-        .find(|body| body["method"] == "inbox.get")
-        .expect("downgraded exact-device Inbox request");
-    assert_eq!(
-        secure_inbox["params"]["body"]["security_profile"],
-        "direct-e2ee"
-    );
+    assert!(!methods.iter().any(|method| method == "inbox.get"));
     let sync_delta = requests
         .iter()
         .find(|request| {
@@ -292,6 +311,7 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
@@ -378,6 +398,7 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "anp.get_capabilities",
             "sync.bootstrap",
             "sync.delta"
         ]
@@ -392,6 +413,7 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
@@ -572,6 +594,7 @@ fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli binary")
 }
 
+#[track_caller]
 fn assert_success(output: &Output) {
     assert_eq!(
         output.status.code(),
@@ -793,12 +816,12 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn empty_secure_inbox() -> Self {
-        Self::ok("__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__")
-    }
-
     fn sync_bootstrap() -> Self {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
+    }
+
+    fn capabilities() -> Self {
+        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
     }
 
     fn sync_delta_direct() -> Self {
@@ -896,9 +919,11 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
-        "__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__" => rpc_result_for_request(
+        "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(
             request,
-            json!({"messages": [], "has_more": false, "warnings": []}),
+            json!({
+                "supported_profiles": ["awiki.message-sync.explicit-negotiation.v1"]
+            }),
         ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = device_binding_from_request(request);
@@ -907,28 +932,51 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
             let client_instance_id = rpc["params"]["body"]["client_instance_id"]
                 .as_str()
                 .expect("sync.bootstrap client_instance_id");
-            assert_eq!(
-                rpc["params"]["body"]["capabilities"]["p6_delivery"],
-                "p6.delivery_context.v1"
-            );
-            rpc_result_for_request(
-                request,
-                json!({
-                    "mode": "tail_only",
-                    "account_id": binding.account_id,
-                    "device_id": binding.device_id,
-                    "server_time": "2026-08-02T00:00:00Z",
-                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
-                    "read_state_baseline": [],
-                    "group_state_baseline": [],
-                    "warnings": [],
-                    "p6_delivery": {
-                        "profile": "p6.delivery_context.v1",
-                        "client_instance_id": client_instance_id,
-                        "activated": true
-                    }
-                }),
-            )
+            let requested = rpc["params"]["body"]["capabilities"]["requested_sync_capabilities"]
+                .as_array()
+                .expect("sync.bootstrap requested capabilities")
+                .clone();
+            let has_p5 = requested.iter().any(|value| value == "lanes.p5_device.v1");
+            let has_p6 = requested.iter().any(|value| value == "lanes.p6_group.v1");
+            let mut lanes = serde_json::Map::new();
+            if has_p5 {
+                lanes.insert(
+                    "p5_device".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            if has_p6 {
+                lanes.insert(
+                    "p6_group".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "42", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            let mut result = json!({
+                "mode": "tail_only",
+                "account_id": binding.account_id,
+                "device_id": binding.device_id,
+                "server_time": "2026-08-02T00:00:00Z",
+                "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                "read_state_baseline": [],
+                "group_state_baseline": [],
+                "warnings": [],
+                "sync_capabilities": requested,
+                "lanes": lanes
+            });
+            if has_p6 {
+                result["p6_delivery"] = json!({
+                    "profile": "p6.delivery_context.v1",
+                    "client_instance_id": client_instance_id,
+                    "activated": true
+                });
+            }
+            rpc_result_for_request(request, result)
         }
         "__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__" => {
             let binding = device_binding_from_request(request);

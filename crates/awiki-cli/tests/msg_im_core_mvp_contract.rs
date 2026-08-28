@@ -158,14 +158,13 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
-        TestResponse::inbox_empty(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
-        TestResponse::inbox_empty(),
         TestResponse::sync_delta_empty(),
-        TestResponse::inbox_empty(),
         TestResponse::error(503, r#"{"error":"temporarily unavailable"}"#),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -277,23 +276,17 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "anp.get_capabilities",
             "sync.bootstrap",
-            "inbox.get",
+            "anp.get_capabilities",
             "sync.bootstrap",
             "sync.delta",
             "message.get_batch",
-            "inbox.get",
             "sync.delta",
-            "inbox.get",
             "sync.delta",
         ]
     );
-    for body in rpc_bodies
-        .iter()
-        .filter(|body| body["method"] == "inbox.get")
-    {
-        assert_eq!(body["params"]["body"]["security_profile"], "direct-e2ee");
-    }
+    assert!(!methods.contains(&"inbox.get"));
     for body in rpc_bodies
         .iter()
         .filter(|body| body["method"] == "sync.delta")
@@ -307,19 +300,9 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [{
-                "id": "msg-ordinary-injected-by-secure-inbox",
-                "sender_did": "did:wba:awiki.ai:user:bob:e1_bob",
-                "receiver_did": "did:wba:awiki.ai:user:alice:e1_alice",
-                "content_type": "text/plain",
-                "content": "must not bypass sync v2",
-                "server_seq": 99
-            }],
-            "has_more": false,
-            "warnings": []
-        }))),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
@@ -369,19 +352,14 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "anp.get_capabilities",
             "sync.bootstrap",
-            "inbox.get",
+            "anp.get_capabilities",
             "sync.bootstrap",
             "sync.delta"
         ]
     );
-    let secure = rpc_bodies
-        .iter()
-        .find(|body| body["method"] == "inbox.get")
-        .unwrap();
-    assert_eq!(secure["params"]["body"]["limit"], 7);
-    assert_eq!(secure["params"]["body"]["security_profile"], "direct-e2ee");
-    assert_eq!(secure["params"]["body"].as_object().unwrap().len(), 3);
+    assert!(!methods.contains(&"inbox.get"));
 
     let connection = open_local_state(workspace.path());
     assert_eq!(
@@ -402,15 +380,14 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
-        TestResponse::inbox_empty(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
         TestResponse::mark_read_state(),
-        TestResponse::inbox_empty(),
         TestResponse::sync_delta_empty(),
-        TestResponse::inbox_empty(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -520,6 +497,7 @@ fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![
         TestResponse::registration(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
@@ -568,6 +546,23 @@ fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history
         workspace.path(),
     );
 
+    if !output.status.success() {
+        panic!(
+            "direct history failed after methods {:?}",
+            server
+                .requests()
+                .iter()
+                .map(
+                    |request| serde_json::from_str::<Value>(request_body(request)).unwrap()
+                        ["method"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                )
+                .collect::<Vec<_>>()
+        );
+    }
+
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Loaded 1 direct history messages");
     assert_eq!(
@@ -593,6 +588,7 @@ fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "anp.get_capabilities",
             "sync.bootstrap",
             "sync.delta",
         ]
@@ -606,6 +602,7 @@ fn msg_history_default_cutover_group_reconciles_sync_v2_and_reads_local_history(
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![
         TestResponse::registration(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
@@ -679,6 +676,7 @@ fn msg_history_default_cutover_group_reconciles_sync_v2_and_reads_local_history(
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "anp.get_capabilities",
             "sync.bootstrap",
             "sync.delta",
         ]
@@ -1013,12 +1011,8 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
 
-    fn inbox_empty() -> Self {
-        Self::ok(&json_rpc_result(json!({
-            "messages": [],
-            "has_more": false,
-            "warnings": []
-        })))
+    fn capabilities() -> Self {
+        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
     }
 
     fn sync_delta_message() -> Self {
@@ -1118,6 +1112,12 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
+        "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "supported_profiles": ["awiki.message-sync.explicit-negotiation.v1"]
+            }),
+        ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = device_binding_from_request(request);
             let rpc: Value =
@@ -1125,28 +1125,51 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
             let client_instance_id = rpc["params"]["body"]["client_instance_id"]
                 .as_str()
                 .expect("sync.bootstrap client_instance_id");
-            assert_eq!(
-                rpc["params"]["body"]["capabilities"]["p6_delivery"],
-                "p6.delivery_context.v1"
-            );
-            rpc_result_for_request(
-                request,
-                json!({
-                    "mode": "tail_only",
-                    "account_id": binding.account_id,
-                    "device_id": binding.device_id,
-                    "server_time": "2026-08-02T00:00:00Z",
-                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
-                    "read_state_baseline": [],
-                    "group_state_baseline": [],
-                    "warnings": [],
-                    "p6_delivery": {
-                        "profile": "p6.delivery_context.v1",
-                        "client_instance_id": client_instance_id,
-                        "activated": true
-                    }
-                }),
-            )
+            let requested = rpc["params"]["body"]["capabilities"]["requested_sync_capabilities"]
+                .as_array()
+                .expect("sync.bootstrap requested capabilities")
+                .clone();
+            let has_p5 = requested.iter().any(|value| value == "lanes.p5_device.v1");
+            let has_p6 = requested.iter().any(|value| value == "lanes.p6_group.v1");
+            let mut lanes = serde_json::Map::new();
+            if has_p5 {
+                lanes.insert(
+                    "p5_device".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            if has_p6 {
+                lanes.insert(
+                    "p6_group".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "42", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            let mut result = json!({
+                "mode": "tail_only",
+                "account_id": binding.account_id,
+                "device_id": binding.device_id,
+                "server_time": "2026-08-02T00:00:00Z",
+                "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                "read_state_baseline": [],
+                "group_state_baseline": [],
+                "warnings": [],
+                "sync_capabilities": requested,
+                "lanes": lanes
+            });
+            if has_p6 {
+                result["p6_delivery"] = json!({
+                    "profile": "p6.delivery_context.v1",
+                    "client_instance_id": client_instance_id,
+                    "activated": true
+                });
+            }
+            rpc_result_for_request(request, result)
         }
         "__DYNAMIC_SYNC_DELTA_MESSAGE_RESPONSE__" => {
             let binding = device_binding_from_request(request);
