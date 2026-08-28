@@ -170,6 +170,13 @@ impl SafeError {
 
 fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
     let code = code.unwrap_or_default().trim().to_ascii_lowercase();
+    if code == "mail.message_size_limit" {
+        return SafeError::new(
+            "invalid_input",
+            "The mail message exceeds the service size limit.",
+            false,
+        );
+    }
     if matches!(
         code.as_str(),
         "invalid_otp" | "otp_invalid" | "identity.registration_verification_invalid"
@@ -291,6 +298,37 @@ mod tests {
         });
         assert_eq!(error.code, "invalid_otp");
         assert_eq!(error.safe_message, "The registration OTP is invalid.");
+    }
+
+    #[test]
+    fn final_mail_size_limit_maps_exactly_without_parsing_service_text() {
+        for message in [
+            "Message too large after MIME encoding",
+            "localized text changed completely",
+        ] {
+            let error = SafeError::from_im(im_core::ImError::Service {
+                status_code: None,
+                code: Some("mail.message_size_limit".to_owned()),
+                message: message.to_owned(),
+                data: Some(serde_json::json!({"json_rpc_code": -32004})),
+            });
+            assert_eq!(error.code, "invalid_input");
+            assert_eq!(
+                error.safe_message,
+                "The mail message exceeds the service size limit."
+            );
+            assert!(!error.retryable);
+        }
+
+        for code in ["mail.message_size_limits", "mail.other_failure"] {
+            let error = SafeError::from_im(im_core::ImError::Service {
+                status_code: None,
+                code: Some(code.to_owned()),
+                message: "Message too large after MIME encoding".to_owned(),
+                data: None,
+            });
+            assert_eq!(error.code, "service_error");
+        }
     }
 
     #[test]

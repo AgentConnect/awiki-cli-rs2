@@ -124,8 +124,19 @@ void opened.then(async client => {
     cc: ['copy@example.test'],
     subject: 'Subject',
     bodyText: 'Plain-text body',
+    attachments: [{
+      fileName: 'fixture.txt',
+      contentType: 'text/plain',
+      bytes: new Uint8Array([0, 1, 2, 255]),
+    }],
   })
   sent.accepted satisfies boolean
+  const mailDownload = await client.downloadMailAttachment({
+    messageId: 'mail-1',
+    attachmentIndex: 0,
+  })
+  mailDownload.sizeBytes satisfies string
+  mailDownload.bytes satisfies Uint8Array
   const recoveryAttestation = await client.issueHandleRecoveryAttestation({
     operationId: 'recover-v4-type-test',
   })

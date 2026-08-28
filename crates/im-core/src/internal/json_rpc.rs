@@ -15,6 +15,7 @@ const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
     "group",
     "identity",
     "inbox",
+    "mail",
     "read_state",
     "sync",
 ];
@@ -384,6 +385,69 @@ mod tests {
                 .and_then(|value| value.as_i64()),
             Some(-32002)
         );
+    }
+
+    #[test]
+    fn json_rpc_error_preserves_stable_mail_size_code_and_numeric_code() {
+        let raw = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "error": {
+                "code": -32004,
+                "message": "localized final MIME limit detail",
+                "data": {"awiki_code": "mail.message_size_limit"}
+            }
+        }))
+        .unwrap();
+
+        let error = decode_response(&raw).unwrap_err();
+        let crate::ImError::Service { code, data, .. } = error else {
+            panic!("expected service error")
+        };
+        assert_eq!(code.as_deref(), Some("mail.message_size_limit"));
+        assert_eq!(
+            data.and_then(|value| value.get("json_rpc_code").cloned()),
+            Some(json!(-32004))
+        );
+    }
+
+    #[test]
+    fn json_rpc_error_rejects_malicious_conflicting_or_invalid_mail_codes() {
+        let cases = [
+            json!({"awiki_code": "mail.message_size_limit\nprivate"}),
+            json!({"awiki_code": "mail..message_size_limit"}),
+            json!({"awiki_code": "mail.Message_size_limit"}),
+            json!({
+                "awiki_code": "mail.message_size_limit",
+                "code": "device.join.expired"
+            }),
+            json!({
+                "awiki_code": "mail.message_size_limit",
+                "anp_code": 42
+            }),
+        ];
+
+        for data in cases {
+            let raw = serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "error": {
+                    "code": -32004,
+                    "message": "must not affect stable classification",
+                    "data": data
+                }
+            }))
+            .unwrap();
+            let error = decode_response(&raw).unwrap_err();
+            let crate::ImError::Service { code, data, .. } = error else {
+                panic!("expected service error")
+            };
+            assert_eq!(code.as_deref(), Some("-32004"));
+            assert!(data
+                .as_ref()
+                .and_then(|value| value.get("json_rpc_code"))
+                .is_none());
+        }
     }
 
     #[test]

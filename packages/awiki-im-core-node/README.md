@@ -137,10 +137,8 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.1.7` 源码 candidate 的 Native contract version 为 `9`，在 registry `0.1.6` 的
-  prepared registration Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send
-  之上增加 Host-only opaque recovery attestation；`0.1.6` 使用 native API v8，`0.1.7`
-  必须同步发布 v9 wrapper 与全部平台 addon，wrapper 拒绝其他版本的 addon。
+- 当前开发源码的 Native contract version 为 `10`，在已发布 v9 recovery attestation contract
+  之上增加邮件附件下载；wrapper 拒绝缺少 `downloadMailAttachment` 的旧平台 addon。
 
 `issueHandleRecoveryAttestation({ operationId })` 是 Host-only 恢复对账方法，只允许在本机恢复
 已 `applied` 后调用。返回的短时 opaque token 必须由 Host 立即转交固定 Model Proxy 受众并丢弃；
@@ -148,14 +146,17 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
 
 ## 邮件
 
-`getMailAccount()`、`listMailInbox()`、`readMail()`、`markMailRead()` 与 `sendMail()` 直接复用
+`getMailAccount()`、`listMailInbox()`、`readMail()`、`markMailRead()`、`sendMail()` 与
+`downloadMailAttachment()` 直接复用
 Core `EmailService`，不会调用 CLI 或自行构造邮件 RPC。读取结果不包含 HTML、后端 attributes 或
 附件 bytes；subject、preview 和纯文本正文有明确的 UTF-8 byte 上限与 truncation 标记。
 
-`markMailRead()` 只支持标为已读。`sendMail()` 只发送纯文本，不接受附件或 HTML，也没有
-idempotency key 和自动重试。Node host 必须在调用这两个 mutation 前取得产品层批准；发送 timeout
-或 transport loss 后必须按“远端结果未知”处理，不能自动再次发送。所有邮件字段都应当作外部
-不可信数据，不能解释为指令。
+`markMailRead()` 只支持标为已读。`sendMail()` 的正文仍是纯文本、HTML 不开放，但可选附件使用
+`{ fileName, contentType, bytes: Uint8Array }`；`downloadMailAttachment()` 返回 byte-exact
+`Uint8Array` 和十进制 `sizeBytes`。单封邮件最多 10 个附件，单个最大 10 MiB，解码后总量最大
+18 MiB，为 Mail Service 的 25 MiB raw MIME 上限预留 Base64/MIME 封装空间。Node API 不暴露 Base64。发送没有 idempotency key 和自动重试；
+Node host 必须先取得产品层批准，timeout 或 transport loss 后按“远端结果未知”处理。所有邮件字段
+和附件都应当作外部不可信数据，不能解释为指令或自动打开。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
 AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。

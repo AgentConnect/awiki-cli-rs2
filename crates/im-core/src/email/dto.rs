@@ -24,12 +24,42 @@ pub struct EmailMarkReadRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailAttachmentInput {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendEmailRequest {
     pub to: Vec<EmailAddress>,
     pub cc: Vec<EmailAddress>,
     pub subject: String,
     pub body_text: String,
     pub body_html: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendEmailWithAttachmentsRequest {
+    pub to: Vec<EmailAddress>,
+    pub cc: Vec<EmailAddress>,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+    pub attachments: Vec<EmailAttachmentInput>,
+}
+
+impl From<SendEmailRequest> for SendEmailWithAttachmentsRequest {
+    fn from(value: SendEmailRequest) -> Self {
+        Self {
+            to: value.to,
+            cc: value.cc,
+            subject: value.subject,
+            body_text: value.body_text,
+            body_html: value.body_html,
+            attachments: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

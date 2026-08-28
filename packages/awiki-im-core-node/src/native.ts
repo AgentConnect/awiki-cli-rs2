@@ -3,6 +3,7 @@ import type {
   CreateGroupInput,
   DisplayProfileBatchInput,
   DownloadAttachmentInput,
+  DownloadMailAttachmentInput,
   ExternalHttpHeader,
   ExternalHttpRequest,
   ExternalHttpResponse,
@@ -20,6 +21,7 @@ import type {
   HistoryInput,
   ImCoreNodeOpenOptions,
   MailAccount,
+  MailAttachmentDownload,
   MailInboxInput,
   MailInboxPage,
   MailMessage,
@@ -46,6 +48,7 @@ import type {
   RegistrationWithOtp,
   RemoveGroupMemberInput,
   SendAttachmentInput,
+  SendMailAttachmentInput,
   SendMailInput,
   SendMailResult,
   SendTextInput,
@@ -133,7 +136,12 @@ export interface NativeImCoreNodeClient {
   listMailInbox(input?: MailInboxInput): Promise<MailInboxPage>
   readMail(messageId: string): Promise<MailMessage>
   markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
-  sendMail(input: SendMailInput): Promise<SendMailResult>
+  sendMail(input: Omit<SendMailInput, 'attachments'> & {
+    readonly attachments?: readonly (Omit<SendMailAttachmentInput, 'bytes'> & { readonly bytes: Buffer })[]
+  }): Promise<SendMailResult>
+  downloadMailAttachment(input: DownloadMailAttachmentInput): Promise<Omit<MailAttachmentDownload, 'bytes'> & {
+    readonly bytes: Buffer
+  }>
   requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult>
   prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<NativeHandleRecoveryProgress>
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>

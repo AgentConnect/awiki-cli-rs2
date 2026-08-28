@@ -4,7 +4,7 @@ use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::email::{self, CommandResult};
 #[cfg(unix)]
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path};
 #[cfg(unix)]
 use std::{fs::DirBuilder, os::unix::fs::DirBuilderExt, os::unix::fs::OpenOptionsExt};
 
@@ -443,17 +443,20 @@ impl App {
         &self,
         resolved: &crate::workspace_config::Resolved,
         _message_id: &str,
-        attachment_index: i64,
+        _attachment_index: i64,
         output_path: &str,
         content: im_core::email::EmailAttachmentContent,
     ) -> Result<(), ExitError> {
-        let filename = if content.filename.trim().is_empty() {
-            format!("attachment_{attachment_index}")
-        } else {
-            content.filename.clone()
-        };
+        let filename = safe_default_attachment_filename(&content.filename).ok_or_else(|| {
+            ExitError::new(
+                "remote_response_invalid",
+                1,
+                "mail attachment response contains an unsafe filename.",
+                "Pass an explicit --output path only after verifying the attachment source.",
+            )
+        })?;
         let final_path = if output_path.trim().is_empty() {
-            filename.clone()
+            filename.to_string()
         } else {
             output_path.to_string()
         };
@@ -474,7 +477,7 @@ impl App {
                 "internal_error",
                 1,
                 err.to_string(),
-                "Check write permissions for the output file.",
+                "Choose a new output path; existing files are never overwritten.",
             )
         })?;
         let (data, summary, warnings) = email::render_attachment_saved(&content, &final_path);
@@ -499,6 +502,17 @@ impl App {
     }
 }
 
+fn safe_default_attachment_filename(value: &str) -> Option<&str> {
+    let path = Path::new(value);
+    if !im_core::email::valid_attachment_filename(value)
+        || path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(value)
+}
+
 #[cfg(unix)]
 fn create_attachment_parent_dir(path: &Path) -> std::io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(path)
@@ -513,8 +527,7 @@ fn create_attachment_parent_dir(path: &Path) -> std::io::Result<()> {
 fn write_attachment_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)?;
     file.write_all(content)
@@ -522,7 +535,11 @@ fn write_attachment_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn write_attachment_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, content)
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    std::io::Write::write_all(&mut file, content)
 }
 
 fn int_flag(command: &ParsedCommand, name: &str, fallback: i64) -> Result<i64, ExitError> {
@@ -548,4 +565,56 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .flags
         .get(name)
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+#[cfg(test)]
+mod attachment_download_tests {
+    use super::{safe_default_attachment_filename, write_attachment_file};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn default_filename_is_one_safe_utf8_bounded_basename() {
+        assert_eq!(
+            safe_default_attachment_filename("report.txt"),
+            Some("report.txt")
+        );
+        for unsafe_name in [
+            "",
+            ".",
+            "..",
+            "../escape.txt",
+            "/tmp/escape.txt",
+            "report.txt ",
+            "report.txt.",
+            "safe\u{202e}gnp.txt",
+            "private\u{e000}.txt",
+            "unassigned\u{0378}.txt",
+        ] {
+            assert_eq!(safe_default_attachment_filename(unsafe_name), None);
+        }
+        assert_eq!(
+            safe_default_attachment_filename(&format!("{}.txt", "界".repeat(84))),
+            None
+        );
+    }
+
+    #[test]
+    fn attachment_write_never_overwrites_an_existing_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-mail-attachment-no-overwrite-{}-{unique}",
+            std::process::id()
+        ));
+        write_attachment_file(&path, b"first").expect("first create");
+        let second = write_attachment_file(&path, b"second");
+        assert_eq!(
+            second.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).expect("read existing"), b"first");
+        std::fs::remove_file(path).expect("remove test file");
+    }
 }

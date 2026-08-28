@@ -143,7 +143,12 @@ const PUBLIC_PARITY: &[PublicParity] = &[
     PublicParity {
         capability: "mail_send",
         node_method: "sendMail",
-        core_facade: "EmailService::send_async",
+        core_facade: "EmailService::send_async/send_with_attachments_async",
+    },
+    PublicParity {
+        capability: "mail_attachment_download",
+        node_method: "downloadMailAttachment",
+        core_facade: "EmailService::download_attachment_async",
     },
     PublicParity {
         capability: "handle_recovery",
@@ -193,6 +198,7 @@ fn dsh_required_capabilities_have_one_public_facade_route() {
         "mail_read",
         "mail_mark_read",
         "mail_send",
+        "mail_attachment_download",
         "handle_recovery",
         "local_reset",
         "lifecycle",

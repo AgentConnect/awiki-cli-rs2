@@ -80,7 +80,19 @@ where
         let raw = self
             .transport
             .authenticated_rpc(call.endpoint, call.method, call.params)?;
-        Ok(crate::internal::email_wire::normalize::send(raw))
+        crate::internal::email_wire::normalize::send(raw)
+    }
+
+    pub(crate) fn send_with_attachments(
+        mut self,
+        request: crate::email::SendEmailWithAttachmentsRequest,
+    ) -> crate::ImResult<crate::email::SendEmailResult> {
+        self.ensure_messaging_session()?;
+        let call = crate::internal::email_wire::build_send_with_attachments_rpc_call(request)?;
+        let raw = self
+            .transport
+            .authenticated_rpc(call.endpoint, call.method, call.params)?;
+        crate::internal::email_wire::normalize::send(raw)
     }
 
     pub(crate) fn download_attachment(
@@ -184,7 +196,20 @@ where
             .transport
             .authenticated_rpc(call.endpoint, call.method, call.params)
             .await?;
-        Ok(crate::internal::email_wire::normalize::send(raw))
+        crate::internal::email_wire::normalize::send(raw)
+    }
+
+    pub(crate) async fn send_with_attachments_async(
+        mut self,
+        request: crate::email::SendEmailWithAttachmentsRequest,
+    ) -> crate::ImResult<crate::email::SendEmailResult> {
+        self.ensure_messaging_session_async().await?;
+        let call = crate::internal::email_wire::build_send_with_attachments_rpc_call(request)?;
+        let raw = self
+            .transport
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::email_wire::normalize::send(raw)
     }
 
     pub(crate) async fn download_attachment_async(

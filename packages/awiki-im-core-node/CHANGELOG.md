@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+## 0.1.9
+
+- Add byte-oriented mail attachment send/download APIs with strict filename, size, MIME, and canonical transport validation.
+- Require explicit `accepted=true` and `status=sent` mail-send responses, and raise the native API contract to v10.
+- Keep the existing Rust `SendEmailRequest` and optional download size source-compatible; expose attachment sends through a new request and method.
+- Use an 18 MiB decoded-total ceiling so valid attachment requests remain below the Mail Service's 25 MiB final-MIME limit.
+
 ## 0.1.8
 
 - Report Windows `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION` as the stable `state_in_use` error when another process owns the AWiki state root.

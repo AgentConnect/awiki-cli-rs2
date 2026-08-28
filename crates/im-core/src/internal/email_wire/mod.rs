@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 pub(crate) const MAIL_RPC_ENDPOINT: &str = "/mail/rpc";
@@ -65,6 +66,12 @@ pub(crate) fn build_account_rpc_call() -> EmailRpcCall {
 pub(crate) fn build_send_rpc_call(
     request: crate::email::SendEmailRequest,
 ) -> crate::ImResult<EmailRpcCall> {
+    build_send_with_attachments_rpc_call(request.into())
+}
+
+pub(crate) fn build_send_with_attachments_rpc_call(
+    request: crate::email::SendEmailWithAttachmentsRequest,
+) -> crate::ImResult<EmailRpcCall> {
     if request.to.is_empty() {
         return Err(crate::ImError::invalid_input(
             Some("to".to_string()),
@@ -83,6 +90,38 @@ pub(crate) fn build_send_rpc_call(
             "mail body is required",
         ));
     }
+    if request.attachments.len() > crate::email::EMAIL_ATTACHMENT_MAX_COUNT {
+        return Err(crate::ImError::invalid_input(
+            Some("attachments".to_string()),
+            "mail attachment collection exceeds the supported count",
+        ));
+    }
+    let mut attachment_total_bytes = 0usize;
+    for attachment in &request.attachments {
+        if !crate::email::valid_attachment_filename(&attachment.filename)
+            || !valid_attachment_content_type(&attachment.content_type)
+            || attachment.bytes.len() > crate::email::EMAIL_ATTACHMENT_MAX_BYTES
+        {
+            return Err(crate::ImError::invalid_input(
+                Some("attachments".to_string()),
+                "mail attachment is invalid",
+            ));
+        }
+        attachment_total_bytes = attachment_total_bytes
+            .checked_add(attachment.bytes.len())
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("attachments".to_string()),
+                    "mail attachment collection is too large",
+                )
+            })?;
+        if attachment_total_bytes > crate::email::EMAIL_ATTACHMENT_TOTAL_MAX_BYTES {
+            return Err(crate::ImError::invalid_input(
+                Some("attachments".to_string()),
+                "mail attachment collection is too large",
+            ));
+        }
+    }
     let to = request
         .to
         .iter()
@@ -98,17 +137,54 @@ pub(crate) fn build_send_rpc_call(
         .filter(|value| !value.trim().is_empty())
         .map(Value::String)
         .unwrap_or(Value::Null);
+    let attachments = request
+        .attachments
+        .into_iter()
+        .map(|attachment| {
+            json!({
+                "filename": attachment.filename,
+                "content_type": attachment.content_type,
+                "content_base64": base64::engine::general_purpose::STANDARD.encode(attachment.bytes),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut params = json!({
+        "to": to,
+        "cc": cc,
+        "subject": request.subject,
+        "body_text": request.body_text,
+        "body_html": body_html,
+    });
+    if !attachments.is_empty() {
+        params
+            .as_object_mut()
+            .expect("mail.send params are always an object")
+            .insert("attachments".to_string(), Value::Array(attachments));
+    }
     Ok(EmailRpcCall {
         endpoint: MAIL_RPC_ENDPOINT,
         method: "mail.send",
-        params: json!({
-            "to": to,
-            "cc": cc,
-            "subject": request.subject,
-            "body_text": request.body_text,
-            "body_html": body_html,
-        }),
+        params,
     })
+}
+
+fn valid_attachment_content_type(value: &str) -> bool {
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    !kind.is_empty()
+        && !subtype.is_empty()
+        && !subtype.contains('/')
+        && kind.bytes().all(valid_mime_token_byte)
+        && subtype.bytes().all(valid_mime_token_byte)
+}
+
+fn valid_mime_token_byte(value: u8) -> bool {
+    value.is_ascii_alphanumeric()
+        || matches!(
+            value,
+            b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+        )
 }
 
 pub(crate) fn build_attachment_rpc_call(
@@ -203,16 +279,27 @@ pub(crate) mod normalize {
         crate::email::EmailMarkReadResult { updated }
     }
 
-    pub(crate) fn send(value: Value) -> crate::email::SendEmailResult {
-        let accepted = bool_candidate(&value, &["accepted", "ok", "success"]).unwrap_or(true);
+    pub(crate) fn send(value: Value) -> crate::ImResult<crate::email::SendEmailResult> {
+        let object = value.as_object().ok_or_else(mail_send_not_accepted)?;
+        let accepted = object.get("accepted").and_then(Value::as_bool);
+        let status = object.get("status").and_then(Value::as_str);
+        let legacy_flags_are_consistent = ["ok", "success"].iter().all(|key| {
+            object
+                .get(*key)
+                .map(|value| value.as_bool() == Some(true))
+                .unwrap_or(true)
+        });
+        if accepted != Some(true) || status != Some("sent") || !legacy_flags_are_consistent {
+            return Err(mail_send_not_accepted());
+        }
         let message_id = first_string_value(&value, &["message_id", "messageId", "id"])
             .and_then(|id| crate::email::EmailMessageId::parse(id).ok());
         let warnings = string_array_candidate(&value, &["warnings"]);
-        crate::email::SendEmailResult {
-            accepted,
+        Ok(crate::email::SendEmailResult {
+            accepted: true,
             message_id,
             warnings,
-        }
+        })
     }
 
     pub(crate) fn attachment(
@@ -220,28 +307,96 @@ pub(crate) mod normalize {
         value: Value,
     ) -> crate::ImResult<crate::email::EmailAttachmentContent> {
         let object = value.as_object().cloned().unwrap_or_default();
-        let filename = first_string(&object, &["filename", "name"])
-            .unwrap_or_else(|| format!("attachment_{}", request.attachment_index));
+        let response_index =
+            first_strict_u64(&object, &["index", "attachment_index", "attachmentIndex"])
+                .ok_or_else(|| crate::ImError::Serialization {
+                    detail: "mail attachment response missing index".to_string(),
+                })?;
+        if response_index != u64::from(request.attachment_index) {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response index mismatch".to_string(),
+            });
+        }
+        let filename = first_string(&object, &["filename", "name"]).ok_or_else(|| {
+            crate::ImError::Serialization {
+                detail: "mail attachment response missing filename".to_string(),
+            }
+        })?;
+        if !crate::email::valid_attachment_filename(&filename) {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response filename is unsafe".to_string(),
+            });
+        }
         let content_type = first_string(&object, &["content_type", "contentType", "mime_type"])
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-        let size = first_u64(&object, &["size", "size_bytes", "sizeBytes"]);
-        let content = first_string(&object, &["content_base64", "contentBase64", "base64"])
             .ok_or_else(|| crate::ImError::Serialization {
-                detail: "mail attachment response missing content_base64".to_string(),
+                detail: "mail attachment response missing content_type".to_string(),
             })?;
+        if !super::valid_attachment_content_type(&content_type) {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response content_type is invalid".to_string(),
+            });
+        }
+        let size =
+            first_strict_u64(&object, &["size", "size_bytes", "sizeBytes"]).ok_or_else(|| {
+                crate::ImError::Serialization {
+                    detail: "mail attachment response missing size".to_string(),
+                }
+            })?;
+        if size > crate::email::EMAIL_ATTACHMENT_MAX_BYTES as u64 {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response exceeds the supported size".to_string(),
+            });
+        }
+        let content =
+            first_string_allow_empty(&object, &["content_base64", "contentBase64", "base64"])
+                .ok_or_else(|| crate::ImError::Serialization {
+                    detail: "mail attachment response missing content_base64".to_string(),
+                })?;
+        let expected_encoded_len = usize::try_from(size)
+            .ok()
+            .and_then(|size| size.checked_add(2))
+            .map(|size| size / 3)
+            .and_then(|groups| groups.checked_mul(4))
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "mail attachment response size is invalid".to_string(),
+            })?;
+        if content.len() != expected_encoded_len {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response encoded size mismatch".to_string(),
+            });
+        }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(content.as_bytes())
             .map_err(|err| crate::ImError::Serialization {
                 detail: format!("mail attachment base64 decode failed: {err}"),
             })?;
+        if base64::engine::general_purpose::STANDARD.encode(&bytes) != content {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response base64 is not canonical".to_string(),
+            });
+        }
+        if u64::try_from(bytes.len()).ok() != Some(size) {
+            return Err(crate::ImError::Serialization {
+                detail: "mail attachment response size mismatch".to_string(),
+            });
+        }
         Ok(crate::email::EmailAttachmentContent {
             message_id: request.message_id,
             attachment_index: request.attachment_index,
             filename,
             content_type,
-            size,
+            size: Some(size),
             bytes,
         })
+    }
+
+    fn mail_send_not_accepted() -> crate::ImError {
+        crate::ImError::Service {
+            status_code: None,
+            code: Some("mail.send_not_accepted".to_string()),
+            message: "mail send was not explicitly accepted".to_string(),
+            data: None,
+        }
     }
 
     pub(crate) fn message_summary(
@@ -392,8 +547,22 @@ pub(crate) mod normalize {
             .filter(|value| !value.trim().is_empty())
     }
 
+    fn first_string_allow_empty(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+        keys.iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+    }
+
     fn first_u64(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
         keys.iter().find_map(|key| u64_value(object.get(*key)))
+    }
+
+    fn first_strict_u64(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
+        keys.iter().find_map(|key| match object.get(*key) {
+            Some(Value::Number(value)) => value.as_u64(),
+            Some(Value::String(value)) => value.parse().ok(),
+            _ => None,
+        })
     }
 
     fn bool_from_object(object: &Map<String, Value>, keys: &[&str]) -> Option<bool> {

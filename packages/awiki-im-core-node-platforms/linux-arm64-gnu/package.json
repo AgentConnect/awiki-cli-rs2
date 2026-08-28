@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node-linux-arm64-gnu",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Linux arm64 glibc native addon for @awiki/im-core-node",
   "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
   "type": "commonjs",

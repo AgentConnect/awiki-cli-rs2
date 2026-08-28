@@ -115,6 +115,11 @@ impl EmailService<'_> {
 
     pub fn send(&self, request: SendEmailRequest) -> crate::ImResult<SendEmailResult>;
 
+    pub fn send_with_attachments(
+        &self,
+        request: SendEmailWithAttachmentsRequest,
+    ) -> crate::ImResult<SendEmailResult>;
+
     pub fn download_attachment(
         &self,
         request: EmailAttachmentDownloadRequest,
@@ -158,12 +163,29 @@ pub struct EmailMarkReadRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailAttachmentInput {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendEmailRequest {
     pub to: Vec<EmailAddress>,
     pub cc: Vec<EmailAddress>,
     pub subject: String,
     pub body_text: String,
     pub body_html: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendEmailWithAttachmentsRequest {
+    pub to: Vec<EmailAddress>,
+    pub cc: Vec<EmailAddress>,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+    pub attachments: Vec<EmailAttachmentInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,7 +261,7 @@ pub struct EmailAttachmentContent {
     pub attachment_index: u32,
     pub filename: String,
     pub content_type: String,
-    pub size: Option<u64>,
+    pub size: u64,
     pub bytes: Vec<u8>,
 }
 
@@ -281,6 +303,7 @@ pub struct EmailAttribute {
 2. 未能稳定归一化的 mail-service 字段放入 `attributes`，不能把完整 raw payload 塞进去。
 3. Attachment 内容在 SDK 中是 bytes；CLI 负责根据 `--output` 写文件和设置权限。
 4. `mail notify` 是本地 notification 视图，不调用远端 mail-service。
+5. 发送附件 bytes 只在内部 wire 编码为 canonical standard Base64；下载必须严格解码并核对服务声明 size。
 ```
 
 ## 7. Internal Wire Contract
@@ -294,6 +317,7 @@ Email 第一版必须兼容当前 Rust 和 Go 实现的 JSON-RPC contract。
 | `email().mark_read()` | `/mail/rpc` | `mail.markRead` | default | `message_ids`, `is_read` |
 | `email().account()` | `/mail/rpc` | `mail.getMailbox` | default | `{}` |
 | `email().send()` | `/mail/rpc` | `mail.send` | default | `to`, `cc`, `subject`, `body_text`, `body_html` |
+| `email().send_with_attachments()` | `/mail/rpc` | `mail.send` | default | `to`, `cc`, `subject`, `body_text`, `body_html`, `attachments[]` |
 | `email().download_attachment()` | `/mail/rpc` | `mail.getAttachment` | read-heavy | `message_id`, `attachment_index` |
 | `email().notifications()` | local sqlite | none | local | owner identity + limit |
 
@@ -308,6 +332,11 @@ message_ids 为空 -> InvalidInput(field = "message_ids")
 to 为空 -> InvalidInput(field = "to")
 subject 为空 -> InvalidInput(field = "subject")
 body_text 为空 -> InvalidInput(field = "body_text")
+legacy `SendEmailRequest` / `email().send()` -> 保持旧 params，不发送 `attachments` 字段
+`SendEmailWithAttachmentsRequest` 的零附件 -> 不发送 `attachments` 字段
+非空附件 -> `filename`, `content_type`, canonical standard `content_base64`
+发送成功 -> 仅接受 `accepted=true` 且 `status=sent`
+下载成功 -> `index` 与请求一致、Base64 canonical、解码长度等于 `size`
 ```
 
 ## 8. Auth And Identity
@@ -419,7 +448,7 @@ reply / reply-all / forward
 delete / archive / move / star
 draft
 server-side filters
-mail compose attachment upload
+attachment preview / forward / inline open
 rich MIME parser
 mail notification host-notify prompt 重写
 ```
