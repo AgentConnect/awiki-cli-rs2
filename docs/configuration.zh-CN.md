@@ -13,7 +13,7 @@
 | CLI → `im-core` features | 同上 `dependencies` | **`secure-direct` + `group-e2ee` + `blocking`** | CLI 显式打开 |
 | `im-core:default` | `crates/im-core/Cargo.toml` | `sqlite` + `http` + `identity-native-anp` | **开** |
 | `im-core:group-e2ee` / `secure-direct` | 同上 | crate default 关；CLI 打开 | crate **关** |
-| `im-core-dart` Flutter 构建 | `scripts/flutter/build-*.sh` | 现为 `group-e2ee`，**无 `secure-direct`**（落地 PR-3 会补上） | 见脚本 |
+| `im-core-dart` Flutter 构建 | `scripts/flutter/build-*.sh` | `group-e2ee` + `secure-direct` | 见脚本 |
 | `AWIKI_CLI_RELEASE` / `AWIKI_DAEMON_RELEASE` | 编译期 `option_env!` | 发布线 | 未注入则为 **`0815`** |
 | `AWIKI_CLI_VERSION` | `option_env!` | 嵌入版本 | 未设 → 运行时 `dev` |
 

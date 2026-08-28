@@ -12,7 +12,7 @@ Authoritative configuration for **awiki-cli-rs2** (CLI, daemon, im-core). Source
 | `awiki-cli:system-test-probe` | same | System-test probe binary | **off** |
 | CLI → `im-core` features | same `dependencies` | **`secure-direct` + `group-e2ee` + `blocking`** | CLI enables them |
 | `im-core:default` | `crates/im-core/Cargo.toml` | `sqlite` + `http` + `identity-native-anp` | **on** |
-| Flutter `im-core-dart` | `scripts/flutter/build-*.sh` | Native App SDK | `group-e2ee`; **no `secure-direct`** until PR-3 |
+| Flutter `im-core-dart` | `scripts/flutter/build-*.sh` | Native App SDK | `group-e2ee` + `secure-direct` |
 | `AWIKI_CLI_RELEASE` / `AWIKI_DAEMON_RELEASE` | `option_env!` | Release line | **`0815`** if unset |
 | `AWIKI_CLI_VERSION` | `option_env!` | Embedded version | `dev` if unset |
 
