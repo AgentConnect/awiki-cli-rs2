@@ -72,7 +72,7 @@ pub struct ImCoreOpenOptions {
     pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
     pub multi_device_handle_recovery_enabled: bool, // default false
-    pub did_transition_vnext_hidden_rollout_enabled: bool, // default false
+    pub did_transition_vnext_hidden_rollout_enabled: bool, // default true; false is emergency rollback
     pub external_http_allow_insecure_loopback_for_testing: bool, // default false
 }
 

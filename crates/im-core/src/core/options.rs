@@ -56,7 +56,7 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
@@ -81,8 +81,9 @@ pub struct ImCoreOpenOptions {
     pub multi_device_handle_recovery_enabled: bool,
     /// Enables the hidden did:wba transition retry path.
     ///
-    /// This local rollout gate defaults to `false` and is never advertised or
-    /// serialized into protocol requests.
+    /// This local product gate defaults to `true`. Set it to `false` only for
+    /// emergency rollback. It is never advertised or serialized into protocol
+    /// requests.
     pub did_transition_vnext_hidden_rollout_enabled: bool,
     /// Explicit same-deployment control-plane audience used in Recovery V4
     /// key-possession proofs. It must equal User Service
@@ -95,6 +96,24 @@ pub struct ImCoreOpenOptions {
     /// This is a test-only transport-policy exception. Remote HTTP remains
     /// forbidden and callers still own the actual network transport.
     pub external_http_allow_insecure_loopback_for_testing: bool,
+}
+
+impl Default for ImCoreOpenOptions {
+    fn default() -> Self {
+        Self {
+            identity_secret_storage_policy: IdentitySecretStoragePolicy::default(),
+            identity_secret_vault: None,
+            multi_device_device_revoke_enabled: false,
+            multi_device_direct_e2ee_enabled: false,
+            multi_device_group_e2ee_enabled: false,
+            multi_device_handle_recovery_enabled: false,
+            did_transition_vnext_hidden_rollout_enabled: true,
+            multi_device_audience: None,
+            #[cfg(feature = "provider-traits")]
+            identity_custody_provider: None,
+            external_http_allow_insecure_loopback_for_testing: false,
+        }
+    }
 }
 
 /// Opaque trusted-host handle for an externally supplied identity provider.
@@ -286,12 +305,12 @@ mod tests {
     }
 
     #[test]
-    fn did_transition_rollout_gate_is_local_and_default_off() {
+    fn did_transition_rollout_gate_is_local_and_default_on() {
         let default_options = ImCoreOpenOptions::default();
-        assert!(!default_options.did_transition_vnext_hidden_rollout_enabled);
+        assert!(default_options.did_transition_vnext_hidden_rollout_enabled);
         assert!(
-            ImCoreOpenOptions::default()
-                .with_did_transition_vnext_hidden_rollout_enabled(true)
+            !ImCoreOpenOptions::default()
+                .with_did_transition_vnext_hidden_rollout_enabled(false)
                 .did_transition_vnext_hidden_rollout_enabled
         );
     }

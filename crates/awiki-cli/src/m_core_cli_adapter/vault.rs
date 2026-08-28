@@ -118,14 +118,14 @@ pub(crate) fn multi_device_group_e2ee_enabled() -> Result<bool, ExitError> {
 
 pub(crate) fn did_transition_vnext_hidden_rollout_enabled() -> Result<bool, ExitError> {
     match std::env::var("AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED") {
-        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(std::env::VarError::NotPresent) => Ok(true),
         Ok(value) if value.trim() == "1" => Ok(true),
         Ok(value) if value.trim() == "0" => Ok(false),
         Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(ExitError::new(
             "invalid_config",
             2,
             "AWIKI_DID_TRANSITION_VNEXT_HIDDEN_ROLLOUT_ENABLED must be 0 or 1.",
-            "Leave it unset for the disabled default, or set it to 1 only for a reviewed hidden-rollout target.",
+            "Leave it unset for the enabled product default, or set it to 0 for emergency rollback.",
         )),
     }
 }
