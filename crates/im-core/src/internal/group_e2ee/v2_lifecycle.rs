@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use anp::authentication::{DeviceManifest, PROFILE_GROUP_E2EE_V2};
 use anp::group_e2ee::operations::v2::{
-    V2AddMemberInput, V2CreateGroupInput, V2GenerateKeyPackageInput, V2InspectLocalGroupInput,
-    V2LocalGroupMemberEndpoint, V2LocalGroupReadiness, V2PreparedAdd, V2PreparedRemove,
-    V2ReconciledPendingCommit, V2RemoveMemberInput,
+    V2AddMemberInput, V2CreateGroupInput, V2DidDocument, V2GenerateKeyPackageInput,
+    V2InspectLocalGroupInput, V2LocalGroupMemberEndpoint, V2LocalGroupReadiness, V2PreparedAdd,
+    V2PreparedRemove, V2ProcessWelcomeInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
 };
 use anp::group_e2ee::{
     V2GetKeyPackageBody, V2GroupAddBody, V2GroupControlMetadata, V2GroupRemoveBody,
@@ -793,6 +793,7 @@ struct TransitionControllerContext<'a> {
     context: ProductionV2Context<'a>,
     predecessor_did: String,
     predecessor_device_id: String,
+    predecessor_document: Value,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -927,7 +928,44 @@ fn transition_controller_context_from_documents<'a>(
         )?,
         predecessor_did,
         predecessor_device_id,
+        predecessor_document,
     }))
+}
+
+fn process_local_transition_welcome(
+    client: &crate::core::ImClient,
+    current_context: &ProductionV2Context<'_>,
+    transition: &TransitionControllerContext<'_>,
+    submission: &V2PreparedAddSubmission,
+    current_document: Value,
+) -> crate::ImResult<()> {
+    let body = &submission.prepared.body;
+    current_context
+        .product
+        .process_transition_welcome(V2ProcessWelcomeInput {
+            recipient_did: client.did().as_str().to_owned(),
+            recipient_device_id: current_context.device.device_id.clone(),
+            group_did: body.group_state_ref.group_did.clone(),
+            group_state_ref: body.group_state_ref.clone(),
+            crypto_group_id_b64u: body.crypto_group_id_b64u.clone(),
+            epoch: body.epoch.clone(),
+            welcome_b64u: body.welcome_b64u.clone(),
+            ratchet_tree_b64u: body.ratchet_tree_b64u.clone(),
+            member_documents: vec![
+                V2DidDocument {
+                    did: transition.predecessor_did.clone(),
+                    document: transition.predecessor_document.clone(),
+                },
+                V2DidDocument {
+                    did: client.did().as_str().to_owned(),
+                    document: current_document,
+                },
+            ],
+            now: format_time(OffsetDateTime::now_utc())?,
+            draft_extension_negotiated: true,
+            request_id: format!("{}-transition-welcome", operation_id("reconcile")),
+        })?;
+    Ok(())
 }
 
 fn transition_add_current_owner(
@@ -991,21 +1029,28 @@ fn transition_add_current_owner(
             meta: control_meta(client, &current_context.device, &group_did, &add_operation),
             group_state_ref,
             group_key_package: package.group_key_package,
-            member_did_document: member_document,
+            member_did_document: member_document.clone(),
             now: format_time(OffsetDateTime::now_utc())?,
             draft_extension_negotiated: true,
             pending_commit_id: format!("pending-{add_operation}"),
             request_id: format!("{add_operation}-prepare"),
         },
         anp::group_e2ee::operations::v2::V2DidTransitionController {
-            predecessor_did: transition.predecessor_did,
-            predecessor_device_id: transition.predecessor_device_id,
+            predecessor_did: transition.predecessor_did.clone(),
+            predecessor_device_id: transition.predecessor_device_id.clone(),
         },
     )?;
     submit_prepared_add(
         &mut transition.context,
         &submission,
         format!("{add_operation}-finalize"),
+    )?;
+    process_local_transition_welcome(
+        client,
+        current_context,
+        &transition,
+        &submission,
+        member_document,
     )?;
     Ok(TransitionAddProgress {
         matched: true,
@@ -1081,15 +1126,15 @@ async fn transition_add_current_owner_async(
             meta: control_meta(client, &current_context.device, &group_did, &add_operation),
             group_state_ref,
             group_key_package: package.group_key_package,
-            member_did_document: member_document,
+            member_did_document: member_document.clone(),
             now: format_time(OffsetDateTime::now_utc())?,
             draft_extension_negotiated: true,
             pending_commit_id: format!("pending-{add_operation}"),
             request_id: format!("{add_operation}-prepare"),
         },
         anp::group_e2ee::operations::v2::V2DidTransitionController {
-            predecessor_did: transition.predecessor_did,
-            predecessor_device_id: transition.predecessor_device_id,
+            predecessor_did: transition.predecessor_did.clone(),
+            predecessor_device_id: transition.predecessor_device_id.clone(),
         },
     )?;
     submit_prepared_add_async(
@@ -1098,6 +1143,13 @@ async fn transition_add_current_owner_async(
         format!("{add_operation}-finalize"),
     )
     .await?;
+    process_local_transition_welcome(
+        client,
+        current_context,
+        &transition,
+        &submission,
+        member_document,
+    )?;
     Ok(TransitionAddProgress {
         matched: true,
         added: true,

@@ -10,8 +10,8 @@ use anp::group_e2ee::operations::v2::{
     V2GenerateKeyPackageInput, V2InspectLocalGroupInput, V2InspectLocalGroupOutput,
     V2KeyPackagePublishStatus, V2ListLocalGroupMemberEndpointsOutput,
     V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate, V2PreparedKeyPackagePublish,
-    V2PreparedRemove, V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ReconcilePendingInput,
-    V2ReconciledPendingCommit, V2RemoveMemberInput,
+    V2PreparedRemove, V2ProcessCommitOutput, V2ProcessNoticeInput, V2ProcessNoticeOutput,
+    V2ProcessWelcomeInput, V2ReconcilePendingInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
 };
 use anp::group_e2ee::{
     get_key_package_request_v2, group_add_request_v2, group_create_request_v2,
@@ -714,6 +714,14 @@ where
             .runtime
             .transition_add_member_prepare(input, controller)?;
         Ok(V2PreparedAddSubmission { meta, prepared })
+    }
+
+    pub(crate) fn process_transition_welcome(
+        &self,
+        input: V2ProcessWelcomeInput,
+    ) -> crate::ImResult<V2ProcessCommitOutput> {
+        self.ensure_current_device(&input.recipient_did, &input.recipient_device_id)?;
+        self.runtime.process_welcome(input)
     }
 
     pub(crate) fn submit_add(
