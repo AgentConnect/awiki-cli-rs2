@@ -3549,6 +3549,44 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    /// Gives independently committed P5/P6 inputs a bounded processing window.
+    ///
+    /// This runs only after sync has already committed its inbox/cursor facts;
+    /// crypto or MLS outcomes therefore cannot change the sync result.
+    pub fn drain_secure_lane_consumers(&self) -> crate::ImResult<()> {
+        #[cfg(feature = "blocking")]
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| crate::ImError::Internal {
+                    message: format!("build secure lane drain runtime: {error}"),
+                })?;
+            runtime.block_on(self.drain_secure_lane_consumers_async())
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            Err(crate::ImError::unsupported("secure-lane-drain"))
+        }
+    }
+
+    /// Async counterpart of [`Self::drain_secure_lane_consumers`].
+    pub async fn drain_secure_lane_consumers_async(&self) -> crate::ImResult<()> {
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+        match tokio::time::timeout(
+            DEADLINE,
+            crate::internal::message_runtime::sync_v2::drain_pending_secure_lane_consumers(
+                self.client,
+                64,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Ok(()),
+        }
+    }
+
     pub fn sync_diagnostics(&self) -> crate::ImResult<super::MessageSyncDiagnostics> {
         #[cfg(feature = "blocking")]
         {

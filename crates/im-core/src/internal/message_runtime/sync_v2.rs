@@ -795,14 +795,29 @@ async fn drain_p6_lane_inputs(
 fn wake_sync_lane_consumers(client: &crate::core::ImClient) {
     let client = client.clone();
     tokio::spawn(async move {
-        #[cfg(feature = "secure-direct")]
-        let _ = drain_p5_lane_inputs(&client, 64).await;
-        #[cfg(feature = "group-e2ee")]
-        let _ = drain_p6_lane_inputs(&client, 64).await;
-        if let Ok(db) = client.core_inner().local_state_db().await {
-            let _ = db.purge_closed_sync_lane_inputs(unix_time_i64(), 256).await;
-        }
+        let _ = drain_pending_secure_lane_consumers(&client, 64).await;
     });
+}
+
+pub(crate) async fn drain_pending_secure_lane_consumers(
+    client: &crate::core::ImClient,
+    max_inputs: u32,
+) -> crate::ImResult<()> {
+    if max_inputs == 0 || max_inputs > 256 {
+        return Err(crate::ImError::invalid_input(
+            Some("max_inputs".to_owned()),
+            "secure lane drain limit must be between 1 and 256",
+        ));
+    }
+    #[cfg(feature = "secure-direct")]
+    let _ = drain_p5_lane_inputs(client, max_inputs).await?;
+    #[cfg(feature = "group-e2ee")]
+    let _ = drain_p6_lane_inputs(client, max_inputs).await?;
+    let db = client.core_inner().local_state_db().await?;
+    let _ = db
+        .purge_closed_sync_lane_inputs(unix_time_i64(), max_inputs)
+        .await?;
+    Ok(())
 }
 
 async fn closed_lane_domain_status(

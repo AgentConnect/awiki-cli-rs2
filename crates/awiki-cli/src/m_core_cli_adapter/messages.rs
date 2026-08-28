@@ -590,7 +590,9 @@ fn reconcile_foreground_message_sync(
             limit: Some(100),
         })
         .map_err(im_error_to_message_error)?;
-    require_foreground_message_sync(&outcome)
+    require_foreground_message_sync(&outcome)?;
+    let _ = client.messages().drain_secure_lane_consumers();
+    Ok(())
 }
 
 async fn reconcile_foreground_message_sync_async(
@@ -604,7 +606,9 @@ async fn reconcile_foreground_message_sync_async(
         })
         .await
         .map_err(im_error_to_message_error)?;
-    require_foreground_message_sync(&outcome)
+    require_foreground_message_sync(&outcome)?;
+    let _ = client.messages().drain_secure_lane_consumers_async().await;
+    Ok(())
 }
 
 fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {
