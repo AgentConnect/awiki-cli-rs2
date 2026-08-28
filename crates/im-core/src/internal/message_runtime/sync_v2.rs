@@ -6068,8 +6068,9 @@ END;
     #[test]
     fn v1b_handoff_adapter_consumes_the_portable_production_delta_fixture() {
         use crate::internal::wire::sync_v2::{parse_delta, SyncLaneDeltaSectionV3, SyncLaneV3};
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../AgentNetworkProtocol/examples/message-vnext/message-sync-v1-a/lane-handoff-fixtures.json");
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../message-service/docs/api/message-sync/fixtures/lane-handoff-fixtures.json",
+        );
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let cases = fixture["cases"].as_array().unwrap();
         let mut adapted_event_types = BTreeSet::new();
