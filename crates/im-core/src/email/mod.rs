@@ -19,7 +19,7 @@ pub const EMAIL_ATTACHMENT_TOTAL_MAX_BYTES: usize = 18 * 1024 * 1024;
 pub fn valid_attachment_filename(value: &str) -> bool {
     !value.is_empty()
         && value.trim() == value
-        && value.trim_end_matches(|character| character == '.' || character == ' ') == value
+        && value.trim_end_matches(['.', ' ']) == value
         && value != "."
         && value != ".."
         && value.len() <= 255
