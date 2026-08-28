@@ -17,7 +17,8 @@ blocking = []
 sqlite = ["dep:rusqlite"]
 http = []
 internal-test-helpers = []
-mcp-trusted-registration = []
+service-trusted-registration = ["dep:uuid"]
+mcp-trusted-registration = ["service-trusted-registration"]
 
 # Reserved for later phases.
 email = []
@@ -52,6 +53,7 @@ serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 time.workspace = true
+uuid = { workspace = true, optional = true }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true

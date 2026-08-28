@@ -108,10 +108,19 @@ awiki-im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attach
 | `group-e2ee` | 否 | 群组 E2EE/MLS 能力；同时启用 `sqlite` 和 ANP `mls` feature。 |
 | `email` | 否 | 邮件产品命名空间。 |
 | `provider-traits` | 否 | 预留 provider 扩展点。 |
-| `mcp-trusted-registration` | 否 | 内部 trusted-registration 集成面。 |
+| `service-trusted-registration` | 否 | Rust 后端服务专用的持久 operation ID 受信注册能力；不导出到 CLI、Node 或 Dart binding。 |
+| `mcp-trusted-registration` | 否 | 兼容已有 MCP 的受信注册能力，并自动启用 `service-trusted-registration`。 |
 | `internal-test-helpers` | 否 | 测试专用 helper；下游生产构建不要启用。 |
 
 默认 feature set 是 `sqlite` + `http`。
+
+### 后端服务受信注册
+
+Rust 后端服务可启用 `service-trusted-registration`，依次调用
+`IdentityRegistry::prepare_handle_with_trusted_service_async` 和
+`register_handle_with_trusted_service_async`。调用方必须提供规范 UUID operation ID 和专用的
+User Service bearer token，并在重试时复用同一 operation ID 与已准备身份材料。该能力只供受信
+服务进程使用，不代替普通用户注册，也不得通过公开客户端 binding 暴露。
 
 ## 最小 Rust 用法
 

@@ -64,6 +64,10 @@ pub use crate::identity::{
     RootKeyTransferService, VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
     VNextAgentLegacyUpgradeSession, VerificationInput,
 };
+#[cfg(feature = "service-trusted-registration")]
+pub use crate::identity::{
+    TrustedServiceRegisterHandleRequest, TrustedServiceRegistrationPreparation,
+};
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef,
     ProtocolDeviceId, ThreadId,

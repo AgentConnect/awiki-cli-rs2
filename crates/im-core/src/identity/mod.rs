@@ -32,6 +32,8 @@ pub(crate) use self::dto::{
     DaemonSubkeyPrivatePackage, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1, DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,
     DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
 };
+#[cfg(feature = "service-trusted-registration")]
+pub use self::dto::{TrustedServiceRegisterHandleRequest, TrustedServiceRegistrationPreparation};
 pub use self::handle_recovery::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
     BeginPreparedRegistrationDeviceJoinRequest, HandleRecoveryAccountEpochReceipt,

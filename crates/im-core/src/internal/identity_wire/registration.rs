@@ -5,6 +5,15 @@ pub(crate) fn build_register_rpc_call(
     let mut payload = serde_json::Map::new();
     payload.insert("did_document".to_string(), params.did_document);
     payload.insert("handle".to_string(), serde_json::Value::String(handle));
+    if let Some(name) = params.name {
+        let name = name.trim();
+        if !name.is_empty() {
+            payload.insert(
+                "name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
+        }
+    }
     if let Some(phone) = params.phone {
         if !phone.trim().is_empty() {
             payload.insert(
@@ -29,6 +38,12 @@ pub(crate) fn build_register_rpc_call(
         payload.insert(
             "invite_code".to_string(),
             serde_json::Value::String(params.invite_code),
+        );
+    }
+    if let Some(operation_id) = params.provision_operation_id {
+        payload.insert(
+            "provision_operation_id".to_string(),
+            serde_json::Value::String(operation_id),
         );
     }
     Ok(super::rpc_call(

@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -564,7 +565,7 @@ pub struct IncomingMessageRecoveryItem {
 ///
 /// The token is intentionally opaque to hosts and is bound to the exact
 /// account/device identity that created it.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingMessageRecoveryPageToken {
     pub(crate) owner_identity_id: String,
     pub(crate) account_id: String,
@@ -575,6 +576,53 @@ pub struct IncomingMessageRecoveryPageToken {
     pub(crate) timestamp: String,
     pub(crate) server_sequence_key: i64,
     pub(crate) logical_message_id: String,
+}
+
+impl IncomingMessageRecoveryPageToken {
+    const PERSISTED_PREFIX: &'static str = "incoming-recovery:v1:";
+
+    /// Serializes a Core-issued recovery position for durable host checkpoints.
+    ///
+    /// The value is opaque to hosts and is still validated against the exact
+    /// active account/device binding when it is presented to Core again.
+    pub fn to_persisted_cursor(&self) -> crate::ImResult<String> {
+        let encoded = serde_json::to_vec(self).map_err(|error| {
+            crate::ImError::invalid_input(
+                Some("recovery_cursor".to_owned()),
+                format!("cannot encode incoming recovery cursor: {error}"),
+            )
+        })?;
+        Ok(format!(
+            "{}{}",
+            Self::PERSISTED_PREFIX,
+            URL_SAFE_NO_PAD.encode(encoded)
+        ))
+    }
+
+    /// Restores a previously persisted Core recovery position.
+    pub fn from_persisted_cursor(value: &str) -> crate::ImResult<Self> {
+        let encoded = value
+            .trim()
+            .strip_prefix(Self::PERSISTED_PREFIX)
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("recovery_cursor".to_owned()),
+                    "incoming recovery cursor is malformed",
+                )
+            })?;
+        let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("recovery_cursor".to_owned()),
+                "incoming recovery cursor is malformed",
+            )
+        })?;
+        serde_json::from_slice(&bytes).map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("recovery_cursor".to_owned()),
+                "incoming recovery cursor is malformed",
+            )
+        })
+    }
 }
 
 impl std::fmt::Debug for IncomingMessageRecoveryPageToken {

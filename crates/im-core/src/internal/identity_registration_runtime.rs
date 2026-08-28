@@ -39,6 +39,7 @@ pub(crate) struct IdentityRegistrationRuntimeResult {
 pub(crate) struct IdentityRegistrationRuntime<'a, T> {
     core: &'a crate::core::ImCore,
     transport: T,
+    provision_operation_id: Option<String>,
 }
 
 pub(crate) struct AnpVNextBootstrapSaveInput<'a> {
@@ -79,7 +80,24 @@ struct RegistrationTarget {
 
 impl<'a, T> IdentityRegistrationRuntime<'a, T> {
     pub(crate) fn new(core: &'a crate::core::ImCore, transport: T) -> Self {
-        Self { core, transport }
+        Self {
+            core,
+            transport,
+            provision_operation_id: None,
+        }
+    }
+
+    #[cfg(feature = "service-trusted-registration")]
+    pub(crate) fn new_with_provision_operation_id(
+        core: &'a crate::core::ImCore,
+        transport: T,
+        provision_operation_id: String,
+    ) -> Self {
+        Self {
+            core,
+            transport,
+            provision_operation_id: Some(provision_operation_id),
+        }
     }
 
     fn pending_result(
@@ -108,6 +126,49 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
             retry_at,
             warnings: warnings_for_request(&request),
         }
+    }
+}
+
+#[cfg(feature = "service-trusted-registration")]
+impl<'a, T> IdentityRegistrationRuntime<'a, T>
+where
+    T: AsyncRpcTransport + AsyncRestTransport,
+{
+    pub(crate) async fn prepare_trusted_registration_async(
+        &mut self,
+        request: &crate::identity::RegisterHandleRequest,
+    ) -> crate::ImResult<crate::identity::TrustedServiceRegistrationPreparation> {
+        if !matches!(
+            request.verification,
+            crate::identity::VerificationInput::AlreadyVerified
+        ) {
+            return Err(crate::ImError::invalid_input(
+                Some("verification".to_owned()),
+                "trusted service registration requires AlreadyVerified".to_owned(),
+            ));
+        }
+        let target = registration_target(
+            request.requested_handle.as_str(),
+            &self.core.inner().sdk_config().did_domain,
+        )?;
+        ensure_registration_domain(self.core, &target)?;
+        let store =
+            crate::internal::identity_registration_pending::PendingRegistrationStore::from_core(
+                self.core,
+            )?;
+        let (_, pending) =
+            load_or_create_pending_registration_async(self.core, &store, request, &target).await?;
+        verify_pending_matches_request(&pending, request, &target)?;
+        let call = register_call(&pending, request, self.provision_operation_id.as_deref())?;
+        let canonical = serde_json_canonicalizer::to_vec(&call.params).map_err(|error| {
+            crate::ImError::Serialization {
+                detail: format!("trusted registration canonicalization failed: {error}"),
+            }
+        })?;
+        use sha2::{Digest as _, Sha256};
+        Ok(crate::identity::TrustedServiceRegistrationPreparation {
+            canonical_request_sha256: Sha256::digest(canonical).into(),
+        })
     }
 }
 
@@ -215,6 +276,7 @@ where
             &mut self.transport,
             &mut pending,
             &request,
+            self.provision_operation_id.as_deref(),
             |pending| store.save(pending).map(|_| ()),
         )? {
             crate::internal::identity_custody::discard_unpublished_registration(
@@ -418,7 +480,8 @@ where
                 .await?;
                 pending.remote_attempted = true;
                 store.save(&pending)?;
-                let call = register_call(&pending, &request)?;
+                let call =
+                    register_call(&pending, &request, self.provision_operation_id.as_deref())?;
                 match self
                     .transport
                     .rpc(call.endpoint, call.method, call.params.clone())
@@ -717,15 +780,18 @@ fn pending_verification_target(
 fn register_call(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
     request: &crate::identity::RegisterHandleRequest,
+    provision_operation_id: Option<&str>,
 ) -> crate::ImResult<crate::internal::identity_wire::RpcCall> {
     crate::internal::identity_wire::registration::build_register_rpc_call(
         crate::internal::identity_wire::RegisterRpcParams {
             did_document: pending.identity.did_document.clone(),
             handle: pending.target_handle.clone(),
+            name: provision_operation_id.and_then(|_| request.profile.display_name.clone()),
             phone: registration_phone(&request.verification),
             otp_code: registration_otp(&request.verification),
             email: registration_email(&request.verification),
             invite_code: request.invite_code.clone().unwrap_or_default(),
+            provision_operation_id: provision_operation_id.map(str::to_owned),
         },
     )
 }
@@ -736,6 +802,7 @@ fn ensure_remote_registration<T, P>(
     transport: &mut T,
     pending: &mut crate::internal::identity_registration_pending::PendingRegistration,
     request: &crate::identity::RegisterHandleRequest,
+    provision_operation_id: Option<&str>,
     mut persist: P,
 ) -> crate::ImResult<Option<ParsedRegistrationJoinRequired>>
 where
@@ -777,7 +844,7 @@ where
         crate::internal::identity_custody::begin_registration_publication(core, &pending.identity)?;
         pending.remote_attempted = true;
         persist(pending)?;
-        let call = register_call(pending, request)?;
+        let call = register_call(pending, request, provision_operation_id)?;
         match transport.rpc(call.endpoint, call.method, call.params) {
             Ok(raw) => match parse_register_outcome(pending, raw)? {
                 RegistrationRemoteOutcome::Registered(result) => {
@@ -1916,13 +1983,19 @@ mod tests {
         };
         let mut persisted = Vec::new();
 
-        let join_required =
-            ensure_remote_registration(&core, &mut transport, &mut pending, &request, |state| {
+        let join_required = ensure_remote_registration(
+            &core,
+            &mut transport,
+            &mut pending,
+            &request,
+            None,
+            |state| {
                 persisted.push((state.remote_attempted, state.phase));
                 Ok(())
-            })
-            .unwrap()
-            .expect("existing handle must enter Join");
+            },
+        )
+        .unwrap()
+        .expect("existing handle must enter Join");
 
         assert_eq!(transport.rpc_calls, 1);
         assert_eq!(transport.probe_calls, 0);
@@ -2003,10 +2076,17 @@ mod tests {
         };
         let mut persisted = Vec::new();
 
-        ensure_remote_registration(&core, &mut transport, &mut pending, &request, |state| {
-            persisted.push((state.remote_attempted, state.phase));
-            Ok(())
-        })
+        ensure_remote_registration(
+            &core,
+            &mut transport,
+            &mut pending,
+            &request,
+            None,
+            |state| {
+                persisted.push((state.remote_attempted, state.phase));
+                Ok(())
+            },
+        )
         .unwrap();
 
         assert_eq!(transport.rpc_calls, 1);
@@ -2049,6 +2129,7 @@ mod tests {
             &mut transport,
             &mut expired_pending,
             &request,
+            None,
             |state| {
                 persisted.push(state.remote_attempted);
                 Ok(())
@@ -2092,6 +2173,7 @@ mod tests {
             &mut transport,
             &mut expired_pending,
             &request,
+            None,
             |_| Ok(()),
         )
         .unwrap_err();
@@ -2113,6 +2195,7 @@ mod tests {
             &mut other_transport,
             &mut other_pending,
             &request,
+            None,
             |_| Ok(()),
         )
         .unwrap_err();
@@ -2197,6 +2280,7 @@ mod tests {
             &mut absent_transport,
             &mut absent,
             &request,
+            None,
             |_| Ok(()),
         )
         .unwrap_err();
@@ -2220,6 +2304,7 @@ mod tests {
                 &mut mismatch_transport,
                 &mut mismatch,
                 &request,
+                None,
                 |_| Ok(())
             ),
             Err(crate::ImError::PermissionDenied)
@@ -2283,8 +2368,10 @@ mod tests {
             rpc_calls: 0,
             probe_calls: 0,
         };
-        ensure_remote_registration(&core, &mut transport, &mut pending, &request, |_| Ok(()))
-            .unwrap();
+        ensure_remote_registration(&core, &mut transport, &mut pending, &request, None, |_| {
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(transport.rpc_calls, 0);
         assert_eq!(transport.probe_calls, 0);
 

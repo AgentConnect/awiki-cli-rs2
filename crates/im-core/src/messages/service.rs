@@ -278,7 +278,23 @@ mod incoming_recovery_tests {
             .unwrap();
         assert_eq!(second.items[0].logical_message_id, "msg-later");
         assert!(!second.has_more);
-        assert!(second.next_page_token.is_none());
+        let final_token = second.next_page_token.clone().unwrap();
+        let persisted = final_token.to_persisted_cursor().unwrap();
+        let restored =
+            crate::messages::IncomingMessageRecoveryPageToken::from_persisted_cursor(&persisted)
+                .unwrap();
+        assert_eq!(restored, final_token);
+        let empty = client
+            .messages()
+            .local_hydrated_incoming_recovery_async(crate::messages::IncomingMessageRecoveryQuery {
+                limit: 1,
+                page_token: Some(restored),
+            })
+            .await
+            .unwrap();
+        assert!(empty.items.is_empty());
+        assert!(!empty.has_more);
+        assert!(empty.next_page_token.is_none());
 
         let other_bootstrap = fixture
             .core
@@ -3203,27 +3219,26 @@ impl<'a> MessageService<'a> {
             if has_more {
                 records.truncate(usize::try_from(query.limit).unwrap_or(usize::MAX));
             }
-            let next_page_token = if has_more {
-                records.last().map(|record| {
-                    let cursor =
-                        crate::internal::local_state::messages::hydrated_incoming_message_cursor(
-                            record,
-                        );
-                    super::IncomingMessageRecoveryPageToken {
-                        owner_identity_id: binding.owner_identity_id.clone(),
-                        account_id: binding.account_id.clone(),
-                        current_did: binding.current_did.clone(),
-                        protocol_device_id: binding.protocol_device_id.clone(),
-                        identity_generation: binding.identity_generation.clone(),
-                        device_auth_generation: binding.device_auth_generation.clone(),
-                        timestamp: cursor.timestamp,
-                        server_sequence_key: cursor.server_sequence_key,
-                        logical_message_id: cursor.message_id,
-                    }
-                })
-            } else {
-                None
-            };
+            // Return the durable position even at the end of the current
+            // projection. Hosts need that checkpoint to resume strictly after
+            // the last item when more messages arrive later.
+            let next_page_token = records.last().map(|record| {
+                let cursor =
+                    crate::internal::local_state::messages::hydrated_incoming_message_cursor(
+                        record,
+                    );
+                super::IncomingMessageRecoveryPageToken {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    account_id: binding.account_id.clone(),
+                    current_did: binding.current_did.clone(),
+                    protocol_device_id: binding.protocol_device_id.clone(),
+                    identity_generation: binding.identity_generation.clone(),
+                    device_auth_generation: binding.device_auth_generation.clone(),
+                    timestamp: cursor.timestamp,
+                    server_sequence_key: cursor.server_sequence_key,
+                    logical_message_id: cursor.message_id,
+                }
+            });
             let items = records
                 .iter()
                 .map(|record| {

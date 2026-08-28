@@ -1419,6 +1419,69 @@ impl<'a> IdentityRegistry<'a> {
         .await
         .map(|result| result.sdk_result)
     }
+
+    /// Registers a complete identity for a trusted Rust backend service.
+    ///
+    /// The operation id must be a canonical, hyphenated UUID and is preserved
+    /// across transport retries together with the pending identity material.
+    #[cfg(feature = "service-trusted-registration")]
+    pub async fn prepare_handle_with_trusted_service_async(
+        &self,
+        request: &super::TrustedServiceRegisterHandleRequest,
+        bearer_token: impl Into<String>,
+    ) -> crate::ImResult<super::TrustedServiceRegistrationPreparation> {
+        let operation_id = canonical_service_operation_id(&request.provision_operation_id)?;
+        crate::internal::identity_registration_runtime::IdentityRegistrationRuntime::new_with_provision_operation_id(
+            self.core,
+            crate::internal::transport::CorePlainTransport::new_with_register_bearer_token(
+                self.core,
+                bearer_token,
+            ),
+            operation_id,
+        )
+        .prepare_trusted_registration_async(&request.registration)
+        .await
+    }
+
+    /// Submits a trusted registration previously prepared in the same Core
+    /// workspace. Calling it without an explicit prepare remains supported and
+    /// performs the same durable local preparation before the first network byte.
+    #[cfg(feature = "service-trusted-registration")]
+    pub async fn register_handle_with_trusted_service_async(
+        &self,
+        request: super::TrustedServiceRegisterHandleRequest,
+        bearer_token: impl Into<String>,
+    ) -> crate::ImResult<super::HandleRegistrationResult> {
+        let operation_id = canonical_service_operation_id(&request.provision_operation_id)?;
+        crate::internal::identity_registration_runtime::IdentityRegistrationRuntime::new_with_provision_operation_id(
+            self.core,
+            crate::internal::transport::CorePlainTransport::new_with_register_bearer_token(
+                self.core,
+                bearer_token,
+            ),
+            operation_id,
+        )
+        .register_handle_async(request.registration)
+        .await
+        .map(|result| result.sdk_result)
+    }
+}
+
+#[cfg(feature = "service-trusted-registration")]
+fn canonical_service_operation_id(value: &str) -> crate::ImResult<String> {
+    let parsed = uuid::Uuid::parse_str(value).map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("provision_operation_id".to_string()),
+            "provision_operation_id must be a canonical UUID".to_string(),
+        )
+    })?;
+    if parsed.hyphenated().to_string() != value {
+        return Err(crate::ImError::invalid_input(
+            Some("provision_operation_id".to_string()),
+            "provision_operation_id must be a canonical UUID".to_string(),
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 impl IdentityRegistry<'_> {

@@ -284,6 +284,145 @@ async fn register_handle_with_service_bearer_adds_authorization_header() {
     assert_prekey_publication_request(&requests[1]);
 }
 
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_prepare_is_local_and_stable() {
+    let server = TestServer::spawn(Vec::new());
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required(server.base_url(), [42_u8; 32])
+        .await;
+    let request = TrustedServiceRegisterHandleRequest {
+        registration: RegisterHandleRequest {
+            local_alias: Some("guest".to_string()),
+            requested_handle: Handle::parse(
+                "guest-0123456789abcdef0123456789abcdef.awiki.test",
+                "",
+            )
+            .unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("AWiki Guest 7K3M".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        },
+        provision_operation_id: "018fb2d7-3c4d-7abc-8def-0123456789ab".to_string(),
+    };
+
+    let first = core
+        .identities()
+        .prepare_handle_with_trusted_service_async(&request, "guest-internal-token")
+        .await
+        .unwrap();
+    let second = core
+        .identities()
+        .prepare_handle_with_trusted_service_async(&request, "guest-internal-token")
+        .await
+        .unwrap();
+
+    assert_eq!(first, second);
+    assert_ne!(first.canonical_request_sha256, [0; 32]);
+    assert!(server.join().is_empty());
+}
+
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_sends_bearer_and_operation_id() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required(server.base_url(), [43_u8; 32])
+        .await;
+    let operation_id = "018fb2d7-3c4d-7abc-8def-0123456789ab";
+
+    let result = core
+        .identities()
+        .register_handle_with_trusted_service_async(
+            TrustedServiceRegisterHandleRequest {
+                registration: RegisterHandleRequest {
+                    local_alias: Some("guest".to_string()),
+                    requested_handle: Handle::parse(
+                        "guest-0123456789abcdef0123456789abcdef.awiki.test",
+                        "",
+                    )
+                    .unwrap(),
+                    verification: VerificationInput::AlreadyVerified,
+                    invite_code: None,
+                    profile: InitialProfile {
+                        display_name: Some("AWiki Guest 7K3M".to_string()),
+                        avatar_url: None,
+                    },
+                    make_default: true,
+                },
+                provision_operation_id: operation_id.to_string(),
+            },
+            "guest-internal-token",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer guest-internal-token")
+    );
+    assert_eq!(
+        requests[0].json_body()["params"]["provision_operation_id"],
+        operation_id
+    );
+    assert_prekey_publication_request(&requests[1]);
+}
+
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_rejects_noncanonical_operation_id_before_network() {
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required("http://127.0.0.1:1", [44_u8; 32])
+        .await;
+
+    for operation_id in [
+        "",
+        "not-a-uuid",
+        "018FB2D7-3C4D-7ABC-8DEF-0123456789AB",
+        "018fb2d73c4d7abc8def0123456789ab",
+    ] {
+        let error = core
+            .identities()
+            .register_handle_with_trusted_service_async(
+                TrustedServiceRegisterHandleRequest {
+                    registration: RegisterHandleRequest {
+                        local_alias: Some("guest".to_string()),
+                        requested_handle: Handle::parse(
+                            "guest-0123456789abcdef0123456789abcdef.awiki.test",
+                            "",
+                        )
+                        .unwrap(),
+                        verification: VerificationInput::AlreadyVerified,
+                        invite_code: None,
+                        profile: InitialProfile {
+                            display_name: None,
+                            avatar_url: None,
+                        },
+                        make_default: true,
+                    },
+                    provision_operation_id: operation_id.to_string(),
+                },
+                "guest-internal-token",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ImError::InvalidInput { .. }));
+    }
+}
+
 #[tokio::test]
 async fn register_handle_async_returns_identity_and_default_change() {
     let server = TestServer::spawn(vec![
