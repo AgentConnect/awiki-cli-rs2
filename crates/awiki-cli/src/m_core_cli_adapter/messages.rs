@@ -571,6 +571,9 @@ fn require_foreground_message_sync(
         MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::TransportUnavailable(
             "foreground message reconciliation did not complete".to_owned(),
         )),
+        MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
+            "foreground message synchronization is blocked and requires intervention".to_owned(),
+        )),
         MessageSyncStatus::AuthRevoked => Err(MessageAdapterError::IdentityRequired(
             "foreground message synchronization authorization is unavailable".to_owned(),
         )),

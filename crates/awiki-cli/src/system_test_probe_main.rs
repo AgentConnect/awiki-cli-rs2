@@ -121,6 +121,7 @@ struct ProbeRequest {
 
 enum Action {
     DeviceReadiness,
+    MessageSyncDiagnostics,
     AgentBootstrapIdentity(AgentBootstrapIdentityParams),
     DaemonContinuityBaseline,
     DaemonContinuityVerify(DaemonContinuityVerifyParams),
@@ -337,6 +338,7 @@ enum DaemonFixturePrepareFailureStage {
     SyncInitializeCallFailed,
     SyncInitializeRecoveryRequired,
     SyncInitializeRetryableFailure,
+    SyncInitializeBlocked,
     SyncInitializeAuthRevoked,
     BootstrapSendTransport,
     BootstrapSendService,
@@ -397,6 +399,7 @@ impl DaemonFixturePrepareFailureStage {
             Self::SyncInitializeCallFailed => "sync_initialize_call_failed",
             Self::SyncInitializeRecoveryRequired => "sync_initialize_recovery_required",
             Self::SyncInitializeRetryableFailure => "sync_initialize_retryable_failure",
+            Self::SyncInitializeBlocked => "sync_initialize_blocked",
             Self::SyncInitializeAuthRevoked => "sync_initialize_auth_revoked",
             Self::BootstrapSendTransport => "bootstrap_send_transport",
             Self::BootstrapSendService => "bootstrap_send_service",
@@ -559,6 +562,11 @@ where
         im_core::messages::MessageSyncStatus::RetryableFailure => {
             return Err(DaemonFixturePrepareFailure(
                 DaemonFixturePrepareFailureStage::SyncInitializeRetryableFailure,
+            ))
+        }
+        im_core::messages::MessageSyncStatus::Blocked => {
+            return Err(DaemonFixturePrepareFailure(
+                DaemonFixturePrepareFailureStage::SyncInitializeBlocked,
             ))
         }
         im_core::messages::MessageSyncStatus::AuthRevoked => {
@@ -1382,6 +1390,15 @@ impl Probe {
                 }),
                 false,
             )),
+            Action::MessageSyncDiagnostics => {
+                let client = self._client.as_ref().ok_or(ProbeFailure::InvalidState)?;
+                let diagnostics = client
+                    .messages()
+                    .sync_diagnostics_async()
+                    .await
+                    .map_err(|_| ProbeFailure::Runtime)?;
+                Ok((message_sync_diagnostics_projection(&diagnostics), false))
+            }
             Action::AgentBootstrapIdentity(params) => {
                 let registry = self
                     .required_user_rpc(&self.did_auth_rpc_url, "device_registry_get", json!({}))
@@ -3292,6 +3309,58 @@ fn daemon_bootstrap_public_key(
     Ok(anp::PublicKeyMaterial::X25519(bytes))
 }
 
+fn message_sync_diagnostics_projection(
+    diagnostics: &im_core::messages::MessageSyncDiagnostics,
+) -> Value {
+    use im_core::messages::{MessageSyncDomainStatus as Domain, MessageSyncLane as Lane};
+
+    let mut p5_lane_seen = false;
+    let mut p6_lane_seen = false;
+    let mut pending_lane_count = 0_u64;
+    let mut degraded_lane_count = 0_u64;
+    for lane in &diagnostics.lanes {
+        match lane.lane {
+            Lane::P5Device => p5_lane_seen = true,
+            Lane::P6Group => p6_lane_seen = true,
+        }
+        pending_lane_count += u64::from(lane.pending);
+        degraded_lane_count += u64::from(lane.last_transport_error.is_some());
+    }
+
+    let mut domain_counts = [0_u64; 8];
+    for state in &diagnostics.domain_states {
+        let index = match state.status {
+            Domain::Pending => 0,
+            Domain::Processing => 1,
+            Domain::Applied => 2,
+            Domain::Terminal => 3,
+            Domain::RejoinRequired => 4,
+            Domain::RepairRequired => 5,
+            Domain::UpgradeRequired => 6,
+            Domain::ActionRequired => 7,
+        };
+        domain_counts[index] += 1;
+    }
+
+    json!({
+        "schema_version": 1,
+        "lane_count": diagnostics.lanes.len(),
+        "p5_lane_seen": p5_lane_seen,
+        "p6_lane_seen": p6_lane_seen,
+        "pending_lane_count": pending_lane_count,
+        "degraded_lane_count": degraded_lane_count,
+        "domain_pending_count": domain_counts[0],
+        "domain_processing_count": domain_counts[1],
+        "domain_applied_count": domain_counts[2],
+        "domain_terminal_count": domain_counts[3],
+        "domain_rejoin_required_count": domain_counts[4],
+        "domain_repair_required_count": domain_counts[5],
+        "domain_upgrade_required_count": domain_counts[6],
+        "domain_action_required_count": domain_counts[7],
+        "contains_raw_identifiers": false,
+    })
+}
+
 fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
     let value: Value = serde_json::from_str(raw).map_err(|_| ProbeFailure::InvalidRequest)?;
     let object = value.as_object().ok_or(ProbeFailure::InvalidRequest)?;
@@ -3309,6 +3378,10 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
         "device_readiness" => {
             require_exact_keys(params, &[])?;
             Action::DeviceReadiness
+        }
+        "message_sync_diagnostics" => {
+            require_exact_keys(params, &[])?;
+            Action::MessageSyncDiagnostics
         }
         "agent_bootstrap_identity" => {
             require_exact_keys(params, &["controller_account_id"])?;
@@ -5098,6 +5171,55 @@ mod tests {
     }
 
     #[test]
+    fn v1c_message_sync_diagnostics_request_and_projection_are_closed() {
+        assert!(matches!(
+            parse_request(r#"{"id":"sync-v1c","action":"message_sync_diagnostics","params":{}}"#),
+            Ok(ProbeRequest {
+                action: Action::MessageSyncDiagnostics,
+                ..
+            })
+        ));
+        assert!(parse_request(
+            r#"{"id":"sync-v1c","action":"message_sync_diagnostics","params":{"cursor":"secret"}}"#
+        )
+        .is_err());
+
+        let diagnostics = im_core::messages::MessageSyncDiagnostics {
+            last_success_at: None,
+            mode: im_core::messages::MessageSyncMode::Blocked,
+            pending_mutation_count: 1,
+            dirty_domains: Vec::new(),
+            retry_state: im_core::messages::MessageSyncRetryState::Scheduled,
+            next_retry_at: None,
+            lanes: vec![im_core::messages::MessageSyncLaneState {
+                lane: im_core::messages::MessageSyncLane::P5Device,
+                committed_cursor: "must-not-leak".to_owned(),
+                pending: true,
+                last_transport_error: Some("lane_storage_pressure".to_owned()),
+            }],
+            domain_states: vec![im_core::messages::MessageSyncDomainState {
+                lane: im_core::messages::MessageSyncLane::P5Device,
+                scope: "did:must-not-leak".to_owned(),
+                retryable: false,
+                operation_ref: Some("must-not-leak".to_owned()),
+                status: im_core::messages::MessageSyncDomainStatus::RepairRequired,
+            }],
+        };
+        let projection = message_sync_diagnostics_projection(&diagnostics);
+        assert_eq!(projection["schema_version"], 1);
+        assert_eq!(projection["p5_lane_seen"], true);
+        assert_eq!(projection["p6_lane_seen"], false);
+        assert_eq!(projection["pending_lane_count"], 1);
+        assert_eq!(projection["degraded_lane_count"], 1);
+        assert_eq!(projection["domain_repair_required_count"], 1);
+        assert_eq!(projection["contains_raw_identifiers"], false);
+        let encoded = projection.to_string();
+        for forbidden in ["must-not-leak", "cursor", "scope", "operation_ref"] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
+
+    #[test]
     fn agent_bootstrap_identity_request_is_closed_and_exact() {
         let request = match parse_request(
             r#"{"id":"agent-1","action":"agent_bootstrap_identity","params":{"controller_account_id":"controller-account"}}"#,
@@ -5462,6 +5584,10 @@ mod tests {
             (
                 im_core::messages::MessageSyncStatus::RetryableFailure,
                 DaemonFixturePrepareFailureStage::SyncInitializeRetryableFailure,
+            ),
+            (
+                im_core::messages::MessageSyncStatus::Blocked,
+                DaemonFixturePrepareFailureStage::SyncInitializeBlocked,
             ),
             (
                 im_core::messages::MessageSyncStatus::AuthRevoked,

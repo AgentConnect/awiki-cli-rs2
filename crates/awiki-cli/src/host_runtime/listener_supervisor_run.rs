@@ -579,6 +579,11 @@ async fn spawn_im_core_runner_session_async(
                                 ListenerSyncDisposition::Retryable => {
                                     scheduler.complete_retryable(Instant::now());
                                 }
+                                ListenerSyncDisposition::Blocked => {
+                                    event_error = Some("reliable v2 sync is blocked and requires intervention".to_owned());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
                                 ListenerSyncDisposition::AuthRevoked => {
                                     event_error = Some("reliable v2 sync authorization was revoked".to_owned());
                                     let _ = session.stop().await;
@@ -811,6 +816,7 @@ impl ListenerSyncScheduler {
 enum ListenerSyncDisposition {
     Success,
     Retryable,
+    Blocked,
     AuthRevoked,
 }
 
@@ -824,6 +830,7 @@ fn listener_sync_disposition(
         | im_core::messages::MessageSyncStatus::RetryableFailure => {
             ListenerSyncDisposition::Retryable
         }
+        im_core::messages::MessageSyncStatus::Blocked => ListenerSyncDisposition::Blocked,
         im_core::messages::MessageSyncStatus::AuthRevoked => ListenerSyncDisposition::AuthRevoked,
     }
 }
@@ -1226,6 +1233,10 @@ mod tests {
         assert_eq!(
             listener_sync_disposition(im_core::messages::MessageSyncStatus::RetryableFailure),
             ListenerSyncDisposition::Retryable
+        );
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::Blocked),
+            ListenerSyncDisposition::Blocked
         );
         assert_eq!(
             listener_sync_disposition(im_core::messages::MessageSyncStatus::AuthRevoked),

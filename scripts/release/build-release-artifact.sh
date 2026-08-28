@@ -94,6 +94,7 @@ verify_e2ee_feature_graph() {
   local tree_output
   tree_output="$("${cargo_cmd[@]}" tree -p awiki-cli -e features --locked)"
   for required in \
+    'im-core feature "secure-direct"' \
     'im-core feature "group-e2ee"' \
     'anp feature "mls"'
   do
@@ -102,7 +103,7 @@ verify_e2ee_feature_graph() {
       die "release feature graph is missing ${required}"
     fi
   done
-  echo "Verified Linux/macOS E2EE release feature graph: im-core/group-e2ee and anp/mls."
+  echo "Verified Linux/macOS E2EE release feature graph: im-core/secure-direct, im-core/group-e2ee, and anp/mls."
 }
 
 VERSION=""
@@ -217,7 +218,7 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
 Would run: AWIKI_CLI_VERSION=${VERSION} AWIKI_CLI_COMMIT=${commit} AWIKI_CLI_BUILD_DATE=${build_date} AWIKI_CLI_CGO_ENABLED=0 ${cargo_cmd[*]} build -p awiki-cli --bin awiki-cli --release --locked --target ${TARGET_TRIPLE}
-Would verify: ${cargo_cmd[*]} tree -p awiki-cli -e features --locked includes im-core/group-e2ee and anp/mls on Linux/macOS
+Would verify: ${cargo_cmd[*]} tree -p awiki-cli -e features --locked includes im-core/secure-direct, im-core/group-e2ee, and anp/mls on Linux/macOS
 Would archive: ${build_bin} -> ${archive_path}
 Would include: ${bin_name} LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md
 EOF

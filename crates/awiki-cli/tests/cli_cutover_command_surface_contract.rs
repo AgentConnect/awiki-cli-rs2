@@ -447,6 +447,7 @@ fn release_artifact_script_documents_e2ee_feature_gate() {
         .lines()
         .find(|line| line.starts_with("im-core = "))
         .expect("awiki-cli im-core dependency");
+    assert!(im_core_dependency.contains("\"secure-direct\""));
     assert!(im_core_dependency.contains("\"group-e2ee\""));
     assert!(im_core_dependency.contains("\"blocking\""));
 
@@ -470,6 +471,7 @@ fn release_artifact_script_documents_e2ee_feature_gate() {
     .expect("read release artifact script");
 
     assert!(script.contains("verify_e2ee_feature_graph"));
+    assert!(script.contains("im-core feature \"secure-direct\""));
     assert!(script.contains("im-core feature \"group-e2ee\""));
     assert!(script.contains("anp feature \"mls\""));
     assert!(script.contains("cargo_cmd[@]}\" tree -p awiki-cli -e features --locked"));

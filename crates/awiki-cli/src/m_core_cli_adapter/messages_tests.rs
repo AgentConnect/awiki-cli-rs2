@@ -36,6 +36,10 @@ fn foreground_message_reads_projection_only_after_terminal_sync_success() {
         Err(MessageAdapterError::TransportUnavailable(_))
     ));
     assert!(matches!(
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::Blocked)),
+        Err(MessageAdapterError::LocalStateUnavailable(_))
+    ));
+    assert!(matches!(
         require_foreground_message_sync(&sync_outcome(MessageSyncStatus::AuthRevoked)),
         Err(MessageAdapterError::IdentityRequired(_))
     ));
