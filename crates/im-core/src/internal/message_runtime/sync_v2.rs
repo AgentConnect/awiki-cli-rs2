@@ -5064,32 +5064,6 @@ mod tests {
         })
     }
 
-    fn accounted_p6_lane_event(
-        delivery_id: &str,
-        seq: &str,
-        group_did: &str,
-        group_event_seq: &str,
-    ) -> Value {
-        json!({
-            "event_type": "p6.delivery.created",
-            "delivery_id": delivery_id,
-            "seq": seq,
-            "group_did": group_did,
-            "group_event_seq": group_event_seq,
-            "envelope": {
-                "meta": {
-                    "profile": "anp.group.e2ee.v2",
-                    "security_profile": "group-e2ee"
-                },
-                "auth": {},
-                "body": {
-                    "group_did": group_did,
-                    "group_event_seq": group_event_seq
-                }
-            }
-        })
-    }
-
     fn realtime_inline_p5_notification(
         delivery_id: &str,
         stream_epoch: &str,
@@ -6865,9 +6839,9 @@ END;
         );
     }
 
+    #[cfg(feature = "group-e2ee")]
     #[tokio::test]
-    #[ignore = "NOT_RUN_PRODUCT_GAP: poison P5 advances while accounted P6 remains behind"]
-    async fn poison_p5_lane_stops_only_p5_while_ordinary_and_p6_advance() {
+    async fn domain_poison_p5_commits_handoff_without_blocking_ordinary_or_p6() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
 
         let fixture = SyncSnapshotFixture::new("p5-poison-isolated");
@@ -6880,27 +6854,8 @@ END;
             &[(SyncLaneV3::P5Device, "41"), (SyncLaneV3::P6Group, "42")],
         )
         .await;
-        let p6_group_did = "did:wba:awiki.test:groups:p6-accounted";
-        client
-            .core_inner()
-            .local_state_db()
-            .await
-            .unwrap()
-            .commit_sync_lane_event(
-                lane_event_receipt(
-                    &binding,
-                    SyncLaneV3::P6Group,
-                    "p6-accounted-1",
-                    "42",
-                    "1",
-                    Some(p6_group_did.to_owned()),
-                    Some("1".to_owned()),
-                ),
-                None,
-                false,
-            )
-            .await
-            .unwrap();
+        let p6_group_did = "did:wba:awiki.test:groups:p6-independent";
+        let p6_envelope = p6_lane_envelope(&binding, "p6-independent-message-1", p6_group_did, "1");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let response = sync_snapshot_delta_with_lanes(
             "1",
@@ -6912,11 +6867,12 @@ END;
                     "has_more": false
                 },
                 "p6_group": {
-                    "events": [accounted_p6_lane_event(
-                        "p6-accounted-1",
+                    "events": [p6_lane_event(
+                        "p6-independent-1",
                         "1",
                         p6_group_did,
-                        "1"
+                        "1",
+                        &p6_envelope
                     )],
                     "next_cursor": {"stream_epoch": "42", "scan_seq": "1"},
                     "has_more": false
@@ -6954,8 +6910,25 @@ END;
             .into_iter()
             .map(|state| (state.lane, state.scan_seq))
             .collect::<BTreeMap<_, _>>();
-        assert_eq!(lanes[&SyncLaneV3::P5Device], "0");
+        assert_eq!(lanes[&SyncLaneV3::P5Device], "1");
         assert_eq!(lanes[&SyncLaneV3::P6Group], "1");
+        drain_pending_secure_lane_consumers(&client, 64)
+            .await
+            .unwrap();
+        let domain_states = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_sync_lane_domain_states(binding.owner_identity_id.clone())
+            .await
+            .unwrap();
+        assert!(domain_states.iter().any(|state| {
+            state.lane == SyncLaneV3::P5Device
+                && state.status
+                    == crate::internal::local_state::sync_v2::SyncLaneDomainStatus::Terminal
+                && state.last_error_code.as_deref() == Some("p5.malformed_input")
+        }));
         {
             let calls = calls.borrow();
             let request = &calls[0].params;
@@ -6964,6 +6937,7 @@ END;
         }
 
         let mut retry_response = response;
+        retry_response["lanes"]["p5_device"]["events"] = json!([]);
         retry_response["lanes"]["p6_group"]["events"] = json!([]);
         let retry = MessageSyncRuntimeV2::new(
             &client,
@@ -6981,7 +6955,7 @@ END;
         let calls = calls.borrow();
         assert_eq!(
             calls[1].params["body"]["lanes"]["p5_device"]["cursor"]["scan_seq"],
-            "0"
+            "1"
         );
         assert_eq!(
             calls[1].params["body"]["lanes"]["p6_group"]["cursor"]["scan_seq"],

@@ -1971,6 +1971,7 @@ fn sync_status(status: im_core::messages::MessageSyncStatus) -> &'static str {
         im_core::messages::MessageSyncStatus::RecoveryRequired => "recovery_required",
         im_core::messages::MessageSyncStatus::RetryableFailure => "retryable_failure",
         im_core::messages::MessageSyncStatus::AuthRevoked => "auth_revoked",
+        im_core::messages::MessageSyncStatus::Blocked => "blocked",
     }
 }
 
@@ -2176,6 +2177,7 @@ mod tests {
                 im_core::messages::MessageSyncStatus::RecoveryRequired,
                 im_core::messages::MessageSyncStatus::RetryableFailure,
                 im_core::messages::MessageSyncStatus::AuthRevoked,
+                im_core::messages::MessageSyncStatus::Blocked,
             ]
             .map(sync_status),
             [
@@ -2183,7 +2185,8 @@ mod tests {
                 "changed",
                 "recovery_required",
                 "retryable_failure",
-                "auth_revoked"
+                "auth_revoked",
+                "blocked"
             ]
         );
     }

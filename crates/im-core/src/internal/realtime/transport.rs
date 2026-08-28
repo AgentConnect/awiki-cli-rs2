@@ -461,6 +461,14 @@ async fn prepare_p6_delivery_session_once_async(
         )
         .await?;
     }
+    let p6_lane_negotiated = db
+        .load_lane_sync_states(owner_identity_id.to_owned())
+        .await?
+        .iter()
+        .any(|state| state.lane == crate::internal::wire::sync_v2::SyncLaneV3::P6Group);
+    if !p6_lane_negotiated {
+        return Ok(None);
+    }
     db.load_or_create_sync_client_instance_id(owner_identity_id.to_owned())
         .await
         .map(Some)

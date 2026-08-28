@@ -608,7 +608,15 @@ fn write_handshake_request(
     p6_client_instance_id: Option<&str>,
 ) -> WsResult<()> {
     stream
-        .write_all(handshake_request_head(parsed, key, request_strict_p6).as_bytes())
+        .write_all(
+            handshake_request_head(
+                parsed,
+                key,
+                request_strict_p6,
+                p6_client_instance_id.is_some(),
+            )
+            .as_bytes(),
+        )
         .map_err(ws_error)?;
     let bearer_token = bearer_token.trim();
     if !bearer_token.is_empty() {
@@ -618,31 +626,44 @@ fn write_handshake_request(
         write!(stream, "X-AWiki-Client-Version: {client_version}\r\n").map_err(ws_error)?;
     }
     if request_strict_p6 {
-        let client_instance_id = p6_client_instance_id
-            .filter(|value| !value.is_empty() && value.trim() == *value && value.len() <= 255)
-            .ok_or_else(|| {
-                ws_message("strict P6 websocket requires a canonical client instance ID")
-            })?;
-        write!(
-            stream,
-            "X-AWiki-P6-Client-Instance-ID: {client_instance_id}\r\n"
-        )
-        .map_err(ws_error)?;
+        if let Some(client_instance_id) = p6_client_instance_id {
+            let client_instance_id = (!client_instance_id.is_empty()
+                && client_instance_id.trim() == client_instance_id
+                && client_instance_id.len() <= 255)
+                .then_some(client_instance_id)
+                .ok_or_else(|| {
+                    ws_message("strict P6 websocket requires a canonical client instance ID")
+                })?;
+            write!(
+                stream,
+                "X-AWiki-P6-Client-Instance-ID: {client_instance_id}\r\n"
+            )
+            .map_err(ws_error)?;
+        }
     }
     stream.write_all(b"\r\n").map_err(ws_error)?;
     stream.flush().map_err(ws_error)
 }
 
-fn handshake_request_head(parsed: &ParsedWsUrl, key: &str, request_strict_p6: bool) -> String {
+fn handshake_request_head(
+    parsed: &ParsedWsUrl,
+    key: &str,
+    request_versioned_sync: bool,
+    request_p6_delivery_context: bool,
+) -> String {
     let mut head = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: awiki-im-core\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\n",
         parsed.path_and_query,
         parsed.host_header(),
         key,
     );
-    if request_strict_p6 {
+    if request_versioned_sync {
         head.push_str("Sec-WebSocket-Protocol: ");
-        head.push_str(crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL);
+        head.push_str(if request_p6_delivery_context {
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+        } else {
+            crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL
+        });
         head.push_str("\r\n");
     }
     head
@@ -705,9 +726,10 @@ fn validate_handshake_response(
         .map(|(_, value)| value.as_str());
     let selected_subprotocol = match selected_subprotocol {
         None => super::SyncNotificationSubprotocol::Legacy,
-        Some(crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL) => {
-            super::SyncNotificationSubprotocol::V3
-        }
+        Some(
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+            | crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
+        ) => super::SyncNotificationSubprotocol::V3,
         Some(_) => {
             return Err(ws_message(
                 "websocket server selected an unsupported sync subprotocol",
@@ -875,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn websocket_handshake_requires_strict_p6_for_exact_devices() {
+    fn websocket_handshake_requires_versioned_sync_for_exact_devices() {
         let key = "dGhlIHNhbXBsZSBub25jZQ==";
         let accept = websocket_accept(key);
         let valid = format!(
@@ -886,7 +908,10 @@ mod tests {
         let inline = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.event.v3\r\n\r\n"
         );
-        assert!(validate_handshake_response(&inline, key, true).is_err());
+        assert_eq!(
+            validate_handshake_response(&inline, key, true).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::V3
+        );
 
         let strict = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.event.v3.p6-delivery-context.v1\r\n\r\n"
@@ -915,9 +940,13 @@ mod tests {
     // current contract deliberately asserts strict-only P6, not V2 fallback.
     fn websocket_handshake_requests_v3_with_v2_fallback_subprotocols() {
         let parsed = ParsedWsUrl::parse("wss://example.test/im/ws").unwrap();
-        let request = handshake_request_head(&parsed, "test-key", true);
+        let request = handshake_request_head(&parsed, "test-key", true, true);
         assert!(request.contains(
             "\r\nSec-WebSocket-Protocol: awiki.sync.event.v3.p6-delivery-context.v1\r\n"
         ));
+
+        let without_p6 = handshake_request_head(&parsed, "test-key", true, false);
+        assert!(without_p6.contains("\r\nSec-WebSocket-Protocol: awiki.sync.event.v3\r\n"));
+        assert!(!without_p6.contains("p6-delivery-context"));
     }
 }

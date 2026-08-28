@@ -158,25 +158,34 @@ fn build_async_ws_request(
             .insert(HeaderName::from_static("x-awiki-client-version"), value);
     }
     if request_sync_changed_v2 {
-        let client_instance_id = p6_client_instance_id
-            .filter(|value| !value.is_empty() && value.trim() == *value && value.len() <= 255)
-            .ok_or_else(|| {
-                async_ws_connect_message(
-                    "strict P6 websocket requires a canonical client instance ID",
-                )
-            })?;
+        let selected_subprotocol = if p6_client_instance_id.is_some() {
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+        } else {
+            crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL
+        };
         request.headers_mut().insert(
             SEC_WEBSOCKET_PROTOCOL,
-            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+            selected_subprotocol
                 .parse()
-                .expect("static websocket subprotocol list is a valid header value"),
+                .expect("static websocket subprotocol is a valid header value"),
         );
-        request.headers_mut().insert(
-            HeaderName::from_static("x-awiki-p6-client-instance-id"),
-            client_instance_id.parse().map_err(|err| {
-                async_ws_connect_message(format!("build P6 client instance header: {err}"))
-            })?,
-        );
+        if let Some(client_instance_id) = p6_client_instance_id {
+            let client_instance_id = (!client_instance_id.is_empty()
+                && client_instance_id.trim() == client_instance_id
+                && client_instance_id.len() <= 255)
+                .then_some(client_instance_id)
+                .ok_or_else(|| {
+                    async_ws_connect_message(
+                        "strict P6 websocket requires a canonical client instance ID",
+                    )
+                })?;
+            request.headers_mut().insert(
+                HeaderName::from_static("x-awiki-p6-client-instance-id"),
+                client_instance_id.parse().map_err(|err| {
+                    async_ws_connect_message(format!("build P6 client instance header: {err}"))
+                })?,
+            );
+        }
     }
     Ok(request)
 }
@@ -199,9 +208,10 @@ fn validate_async_ws_subprotocol(
         .and_then(|value| value.to_str().ok());
     let selected = match selected {
         None => super::SyncNotificationSubprotocol::Legacy,
-        Some(crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL) => {
-            super::SyncNotificationSubprotocol::V3
-        }
+        Some(
+            crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
+            | crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL,
+        ) => super::SyncNotificationSubprotocol::V3,
         Some(_) => {
             return Err(async_ws_connect_message(
                 "websocket server selected an unsupported sync subprotocol",
@@ -307,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn async_ws_requires_the_strict_p6_subprotocol_for_exact_devices() {
+    fn async_ws_requires_a_versioned_subprotocol_for_exact_devices() {
         let mut headers = HeaderMap::new();
         assert_eq!(
             validate_async_ws_subprotocol(&headers, false).unwrap(),
@@ -327,6 +337,16 @@ mod tests {
                 .unwrap(),
         );
         assert!(validate_async_ws_subprotocol(&headers, false).is_err());
+        headers.insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            validate_async_ws_subprotocol(&headers, true).unwrap(),
+            crate::internal::realtime::SyncNotificationSubprotocol::V3
+        );
         headers.insert(
             SEC_WEBSOCKET_PROTOCOL,
             crate::internal::realtime::P6_DELIVERY_CONTEXT_V1_SUBPROTOCOL
@@ -374,6 +394,31 @@ mod tests {
                 .unwrap(),
             "awiki-me/0714/1.0.31+214"
         );
+    }
+
+    #[test]
+    fn async_ws_requests_v3_without_p6_when_the_lane_is_not_negotiated() {
+        let request = build_async_ws_request(
+            "wss://example.test/im/ws",
+            "token",
+            true,
+            Some("awiki-daemon/0815/0.1.91"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(SEC_WEBSOCKET_PROTOCOL)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            crate::internal::realtime::SYNC_EVENT_V3_SUBPROTOCOL
+        );
+        assert!(request
+            .headers()
+            .get("x-awiki-p6-client-instance-id")
+            .is_none());
     }
 
     #[tokio::test]

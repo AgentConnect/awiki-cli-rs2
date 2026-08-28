@@ -386,6 +386,15 @@ async fn send_group_async_impl(
             "P6 v2 group target must be a DID",
         ));
     }
+    // P4 membership may have advanced independently (for example, a member
+    // called group.leave). Before encrypting at the current MLS epoch, let the
+    // active owner converge its accepted local tree to the authoritative P4/P2
+    // roster. Non-owners and already-converged owners are no-ops.
+    crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
+        client,
+        group.clone(),
+    )
+    .await?;
     let logical_message_id = required_message_id(&request)?.to_owned();
     let operation_id = request
         .delivery

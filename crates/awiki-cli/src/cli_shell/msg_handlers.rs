@@ -1,5 +1,5 @@
 use super::handle_helpers::complete_bare_handle;
-use super::App;
+use super::{internal_anyhow, App};
 use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::message_result::{
@@ -8,6 +8,92 @@ use crate::m_core_cli_adapter::message_result::{
 use crate::workspace_config::Resolved;
 use im_core::prelude::{MessageBody, MessageKind};
 use serde_json::{json, Map, Value};
+
+fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        resolved.active_identity.trim().to_owned()
+    } else {
+        requested.to_owned()
+    }
+}
+
+fn try_listener_local_command(
+    resolved: &Resolved,
+    requested_identity: &str,
+    method: &str,
+    params: Map<String, Value>,
+) -> Result<Option<CommandResult>, ExitError> {
+    if crate::host_runtime::resolve(resolved).mode != crate::host_runtime::bridge::MODE_WEBSOCKET {
+        return Ok(None);
+    }
+    let endpoint = crate::host_runtime::bridge::resolved_bridge_endpoint(resolved);
+    if !crate::host_runtime::bridge::bridge_endpoint_available(&endpoint) {
+        return Ok(None);
+    }
+    let result = crate::host_runtime::bridge::call_local_bridge(
+        crate::host_runtime::bridge::BridgeRequest {
+            method: method.to_owned(),
+            params,
+            identity_name: bridge_identity_name(resolved, requested_identity),
+        },
+        resolved,
+    )
+    .map_err(|_| {
+        ExitError::new(
+            "local_state_unavailable",
+            5,
+            "the running listener could not complete the local message operation.",
+            "Check `awiki-cli runtime listener status`; do not start a second foreground writer while the listener is active.",
+        )
+    })?;
+    parse_listener_local_result(result).map(Some)
+}
+
+fn parse_listener_local_result(result: Map<String, Value>) -> Result<CommandResult, ExitError> {
+    let keys = result.keys().map(String::as_str).collect::<Vec<_>>();
+    if keys.len() != 3
+        || !result.contains_key("data")
+        || !result.contains_key("summary")
+        || !result.contains_key("warnings")
+    {
+        return Err(ExitError::new(
+            "local_state_unavailable",
+            5,
+            "the running listener returned an invalid local message result.",
+            "Restart the listener and retry.",
+        ));
+    }
+    let data = result.get("data").cloned().unwrap_or(Value::Null);
+    let summary = result
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ExitError::new(
+                "local_state_unavailable",
+                5,
+                "the running listener returned an invalid local message summary.",
+                "Restart the listener and retry.",
+            )
+        })?;
+    let warnings = serde_json::from_value::<Vec<String>>(
+        result.get("warnings").cloned().unwrap_or(Value::Null),
+    )
+    .map_err(|_| {
+        ExitError::new(
+            "local_state_unavailable",
+            5,
+            "the running listener returned invalid local message warnings.",
+            "Restart the listener and retry.",
+        )
+    })?;
+    Ok(CommandResult {
+        data,
+        summary,
+        warnings,
+    })
+}
 
 struct MsgSendPlan<'a> {
     identity: &'a str,
@@ -539,6 +625,17 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::m_core_cli_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
+            if let Some(result) = try_listener_local_command(
+                &resolved,
+                &self.globals.identity,
+                "local.inbox",
+                Map::from_iter([(
+                    "query".to_owned(),
+                    serde_json::to_value(&query).map_err(|error| internal_anyhow(error.into()))?,
+                )]),
+            )? {
+                return self.render_message_result("awiki-cli msg inbox", &resolved, result);
+            }
             let client = crate::m_core_cli_adapter::build_im_client(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -561,6 +658,17 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::m_core_cli_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
+            if let Some(result) = try_listener_local_command(
+                &resolved,
+                &self.globals.identity,
+                "local.inbox",
+                Map::from_iter([(
+                    "query".to_owned(),
+                    serde_json::to_value(&query).map_err(|error| internal_anyhow(error.into()))?,
+                )]),
+            )? {
+                return self.render_message_result("awiki-cli msg inbox", &resolved, result);
+            }
             let mut client = crate::m_core_cli_adapter::build_im_client_async(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -657,6 +765,25 @@ impl App {
         let (thread, query) =
             crate::m_core_cli_adapter::messages::history_request(command, &resolved.did_domain)?;
         if !self.globals.dry_run {
+            if let Some(result) = try_listener_local_command(
+                &resolved,
+                &self.globals.identity,
+                "local.history",
+                Map::from_iter([
+                    (
+                        "thread".to_owned(),
+                        serde_json::to_value(&thread)
+                            .map_err(|error| internal_anyhow(error.into()))?,
+                    ),
+                    (
+                        "query".to_owned(),
+                        serde_json::to_value(&query)
+                            .map_err(|error| internal_anyhow(error.into()))?,
+                    ),
+                ]),
+            )? {
+                return self.render_message_result("awiki-cli msg history", &resolved, result);
+            }
             let client = crate::m_core_cli_adapter::build_im_client(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -683,6 +810,25 @@ impl App {
         let (thread, query) =
             crate::m_core_cli_adapter::messages::history_request(command, &resolved.did_domain)?;
         if !self.globals.dry_run {
+            if let Some(result) = try_listener_local_command(
+                &resolved,
+                &self.globals.identity,
+                "local.history",
+                Map::from_iter([
+                    (
+                        "thread".to_owned(),
+                        serde_json::to_value(&thread)
+                            .map_err(|error| internal_anyhow(error.into()))?,
+                    ),
+                    (
+                        "query".to_owned(),
+                        serde_json::to_value(&query)
+                            .map_err(|error| internal_anyhow(error.into()))?,
+                    ),
+                ]),
+            )? {
+                return self.render_message_result("awiki-cli msg history", &resolved, result);
+            }
             let client = crate::m_core_cli_adapter::build_im_client_async(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -778,6 +924,17 @@ impl App {
         }
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
+            if let Some(result) = try_listener_local_command(
+                &resolved,
+                &self.globals.identity,
+                "local.mark_read",
+                Map::from_iter([(
+                    "message_ids".to_owned(),
+                    Value::Array(command.args.iter().cloned().map(Value::String).collect()),
+                )]),
+            )? {
+                return self.render_message_result("awiki-cli msg mark-read", &resolved, result);
+            }
             let client = crate::m_core_cli_adapter::build_im_client(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -822,6 +979,17 @@ impl App {
         }
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
+            if let Some(result) = try_listener_local_command(
+                &resolved,
+                &self.globals.identity,
+                "local.mark_read",
+                Map::from_iter([(
+                    "message_ids".to_owned(),
+                    Value::Array(command.args.iter().cloned().map(Value::String).collect()),
+                )]),
+            )? {
+                return self.render_message_result("awiki-cli msg mark-read", &resolved, result);
+            }
             let client = crate::m_core_cli_adapter::build_im_client_async(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
@@ -1333,6 +1501,29 @@ mod tests {
             exit.detail.hint,
             "Check the configured transport and network connectivity. If this send may have reached the service, reconcile message history before retrying."
         );
+    }
+
+    #[test]
+    fn listener_local_result_schema_is_closed() {
+        let parsed = parse_listener_local_result(Map::from_iter([
+            ("data".to_owned(), json!({"messages": []})),
+            ("summary".to_owned(), json!("Loaded 0 inbox messages")),
+            ("warnings".to_owned(), json!(["sync.pending"])),
+        ]))
+        .unwrap();
+        assert_eq!(parsed.data, json!({"messages": []}));
+        assert_eq!(parsed.summary, "Loaded 0 inbox messages");
+        assert_eq!(parsed.warnings, ["sync.pending"]);
+
+        let mut extra = Map::from_iter([
+            ("data".to_owned(), json!({})),
+            ("summary".to_owned(), json!("summary")),
+            ("warnings".to_owned(), json!([])),
+        ]);
+        extra.insert("cursor".to_owned(), json!("must-not-cross-bridge"));
+        let error = parse_listener_local_result(extra).unwrap_err();
+        assert_eq!(error.detail.code, "local_state_unavailable");
+        assert!(!format!("{error:?}").contains("must-not-cross-bridge"));
     }
 
     #[test]

@@ -114,6 +114,10 @@ recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取
 stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
 恢复，不得只退出监听循环，也不得跳过 canonical sync。
 
+exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使用既有
+`awiki.sync.event.v3.p6-delivery-context.v1` 和同一 bootstrap client instance；未协商 P6 lane
+（包括不编译 group-e2ee 的 Node build）时使用既有 `awiki.sync.event.v3`，不得伪造 P6 activation。
+
 ## DTO 与错误
 
 - ID/cursor 都是不透明字符串；字节数和 `registeredAtMs` 使用十进制字符串。

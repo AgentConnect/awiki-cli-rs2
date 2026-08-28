@@ -342,6 +342,23 @@ enum DaemonFixturePrepareFailureStage {
     SyncInitializeAuthRevoked,
     BootstrapSendTransport,
     BootstrapSendService,
+    BootstrapSendServiceTargetNotFound,
+    BootstrapSendServiceDeviceBindingRequired,
+    BootstrapSendServiceDeviceStateChanged,
+    BootstrapSendServiceForbidden,
+    BootstrapSendServiceTemporarilyUnavailable,
+    BootstrapSendServiceInvalidRequest,
+    BootstrapSendServiceInternal,
+    BootstrapSendServiceSync,
+    BootstrapSendServiceClient,
+    BootstrapSendServiceIdentity,
+    BootstrapSendServiceDirectory,
+    BootstrapSendServiceDirect,
+    BootstrapSendServiceAgent,
+    BootstrapSendServiceAnpOther,
+    BootstrapSendServiceRpcOther,
+    BootstrapSendServiceNumeric,
+    BootstrapSendServiceCodeMissing,
     BootstrapSendAuthorization,
     BootstrapSendDeliveryFailed,
     BootstrapSendPeer,
@@ -403,6 +420,29 @@ impl DaemonFixturePrepareFailureStage {
             Self::SyncInitializeAuthRevoked => "sync_initialize_auth_revoked",
             Self::BootstrapSendTransport => "bootstrap_send_transport",
             Self::BootstrapSendService => "bootstrap_send_service",
+            Self::BootstrapSendServiceTargetNotFound => "bootstrap_send_service_target_not_found",
+            Self::BootstrapSendServiceDeviceBindingRequired => {
+                "bootstrap_send_service_device_binding_required"
+            }
+            Self::BootstrapSendServiceDeviceStateChanged => {
+                "bootstrap_send_service_device_state_changed"
+            }
+            Self::BootstrapSendServiceForbidden => "bootstrap_send_service_forbidden",
+            Self::BootstrapSendServiceTemporarilyUnavailable => {
+                "bootstrap_send_service_temporarily_unavailable"
+            }
+            Self::BootstrapSendServiceInvalidRequest => "bootstrap_send_service_invalid_request",
+            Self::BootstrapSendServiceInternal => "bootstrap_send_service_internal",
+            Self::BootstrapSendServiceSync => "bootstrap_send_service_sync",
+            Self::BootstrapSendServiceClient => "bootstrap_send_service_client",
+            Self::BootstrapSendServiceIdentity => "bootstrap_send_service_identity",
+            Self::BootstrapSendServiceDirectory => "bootstrap_send_service_directory",
+            Self::BootstrapSendServiceDirect => "bootstrap_send_service_direct",
+            Self::BootstrapSendServiceAgent => "bootstrap_send_service_agent",
+            Self::BootstrapSendServiceAnpOther => "bootstrap_send_service_anp_other",
+            Self::BootstrapSendServiceRpcOther => "bootstrap_send_service_rpc_other",
+            Self::BootstrapSendServiceNumeric => "bootstrap_send_service_numeric",
+            Self::BootstrapSendServiceCodeMissing => "bootstrap_send_service_code_missing",
             Self::BootstrapSendAuthorization => "bootstrap_send_authorization",
             Self::BootstrapSendDeliveryFailed => "bootstrap_send_delivery_failed",
             Self::BootstrapSendPeer => "bootstrap_send_peer",
@@ -585,7 +625,72 @@ fn daemon_bootstrap_send_failure_stage(
         im_core::ImError::TransportUnavailable { .. } => {
             DaemonFixturePrepareFailureStage::BootstrapSendTransport
         }
-        im_core::ImError::Service { .. } => DaemonFixturePrepareFailureStage::BootstrapSendService,
+        im_core::ImError::Service { code, .. } => match code.as_deref() {
+            Some("anp.target_not_found") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceTargetNotFound
+            }
+            Some("anp.device_binding_required") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceDeviceBindingRequired
+            }
+            Some("anp.device_state_changed") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceDeviceStateChanged
+            }
+            Some("anp.forbidden" | "anp.device_not_eligible") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceForbidden
+            }
+            Some("anp.temporarily_unavailable") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceTemporarilyUnavailable
+            }
+            Some("rpc.invalid_params" | "anp.invalid_request") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceInvalidRequest
+            }
+            Some("anp.internal" | "rpc.internal_error") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceInternal
+            }
+            Some(code) if code.starts_with("sync.") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceSync
+            }
+            Some(code) if code.starts_with("client.") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceClient
+            }
+            Some(code)
+                if code.starts_with("identity.")
+                    || code.starts_with("did.")
+                    || code.starts_with("auth.")
+                    || code.starts_with("handle.") =>
+            {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceIdentity
+            }
+            Some(code)
+                if code.starts_with("directory.")
+                    || code.starts_with("users.")
+                    || code.starts_with("wns.") =>
+            {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceDirectory
+            }
+            Some(code)
+                if code.starts_with("direct.")
+                    || code.starts_with("message.")
+                    || code.starts_with("conversation.")
+                    || code.starts_with("inbox.") =>
+            {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceDirect
+            }
+            Some(code) if code.starts_with("agent.") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceAgent
+            }
+            Some(code) if code.starts_with("anp.") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceAnpOther
+            }
+            Some(code) if code.starts_with("rpc.") => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceRpcOther
+            }
+            Some(code) if code.parse::<i64>().is_ok() => {
+                DaemonFixturePrepareFailureStage::BootstrapSendServiceNumeric
+            }
+            None => DaemonFixturePrepareFailureStage::BootstrapSendServiceCodeMissing,
+            _ => DaemonFixturePrepareFailureStage::BootstrapSendService,
+        },
         im_core::ImError::AuthRequired
         | im_core::ImError::SessionExpired
         | im_core::ImError::PermissionDenied => {
@@ -5505,11 +5610,47 @@ mod tests {
         assert_eq!(
             daemon_bootstrap_send_failure_stage(&im_core::ImError::Service {
                 status_code: Some(200),
+                code: Some("anp.target_not_found".to_owned()),
+                message: "redacted".to_owned(),
+                data: None,
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendServiceTargetNotFound
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::Service {
+                status_code: Some(200),
+                code: Some("sync.bootstrap_required".to_owned()),
+                message: "redacted".to_owned(),
+                data: None,
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendServiceSync
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::Service {
+                status_code: Some(200),
                 code: Some("-32010".to_owned()),
                 message: "redacted".to_owned(),
                 data: None,
             }),
-            DaemonFixturePrepareFailureStage::BootstrapSendService
+            DaemonFixturePrepareFailureStage::BootstrapSendServiceNumeric
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::Service {
+                status_code: Some(400),
+                code: Some("client.invalid_client_metadata".to_owned()),
+                message: "redacted".to_owned(),
+                data: None,
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendServiceClient
+        );
+        assert_eq!(
+            daemon_bootstrap_send_failure_stage(&im_core::ImError::Service {
+                status_code: Some(409),
+                code: None,
+                message: "redacted".to_owned(),
+                data: None,
+            }),
+            DaemonFixturePrepareFailureStage::BootstrapSendServiceCodeMissing
         );
         assert_eq!(
             daemon_bootstrap_send_failure_stage(&im_core::ImError::PermissionDenied),

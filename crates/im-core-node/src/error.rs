@@ -63,6 +63,11 @@ impl SafeError {
                 "The IM synchronization could not be completed.",
                 true,
             ),
+            im_core::messages::MessageSyncStatus::Blocked => Self::new(
+                "sync_blocked",
+                "The IM synchronization requires an explicit client action.",
+                false,
+            ),
             im_core::messages::MessageSyncStatus::Idle
             | im_core::messages::MessageSyncStatus::Changed => Self::internal(),
         }
@@ -406,5 +411,14 @@ mod tests {
             assert!(!safe.safe_message.contains("proof"));
             assert!(!safe.safe_message.contains("token"));
         }
+    }
+
+    #[test]
+    fn blocked_sync_requires_action_without_retrying() {
+        let safe = SafeError::sync_outcome(im_core::messages::MessageSyncStatus::Blocked);
+        assert_eq!(safe.code, "sync_blocked");
+        assert!(!safe.retryable);
+        assert!(!safe.safe_message.contains("cursor"));
+        assert!(!safe.safe_message.contains("token"));
     }
 }
