@@ -8,6 +8,23 @@ fn foreground_message_reads_use_standard_reconcile_reason() {
 }
 
 #[test]
+fn secure_lane_drain_failure_is_a_closed_cli_warning() {
+    assert_eq!(
+        secure_lane_drain_warning(&im_core::ImError::LocalStateUnavailable {
+            detail: "secure lane consumer drain timed out with durable domain work still pending"
+                .to_owned(),
+        }),
+        "sync.secure_lane_drain_pending"
+    );
+    assert_eq!(
+        secure_lane_drain_warning(&im_core::ImError::LocalStateUnavailable {
+            detail: "local database unavailable".to_owned(),
+        }),
+        "sync.secure_lane_drain_failed"
+    );
+}
+
+#[test]
 fn cli_message_read_state_is_boolean_and_drives_unread_filter() {
     let read = thread_scoped_send_result(&[("is_read", "true")]).message;
     let unread = thread_scoped_send_result(&[("is_read", "false")]).message;

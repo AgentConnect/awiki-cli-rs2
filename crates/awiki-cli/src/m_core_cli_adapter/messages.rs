@@ -505,7 +505,8 @@ pub async fn read_inbox_via_im_core_async(
     require_messaging_ready(client)?;
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
     let reconciled = async {
-        reconcile_foreground_message_sync_async(client).await?;
+        let mut secure_warnings = secure_warnings;
+        secure_warnings.extend(reconcile_foreground_message_sync_async(client).await?);
         let page = client
             .messages()
             .local_inbox_projection_with_metadata_async(query.clone())
@@ -560,6 +561,17 @@ fn foreground_message_sync_reason() -> &'static str {
     "foreground_reconcile"
 }
 
+fn secure_lane_drain_warning(error: &im_core::ImError) -> &'static str {
+    match error {
+        im_core::ImError::LocalStateUnavailable { detail }
+            if detail.contains("secure lane consumer drain timed out") =>
+        {
+            "sync.secure_lane_drain_pending"
+        }
+        _ => "sync.secure_lane_drain_failed",
+    }
+}
+
 fn require_foreground_message_sync(
     outcome: &MessageSyncOutcome,
 ) -> Result<(), MessageAdapterError> {
@@ -582,7 +594,7 @@ fn require_foreground_message_sync(
 
 fn reconcile_foreground_message_sync(
     client: &im_core::ImClient,
-) -> Result<(), MessageAdapterError> {
+) -> Result<Vec<String>, MessageAdapterError> {
     let outcome = client
         .messages()
         .sync_now(MessageSyncRequest {
@@ -591,13 +603,15 @@ fn reconcile_foreground_message_sync(
         })
         .map_err(im_error_to_message_error)?;
     require_foreground_message_sync(&outcome)?;
-    let _ = client.messages().drain_secure_lane_consumers();
-    Ok(())
+    Ok(match client.messages().drain_secure_lane_consumers() {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![secure_lane_drain_warning(&error).to_owned()],
+    })
 }
 
 async fn reconcile_foreground_message_sync_async(
     client: &im_core::ImClient,
-) -> Result<(), MessageAdapterError> {
+) -> Result<Vec<String>, MessageAdapterError> {
     let outcome = client
         .messages()
         .sync_now_async(MessageSyncRequest {
@@ -607,8 +621,12 @@ async fn reconcile_foreground_message_sync_async(
         .await
         .map_err(im_error_to_message_error)?;
     require_foreground_message_sync(&outcome)?;
-    let _ = client.messages().drain_secure_lane_consumers_async().await;
-    Ok(())
+    Ok(
+        match client.messages().drain_secure_lane_consumers_async().await {
+            Ok(()) => Vec::new(),
+            Err(error) => vec![secure_lane_drain_warning(&error).to_owned()],
+        },
+    )
 }
 
 fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {
@@ -659,7 +677,7 @@ fn read_direct_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    reconcile_foreground_message_sync(client)?;
+    let warnings = reconcile_foreground_message_sync(client)?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
@@ -680,7 +698,7 @@ fn read_direct_history_via_im_core(
             "resolved_dids": resolved_dids,
         }),
         summary: format!("Loaded {total} direct history messages"),
-        warnings: Vec::new(),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -691,7 +709,7 @@ async fn read_direct_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    reconcile_foreground_message_sync_async(client).await?;
+    let warnings = reconcile_foreground_message_sync_async(client).await?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
@@ -716,7 +734,7 @@ async fn read_direct_history_via_im_core_async(
             "resolved_dids": resolved_dids,
         }),
         summary: format!("Loaded {total} direct history messages"),
-        warnings: Vec::new(),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -727,7 +745,7 @@ fn read_group_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    reconcile_foreground_message_sync(client)?;
+    let warnings = reconcile_foreground_message_sync(client)?;
     let page = client
         .messages()
         .local_history_with_metadata(ThreadRef::Group(group.clone()), local_history_query(query))
@@ -744,7 +762,7 @@ fn read_group_history_via_im_core(
             "group": group.as_str(),
         }),
         summary: format!("Loaded {total} group history messages"),
-        warnings: Vec::new(),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -755,7 +773,7 @@ async fn read_group_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    reconcile_foreground_message_sync_async(client).await?;
+    let warnings = reconcile_foreground_message_sync_async(client).await?;
     let page = client
         .messages()
         .local_history_with_metadata_async(
@@ -776,7 +794,7 @@ async fn read_group_history_via_im_core_async(
             "group": group.as_str(),
         }),
         summary: format!("Loaded {total} group history messages"),
-        warnings: Vec::new(),
+        warnings: compact_warnings(warnings),
     })
 }
 

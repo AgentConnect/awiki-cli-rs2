@@ -809,15 +809,38 @@ pub(crate) async fn drain_pending_secure_lane_consumers(
             "secure lane drain limit must be between 1 and 256",
         ));
     }
+    let mut first_error: Option<crate::ImError> = None;
     #[cfg(feature = "secure-direct")]
-    let _ = drain_p5_lane_inputs(client, max_inputs).await?;
+    if let Err(error) = drain_p5_lane_inputs(client, max_inputs).await {
+        first_error = Some(error);
+    }
     #[cfg(feature = "group-e2ee")]
-    let _ = drain_p6_lane_inputs(client, max_inputs).await?;
-    let db = client.core_inner().local_state_db().await?;
-    let _ = db
-        .purge_closed_sync_lane_inputs(unix_time_i64(), max_inputs)
-        .await?;
-    Ok(())
+    if let Err(error) = drain_p6_lane_inputs(client, max_inputs).await {
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
+    match client.core_inner().local_state_db().await {
+        Ok(db) => {
+            if let Err(error) = db
+                .purge_closed_sync_lane_inputs(unix_time_i64(), max_inputs)
+                .await
+            {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        Err(error) => {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn closed_lane_domain_status(
@@ -1677,7 +1700,11 @@ where
                         scan_seq: next_cursor.scan_seq.clone(),
                         committed_seq: next_cursor.scan_seq.clone(),
                     };
-                    db.advance_lane_sync_state(next.clone()).await?;
+                    // Each complete event has already advanced the durable lane
+                    // checkpoint in the same transaction as its inbox insert.
+                    // `validate_lane_page_progress` guarantees that the last
+                    // event position equals `next_cursor`, so a second page-level
+                    // database writer would only add a redundant CAS window.
                     lane_states.insert(lane, next);
                     if *has_more && previous_scan_seq == next_cursor.scan_seq {
                         return Err(sync_error(
@@ -2462,6 +2489,13 @@ async fn desired_v1b_lanes(
     owner_identity_id: &str,
 ) -> crate::ImResult<BTreeSet<crate::internal::wire::sync_v2::SyncLaneV3>> {
     use crate::internal::wire::sync_v2::SyncLaneV3;
+    // Compile-time features declare what this Core implementation can consume;
+    // they do not activate a lane or bypass explicit Service negotiation. The
+    // resulting desired set is sent in extended bootstrap and becomes active
+    // only if the Service returns the same authoritative negotiated set.
+    // Local readiness/migration failures remove a supported lane before that
+    // request. Requiring a lane to be "already negotiated" here would be
+    // circular and would make first bootstrap impossible.
     let mut lanes = BTreeSet::new();
     #[cfg(feature = "secure-direct")]
     lanes.insert(SyncLaneV3::P5Device);

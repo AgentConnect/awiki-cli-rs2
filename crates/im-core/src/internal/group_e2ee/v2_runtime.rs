@@ -14,10 +14,10 @@ use anp::group_e2ee::operations::v2::{
     V2MarkTerminalIntentInput, V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate,
     V2PreparedKeyPackagePublish, V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput,
     V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
-    V2ReconcilePendingOutput, V2RemoveMemberInput,
+    V2ReconcilePendingOutput, V2RecoverTransitionWelcomeInput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
-use anp::group_e2ee::{V2GroupCipherObject, V2GroupKeyPackage};
+use anp::group_e2ee::{V2GroupAddBody, V2GroupCipherObject, V2GroupKeyPackage};
 use serde_json::Value;
 
 use super::provider::map_group_mls_error;
@@ -176,6 +176,13 @@ impl GroupE2eeV2Runtime {
         input: V2ProcessWelcomeInput,
     ) -> crate::ImResult<V2ProcessCommitOutput> {
         v2::process_welcome_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn recover_finalized_transition_welcome(
+        &self,
+        input: V2RecoverTransitionWelcomeInput,
+    ) -> crate::ImResult<Option<V2GroupAddBody>> {
+        v2::recover_finalized_transition_welcome_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
     pub(crate) fn process_commit(

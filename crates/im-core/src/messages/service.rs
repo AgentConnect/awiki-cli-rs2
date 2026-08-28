@@ -4,6 +4,39 @@ pub struct MessageService<'a> {
 
 pub const LOCAL_INCOMING_RECOVERY_LIMIT_MAX: u32 = 1_000;
 
+async fn bounded_secure_lane_drain<F>(
+    deadline: std::time::Duration,
+    drain: F,
+) -> crate::ImResult<()>
+where
+    F: std::future::Future<Output = crate::ImResult<()>>,
+{
+    match tokio::time::timeout(deadline, drain).await {
+        Ok(result) => result,
+        Err(_) => Err(crate::ImError::LocalStateUnavailable {
+            detail: "secure lane consumer drain timed out with durable domain work still pending"
+                .to_owned(),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod secure_lane_drain_tests {
+    #[tokio::test]
+    async fn timeout_is_observable_instead_of_returning_success() {
+        let error = super::bounded_secure_lane_drain(
+            std::time::Duration::from_millis(1),
+            std::future::pending::<crate::ImResult<()>>(),
+        )
+        .await
+        .expect_err("a bounded drain timeout must remain observable");
+        assert!(matches!(
+            error,
+            crate::ImError::LocalStateUnavailable { .. }
+        ));
+    }
+}
+
 #[cfg(test)]
 mod direct_send_result_identity_tests {
     use crate::internal::local_state::owner_scope::{
@@ -3573,7 +3606,7 @@ impl<'a> MessageService<'a> {
     /// Async counterpart of [`Self::drain_secure_lane_consumers`].
     pub async fn drain_secure_lane_consumers_async(&self) -> crate::ImResult<()> {
         const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-        match tokio::time::timeout(
+        bounded_secure_lane_drain(
             DEADLINE,
             crate::internal::message_runtime::sync_v2::drain_pending_secure_lane_consumers(
                 self.client,
@@ -3581,10 +3614,6 @@ impl<'a> MessageService<'a> {
             ),
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => Ok(()),
-        }
     }
 
     pub fn sync_diagnostics(&self) -> crate::ImResult<super::MessageSyncDiagnostics> {

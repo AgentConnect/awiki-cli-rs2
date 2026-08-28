@@ -12,7 +12,8 @@ use anp::authentication::{DeviceManifest, PROFILE_GROUP_E2EE_V2};
 use anp::group_e2ee::operations::v2::{
     V2AddMemberInput, V2CreateGroupInput, V2DidDocument, V2GenerateKeyPackageInput,
     V2InspectLocalGroupInput, V2LocalGroupMemberEndpoint, V2LocalGroupReadiness, V2PreparedAdd,
-    V2PreparedRemove, V2ProcessWelcomeInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
+    V2PreparedRemove, V2ProcessWelcomeInput, V2ReconciledPendingCommit,
+    V2RecoverTransitionWelcomeInput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::{
     V2GetKeyPackageBody, V2GroupAddBody, V2GroupControlMetadata, V2GroupRemoveBody,
@@ -936,10 +937,9 @@ fn process_local_transition_welcome(
     client: &crate::core::ImClient,
     current_context: &ProductionV2Context<'_>,
     transition: &TransitionControllerContext<'_>,
-    submission: &V2PreparedAddSubmission,
+    body: &V2GroupAddBody,
     current_document: Value,
 ) -> crate::ImResult<()> {
-    let body = &submission.prepared.body;
     current_context
         .product
         .process_transition_welcome(V2ProcessWelcomeInput {
@@ -968,6 +968,31 @@ fn process_local_transition_welcome(
     Ok(())
 }
 
+fn recover_local_transition_welcome(
+    client: &crate::core::ImClient,
+    current_context: &ProductionV2Context<'_>,
+    transition: &TransitionControllerContext<'_>,
+    group_did: &str,
+    current_document: Value,
+) -> crate::ImResult<()> {
+    let body = transition
+        .context
+        .product
+        .recover_finalized_transition_welcome(V2RecoverTransitionWelcomeInput {
+            predecessor_did: transition.predecessor_did.clone(),
+            predecessor_device_id: transition.predecessor_device_id.clone(),
+            current_did: client.did().as_str().to_owned(),
+            current_device_id: current_context.device.device_id.clone(),
+            group_did: group_did.to_owned(),
+            request_id: format!("{}-transition-welcome-recover", operation_id("reconcile")),
+        })?
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "Host contains the successor Leaf but the finalized transition Welcome is unavailable"
+                .to_owned(),
+        })?;
+    process_local_transition_welcome(client, current_context, transition, &body, current_document)
+}
+
 fn transition_add_current_owner(
     client: &crate::core::ImClient,
     current_context: &mut ProductionV2Context<'_>,
@@ -992,6 +1017,30 @@ fn transition_add_current_owner(
         endpoint.member_did == client.did().as_str()
             && endpoint.member_device_id == current_context.device.device_id
     }) {
+        let readiness = current_context
+            .product
+            .inspect_local_group(endpoint_inventory_input(
+                client,
+                &current_context.device,
+                &group_did,
+                "transition-successor-readiness",
+            ))?;
+        match readiness.readiness {
+            V2LocalGroupReadiness::Missing => recover_local_transition_welcome(
+                client,
+                current_context,
+                &transition,
+                &group_did,
+                member_document,
+            )?,
+            V2LocalGroupReadiness::Active => {}
+            V2LocalGroupReadiness::Inactive => {
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "successor transition Leaf is inactive in the local MLS store"
+                        .to_owned(),
+                })
+            }
+        }
         return Ok(TransitionAddProgress {
             matched: true,
             added: false,
@@ -1049,7 +1098,7 @@ fn transition_add_current_owner(
         client,
         current_context,
         &transition,
-        &submission,
+        &submission.prepared.body,
         member_document,
     )?;
     Ok(TransitionAddProgress {
@@ -1086,6 +1135,30 @@ async fn transition_add_current_owner_async(
         endpoint.member_did == client.did().as_str()
             && endpoint.member_device_id == current_context.device.device_id
     }) {
+        let readiness = current_context
+            .product
+            .inspect_local_group(endpoint_inventory_input(
+                client,
+                &current_context.device,
+                &group_did,
+                "transition-successor-readiness",
+            ))?;
+        match readiness.readiness {
+            V2LocalGroupReadiness::Missing => recover_local_transition_welcome(
+                client,
+                current_context,
+                &transition,
+                &group_did,
+                member_document,
+            )?,
+            V2LocalGroupReadiness::Active => {}
+            V2LocalGroupReadiness::Inactive => {
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "successor transition Leaf is inactive in the local MLS store"
+                        .to_owned(),
+                })
+            }
+        }
         return Ok(TransitionAddProgress {
             matched: true,
             added: false,
@@ -1147,7 +1220,7 @@ async fn transition_add_current_owner_async(
         client,
         current_context,
         &transition,
-        &submission,
+        &submission.prepared.body,
         member_document,
     )?;
     Ok(TransitionAddProgress {

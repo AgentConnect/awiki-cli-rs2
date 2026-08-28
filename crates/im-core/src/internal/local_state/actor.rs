@@ -206,10 +206,6 @@ enum LocalStateCommand {
         states: Vec<super::sync_v2::LaneSyncState>,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
-    AdvanceLaneSyncState {
-        state: super::sync_v2::LaneSyncState,
-        reply: oneshot::Sender<crate::ImResult<()>>,
-    },
     CommitSyncLaneHandoff {
         input: super::sync_v2::SyncLaneHandoffInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncLaneHandoffOutcome>>,
@@ -1212,16 +1208,6 @@ impl LocalStateDb {
             reply,
         })
         .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
-    pub(crate) async fn advance_lane_sync_state(
-        &self,
-        state: super::sync_v2::LaneSyncState,
-    ) -> crate::ImResult<()> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::AdvanceLaneSyncState { state, reply })
-            .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -2750,10 +2736,6 @@ fn run_actor(
                     &owner_identity_id,
                     &states,
                 );
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::AdvanceLaneSyncState { state, reply } => {
-                let result = super::sync_v2::advance_lane_sync_state(&connection, &state);
                 let _ = reply.send(result);
             }
             LocalStateCommand::CommitSyncLaneHandoff { input, reply } => {

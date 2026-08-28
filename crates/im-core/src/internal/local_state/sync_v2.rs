@@ -1713,6 +1713,7 @@ fn load_negotiated_lanes_v1a(
     Ok(Some(lanes))
 }
 
+#[cfg(test)]
 pub(crate) fn advance_lane_sync_state(
     connection: &Connection,
     next: &LaneSyncState,
