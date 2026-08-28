@@ -676,11 +676,33 @@ pub struct NodeMarkMailReadInput {
 }
 
 #[napi(object)]
+pub struct NodeSendMailAttachmentInput {
+    pub file_name: String,
+    pub content_type: String,
+    pub bytes: Buffer,
+}
+
+#[napi(object)]
 pub struct NodeSendMailInput {
     pub to: Vec<String>,
     pub cc: Option<Vec<String>>,
     pub subject: String,
     pub body_text: String,
+    pub attachments: Option<Vec<NodeSendMailAttachmentInput>>,
+}
+
+#[napi(object)]
+pub struct NodeDownloadMailAttachmentInput {
+    pub message_id: String,
+    pub attachment_index: u32,
+}
+
+#[napi(object)]
+pub struct NodeMailAttachmentDownload {
+    pub file_name: String,
+    pub content_type: String,
+    pub size_bytes: String,
+    pub bytes: Buffer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -756,7 +778,7 @@ const MAIL_PREVIEW_MAX_BYTES: usize = 4_096;
 const MAIL_BODY_MAX_BYTES: usize = 65_536;
 const MAIL_ADDRESS_COLLECTION_MAX_ITEMS: usize = 100;
 const MAIL_ATTACHMENT_MAX_ITEMS: usize = 100;
-const MAIL_ATTACHMENT_FILENAME_MAX_BYTES: usize = 512;
+const MAIL_ATTACHMENT_FILENAME_MAX_BYTES: usize = 255;
 const MAIL_ATTACHMENT_CONTENT_TYPE_MAX_BYTES: usize = 255;
 const MAIL_ACCOUNT_DISPLAY_NAME_MAX_BYTES: usize = 512;
 const MAIL_ACCOUNT_STATUS_MAX_BYTES: usize = 128;
@@ -852,6 +874,24 @@ pub(crate) fn send_mail_result(
             .into_iter()
             .map(|warning| checked_remote_text(warning, MAIL_WARNING_MAX_BYTES))
             .collect::<SafeResult<Vec<_>>>()?,
+    })
+}
+
+pub(crate) fn mail_attachment_download(
+    value: im_core::email::EmailAttachmentContent,
+) -> SafeResult<NodeMailAttachmentDownload> {
+    let size = value.size.ok_or_else(invalid_mail_response)?;
+    if !valid_mail_file_name(&value.filename)
+        || !valid_mail_content_type(&value.content_type)
+        || u64::try_from(value.bytes.len()).ok() != Some(size)
+    {
+        return Err(invalid_mail_response());
+    }
+    Ok(NodeMailAttachmentDownload {
+        file_name: value.filename,
+        content_type: value.content_type,
+        size_bytes: size.to_string(),
+        bytes: Buffer::from(value.bytes),
     })
 }
 
@@ -958,6 +998,30 @@ fn checked_remote_text(value: String, max_bytes: usize) -> SafeResult<String> {
         return Err(invalid_mail_response());
     }
     Ok(value)
+}
+
+pub(crate) fn valid_mail_file_name(value: &str) -> bool {
+    value.len() <= MAIL_ATTACHMENT_FILENAME_MAX_BYTES
+        && im_core::email::valid_attachment_filename(value)
+}
+
+pub(crate) fn valid_mail_content_type(value: &str) -> bool {
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    !kind.is_empty()
+        && !subtype.is_empty()
+        && !subtype.contains('/')
+        && kind.bytes().all(valid_mime_token_byte)
+        && subtype.bytes().all(valid_mime_token_byte)
+}
+
+fn valid_mime_token_byte(value: u8) -> bool {
+    value.is_ascii_alphanumeric()
+        || matches!(
+            value,
+            b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+        )
 }
 
 fn truncate_optional_utf8(value: Option<String>, max_bytes: usize) -> (Option<String>, bool) {

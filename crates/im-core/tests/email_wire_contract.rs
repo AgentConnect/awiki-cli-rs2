@@ -124,6 +124,189 @@ fn email_wire_validation_errors_are_sdk_inputs() {
 }
 
 #[test]
+fn email_attachment_send_wire_encodes_bytes_and_legacy_serde_defaults_empty() {
+    let legacy: SendEmailRequest = serde_json::from_value(json!({
+        "to": ["bob@example.com"],
+        "cc": [],
+        "subject": "Legacy",
+        "body_text": "Body",
+        "body_html": null
+    }))
+    .expect("legacy request deserializes");
+    assert_eq!(legacy.subject, "Legacy");
+
+    let send = email::build_send_with_attachments_rpc_call(SendEmailWithAttachmentsRequest {
+        to: vec![EmailAddress::parse("bob@example.com").unwrap()],
+        cc: Vec::new(),
+        subject: "Attachments".to_string(),
+        body_text: "Body".to_string(),
+        body_html: None,
+        attachments: vec![
+            EmailAttachmentInput {
+                filename: "fixture.txt".to_string(),
+                content_type: "text/plain".to_string(),
+                bytes: b"mail attachment".to_vec(),
+            },
+            EmailAttachmentInput {
+                filename: "empty.png".to_string(),
+                content_type: "image/png".to_string(),
+                bytes: Vec::new(),
+            },
+        ],
+    })
+    .expect("attachment send rpc call");
+
+    assert_eq!(
+        send.params["attachments"],
+        json!([
+            {
+                "filename": "fixture.txt",
+                "content_type": "text/plain",
+                "content_base64": "bWFpbCBhdHRhY2htZW50"
+            },
+            {
+                "filename": "empty.png",
+                "content_type": "image/png",
+                "content_base64": ""
+            }
+        ])
+    );
+}
+
+#[test]
+fn email_attachment_send_wire_rejects_unsafe_names_types_and_limits() {
+    let request = |attachments| SendEmailWithAttachmentsRequest {
+        to: vec![EmailAddress::parse("bob@example.com").unwrap()],
+        cc: Vec::new(),
+        subject: "Attachments".to_string(),
+        body_text: "Body".to_string(),
+        body_html: None,
+        attachments,
+    };
+    let attachment = |filename: &str, content_type: &str, size: usize| EmailAttachmentInput {
+        filename: filename.to_string(),
+        content_type: content_type.to_string(),
+        bytes: vec![0; size],
+    };
+
+    for attachments in [
+        vec![attachment(" ", "text/plain", 1)],
+        vec![attachment("..", "text/plain", 1)],
+        vec![attachment("../secret.txt", "text/plain", 1)],
+        vec![attachment("bad\nname.txt", "text/plain", 1)],
+        vec![attachment("payload.exe ", "application/octet-stream", 1)],
+        vec![attachment("safe\u{202e}gnp.txt", "text/plain", 1)],
+        vec![attachment("private\u{e000}.txt", "text/plain", 1)],
+        vec![attachment("unassigned\u{0378}.txt", "text/plain", 1)],
+        vec![attachment(
+            &format!("{}.txt", "界".repeat(84)),
+            "text/plain",
+            1,
+        )],
+        vec![attachment("file.txt", "text/plain; charset=utf-8", 1)],
+        vec![attachment("file.txt", "not-a-type", 1)],
+        vec![attachment(
+            "large.bin",
+            "application/octet-stream",
+            awiki_im_core::email::EMAIL_ATTACHMENT_MAX_BYTES + 1,
+        )],
+        (0..=awiki_im_core::email::EMAIL_ATTACHMENT_MAX_COUNT)
+            .map(|index| attachment(&format!("{index}.txt"), "text/plain", 0))
+            .collect(),
+    ] {
+        assert!(email::build_send_with_attachments_rpc_call(request(attachments)).is_err());
+    }
+
+    let over_total = (0..3)
+        .map(|index| {
+            attachment(
+                &format!("{index}.bin"),
+                "application/octet-stream",
+                9 * 1024 * 1024,
+            )
+        })
+        .collect();
+    assert!(email::build_send_with_attachments_rpc_call(request(over_total)).is_err());
+}
+
+#[test]
+fn email_send_normalizer_requires_unambiguous_explicit_success() {
+    let sent = email::normalize_send(json!({
+        "accepted": true,
+        "status": "sent",
+        "message_id": "mail-sent-1",
+        "warnings": ["queued"]
+    }))
+    .expect("explicit success");
+    assert!(sent.accepted);
+    assert_eq!(sent.message_id.unwrap().as_str(), "mail-sent-1");
+    assert_eq!(sent.warnings, ["queued"]);
+
+    for rejected in [
+        json!({"accepted": false, "status": "failed"}),
+        json!({"accepted": true, "status": "failed"}),
+        json!({"accepted": false, "status": "sent"}),
+        json!({"accepted": true}),
+        json!({"status": "sent"}),
+        json!({"accepted": true, "status": "sent", "success": false}),
+        json!({}),
+        Value::Null,
+    ] {
+        assert!(email::normalize_send(rejected).is_err());
+    }
+}
+
+#[test]
+fn email_attachment_download_is_canonical_and_size_checked() {
+    let request = || EmailAttachmentDownloadRequest {
+        message_id: EmailMessageId::parse("mail-1").unwrap(),
+        attachment_index: 2,
+    };
+    let attachment = email::normalize_attachment(
+        request(),
+        json!({
+            "index": 2,
+            "filename": "fixture.bin",
+            "content_type": "application/octet-stream",
+            "size": 3,
+            "content_base64": "AP+A"
+        }),
+    )
+    .expect("canonical attachment");
+    assert_eq!(attachment.bytes, [0, 255, 128]);
+    assert_eq!(attachment.size, Some(3));
+    assert_eq!(attachment.filename, "fixture.bin");
+
+    let empty = email::normalize_attachment(
+        request(),
+        json!({
+            "index": 2,
+            "filename": "empty.txt",
+            "content_type": "text/plain",
+            "size": 0,
+            "content_base64": ""
+        }),
+    )
+    .expect("empty attachment");
+    assert!(empty.bytes.is_empty());
+
+    for invalid in [
+        json!({"index": 2, "filename": "a", "content_type": "text/plain", "size": 1, "content_base64": "/x=="}),
+        json!({"index": 2, "filename": "a", "content_type": "text/plain", "size": 2, "content_base64": "YQ=="}),
+        json!({"index": 3, "filename": "a", "content_type": "text/plain", "size": 1, "content_base64": "YQ=="}),
+        json!({"index": 2, "filename": "a", "content_type": "text/plain", "size": 1, "content_base64": "%%%"}),
+        json!({"index": 2, "filename": "a", "content_type": "text/plain", "size": 1}),
+        json!({"index": 2.0, "filename": "a", "content_type": "text/plain", "size": 1, "content_base64": "YQ=="}),
+        json!({"index": 2, "filename": "a", "content_type": "text/plain", "size": 1.0, "content_base64": "YQ=="}),
+        json!({"index": 2, "filename": "a", "content_type": "text/plain", "size": 10 * 1024 * 1024 + 1, "content_base64": ""}),
+        json!({"index": 2, "filename": "../escape", "content_type": "text/plain", "size": 1, "content_base64": "YQ=="}),
+        json!({"index": 2, "filename": "safe\u{202e}gnp.txt", "content_type": "text/plain", "size": 1, "content_base64": "YQ=="}),
+    ] {
+        assert!(email::normalize_attachment(request(), invalid).is_err());
+    }
+}
+
+#[test]
 fn email_inbox_normalization_accepts_legacy_shapes() {
     let page = email::normalize_inbox(json!({
         "messages": [{

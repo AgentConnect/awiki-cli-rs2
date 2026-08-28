@@ -1,9 +1,12 @@
 use crate::client::{
-    core_config, mail_inbox_query, mail_message_id, mark_mail_read_request, send_mail_request,
+    core_config, mail_attachment_download_request, mail_inbox_query, mail_message_id,
+    mark_mail_read_request, send_mail_request,
 };
 use crate::dto::{
-    self, NodeMailInboxInput, NodeMarkMailReadInput, NodeOpenOptions, NodeSendMailInput,
+    self, NodeDownloadMailAttachmentInput, NodeMailInboxInput, NodeMarkMailReadInput,
+    NodeOpenOptions, NodeSendMailAttachmentInput, NodeSendMailInput,
 };
+use napi::bindgen_prelude::Buffer;
 
 fn open_options() -> NodeOpenOptions {
     NodeOpenOptions {
@@ -124,12 +127,25 @@ fn mark_read_validates_ids_and_always_sets_read_true() {
 }
 
 #[test]
-fn send_input_preserves_content_and_never_constructs_html() {
+fn send_input_preserves_content_and_copies_attachment_bytes() {
+    let source = vec![0, 1, 2, 255];
     let request = send_mail_request(NodeSendMailInput {
         to: vec!["to@example.test".to_owned()],
         cc: Some(vec!["cc@example.test".to_owned()]),
         subject: "Subject".to_owned(),
         body_text: "  body content  ".to_owned(),
+        attachments: Some(vec![
+            NodeSendMailAttachmentInput {
+                file_name: "fixture.bin".to_owned(),
+                content_type: "application/octet-stream".to_owned(),
+                bytes: Buffer::from(source.clone()),
+            },
+            NodeSendMailAttachmentInput {
+                file_name: "empty.txt".to_owned(),
+                content_type: "text/plain".to_owned(),
+                bytes: Buffer::from(Vec::new()),
+            },
+        ]),
     })
     .unwrap();
     assert_eq!(request.to[0].as_str(), "to@example.test");
@@ -137,6 +153,8 @@ fn send_input_preserves_content_and_never_constructs_html() {
     assert_eq!(request.subject, "Subject");
     assert_eq!(request.body_text, "  body content  ");
     assert_eq!(request.body_html, None);
+    assert_eq!(request.attachments[0].bytes, source);
+    assert!(request.attachments[1].bytes.is_empty());
 
     for input in [
         NodeSendMailInput {
@@ -144,39 +162,164 @@ fn send_input_preserves_content_and_never_constructs_html() {
             cc: None,
             subject: "Subject".to_owned(),
             body_text: "Body".to_owned(),
+            attachments: None,
         },
         NodeSendMailInput {
             to: vec!["bad address@example.test".to_owned()],
             cc: None,
             subject: "Subject".to_owned(),
             body_text: "Body".to_owned(),
+            attachments: None,
         },
         NodeSendMailInput {
             to: vec!["bad\u{7}@example.test".to_owned()],
             cc: None,
             subject: "Subject".to_owned(),
             body_text: "Body".to_owned(),
+            attachments: None,
         },
         NodeSendMailInput {
             to: vec!["same@example.test".to_owned()],
             cc: Some(vec!["same@example.test".to_owned()]),
             subject: "Subject".to_owned(),
             body_text: "Body".to_owned(),
+            attachments: None,
         },
         NodeSendMailInput {
             to: vec!["to@example.test".to_owned()],
             cc: None,
             subject: " Subject".to_owned(),
             body_text: "Body".to_owned(),
+            attachments: None,
         },
         NodeSendMailInput {
             to: vec!["to@example.test".to_owned()],
             cc: None,
             subject: "Subject".to_owned(),
             body_text: " \n ".to_owned(),
+            attachments: None,
         },
     ] {
         assert_eq!(send_mail_request(input).unwrap_err().code, "invalid_input");
+    }
+}
+
+#[test]
+fn send_attachment_input_rejects_unsafe_names_types_and_limits() {
+    let input = |attachments| NodeSendMailInput {
+        to: vec!["to@example.test".to_owned()],
+        cc: None,
+        subject: "Subject".to_owned(),
+        body_text: "Body".to_owned(),
+        attachments: Some(attachments),
+    };
+    let attachment =
+        |file_name: &str, content_type: &str, size: usize| NodeSendMailAttachmentInput {
+            file_name: file_name.to_owned(),
+            content_type: content_type.to_owned(),
+            bytes: Buffer::from(vec![0; size]),
+        };
+
+    for attachments in [
+        vec![attachment("..", "text/plain", 1)],
+        vec![attachment("../secret.txt", "text/plain", 1)],
+        vec![attachment("bad\nname.txt", "text/plain", 1)],
+        vec![attachment("payload.exe ", "application/octet-stream", 1)],
+        vec![attachment("safe\u{202e}gnp.txt", "text/plain", 1)],
+        vec![attachment("private\u{e000}.txt", "text/plain", 1)],
+        vec![attachment("unassigned\u{0378}.txt", "text/plain", 1)],
+        vec![attachment(
+            &format!("{}.txt", "界".repeat(84)),
+            "text/plain",
+            1,
+        )],
+        vec![attachment("file.txt", "text/plain; charset=utf-8", 1)],
+        vec![attachment("file.txt", "not-a-type", 1)],
+        vec![attachment(
+            "large.bin",
+            "application/octet-stream",
+            10 * 1024 * 1024 + 1,
+        )],
+        (0..11)
+            .map(|index| attachment(&format!("{index}.txt"), "text/plain", 0))
+            .collect(),
+    ] {
+        assert_eq!(
+            send_mail_request(input(attachments)).unwrap_err().code,
+            "invalid_input"
+        );
+    }
+
+    let over_total = (0..3)
+        .map(|index| {
+            attachment(
+                &format!("{index}.bin"),
+                "application/octet-stream",
+                9 * 1024 * 1024,
+            )
+        })
+        .collect();
+    assert_eq!(
+        send_mail_request(input(over_total)).unwrap_err().code,
+        "invalid_input"
+    );
+}
+
+#[test]
+fn mail_attachment_download_request_and_projection_are_byte_exact() {
+    let request = mail_attachment_download_request(NodeDownloadMailAttachmentInput {
+        message_id: "mail-1".to_owned(),
+        attachment_index: u32::MAX,
+    })
+    .unwrap();
+    assert_eq!(request.message_id.as_str(), "mail-1");
+    assert_eq!(request.attachment_index, u32::MAX);
+
+    let download = dto::mail_attachment_download(im_core::email::EmailAttachmentContent {
+        message_id: im_core::email::EmailMessageId::parse("mail-1").unwrap(),
+        attachment_index: 0,
+        filename: "fixture.bin".to_owned(),
+        content_type: "application/octet-stream".to_owned(),
+        size: Some(4),
+        bytes: vec![0, 1, 2, 255],
+    })
+    .unwrap();
+    assert_eq!(download.file_name, "fixture.bin");
+    assert_eq!(download.content_type, "application/octet-stream");
+    assert_eq!(download.size_bytes, "4");
+    assert_eq!(download.bytes.as_ref(), &[0, 1, 2, 255]);
+
+    for invalid in [
+        im_core::email::EmailAttachmentContent {
+            message_id: im_core::email::EmailMessageId::parse("mail-1").unwrap(),
+            attachment_index: 0,
+            filename: "../secret".to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            size: Some(1),
+            bytes: vec![0],
+        },
+        im_core::email::EmailAttachmentContent {
+            message_id: im_core::email::EmailMessageId::parse("mail-1").unwrap(),
+            attachment_index: 0,
+            filename: "fixture.bin".to_owned(),
+            content_type: "invalid".to_owned(),
+            size: Some(1),
+            bytes: vec![0],
+        },
+        im_core::email::EmailAttachmentContent {
+            message_id: im_core::email::EmailMessageId::parse("mail-1").unwrap(),
+            attachment_index: 0,
+            filename: "fixture.bin".to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            size: Some(2),
+            bytes: vec![0],
+        },
+    ] {
+        let error = match dto::mail_attachment_download(invalid) {
+            Ok(_) => panic!("invalid mail download must fail closed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "remote_response_invalid");
     }
 }
 

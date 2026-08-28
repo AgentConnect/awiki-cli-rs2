@@ -21,9 +21,10 @@ pub use crate::directory::{
 };
 pub use crate::email::{
     EmailAccount, EmailAddress, EmailAttachmentContent, EmailAttachmentDownloadRequest,
-    EmailAttachmentMetadata, EmailAttribute, EmailFolder, EmailInboxQuery, EmailMarkReadRequest,
-    EmailMarkReadResult, EmailMessage, EmailMessageId, EmailMessageSummary, EmailNotification,
-    EmailNotificationQuery, EmailService, SendEmailRequest, SendEmailResult,
+    EmailAttachmentInput, EmailAttachmentMetadata, EmailAttribute, EmailFolder, EmailInboxQuery,
+    EmailMarkReadRequest, EmailMarkReadResult, EmailMessage, EmailMessageId, EmailMessageSummary,
+    EmailNotification, EmailNotificationQuery, EmailService, SendEmailRequest, SendEmailResult,
+    SendEmailWithAttachmentsRequest,
 };
 pub use crate::error::{IdentityVaultFailure, ImError, ImResult};
 pub use crate::external_http_auth::{

@@ -1600,12 +1600,37 @@ impl NativeImCoreNodeClient {
         let client = operation.client()?;
         let request = send_mail_request(input)?;
         let email = client.email();
-        let send = box_im_future(email.send_async(request));
+        let send = box_im_future(email.send_with_attachments_async(request));
         let result = self
             .inner
             .wait_im(send, self.inner.operation_timeout)
             .await?;
         crate::dto::send_mail_result(result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn download_mail_attachment(
+        &self,
+        input: NodeDownloadMailAttachmentInput,
+    ) -> napi::Result<NodeMailAttachmentDownload> {
+        napi_result(self.download_mail_attachment_inner(input).await)
+    }
+
+    async fn download_mail_attachment_inner(
+        &self,
+        input: NodeDownloadMailAttachmentInput,
+    ) -> SafeResult<NodeMailAttachmentDownload> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = mail_attachment_download_request(input)?;
+        let result = self
+            .inner
+            .wait_im(
+                client.email().download_attachment_async(request),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        crate::dto::mail_attachment_download(result)
     }
 
     #[napi(catch_unwind)]
@@ -2275,8 +2300,9 @@ pub(crate) fn mark_mail_read_request(
 
 pub(crate) fn send_mail_request(
     input: NodeSendMailInput,
-) -> SafeResult<im_core::email::SendEmailRequest> {
+) -> SafeResult<im_core::email::SendEmailWithAttachmentsRequest> {
     let cc = input.cc.unwrap_or_default();
+    let attachments = input.attachments.unwrap_or_default();
     if input.to.is_empty()
         || input.to.len() > MAX_MAIL_RECIPIENTS
         || input.to.len().saturating_add(cc.len()) > MAX_MAIL_RECIPIENTS
@@ -2301,7 +2327,33 @@ pub(crate) fn send_mail_request(
     if input.body_text.trim().is_empty() || input.body_text.len() > 65_536 {
         return Err(invalid_input("The mail body is invalid."));
     }
-    Ok(im_core::email::SendEmailRequest {
+    if attachments.len() > im_core::email::EMAIL_ATTACHMENT_MAX_COUNT {
+        return Err(invalid_input("The mail attachment collection is invalid."));
+    }
+    let mut attachment_total_bytes = 0usize;
+    let attachments = attachments
+        .into_iter()
+        .map(|attachment| {
+            if !crate::dto::valid_mail_file_name(&attachment.file_name)
+                || !crate::dto::valid_mail_content_type(&attachment.content_type)
+                || attachment.bytes.len() > im_core::email::EMAIL_ATTACHMENT_MAX_BYTES
+            {
+                return Err(invalid_input("The mail attachment is invalid."));
+            }
+            attachment_total_bytes = attachment_total_bytes
+                .checked_add(attachment.bytes.len())
+                .ok_or_else(|| invalid_input("The mail attachment collection is invalid."))?;
+            if attachment_total_bytes > im_core::email::EMAIL_ATTACHMENT_TOTAL_MAX_BYTES {
+                return Err(invalid_input("The mail attachment collection is invalid."));
+            }
+            Ok(im_core::email::EmailAttachmentInput {
+                filename: attachment.file_name,
+                content_type: attachment.content_type,
+                bytes: attachment.bytes.as_ref().to_vec(),
+            })
+        })
+        .collect::<SafeResult<Vec<_>>>()?;
+    Ok(im_core::email::SendEmailWithAttachmentsRequest {
         to: input
             .to
             .into_iter()
@@ -2316,6 +2368,16 @@ pub(crate) fn send_mail_request(
         subject: input.subject,
         body_text: input.body_text,
         body_html: None,
+        attachments,
+    })
+}
+
+pub(crate) fn mail_attachment_download_request(
+    input: NodeDownloadMailAttachmentInput,
+) -> SafeResult<im_core::email::EmailAttachmentDownloadRequest> {
+    Ok(im_core::email::EmailAttachmentDownloadRequest {
+        message_id: mail_message_id(input.message_id)?,
+        attachment_index: input.attachment_index,
     })
 }
 

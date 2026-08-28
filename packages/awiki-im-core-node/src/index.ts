@@ -11,6 +11,7 @@ import {
   type CreateGroupInput,
   type DisplayProfileBatchInput,
   type DownloadAttachmentInput,
+  type DownloadMailAttachmentInput,
   type ExternalHttpAuthAttempt,
   type ExternalHttpHeader,
   type ExternalHttpRequest,
@@ -30,6 +31,7 @@ import {
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
   type MailAccount,
+  type MailAttachmentDownload,
   type MailInboxInput,
   type MailInboxPage,
   type MailMessage,
@@ -267,7 +269,34 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
   }
 
   public sendMail(input: SendMailInput): Promise<SendMailResult> {
-    return call(() => this.native.sendMail(input))
+    const { attachments: attachmentInputs, ...mail } = input
+    if (attachmentInputs === undefined) return call(() => this.native.sendMail(mail))
+    const attachments = attachmentInputs.map(attachment => ({
+      ...attachment,
+      bytes: Buffer.from(attachment.bytes),
+    }))
+    return call(() => this.native.sendMail({ ...mail, attachments }))
+  }
+
+  public async downloadMailAttachment(
+    input: DownloadMailAttachmentInput,
+  ): Promise<MailAttachmentDownload> {
+    let attachmentIndex: number
+    try {
+      attachmentIndex = nativeUint32(input.attachmentIndex)
+    }
+    catch {
+      throw new ImCoreNodeError(
+        'invalid_input',
+        'The mail attachment index is invalid.',
+        false,
+      )
+    }
+    const value = await call(() => this.native.downloadMailAttachment({
+      ...input,
+      attachmentIndex,
+    }))
+    return { ...value, bytes: Uint8Array.from(value.bytes) }
   }
 
   public requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult> {

@@ -42,6 +42,13 @@ pub fn build_send_rpc_call(
 }
 
 #[doc(hidden)]
+pub fn build_send_with_attachments_rpc_call(
+    request: crate::email::SendEmailWithAttachmentsRequest,
+) -> crate::ImResult<EmailRpcCall> {
+    crate::internal::email_wire::build_send_with_attachments_rpc_call(request).map(Into::into)
+}
+
+#[doc(hidden)]
 pub fn build_attachment_rpc_call(
     request: crate::email::EmailAttachmentDownloadRequest,
 ) -> EmailRpcCall {
@@ -53,6 +60,19 @@ pub fn normalize_inbox(
     value: Value,
 ) -> crate::ImResult<crate::ids::Page<crate::email::EmailMessageSummary>> {
     crate::internal::email_wire::normalize::inbox(value)
+}
+
+#[doc(hidden)]
+pub fn normalize_send(value: Value) -> crate::ImResult<crate::email::SendEmailResult> {
+    crate::internal::email_wire::normalize::send(value)
+}
+
+#[doc(hidden)]
+pub fn normalize_attachment(
+    request: crate::email::EmailAttachmentDownloadRequest,
+    value: Value,
+) -> crate::ImResult<crate::email::EmailAttachmentContent> {
+    crate::internal::email_wire::normalize::attachment(request, value)
 }
 
 impl From<crate::internal::email_wire::EmailRpcCall> for EmailRpcCall {

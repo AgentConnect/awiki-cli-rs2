@@ -262,6 +262,7 @@ dependencies = [
  "libc",
  "rand 0.8.6",
  "redb",
+ "regex",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -282,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anp",
  "awiki-im-core",

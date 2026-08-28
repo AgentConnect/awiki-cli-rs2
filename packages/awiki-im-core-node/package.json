@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Promise-based Node.js facade for the Awiki Rust IM SDK",
   "repository": "https://github.com/AgentConnect/awiki-cli-rs2",
   "license": "AGPL-3.0-only",
@@ -35,11 +35,11 @@
     "test": "node --test test/*.test.mjs ../../scripts/release/node-sdk/*.test.mjs"
   },
   "optionalDependencies": {
-    "@awiki/im-core-node-darwin-arm64": "workspace:0.1.8",
-    "@awiki/im-core-node-darwin-x64": "workspace:0.1.8",
-    "@awiki/im-core-node-linux-arm64-gnu": "workspace:0.1.8",
-    "@awiki/im-core-node-linux-x64-gnu": "workspace:0.1.8",
-    "@awiki/im-core-node-win32-x64-msvc": "workspace:0.1.8"
+    "@awiki/im-core-node-darwin-arm64": "workspace:0.1.9",
+    "@awiki/im-core-node-darwin-x64": "workspace:0.1.9",
+    "@awiki/im-core-node-linux-arm64-gnu": "workspace:0.1.9",
+    "@awiki/im-core-node-linux-x64-gnu": "workspace:0.1.9",
+    "@awiki/im-core-node-win32-x64-msvc": "workspace:0.1.9"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",

@@ -42,6 +42,7 @@ rand.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
 redb.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true

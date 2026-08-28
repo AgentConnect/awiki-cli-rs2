@@ -550,11 +550,31 @@ export interface MarkMailReadInput {
   readonly messageIds: readonly string[]
 }
 
+export interface SendMailAttachmentInput {
+  readonly fileName: string
+  readonly contentType: string
+  readonly bytes: Uint8Array
+}
+
 export interface SendMailInput {
   readonly to: readonly string[]
   readonly cc?: readonly string[]
   readonly subject: string
   readonly bodyText: string
+  readonly attachments?: readonly SendMailAttachmentInput[]
+}
+
+export interface DownloadMailAttachmentInput {
+  readonly messageId: string
+  readonly attachmentIndex: number
+}
+
+export interface MailAttachmentDownload {
+  readonly fileName: string
+  readonly contentType: string
+  /** Decimal byte count; kept as a string to avoid JS integer truncation. */
+  readonly sizeBytes: string
+  readonly bytes: Uint8Array
 }
 
 export interface MailAccount {
@@ -668,6 +688,7 @@ export interface ImCoreNodeClient {
   readMail(messageId: string): Promise<MailMessage>
   markMailRead(input: MarkMailReadInput): Promise<MarkMailReadResult>
   sendMail(input: SendMailInput): Promise<SendMailResult>
+  downloadMailAttachment(input: DownloadMailAttachmentInput): Promise<MailAttachmentDownload>
   requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult>
   prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<HandleRecoveryProgress>
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>

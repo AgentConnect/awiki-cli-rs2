@@ -30,7 +30,8 @@
 | 邮箱列表 | `listMailInbox` | `email().inbox_async` |
 | 邮件读取 | `readMail` | `email().read_async` |
 | 邮件已读 | `markMailRead` | `email().mark_read_async` |
-| 纯文本邮件发送 | `sendMail` | `email().send_async` |
+| 邮件发送（可选附件） | `sendMail` | `email().send_async` |
+| 邮件附件下载 | `downloadMailAttachment` | `email().download_attachment_async` |
 | 清空本地状态 | `clearLocalData` | Node 环境生命周期拥有的 state root |
 
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
@@ -126,9 +127,33 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 attributes 与后端原始字段不穿过 N-API。subject、preview、纯文本正文分别按 1024、4096、65536
 UTF-8 bytes 安全截断并返回显式标记；`u64` 附件大小使用十进制字符串。
 
-`markMailRead` 固定构造 `is_read=true`。`sendMail` 只接受纯文本并固定构造 `body_html=None`；发送
-没有 idempotency key，也不会自动重试。Host 必须在调用这两个 mutation 前完成自己的用户批准，
-并把发送 timeout/transport ambiguity 视为远端结果未知，不能直接重发。
+`markMailRead` 固定构造 `is_read=true`。`sendMail` 保持纯文本正文并固定构造 `body_html=None`，
+可选 `attachments` 使用 `{ fileName, contentType, bytes: Uint8Array }`；最多 10 个、单个 10 MiB、
+解码字节总量 18 MiB，以便 Base64 和 MIME 封装后仍能满足 Mail Service 的 25 MiB raw MIME 上限；服务端仍是最终限制权威。`downloadMailAttachment` 只在用户显式选择后按
+`messageId + attachmentIndex` 返回 `{ fileName, contentType, sizeBytes, bytes }`。Base64 只存在于
+Rust mail wire，不进入 Node 公共 API。
+
+```ts
+await client.sendMail({
+  to: ['recipient@example.test'],
+  subject: 'Attachment check',
+  bodyText: 'See attachment.',
+  attachments: [{
+    fileName: 'fixture.txt',
+    contentType: 'text/plain',
+    bytes: new TextEncoder().encode('fixture'),
+  }],
+})
+
+const attachment = await client.downloadMailAttachment({
+  messageId: 'mail-1',
+  attachmentIndex: 0,
+})
+```
+
+邮件发送没有 idempotency key，也不会自动重试。Host 必须在 mutation 前完成自己的用户批准，并把
+timeout/transport ambiguity 视为远端结果未知，不能直接重发。SDK 只有在服务响应同时明确
+`accepted=true`、`status=sent` 时才返回成功；矛盾或缺失信号会 fail closed。
 
 ## Realtime 与可靠同步
 
@@ -180,7 +205,7 @@ finally {
 - `registeredAtMs` 和附件 byte size 是十进制字符串；其他时间是 RFC 3339。
 - 可选输出字段缺失时是 `undefined`，只有 `getDefaultIdentity` 明确用 `null` 表示未注册。
 - 上传、下载使用 `Uint8Array`/Buffer 直接跨 N-API；附件正文不经 JSON/base64。
-- 当前范围只有单附件，不扩展多附件 UI 或领域 API。
+- IM 消息附件当前仍是单附件领域 API；邮件发送是独立产品域，公开 contract 支持有界附件数组。
 - `createGroup` 的 Node 产品契约固定为 private、open-join、transport-protected；返回的
   canonical conversation ID 由 Core 生成，Host 不拼接。初始成员由 `addGroupMember` 逐个添加，
   该方法接受 Handle 或 DID 并返回 Core 权威解析后的身份。
@@ -216,11 +241,9 @@ Model Proxy 对账。Node facade 不允许 caller 提供 claims/audience，只�
 remote 或 Agent 工具。临时服务故障映射为可重试 `recovery_reconciliation_unavailable`；operation
 不匹配映射为不可重试 `recovery_reconciliation_invalid`，原始服务正文和 token 均不会进入 JS 错误。
 
-当前 `0.1.7` 源码 candidate 的 Native contract version 为 `9`，在 registry `0.1.6` 的
-prepared registration Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send
-之上增加 Host-only opaque recovery attestation；wrapper 在加载时必须拒绝其他版本的 addon，
-避免 native API v8 二进制缺少对应方法却被静默当作兼容实现。`0.1.7` 必须把 v9 wrapper 和全部
-Tier 1 addon 一起发布。
+当前开发源码的 Native contract version 为 `10`，在已发布 v9 recovery attestation contract
+之上增加邮件附件下载方法；wrapper 在加载时必须拒绝其他版本的 addon，避免旧二进制缺少
+`downloadMailAttachment` 却被静默当作兼容实现。版本号和全部 Tier 1 addon 的发布属于独立门禁。
 
 ## 构建与验证
 
@@ -239,7 +262,6 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-`0.1.7` 本地 candidate 使用 native API v9，由同一个 committed source OID 构建 wrapper 和当前
-平台包，并通过
+后续 candidate 使用 native API v10，由同一个 committed source OID 构建 wrapper 和当前平台包，并通过
 `stage-package.mjs` / `pack-audit.mjs` 生成 checksum、SBOM 与 provenance。其他平台包和正式
 registry 发布仍属于后续原生制品步骤；本地 candidate 不得标记为正式 release。

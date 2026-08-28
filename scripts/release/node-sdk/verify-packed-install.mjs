@@ -78,6 +78,9 @@ try {
         || typeof client.issueHandleRecoveryAttestation !== 'function') {
         throw new Error('expected native API v9 recovery facade')
       }
+      if (typeof client.downloadMailAttachment !== 'function') {
+        throw new Error('expected native API v10 mail attachment facade')
+      }
       if (await client.getDefaultIdentity() !== null) throw new Error('expected an empty fixture')
       const cleared = await client.clearLocalData()
       if (cleared?.cleared !== true) throw new Error('expected initialized Rust state to be cleared')

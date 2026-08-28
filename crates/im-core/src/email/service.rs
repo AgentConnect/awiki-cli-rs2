@@ -123,6 +123,31 @@ impl<'a> EmailService<'a> {
         .await
     }
 
+    pub fn send_with_attachments(
+        &self,
+        request: super::SendEmailWithAttachmentsRequest,
+    ) -> crate::ImResult<super::SendEmailResult> {
+        crate::internal::email_runtime::EmailRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send_with_attachments(request)
+    }
+
+    pub async fn send_with_attachments_async(
+        &self,
+        request: super::SendEmailWithAttachmentsRequest,
+    ) -> crate::ImResult<super::SendEmailResult> {
+        crate::internal::email_runtime::EmailRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send_with_attachments_async(request)
+        .await
+    }
+
     pub fn download_attachment(
         &self,
         request: super::EmailAttachmentDownloadRequest,

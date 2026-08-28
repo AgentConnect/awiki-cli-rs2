@@ -41,6 +41,7 @@ napi-derive = "=3.6.3"
 anp = { version = "0.9.3", path = "../anp/anp/rust", default-features = false }
 rand = "0.8"
 redb = "=2.6.3"
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "fs", "io-util"] }
