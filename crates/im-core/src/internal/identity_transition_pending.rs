@@ -390,6 +390,77 @@ pub(crate) fn load_identity_switched(
         .collect()
 }
 
+pub(crate) fn load_active_joined_devices(
+    sqlite_path: &Path,
+) -> crate::ImResult<Vec<IdentityTransitionMarker>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let recovery_ids = {
+        let mut statement = connection
+            .prepare(
+                "SELECT recovery_id FROM identity_transition_pending WHERE source_kind='joined_device' AND phase IN ('pending','identity_switched') ORDER BY updated_at,recovery_id",
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let recovery_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        recovery_ids
+    };
+    drop(connection);
+    recovery_ids
+        .into_iter()
+        .map(|recovery_id| load(sqlite_path, &recovery_id)?.ok_or(crate::ImError::PermissionDenied))
+        .collect()
+}
+
+pub(crate) fn delete_joined_device_terminal(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+) -> crate::ImResult<()> {
+    marker.validate()?;
+    marker.validate_state_root(sqlite_path)?;
+    if marker.source_kind != TransitionSourceKind::JoinedDevice
+        || marker.phase != TransitionPhase::Pending
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let changed = connection
+        .execute(
+            "DELETE FROM identity_transition_pending WHERE recovery_id=?1 AND source_kind='joined_device' AND source_id=?2 AND state_root_fingerprint=?3 AND account_user_id=?4 AND owner_identity_id=?5 AND handle=?6 AND previous_did=?7 AND current_did=?8 AND binding_generation=?9 AND phase='pending'",
+            rusqlite::params![
+                marker.recovery_id,
+                marker.source_id,
+                marker.state_root_fingerprint,
+                marker.account_user_id,
+                marker.owner_identity_id,
+                marker.handle,
+                marker.previous_did,
+                marker.current_did,
+                marker.binding_generation,
+            ],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if changed == 1 {
+        return Ok(());
+    }
+    let remaining: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM identity_transition_pending WHERE recovery_id=?1 OR (source_kind='joined_device' AND source_id=?2)",
+            rusqlite::params![marker.recovery_id, marker.source_id],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if remaining == 0 {
+        Ok(())
+    } else {
+        Err(crate::ImError::PermissionDenied)
+    }
+}
+
 pub(crate) fn load_latest_applied_for_owner(
     sqlite_path: &Path,
     owner_identity_id: &str,
@@ -432,9 +503,17 @@ pub(crate) fn persist(
 ) -> crate::ImResult<()> {
     marker.validate()?;
     marker.validate_state_root(sqlite_path)?;
-    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let mut connection = crate::internal::local_state::open_writable(sqlite_path)?;
     crate::internal::local_state::schema::ensure_schema(&connection)?;
-    let other_active_transition: i64 = connection
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    crate::internal::identity_local_deletion::ensure_no_active_deletion(
+        &transaction,
+        &marker.owner_identity_id,
+        Some(&marker.handle),
+    )?;
+    let other_active_transition: i64 = transaction
         .query_row(
             "SELECT COUNT(*) FROM identity_transition_pending WHERE owner_identity_id=?1 AND recovery_id<>?2 AND phase IN ('pending','identity_switched')",
             rusqlite::params![marker.owner_identity_id, marker.recovery_id],
@@ -450,7 +529,7 @@ pub(crate) fn persist(
             data: None,
         });
     }
-    connection
+    transaction
         .execute(
             r#"
 INSERT INTO identity_transition_pending
@@ -502,7 +581,7 @@ WHERE identity_transition_pending.schema_version=excluded.schema_version
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    let count: i64 = connection
+    let count: i64 = transaction
         .query_row(
             "SELECT COUNT(*) FROM identity_transition_pending WHERE recovery_id=?1 AND source_kind=?2 AND source_id=?3 AND owner_identity_id=?4 AND previous_did=?5 AND current_did=?6 AND binding_generation=?7",
             rusqlite::params![
@@ -520,7 +599,9 @@ WHERE identity_transition_pending.schema_version=excluded.schema_version
     if count != 1 {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)
 }
 
 pub(crate) fn update_phase(
@@ -838,16 +919,7 @@ fn migrate_local_state_inner(
     let now = now()?;
     retire_superseded_write_state(&transaction, marker, &now)?;
 
-    for table in [
-        "identity_root_import_completion_v1",
-        "identity_root_transfer_sender_v1",
-        "system_notification_join_state",
-        "message_sync_state",
-        "lane_sync_state",
-        "sync_lane_capability_state",
-    ] {
-        delete_owner_rows(&transaction, table, &marker.owner_identity_id)?;
-    }
+    clear_owner_join_control_state(&transaction, &marker.owner_identity_id)?;
 
     transaction
         .execute(
@@ -885,54 +957,85 @@ fn retire_superseded_write_state(
     marker: &IdentityTransitionMarker,
     now: &str,
 ) -> crate::ImResult<()> {
+    retire_owner_write_state(
+        transaction,
+        &marker.owner_identity_id,
+        &marker.previous_did,
+        now,
+    )
+}
+
+pub(crate) fn retire_owner_write_state(
+    transaction: &rusqlite::Transaction<'_>,
+    owner_identity_id: &str,
+    retired_did: &str,
+    now: &str,
+) -> crate::ImResult<()> {
     update_existing_table(
         transaction,
         "direct_e2ee_signed_prekeys",
         "UPDATE direct_e2ee_signed_prekeys SET status='retired',updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND status='active'",
-        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+        rusqlite::params![owner_identity_id, retired_did, now],
     )?;
     update_existing_table(
         transaction,
         "direct_e2ee_one_time_prekeys",
         "UPDATE direct_e2ee_one_time_prekeys SET status='consumed',consumed_at=COALESCE(consumed_at,?3) WHERE owner_identity_id=?1 AND owner_did=?2 AND status IN ('available','reserved')",
-        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+        rusqlite::params![owner_identity_id, retired_did, now],
     )?;
     update_existing_table(
         transaction,
         "direct_e2ee_v2_sessions",
         "UPDATE direct_e2ee_v2_sessions SET disabled=1,updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND disabled=0",
-        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+        rusqlite::params![owner_identity_id, retired_did, now],
     )?;
     update_existing_table(
         transaction,
         "direct_e2ee_v2_prekey_bundles",
         "UPDATE direct_e2ee_v2_prekey_bundles SET status='retired',updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND status<>'retired'",
-        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+        rusqlite::params![owner_identity_id, retired_did, now],
     )?;
     update_existing_table(
         transaction,
         "direct_e2ee_v2_one_time_prekeys",
         "UPDATE direct_e2ee_v2_one_time_prekeys SET status='consumed',consumed_at=COALESCE(consumed_at,?3) WHERE owner_identity_id=?1 AND owner_did=?2 AND status IN ('available','reserved')",
-        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+        rusqlite::params![owner_identity_id, retired_did, now],
     )?;
     update_existing_table(
         transaction,
         "e2ee_outbox",
         "UPDATE e2ee_outbox SET local_status='dropped',last_error_code='did_transition_superseded_old_did',retry_hint=NULL,updated_at=?3 WHERE owner_identity_id=?1 AND owner_did=?2 AND local_status IN ('queued','failed')",
-        rusqlite::params![marker.owner_identity_id, marker.previous_did, now],
+        rusqlite::params![owner_identity_id, retired_did, now],
     )?;
     update_existing_table(
         transaction,
         "group_rebind_outbox",
         "UPDATE group_rebind_outbox SET phase='blocked',lease_expires_at=NULL,next_attempt_at=NULL,last_error_code='did_transition_replaced_legacy_rebind',last_error_detail=NULL,updated_at=?2 WHERE owner_identity_id=?1 AND phase NOT IN ('complete','blocked')",
-        rusqlite::params![marker.owner_identity_id, now],
+        rusqlite::params![owner_identity_id, now],
     )?;
     update_existing_table(
         transaction,
         "group_rebind_p6_jobs",
         "UPDATE group_rebind_p6_jobs SET phase='blocked',lease_expires_at=NULL,next_attempt_at=NULL,last_error_code='did_transition_replaced_legacy_rebind',last_error_detail=NULL,updated_at=?2 WHERE owner_identity_id=?1 AND phase NOT IN ('complete','blocked')",
-        rusqlite::params![marker.owner_identity_id, now],
+        rusqlite::params![owner_identity_id, now],
     )?;
+    Ok(())
+}
+
+pub(crate) fn clear_owner_join_control_state(
+    transaction: &rusqlite::Transaction<'_>,
+    owner_identity_id: &str,
+) -> crate::ImResult<()> {
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+        "system_notification_join_state",
+        "message_sync_state",
+        "lane_sync_state",
+        "sync_lane_capability_state",
+    ] {
+        delete_owner_rows(transaction, table, owner_identity_id)?;
+    }
     Ok(())
 }
 
@@ -1284,6 +1387,39 @@ mod tests {
             Some(marker)
         );
         assert_eq!(load_joined_device(&path, "join-session-2").unwrap(), None);
+    }
+
+    #[test]
+    fn joined_device_terminal_delete_requires_exact_marker_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("joined-marker-delete.sqlite");
+        let marker = IdentityTransitionMarker::joined_device(
+            &path,
+            "join-session-delete",
+            "user-1",
+            "owner-1",
+            "alice.awiki.info",
+            "did:wba:awiki.info:users:alice-old",
+            "did:wba:awiki.info:users:alice-new",
+            "8",
+        )
+        .unwrap();
+        persist(&path, &marker).unwrap();
+
+        let mut mismatched = marker.clone();
+        mismatched.handle = "bob.awiki.info".to_owned();
+        assert!(delete_joined_device_terminal(&path, &mismatched).is_err());
+        assert_eq!(
+            load_joined_device(&path, "join-session-delete").unwrap(),
+            Some(marker.clone())
+        );
+
+        delete_joined_device_terminal(&path, &marker).unwrap();
+        delete_joined_device_terminal(&path, &marker).unwrap();
+        assert_eq!(
+            load_joined_device(&path, "join-session-delete").unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -41,7 +41,7 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, SecretVault};
 
-const JOIN_STATE_SCHEMA_VERSION: u32 = 2;
+const JOIN_STATE_SCHEMA_VERSION: u32 = 3;
 const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
 const JOIN_STATE_LOCK_FILE: &str = ".awiki-device-join-state.lock";
@@ -135,6 +135,10 @@ struct StoredJoinSession {
     response: Option<DeviceJoinChallengeResponse>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     join_session_token_ref: Option<SecretRef>,
+    #[serde(default)]
+    remote_create_state: RemoteCreateState,
+    #[serde(default)]
+    terminal_evidence: Option<JoinTerminalEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval: Option<StoredAdminApproval>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -143,6 +147,47 @@ struct StoredJoinSession {
     join_custody: Option<crate::internal::identity_join_activation_pending::JoinEnrollmentRef>,
     pairing_private_ref: SecretRef,
     admin_identity: Option<crate::identity::IdentitySelector>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RemoteCreateState {
+    LocalOnly,
+    Attempting,
+    Bound,
+    #[default]
+    UnknownLegacy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JoinTerminalEvidence {
+    LocalOnlyAbort,
+    RemoteCancelled,
+    RemoteRejected,
+    RemoteExpired,
+    AuthoritativeDeadlineElapsed,
+    LegacyUnverified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegistrationJoinSessionEvidence {
+    pub(crate) join_session_id: String,
+    pub(crate) did: String,
+    pub(crate) device_id: String,
+    pub(crate) phase: DeviceJoinLocalPhase,
+    pub(crate) activation_pending: bool,
+    pub(crate) remote_create_state: RemoteCreateState,
+    pub(crate) terminal_evidence: Option<JoinTerminalEvidence>,
+    pub(crate) deadline_elapsed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NewDeviceRemoteCreateIntent {
+    pub(crate) operation_id: String,
+    pub(crate) join_request: DeviceJoinRequest,
+    pub(crate) session: DeviceJoinSessionSummary,
+    pub(crate) remote_create_state: RemoteCreateState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -220,6 +265,8 @@ impl std::fmt::Debug for StoredJoinSession {
                 "has_join_session_token",
                 &self.join_session_token_ref.is_some(),
             )
+            .field("remote_create_state", &self.remote_create_state)
+            .field("terminal_evidence", &self.terminal_evidence)
             .field("has_approval", &self.approval.is_some())
             .field("activation_pending", &self.activation_pending)
             .field("secret_refs", &"<redacted-secret-refs>")
@@ -445,6 +492,8 @@ pub(crate) async fn start(
         challenge_hash: None,
         response: None,
         join_session_token_ref: None,
+        remote_create_state: RemoteCreateState::LocalOnly,
+        terminal_evidence: None,
         approval: None,
         activation_pending: false,
         join_custody: Some(join_custody),
@@ -486,10 +535,20 @@ pub(crate) fn bind_new_device_remote_session(
             "Join session token is required",
         ));
     }
+    if !matches!(
+        stored.remote_create_state,
+        RemoteCreateState::Attempting | RemoteCreateState::Bound
+    ) {
+        return Err(invalid_state(
+            "remote Join create was not durably marked attempting",
+        ));
+    }
 
     let vault = required_vault(core)?;
     if let Some(secret_ref) = stored.join_session_token_ref.as_ref() {
-        if secret_ref.kind != SecretKind::IdentityJoinSessionToken {
+        if secret_ref.kind != SecretKind::IdentityJoinSessionToken
+            || stored.remote_create_state != RemoteCreateState::Bound
+        {
             return Err(invalid_state("Join session token reference mismatch"));
         }
         let existing = vault.open(secret_ref)?;
@@ -508,11 +567,97 @@ pub(crate) fn bind_new_device_remote_session(
         join_session_token.expose_secret(),
     )?;
     stored.join_session_token_ref = Some(secret_ref.clone());
+    stored.remote_create_state = RemoteCreateState::Bound;
     if let Err(error) = store.save(&stored) {
         let _ = vault.delete(&secret_ref);
         return Err(error);
     }
     summary(&stored)
+}
+
+pub(crate) fn mark_new_device_remote_create_attempting(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id,
+        })?;
+    ensure_not_expired(&stored)?;
+    if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
+        return summary(&stored);
+    }
+    match stored.remote_create_state {
+        RemoteCreateState::LocalOnly | RemoteCreateState::UnknownLegacy => {
+            stored.remote_create_state = RemoteCreateState::Attempting;
+            store.save(&stored)?;
+        }
+        RemoteCreateState::Attempting | RemoteCreateState::Bound => {}
+    }
+    summary(&stored)
+}
+
+pub(crate) fn registration_join_session_evidence(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<Option<RegistrationJoinSessionEvidence>> {
+    let _guard = lock_join_state(core)?;
+    let Some(stored) =
+        JoinStateStore::new(core).load(join_session_id, DeviceJoinSide::NewDevice)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(RegistrationJoinSessionEvidence {
+        join_session_id: stored.join_request.join_session_id.clone(),
+        did: stored.join_request.did.clone(),
+        device_id: stored.join_request.device_id.clone(),
+        phase: stored.phase,
+        activation_pending: stored.activation_pending,
+        remote_create_state: stored.remote_create_state,
+        terminal_evidence: stored.terminal_evidence,
+        deadline_elapsed: join_deadline_elapsed(&stored)?,
+    }))
+}
+
+pub(crate) fn new_device_remote_create_intent(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<NewDeviceRemoteCreateIntent> {
+    let _guard = lock_join_state(core)?;
+    let stored = JoinStateStore::new(core)
+        .load(join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.to_owned(),
+        })?;
+    let operation_id = stored
+        .create_operation_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_state("new-device create operation is missing"))?;
+    if stored
+        .create_input_hash
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        || stored.join_custody.is_none()
+        || matches!(
+            stored.phase,
+            DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+        )
+    {
+        return Err(invalid_state(
+            "new-device remote create intent is incomplete",
+        ));
+    }
+    Ok(NewDeviceRemoteCreateIntent {
+        operation_id,
+        join_request: stored.join_request.clone(),
+        session: summary(&stored)?,
+        remote_create_state: stored.remote_create_state,
+    })
 }
 
 pub(crate) fn open_new_device_remote_session_token(
@@ -712,6 +857,8 @@ pub(crate) fn prepare_admin_challenge(
         challenge_hash: Some(challenge_hash),
         response: None,
         join_session_token_ref: None,
+        remote_create_state: RemoteCreateState::UnknownLegacy,
+        terminal_evidence: None,
         approval: None,
         activation_pending: false,
         join_custody: None,
@@ -871,6 +1018,8 @@ pub(crate) async fn prepare_admin_challenge_async(
         challenge_hash: Some(challenge_hash),
         response: None,
         join_session_token_ref: None,
+        remote_create_state: RemoteCreateState::UnknownLegacy,
+        terminal_evidence: None,
         approval: None,
         activation_pending: false,
         join_custody: None,
@@ -2374,7 +2523,6 @@ fn finish_authorized_new_device_cleanup(
         pending_store.delete(&secret_ref)?;
     }
     stored.activation_pending = false;
-    stored.join_session_token_ref = None;
     state_store.save(stored)
 }
 
@@ -2491,6 +2639,22 @@ fn promote_join_identity_local(
     let identity_store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
     let index = identity_store.load_index()?;
+    if let Some(rollover) = crate::internal::identity_registration_retired_join::load(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &stored.join_request.join_session_id,
+    )? {
+        return promote_retired_registration_join_identity(
+            core,
+            stored,
+            pending,
+            access,
+            &identity_store,
+            &index,
+            projection_storage,
+            root_key_id,
+            rollover,
+        );
+    }
     if let Some(marker) = crate::internal::identity_transition_pending::load_joined_device(
         &core.inner().sdk_paths().local_state.sqlite_path,
         &stored.join_request.join_session_id,
@@ -2746,6 +2910,152 @@ fn promote_join_identity_local(
 static FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[allow(clippy::too_many_arguments)]
+fn promote_retired_registration_join_identity(
+    core: &crate::core::ImCore,
+    stored: &StoredJoinSession,
+    pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    access: &crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
+    identity_store: &crate::internal::identity_store::IdentityStore<'_>,
+    index: &crate::internal::identity_store::IndexPayload,
+    projection_storage: crate::internal::identity_store::AnpIdentityProjectionStorage,
+    root_key_id: String,
+    rollover: crate::internal::identity_registration_retired_join::RetiredJoinRollover,
+) -> crate::ImResult<()> {
+    if rollover.join_session_id != stored.join_request.join_session_id
+        || rollover.account_user_id != access.user_id
+        || rollover.current_did != pending.did.as_str()
+        || rollover.current_did != stored.join_request.did
+        || rollover.new_device_id != pending.authorization.device.device_id
+        || rollover.new_device_id != stored.join_request.device_id
+        || pending.authorization.device.auth_generation == 0
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if rollover.phase
+        == crate::internal::identity_registration_retired_join::RetiredJoinRolloverPhase::Prepared
+        && !crate::internal::identity_retirement::matches_completed_binding(
+            &core.inner().sdk_paths().identities.identity_root_dir,
+            &rollover.owner_identity_id,
+            &rollover.retired_did,
+            &rollover.retired_device_id,
+        )?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let related = index
+        .credentials
+        .iter()
+        .filter(|(_, entry)| {
+            entry.unique_id == rollover.owner_identity_id
+                || entry.user_id == rollover.account_user_id
+                || entry.full_handle == rollover.handle
+                || entry.did == rollover.current_did
+        })
+        .collect::<Vec<_>>();
+    let local_alias = if related.is_empty() {
+        if rollover.phase
+            != crate::internal::identity_registration_retired_join::RetiredJoinRolloverPhase::Prepared
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let (local_alias, handle, full_handle, make_default) =
+            join_local_identity_projection(&pending.did, &stored.join_request.device_id, index)?;
+        if full_handle != rollover.handle {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        identity_store.save_anp_identity_projection(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias: local_alias.clone(),
+                did: pending.did.clone(),
+                unique_id: rollover.owner_identity_id.clone(),
+                user_id: access.user_id.clone(),
+                display_name: handle.clone(),
+                handle,
+                full_handle,
+                binding_generation: Some(rollover.current_binding_generation.clone()),
+                jwt_token: access.access_token.clone(),
+                did_document: Some(pending.resolved_document.clone()),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                    root_key_id,
+                    device_signing_key_id: pending.authorization.device.signing_key_id.clone(),
+                    device_e2ee_key_id: pending.authorization.device.e2ee_key_id.clone(),
+                },
+                device_state: Some(crate::internal::identity_device_state::IdentityDeviceState {
+                    schema_version: crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                    mode: crate::internal::identity_device_state::IdentityDeviceMode::VNext,
+                    authorization: Some(crate::internal::identity_device_state::DeviceAuthorizationProjection {
+                        protocol_device_id: crate::ids::ProtocolDeviceId::parse(
+                            &pending.authorization.device.device_id,
+                        )?,
+                        signing_key_id: pending.authorization.device.signing_key_id.clone(),
+                        e2ee_key_id: pending.authorization.device.e2ee_key_id.clone(),
+                        status: pending.authorization.device.status,
+                        role: pending.authorization.device.role,
+                        management_ready: false,
+                        auth_generation: pending.authorization.device.auth_generation,
+                    }),
+                    checkpoint: Some(pending.authorization.checkpoint.clone()),
+                }),
+                key1_private_pem: String::new(),
+                key1_public_pem: String::new(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: String::new(),
+                daemon_subkey_package: None,
+                make_default,
+            },
+            projection_storage,
+        )?;
+        #[cfg(test)]
+        if FAIL_AFTER_RETIRED_REGISTRATION_JOIN_IDENTITY_SAVE
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(crate::ImError::Internal {
+                message: "injected crash after retired registration Join identity save".to_owned(),
+            });
+        }
+        local_alias
+    } else if related.len() == 1 {
+        let (local_alias, entry) = related[0];
+        if entry.unique_id != rollover.owner_identity_id
+            || entry.user_id != rollover.account_user_id
+            || entry.full_handle != rollover.handle
+            || entry.did != rollover.current_did
+            || entry.binding_generation.as_deref()
+                != Some(rollover.current_binding_generation.as_str())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        ensure_existing_join_identity_is_rootless(
+            index,
+            local_alias,
+            &pending.did,
+            &pending.authorization,
+        )?;
+        (*local_alias).clone()
+    } else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+
+    crate::internal::identity_registration_retired_join::converge_after_registry_save(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &rollover,
+        pending.authorization.device.auth_generation,
+    )?;
+    let committed = identity_store.load_index()?;
+    ensure_existing_join_identity_is_rootless(
+        &committed,
+        &local_alias,
+        &pending.did,
+        &pending.authorization,
+    )
+}
+
+#[cfg(test)]
+static FAIL_AFTER_RETIRED_REGISTRATION_JOIN_IDENTITY_SAVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn join_local_identity_projection(
     did: &crate::ids::Did,
     device_id: &str,
@@ -2844,6 +3154,7 @@ pub(crate) async fn cancel_join(
     core: &crate::core::ImCore,
     join_session_id: &str,
     side: DeviceJoinSide,
+    evidence: JoinTerminalEvidence,
 ) -> crate::ImResult<DeviceJoinSessionSummary> {
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
@@ -2858,13 +3169,31 @@ pub(crate) async fn cancel_join(
         if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
             return Err(invalid_state("authorized Join cannot be cancelled"));
         }
+        let valid_evidence = match side {
+            DeviceJoinSide::NewDevice => match stored.remote_create_state {
+                RemoteCreateState::LocalOnly => evidence == JoinTerminalEvidence::LocalOnlyAbort,
+                RemoteCreateState::Attempting
+                | RemoteCreateState::Bound
+                | RemoteCreateState::UnknownLegacy => matches!(
+                    evidence,
+                    JoinTerminalEvidence::RemoteCancelled | JoinTerminalEvidence::RemoteRejected
+                ),
+            },
+            DeviceJoinSide::Admin => evidence == JoinTerminalEvidence::RemoteRejected,
+        };
+        if !valid_evidence {
+            return Err(invalid_state("Join cancellation evidence mismatch"));
+        }
         if stored.phase != DeviceJoinLocalPhase::Cancelled {
             stored.phase = DeviceJoinLocalPhase::Cancelled;
+            stored.terminal_evidence = Some(evidence);
             store.save(&stored)?;
+        } else if stored.terminal_evidence != Some(evidence) {
+            return Err(idempotency_conflict("cancel_join"));
         }
         stored
     };
-    cleanup_cancelled_join_secrets(core, &stored).await?;
+    cleanup_terminal_join_state(core, &stored).await?;
     summary(&stored)
 }
 
@@ -2888,11 +3217,196 @@ pub(crate) async fn mark_join_expired(
         }
         if stored.phase != DeviceJoinLocalPhase::Expired {
             stored.phase = DeviceJoinLocalPhase::Expired;
+            stored.terminal_evidence = Some(JoinTerminalEvidence::RemoteExpired);
+            store.save(&stored)?;
+        } else if stored.terminal_evidence != Some(JoinTerminalEvidence::RemoteExpired) {
+            return Err(idempotency_conflict("mark_join_expired"));
+        }
+        stored
+    };
+    cleanup_terminal_join_state(core, &stored).await?;
+    summary(&stored)
+}
+
+pub(crate) async fn abort_local_only_registration_join(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    cancel_join(
+        core,
+        join_session_id,
+        DeviceJoinSide::NewDevice,
+        JoinTerminalEvidence::LocalOnlyAbort,
+    )
+    .await
+}
+
+pub(crate) fn abort_local_only_registration_join_sync(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let store = JoinStateStore::new(core);
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored = store
+            .load(join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.to_owned(),
+            })?;
+        if stored.phase == DeviceJoinLocalPhase::Authorized
+            || stored.activation_pending
+            || stored.remote_create_state != RemoteCreateState::LocalOnly
+        {
+            return Err(invalid_state("local-only Join abort authority mismatch"));
+        }
+        if stored.phase != DeviceJoinLocalPhase::Cancelled {
+            stored.phase = DeviceJoinLocalPhase::Cancelled;
+            stored.terminal_evidence = Some(JoinTerminalEvidence::LocalOnlyAbort);
+            store.save(&stored)?;
+        } else if stored.terminal_evidence != Some(JoinTerminalEvidence::LocalOnlyAbort) {
+            return Err(idempotency_conflict(
+                "abort_local_only_registration_join_sync",
+            ));
+        }
+        stored
+    };
+    cleanup_terminal_join_state_sync(core, &stored)?;
+    summary(&stored)
+}
+
+pub(crate) async fn expire_registration_join_at_deadline(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let store = JoinStateStore::new(core);
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored = store
+            .load(join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.to_owned(),
+            })?;
+        if !matches!(
+            stored.remote_create_state,
+            RemoteCreateState::Attempting | RemoteCreateState::UnknownLegacy
+        ) || stored.phase == DeviceJoinLocalPhase::Authorized
+            || stored.activation_pending
+            || !join_deadline_elapsed(&stored)?
+        {
+            return Err(invalid_state(
+                "Join has no authoritative elapsed-deadline evidence",
+            ));
+        }
+        stored.phase = DeviceJoinLocalPhase::Expired;
+        stored.terminal_evidence = Some(JoinTerminalEvidence::AuthoritativeDeadlineElapsed);
+        store.save(&stored)?;
+        stored
+    };
+    cleanup_terminal_join_state(core, &stored).await?;
+    summary(&stored)
+}
+
+pub(crate) fn expire_registration_join_at_deadline_sync(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let store = JoinStateStore::new(core);
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored = store
+            .load(join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.to_owned(),
+            })?;
+        if !matches!(
+            stored.remote_create_state,
+            RemoteCreateState::Attempting | RemoteCreateState::UnknownLegacy
+        ) || stored.phase == DeviceJoinLocalPhase::Authorized
+            || stored.activation_pending
+            || !join_deadline_elapsed(&stored)?
+        {
+            return Err(invalid_state(
+                "Join has no authoritative elapsed-deadline evidence",
+            ));
+        }
+        stored.phase = DeviceJoinLocalPhase::Expired;
+        stored.terminal_evidence = Some(JoinTerminalEvidence::AuthoritativeDeadlineElapsed);
+        store.save(&stored)?;
+        stored
+    };
+    cleanup_terminal_join_state_sync(core, &stored)?;
+    summary(&stored)
+}
+
+pub(crate) async fn cleanup_terminal_registration_join(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let store = JoinStateStore::new(core);
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored = store
+            .load(join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.to_owned(),
+            })?;
+        if !matches!(
+            stored.phase,
+            DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+        ) {
+            return Err(invalid_state("Join is not terminal"));
+        }
+        if stored.terminal_evidence == Some(JoinTerminalEvidence::LegacyUnverified) {
+            if !join_deadline_elapsed(&stored)? {
+                return Err(
+                    crate::internal::identity_registration_join_preparation::continuity_error(
+                        "handle_recovery.join_terminal_wait",
+                    ),
+                );
+            }
+            stored.phase = DeviceJoinLocalPhase::Expired;
+            stored.terminal_evidence = Some(JoinTerminalEvidence::AuthoritativeDeadlineElapsed);
             store.save(&stored)?;
         }
         stored
     };
-    cleanup_cancelled_join_secrets(core, &stored).await?;
+    cleanup_terminal_join_state(core, &stored).await?;
+    summary(&stored)
+}
+
+pub(crate) fn cleanup_terminal_registration_join_sync(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let store = JoinStateStore::new(core);
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        let mut stored = store
+            .load(join_session_id, DeviceJoinSide::NewDevice)?
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: join_session_id.to_owned(),
+            })?;
+        if !matches!(
+            stored.phase,
+            DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+        ) {
+            return Err(invalid_state("Join is not terminal"));
+        }
+        if stored.terminal_evidence == Some(JoinTerminalEvidence::LegacyUnverified) {
+            if !join_deadline_elapsed(&stored)? {
+                return Err(
+                    crate::internal::identity_registration_join_preparation::continuity_error(
+                        "handle_recovery.join_terminal_wait",
+                    ),
+                );
+            }
+            stored.phase = DeviceJoinLocalPhase::Expired;
+            stored.terminal_evidence = Some(JoinTerminalEvidence::AuthoritativeDeadlineElapsed);
+            store.save(&stored)?;
+        }
+        stored
+    };
+    cleanup_terminal_join_state_sync(core, &stored)?;
     summary(&stored)
 }
 
@@ -3321,6 +3835,100 @@ async fn cleanup_cancelled_join_secrets(
         refs.push(secret_ref);
     }
     delete_secret_refs(&*vault, refs)
+}
+
+async fn cleanup_terminal_join_state(
+    core: &crate::core::ImCore,
+    stored: &StoredJoinSession,
+) -> crate::ImResult<()> {
+    if !matches!(
+        stored.phase,
+        DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+    ) || stored.terminal_evidence.is_none()
+    {
+        return Err(invalid_state("Join terminal cleanup authority is missing"));
+    }
+    cleanup_cancelled_join_secrets(core, stored).await?;
+    let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+    if let Some(marker) = crate::internal::identity_transition_pending::load_joined_device(
+        sqlite_path,
+        &stored.join_request.join_session_id,
+    )? {
+        if marker.current_did != stored.join_request.did
+            || marker.source_id != stored.join_request.join_session_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_transition_pending::delete_joined_device_terminal(
+            sqlite_path,
+            &marker,
+        )?;
+    }
+    Ok(())
+}
+
+fn cleanup_terminal_join_state_sync(
+    core: &crate::core::ImCore,
+    stored: &StoredJoinSession,
+) -> crate::ImResult<()> {
+    if !matches!(
+        stored.phase,
+        DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+    ) || stored.terminal_evidence.is_none()
+    {
+        return Err(invalid_state("Join terminal cleanup authority is missing"));
+    }
+    cleanup_cancelled_join_secrets_sync(core, stored)?;
+    let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+    if let Some(marker) = crate::internal::identity_transition_pending::load_joined_device(
+        sqlite_path,
+        &stored.join_request.join_session_id,
+    )? {
+        if marker.current_did != stored.join_request.did
+            || marker.source_id != stored.join_request.join_session_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_transition_pending::delete_joined_device_terminal(
+            sqlite_path,
+            &marker,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "identity-native-anp")]
+fn cleanup_cancelled_join_secrets_sync(
+    core: &crate::core::ImCore,
+    stored: &StoredJoinSession,
+) -> crate::ImResult<()> {
+    if stored.side == DeviceJoinSide::NewDevice {
+        let custody = stored
+            .join_custody
+            .as_ref()
+            .ok_or_else(|| invalid_state("new-device custody reference missing"))?;
+        crate::internal::identity_custody::discard_join_enrollment(
+            core,
+            &crate::ids::Did::parse(&stored.join_request.did)?,
+            custody,
+        )?;
+    }
+    let vault = required_vault(core)?;
+    let mut refs = vec![&stored.pairing_private_ref];
+    if let Some(secret_ref) = stored.join_session_token_ref.as_ref() {
+        refs.push(secret_ref);
+    }
+    delete_secret_refs(&*vault, refs)
+}
+
+#[cfg(not(feature = "identity-native-anp"))]
+fn cleanup_cancelled_join_secrets_sync(
+    _core: &crate::core::ImCore,
+    _stored: &StoredJoinSession,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported(
+        "synchronous Join cleanup requires identity-native-anp",
+    ))
 }
 
 fn delete_secret_refs(vault: &dyn SecretVault, refs: Vec<&SecretRef>) -> crate::ImResult<()> {
@@ -4421,6 +5029,13 @@ fn ensure_not_expired(stored: &StoredJoinSession) -> crate::ImResult<()> {
     }
 }
 
+fn join_deadline_elapsed(stored: &StoredJoinSession) -> crate::ImResult<bool> {
+    Ok(
+        parse_time("join_request.expires_at", &stored.join_request.expires_at)?
+            <= OffsetDateTime::now_utc(),
+    )
+}
+
 fn invalid_state(message: &str) -> crate::ImError {
     crate::ImError::LocalStateUnavailable {
         detail: format!("device Join state invalid: {message}"),
@@ -4538,9 +5153,7 @@ impl<'a> JoinStateStore<'a> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(crate::ImError::from(err)),
         };
-        let stored: StoredJoinSession =
-            serde_json::from_slice(&raw).map_err(|_| invalid_state("state JSON unreadable"))?;
-        self.validate_loaded(stored, join_session_id, side)
+        self.decode_loaded(&raw, join_session_id, side, &path)
             .map(Some)
     }
 
@@ -4557,12 +5170,12 @@ impl<'a> JoinStateStore<'a> {
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
-            let raw = fs::read(path)?;
-            let stored: StoredJoinSession =
+            let raw = fs::read(&path)?;
+            let untrusted: StoredJoinSession =
                 serde_json::from_slice(&raw).map_err(|_| invalid_state("state JSON unreadable"))?;
-            let session_id = stored.join_request.join_session_id.clone();
-            let side = stored.side;
-            result.push(self.validate_loaded(stored, &session_id, side)?);
+            let session_id = untrusted.join_request.join_session_id.clone();
+            let side = untrusted.side;
+            result.push(self.decode_loaded(&raw, &session_id, side, &path)?);
         }
         Ok(result)
     }
@@ -4613,6 +5226,33 @@ impl<'a> JoinStateStore<'a> {
         {
             return Err(invalid_state("state binding mismatch"));
         }
+        let terminal = matches!(
+            stored.phase,
+            DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+        );
+        if terminal != stored.terminal_evidence.is_some()
+            || (stored.phase == DeviceJoinLocalPhase::Cancelled
+                && !matches!(
+                    stored.terminal_evidence,
+                    Some(
+                        JoinTerminalEvidence::LocalOnlyAbort
+                            | JoinTerminalEvidence::RemoteCancelled
+                            | JoinTerminalEvidence::RemoteRejected
+                            | JoinTerminalEvidence::LegacyUnverified
+                    )
+                ))
+            || (stored.phase == DeviceJoinLocalPhase::Expired
+                && !matches!(
+                    stored.terminal_evidence,
+                    Some(
+                        JoinTerminalEvidence::RemoteExpired
+                            | JoinTerminalEvidence::AuthoritativeDeadlineElapsed
+                            | JoinTerminalEvidence::LegacyUnverified
+                    )
+                ))
+        {
+            return Err(invalid_state("Join terminal evidence mismatch"));
+        }
         match stored.side {
             DeviceJoinSide::NewDevice => {
                 if stored.join_custody.as_ref().is_none_or(|custody| {
@@ -4621,6 +5261,23 @@ impl<'a> JoinStateStore<'a> {
                         || custody.enrollment_id.trim().is_empty()
                 }) || stored.admin_identity.is_some()
                     || stored.approval.is_some()
+                    || (stored.remote_create_state == RemoteCreateState::Bound)
+                        != stored.join_session_token_ref.is_some()
+                    || (stored.remote_create_state == RemoteCreateState::LocalOnly
+                        && !matches!(
+                            (stored.phase, stored.terminal_evidence),
+                            (DeviceJoinLocalPhase::Pending, None)
+                                | (
+                                    DeviceJoinLocalPhase::Cancelled,
+                                    Some(JoinTerminalEvidence::LocalOnlyAbort)
+                                )
+                        ))
+                    || (matches!(
+                        stored.remote_create_state,
+                        RemoteCreateState::Attempting | RemoteCreateState::UnknownLegacy
+                    ) && stored.join_session_token_ref.is_some())
+                    || (stored.terminal_evidence == Some(JoinTerminalEvidence::LegacyUnverified)
+                        && stored.remote_create_state != RemoteCreateState::UnknownLegacy)
                     || (stored.activation_pending
                         && !matches!(
                             stored.phase,
@@ -4638,6 +5295,7 @@ impl<'a> JoinStateStore<'a> {
             DeviceJoinSide::Admin => {
                 if stored.join_custody.is_some()
                     || stored.activation_pending
+                    || stored.remote_create_state != RemoteCreateState::UnknownLegacy
                     || stored.admin_identity.is_none()
                     || stored.join_session_token_ref.is_some()
                     || (stored.approval.is_some()
@@ -4654,6 +5312,61 @@ impl<'a> JoinStateStore<'a> {
                     return Err(invalid_state("admin state secret reference mismatch"));
                 }
             }
+        }
+        Ok(stored)
+    }
+
+    fn decode_loaded(
+        &self,
+        raw: &[u8],
+        expected_session_id: &str,
+        expected_side: DeviceJoinSide,
+        path: &Path,
+    ) -> crate::ImResult<StoredJoinSession> {
+        let encoded: Value =
+            serde_json::from_slice(raw).map_err(|_| invalid_state("state JSON unreadable"))?;
+        let object = encoded
+            .as_object()
+            .ok_or_else(|| invalid_state("state JSON unreadable"))?;
+        let schema_version = object
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid_state("state schema is missing"))?;
+        let lifecycle_fields_present =
+            object.contains_key("remote_create_state") && object.contains_key("terminal_evidence");
+        let mut stored: StoredJoinSession =
+            serde_json::from_value(encoded).map_err(|_| invalid_state("state JSON unreadable"))?;
+        let migrated = match schema_version {
+            2 => {
+                stored.schema_version = JOIN_STATE_SCHEMA_VERSION;
+                stored.remote_create_state = if stored.join_session_token_ref.is_some() {
+                    RemoteCreateState::Bound
+                } else {
+                    RemoteCreateState::UnknownLegacy
+                };
+                stored.terminal_evidence = matches!(
+                    stored.phase,
+                    DeviceJoinLocalPhase::Cancelled | DeviceJoinLocalPhase::Expired
+                )
+                .then_some(JoinTerminalEvidence::LegacyUnverified);
+                true
+            }
+            value if value == u64::from(JOIN_STATE_SCHEMA_VERSION) => {
+                if !lifecycle_fields_present {
+                    return Err(invalid_state("state v3 lifecycle fields are missing"));
+                }
+                false
+            }
+            _ => return Err(invalid_state("state schema is unsupported")),
+        };
+        let stored = self.validate_loaded(stored, expected_session_id, expected_side)?;
+        if migrated {
+            let rewritten = serde_json::to_vec_pretty(&stored).map_err(|error| {
+                crate::ImError::Serialization {
+                    detail: error.to_string(),
+                }
+            })?;
+            write_private_atomic(path, &rewritten)?;
         }
         Ok(stored)
     }
@@ -4675,6 +5388,122 @@ impl<'a> JoinStateStore<'a> {
             URL_SAFE_NO_PAD.encode(hasher.finalize())
         ))
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_new_device_remote_create_state(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<Option<RemoteCreateState>> {
+    let _guard = lock_join_state(core)?;
+    JoinStateStore::new(core)
+        .load(join_session_id, DeviceJoinSide::NewDevice)
+        .map(|stored| stored.map(|stored| stored.remote_create_state))
+}
+
+#[cfg(test)]
+pub(crate) fn test_new_device_remote_create_state_by_operation(
+    core: &crate::core::ImCore,
+    operation_id: &str,
+) -> crate::ImResult<Option<RemoteCreateState>> {
+    let _guard = lock_join_state(core)?;
+    JoinStateStore::new(core)
+        .find_new_device_by_create_operation(operation_id)
+        .map(|stored| stored.map(|stored| stored.remote_create_state))
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_legacy_terminal_join(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    deadline_elapsed: bool,
+) -> crate::ImResult<()> {
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.to_owned(),
+        })?;
+    stored.phase = DeviceJoinLocalPhase::Cancelled;
+    stored.remote_create_state = RemoteCreateState::UnknownLegacy;
+    stored.terminal_evidence = Some(JoinTerminalEvidence::LegacyUnverified);
+    if deadline_elapsed {
+        stored.join_request.expires_at = "2000-01-01T00:00:00Z".to_owned();
+        stored.join_request_hash = canonical_hash(
+            &serde_json::to_value(&stored.join_request).map_err(|error| {
+                crate::ImError::Serialization {
+                    detail: error.to_string(),
+                }
+            })?,
+        )?;
+    }
+    store.save(&stored)
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_remote_terminal_without_cleanup(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    evidence: JoinTerminalEvidence,
+) -> crate::ImResult<()> {
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.to_owned(),
+        })?;
+    stored.phase = match evidence {
+        JoinTerminalEvidence::RemoteCancelled | JoinTerminalEvidence::RemoteRejected => {
+            DeviceJoinLocalPhase::Cancelled
+        }
+        JoinTerminalEvidence::RemoteExpired
+        | JoinTerminalEvidence::AuthoritativeDeadlineElapsed => DeviceJoinLocalPhase::Expired,
+        JoinTerminalEvidence::LocalOnlyAbort | JoinTerminalEvidence::LegacyUnverified => {
+            return Err(crate::ImError::PermissionDenied)
+        }
+    };
+    stored.terminal_evidence = Some(evidence);
+    store.save(&stored)
+}
+
+#[cfg(test)]
+pub(crate) fn test_corrupt_join_custody_enrollment(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<()> {
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.to_owned(),
+        })?;
+    stored
+        .join_custody
+        .as_mut()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .enrollment_id = "mismatched-enrollment".to_owned();
+    store.save(&stored)
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_activation_pending_for_identity_switch(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<()> {
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.to_owned(),
+        })?;
+    stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
+    stored.remote_create_state = RemoteCreateState::UnknownLegacy;
+    stored.activation_pending = true;
+    store.save(&stored)
 }
 
 fn write_private_atomic(path: &Path, raw: &[u8]) -> crate::ImResult<()> {

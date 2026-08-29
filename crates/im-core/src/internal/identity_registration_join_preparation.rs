@@ -29,8 +29,19 @@ pub(crate) struct RegistrationJoinPreparationInput {
     pub(crate) transition: Option<RegistrationJoinTransition>,
     pub(crate) mode: crate::identity::HandleRegistrationJoinMode,
     pub(crate) owner_identity_id: Option<String>,
+    pub(crate) retired_owner_evidence:
+        Option<crate::internal::identity_local_owner_matcher::RetiredOwnerEvidence>,
+    pub(crate) resume_join_session_id: Option<String>,
+    pub(crate) pending_registration_cleanup: Option<RegistrationPendingCleanup>,
     pub(crate) state_root_fingerprint: String,
     pub(crate) identity_index_fingerprint: String,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct RegistrationPendingCleanup {
+    pub(crate) secret_ref: crate::internal::secret_vault::record::SecretRef,
+    pub(crate) identity:
+        crate::internal::identity_registration_pending::PendingRegistrationIdentity,
 }
 
 struct RegistrationJoinPreparationEntry {
@@ -43,7 +54,7 @@ struct RegistrationJoinPreparationEntry {
     lock: Arc<tokio::sync::Mutex<()>>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct RegistrationJoinPreparationSnapshot {
     pub(crate) expected_did: crate::ids::Did,
     pub(crate) full_handle: crate::ids::Handle,
@@ -51,6 +62,10 @@ pub(crate) struct RegistrationJoinPreparationSnapshot {
     pub(crate) transition: Option<RegistrationJoinTransition>,
     pub(crate) mode: crate::identity::HandleRegistrationJoinMode,
     pub(crate) owner_identity_id: Option<String>,
+    pub(crate) retired_owner_evidence:
+        Option<crate::internal::identity_local_owner_matcher::RetiredOwnerEvidence>,
+    pub(crate) resume_join_session_id: Option<String>,
+    pub(crate) pending_registration_cleanup: Option<RegistrationPendingCleanup>,
     pub(crate) state_root_fingerprint: String,
     pub(crate) identity_index_fingerprint: String,
     pub(crate) join_session_id: Option<String>,
@@ -95,6 +110,7 @@ impl RegistrationJoinPreparationStore {
             expected_did: input.expected_did.clone(),
             full_handle: input.full_handle.clone(),
         };
+        let resume_join_session_id = input.resume_join_session_id.clone();
         let mut entries = self.lock_entries()?;
         retain_live(&mut entries);
         entries.insert(
@@ -104,7 +120,7 @@ impl RegistrationJoinPreparationStore {
                 created_at: Instant::now(),
                 begin_operation_id: None,
                 begin_input_hash: None,
-                join_session_id: None,
+                join_session_id: resume_join_session_id,
                 remote_started: false,
                 lock: Arc::new(tokio::sync::Mutex::new(())),
             },
@@ -155,6 +171,9 @@ impl RegistrationJoinPreparationStore {
             transition: entry.input.transition.clone(),
             mode: entry.input.mode,
             owner_identity_id: entry.input.owner_identity_id.clone(),
+            retired_owner_evidence: entry.input.retired_owner_evidence.clone(),
+            resume_join_session_id: entry.input.resume_join_session_id.clone(),
+            pending_registration_cleanup: entry.input.pending_registration_cleanup.clone(),
             state_root_fingerprint: entry.input.state_root_fingerprint.clone(),
             identity_index_fingerprint: entry.input.identity_index_fingerprint.clone(),
             join_session_id: entry.join_session_id.clone(),
@@ -259,6 +278,12 @@ pub(crate) fn continuity_error(code: &'static str) -> crate::ImError {
 }
 
 fn validate_input(input: &RegistrationJoinPreparationInput) -> crate::ImResult<()> {
+    let is_rebind = matches!(
+        input.mode,
+        crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind
+    );
+    let is_retired_ordinary = input.retired_owner_evidence.is_some();
+    let is_resume = input.resume_join_session_id.is_some();
     let transition_invalid = input.transition.as_ref().is_some_and(|transition| {
         transition.account_user_id.trim().is_empty()
             || transition.previous_did == transition.current_did
@@ -273,18 +298,35 @@ fn validate_input(input: &RegistrationJoinPreparationInput) -> crate::ImResult<(
             .expose_secret()
             .iter()
             .all(u8::is_ascii_whitespace)
-        || matches!(
-            input.mode,
-            crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind
-        ) != input.owner_identity_id.is_some()
-        || (matches!(
-            input.mode,
-            crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind
-        ) && input.transition.is_none())
+        || (is_rebind && is_retired_ordinary)
+        || ((is_rebind || is_retired_ordinary) != input.owner_identity_id.is_some())
+        || ((is_rebind || is_retired_ordinary) && input.transition.is_none())
+        || (is_resume && (!is_rebind || input.owner_identity_id.is_none()))
+        || input
+            .resume_join_session_id
+            .as_deref()
+            .is_some_and(|join_session_id| join_session_id.trim().is_empty())
+        || input
+            .pending_registration_cleanup
+            .as_ref()
+            .is_some_and(|cleanup| {
+                cleanup.secret_ref.kind
+                != crate::internal::secret_vault::record::SecretKind::IdentityRegistrationPending
+                || cleanup.identity.validate().is_err()
+            })
         || input
             .owner_identity_id
             .as_deref()
             .is_some_and(|owner| owner.trim().is_empty())
+        || input
+            .retired_owner_evidence
+            .as_ref()
+            .is_some_and(|evidence| {
+                input.owner_identity_id.as_deref() != Some(evidence.owner_identity_id.as_str())
+                    || evidence.retired_did.trim().is_empty()
+                    || evidence.retired_protocol_device_id.trim().is_empty()
+                    || evidence.retired_binding_generation.trim().is_empty()
+            })
         || transition_invalid
     {
         return Err(crate::ImError::PermissionDenied);
@@ -326,6 +368,9 @@ mod tests {
                 }),
                 mode: crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
                 owner_identity_id: Some("owner-alice".to_owned()),
+                retired_owner_evidence: None,
+                resume_join_session_id: None,
+                pending_registration_cleanup: None,
                 state_root_fingerprint: format!("sha256:{}", "a".repeat(64)),
                 identity_index_fingerprint: format!("sha256:{}", "b".repeat(64)),
             })
@@ -367,6 +412,9 @@ mod tests {
                 }),
                 mode: crate::identity::HandleRegistrationJoinMode::Ordinary,
                 owner_identity_id: None,
+                retired_owner_evidence: None,
+                resume_join_session_id: None,
+                pending_registration_cleanup: None,
                 state_root_fingerprint: format!("sha256:{}", "a".repeat(64)),
                 identity_index_fingerprint: format!("sha256:{}", "b".repeat(64)),
             })
@@ -377,5 +425,63 @@ mod tests {
             crate::identity::HandleRegistrationJoinMode::Ordinary
         );
         assert!(!projection.requires_user_presence);
+    }
+
+    #[test]
+    fn registration_resume_preparation_keeps_existing_session_private() {
+        let store = RegistrationJoinPreparationStore::default();
+        let projection = store
+            .issue(RegistrationJoinPreparationInput {
+                raw_result_hash: "sha256:resume-registration".to_owned(),
+                expected_did: crate::ids::Did::parse("did:wba:example.test:alice:new").unwrap(),
+                full_handle: crate::ids::Handle::parse("alice.example.test", "").unwrap(),
+                account_verification_token: crate::internal::platform_secret::SecretBytes::from_vec(
+                    b"fresh-verification-grant".to_vec(),
+                ),
+                transition: Some(RegistrationJoinTransition {
+                    account_user_id: "account-alice".to_owned(),
+                    previous_did: "did:wba:example.test:alice:old".to_owned(),
+                    current_did: "did:wba:example.test:alice:new".to_owned(),
+                    binding_generation: "8".to_owned(),
+                }),
+                mode: crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
+                owner_identity_id: Some("owner-alice".to_owned()),
+                retired_owner_evidence: None,
+                resume_join_session_id: Some("existing-join-session".to_owned()),
+                pending_registration_cleanup: None,
+                state_root_fingerprint: format!("sha256:{}", "a".repeat(64)),
+                identity_index_fingerprint: format!("sha256:{}", "b".repeat(64)),
+            })
+            .unwrap();
+        let public_keys = serde_json::to_value(&projection)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            public_keys,
+            std::collections::BTreeSet::from([
+                "expected_did".to_owned(),
+                "full_handle".to_owned(),
+                "mode".to_owned(),
+                "preparation_id".to_owned(),
+                "requires_user_presence".to_owned(),
+            ])
+        );
+        let hash = begin_input_hash("new-process-invocation", 600, true).unwrap();
+        let snapshot = store
+            .bind_and_snapshot(&projection.preparation_id, "new-process-invocation", &hash)
+            .unwrap();
+        assert_eq!(
+            snapshot.resume_join_session_id.as_deref(),
+            Some("existing-join-session")
+        );
+        assert_eq!(
+            snapshot.join_session_id.as_deref(),
+            Some("existing-join-session")
+        );
+        assert!(!snapshot.remote_started);
     }
 }

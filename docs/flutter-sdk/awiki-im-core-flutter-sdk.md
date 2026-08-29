@@ -109,7 +109,16 @@ message account binding while the related credential is absent. Re-registering
 that same Handle returns ordinary `join_required` when the retirement marker
 exactly closes over the binding identity, DID, and protocol device; Flutter
 hosts should keep presenting the explicit Join/Handle-Recovery choice rather
-than translating the historical binding into an error.
+than translating the historical binding into an error. Core excludes completed
+Recovery identities from unpublished provider reuse and replaces only the exact
+retired current provider identity with a fresh rootless Join enrollment; this
+custody cleanup and its crash recovery remain private to Core.
+If the server also returns a closed Recovery transition, Core accepts only one
+exact retired current/direct-previous tuple, returns `mode=ordinary`, keeps
+`requiresUserPresence=false`, reuses the retired stable local owner internally,
+and exposes no reset reference. The session-bound rollover journal, Registry
+save, binding CAS, write-state retirement, crash recovery, and tombstone guard
+remain private to Core; Dart must not infer them or start another Recovery.
 
 The remote `registered.message` field is diagnostic text and is not exposed as
 registration authority. Core validates the exact DID, Handle, domain, binding
@@ -146,12 +155,17 @@ identity owner or supply a separate generated identity.
 This legacy API is not the multi-device Handle Recovery flow below and must
 never be used as its fallback.
 
-For an explicit destructive settings action, native Flutter hosts may call
-`AwikiImCore.deleteLocalIdentityData(selector)`. Unlike ordinary
-`deleteLocalIdentity`, this removes every Core-owned local projection for the
-selected stable identity before retiring its credential. It never deletes the
-remote Handle/account or another local identity. Product-owned App databases
-must be purged separately with the same stable owner identity ID; Web fails
+For an explicit destructive settings action, native Flutter hosts must call
+`prepareLocalIdentityDataDeletion(selector)` before any Product-store or
+session teardown mutation. The returned secret-free ticket freezes the stable
+owner identity ID and current DID. The host then idempotently deletes its own
+Product rows and calls `completeLocalIdentityDataDeletion(deletionId)`. On
+startup it must read `pendingLocalIdentityDataDeletions()`, repeat Product
+deletion, and complete each existing ticket before restoring a session. A
+ticket represents committed user intent and has no cancel path. The older
+`deleteLocalIdentityData(selector)` remains a Core-only compatibility entrypoint
+and must not be used by AWiki Me for the coordinated settings flow. Neither
+path deletes the remote Handle/account or another local identity; Web fails
 closed with `UnsupportedError`.
 
 Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
@@ -281,6 +295,10 @@ Recovery rebind 模式下先持久化 joined-device marker，再创建远端 Joi
 本地凭证已通过 Core 完成退役、但同账号消息 binding 仍保留时，重新提交同 Handle 会继续得到
 ordinary `join_required`；App 仍显示 Join/Recovery 选择。缺失、未完成或不匹配的 retirement
 证据由 Core 失败关闭，Dart 不检查 SQLite、marker 或 identity registry 来自行降级。
+服务端带 Recovery transition 时，只有 retired current/direct-previous 的唯一 exact evidence
+进入 ordinary Join。该分支不请求 user presence、不返回 Recovery reset reference，并由 Core
+在 remote create 前写 secret-free rollover journal；Registry save 与 binding 尚未收敛之间崩溃时，
+下次 Core open 会按唯一 new-device winner 继续同一次收敛。App 只继续现有 ordinary Join UI。
 
 现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
 验证、durable dedupe 和本地 reducer commit 后，才发出可信

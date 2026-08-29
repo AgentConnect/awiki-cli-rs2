@@ -69,6 +69,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "group_rebind_outbox"),
         ("table", "group_rebind_p6_jobs"),
         ("table", "did_transition_edges"),
+        ("table", "registration_retired_join_rollovers"),
         ("view", "threads"),
         ("view", "inbox"),
         ("view", "outbox"),
@@ -108,6 +109,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_group_rebind_outbox_resume");
     assert_index_exists(&db, "idx_group_rebind_p6_resume");
     assert_index_exists(&db, "idx_did_transition_edges_owner_successor");
+    assert_index_exists(&db, "registration_retired_join_rollovers_owner_phase_idx");
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -2433,6 +2435,68 @@ PRAGMA user_version=36;
     assert!(ensure_schema(&db).is_err());
     assert_eq!(current_schema_version(&db).unwrap(), 36);
     assert!(!has_index(&db, "idx_did_transition_edges_owner_successor").unwrap());
+}
+
+#[test]
+fn schema_38_migrates_v37_transactionally_and_reopens_idempotently() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch("DROP TABLE registration_retired_join_rollovers; PRAGMA user_version=37;")
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "registration_retired_join_rollovers");
+    assert_index_exists(&db, "registration_retired_join_rollovers_owner_phase_idx");
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn schema_38_failed_migration_rolls_back_table_index_and_version() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch("DROP TABLE registration_retired_join_rollovers; PRAGMA user_version=37;")
+        .unwrap();
+    FAIL_SCHEMA_38_AFTER_TABLE_CREATE.with(|fail| fail.set(true));
+
+    assert!(ensure_schema(&db).is_err());
+    assert_eq!(current_schema_version(&db).unwrap(), 37);
+    assert!(!has_table(&db, "registration_retired_join_rollovers").unwrap());
+    assert!(!has_index(&db, "registration_retired_join_rollovers_owner_phase_idx").unwrap());
+}
+
+#[test]
+fn schema_39_migrates_v38_transactionally_and_reopens_idempotently() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS local_identity_deletions; PRAGMA user_version=38;")
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "local_identity_deletions");
+    assert_index_exists(&db, "local_identity_deletions_active_owner_idx");
+    assert_index_exists(&db, "local_identity_deletions_handle_phase_idx");
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn schema_39_failed_migration_rolls_back_table_indexes_and_version() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS local_identity_deletions; PRAGMA user_version=38;")
+        .unwrap();
+    FAIL_SCHEMA_39_AFTER_TABLE_CREATE.with(|fail| fail.set(true));
+
+    assert!(ensure_schema(&db).is_err());
+    assert_eq!(current_schema_version(&db).unwrap(), 38);
+    assert!(!has_table(&db, "local_identity_deletions").unwrap());
+    assert!(!has_index(&db, "local_identity_deletions_active_owner_idx").unwrap());
+    assert!(!has_index(&db, "local_identity_deletions_handle_phase_idx").unwrap());
 }
 
 #[test]

@@ -887,6 +887,18 @@ impl From<im_core::identity::DeleteLocalIdentityResult> for DartDeleteLocalIdent
     }
 }
 
+impl From<im_core::identity::LocalIdentityDeletionTicket>
+    for crate::dto::identity::DartLocalIdentityDeletionTicket
+{
+    fn from(value: im_core::identity::LocalIdentityDeletionTicket) -> Self {
+        Self {
+            deletion_id: value.deletion_id,
+            owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+            current_did: value.current_did.as_str().to_owned(),
+        }
+    }
+}
+
 impl From<im_core::identity::DaemonSubkeyPublicPackage> for DartDaemonSubkeyPublicPackage {
     fn from(value: im_core::identity::DaemonSubkeyPublicPackage) -> Self {
         Self {

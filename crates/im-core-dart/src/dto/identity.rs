@@ -535,6 +535,13 @@ pub struct DartDeleteLocalIdentityResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartLocalIdentityDeletionTicket {
+    pub deletion_id: String,
+    pub owner_identity_id: String,
+    pub current_did: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRegistrationResult {
     pub identity: Option<DartIdentitySummary>,
     pub account_id: Option<String>,

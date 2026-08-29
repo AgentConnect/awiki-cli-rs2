@@ -151,7 +151,11 @@ impl ImCore {
                 local_state_db: OnceCell::new(),
             }),
         };
+        crate::internal::identity_registration_join_continuation::recover_all(&core)?;
+        crate::internal::identity_registration_retired_join::recover_all(&core)?;
+        crate::internal::identity_local_deletion::recover_before_retirement(&core)?;
         crate::internal::identity_retirement::recover_all(&core)?;
+        crate::internal::identity_local_deletion::recover_after_retirement(&core)?;
         Ok(core)
     }
 

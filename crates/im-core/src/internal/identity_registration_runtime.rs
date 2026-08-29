@@ -217,12 +217,14 @@ where
             &request,
             |pending| store.save(pending).map(|_| ()),
         )? {
-            crate::internal::identity_custody::discard_unpublished_registration(
+            let preparation = prepare_join_required(
                 self.core,
-                &pending.identity,
+                join_required,
+                crate::internal::identity_registration_join_preparation::RegistrationPendingCleanup {
+                    secret_ref: pending_ref,
+                    identity: pending.identity.clone(),
+                },
             )?;
-            store.delete(&pending_ref)?;
-            let preparation = prepare_join_required(self.core, join_required)?;
             return join_required_result(&request, target.full_handle, preparation);
         }
         let mut result = commit_pending_registration(
@@ -442,13 +444,17 @@ where
                                 false,
                             )
                             .await?;
-                            crate::internal::identity_custody::discard_unpublished_registration_async(
+                            pending.remote_attempted = false;
+                            store.save(&pending)?;
+                            let preparation = prepare_join_required_async(
                                 self.core,
-                                &pending.identity,
+                                join_required,
+                                crate::internal::identity_registration_join_preparation::RegistrationPendingCleanup {
+                                    secret_ref: pending_ref,
+                                    identity: pending.identity.clone(),
+                                },
                             )
                             .await?;
-                            store.delete(&pending_ref)?;
-                            let preparation = prepare_join_required(self.core, join_required)?;
                             return join_required_result(&request, target.full_handle, preparation);
                         }
                     },
@@ -795,6 +801,8 @@ where
                         &pending.identity,
                         false,
                     )?;
+                    pending.remote_attempted = false;
+                    persist(pending)?;
                     return Ok(Some(join_required));
                 }
             },
@@ -1088,37 +1096,168 @@ fn join_required_result(
     })
 }
 
+async fn prepare_join_required_async(
+    core: &crate::core::ImCore,
+    parsed: ParsedRegistrationJoinRequired,
+    pending_registration_cleanup: crate::internal::identity_registration_join_preparation::RegistrationPendingCleanup,
+) -> crate::ImResult<crate::identity::HandleRegistrationJoinRequiredPreparation> {
+    if let Some(transition) = parsed.transition.as_ref() {
+        use crate::internal::identity_registration_join_continuation::RegistrationJoinContinuation;
+        if let RegistrationJoinContinuation::TerminalCleanupThenRetry {
+            join_session_id,
+            reason,
+        } = crate::internal::identity_registration_join_continuation::resolve(
+            core,
+            transition,
+            &parsed.full_handle,
+        )? {
+            if reason == "cleanup_local_only" {
+                crate::internal::identity_device_join::abort_local_only_registration_join(
+                    core,
+                    &join_session_id,
+                )
+                .await?;
+            } else {
+                crate::internal::identity_device_join::cleanup_terminal_registration_join(
+                    core,
+                    &join_session_id,
+                )
+                .await?;
+            }
+            if crate::internal::identity_registration_join_continuation::resolve(
+                core,
+                transition,
+                &parsed.full_handle,
+            )? != RegistrationJoinContinuation::None
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+    }
+    prepare_join_required(core, parsed, pending_registration_cleanup)
+}
+
 fn prepare_join_required(
     core: &crate::core::ImCore,
     parsed: ParsedRegistrationJoinRequired,
+    pending_registration_cleanup: crate::internal::identity_registration_join_preparation::RegistrationPendingCleanup,
 ) -> crate::ImResult<crate::identity::HandleRegistrationJoinRequiredPreparation> {
-    use crate::internal::identity_local_owner_matcher::{StableOwnerAuthority, StableOwnerMatch};
+    use crate::internal::identity_local_owner_matcher::{
+        RegistrationOwnerAuthority, RegistrationOwnerDisposition, StableOwnerMatch,
+    };
 
     let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
+    let mut resume = None;
+    if let Some(transition) = parsed.transition.as_ref() {
+        use crate::internal::identity_registration_join_continuation::RegistrationJoinContinuation;
+        match crate::internal::identity_registration_join_continuation::resolve(
+            core,
+            transition,
+            &parsed.full_handle,
+        )? {
+            RegistrationJoinContinuation::None => {}
+            RegistrationJoinContinuation::Resume(evidence) => resume = Some(evidence),
+            RegistrationJoinContinuation::TerminalCleanupThenRetry {
+                join_session_id,
+                reason,
+            } => {
+                if reason == "cleanup_local_only" {
+                    crate::internal::identity_device_join::abort_local_only_registration_join_sync(
+                        core,
+                        &join_session_id,
+                    )?;
+                } else {
+                    crate::internal::identity_device_join::cleanup_terminal_registration_join_sync(
+                        core,
+                        &join_session_id,
+                    )?;
+                }
+                if crate::internal::identity_registration_join_continuation::resolve(
+                    core,
+                    transition,
+                    &parsed.full_handle,
+                )? != RegistrationJoinContinuation::None
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+            }
+            RegistrationJoinContinuation::WaitForLegacyDeadline => {
+                return Err(
+                    crate::internal::identity_registration_join_preparation::continuity_error(
+                        "handle_recovery.join_terminal_wait",
+                    ),
+                );
+            }
+            RegistrationJoinContinuation::FinalizeIdentitySwitched {
+                join_session_id, ..
+            } => {
+                let marker = crate::internal::identity_transition_pending::load_joined_device(
+                    sqlite_path,
+                    &join_session_id,
+                )?
+                .ok_or(crate::ImError::PermissionDenied)?;
+                crate::internal::identity_handle_recovery_runtime::mark_joined_transition_applied(
+                    core, &marker,
+                )?;
+                return Err(
+                    crate::internal::identity_registration_join_preparation::continuity_error(
+                        "handle_recovery.join_already_applied",
+                    ),
+                );
+            }
+            RegistrationJoinContinuation::Conflict => {
+                return Err(
+                    crate::internal::identity_registration_join_preparation::continuity_error(
+                        "handle_recovery.local_state_conflict",
+                    ),
+                );
+            }
+        }
+    }
     let index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .load_index()?;
-    let (mode, owner_identity_id) = match parsed.transition.as_ref() {
-        Some(transition) => match crate::internal::identity_local_owner_matcher::match_stable_owner(
+    let (mode, owner_identity_id, retired_owner_evidence, resume_join_session_id) = if let Some(
+        evidence,
+    ) = resume
+    {
+        (
+            crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
+            Some(evidence.owner_identity_id),
+            None,
+            Some(evidence.join_session_id),
+        )
+    } else {
+        let (mode, owner_identity_id, retired_owner_evidence) = match parsed.transition.as_ref() {
+        Some(transition) => match crate::internal::identity_local_owner_matcher::classify_registration_owner(
             sqlite_path,
+            &core.inner().sdk_paths().identities.identity_root_dir,
             &index,
-            StableOwnerAuthority {
+            RegistrationOwnerAuthority {
                 account_user_id: &transition.account_user_id,
                 full_handle: parsed.full_handle.as_str(),
                 previous_did: &transition.previous_did,
+                current_did: &transition.current_did,
                 binding_generation: &transition.binding_generation,
             },
             None,
-            None,
         )? {
-            StableOwnerMatch::Exact(owner) => (
+            RegistrationOwnerDisposition::ExactLivePredecessor(owner) => (
                 crate::identity::HandleRegistrationJoinMode::HandleRecoveryRebind,
                 Some(owner.owner_identity_id),
+                None,
             ),
-            StableOwnerMatch::None => {
-                (crate::identity::HandleRegistrationJoinMode::Ordinary, None)
-            }
-            StableOwnerMatch::Conflict => {
+            RegistrationOwnerDisposition::RetiredNoLiveCredential(evidence) => (
+                crate::identity::HandleRegistrationJoinMode::Ordinary,
+                Some(evidence.owner_identity_id.clone()),
+                Some(evidence),
+            ),
+            RegistrationOwnerDisposition::FreshNone => (
+                crate::identity::HandleRegistrationJoinMode::Ordinary,
+                None,
+                None,
+            ),
+            RegistrationOwnerDisposition::Conflict => {
                 return Err(crate::internal::identity_registration_join_preparation::continuity_error(
                     "handle_recovery.local_state_conflict",
                 ));
@@ -1132,7 +1271,7 @@ fn prepare_join_required(
             parsed.did.as_str(),
         )? {
             StableOwnerMatch::None => {
-                (crate::identity::HandleRegistrationJoinMode::Ordinary, None)
+                (crate::identity::HandleRegistrationJoinMode::Ordinary, None, None)
             }
             StableOwnerMatch::Exact(_) | StableOwnerMatch::Conflict => {
                 return Err(crate::internal::identity_registration_join_preparation::continuity_error(
@@ -1140,6 +1279,8 @@ fn prepare_join_required(
                 ));
             }
         },
+    };
+        (mode, owner_identity_id, retired_owner_evidence, None)
     };
     core.inner().registration_join_preparations.issue(
         crate::internal::identity_registration_join_preparation::RegistrationJoinPreparationInput {
@@ -1150,6 +1291,9 @@ fn prepare_join_required(
             transition: parsed.transition,
             mode,
             owner_identity_id,
+            retired_owner_evidence,
+            resume_join_session_id,
+            pending_registration_cleanup: Some(pending_registration_cleanup),
             state_root_fingerprint:
                 crate::internal::identity_transition_pending::state_root_fingerprint(sqlite_path),
             identity_index_fingerprint:
@@ -1933,16 +2077,23 @@ mod tests {
         );
         assert!(join_required.transition.is_none());
         assert!(pending.remote_result.is_none());
+        assert!(!pending.remote_attempted);
         assert_eq!(
             pending.phase,
             crate::internal::identity_registration_pending::PendingRegistrationPhase::Prepared
         );
         assert_eq!(
             persisted,
-            vec![(
-                true,
-                crate::internal::identity_registration_pending::PendingRegistrationPhase::Prepared
-            )]
+            vec![
+                (
+                    true,
+                    crate::internal::identity_registration_pending::PendingRegistrationPhase::Prepared
+                ),
+                (
+                    false,
+                    crate::internal::identity_registration_pending::PendingRegistrationPhase::Prepared
+                ),
+            ]
         );
     }
 
@@ -2073,7 +2224,7 @@ mod tests {
             original.device_e2ee_key_id
         );
         assert_ne!(expired_pending.document_hash, original_hash);
-        assert_eq!(persisted, vec![true, false, true]);
+        assert_eq!(persisted, vec![true, false, true, false]);
     }
 
     #[test]

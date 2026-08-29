@@ -2,6 +2,217 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OwnerDeleteTable {
+    pub(crate) table: &'static str,
+    pub(crate) delete_owner_dids: bool,
+}
+
+pub(crate) const OWNER_BUSINESS_DELETE_TABLES: &[OwnerDeleteTable] = &[
+    OwnerDeleteTable {
+        table: "attachment_manifest_cache",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "contact_handle_bindings",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "contacts",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "conversation_aliases",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "conversation_registry",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "conversation_summaries",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "did_transition_edges",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "direct_e2ee_one_time_prekeys",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "direct_e2ee_sessions",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "direct_e2ee_signed_prekeys",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "direct_peer_routes",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "e2ee_outbox",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "group_members",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "group_rebind_outbox",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "group_rebind_p6_jobs",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "groups",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "identity_root_import_completion_v1",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "identity_root_transfer_sender_v1",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "inbound_resolution_backlog",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "inbound_resolution_thread_bindings",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "lane_sync_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "local_mutation_outbox",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "message_identity_aliases",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "message_sync_run_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "message_sync_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "messages",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "p6_lane_blockers",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "peer_identifiers",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "peer_personas",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "peer_profiles",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "relationship_events",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "sync_applied_events",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_installation_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_lane_applied_events",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_lane_capability_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_lane_inbox",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_lane_transport_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_p5_did_cutovers",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_p5_input_outcomes",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_p6_input_outcomes",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_p6_legacy_migration_repairs",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_recovery_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_remote_read_states",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_state",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "sync_thread_bindings",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
+        table: "system_notification_join_state",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "system_notification_receipts",
+        delete_owner_dids: true,
+    },
+    OwnerDeleteTable {
+        table: "thread_read_state",
+        delete_owner_dids: true,
+    },
+];
+
+pub(crate) const OWNER_DEDICATED_DELETE_TABLES: &[&str] =
+    &["identity_did_history", "identity_account_bindings"];
+
+pub(crate) const OWNER_CONTROL_PRESERVE_TABLES: &[&str] = &[
+    "handle_recovery_operations_v4",
+    "identity_transition_pending",
+    "registration_retired_join_rollovers",
+    "local_identity_deletions",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwnerScope {
     pub(crate) owner_identity_id: String,
@@ -64,6 +275,20 @@ pub(crate) fn delete_owner_data(
     let transaction = connection
         .transaction()
         .map_err(super::local_state_unavailable)?;
+    let deleted = delete_owner_data_in_transaction(&transaction, &owner_identity_id, &current_did)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(deleted)
+}
+
+pub(crate) fn delete_owner_data_in_transaction(
+    transaction: &rusqlite::Connection,
+    owner_identity_id: &str,
+    current_did: &str,
+) -> crate::ImResult<usize> {
+    let owner_identity_id = OwnerScope::require_identity_id(owner_identity_id.to_owned())?;
+    let current_did = require_non_empty("owner_did", current_did.to_owned())?;
     transaction
         .pragma_update(None, "defer_foreign_keys", "ON")
         .map_err(super::local_state_unavailable)?;
@@ -84,42 +309,47 @@ pub(crate) fn delete_owner_data(
         }
     }
 
-    let tables = user_tables(&transaction)?;
     let mut deleted = 0usize;
-    for table in &tables {
-        if table_has_column(&transaction, table, "owner_identity_id")? {
-            deleted += transaction
-                .execute(
-                    &format!(
-                        "DELETE FROM {} WHERE owner_identity_id=?1",
-                        quote_identifier(table)
-                    ),
-                    [owner_identity_id.as_str()],
-                )
-                .map_err(super::local_state_unavailable)?;
+    for spec in OWNER_BUSINESS_DELETE_TABLES {
+        deleted += transaction
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE owner_identity_id=?1",
+                    quote_identifier(spec.table)
+                ),
+                [owner_identity_id.as_str()],
+            )
+            .map_err(super::local_state_unavailable)?;
+        if spec.delete_owner_dids {
+            for did in &owner_dids {
+                deleted += transaction
+                    .execute(
+                        &format!(
+                            "DELETE FROM {} WHERE owner_did=?1 AND (owner_identity_id IS NULL OR owner_identity_id=?2)",
+                            quote_identifier(spec.table)
+                        ),
+                        rusqlite::params![did, owner_identity_id],
+                    )
+                    .map_err(super::local_state_unavailable)?;
+            }
         }
     }
-    for table in &tables {
-        if table_has_column(&transaction, table, "owner_identity_id")?
-            || !table_has_column(&transaction, table, "owner_did")?
-        {
-            continue;
-        }
-        for did in &owner_dids {
-            deleted += transaction
-                .execute(
-                    &format!("DELETE FROM {} WHERE owner_did=?1", quote_identifier(table)),
-                    [did.as_str()],
-                )
-                .map_err(super::local_state_unavailable)?;
-        }
-    }
-    transaction
-        .commit()
+    deleted += transaction
+        .execute(
+            "DELETE FROM identity_did_history WHERE owner_identity_id=?1",
+            [owner_identity_id.as_str()],
+        )
+        .map_err(super::local_state_unavailable)?;
+    deleted += transaction
+        .execute(
+            "DELETE FROM identity_account_bindings WHERE owner_identity_id=?1",
+            [owner_identity_id.as_str()],
+        )
         .map_err(super::local_state_unavailable)?;
     Ok(deleted)
 }
 
+#[cfg(test)]
 fn user_tables(connection: &rusqlite::Connection) -> crate::ImResult<Vec<String>> {
     let mut statement = connection
         .prepare(
@@ -429,7 +659,7 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            0,
+            1,
         );
         assert_eq!(
             connection
@@ -441,5 +671,135 @@ mod tests {
                 .unwrap(),
             1,
         );
+    }
+
+    #[test]
+    fn owner_table_classification_is_complete_and_disjoint() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        super::super::schema::ensure_schema(&connection).unwrap();
+        let mut classified = std::collections::BTreeMap::<&str, usize>::new();
+        for spec in OWNER_BUSINESS_DELETE_TABLES {
+            *classified.entry(spec.table).or_default() += 1;
+        }
+        for table in OWNER_DEDICATED_DELETE_TABLES {
+            *classified.entry(table).or_default() += 1;
+        }
+        for table in OWNER_CONTROL_PRESERVE_TABLES {
+            *classified.entry(table).or_default() += 1;
+        }
+        let mut discovered = std::collections::BTreeSet::new();
+        for table in user_tables(&connection).unwrap() {
+            let has_owner_id = table_has_column(&connection, &table, "owner_identity_id").unwrap();
+            let has_owner_did = table_has_column(&connection, &table, "owner_did").unwrap();
+            if has_owner_id || has_owner_did {
+                discovered.insert(table);
+            }
+        }
+        assert_eq!(
+            discovered,
+            classified.keys().map(|table| (*table).to_owned()).collect()
+        );
+        assert!(classified.values().all(|count| *count == 1));
+    }
+
+    #[test]
+    fn owner_data_delete_never_deletes_control_tables() {
+        let directory = tempfile::tempdir().unwrap();
+        let sqlite_path = directory.path().join("local-state.sqlite");
+        let connection = super::super::open_writable(&sqlite_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO handle_recovery_operations_v4(operation_id,owner_identity_id,full_handle,lifecycle_class,commit_attempted,key_state,vault_key_id,created_at,updated_at) VALUES ('op-a','alice-owner','alice.example.invalid','discarded_pre_attempt',0,'destroyed_pre_attempt','vault-a','now','now')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,current_device_id,device_auth_generation,registry_version,applied_at,metadata_json,phase,created_at,updated_at) VALUES ('transition-a',1,'4.0','sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','initiator','op-a','sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB','account-a','alice-owner','alice.example.invalid','did:example:alice-old','did:example:alice','2','device-a','2','2','now','{}','completed','now','now')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO registration_retired_join_rollovers(join_session_id,schema_version,account_user_id,owner_identity_id,handle,retired_did,retired_device_id,retired_binding_generation,current_did,current_binding_generation,new_device_id,join_expires_at,completed_auth_generation,phase,created_at,updated_at,completed_at) VALUES ('join-a',1,'account-a','alice-owner','alice.example.invalid','did:example:alice-old','device-old','1','did:example:alice','2','device-new','2099-01-01T00:00:00Z','2','completed','now','now','now')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO local_identity_deletions(deletion_id,schema_version,mode,owner_identity_id,current_did,full_handle,local_alias,phase,created_at,updated_at) VALUES ('delete-a',1,'full_data_app','alice-owner','did:example:alice','alice.example.invalid','alice','prepared','2026-08-29T00:00:00Z','2026-08-29T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "CREATE TABLE future_owner_state(owner_identity_id TEXT NOT NULL,value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO future_owner_state(owner_identity_id,value) VALUES ('alice-owner','preserve')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        delete_owner_data(&sqlite_path, "alice-owner", "did:example:alice").unwrap();
+        let connection = super::super::open_writable(&sqlite_path).unwrap();
+        for table in OWNER_CONTROL_PRESERVE_TABLES {
+            assert_eq!(
+                connection
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM {} WHERE owner_identity_id='alice-owner'",
+                            quote_identifier(table)
+                        ),
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1,
+                "{table}",
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM future_owner_state WHERE owner_identity_id='alice-owner'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn binding_delete_has_no_control_table_cascade() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        super::super::schema::ensure_schema(&connection).unwrap();
+        for table in OWNER_CONTROL_PRESERVE_TABLES {
+            let mut statement = connection
+                .prepare(&format!(
+                    "PRAGMA foreign_key_list({})",
+                    quote_identifier(table)
+                ))
+                .unwrap();
+            let foreign_keys = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(2)?, row.get::<_, String>(6)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                foreign_keys.iter().all(|(target, on_delete)| {
+                    target != "identity_account_bindings"
+                        || !on_delete.eq_ignore_ascii_case("cascade")
+                }),
+                "{table}",
+            );
+        }
     }
 }

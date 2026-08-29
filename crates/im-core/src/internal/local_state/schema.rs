@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 37;
+pub(crate) const SCHEMA_VERSION: i64 = 39;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -16,6 +16,8 @@ const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
 const INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION: i64 = 35;
 const HANDLE_RECOVERY_V4_SCHEMA_VERSION: i64 = 36;
 const DID_TRANSITION_EDGE_SCHEMA_VERSION: i64 = 37;
+const RETIRED_REGISTRATION_JOIN_SCHEMA_VERSION: i64 = 38;
+const LOCAL_IDENTITY_DELETION_SCHEMA_VERSION: i64 = 39;
 const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
     "identity_account_bindings",
     "message_sync_state",
@@ -1045,19 +1047,39 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == DID_TRANSITION_EDGE_SCHEMA_VERSION {
+        if schema_v37_shape_is_complete(connection)? {
+            return migrate_v37_to_v38(connection);
+        }
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete DID transition edge shape"
+            ),
+        });
+    }
+    if version == RETIRED_REGISTRATION_JOIN_SCHEMA_VERSION {
+        if schema_v38_shape_is_complete(connection)? {
+            return migrate_v38_to_v39(connection);
+        }
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete retired registration Join shape"
+            ),
+        });
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
             target_version: SCHEMA_VERSION,
         });
     }
-    if version == DID_TRANSITION_EDGE_SCHEMA_VERSION {
+    if version == LOCAL_IDENTITY_DELETION_SCHEMA_VERSION {
         if current_schema_shape_is_complete(connection)? {
             return Ok(());
         }
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
-                "sqlite schema version {version} has an incomplete DID transition edge shape"
+                "sqlite schema version {version} has an incomplete local identity deletion shape"
             ),
         });
     }
@@ -1226,10 +1248,12 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
         )
         .map_err(super::local_state_unavailable)?;
     // Continue directly into the additive schema-37 cache so one open always
-    // reaches the current head without exposing schema 36 as an intermediate
-    // successful result.
+    // reaches the current head without exposing schema 36 or 37 as an
+    // intermediate successful result.
     super::did_transition_edges::create_schema(&transaction)?;
-    set_schema_version(&transaction, DID_TRANSITION_EDGE_SCHEMA_VERSION)?;
+    create_retired_registration_join_schema(&transaction)?;
+    create_local_identity_deletion_schema(&transaction)?;
+    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1246,8 +1270,87 @@ fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
     super::did_transition_edges::create_schema(&transaction)?;
-    set_schema_version(&transaction, DID_TRANSITION_EDGE_SCHEMA_VERSION)?;
+    create_retired_registration_join_schema(&transaction)?;
+    create_local_identity_deletion_schema(&transaction)?;
+    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v37_to_v38(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != DID_TRANSITION_EDGE_SCHEMA_VERSION
+        || !schema_v37_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail:
+                "sqlite schema v37 must be complete before adding retired registration Join state"
+                    .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    create_retired_registration_join_schema(&transaction)?;
+    create_local_identity_deletion_schema(&transaction)?;
+    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v38_to_v39(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != RETIRED_REGISTRATION_JOIN_SCHEMA_VERSION
+        || !schema_v38_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail:
+                "sqlite schema v38 must be complete before adding local identity deletion state"
+                    .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    create_local_identity_deletion_schema(&transaction)?;
+    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn create_retired_registration_join_schema(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch(
+            crate::internal::identity_registration_retired_join::RETIRED_JOIN_ROLLOVER_TABLE_SQL,
+        )
+        .map_err(super::local_state_unavailable)?;
+    #[cfg(test)]
+    if FAIL_SCHEMA_38_AFTER_TABLE_CREATE.with(|fail| fail.replace(false)) {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "injected schema 38 migration failure".to_owned(),
+        });
+    }
+    connection
+        .execute_batch(
+            crate::internal::identity_registration_retired_join::RETIRED_JOIN_ROLLOVER_INDEX_SQL,
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn create_local_identity_deletion_schema(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch(crate::internal::identity_local_deletion::LOCAL_IDENTITY_DELETION_TABLE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    #[cfg(test)]
+    if FAIL_SCHEMA_39_AFTER_TABLE_CREATE.with(|fail| fail.replace(false)) {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "injected schema 39 migration failure".to_owned(),
+        });
+    }
+    connection
+        .execute_batch(crate::internal::identity_local_deletion::LOCAL_IDENTITY_DELETION_INDEX_SQL)
+        .map_err(super::local_state_unavailable)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_SCHEMA_38_AFTER_TABLE_CREATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_SCHEMA_39_AFTER_TABLE_CREATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn validate_divergent_schema_shape(connection: &Connection, version: i64) -> crate::ImResult<()> {
@@ -1379,10 +1482,26 @@ fn schema_v36_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
     Ok(true)
 }
 
-fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+fn schema_v37_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     Ok(schema_v36_shape_is_complete(connection)?
         && has_table(connection, "did_transition_edges")?
         && has_index(connection, "idx_did_transition_edges_owner_successor")?)
+}
+
+fn schema_v38_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(schema_v37_shape_is_complete(connection)?
+        && has_table(connection, "registration_retired_join_rollovers")?
+        && has_index(
+            connection,
+            "registration_retired_join_rollovers_owner_phase_idx",
+        )?)
+}
+
+fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(schema_v38_shape_is_complete(connection)?
+        && has_table(connection, "local_identity_deletions")?
+        && has_index(connection, "local_identity_deletions_active_owner_idx")?
+        && has_index(connection, "local_identity_deletions_handle_phase_idx")?)
 }
 
 fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {
@@ -1452,6 +1571,22 @@ pub(super) fn create_schema(
         .execute_batch(
             crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,
         )
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(
+            crate::internal::identity_registration_retired_join::RETIRED_JOIN_ROLLOVER_TABLE_SQL,
+        )
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(
+            crate::internal::identity_registration_retired_join::RETIRED_JOIN_ROLLOVER_INDEX_SQL,
+        )
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(crate::internal::identity_local_deletion::LOCAL_IDENTITY_DELETION_TABLE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(crate::internal::identity_local_deletion::LOCAL_IDENTITY_DELETION_INDEX_SQL)
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)

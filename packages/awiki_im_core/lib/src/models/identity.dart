@@ -525,6 +525,18 @@ class DeleteLocalIdentityResult {
   final List<String> warnings;
 }
 
+class LocalIdentityDeletionTicket {
+  const LocalIdentityDeletionTicket({
+    required this.deletionId,
+    required this.ownerIdentityId,
+    required this.currentDid,
+  });
+
+  final String deletionId;
+  final String ownerIdentityId;
+  final String currentDid;
+}
+
 class DaemonSubkeyPublicProposal {
   const DaemonSubkeyPublicProposal({
     required this.userDid,
