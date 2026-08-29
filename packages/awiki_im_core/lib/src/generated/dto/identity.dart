@@ -1390,6 +1390,31 @@ sealed class DartLegacyUpgradeStatus with _$DartLegacyUpgradeStatus {
       DartLegacyUpgradeStatus_Completed;
 }
 
+class DartLocalIdentityDeletionTicket {
+  final String deletionId;
+  final String ownerIdentityId;
+  final String currentDid;
+
+  const DartLocalIdentityDeletionTicket({
+    required this.deletionId,
+    required this.ownerIdentityId,
+    required this.currentDid,
+  });
+
+  @override
+  int get hashCode =>
+      deletionId.hashCode ^ ownerIdentityId.hashCode ^ currentDid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartLocalIdentityDeletionTicket &&
+          runtimeType == other.runtimeType &&
+          deletionId == other.deletionId &&
+          ownerIdentityId == other.ownerIdentityId &&
+          currentDid == other.currentDid;
+}
+
 /// Closed, secret-free public error returned by root-transfer host APIs.
 class DartRootKeyTransferError implements FrbException {
   final String code;

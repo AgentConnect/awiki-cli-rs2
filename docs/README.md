@@ -9,6 +9,7 @@
 3. `architecture/identity-secret-storage.md`：端侧 identity SecretVault、CLI/App/daemon root key、私钥/JWT/E2EE local secret 加密持久化边界。
 4. `architecture/awiki-command-v2.md` 与 `architecture/output-format.md`：CLI 命令面与结构化输出契约。
 5. `installation.md`：本地构建、配置、工作区和常见运行方式。
+5b. `configuration.md` / `configuration.zh-CN.md`：CLI / daemon / im-core 权威配置表（标识符、来源、作用、默认值）。
 6. `publish.md`：本地/服务器构建、文件服务 staging 和回滚流程。
 7. `api/im-core-public-api.md` 与 `api/im-core-interface/*`：SDK API / interface 规格；只有 API 变化时才修改。
 
@@ -38,6 +39,7 @@
 ### 功能与使用说明
 
 - `installation.md`：安装、配置、工作区、runtime 和常见问题。
+- `configuration.md` / `configuration.zh-CN.md`：运行时与编译开关清单。
 - `flutter-sdk/awiki-im-core-flutter-sdk.md`：Flutter/Dart SDK 使用与边界。
 - `flutter-sdk/awiki-me-future-integration.md`：未来接入 `awiki-me` 的建议。
 - `node-sdk/dsh-device-join-extension.md`：DSH 新设备加入与 ready-admin 设备管理所需的 Node

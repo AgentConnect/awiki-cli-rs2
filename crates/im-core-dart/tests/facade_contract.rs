@@ -1207,6 +1207,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     assert!(mapped.multi_device_direct_e2ee_enabled);
     assert!(mapped.multi_device_group_e2ee_enabled);
     assert!(mapped.multi_device_handle_recovery_enabled);
+    assert!(mapped.did_transition_vnext_hidden_rollout_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
         vault.vault_dir,

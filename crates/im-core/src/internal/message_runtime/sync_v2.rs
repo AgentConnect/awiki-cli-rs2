@@ -275,7 +275,7 @@ async fn consume_p5_lane_input(
     let peer_scope = metadata.sender_did.clone();
     let expected_peer_did =
         p5_expected_decryption_peer(&metadata.sender_did, &metadata.target.did).map(str::to_owned);
-    let trusted_delivery = p5_reliable_delivery_context(&metadata, &input.raw_payload);
+    let trusted_delivery = p5_reliable_delivery_context(&metadata, &input.raw_payload)?;
     let now = unix_time_i64();
     if metadata.target.did != client.did().as_str() {
         let cutover = db
@@ -353,7 +353,7 @@ async fn consume_p5_lane_input(
         metadata,
         body,
         expected_peer_did.as_deref(),
-        trusted_delivery.as_ref(),
+        Some(&trusted_delivery),
         move |transaction, outcome| {
             let own_sync_target = match outcome {
                 crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(
@@ -468,17 +468,19 @@ fn p5_committed_domain_scope(fallback: &str, own_sync_target: Option<&str>) -> S
 fn p5_reliable_delivery_context(
     metadata: &anp::direct_e2ee::V2DirectMetadata,
     raw_payload: &Value,
-) -> Option<crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext> {
+) -> crate::ImResult<crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext>
+{
     let accepted_at = raw_payload
         .get("accepted_at")
         .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_owned);
     crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext::from_stored_message(
         metadata,
         accepted_at,
         crate::internal::identity_root_import_completion::TrustedDirectDeliverySource::ReliableSync,
     )
-    .ok()
 }
 
 fn p5_failure_domain_state(
@@ -4902,38 +4904,10 @@ mod tests {
         stream_epoch: &str,
         snapshot_scan_seq: &str,
     ) -> Value {
-        let mut sync_capabilities: Vec<&str> = Vec::new();
-        let mut lanes = serde_json::Map::new();
-        #[cfg(feature = "secure-direct")]
-        {
-            sync_capabilities.push(crate::internal::wire::sync_v2::SYNC_CAPABILITY_P5_DEVICE_V1);
-            lanes.insert(
-                "p5_device".to_owned(),
-                json!({
-                    "cursor": {"stream_epoch": "41", "scan_seq": "0"},
-                    "committed_seq": "0"
-                }),
-            );
-        }
-        #[cfg(feature = "group-e2ee")]
-        {
-            sync_capabilities.push(crate::internal::wire::sync_v2::SYNC_CAPABILITY_P6_GROUP_V1);
-            sync_capabilities
-                .push(crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1);
-            lanes.insert(
-                "p6_group".to_owned(),
-                json!({
-                    "cursor": {"stream_epoch": "42", "scan_seq": "0"},
-                    "committed_seq": "0"
-                }),
-            );
-        }
         let mut response = json!({
             "mode": "compact_recovery_required",
             "account_id": binding.account_id,
             "device_id": binding.protocol_device_id,
-            "sync_capabilities": sync_capabilities,
-            "lanes": lanes,
             "recovery": {
                 "recovery_id": recovery_id,
                 "token": token,
@@ -4944,14 +4918,7 @@ mod tests {
                 "expires_at": "2026-07-28T12:10:03Z"
             }
         });
-        #[cfg(feature = "group-e2ee")]
-        {
-            response["p6_delivery"] = json!({
-                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
-                "client_instance_id": client_instance_id,
-                "activated": true
-            });
-        }
+        add_enabled_lane_bootstrap(&mut response, client_instance_id, "41", "42");
         response
     }
 
@@ -5030,6 +4997,62 @@ mod tests {
             "recovery": null,
             "warnings": []
         })
+    }
+
+    fn explicit_sync_negotiation_response() -> Value {
+        json!({
+            "supported_profiles": [
+                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
+            ]
+        })
+    }
+
+    fn add_enabled_lane_bootstrap(
+        response: &mut Value,
+        client_instance_id: &str,
+        p5_stream_epoch: &str,
+        p6_stream_epoch: &str,
+    ) {
+        #[allow(unused_mut)]
+        let mut capabilities = Vec::new();
+        #[allow(unused_mut)]
+        let mut lanes = serde_json::Map::new();
+        #[cfg(feature = "secure-direct")]
+        {
+            capabilities.push(json!(
+                crate::internal::wire::sync_v2::SYNC_CAPABILITY_P5_DEVICE_V1
+            ));
+            lanes.insert(
+                "p5_device".to_owned(),
+                json!({
+                    "cursor": {"stream_epoch": p5_stream_epoch, "scan_seq": "0"},
+                    "committed_seq": "0"
+                }),
+            );
+        }
+        #[cfg(feature = "group-e2ee")]
+        {
+            capabilities.push(json!(
+                crate::internal::wire::sync_v2::SYNC_CAPABILITY_P6_GROUP_V1
+            ));
+            lanes.insert(
+                "p6_group".to_owned(),
+                json!({
+                    "cursor": {"stream_epoch": p6_stream_epoch, "scan_seq": "0"},
+                    "committed_seq": "0"
+                }),
+            );
+            response["p6_delivery"] = json!({
+                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
+                "client_instance_id": client_instance_id,
+                "activated": true
+            });
+        }
+        if !capabilities.is_empty() {
+            response["sync_capabilities"] = Value::Array(capabilities);
+            response["lanes"] = Value::Object(lanes);
+        }
+        let _ = (client_instance_id, p5_stream_epoch, p6_stream_epoch);
     }
 
     fn sync_snapshot_delta_with_lanes(
@@ -5862,11 +5885,7 @@ mod tests {
         let transport = SyncSnapshotTransport::queued(
             Rc::clone(&calls),
             vec![
-                Ok(json!({
-                    "supported_profiles": [
-                        crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                    ]
-                })),
+                Ok(explicit_sync_negotiation_response()),
                 Ok(json!({
                     "mode": "tail_only",
                     "account_id": binding.account_id,
@@ -6353,7 +6372,6 @@ END;
             &json!({"accepted_at": "2026-08-28T00:00:00Z"}),
         )
         .expect("a committed lane envelope is an authenticated reliable delivery");
-
         assert_eq!(
             context.source,
             crate::internal::identity_root_import_completion::TrustedDirectDeliverySource::ReliableSync
@@ -6362,6 +6380,8 @@ END;
         assert_eq!(context.message_id, "root-message-1");
         assert_eq!(context.sender_device_id, "device-a");
         assert_eq!(context.recipient_device_id, "device-b");
+        let ordinary_compatible = p5_reliable_delivery_context(&metadata, &json!({})).unwrap();
+        assert_eq!(ordinary_compatible.accepted_at, None);
     }
 
     #[test]
@@ -6688,11 +6708,10 @@ END;
         assert!(!transient_exhausted.retryable);
     }
 
+    #[cfg(feature = "secure-direct")]
     #[tokio::test]
     async fn upgraded_client_negotiates_lane_capabilities_before_first_delta() {
-        use crate::internal::wire::sync_v2::{
-            SyncLaneV3, SYNC_CAPABILITY_P5_DEVICE_V1, SYNC_CAPABILITY_P6_GROUP_V1,
-        };
+        use crate::internal::wire::sync_v2::SyncLaneV3;
 
         let fixture = SyncSnapshotFixture::new("lane-capability-upgrade");
         let client = fixture.client();
@@ -6706,7 +6725,7 @@ END;
             .await
             .unwrap();
         seed_legacy_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
-        let bootstrap = json!({
+        let mut bootstrap = json!({
             "mode": "tail_only",
             "account_id": binding.account_id,
             "device_id": binding.protocol_device_id,
@@ -6715,27 +6734,8 @@ END;
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
-            "p6_delivery": {
-                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
-                "client_instance_id": client_instance_id,
-                "activated": true
-            },
-            "sync_capabilities": [
-                SYNC_CAPABILITY_P5_DEVICE_V1,
-                SYNC_CAPABILITY_P6_GROUP_V1,
-                crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1
-            ],
-            "lanes": {
-                "p5_device": {
-                    "cursor": {"stream_epoch": "41", "scan_seq": "0"},
-                    "committed_seq": "0"
-                },
-                "p6_group": {
-                    "cursor": {"stream_epoch": "42", "scan_seq": "0"},
-                    "committed_seq": "0"
-                }
-            }
         });
+        add_enabled_lane_bootstrap(&mut bootstrap, &client_instance_id, "41", "42");
         let delta = sync_snapshot_delta_with_lanes(
             "1",
             "10",
@@ -6760,11 +6760,7 @@ END;
             SyncSnapshotTransport::queued(
                 Rc::clone(&calls),
                 vec![
-                    Ok(json!({
-                        "supported_profiles": [
-                            crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                        ]
-                    })),
+                    Ok(explicit_sync_negotiation_response()),
                     Ok(bootstrap),
                     Ok(delta),
                 ],
@@ -6843,7 +6839,7 @@ END;
         );
     }
 
-    #[cfg(feature = "group-e2ee")]
+    #[cfg(all(feature = "secure-direct", feature = "group-e2ee"))]
     #[tokio::test]
     async fn domain_poison_p5_commits_handoff_without_blocking_ordinary_or_p6() {
         use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -6919,20 +6915,26 @@ END;
         drain_pending_secure_lane_consumers(&client, 64)
             .await
             .unwrap();
-        let domain_states = client
+        let p5_domain = client
             .core_inner()
             .local_state_db()
             .await
             .unwrap()
             .load_sync_lane_domain_states(binding.owner_identity_id.clone())
             .await
+            .unwrap()
+            .into_iter()
+            .find(|state| state.operation_ref.as_deref() == Some("p5-poison-1"))
             .unwrap();
-        assert!(domain_states.iter().any(|state| {
-            state.lane == SyncLaneV3::P5Device
-                && state.status
-                    == crate::internal::local_state::sync_v2::SyncLaneDomainStatus::Terminal
-                && state.last_error_code.as_deref() == Some("p5.malformed_input")
-        }));
+        assert_eq!(
+            p5_domain.status,
+            crate::internal::local_state::sync_v2::SyncLaneDomainStatus::Terminal
+        );
+        assert!(!p5_domain.retryable);
+        assert_eq!(
+            p5_domain.last_error_code.as_deref(),
+            Some("p5.malformed_input")
+        );
         {
             let calls = calls.borrow();
             let request = &calls[0].params;
@@ -8186,11 +8188,7 @@ END;
             SyncSnapshotTransport::queued(
                 Rc::clone(&calls),
                 vec![
-                    Ok(json!({
-                        "supported_profiles": [
-                            crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                        ]
-                    })),
+                    Ok(explicit_sync_negotiation_response()),
                     Ok(sync_snapshot_bootstrap_recovery(
                         &binding,
                         &client_instance_id,
@@ -9069,11 +9067,10 @@ END;
         );
     }
 
+    #[cfg(feature = "secure-direct")]
     #[tokio::test]
     async fn device_epoch_refresh_revalidates_p5_lane_epoch_before_retry() {
-        use crate::internal::wire::sync_v2::{
-            SyncLaneV3, SYNC_CAPABILITY_P5_DEVICE_V1, SYNC_CAPABILITY_P6_GROUP_V1,
-        };
+        use crate::internal::wire::sync_v2::SyncLaneV3;
 
         let fixture = SyncSnapshotFixture::new("device-epoch-p5-lane-refresh");
         let client = fixture.client();
@@ -9097,7 +9094,7 @@ END;
             message: "device authorization epoch is stale".to_owned(),
             data: None,
         };
-        let lane_bootstrap = json!({
+        let mut lane_bootstrap = json!({
             "mode": "tail_only",
             "account_id": binding.account_id,
             "device_id": binding.protocol_device_id,
@@ -9106,27 +9103,8 @@ END;
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
-            "p6_delivery": {
-                "profile": crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1,
-                "client_instance_id": client_instance_id,
-                "activated": true
-            },
-            "sync_capabilities": [
-                SYNC_CAPABILITY_P5_DEVICE_V1,
-                SYNC_CAPABILITY_P6_GROUP_V1,
-                crate::internal::wire::sync_v2::P6_DELIVERY_CONTEXT_CAPABILITY_V1
-            ],
-            "lanes": {
-                "p5_device": {
-                    "cursor": {"stream_epoch": "51", "scan_seq": "0"},
-                    "committed_seq": "0"
-                },
-                "p6_group": {
-                    "cursor": {"stream_epoch": "52", "scan_seq": "0"},
-                    "committed_seq": "0"
-                }
-            }
         });
+        add_enabled_lane_bootstrap(&mut lane_bootstrap, &client_instance_id, "51", "52");
         let retry_delta = sync_snapshot_delta_with_lanes(
             "1",
             "10",
@@ -9155,11 +9133,7 @@ END;
                     Rc::clone(&calls),
                     vec![
                         Err(rejected),
-                        Ok(json!({
-                            "supported_profiles": [
-                                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                            ]
-                        })),
+                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Ok(retry_delta),
                     ],

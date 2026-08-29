@@ -194,35 +194,61 @@ test("Android builds remove every generated shared library before compiling", ()
   assert.match(source, /find "\$\{OUT_DIR\}" -type f -name "\*\.so" -delete/);
 });
 
-test("Android native IM Core includes group E2EE support", () => {
+test("Linux native IM Core includes group E2EE and secure-direct support", () => {
+  const source = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-linux.sh"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /--features blocking,sqlite,http,linux,group-e2ee,secure-direct,identity-native-anp/,
+  );
+});
+
+test("Android native IM Core includes group E2EE and secure-direct support", () => {
   const source = fs.readFileSync(
     path.join(root, "scripts/flutter/build-android.sh"),
     "utf8",
   );
   assert.match(
     source,
-    /--features blocking,sqlite,http,android,group-e2ee,identity-native-anp/,
+    /--features blocking,sqlite,http,android,group-e2ee,secure-direct,identity-native-anp/,
   );
 });
 
-test("iOS native IM Core includes group E2EE support", () => {
+test("iOS native IM Core includes group E2EE and secure-direct support", () => {
   const source = fs.readFileSync(
     path.join(root, "scripts/flutter/build-apple.sh"),
     "utf8",
   );
   assert.equal(
-    source.match(/blocking,sqlite,http,ios,group-e2ee,identity-native-anp/g)?.length,
+    source.match(
+      /blocking,sqlite,http,ios,group-e2ee,secure-direct,identity-native-anp/g,
+    )?.length,
     2,
   );
 });
 
-test("Windows native IM Core includes group E2EE support", () => {
+test("macOS native IM Core includes group E2EE and secure-direct support", () => {
+  const source = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-apple.sh"),
+    "utf8",
+  );
+  assert.equal(
+    source.match(
+      /blocking,sqlite,http,macos,group-e2ee,secure-direct,identity-native-anp/g,
+    )?.length,
+    2,
+  );
+});
+
+test("Windows native IM Core includes group E2EE and secure-direct support", () => {
   const source = fs.readFileSync(
     path.join(root, "scripts/flutter/build-windows.ps1"),
     "utf8",
   );
   assert.match(
     source,
-    /\$Features = 'blocking,sqlite,http,windows,group-e2ee,identity-native-anp'/,
+    /\$Features = 'blocking,sqlite,http,windows,group-e2ee,secure-direct,identity-native-anp'/,
   );
 });

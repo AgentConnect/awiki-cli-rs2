@@ -873,6 +873,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartLegacyUpgradeStatus dco_decode_dart_legacy_upgrade_status(dynamic raw);
 
   @protected
+  DartLocalIdentityDeletionTicket
+  dco_decode_dart_local_identity_deletion_ticket(dynamic raw);
+
+  @protected
   DartLocalStateConversationAliasMapping
   dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw);
 
@@ -1183,6 +1187,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
+
+  @protected
+  List<DartLocalIdentityDeletionTicket>
+  dco_decode_list_dart_local_identity_deletion_ticket(dynamic raw);
 
   @protected
   List<DartLocalStateConversationAliasMapping>
@@ -2364,6 +2372,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartLocalIdentityDeletionTicket
+  sse_decode_dart_local_identity_deletion_ticket(SseDeserializer deserializer);
+
+  @protected
   DartLocalStateConversationAliasMapping
   sse_decode_dart_local_state_conversation_alias_mapping(
     SseDeserializer deserializer,
@@ -2770,6 +2782,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartLocalIdentityDeletionTicket>
+  sse_decode_list_dart_local_identity_deletion_ticket(
     SseDeserializer deserializer,
   );
 
@@ -4164,6 +4182,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_local_identity_deletion_ticket(
+    DartLocalIdentityDeletionTicket self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_local_state_conversation_alias_mapping(
     DartLocalStateConversationAliasMapping self,
     SseSerializer serializer,
@@ -4661,6 +4685,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_identity_summary(
     List<DartIdentitySummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_local_identity_deletion_ticket(
+    List<DartLocalIdentityDeletionTicket> self,
     SseSerializer serializer,
   );
 

@@ -419,8 +419,154 @@ fn mark_new_device_join_authorized(
     stored.phase = DeviceJoinLocalPhase::Authorized;
     stored.activation_pending = false;
     stored.join_session_token_ref = None;
+    stored.remote_create_state = RemoteCreateState::UnknownLegacy;
     store.save(&stored).unwrap();
     stored
+}
+
+fn rewrite_join_state_as_legacy_v2(
+    core: &crate::ImCore,
+    join_session_id: &str,
+    side: DeviceJoinSide,
+) {
+    let path = JoinStateStore::new(core).path(join_session_id, side);
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let object = value.as_object_mut().unwrap();
+    object.insert("schema_version".to_owned(), Value::from(2));
+    object.remove("remote_create_state");
+    object.remove("terminal_evidence");
+    std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+async fn start_schema_v3_test_join(
+    core: &crate::ImCore,
+    operation_id: &str,
+) -> DeviceJoinStartResult {
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.test",
+        operation_id,
+        None,
+        None,
+    )
+    .unwrap();
+    core.device_join()
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: operation_id.to_owned(),
+                did: generated.did,
+                ttl_seconds: 300,
+            },
+            &generated.did_document,
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn join_state_v3_migrates_v2_token_session_to_bound() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let started = start_schema_v3_test_join(&core, "schema-v2-token").await;
+    mark_new_device_remote_create_attempting(&core, &started.session.join_session_id).unwrap();
+    bind_new_device_remote_session(
+        &core,
+        &started.session.join_session_id,
+        &SecretBytes::from_vec(b"legacy-token".to_vec()),
+        &started.session.expires_at,
+    )
+    .unwrap();
+    rewrite_join_state_as_legacy_v2(
+        &core,
+        &started.session.join_session_id,
+        DeviceJoinSide::NewDevice,
+    );
+
+    let store = JoinStateStore::new(&core);
+    let migrated = store
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    assert_eq!(migrated.schema_version, JOIN_STATE_SCHEMA_VERSION);
+    assert_eq!(migrated.remote_create_state, RemoteCreateState::Bound);
+    assert_eq!(migrated.terminal_evidence, None);
+    let rewritten: Value = serde_json::from_slice(
+        &std::fs::read(store.path(&started.session.join_session_id, DeviceJoinSide::NewDevice))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rewritten["schema_version"], JOIN_STATE_SCHEMA_VERSION);
+    assert_eq!(rewritten["remote_create_state"], "bound");
+    assert!(rewritten.get("terminal_evidence").is_some());
+}
+
+#[tokio::test]
+async fn join_state_v3_migrates_v2_tokenless_session_to_unknown_legacy() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let started = start_schema_v3_test_join(&core, "schema-v2-tokenless").await;
+    rewrite_join_state_as_legacy_v2(
+        &core,
+        &started.session.join_session_id,
+        DeviceJoinSide::NewDevice,
+    );
+
+    let migrated = JoinStateStore::new(&core)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        migrated.remote_create_state,
+        RemoteCreateState::UnknownLegacy
+    );
+    assert_eq!(migrated.terminal_evidence, None);
+}
+
+#[tokio::test]
+async fn join_state_v3_migrates_legacy_terminal_to_unverified_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let started = start_schema_v3_test_join(&core, "schema-v2-terminal").await;
+    cancel_join(
+        &core,
+        &started.session.join_session_id,
+        DeviceJoinSide::NewDevice,
+        JoinTerminalEvidence::LocalOnlyAbort,
+    )
+    .await
+    .unwrap();
+    rewrite_join_state_as_legacy_v2(
+        &core,
+        &started.session.join_session_id,
+        DeviceJoinSide::NewDevice,
+    );
+
+    let migrated = JoinStateStore::new(&core)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        migrated.remote_create_state,
+        RemoteCreateState::UnknownLegacy
+    );
+    assert_eq!(
+        migrated.terminal_evidence,
+        Some(JoinTerminalEvidence::LegacyUnverified)
+    );
+}
+
+#[tokio::test]
+async fn join_state_v3_rejects_unknown_newer_schema() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let started = start_schema_v3_test_join(&core, "schema-v4-unknown").await;
+    let store = JoinStateStore::new(&core);
+    let path = store.path(&started.session.join_session_id, DeviceJoinSide::NewDevice);
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["schema_version"] = Value::from(JOIN_STATE_SCHEMA_VERSION + 1);
+    std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    assert!(store
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .is_err());
 }
 
 #[test]
@@ -621,6 +767,7 @@ async fn cancelled_new_device_join_discards_unpublished_custody_and_pairing_secr
         &core,
         &started.session.join_session_id,
         DeviceJoinSide::NewDevice,
+        JoinTerminalEvidence::LocalOnlyAbort,
     )
     .await
     .unwrap();
@@ -942,6 +1089,7 @@ async fn local_admin_verification_progress_is_phase_gated_and_read_only() {
         )
         .is_err());
 
+    mark_new_device_remote_create_attempting(&candidate, &started.session.join_session_id).unwrap();
     let responded = candidate
         .device_join()
         .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
@@ -1027,6 +1175,7 @@ async fn external_provider_completes_admin_join_signing_and_document_change() {
     )
     .await
     .unwrap();
+    mark_new_device_remote_create_attempting(&candidate, &started.session.join_session_id).unwrap();
     let responded = candidate
         .device_join()
         .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
@@ -1188,6 +1337,7 @@ async fn admin_rejects_legacy_join_before_preparing_document_mutation() {
             document_hash: document_hash.clone(),
         })
         .unwrap();
+    mark_new_device_remote_create_attempting(&candidate, &started.session.join_session_id).unwrap();
     let responded = candidate
         .device_join()
         .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
@@ -1283,6 +1433,7 @@ async fn local_new_device_sas_is_restart_safe_and_read_only() {
             document_hash: document_hash.clone(),
         })
         .unwrap();
+    mark_new_device_remote_create_attempting(&candidate, &started.session.join_session_id).unwrap();
     let responded = candidate
         .device_join()
         .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
@@ -1563,6 +1714,7 @@ async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_i
             document_hash: admin_hash.clone(),
         })
         .unwrap();
+    mark_new_device_remote_create_attempting(&candidate, &started.session.join_session_id).unwrap();
     let responded = candidate
         .device_join()
         .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
@@ -1938,5 +2090,245 @@ VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
             "8".to_owned(),
             "1".to_owned(),
         )
+    );
+}
+
+#[tokio::test]
+async fn retired_registration_join_recovers_fault_after_registry_save_before_binding_commit() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let (admin, admin_document, current_did) = open_ready_admin_core(admin_root.path());
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let candidate_paths = test_paths(candidate_root.path());
+    let started = candidate
+        .device_join()
+        .start(
+            DeviceJoinStartRequest {
+                operation_id: "retired-crash-start".to_owned(),
+                did: current_did.clone(),
+                ttl_seconds: 300,
+            },
+            &admin_document,
+        )
+        .await
+        .unwrap();
+    let join_request = started.join_request.clone();
+    let retired_did = "did:wba:awiki.test:user:alice:e1_retired";
+    let owner_identity_id = "owner-retired-stable";
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,'user-1','alice.awiki.test',?2,'dev-retired','7','3',1,1)",
+        rusqlite::params![owner_identity_id, retired_did],
+    )
+    .unwrap();
+    drop(db);
+    let transition =
+        crate::internal::identity_registration_join_preparation::RegistrationJoinTransition {
+            account_user_id: "user-1".to_owned(),
+            previous_did: retired_did.to_owned(),
+            current_did: current_did.as_str().to_owned(),
+            binding_generation: "8".to_owned(),
+        };
+    let evidence = crate::internal::identity_local_owner_matcher::RetiredOwnerEvidence {
+        owner_identity_id: owner_identity_id.to_owned(),
+        retired_did: retired_did.to_owned(),
+        retired_protocol_device_id: "dev-retired".to_owned(),
+        retired_binding_generation: "7".to_owned(),
+        epoch_relation:
+            crate::internal::identity_local_owner_matcher::RetiredOwnerEpochRelation::DirectPrevious,
+    };
+    let retirement_dir = candidate_paths
+        .identities
+        .identity_root_dir
+        .join(".identity-retirements");
+    std::fs::create_dir_all(&retirement_dir).unwrap();
+    std::fs::write(
+        retirement_dir.join(format!(
+            "{}.json",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(sha2::Sha256::digest(owner_identity_id.as_bytes()))
+        )),
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "identity_id": owner_identity_id,
+            "did": retired_did,
+            "local_alias": "alice",
+            "identity_dir_name": owner_identity_id,
+            "protocol_device_id": "dev-retired",
+            "phase": "completed"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let journal =
+        crate::internal::identity_registration_retired_join::RetiredJoinRollover::prepared(
+            &started.session.join_session_id,
+            "user-1",
+            "alice.awiki.test",
+            &transition,
+            &evidence,
+            started.session.protocol_device_id.as_str(),
+            &started.session.expires_at,
+        )
+        .unwrap();
+    crate::internal::identity_registration_retired_join::insert_prepared(
+        &candidate_paths.local_state.sqlite_path,
+        &journal,
+    )
+    .unwrap();
+
+    let admin_hash = canonical_hash(&admin_document).unwrap();
+    let challenged = admin
+        .device_join()
+        .prepare_admin_challenge(DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "retired-crash-challenge".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: 7,
+            document_hash: admin_hash.clone(),
+        })
+        .unwrap();
+    mark_new_device_remote_create_attempting(&candidate, &started.session.join_session_id).unwrap();
+    let responded = candidate
+        .device_join()
+        .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
+            operation_id: "retired-crash-response".to_owned(),
+            challenge: challenged.challenge,
+            admin_did_document: admin_document,
+            document_version: 7,
+            document_hash: admin_hash.clone(),
+        })
+        .await
+        .unwrap();
+    admin
+        .device_join()
+        .verify_response_as_admin(DeviceJoinAdminVerifyRequest {
+            operation_id: "retired-crash-verify".to_owned(),
+            join_session_id: started.session.join_session_id.clone(),
+            response: responded.response,
+        })
+        .unwrap();
+    let approval = prepare_admin_approval(
+        &admin,
+        "retired-crash-approve",
+        &started.session.join_session_id,
+        &crate::internal::identity_device_state::IdentityInternalCheckpoint {
+            document_version: 7,
+            document_hash: admin_hash,
+            registry_version: 3,
+        },
+        &format_time(OffsetDateTime::now_utc()).unwrap(),
+        true,
+    )
+    .unwrap();
+    let authorization =
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+            checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: 8,
+                document_hash: canonical_hash(&approval.new_document).unwrap(),
+                registry_version: 4,
+            },
+            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: join_request.device_id.clone(),
+                signing_key_id: method_id(&join_request.signing_public_key, "signing")
+                    .unwrap()
+                    .to_owned(),
+                e2ee_key_id: method_id(&join_request.e2ee_public_key, "e2ee")
+                    .unwrap()
+                    .to_owned(),
+                status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        };
+    mark_join_authorized_async(
+        &admin,
+        &started.session.join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .await
+    .unwrap();
+    prepare_new_device_activation_async(
+        &candidate,
+        &started.session.join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .await
+    .unwrap();
+    record_new_device_access_result(
+        &candidate,
+        &started.session.join_session_id,
+        crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+            user_id: "user-1".to_owned(),
+            access_token: member_access_token(
+                current_did.as_str(),
+                &authorization.device.device_id,
+                &authorization.device.signing_key_id,
+            ),
+        },
+    )
+    .unwrap();
+
+    FAIL_AFTER_RETIRED_REGISTRATION_JOIN_IDENTITY_SAVE
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(
+        finalize_new_device_activation_async(&candidate, &started.session.join_session_id).await,
+        Err(crate::ImError::Internal { message })
+            if message == "injected crash after retired registration Join identity save"
+    ));
+    assert_eq!(
+        crate::internal::identity_registration_retired_join::load(
+            &candidate_paths.local_state.sqlite_path,
+            &started.session.join_session_id,
+        )
+        .unwrap()
+        .unwrap()
+        .phase,
+        crate::internal::identity_registration_retired_join::RetiredJoinRolloverPhase::Prepared
+    );
+    drop(candidate);
+
+    let reopened = open_empty_vault_core(candidate_root.path());
+    assert_eq!(
+        crate::internal::identity_registration_retired_join::load(
+            &candidate_paths.local_state.sqlite_path,
+            &started.session.join_session_id,
+        )
+        .unwrap()
+        .unwrap()
+        .phase,
+        crate::internal::identity_registration_retired_join::RetiredJoinRolloverPhase::Completed
+    );
+    finalize_new_device_activation_async(&reopened, &started.session.join_session_id)
+        .await
+        .unwrap();
+    let index = crate::internal::identity_store::IdentityStore::new(&candidate_paths.identities)
+        .load_index()
+        .unwrap();
+    let matches = index
+        .credentials
+        .values()
+        .filter(|entry| entry.unique_id == owner_identity_id)
+        .collect::<Vec<_>>();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].did, current_did.as_str());
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT current_did || '|' || device_id || '|' || identity_generation FROM identity_account_bindings WHERE owner_identity_id=?1",
+            [owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        format!("{}|{}|8", current_did.as_str(), authorization.device.device_id)
     );
 }

@@ -890,10 +890,21 @@ where
         let operation_id = request.operation_id.clone();
         let document = self.resolver.resolve(&request.did).await?;
         let local = self.core.device_join().start(request, &document).await?;
-        local_hook(&local.session)?;
+        if let Err(error) = local_hook(&local.session) {
+            crate::internal::identity_device_join::abort_local_only_registration_join(
+                self.core,
+                &local.session.join_session_id,
+            )
+            .await?;
+            return Err(error);
+        }
         if local.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
             return Ok(local.session);
         }
+        crate::internal::identity_device_join::mark_new_device_remote_create_attempting(
+            self.core,
+            &local.session.join_session_id,
+        )?;
         let created = self
             .remote
             .create(DeviceJoinRemoteCreateRequest {
@@ -902,12 +913,65 @@ where
                 join_request: &local.join_request,
             })
             .await?;
-        if created.state != DeviceJoinRemoteState::Pending {
+        if created.state != DeviceJoinRemoteState::Pending
+            || created.join_session_id != local.session.join_session_id
+            || created.session_revision == 0
+        {
             return Err(crate::ImError::PermissionDenied);
         }
         crate::internal::identity_device_join::bind_new_device_remote_session(
             self.core,
             &local.session.join_session_id,
+            &created.join_session_token,
+            &created.expires_at,
+        )
+    }
+
+    pub(crate) async fn resume_remote_create(
+        &mut self,
+        join_session_id: &str,
+        account_verification_token: &SecretBytes,
+    ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary> {
+        let intent = crate::internal::identity_device_join::new_device_remote_create_intent(
+            self.core,
+            join_session_id,
+        )?;
+        if intent.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
+            return Ok(intent.session);
+        }
+        match intent.remote_create_state {
+            crate::internal::identity_device_join::RemoteCreateState::Bound => {
+                return Ok(intent.session)
+            }
+            crate::internal::identity_device_join::RemoteCreateState::Attempting
+            | crate::internal::identity_device_join::RemoteCreateState::UnknownLegacy => {}
+            crate::internal::identity_device_join::RemoteCreateState::LocalOnly => {
+                return Err(invalid_remote_state(
+                    "local-only Join cannot issue a delayed remote create",
+                ))
+            }
+        }
+        crate::internal::identity_device_join::mark_new_device_remote_create_attempting(
+            self.core,
+            join_session_id,
+        )?;
+        let created = self
+            .remote
+            .create(DeviceJoinRemoteCreateRequest {
+                operation_id: &intent.operation_id,
+                account_verification_token,
+                join_request: &intent.join_request,
+            })
+            .await?;
+        if created.state != DeviceJoinRemoteState::Pending
+            || created.join_session_id != intent.join_request.join_session_id
+            || created.session_revision == 0
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_device_join::bind_new_device_remote_session(
+            self.core,
+            join_session_id,
             &created.join_session_token,
             &created.expires_at,
         )
@@ -970,10 +1034,16 @@ where
                 })
             }
             DeviceJoinRemoteState::Cancelled | DeviceJoinRemoteState::Rejected => {
+                let evidence = if status.state == DeviceJoinRemoteState::Cancelled {
+                    crate::internal::identity_device_join::JoinTerminalEvidence::RemoteCancelled
+                } else {
+                    crate::internal::identity_device_join::JoinTerminalEvidence::RemoteRejected
+                };
                 let session = crate::internal::identity_device_join::cancel_join(
                     self.core,
                     join_session_id,
                     crate::identity::DeviceJoinSide::NewDevice,
+                    evidence,
                 )
                 .await?;
                 Ok(DeviceJoinAdvanceResult {
@@ -1133,6 +1203,7 @@ where
             self.core,
             join_session_id,
             crate::identity::DeviceJoinSide::NewDevice,
+            crate::internal::identity_device_join::JoinTerminalEvidence::RemoteCancelled,
         )
         .await
     }
@@ -1689,6 +1760,7 @@ where
             self.core,
             join_session_id,
             crate::identity::DeviceJoinSide::Admin,
+            crate::internal::identity_device_join::JoinTerminalEvidence::RemoteRejected,
         )
         .await
         {

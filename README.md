@@ -229,6 +229,7 @@ Report security issues privately according to [SECURITY.md](SECURITY.md).
 | [Workspace Components](docs/workspace-components.md) | CLI, Core, Daemon, Dart SDK, and Skills boundaries. |
 | [Compatibility and Maturity](docs/compatibility.md) | Platforms, capability status, servers, and secure-message boundaries. |
 | [Development Guide](docs/development.md) | Rust/Flutter build, test, release, and local state. |
+| [Configuration](docs/configuration.md) | CLI / daemon / im-core keys, sources, and defaults. |
 | [Asset Plan](docs/screenshot-plan.md) | README terminal demos and architecture assets. |
 | [`onboarding.md`](onboarding.md) | Current full first-install flow; channel placeholders must be replaced before release. |
 | [`docs/README.md`](docs/README.md) | Existing stable documentation index. |

@@ -704,6 +704,16 @@ pub struct DeleteLocalIdentityResult {
     pub warnings: Vec<String>,
 }
 
+/// Opaque, secret-free authority for one committed local identity data
+/// deletion. Hosts use it only to coordinate their own product store before
+/// asking Core to continue the same deletion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalIdentityDeletionTicket {
+    pub deletion_id: String,
+    pub owner_identity_id: crate::ids::IdentityId,
+    pub current_did: crate::ids::Did,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub subject: crate::ids::Did,

@@ -23,10 +23,10 @@ pub use self::dto::{
     IdentityDeviceRole, IdentityDeviceSummary, IdentityMissingItem, IdentityReadiness,
     IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
     IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile,
-    LegacyRegistryEpochAdoptionAuthority, LegacyUpgradeStatus, Profile, ProfileAttribute,
-    ProfilePatch, RegisterHandleRequest, RegistrationMethod, VNextAgentBootstrapMaterial,
-    VNextAgentLegacyUpgradeReconciliation, VNextAgentLegacyUpgradeSession, VerificationInput,
-    DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3,
+    LegacyRegistryEpochAdoptionAuthority, LegacyUpgradeStatus, LocalIdentityDeletionTicket,
+    Profile, ProfileAttribute, ProfilePatch, RegisterHandleRequest, RegistrationMethod,
+    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
+    VNextAgentLegacyUpgradeSession, VerificationInput, DAEMON_SUBKEY_PUBLIC_PACKAGE_SCHEMA_V3,
 };
 pub(crate) use self::dto::{
     DaemonSubkeyPrivatePackage, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1, DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,

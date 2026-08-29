@@ -27,6 +27,221 @@ pub(crate) enum StableOwnerMatch {
     Conflict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetiredOwnerEpochRelation {
+    Current,
+    DirectPrevious,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetiredOwnerEvidence {
+    pub(crate) owner_identity_id: String,
+    pub(crate) retired_did: String,
+    pub(crate) retired_protocol_device_id: String,
+    pub(crate) retired_binding_generation: String,
+    pub(crate) epoch_relation: RetiredOwnerEpochRelation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RegistrationOwnerDisposition {
+    ExactLivePredecessor(StableOwnerCandidate),
+    RetiredNoLiveCredential(RetiredOwnerEvidence),
+    FreshNone,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegistrationOwnerAuthority<'a> {
+    pub(crate) account_user_id: &'a str,
+    pub(crate) full_handle: &'a str,
+    pub(crate) previous_did: &'a str,
+    pub(crate) current_did: &'a str,
+    pub(crate) binding_generation: &'a str,
+}
+
+pub(crate) fn classify_registration_owner(
+    sqlite_path: &Path,
+    identity_root_dir: &Path,
+    index: &crate::internal::identity_store::IndexPayload,
+    authority: RegistrationOwnerAuthority<'_>,
+    excluded_transition_source_id: Option<&str>,
+) -> crate::ImResult<RegistrationOwnerDisposition> {
+    crate::internal::identity_wire::handle_recovery::canonical_handle(authority.full_handle)?;
+    crate::ids::Did::parse(authority.previous_did)?;
+    crate::ids::Did::parse(authority.current_did)?;
+    let Some(previous_generation) =
+        crate::internal::identity_handle_recovery_pending::previous_canonical_generation(
+            authority.binding_generation,
+        )
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    if authority.account_user_id.trim().is_empty()
+        || authority.previous_did == authority.current_did
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let unfinished_transition_count: i64 = connection
+        .query_row(
+            r#"SELECT COUNT(*) FROM identity_transition_pending
+WHERE phase IN ('pending','identity_switched')
+  AND (?1 IS NULL OR source_id<>?1)
+  AND (
+    account_user_id=?2 OR handle=?3
+    OR previous_did IN (?4,?5) OR current_did IN (?4,?5)
+    OR owner_identity_id IN (
+      SELECT owner_identity_id FROM identity_account_bindings
+      WHERE account_id=?2 OR handle_scope=?3 OR current_did IN (?4,?5)
+    )
+  )"#,
+            rusqlite::params![
+                excluded_transition_source_id,
+                authority.account_user_id,
+                authority.full_handle,
+                authority.previous_did,
+                authority.current_did,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let unfinished_operation_count: i64 = connection
+        .query_row(
+            r#"SELECT COUNT(*) FROM handle_recovery_operations_v4
+WHERE lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed','local_transition_pending')
+  AND (
+    account_user_id=?1 OR full_handle=?2
+    OR owner_identity_id IN (
+      SELECT owner_identity_id FROM identity_account_bindings
+      WHERE account_id=?1 OR handle_scope=?2 OR current_did IN (?3,?4)
+    )
+  )"#,
+            rusqlite::params![
+                authority.account_user_id,
+                authority.full_handle,
+                authority.previous_did,
+                authority.current_did,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if unfinished_transition_count != 0 || unfinished_operation_count != 0 {
+        return Ok(RegistrationOwnerDisposition::Conflict);
+    }
+
+    let mut statement = connection
+        .prepare(
+            r#"SELECT owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation
+FROM identity_account_bindings
+WHERE account_id=?1 OR handle_scope=?2 OR current_did IN (?3,?4)
+ORDER BY owner_identity_id"#,
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let related_bindings = statement
+        .query_map(
+            rusqlite::params![
+                authority.account_user_id,
+                authority.full_handle,
+                authority.previous_did,
+                authority.current_did,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let related_index_count = index
+        .credentials
+        .values()
+        .filter(|entry| {
+            entry.user_id == authority.account_user_id
+                || entry.full_handle == authority.full_handle
+                || entry.did == authority.previous_did
+                || entry.did == authority.current_did
+        })
+        .count();
+    if related_bindings.is_empty() && related_index_count == 0 {
+        return Ok(RegistrationOwnerDisposition::FreshNone);
+    }
+
+    // Retirement is intentionally classified before the direct-previous live
+    // matcher. Otherwise an exact retired current binding is prematurely
+    // treated as suspicious related state and can never reach ordinary Join.
+    if related_bindings.len() == 1 && related_index_count == 0 {
+        let (
+            owner_identity_id,
+            account_id,
+            handle_scope,
+            retired_did,
+            retired_device_id,
+            retired_generation,
+        ) = &related_bindings[0];
+        if account_id == authority.account_user_id
+            && handle_scope.as_deref() == Some(authority.full_handle)
+        {
+            let epoch_relation = if retired_did == authority.current_did
+                && retired_generation == authority.binding_generation
+            {
+                Some(RetiredOwnerEpochRelation::Current)
+            } else if retired_did == authority.previous_did
+                && retired_generation == &previous_generation
+            {
+                Some(RetiredOwnerEpochRelation::DirectPrevious)
+            } else {
+                None
+            };
+            if let Some(epoch_relation) = epoch_relation {
+                if crate::internal::identity_retirement::matches_completed_binding(
+                    identity_root_dir,
+                    owner_identity_id,
+                    retired_did,
+                    retired_device_id,
+                )? {
+                    return Ok(RegistrationOwnerDisposition::RetiredNoLiveCredential(
+                        RetiredOwnerEvidence {
+                            owner_identity_id: owner_identity_id.clone(),
+                            retired_did: retired_did.clone(),
+                            retired_protocol_device_id: retired_device_id.clone(),
+                            retired_binding_generation: retired_generation.clone(),
+                            epoch_relation,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    match match_stable_owner(
+        sqlite_path,
+        index,
+        StableOwnerAuthority {
+            account_user_id: authority.account_user_id,
+            full_handle: authority.full_handle,
+            previous_did: authority.previous_did,
+            binding_generation: authority.binding_generation,
+        },
+        None,
+        excluded_transition_source_id,
+    )? {
+        StableOwnerMatch::Exact(owner) => {
+            Ok(RegistrationOwnerDisposition::ExactLivePredecessor(owner))
+        }
+        StableOwnerMatch::None | StableOwnerMatch::Conflict => {
+            Ok(RegistrationOwnerDisposition::Conflict)
+        }
+    }
+}
+
 /// Classifies an ordinary registration response when no Recovery authority is
 /// available. Live or ambiguous local state related to the Handle or target
 /// DID must fail closed as a missing transition. One exact stable binding whose
@@ -452,6 +667,352 @@ mod tests {
             )
             .unwrap(),
             StableOwnerMatch::Conflict
+        );
+    }
+
+    #[test]
+    fn registration_owner_accepts_exact_retired_current_before_suspicious_filter() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let current_did = "did:wba:example.invalid:user:alice:new";
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            current_did,
+            "8",
+        );
+        write_completed_retirement(
+            &identity_root_dir,
+            "owner-alice",
+            current_did,
+            "device-owner-alice",
+        );
+
+        assert!(matches!(
+            classify_registration_owner(
+                &path,
+                &identity_root_dir,
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: "did:wba:example.invalid:user:alice:old",
+                    current_did,
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::RetiredNoLiveCredential(RetiredOwnerEvidence {
+                owner_identity_id,
+                epoch_relation: RetiredOwnerEpochRelation::Current,
+                ..
+            }) if owner_identity_id == "owner-alice"
+        ));
+    }
+
+    #[test]
+    fn registration_owner_accepts_exact_retired_direct_previous() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let previous_did = "did:wba:example.invalid:user:alice:old";
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            previous_did,
+            "7",
+        );
+        write_completed_retirement(
+            &identity_root_dir,
+            "owner-alice",
+            previous_did,
+            "device-owner-alice",
+        );
+
+        assert!(matches!(
+            classify_registration_owner(
+                &path,
+                &identity_root_dir,
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did,
+                    current_did: "did:wba:example.invalid:user:alice:new",
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::RetiredNoLiveCredential(RetiredOwnerEvidence {
+                owner_identity_id,
+                epoch_relation: RetiredOwnerEpochRelation::DirectPrevious,
+                ..
+            }) if owner_identity_id == "owner-alice"
+        ));
+    }
+
+    #[test]
+    fn retired_registration_join_prepared_does_not_block_new_registration() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let previous_did = "did:wba:example.invalid:user:alice:old";
+        let current_did = "did:wba:example.invalid:user:alice:new";
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            previous_did,
+            "7",
+        );
+        write_completed_retirement(
+            &identity_root_dir,
+            "owner-alice",
+            previous_did,
+            "device-owner-alice",
+        );
+        let transition =
+            crate::internal::identity_registration_join_preparation::RegistrationJoinTransition {
+                account_user_id: "account-alice".to_owned(),
+                previous_did: previous_did.to_owned(),
+                current_did: current_did.to_owned(),
+                binding_generation: "8".to_owned(),
+            };
+        let evidence = RetiredOwnerEvidence {
+            owner_identity_id: "owner-alice".to_owned(),
+            retired_did: previous_did.to_owned(),
+            retired_protocol_device_id: "device-owner-alice".to_owned(),
+            retired_binding_generation: "7".to_owned(),
+            epoch_relation: RetiredOwnerEpochRelation::DirectPrevious,
+        };
+        let journal =
+            crate::internal::identity_registration_retired_join::RetiredJoinRollover::prepared(
+                "join-orphan",
+                "account-alice",
+                "alice.example.invalid",
+                &transition,
+                &evidence,
+                "dev-new",
+                "2099-08-28T12:00:00Z",
+            )
+            .unwrap();
+        crate::internal::identity_registration_retired_join::insert_prepared(&path, &journal)
+            .unwrap();
+
+        assert!(matches!(
+            classify_registration_owner(
+                &path,
+                &identity_root_dir,
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did,
+                    current_did,
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::RetiredNoLiveCredential(_)
+        ));
+    }
+
+    #[test]
+    fn registration_owner_rejects_retired_n_minus_two() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let retired_did = "did:wba:example.invalid:user:alice:n-minus-two";
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            retired_did,
+            "6",
+        );
+        write_completed_retirement(
+            &identity_root_dir,
+            "owner-alice",
+            retired_did,
+            "device-owner-alice",
+        );
+
+        assert_eq!(
+            classify_registration_owner(
+                &path,
+                &identity_root_dir,
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: "did:wba:example.invalid:user:alice:old",
+                    current_did: "did:wba:example.invalid:user:alice:new",
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::Conflict
+        );
+    }
+
+    #[test]
+    fn registration_owner_rejects_wrong_marker_device_or_account() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let current_did = "did:wba:example.invalid:user:alice:new";
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            current_did,
+            "8",
+        );
+        write_completed_retirement(&identity_root_dir, "owner-alice", current_did, "dev-wrong");
+
+        assert_eq!(
+            classify_registration_owner(
+                &path,
+                &identity_root_dir,
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: "did:wba:example.invalid:user:alice:old",
+                    current_did,
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::Conflict
+        );
+    }
+
+    #[test]
+    fn registration_owner_rejects_live_multiple_or_unfinished_state() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("im.sqlite");
+        let identity_root_dir = root.path().join("identities");
+        let current_did = "did:wba:example.invalid:user:alice:new";
+        insert_binding(
+            &path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            current_did,
+            "8",
+        );
+        write_completed_retirement(
+            &identity_root_dir,
+            "owner-alice",
+            current_did,
+            "device-owner-alice",
+        );
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO handle_recovery_operations_v4(operation_id,owner_identity_id,account_user_id,full_handle,lifecycle_class,commit_attempted,key_state,vault_key_id,created_at,updated_at) VALUES ('active-op','owner-alice','account-alice','alice.example.invalid','remote_unresolved',1,'available','secret-ref','old','old')",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(
+            classify_registration_owner(
+                &path,
+                &identity_root_dir,
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: "did:wba:example.invalid:user:alice:old",
+                    current_did,
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::Conflict
+        );
+
+        let live_root = tempfile::tempdir().unwrap();
+        let live_path = live_root.path().join("im.sqlite");
+        insert_binding(
+            &live_path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            current_did,
+            "8",
+        );
+        let mut live_index = fixture_index();
+        let live_entry = live_index.credentials.get_mut("alice").unwrap();
+        live_entry.did = current_did.to_owned();
+        live_entry.binding_generation = Some("8".to_owned());
+        assert_eq!(
+            classify_registration_owner(
+                &live_path,
+                &live_root.path().join("identities"),
+                &live_index,
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: "did:wba:example.invalid:user:alice:old",
+                    current_did,
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::Conflict
+        );
+
+        let multiple_root = tempfile::tempdir().unwrap();
+        let multiple_path = multiple_root.path().join("im.sqlite");
+        insert_binding(
+            &multiple_path,
+            "owner-alice",
+            "account-alice",
+            "alice.example.invalid",
+            current_did,
+            "8",
+        );
+        insert_binding(
+            &multiple_path,
+            "owner-alice-other",
+            "account-alice",
+            "alice.example.invalid",
+            current_did,
+            "8",
+        );
+        assert_eq!(
+            classify_registration_owner(
+                &multiple_path,
+                &multiple_root.path().join("identities"),
+                &crate::internal::identity_store::IndexPayload::default(),
+                RegistrationOwnerAuthority {
+                    account_user_id: "account-alice",
+                    full_handle: "alice.example.invalid",
+                    previous_did: "did:wba:example.invalid:user:alice:old",
+                    current_did,
+                    binding_generation: "8",
+                },
+                None,
+            )
+            .unwrap(),
+            RegistrationOwnerDisposition::Conflict
         );
     }
 

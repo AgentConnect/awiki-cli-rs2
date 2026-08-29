@@ -72,7 +72,7 @@ pub struct ImCoreOpenOptions {
     pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
     pub multi_device_handle_recovery_enabled: bool, // default false
-    pub did_transition_vnext_hidden_rollout_enabled: bool, // default false
+    pub did_transition_vnext_hidden_rollout_enabled: bool, // default true; false is emergency rollback
     pub external_http_allow_insecure_loopback_for_testing: bool, // default false
 }
 
@@ -238,18 +238,22 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 37。pre-open canonical runner 只拥有 schema 27；已经完成
-canonical cutover 的 schema 28 到 37 必须返回 `not_required`，随后由普通 Core open
+当前 target 为 schema 38。pre-open canonical runner 只拥有 schema 27；已经完成
+canonical cutover 的 schema 28 到 38 必须返回 `not_required`，随后由普通 Core open
 推进或校验。普通 open 严格识别 release/0714 schema 28-31 以及两条开发线曾产生的
 v32-v34 合法形态，并在单一事务中收敛为 hydration projection、subject-scoped checkpoint、
 可证明的旧 Direct WireIdentity 修复、v2 account/message sync、read recovery，以及
 未解析消息与 remote-thread binding 的 durable association、schema 36 Handle Recovery
-状态，以及 schema 37 owner-scoped strong-assurance DID transition edge cache。schema 35 的 association
+状态、schema 37 owner-scoped strong-assurance DID transition edge cache，以及 schema 38
+retired ordinary registration Join 的 secret-free rollover journal。schema 35 的 association
 使 Persona replay 能原子写入 canonical message/binding，不能把暂定 DID conversation
 写成 durable binding。
 schema 37 不更新 route、Persona、conversation、历史 wire identity 或 recovery outbox，
 也不创建 transition conflict/reconcile job 表；只有 ANP resolver 完整验证成功后的
 `verified` / `recovery_verified` edge 可以按 CAS 写入。
+schema 38 只新增 `registration_retired_join_rollovers` 表和 owner/phase/update-time 索引；
+37→38 迁移失败必须回滚表、索引和 `user_version`。旧 Core 不支持直接打开 v38，回退只能
+恢复升级前完整 scope 备份，不能改写 `user_version` 或删除 journal。
 未知、残缺或混合得无法证明的同号形态必须 fail closed，不能被猜测性迁移或静默删除。
 
 P2+ API：
@@ -438,6 +442,17 @@ impl IdentityRegistry<'_> {
         &self,
         selector: IdentitySelector,
     ) -> ImResult<DeleteLocalIdentityResult>;
+    pub fn prepare_local_identity_data_deletion(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<LocalIdentityDeletionTicket>;
+    pub fn complete_local_identity_data_deletion(
+        &self,
+        deletion_id: &str,
+    ) -> ImResult<DeleteLocalIdentityResult>;
+    pub fn pending_local_identity_data_deletions(
+        &self,
+    ) -> ImResult<Vec<LocalIdentityDeletionTicket>>;
     pub fn legacy_upgrade_status(
         &self,
         selector: IdentitySelector,
@@ -495,6 +510,12 @@ pub struct DeleteLocalIdentityResult {
     pub was_default: bool,
     pub next_default: Option<IdentitySummary>,
     pub warnings: Vec<String>,
+}
+
+pub struct LocalIdentityDeletionTicket {
+    pub deletion_id: String,
+    pub owner_identity_id: IdentityId,
+    pub current_did: Did,
 }
 
 pub enum LegacyUpgradeStatus {
@@ -595,11 +616,20 @@ records。Host 的 realtime stop、runtime dispose 和任何网络 logout 都不
 `join_required`。缺失、未完成、冲突或部分匹配仍失败关闭为
 `handle_recovery.transition_missing`。
 
-`delete_local_identity_data` 只用于用户明确确认的“退出并删除当前数据”。它先按 stable
-identity ID 删除 Core SQLite 中该身份拥有的消息、会话、群、智能体投影、同步状态与密钥；
-对仅有 `owner_did` 的旧表，同时清理 identity DID history 中的当前及历史 DID，随后复用
-`delete_local_identity` 的 crash-safe 本地身份退役。其他本地身份和远端账号不受影响。
-该 API 不修改 ANP 协议，也不引入数据库 schema migration。
+`delete_local_identity_data` 保留为 Core-only host 的兼容入口，但 App 的“退出并删除当前数据”
+必须使用 `prepare_local_identity_data_deletion` → App Product-store delete →
+`complete_local_identity_data_deletion`。prepare 在任何 Product mutation 前完成 Recovery/Join
+admission 并写入 schema 39 的 secret-free ticket；ticket 一经创建不可取消。App 重启先读取
+`pending_local_identity_data_deletions`，幂等重做 Product 删除，再 complete 同一 ticket。
+admission 同时按 stable owner ID 与 canonical full Handle 匹配 active Recovery、transition、
+Join rollover和已有 deletion；同 Handle 的异常异 owner 状态同样 fail closed。异步入口按
+Handle lock→owner lock固定顺序减少同进程竞态，最终安全边界仍是各 authority insert 所在的
+SQLite `IMMEDIATE` transaction，sync入口也进入同一 coordinator。
+Core business rows、DID history 与 binding 在一个 SQLite 事务内删除，binding 最后；Recovery
+operation、transition、retired-Join rollover 与 deletion journal 等 control rows始终保留。
+随后才复用 `delete_local_identity` 的 crash-safe retirement。credential-only 删除只复用短
+journal 做互斥和 retirement 续跑，不进入 full-data business allowlist。其他本地身份和远端
+账号不受影响，Core open 不调用网络也不删除 App Product store。
 
 Legacy upgrade 是 Core 内部可恢复事务；host 必须等待
 `upgrade_legacy_identity_async` 的 typed status，不得用更短的通用 UI request timeout
@@ -639,7 +669,12 @@ account verification token 或 owner 选择。Core 在 prepared begin 时重新�
 Recovery rebind 必须在远端 Join create 之前持久化 joined-device marker。进程重启后 preparation
 失效，host 重新发起注册验证，不提供兼容恢复或独立 JSON continuation。已完成本地身份退役
 但保留消息 binding 的同 Handle 仍通过 ordinary `join_required` 重新进入显式 Join，而不是
-因该历史 binding 返回 `handle_recovery.transition_missing`。
+因该历史 binding 返回 `handle_recovery.transition_missing`。若服务端同时返回 closed Recovery
+transition，Core 只接受 retired current 或 direct-previous 的唯一 exact tuple，固定复用 retired
+stable owner，并在远端 create 前写入 Core-private rollover journal。ordinary activation 保存新
+Registry device 后，以 journal authority 在单一 SQLite 事务中收敛 binding、旧 write state、DID
+history 和 journal；`AuthorizedJoinActivationProgress.reset_reference` 必须为 `null`。Host 不读取
+journal、不选择 owner，也不把该 ordinary Join 投影为第二次 Recovery。
 注册写入发生传输不确定性时，Core 先用同一 pending DID 对账；所有 JSON-RPC HTTP 状态都
 保留服务端 `code/data`。只有 User Service 返回精确
 `error.data.awiki_code=did_auth.active_did_not_found`（或既有明确 not-found 契约）时，

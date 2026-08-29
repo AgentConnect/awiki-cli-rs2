@@ -3,11 +3,203 @@ use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 
-struct JoinedMarkerAssertingRemote {
+struct JoinedMarkerAssertingRemote<'a> {
+    core: &'a crate::ImCore,
     sqlite_path: std::path::PathBuf,
 }
 
-impl DeviceJoinNewDeviceRemote for JoinedMarkerAssertingRemote {
+struct RetiredJournalAssertingRemote<'a> {
+    core: &'a crate::ImCore,
+    sqlite_path: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CreateObservation {
+    operation_id: String,
+    join_session_id: String,
+    device_id: String,
+    join_request_hash: String,
+    grant_generation: &'static str,
+}
+
+struct ResponseLossCreateRemote {
+    calls: Arc<std::sync::Mutex<Vec<CreateObservation>>>,
+}
+
+struct NeverCreateRemote;
+
+impl DeviceJoinNewDeviceRemote for NeverCreateRemote {
+    async fn create(
+        &mut self,
+        _request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        panic!("remote Join create must not run after the local deletion guard wins")
+    }
+
+    async fn status(
+        &mut self,
+        _expected_join_session_id: &str,
+        _join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        Err(crate::ImError::unsupported("deletion-race-test-status"))
+    }
+
+    async fn submit_response(
+        &mut self,
+        _request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("deletion-race-test-response"))
+    }
+
+    async fn cancel(
+        &mut self,
+        _request: DeviceJoinRemoteCancelRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("deletion-race-test-cancel"))
+    }
+
+    async fn refresh_device_access(
+        &mut self,
+        _pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        Err(crate::ImError::unsupported("deletion-race-test-refresh"))
+    }
+}
+
+impl DeviceJoinNewDeviceRemote for ResponseLossCreateRemote {
+    async fn create(
+        &mut self,
+        request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        let grant_generation = match request.account_verification_token.expose_secret() {
+            b"verification-grant-a" => "a",
+            b"verification-grant-b" => "b",
+            _ => return Err(crate::ImError::PermissionDenied),
+        };
+        let mut calls = self.calls.lock().unwrap();
+        calls.push(CreateObservation {
+            operation_id: request.operation_id.to_owned(),
+            join_session_id: request.join_request.join_session_id.clone(),
+            device_id: request.join_request.device_id.clone(),
+            join_request_hash: crate::internal::identity_wire::document::document_hash(
+                &serde_json::to_value(request.join_request).unwrap(),
+            )?,
+            grant_generation,
+        });
+        if calls.len() == 1 {
+            return Err(crate::ImError::TransportUnavailable {
+                detail: "committed response was lost".to_owned(),
+            });
+        }
+        Ok(DeviceJoinRemoteCreateResult {
+            join_session_id: request.join_request.join_session_id.clone(),
+            join_session_token: SecretBytes::from_vec(b"join-token".to_vec()),
+            state: DeviceJoinRemoteState::Pending,
+            session_revision: 1,
+            expires_at: request.join_request.expires_at.clone(),
+        })
+    }
+
+    async fn status(
+        &mut self,
+        _expected_join_session_id: &str,
+        _join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        Err(crate::ImError::unsupported("response-loss-test-status"))
+    }
+
+    async fn submit_response(
+        &mut self,
+        _request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("response-loss-test-response"))
+    }
+
+    async fn cancel(
+        &mut self,
+        _request: DeviceJoinRemoteCancelRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("response-loss-test-cancel"))
+    }
+
+    async fn refresh_device_access(
+        &mut self,
+        _pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        Err(crate::ImError::unsupported("response-loss-test-refresh"))
+    }
+}
+
+impl DeviceJoinNewDeviceRemote for RetiredJournalAssertingRemote<'_> {
+    async fn create(
+        &mut self,
+        request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        let journal = crate::internal::identity_registration_retired_join::load(
+            &self.sqlite_path,
+            &request.join_request.join_session_id,
+        )?
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "retired Join journal was not durable before remote create".to_owned(),
+        })?;
+        if journal.phase
+            != crate::internal::identity_registration_retired_join::RetiredJoinRolloverPhase::Prepared
+            || journal.new_device_id != request.join_request.device_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let state = crate::internal::identity_device_join::test_new_device_remote_create_state(
+            self.core,
+            &request.join_request.join_session_id,
+        )?
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "Join state was missing before remote create".to_owned(),
+        })?;
+        if state != crate::internal::identity_device_join::RemoteCreateState::Attempting {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "remote create was not durably marked attempting".to_owned(),
+            });
+        }
+        Ok(DeviceJoinRemoteCreateResult {
+            join_session_id: request.join_request.join_session_id.clone(),
+            join_session_token: SecretBytes::from_vec(b"join-token".to_vec()),
+            state: DeviceJoinRemoteState::Pending,
+            session_revision: 1,
+            expires_at: request.join_request.expires_at.clone(),
+        })
+    }
+
+    async fn status(
+        &mut self,
+        _expected_join_session_id: &str,
+        _join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        Err(crate::ImError::unsupported("retired-journal-test-status"))
+    }
+
+    async fn submit_response(
+        &mut self,
+        _request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("retired-journal-test-response"))
+    }
+
+    async fn cancel(
+        &mut self,
+        _request: DeviceJoinRemoteCancelRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("retired-journal-test-cancel"))
+    }
+
+    async fn refresh_device_access(
+        &mut self,
+        _pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        Err(crate::ImError::unsupported("retired-journal-test-refresh"))
+    }
+}
+
+impl DeviceJoinNewDeviceRemote for JoinedMarkerAssertingRemote<'_> {
     async fn create(
         &mut self,
         request: DeviceJoinRemoteCreateRequest<'_>,
@@ -19,6 +211,18 @@ impl DeviceJoinNewDeviceRemote for JoinedMarkerAssertingRemote {
         if marker.is_none() {
             return Err(crate::ImError::LocalStateUnavailable {
                 detail: "joined transition marker was not durable before remote create".to_owned(),
+            });
+        }
+        let state = crate::internal::identity_device_join::test_new_device_remote_create_state(
+            self.core,
+            &request.join_request.join_session_id,
+        )?
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "Join state was missing before remote create".to_owned(),
+        })?;
+        if state != crate::internal::identity_device_join::RemoteCreateState::Attempting {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "remote create was not durably marked attempting".to_owned(),
             });
         }
         Ok(DeviceJoinRemoteCreateResult {
@@ -527,6 +731,11 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
             document_hash: current_document_hash.clone(),
         })
         .unwrap();
+    crate::internal::identity_device_join::mark_new_device_remote_create_attempting(
+        &candidate,
+        &join_session_id,
+    )
+    .unwrap();
     let response = candidate
         .device_join()
         .respond_as_new_device(crate::identity::DeviceJoinNewDeviceRespondRequest {
@@ -755,6 +964,7 @@ async fn registration_recovery_join_marker_is_durable_before_remote_join_create(
     let mut runtime = DeviceJoinNewDeviceRuntime::new(
         &core,
         JoinedMarkerAssertingRemote {
+            core: &core,
             sqlite_path: sqlite_path.clone(),
         },
         DeviceJoinDidResolver::new(StaticResolver(generated.did_document)),
@@ -792,6 +1002,256 @@ async fn registration_recovery_join_marker_is_durable_before_remote_join_create(
         .unwrap()
         .is_some()
     );
+    let state = crate::internal::identity_device_join::test_new_device_remote_create_state(
+        &core,
+        &session.join_session_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        state,
+        crate::internal::identity_device_join::RemoteCreateState::Bound
+    );
+}
+
+#[tokio::test]
+async fn join_losing_deletion_race_cleans_local_material_before_remote_create() {
+    let directory = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(directory.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.info",
+        "delete-race",
+        None,
+        None,
+    )
+    .unwrap();
+    let current_did = generated.did.clone();
+    let sqlite_path = core.inner().sdk_paths().local_state.sqlite_path.clone();
+    crate::internal::identity_local_deletion::prepare_with_id(
+        &sqlite_path,
+        &crate::internal::identity_local_deletion::LocalIdentityDeletionSnapshot {
+            owner_identity_id: "owner-delete-race-1".to_owned(),
+            current_did: current_did.as_str().to_owned(),
+            full_handle: Some("delete-race.awiki.info".to_owned()),
+            local_alias: "delete-race".to_owned(),
+            identity_dir_name: None,
+            next_default_alias: None,
+            protocol_device_id: None,
+        },
+        crate::internal::identity_local_deletion::LocalIdentityDeletionMode::FullDataApp,
+        "delete-join-race-001",
+        "2026-08-29T12:00:00Z",
+    )
+    .unwrap();
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &core,
+        NeverCreateRemote,
+        DeviceJoinDidResolver::new(StaticResolver(generated.did_document)),
+    );
+
+    let error = runtime
+        .begin_with_local_hook(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "join-delete-race-operation-1".to_owned(),
+                did: current_did.clone(),
+                ttl_seconds: 300,
+            },
+            &SecretBytes::from_vec(b"account-verification-token".to_vec()),
+            |session| {
+                let marker = crate::internal::identity_transition_pending::IdentityTransitionMarker::joined_device(
+                    &sqlite_path,
+                    &session.join_session_id,
+                    "user-delete-race-1",
+                    "owner-delete-race-1",
+                    "delete-race.awiki.info",
+                    "did:wba:awiki.info:users:delete-race-old",
+                    current_did.as_str(),
+                    "8",
+                )?;
+                crate::internal::identity_transition_pending::persist(&sqlite_path, &marker)
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::ImError::Service { code: Some(code), .. }
+            if code == "identity.local_deletion_conflict"
+    ));
+    assert!(
+        crate::internal::identity_custody::controller_custody_provider(&core)
+            .await
+            .unwrap()
+            .list_identities()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        crate::internal::identity_transition_pending::load_joined_device(
+            &sqlite_path,
+            "join-delete-race-operation-1",
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn recovery_rebind_retries_same_create_after_response_loss() {
+    let directory = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(directory.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.info",
+        "response-loss",
+        None,
+        None,
+    )
+    .unwrap();
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &core,
+        ResponseLossCreateRemote {
+            calls: Arc::clone(&calls),
+        },
+        DeviceJoinDidResolver::new(StaticResolver(generated.did_document)),
+    );
+    let request = crate::identity::DeviceJoinStartRequest {
+        operation_id: "response-loss-create-operation".to_owned(),
+        did: generated.did,
+        ttl_seconds: 300,
+    };
+
+    assert!(matches!(
+        runtime
+            .begin(
+                request.clone(),
+                &SecretBytes::from_vec(b"verification-grant-a".to_vec()),
+            )
+            .await,
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+    let after_loss =
+        crate::internal::identity_device_join::test_new_device_remote_create_state_by_operation(
+            &core,
+            &request.operation_id,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after_loss,
+        crate::internal::identity_device_join::RemoteCreateState::Attempting
+    );
+
+    let completed = runtime
+        .begin(
+            request,
+            &SecretBytes::from_vec(b"verification-grant-b".to_vec()),
+        )
+        .await
+        .unwrap();
+    let observations = calls.lock().unwrap().clone();
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0].operation_id, observations[1].operation_id);
+    assert_eq!(
+        observations[0].join_session_id,
+        observations[1].join_session_id
+    );
+    assert_eq!(observations[0].device_id, observations[1].device_id);
+    assert_eq!(
+        observations[0].join_request_hash,
+        observations[1].join_request_hash
+    );
+    assert_eq!(
+        observations
+            .iter()
+            .map(|observation| observation.grant_generation)
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    assert_eq!(completed.join_session_id, observations[0].join_session_id);
+    let state = crate::internal::identity_device_join::test_new_device_remote_create_state(
+        &core,
+        &completed.join_session_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        state,
+        crate::internal::identity_device_join::RemoteCreateState::Bound
+    );
+}
+
+#[tokio::test]
+async fn retired_registration_join_journal_is_durable_before_remote_create() {
+    let directory = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(directory.path());
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.info",
+        "alice",
+        None,
+        None,
+    )
+    .unwrap();
+    let current_did = generated.did.clone();
+    let sqlite_path = core.inner().sdk_paths().local_state.sqlite_path.clone();
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &core,
+        RetiredJournalAssertingRemote {
+            core: &core,
+            sqlite_path: sqlite_path.clone(),
+        },
+        DeviceJoinDidResolver::new(StaticResolver(generated.did_document)),
+    );
+    let transition =
+        crate::internal::identity_registration_join_preparation::RegistrationJoinTransition {
+            account_user_id: "user-1".to_owned(),
+            previous_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+            current_did: current_did.as_str().to_owned(),
+            binding_generation: "8".to_owned(),
+        };
+    let evidence = crate::internal::identity_local_owner_matcher::RetiredOwnerEvidence {
+        owner_identity_id: "owner-1".to_owned(),
+        retired_did: transition.previous_did.clone(),
+        retired_protocol_device_id: "dev-retired".to_owned(),
+        retired_binding_generation: "7".to_owned(),
+        epoch_relation:
+            crate::internal::identity_local_owner_matcher::RetiredOwnerEpochRelation::DirectPrevious,
+    };
+    let session = runtime
+        .begin_with_local_hook(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "retired-join-operation-1".to_owned(),
+                did: current_did,
+                ttl_seconds: 300,
+            },
+            &SecretBytes::from_vec(b"account-verification-token".to_vec()),
+            |session| {
+                let journal = crate::internal::identity_registration_retired_join::RetiredJoinRollover::prepared(
+                    &session.join_session_id,
+                    &transition.account_user_id,
+                    "alice.awiki.info",
+                    &transition,
+                    &evidence,
+                    session.protocol_device_id.as_str(),
+                    &session.expires_at,
+                )?;
+                crate::internal::identity_registration_retired_join::insert_prepared(
+                    &sqlite_path,
+                    &journal,
+                )
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(crate::internal::identity_registration_retired_join::load(
+        &sqlite_path,
+        &session.join_session_id,
+    )
+    .unwrap()
+    .is_some());
 }
 
 #[tokio::test]
@@ -825,6 +1285,11 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
             document_hash: document_hash.clone(),
         })
         .unwrap();
+    crate::internal::identity_device_join::mark_new_device_remote_create_attempting(
+        &candidate,
+        &join_session_id,
+    )
+    .unwrap();
     let responded = candidate
         .device_join()
         .respond_as_new_device(crate::identity::DeviceJoinNewDeviceRespondRequest {
@@ -974,6 +1439,7 @@ async fn cancelled_new_device_runtime_does_not_reopen_deleted_remote_token() {
         &core,
         &started.session.join_session_id,
         crate::identity::DeviceJoinSide::NewDevice,
+        crate::internal::identity_device_join::JoinTerminalEvidence::LocalOnlyAbort,
     )
     .await
     .unwrap();

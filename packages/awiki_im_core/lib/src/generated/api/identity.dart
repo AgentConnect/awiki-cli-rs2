@@ -394,6 +394,28 @@ Future<DartDeleteLocalIdentityResult> deleteLocalIdentityData({
   selector: selector,
 );
 
+Future<DartLocalIdentityDeletionTicket> prepareLocalIdentityDataDeletion({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityPrepareLocalIdentityDataDeletion(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDeleteLocalIdentityResult> completeLocalIdentityDataDeletion({
+  required ArcDartImCore core,
+  required String deletionId,
+}) => RustLib.instance.api.crateApiIdentityCompleteLocalIdentityDataDeletion(
+  core: core,
+  deletionId: deletionId,
+);
+
+Future<List<DartLocalIdentityDeletionTicket>>
+pendingLocalIdentityDataDeletions({required ArcDartImCore core}) => RustLib
+    .instance
+    .api
+    .crateApiIdentityPendingLocalIdentityDataDeletions(core: core);
+
 Future<DartDaemonSubkeyPublicPackage> authorizeDaemonSubkey({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

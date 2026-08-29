@@ -187,8 +187,16 @@ impl RecoveryOperationRecord {
 }
 
 pub(crate) fn insert(sqlite_path: &Path, record: &RecoveryOperationRecord) -> crate::ImResult<()> {
-    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
-    connection
+    let mut connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    crate::internal::identity_local_deletion::ensure_no_active_deletion(
+        &transaction,
+        &record.owner_identity_id,
+        Some(&record.full_handle),
+    )?;
+    transaction
         .execute(
             r#"INSERT INTO handle_recovery_operations_v4
 (operation_id,owner_identity_id,account_user_id,full_handle,lifecycle_class,commit_attempted,
@@ -213,7 +221,9 @@ VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    Ok(())
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)
 }
 
 pub(crate) fn load(
