@@ -9,7 +9,6 @@ use crate::internal::message_runtime::group::{
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 use super::provider::GroupMlsProvider;
-use super::DEFAULT_GROUP_MLS_DEVICE_ID;
 
 pub(crate) struct GroupStateRefResolver<'a, P, T, M> {
     client: &'a crate::core::ImClient,
@@ -87,7 +86,7 @@ where
 {
     session_provider.ensure_session(crate::auth::AuthScope::GroupMessaging)?;
     let group_did = require_non_empty_group(input.group.as_str())?;
-    let device_id = device_id_for_client(client);
+    let device_id = device_id_for_client(client)?;
     let mls_status = mls_provider.status(StatusInput {
         request_id: format!(
             "group-e2ee-status-{}",
@@ -386,7 +385,7 @@ where
         .ensure_session(crate::auth::AuthScope::GroupMessaging)
         .await?;
     let group_did = require_non_empty_group(input.group.as_str())?;
-    let device_id = device_id_for_client(client);
+    let device_id = device_id_for_client(client)?;
     let agent_did = client.did().as_str().to_owned();
     let group_did_for_worker = group_did.to_owned();
     let mls_provider = (*mls_provider).clone();
@@ -605,14 +604,8 @@ fn require_non_empty_group(group_did: &str) -> crate::ImResult<&str> {
     Ok(group_did)
 }
 
-fn device_id_for_client(client: &crate::core::ImClient) -> String {
-    client
-        .current_identity()
-        .device_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
-        .to_owned()
+fn device_id_for_client(client: &crate::core::ImClient) -> crate::ImResult<String> {
+    super::storage::device_id_for_client(client)
 }
 
 #[cfg(test)]

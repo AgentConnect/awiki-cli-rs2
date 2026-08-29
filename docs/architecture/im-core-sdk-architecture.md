@@ -1298,7 +1298,14 @@ public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
 changes an interrupted recovery to `retryable` while retaining the original
 cursor, so the next `syncNow` obtains a fresh process-local token.
 
-Core serializes `syncNow` per `owner_identity_id`. Snapshot commit additionally
+Core uses one process-local single-flight coordinator per `owner_identity_id`.
+The first request owns the complete `begin_message_sync_run → sync → finish_message_sync_run`
+run. Concurrent foreground callers wait for and reuse that outcome instead of creating another
+generation. Listener startup/reconnect/hint/timer requests that arrive during a run are coalesced
+into at most one immediate follow-up; cancelling one waiter does not cancel the coordinator-owned
+run. This is process-local scheduling only: durable `run_generation` continues to fence another
+process or a stale process, and genuine retryable/blocked/auth failures remain fail-closed.
+Snapshot commit additionally
 uses a SQLite compare-and-swap fence over the exact previous epoch/cursor,
 recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent
 workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and

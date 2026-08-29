@@ -1225,8 +1225,12 @@ Reliable sync 补充：
   cursor/anchor、cutoff、policy
   limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
-  projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按 owner
-  串行化 `sync_now`，并在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
+  projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按
+  `owner_identity_id` 使用进程内 single-flight coordinator：第一个 `sync_now_async` 调用执行
+  完整 run，并发 foreground 调用共享同一 outcome；Rust Listener 使用隐藏的
+  `request_sync_async` 提交后台变化，运行中的重复 hint 只合并为一轮 follow-up。等待者取消不取消
+  Core 持有的公共 run。该协调不替代跨进程 `run_generation` fencing，也不把真实失败改成成功。
+  Snapshot 仍在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
   CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed schema，消息时间不得
   早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法。
 - `committed_incoming_messages` 只包含 post-snapshot/live delta 实际提交的 incoming messages；

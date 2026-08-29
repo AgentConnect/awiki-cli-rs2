@@ -7,21 +7,30 @@ pub(crate) fn native_provider_for_client(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<NativeAnpMlsProvider> {
     let identity = client.current_identity();
-    let device_id = identity
-        .device_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID);
+    let device_id = device_id_for_client(client)?;
     let store = ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
         identity.id.as_str(),
         identity.did.as_str(),
-        device_id,
+        &device_id,
     )
     .map_err(|err| crate::ImError::LocalStateUnavailable {
         detail: format!("initialize group MLS store: {err}"),
     })?;
     Ok(NativeAnpMlsProvider::new(store))
+}
+
+pub(crate) fn device_id_for_client(client: &crate::core::ImClient) -> crate::ImResult<String> {
+    if client.runtime().owner.sync_account.is_some() {
+        return client.exact_protocol_device_id();
+    }
+    Ok(client
+        .current_identity()
+        .device_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
+        .to_owned())
 }
 
 #[cfg(test)]

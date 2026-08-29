@@ -386,6 +386,7 @@ async fn send_group_async_impl(
             "P6 v2 group target must be a DID",
         ));
     }
+    let device = current_vnext_device(client)?;
     // P4 membership may have advanced independently (for example, a member
     // called group.leave). Before encrypting at the current MLS epoch, let the
     // active owner converge its accepted local tree to the authoritative P4/P2
@@ -405,7 +406,6 @@ async fn send_group_async_impl(
         .ok_or(crate::ImError::PermissionDenied)?
         .to_owned();
     let created_at = crate::internal::wire::common::now_rfc3339();
-    let device = current_vnext_device(client)?;
     let did_document = client
         .runtime()
         .key_provider

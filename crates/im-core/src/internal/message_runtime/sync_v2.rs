@@ -848,6 +848,10 @@ pub(crate) async fn drain_pending_secure_lane_consumers(
             "secure lane drain limit must be between 1 and 256",
         ));
     }
+    let coordinator = client
+        .core_inner()
+        .message_sync_coordinator(client.current_identity().id.as_str());
+    let _operation_guard = coordinator.lock_local_state_operation().await;
     let mut first_error: Option<crate::ImError> = None;
     #[cfg(feature = "secure-direct")]
     if let Err(error) = drain_p5_lane_inputs(client, max_inputs).await {

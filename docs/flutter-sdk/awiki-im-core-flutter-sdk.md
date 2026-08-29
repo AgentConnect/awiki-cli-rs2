@@ -884,6 +884,11 @@ final diagnostics = await client.messages.syncDiagnostics();
 
 `syncNow` semantics:
 
+- 同一 native Core 内，同一 `ownerIdentityId` 的并发 `syncNow` 由 Core single-flight
+  coordinator 合并。第一个调用执行完整同步，后续调用等待并共享该 outcome，不创建第二个
+  `runGeneration`。后台 realtime/hint 调度产生的新变化由 Rust host 的内部请求入口合并为最多一轮
+  follow-up；Dart API 形态不变，也不暴露 coordinator、waiter 或 generation。一个 Dart caller
+  取消等待不会取消 Core 持有的公共同步。
 - Rust `im-core` reads the active account/device binding and v2 cursor from
   private SQLite; Dart supplies only `reason` and optional `limit`.
 - When fenced or missing, Rust runs `sync.bootstrap`. A new device takes the

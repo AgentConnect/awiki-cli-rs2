@@ -352,6 +352,7 @@ pub fn call_local_bridge(
     }
     prepare_bridge_endpoint(&bridge.socket_path)?;
     let timeout_config = cli_http::resolve();
+    let read_timeout = bridge_request_read_timeout(&request.method, &timeout_config);
     if let Err(err) = bridge_health_probe(
         &bridge.socket_path,
         timeout_config.bridge_health_probe_timeout,
@@ -368,8 +369,16 @@ pub fn call_local_bridge(
         request,
         timeout_config.bridge_dial_timeout,
         timeout_config.bridge_write_timeout,
-        timeout_config.bridge_read_timeout,
+        read_timeout,
     )
+}
+
+fn bridge_request_read_timeout(method: &str, config: &cli_http::Config) -> Duration {
+    if matches!(method, "local.inbox" | "local.history" | "local.mark_read") {
+        config.timeout_for_profile(cli_http::Profile::RpcReadHeavy)
+    } else {
+        config.bridge_read_timeout
+    }
 }
 
 #[cfg(unix)]
@@ -1247,4 +1256,22 @@ fn set_dir_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn set_dir_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_message_operations_use_the_read_heavy_bridge_timeout() {
+        let config = cli_http::resolve();
+        let read_heavy = config.timeout_for_profile(cli_http::Profile::RpcReadHeavy);
+        for method in ["local.inbox", "local.history", "local.mark_read"] {
+            assert_eq!(bridge_request_read_timeout(method, &config), read_heavy);
+        }
+        assert_eq!(
+            bridge_request_read_timeout("runtime.listener.status", &config),
+            config.bridge_read_timeout
+        );
+    }
 }

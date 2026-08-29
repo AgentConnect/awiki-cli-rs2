@@ -632,6 +632,12 @@ cursor/`committed_seq`。同一前台运行在 capability 尚未确定时不会�
 lane；协商到 P5 lane 后，`hydrate_exact_device_secure_inbox_async`、realtime 的 legacy P5
 hydration 以及 P5 Inbox projector 都不再调用 `inbox.get` / `inbox.mark_read`。
 
+同一 Core、同一 `owner_identity_id` 的 `sync_now_async` 通过进程内 single-flight coordinator
+执行。第一个请求执行完整 `begin → sync → finish`，并发 foreground 请求等待并共享该结果；
+Listener 的后台变化请求在运行中合并为最多一轮 follow-up。调用者取消只取消自己的等待，不取消
+公共 run。该协调不改变公开 DTO、wire 或数据库 schema，跨进程仍由 durable
+`run_generation` fencing。
+
 P5 lane 复用既有认证解密与 ratchet/replay 持久化管道；只有解密/ratchet 与消息或 durable
 backlog 均成功后，delta 才原子写 lane receipt 并推进 P5 `scan_seq/committed_seq`。内联只写
 幂等 receipt，不推进 checkpoint；失败或 replay-without-receipt 保持 P5 cursor 原位并由下一次

@@ -2788,12 +2788,23 @@ impl Probe {
                 )
             })
             .await?;
+        self.release_local_runtime().await?;
         let (projection, message_id) =
             closed_held_direct_wire_projection(&json!({"messages": matching_messages}), params)?;
         if let Some(message_id) = message_id {
             self.held_direct_wire_projection = Some(HeldDirectWireProjection { message_id });
         }
         Ok(projection)
+    }
+
+    async fn release_local_runtime(&mut self) -> Result<(), ProbeFailure> {
+        self._client.take();
+        if let Some(core) = self._core.take() {
+            core.shutdown_local_state_for_reset()
+                .await
+                .map_err(|_| ProbeFailure::Runtime)?;
+        }
+        Ok(())
     }
 
     fn confirm_direct_wire_projection(&mut self, message_id: &str) -> Result<Value, ProbeFailure> {

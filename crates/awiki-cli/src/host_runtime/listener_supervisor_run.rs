@@ -385,18 +385,32 @@ impl BridgeRuntime {
                         .ok_or_else(|| anyhow::anyhow!("local inbox query is missing"))?,
                 )?;
                 self.runtime.block_on(async {
-                    let secure_warnings =
+                    let mut warnings =
+                        crate::m_core_cli_adapter::messages::reconcile_foreground_message_sync_async(
+                            &client,
+                        )
+                        .await
+                        .map_err(|error| {
+                            anyhow::anyhow!("local inbox reconciliation failed: {error}")
+                        })?;
+                    warnings.extend(
                         crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
                             &client, &query,
                         )
-                        .await?;
-                    crate::m_core_cli_adapter::messages::read_inbox_via_im_core_async(
-                        &self.resolved,
+                        .await
+                        .map_err(|error| {
+                            anyhow::anyhow!("local inbox secure hydration failed: {error}")
+                        })?,
+                    );
+                    crate::m_core_cli_adapter::messages::read_local_inbox_projection_via_im_core_async(
                         &client,
                         query,
-                        secure_warnings,
+                        warnings,
                     )
                     .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("local inbox reconciliation/read failed: {error}")
+                    })
                 })?
             }
             "local.history" => {
@@ -590,7 +604,7 @@ async fn spawn_im_core_runner_session_async(
                     sync_task = Some(tokio::spawn(async move {
                         sync_client
                             .messages()
-                            .sync_now_async(im_core::messages::MessageSyncRequest {
+                            .request_sync_async(im_core::messages::MessageSyncRequest {
                                 reason: reason.as_str().to_owned(),
                                 limit: Some(RELIABLE_SYNC_LIMIT),
                             })
