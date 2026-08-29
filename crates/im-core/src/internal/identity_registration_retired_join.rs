@@ -608,6 +608,9 @@ WHERE owner_identity_id=?1 AND account_id=?2 AND handle_scope=?3
 }
 
 fn list(sqlite_path: &Path) -> crate::ImResult<Vec<RetiredJoinRollover>> {
+    if !sqlite_path.is_file() {
+        return Ok(Vec::new());
+    }
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     let mut statement = connection
         .prepare(

@@ -443,6 +443,9 @@ pub(crate) fn recover_after_retirement(core: &crate::core::ImCore) -> crate::ImR
 pub(crate) fn list_incomplete(
     sqlite_path: &Path,
 ) -> crate::ImResult<Vec<LocalIdentityDeletionRecord>> {
+    if !sqlite_path.is_file() {
+        return Ok(Vec::new());
+    }
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     let mut statement = connection
         .prepare(

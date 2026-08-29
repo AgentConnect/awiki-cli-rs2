@@ -393,6 +393,9 @@ pub(crate) fn load_identity_switched(
 pub(crate) fn load_active_joined_devices(
     sqlite_path: &Path,
 ) -> crate::ImResult<Vec<IdentityTransitionMarker>> {
+    if !sqlite_path.is_file() {
+        return Ok(Vec::new());
+    }
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     crate::internal::local_state::schema::ensure_schema(&connection)?;
     let recovery_ids = {
