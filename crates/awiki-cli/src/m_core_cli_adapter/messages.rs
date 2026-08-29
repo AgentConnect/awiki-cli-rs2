@@ -584,9 +584,13 @@ fn require_foreground_message_sync(
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message recovery did not complete".to_owned(),
         )),
-        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::TransportUnavailable(
-            "foreground message reconciliation did not complete".to_owned(),
-        )),
+        MessageSyncStatus::RetryableFailure => {
+            Err(MessageAdapterError::TransportUnavailable(format!(
+                "foreground message reconciliation did not complete (error_code={}, warnings={})",
+                outcome.error_code.as_deref().unwrap_or("none"),
+                outcome.warnings.join(",")
+            )))
+        }
         MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message synchronization is blocked and requires intervention".to_owned(),
         )),

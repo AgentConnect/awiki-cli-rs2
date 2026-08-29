@@ -105,8 +105,13 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
         "host runtime listener should call the public async realtime service API outside compat"
     );
     assert!(
-        text.contains(".sync_now_async(") && text.contains("im_core::messages::MessageSyncRequest"),
-        "host runtime listener should converge through the public v2 reliable-sync API"
+        text.contains(".request_sync_async(")
+            && text.contains("im_core::messages::MessageSyncRequest"),
+        "host runtime listener should submit background changes through the public coordinated reliable-sync API"
+    );
+    assert!(
+        text.contains("core: im_core::ImCore") && text.contains("core.client_async(selector)"),
+        "all listener identity sessions should share one Core runtime and local-state actor"
     );
     assert!(
         !text.contains("sync_delta"),

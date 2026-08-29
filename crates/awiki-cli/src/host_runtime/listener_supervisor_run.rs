@@ -60,7 +60,8 @@ fn run_listener(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result
 
 async fn run_listener_async(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result<()> {
     let runner = im_core_realtime_adapter::listener_runner_selection(host);
-    let mut supervisor = ListenerSupervisor::new(resolved, runner.mode, host)?;
+    let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
+    let mut supervisor = ListenerSupervisor::new(resolved, core, runner.mode, host)?;
     let result = supervisor.run_async().await;
     supervisor.cleanup_runtime_artifacts();
     result
@@ -68,6 +69,7 @@ async fn run_listener_async(resolved: Resolved, host: ListenerRunHostKind) -> an
 
 struct ListenerSupervisor {
     resolved: Arc<Resolved>,
+    core: im_core::ImCore,
     status: Arc<Mutex<Status>>,
     shutdown: Arc<AtomicBool>,
     listener: Option<bridge::BridgeListener>,
@@ -80,6 +82,7 @@ struct ListenerSupervisor {
 impl ListenerSupervisor {
     fn new(
         resolved: Resolved,
+        core: im_core::ImCore,
         runner_mode: ListenerRunnerMode,
         host: ListenerRunHostKind,
     ) -> anyhow::Result<Self> {
@@ -107,6 +110,7 @@ impl ListenerSupervisor {
         };
         Ok(Self {
             resolved: Arc::new(resolved),
+            core,
             status: Arc::new(Mutex::new(status)),
             shutdown: Arc::new(AtomicBool::new(false)),
             listener: None,
@@ -182,8 +186,7 @@ impl ListenerSupervisor {
     }
 
     async fn start_known_sessions_async(&self) -> anyhow::Result<()> {
-        let core = crate::m_core_cli_adapter::build_im_core_async(&self.resolved).await?;
-        let identities = core.identities().list_async().await?;
+        let identities = self.core.identities().list_async().await?;
         let sessions: Vec<(String, String)> = identities
             .iter()
             .map(|summary| {
@@ -214,7 +217,7 @@ impl ListenerSupervisor {
         }
         for (identity_name, did) in sessions {
             spawn_im_core_runner_session_async(
-                self.resolved.clone(),
+                self.core.clone(),
                 self.status.clone(),
                 self.host_notify.clone(),
                 self.clients.clone(),
@@ -244,7 +247,7 @@ impl ListenerSupervisor {
             return Ok(());
         };
         spawn_im_core_runner_session_async(
-            self.resolved.clone(),
+            self.core.clone(),
             self.status.clone(),
             self.host_notify.clone(),
             self.clients.clone(),
@@ -475,16 +478,21 @@ impl BridgeRuntime {
 
 fn handle_bridge_stream(stream: bridge::BridgeStream, mut runtime: BridgeRuntime) {
     let _ = bridge::handle_bridge_connection_once(stream, |request| {
-        if request.method.starts_with("local.") {
+        let method = request.method.clone();
+        let result = if method.starts_with("local.") {
             runtime.execute_local_request(&request)
         } else {
             execute_listener_bridge_request(&mut runtime, request)
+        };
+        if let Err(error) = &result {
+            eprintln!("listener bridge request {method} failed: {error:#}");
         }
+        result
     });
 }
 
 async fn spawn_im_core_runner_session_async(
-    resolved: Arc<Resolved>,
+    core: im_core::ImCore,
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
     clients: Arc<Mutex<HashMap<String, im_core::ImClient>>>,
@@ -507,7 +515,7 @@ async fn spawn_im_core_runner_session_async(
         let _ = listener::write_status(&guard.status_file, &guard);
     }
     let selector = im_core::IdentitySelector::LocalAlias(identity_name.clone());
-    let client = match crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await {
+    let client = match core.client_async(selector).await {
         Ok(client) => client,
         Err(err) => {
             mark_session_disconnected(
