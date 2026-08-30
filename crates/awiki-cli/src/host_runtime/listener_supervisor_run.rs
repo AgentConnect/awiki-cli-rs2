@@ -402,12 +402,11 @@ impl BridgeRuntime {
                         )
                     })?;
                     warnings.extend(
-                        listener_local_inbox_transport_or_warning(
+                        listener_local_inbox_secure_hydration_or_warning(
                             crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
                                 &client, &query,
                             )
                             .await,
-                            "sync.secure_inbox_hydration_deferred",
                         )
                         .map_err(|error| {
                             anyhow::anyhow!(
@@ -487,6 +486,23 @@ impl BridgeRuntime {
                 Value::Array(result.warnings.into_iter().map(Value::String).collect()),
             ),
         ]))
+    }
+}
+
+fn listener_local_inbox_secure_hydration_or_warning(
+    result: Result<Vec<String>, crate::m_core_cli_adapter::message_result::MessageAdapterError>,
+) -> Result<Vec<String>, crate::m_core_cli_adapter::message_result::MessageAdapterError> {
+    use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+    match result {
+        Ok(warnings) => Ok(warnings),
+        Err(MessageAdapterError::TransportUnavailable(_)) => {
+            Ok(vec!["sync.secure_inbox_hydration_deferred".to_owned()])
+        }
+        Err(MessageAdapterError::LocalStateUnavailable(_)) => Ok(vec![
+            "sync.secure_inbox_hydration_local_state_deferred".to_owned(),
+        ]),
+        Err(error) => Err(error),
     }
 }
 
@@ -1288,6 +1304,30 @@ mod tests {
                 "sync.foreground_reconcile_deferred",
             ),
             Err(MessageAdapterError::IdentityRequired(_))
+        ));
+    }
+
+    #[test]
+    fn secure_hydration_local_state_failure_defers_but_service_stays_closed() {
+        use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
+
+        assert_eq!(
+            listener_local_inbox_secure_hydration_or_warning(Err(
+                MessageAdapterError::LocalStateUnavailable("secret-bearing-detail".to_owned()),
+            ))
+            .unwrap(),
+            vec!["sync.secure_inbox_hydration_local_state_deferred"]
+        );
+        assert!(matches!(
+            listener_local_inbox_secure_hydration_or_warning(Err(MessageAdapterError::Service(
+                ServiceError {
+                    status_code: 409,
+                    rpc_code: 1409,
+                    message: "secret-bearing-detail".to_owned(),
+                    data: None,
+                }
+            ),)),
+            Err(MessageAdapterError::Service(_))
         ));
     }
 
