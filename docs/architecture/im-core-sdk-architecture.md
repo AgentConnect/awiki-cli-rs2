@@ -472,6 +472,16 @@ passes `user_presence_confirmed=true` does Core call ANP Identity's public Rust
 root export and construct that envelope in zeroizing memory. Core never sends
 an empty Init and never asks for a second confirmation.
 
+If an earlier confirmed attempt committed standard P5 pending bytes but its
+acceptance outcome is unknown, Core does not resend them at startup or while
+`prepare` is running. A later `prepare` performs the same fresh
+Registry/Manifest/sender/recipient checks and returns a short-lived handle bound
+to the existing message ID and sealed P5 bytes. Only a subsequent
+`confirm_and_send(user_presence_confirmed=true)` may resume those exact bytes;
+false confirmation consumes the handle without network I/O. Pending recovery
+never re-exports the root, advances the ratchet, changes the target, or creates
+a replacement message.
+
 The envelope object, canonical JSON output and P5 `V2SecretJsonPayload` are all
 owned by zeroizing containers. This is an SDK allocation-lifetime guarantee,
 not a claim that serializers or cryptographic backends can never create a
@@ -1341,13 +1351,23 @@ public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
 changes an interrupted recovery to `retryable` while retaining the original
 cursor, so the next `syncNow` obtains a fresh process-local token.
 
-Core uses one process-local single-flight coordinator per `owner_identity_id`.
+Core uses one process-local single-flight coordinator per
+`state-root + owner_identity_id`. Reopened `ImCore` instances that point to the
+same SQLite root share it; isolated roots with the same owner do not block one
+another.
 The first request owns the complete `begin_message_sync_run → sync → finish_message_sync_run`
 run. Concurrent foreground callers wait for and reuse that outcome instead of creating another
 generation. Listener startup/reconnect/hint/timer requests that arrive during a run are coalesced
 into at most one immediate follow-up; cancelling one waiter does not cancel the coordinator-owned
 run. This is process-local scheduling only: durable `run_generation` continues to fence another
 process or a stale process, and genuine retryable/blocked/auth failures remain fail-closed.
+The coordinator does not own a second owner-wide local-state operation mutex. Network, Directory,
+Realtime, and P5/P6 waits never hold a lock that blocks an unrelated committed local projection
+read. SQLite actor commands, atomic apply transactions, `run_generation`, and the existing
+peer/group lane-consumer scope locks remain the write-side serialization and stale-result fences.
+Consequently `local_inbox_projection` and `local_history` may return the latest committed view while
+a sync run is still in flight; they do not claim that view is remotely fresh. Operations whose
+contract requires freshness still await the coordinated sync result and fail closed when it fails.
 Snapshot commit additionally
 uses a SQLite compare-and-swap fence over the exact previous epoch/cursor,
 recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent

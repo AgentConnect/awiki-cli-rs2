@@ -755,7 +755,8 @@ Root transfer is an identity-scoped `ImClient::root_key_transfer()` capability
 with no rollout gate. The host first calls `prepare` with only the exact
 recipient `ProtocolDeviceId`. Core verifies the current ready Admin, the active
 Member/not-ready recipient, Manifest/Registry bindings, ANP Identity root
-capability and P5 Session or PreKey readiness. It returns an opaque 60-second, single-use
+capability and either P5 Session/PreKey readiness or an exact existing P5
+`pending_delivery`. It returns an opaque 60-second, single-use
 authorization handle plus a secret-free recipient summary. The host then calls
 `confirm_and_send` once with that handle and local user presence; Core, not the
 host, generates the message ID. A false confirmation fails before ANP Identity
@@ -771,11 +772,14 @@ There is no private endpoint, delivery class, sidecar, empty-Init handshake,
 imported ACK, public list/retry state, or host-supplied message ID. Core commits
 the standard P5 pending state and its secret-free sender delivery ledger in the
 same SQLite transaction, and an uncertain transport response is retried only
-with the identical P5 bytes and message ID. Startup and an explicit later
-prepare first recover any `pending_delivery` by resuming those durable bytes;
+with the identical P5 bytes and message ID. Startup never sends a pending root
+transfer. An explicit later `prepare` only performs fresh eligibility checks and
+issues a handle bound to the exact durable `pending_delivery`; it does not send
+network data. Only `confirm_and_send(user_presence_confirmed=true)` resumes the
+identical bytes, while false confirmation consumes the handle without sending.
 P5 acceptance and the sender `sent` fact commit atomically. Core never re-exports
-the root or creates a replacement message during recovery, and it rejects
-a new transfer while that recipient already has a pending or sent fact.
+the root or creates a replacement message during pending recovery, and it
+rejects a new transfer while that recipient already has a sent fact.
 
 On the recipient, authenticated Mailbox delivery supplies the exact accepted
 tuple and timestamp. Core validates the outer P5 binding, Registry/Manifest,
@@ -1261,10 +1265,17 @@ Reliable sync 补充：
   limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
   projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按
-  `owner_identity_id` 使用进程内 single-flight coordinator：第一个 `sync_now_async` 调用执行
+  同一 local state root 中的 `owner_identity_id` 使用进程内 single-flight coordinator：即使
+  host 重新打开另一个 `ImCore` 实例，也共享同一轮；不同 state root 不互相阻塞。第一个
+  `sync_now_async` 调用执行
   完整 run，并发 foreground 调用共享同一 outcome；Rust Listener 使用隐藏的
   `request_sync_async` 提交后台变化，运行中的重复 hint 只合并为一轮 follow-up。等待者取消不取消
   Core 持有的公共 run。该协调不替代跨进程 `run_generation` fencing，也不把真实失败改成成功。
+  Core 不再使用覆盖完整网络同步、Realtime、secure consumer 和本地读取的第二把 owner-wide
+  operation lock。`local_inbox_projection` / `local_history` 在同步请求等待网络时仍可读取 SQLite
+  已提交投影；结果只代表 committed local view，不代表远端最新。写入一致性继续由 SQLite actor、
+  原子事务、`run_generation` 与 P5/P6 peer/group scope fence 保证。要求 freshness 的入口仍等待
+  single-flight 同步结果，并在同步失败时 fail closed。
   Snapshot 仍在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
   CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed schema，消息时间不得
   早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法。

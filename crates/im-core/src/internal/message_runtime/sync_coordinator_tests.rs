@@ -313,30 +313,3 @@ async fn different_owners_can_execute_sync_runs_concurrently() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
-
-#[tokio::test]
-async fn local_state_operation_lock_hides_partially_handed_off_lane_inputs() {
-    let registry = MessageSyncCoordinatorRegistry::default();
-    let coordinator = registry.for_owner("owner-alice");
-    let sync_guard = coordinator.lock_local_state_operation().await;
-    let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
-    let (acquired_sender, mut acquired_receiver) = tokio::sync::oneshot::channel();
-
-    let lane_consumer = tokio::spawn({
-        let coordinator = Arc::clone(&coordinator);
-        async move {
-            let _ = started_sender.send(());
-            let _lane_guard = coordinator.lock_local_state_operation().await;
-            let _ = acquired_sender.send(());
-        }
-    });
-    started_receiver.await.unwrap();
-    assert!(matches!(
-        acquired_receiver.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-    ));
-
-    drop(sync_guard);
-    acquired_receiver.await.unwrap();
-    lane_consumer.await.unwrap();
-}

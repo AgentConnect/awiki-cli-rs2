@@ -850,10 +850,6 @@ pub(crate) async fn drain_pending_secure_lane_consumers(
             "secure lane drain limit must be between 1 and 256",
         ));
     }
-    let coordinator = client
-        .core_inner()
-        .message_sync_coordinator(client.current_identity().id.as_str());
-    let _operation_guard = coordinator.lock_local_state_operation().await;
     let mut first_error: Option<crate::ImError> = None;
     #[cfg(feature = "secure-direct")]
     if let Err(error) = drain_p5_lane_inputs(client, max_inputs).await {
@@ -1103,8 +1099,6 @@ where
                     Ok((mut outcome, Some(_error))) if !device_epoch_refresh_attempted => {
                         self.refresh_session_and_lane_epoch().await?;
                         let binding = self.client.active_sync_account_binding().await?;
-                        let owner_lock = owner_sync_lock(&binding.owner_identity_id);
-                        let _owner_guard = owner_lock.lock().await;
                         let db = self.client.core_inner().local_state_db().await?;
                         match self.drain_read_outbox(&db, &binding).await {
                             Ok(None) => break Ok(outcome),
@@ -1189,8 +1183,6 @@ where
         self.session_provider.refresh_session().await?;
         self.transport.reload_authentication_state()?;
         let binding = self.client.active_sync_account_binding().await?;
-        let owner_lock = owner_sync_lock(&binding.owner_identity_id);
-        let _owner_guard = owner_lock.lock().await;
         let db = self.client.core_inner().local_state_db().await?;
         if !db
             .load_lane_sync_states(binding.owner_identity_id.clone())
@@ -1220,8 +1212,6 @@ where
             ));
         }
         let binding = self.client.active_sync_account_binding().await?;
-        let owner_lock = owner_sync_lock(&binding.owner_identity_id);
-        let _owner_guard = owner_lock.lock().await;
         let db = self.client.core_inner().local_state_db().await?;
         let owner_identity_id = binding.owner_identity_id.clone();
         let mut result = empty_outcome();
@@ -4172,19 +4162,6 @@ fn preserve_success_after_cleanup<T>(
     successful_sync
 }
 
-fn owner_sync_lock(owner_identity_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: OnceLock<StdMutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-        OnceLock::new();
-    let mut locks = LOCKS
-        .get_or_init(|| StdMutex::new(BTreeMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    locks
-        .entry(owner_identity_id.to_owned())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
-}
-
 fn lane_consumer_scope_lock(
     owner_identity_id: &str,
     lane: crate::internal::wire::sync_v2::SyncLaneV3,
@@ -6173,7 +6150,7 @@ END;
     }
 
     #[tokio::test]
-    async fn v1a_run_deadline_cancels_hung_rpc_and_releases_the_owner_lock() {
+    async fn v1a_run_deadline_cancels_hung_rpc_and_allows_the_next_run() {
         let fixture = SyncSnapshotFixture::new("v1a-run-deadline");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
