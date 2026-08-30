@@ -417,14 +417,11 @@ pub(crate) struct CorePlainTransport<'a> {
     register_authorization: Option<String>,
 }
 
-fn append_client_version_header(
-    headers: &mut BTreeMap<String, String>,
+pub(crate) fn client_version_header(
     config: &crate::ImCoreConfig,
     request_url: &str,
-) {
-    let Ok(request) = reqwest::Url::parse(request_url) else {
-        return;
-    };
+) -> Option<(String, String)> {
+    let request = reqwest::Url::parse(request_url).ok()?;
     let path = request.path();
     if !matches!(
         path,
@@ -432,7 +429,7 @@ fn append_client_version_header(
             || value.starts_with("/im/")
             || value.starts_with("/mail/")
     ) {
-        return;
+        return None;
     }
     let is_local_origin = [
         Some(&config.service_base_url),
@@ -448,14 +445,24 @@ fn append_client_version_header(
             && endpoint.host_str() == request.host_str()
             && endpoint.port_or_known_default() == request.port_or_known_default()
     });
-    if is_local_origin {
-        let Some(version) = config.client_version_info.as_ref() else {
-            return;
-        };
-        headers.insert(
+    if !is_local_origin {
+        return None;
+    }
+    config.client_version_info.as_ref().map(|version| {
+        (
             crate::config::CLIENT_VERSION_HEADER.to_owned(),
             version.header_value(),
-        );
+        )
+    })
+}
+
+fn append_client_version_header(
+    headers: &mut BTreeMap<String, String>,
+    config: &crate::ImCoreConfig,
+    request_url: &str,
+) {
+    if let Some((name, value)) = client_version_header(config, request_url) {
+        headers.insert(name, value);
     }
 }
 

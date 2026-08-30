@@ -71,6 +71,10 @@ request-signing key 的 HTTP Message Signature；Token、nonce、key ID、retry 
 challenge 逻辑不由调用方选择。Token 只接受成功响应的 `Authentication-Info`，不会从响应
 `Authorization` 读取，也不会跨进程重启持久化。
 
+若 URL 属于配置的 AWiki User/Message/Mail origin，attempt 的 `headerPatch` 还会包含 Core
+根据 `clientVersionInfo` 生成的唯一 `X-AWiki-Client-Version`。该字段在签名前加入精确请求，
+调用方预置同名字段会 fail closed；任意其他 origin 不会收到产品版本信息。
+
 attempt 的 `headerPatch` 含敏感认证值，禁止记录。attempt 只能调用一次
 `handleResponse`；`401` 最多返回一个 `retryCount === 1` 的新 attempt，后者不会生成第三次
 请求。生产只接受 HTTPS；`externalHttpAllowInsecureLoopbackForTesting` 只允许 literal

@@ -10,11 +10,18 @@ struct Fixture {
 
 impl Fixture {
     fn new(allow_loopback_http: bool) -> Self {
+        Self::with_client_version(allow_loopback_http, None)
+    }
+
+    fn with_client_version(
+        allow_loopback_http: bool,
+        client_version_info: Option<crate::ClientVersionInfo>,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let config = crate::ImCoreConfig {
             service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
             did_domain: "example.test".to_owned(),
-            client_version_info: None,
+            client_version_info,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -68,6 +75,32 @@ impl Fixture {
             did_document: bundle.did_document,
         }
     }
+}
+
+#[test]
+fn local_service_request_adds_the_core_owned_client_version_header() {
+    let fixture = Fixture::with_client_version(
+        false,
+        Some(crate::ClientVersionInfo::new("awiki-daemon", "0815", "0.1.91", None).unwrap()),
+    );
+    let attempt = fixture
+        .client
+        .external_http_auth()
+        .prepare(get("https://example.test/user-service/v1/did/profile/rpc"))
+        .unwrap();
+
+    assert_eq!(
+        attempt
+            .request
+            .headers
+            .get("x-awiki-client-version")
+            .map(String::as_str),
+        Some("awiki-daemon/0815/0.1.91")
+    );
+    assert_eq!(
+        header_value(attempt.header_patch(), crate::CLIENT_VERSION_HEADER),
+        Some("awiki-daemon/0815/0.1.91")
+    );
 }
 
 #[test]
@@ -442,6 +475,7 @@ fn request_validation_rejects_unsafe_or_ambiguous_inputs_before_signing() {
         "Signature-Input",
         "Signature",
         "Content-Digest",
+        "X-AWiki-Client-Version",
     ] {
         assert!(ExternalHttpRequest::new(
             "https://api.example.com/orders",

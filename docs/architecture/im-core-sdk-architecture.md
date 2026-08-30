@@ -251,9 +251,10 @@ replacing the one persisted access token. V1 has no device-token issue or
 refresh RPC and stores no device refresh token.
 
 Product version metadata is typed host input but Core-owned wire behavior. Core
-adds exactly one `X-AWiki-Client-Version` after authentication headers have been
-constructed for configured-origin AWiki product HTTP requests, and also adds it
-to Message WebSocket handshakes. Raw DID/ANP and attachment-object traffic does
+adds exactly one `X-AWiki-Client-Version` to configured-origin AWiki product HTTP
+requests, including Host-owned External HTTP attempts before they are signed,
+and also adds it to Message WebSocket handshakes. Callers cannot override the
+managed field. Raw DID/ANP, unrelated external origins, and attachment-object traffic do
 not inherit it. User Service product traffic uses only canonical
 `/user-service/v1/...` paths; the server's unversioned aliases are not a client
 fallback mechanism.

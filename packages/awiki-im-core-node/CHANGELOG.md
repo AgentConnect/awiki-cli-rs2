@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.1 (unreleased)
+
+- Publish the current native API v10 External Provider source as a new immutable
+  candidate after `0.2.0`; no Provider protocol or public API shape is changed.
+- Refresh checksums, provenance, SBOM, and all five platform packages from the
+  same source commit before the DSH plugin candidate is assembled.
+- Add the configured `X-AWiki-Client-Version` to External HTTP requests targeting
+  the local AWiki User/Message/Mail origin before signing, and reject caller overrides.
+
+## 0.2.0
 
 - Add restart-safe new-device Join listing, explicit cancellation, SAS/expiry, ready-admin
   Registry, approval/rejection, and device revocation methods.

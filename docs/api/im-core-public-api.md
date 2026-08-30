@@ -950,6 +950,11 @@ method, target URI, authority and optional body digest with the current device
 request-signing key. The host cannot choose the key, nonce, algorithm or auth
 mode.
 
+For configured-origin AWiki User/Message/Mail URLs, Core also injects the
+configured `X-AWiki-Client-Version` into the prepared request and returned
+header patch before signing. Callers cannot pre-populate or override this
+managed field. Unrelated external origins receive no AWiki product version.
+
 ```rust
 pub const EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
