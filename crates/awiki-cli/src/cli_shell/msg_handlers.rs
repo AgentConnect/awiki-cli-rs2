@@ -18,6 +18,46 @@ fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
     }
 }
 
+fn listener_local_command_error(method: &str, error: &anyhow::Error) -> ExitError {
+    let stage = error
+        .downcast_ref::<crate::host_runtime::bridge::BridgeCallError>()
+        .map(|error| {
+            if method == "local.inbox" && error.phase == "bridge_read" {
+                if error
+                    .message
+                    .starts_with("local inbox reconciliation failed:")
+                {
+                    return "inbox_reconciliation";
+                }
+                if error
+                    .message
+                    .starts_with("local inbox secure hydration failed:")
+                {
+                    return "inbox_secure_hydration";
+                }
+                if error
+                    .message
+                    .starts_with("local inbox reconciliation/read failed:")
+                {
+                    return "inbox_local_projection";
+                }
+            }
+            match error.phase.as_str() {
+                "bridge_health_probe" | "bridge_dial" => "bridge_connection",
+                "bridge_write" => "bridge_write",
+                "bridge_read" => "bridge_read",
+                _ => "bridge_unknown",
+            }
+        })
+        .unwrap_or("bridge_unknown");
+    ExitError::new(
+        "local_state_unavailable",
+        5,
+        format!("the running listener failed during {stage}."),
+        "Check `awiki-cli runtime listener status`; do not start a second foreground writer while the listener is active.",
+    )
+}
+
 fn try_listener_local_command(
     resolved: &Resolved,
     requested_identity: &str,
@@ -39,15 +79,47 @@ fn try_listener_local_command(
         },
         resolved,
     )
-    .map_err(|_| {
-        ExitError::new(
-            "local_state_unavailable",
-            5,
-            "the running listener could not complete the local message operation.",
-            "Check `awiki-cli runtime listener status`; do not start a second foreground writer while the listener is active.",
-        )
-    })?;
+    .map_err(|error| listener_local_command_error(method, &error))?;
     parse_listener_local_result(result).map(Some)
+}
+
+#[cfg(test)]
+mod listener_local_command_error_tests {
+    #[test]
+    fn classifies_inbox_stage_without_exposing_bridge_detail() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_read",
+            "local inbox secure hydration failed: secret-bearing-detail",
+            "",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(mapped.detail.code, "local_state_unavailable");
+        assert_eq!(mapped.exit_code, 5);
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during inbox_secure_hydration."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-detail"));
+    }
+
+    #[test]
+    fn classifies_bridge_connection_without_exposing_cause() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_dial",
+            "local websocket bridge unavailable",
+            "secret-bearing-cause",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during bridge_connection."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-cause"));
+    }
 }
 
 fn parse_listener_local_result(result: Map<String, Value>) -> Result<CommandResult, ExitError> {
