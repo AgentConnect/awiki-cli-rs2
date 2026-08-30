@@ -129,10 +129,25 @@ pub async fn derive_shared_secret_or_fallback(
                 peer_public,
             })
             .await
-            .map_err(map_provider_error)?;
+            .map_err(|error| {
+                if std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1") {
+                    eprintln!(
+                        "[awiki-im-core][root-transfer] stage=prekey_ecdh_provider provider_code={:?}",
+                        error.code
+                    );
+                }
+                map_provider_error(error)
+            })?;
         return Ok(Zeroizing::new(*shared.as_bytes()));
     }
-    fallback.ecdh(kid, &peer_public)
+    fallback.ecdh(kid, &peer_public).map_err(|error| {
+        if std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1") {
+            eprintln!(
+                "[awiki-im-core][root-transfer] stage=prekey_ecdh_fallback provider_code=none"
+            );
+        }
+        error
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
