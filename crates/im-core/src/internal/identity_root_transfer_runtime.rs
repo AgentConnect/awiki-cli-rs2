@@ -556,7 +556,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                 .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
             Some(
                 crate::internal::identity_provider::derive_shared_secret_or_fallback(
-                    client.runtime().identity_session.as_ref(),
+                    Some(&custody_identity),
                     &client.runtime().key_provider,
                     &sender.e2ee_key_id,
                     recipient_signed_prekey,
