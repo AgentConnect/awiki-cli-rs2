@@ -1500,11 +1500,25 @@ async fn send_commit_v4(
         .intent_hash
         .clone()
         .ok_or(crate::ImError::PermissionDenied)?;
-    let transition_candidate =
+    let predecessor_document = if pending.fresh_local_state {
+        let mut transport = crate::internal::transport::CorePlainTransport::new(core);
+        let current = crate::internal::discovery::did_document::resolve_did_document_async(
+            &mut transport,
+            &pending.local_previous_did,
+        )
+        .await?;
+        unsigned_recovery_predecessor_document(
+            current,
+            &pending.local_previous_did,
+            pending.identity.did.as_str(),
+        )?
+    } else {
         crate::internal::identity_custody::prepare_handle_recovery_transition_candidate(
             core, pending,
         )
-        .await?;
+        .await?
+        .predecessor_document
+    };
     let audience = core
         .inner()
         .multi_device_audience()
@@ -1520,7 +1534,7 @@ async fn send_commit_v4(
                 nonce: &nonce,
             },
             recovery_grant: pending.recovery_grant()?,
-            predecessor_did_document: transition_candidate.predecessor_document,
+            predecessor_did_document: predecessor_document,
             new_did_document: pending.identity.did_document.clone(),
         },
     )?;
@@ -1540,8 +1554,12 @@ async fn send_commit_v4(
             .map_err(crate::internal::identity_provider::map_provider_error)?;
     let prepared =
         crate::internal::identity_wire::handle_recovery::complete_commit_v4(prepared, &signature)?;
-    crate::internal::identity_custody::begin_handle_recovery_transition_publication(core, pending)
+    if !pending.fresh_local_state {
+        crate::internal::identity_custody::begin_handle_recovery_transition_publication(
+            core, pending,
+        )
         .await?;
+    }
     if !pending.commit_attempted {
         let attempted_at = now_second_z()?;
         crate::internal::identity_handle_recovery_operation::mark_commit_attempted(
@@ -1564,10 +1582,12 @@ async fn send_commit_v4(
     {
         Ok(raw) => raw,
         Err(error) => {
-            crate::internal::identity_custody::mark_handle_recovery_transition_unknown(
-                core, pending,
-            )
-            .await?;
+            if !pending.fresh_local_state {
+                crate::internal::identity_custody::mark_handle_recovery_transition_unknown(
+                    core, pending,
+                )
+                .await?;
+            }
             if let Some(raw_code) = service_code(&error) {
                 let Some(code) = crate::internal::identity_wire::handle_recovery::RecoveryServerErrorCodeV4::parse(raw_code) else {
                     return Err(error);
@@ -1604,15 +1624,21 @@ async fn send_commit_v4(
     ) {
         Ok(result) => result,
         Err(error) => {
-            crate::internal::identity_custody::mark_handle_recovery_transition_unknown(
-                core, pending,
-            )
-            .await?;
+            if !pending.fresh_local_state {
+                crate::internal::identity_custody::mark_handle_recovery_transition_unknown(
+                    core, pending,
+                )
+                .await?;
+            }
             return Err(error);
         }
     };
-    crate::internal::identity_custody::confirm_handle_recovery_transition_published(core, pending)
+    if !pending.fresh_local_state {
+        crate::internal::identity_custody::confirm_handle_recovery_transition_published(
+            core, pending,
+        )
         .await?;
+    }
     let revision = pending.revision;
     pending.record_remote_result(result)?;
     store.save_v4_cas(pending, revision)?;
@@ -1626,6 +1652,31 @@ async fn send_commit_v4(
         &now_second_z()?,
     )?;
     Ok(true)
+}
+
+fn unsigned_recovery_predecessor_document(
+    mut document: Value,
+    expected_previous_did: &str,
+    successor_did: &str,
+) -> crate::ImResult<Value> {
+    let object = document
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if object.get("id").and_then(Value::as_str) != Some(expected_previous_did)
+        || object.get("deactivated").and_then(Value::as_bool) == Some(true)
+        || object.contains_key("successorDid")
+        || object.contains_key("providerTransitionAssertion")
+        || expected_previous_did == successor_did
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    object.remove("proof");
+    object.insert("deactivated".to_owned(), Value::Bool(true));
+    object.insert(
+        "successorDid".to_owned(),
+        Value::String(successor_did.to_owned()),
+    );
+    Ok(document)
 }
 
 async fn reconcile_result_v4(
@@ -1787,10 +1838,12 @@ async fn reconcile_result_v4(
     }
     match result {
         crate::internal::identity_wire::handle_recovery::RecoveryResultGetV4::Committed(result) => {
-            crate::internal::identity_custody::confirm_handle_recovery_transition_published(
-                core, pending,
-            )
-            .await?;
+            if !pending.fresh_local_state {
+                crate::internal::identity_custody::confirm_handle_recovery_transition_published(
+                    core, pending,
+                )
+                .await?;
+            }
             let revision = pending.revision;
             pending.record_remote_result(result)?;
             store.save_v4_cas(pending, revision)?;
@@ -1806,10 +1859,12 @@ async fn reconcile_result_v4(
             Ok(ReconcileV4Outcome::Committed)
         }
         crate::internal::identity_wire::handle_recovery::RecoveryResultGetV4::ResultAbsent => {
-            crate::internal::identity_custody::reconcile_handle_recovery_transition_remote_old(
-                core, pending,
-            )
-            .await?;
+            if !pending.fresh_local_state {
+                crate::internal::identity_custody::reconcile_handle_recovery_transition_remote_old(
+                    core, pending,
+                )
+                .await?;
+            }
             Ok(ReconcileV4Outcome::ResultAbsent)
         }
     }
@@ -2952,6 +3007,46 @@ fn canonical_generation(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_recovery_builds_unsigned_predecessor_without_old_private_key() {
+        let old_did = "did:wba:example.invalid:users:alice:e1_old";
+        let new_did = "did:wba:example.invalid:users:alice:e1_new";
+        let document = json!({
+            "id": old_did,
+            "verificationMethod": [{
+                "id": format!("{old_did}#key-1"),
+                "controller": old_did,
+                "type": "Multikey",
+                "publicKeyMultibase": "z6Mkfixture"
+            }],
+            "proof": {"proofValue": "active-document-proof"}
+        });
+
+        let predecessor =
+            unsigned_recovery_predecessor_document(document, old_did, new_did).unwrap();
+        assert_eq!(predecessor["id"], old_did);
+        assert_eq!(predecessor["deactivated"], true);
+        assert_eq!(predecessor["successorDid"], new_did);
+        assert!(predecessor.get("proof").is_none());
+        assert!(predecessor.get("verificationMethod").is_some());
+    }
+
+    #[test]
+    fn fresh_recovery_rejects_an_already_superseded_predecessor() {
+        let old_did = "did:wba:example.invalid:users:alice:e1_old";
+        let document = json!({
+            "id": old_did,
+            "deactivated": true,
+            "successorDid": "did:wba:example.invalid:users:alice:e1_other"
+        });
+        assert!(unsigned_recovery_predecessor_document(
+            document,
+            old_did,
+            "did:wba:example.invalid:users:alice:e1_new",
+        )
+        .is_err());
+    }
 
     fn read_http_request(stream: &mut std::net::TcpStream) -> String {
         use std::io::Read as _;

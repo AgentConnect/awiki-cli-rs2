@@ -2611,20 +2611,30 @@ LIMIT 1"#,
                 detail: format!("message {requested_id} has no committed Sync V2 thread sequence"),
             }
         })?;
-        let sync_binding = super::sync_v2::load_sync_thread_binding_for_conversation(
+        let thread_kind = if conversation_id.starts_with("group:") {
+            "group"
+        } else {
+            "direct"
+        };
+        let mut sync_binding = super::sync_v2::load_sync_thread_binding_for_conversation(
             connection,
             &owner_identity_id,
             &conversation_id,
-            if conversation_id.starts_with("group:") {
-                "group"
-            } else {
-                "direct"
-            },
-        )?
-        .ok_or_else(|| crate::ImError::IdentityBindingConflict {
-            detail: format!("message {requested_id} has no exact Sync V2 thread binding"),
-        })?;
-        if sync_binding.conversation_id != conversation_id {
+            thread_kind,
+        )?;
+        if sync_binding.is_none() {
+            sync_binding = recover_sync_thread_binding_from_message_metadata(
+                connection,
+                &owner_identity_id,
+                &conversation_id,
+                thread_kind,
+                &metadata,
+            )?;
+        }
+        if sync_binding
+            .as_ref()
+            .is_some_and(|binding| binding.conversation_id != conversation_id)
+        {
             return Err(crate::ImError::IdentityBindingConflict {
                 detail: format!(
                     "message {requested_id} Sync V2 thread binding changed concurrently"
@@ -2652,6 +2662,41 @@ LIMIT 1"#,
         watermarks: by_conversation.into_values().collect(),
         local_only_message_ids,
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn recover_sync_thread_binding_from_message_metadata(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    thread_kind: &str,
+    metadata: &str,
+) -> crate::ImResult<Option<super::sync_v2::SyncThreadBinding>> {
+    if (thread_kind == "direct" && !conversation_id.starts_with("dm:"))
+        || (thread_kind == "group" && !conversation_id.starts_with("group:"))
+    {
+        return Ok(None);
+    }
+    let metadata = parse_metadata(metadata);
+    let remote_thread_key = metadata
+        .get("remote_thread_key")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if remote_thread_key.is_none() {
+        return Ok(None);
+    }
+    let binding = super::sync_v2::SyncThreadBinding {
+        owner_identity_id: owner_identity_id.to_owned(),
+        remote_thread_key: remote_thread_key
+            .expect("checked remote thread key")
+            .to_owned(),
+        thread_kind: thread_kind.to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        updated_at: chrono::Utc::now().timestamp(),
+    };
+    super::sync_v2::upsert_sync_thread_binding(connection, &binding)?;
+    Ok(Some(binding))
 }
 
 #[cfg(feature = "sqlite")]
@@ -7705,6 +7750,113 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             ]
         );
         assert!(result.local_only_message_ids.is_empty());
+    }
+
+    #[test]
+    fn v2_mark_read_repairs_missing_binding_from_remote_thread_metadata() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:example:owner";
+        let conversation_id = "dm:peer-scope:v1:stable";
+        let remote_thread_key = "direct-thread-account-owner-peer";
+        crate::internal::local_state::sync_v2::upsert_identity_account_binding(
+            &db,
+            &crate::internal::local_state::sync_v2::IdentityAccountBinding {
+                owner_identity_id: owner_identity_id.to_owned(),
+                account_id: "account-owner".to_owned(),
+                handle_scope: Some("owner.awiki.info".to_owned()),
+                current_did: owner_did.to_owned(),
+                protocol_device_id: "device-owner".to_owned(),
+                identity_generation: "1".to_owned(),
+                device_auth_generation: "1".to_owned(),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "direct-recovered".to_owned(),
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                thread_id: conversation_id.to_owned(),
+                direction: 0,
+                sender_did: "did:example:peer".to_owned(),
+                receiver_did: owner_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "recovered".to_owned(),
+                server_seq: Some(21),
+                sent_at: "2026-08-30T00:00:21Z".to_owned(),
+                stored_at: "2026-08-30T00:00:21Z".to_owned(),
+                metadata: serde_json::json!({
+                    "remote_thread_key": remote_thread_key,
+                })
+                .to_string(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        let resolved = resolve_v2_mark_read_watermarks_for_owner_identity(
+            &db,
+            owner_identity_id,
+            &["direct-recovered".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(resolved.watermarks.len(), 1);
+        let binding =
+            crate::internal::local_state::sync_v2::load_sync_thread_binding_for_conversation(
+                &db,
+                owner_identity_id,
+                conversation_id,
+                "direct",
+            )
+            .unwrap()
+            .expect("trusted remote thread metadata should repair the missing binding");
+        assert_eq!(binding.remote_thread_key, remote_thread_key);
+
+        let selector_only_conversation = "dm:did:example:selector-only";
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "direct-selector-only".to_owned(),
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: selector_only_conversation.to_owned(),
+                thread_id: selector_only_conversation.to_owned(),
+                direction: 0,
+                sender_did: "did:example:selector-only".to_owned(),
+                receiver_did: owner_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "selector-only".to_owned(),
+                server_seq: Some(22),
+                sent_at: "2026-08-30T00:00:22Z".to_owned(),
+                stored_at: "2026-08-30T00:00:22Z".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+        let selector_only = resolve_v2_mark_read_watermarks_for_owner_identity(
+            &db,
+            owner_identity_id,
+            &["direct-selector-only".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(selector_only.watermarks.len(), 1);
+        assert!(
+            crate::internal::local_state::sync_v2::load_sync_thread_binding_for_conversation(
+                &db,
+                owner_identity_id,
+                selector_only_conversation,
+                "direct",
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]
