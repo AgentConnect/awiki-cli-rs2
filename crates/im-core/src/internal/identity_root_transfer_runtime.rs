@@ -502,7 +502,10 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
             },
         )
         .await
-        .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
+        .map_err(|error| {
+            root_transfer_safe_diagnostic("root_export", Some(&format!("{:?}", error.code)));
+            root_error(RootTransferErrorCode::RootVaultUnavailable)
+        })?;
     validate_root_private_der_matches_document(
         exported_root.as_pkcs8_der(),
         &document,
@@ -559,7 +562,10 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                     recipient_signed_prekey,
                 )
                 .await
-                .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?,
+                .map_err(|_| {
+                    root_transfer_safe_diagnostic("prekey_ecdh", None);
+                    root_error(RootTransferErrorCode::RootVaultUnavailable)
+                })?,
             )
         }
         PreparedRootTransport::EstablishedSession => None,
@@ -884,6 +890,16 @@ fn ensure_sender_envelope_format_column_with_connection(
 
 fn root_error(code: RootTransferErrorCode) -> RootTransferError {
     RootTransferError::new(code)
+}
+
+fn root_transfer_safe_diagnostic(stage: &str, provider_code: Option<&str>) {
+    if std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() != Ok("1") {
+        return;
+    }
+    eprintln!(
+        "[awiki-im-core][root-transfer] stage={stage} provider_code={}",
+        provider_code.unwrap_or("none")
+    );
 }
 
 fn map_prepare_remote_error(error: crate::ImError) -> RootTransferError {
