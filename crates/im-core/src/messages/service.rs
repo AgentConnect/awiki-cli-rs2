@@ -2892,7 +2892,13 @@ impl<'a> MessageService<'a> {
                 "limit must be greater than zero",
             ));
         }
-        let binding = self.client.active_sync_account_binding().await?;
+        let binding_result = self.client.active_sync_account_binding().await;
+        if binding_result.is_err()
+            && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+        {
+            eprintln!("[awiki-im-core][root-import] stage=local_projection_binding status=failed");
+        }
+        let binding = binding_result?;
         if binding.owner_identity_id != self.client.current_identity().id.as_str()
             || binding.current_did != self.client.did().as_str()
         {
@@ -2903,11 +2909,15 @@ impl<'a> MessageService<'a> {
         #[cfg(feature = "sqlite")]
         {
             let requested_limit = i64::from(query.limit.0);
-            let mut records = self
-                .client
-                .core_inner()
-                .local_state_db()
-                .await?
+            let db_result = self.client.core_inner().local_state_db().await;
+            if db_result.is_err()
+                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "[awiki-im-core][root-import] stage=local_projection_database status=failed"
+                );
+            }
+            let records_result = db_result?
                 .list_local_inbox_messages(
                     binding.owner_identity_id,
                     binding.current_did,
@@ -2915,15 +2925,31 @@ impl<'a> MessageService<'a> {
                     query.unread_only,
                     requested_limit.saturating_add(1),
                 )
-                .await?;
+                .await;
+            if records_result.is_err()
+                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "[awiki-im-core][root-import] stage=local_projection_query status=failed"
+                );
+            }
+            let mut records = records_result?;
             let has_more = records.len() > usize::try_from(requested_limit).unwrap_or(usize::MAX);
             if has_more {
                 records.truncate(usize::try_from(requested_limit).unwrap_or(usize::MAX));
             }
-            let items = records
+            let items_result = records
                 .iter()
                 .map(crate::internal::message_runtime::conversations::message_from_record)
-                .collect::<crate::ImResult<Vec<_>>>()?;
+                .collect::<crate::ImResult<Vec<_>>>();
+            if items_result.is_err()
+                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "[awiki-im-core][root-import] stage=local_projection_conversion status=failed"
+                );
+            }
+            let items = items_result?;
             Ok(super::MessagePage {
                 items,
                 next_cursor: None,
