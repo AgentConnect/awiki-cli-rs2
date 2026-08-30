@@ -18,6 +18,12 @@ fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
     }
 }
 
+fn root_import_cli_safe_diagnostic(stage: &str) {
+    if std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1") {
+        eprintln!("[awiki-im-core][root-import] stage={stage} status=failed");
+    }
+}
+
 fn try_listener_local_command(
     resolved: &Resolved,
     requested_identity: &str,
@@ -669,39 +675,53 @@ impl App {
             )? {
                 return self.render_message_result("awiki-cli msg inbox", &resolved, result);
             }
-            let mut client = crate::m_core_cli_adapter::build_im_client_async(
+            let initial_client = crate::m_core_cli_adapter::build_im_client_async(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
             )
-            .await?;
+            .await;
+            if initial_client.is_err() {
+                root_import_cli_safe_diagnostic("build_initial_cli_client");
+            }
+            let mut client = initial_client?;
             let refresh_after_hydration = matches!(
                 &query.scope,
                 im_core::messages::InboxScope::DirectOnly | im_core::messages::InboxScope::All
             );
-            let secure_warnings =
+            let secure_hydration =
                 crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
                     &client, &query,
                 )
-                .await
-                .map_err(|err| {
-                    message_exit(
-                        err,
-                        "Ensure the active identity is ready and the message service is reachable.",
-                    )
-                })?;
+                .await;
+            if secure_hydration.is_err() {
+                root_import_cli_safe_diagnostic("hydrate_cli_secure_inbox");
+            }
+            let secure_warnings = secure_hydration.map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the active identity is ready and the message service is reachable.",
+                )
+            })?;
             if refresh_after_hydration {
                 let selector = im_core::IdentitySelector::Did(client.did().clone());
-                client =
-                    crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await?;
+                let refreshed_client =
+                    crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await;
+                if refreshed_client.is_err() {
+                    root_import_cli_safe_diagnostic("build_refreshed_cli_client");
+                }
+                client = refreshed_client?;
             }
-            let result = crate::m_core_cli_adapter::messages::read_inbox_via_im_core_async(
+            let projection = crate::m_core_cli_adapter::messages::read_inbox_via_im_core_async(
                 &resolved,
                 &client,
                 query,
                 secure_warnings,
             )
-            .await
-            .map_err(|err| {
+            .await;
+            if projection.is_err() {
+                root_import_cli_safe_diagnostic("read_cli_inbox_projection");
+            }
+            let result = projection.map_err(|err| {
                 message_exit(
                     err,
                     "Ensure the active identity is ready and the message service is reachable.",
