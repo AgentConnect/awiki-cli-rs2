@@ -375,6 +375,67 @@ mod incoming_recovery_tests {
     }
 
     #[tokio::test]
+    async fn newer_promoted_binding_does_not_block_committed_local_inbox_read() {
+        let fixture = Fixture::new();
+        let bootstrap = fixture
+            .core
+            .generate_vnext_agent_bootstrap(
+                crate::identity::AgentIdentityKind::Daemon,
+                "daemon-promoted-local-read",
+            )
+            .unwrap();
+        let client = fixture
+            .core
+            .client_with_device_identity_material(host_material(
+                &bootstrap,
+                "daemon-promoted-local-read.awiki.info",
+                "daemon-promoted-local-read-account",
+            ))
+            .unwrap();
+        client.active_sync_account_binding().await.unwrap();
+        fixture.seed(record(
+            "msg-before-promotion",
+            &bootstrap.identity_id,
+            bootstrap.did.as_str(),
+            0,
+            "2026-08-01T00:01:00Z",
+            crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+        ));
+        let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path).unwrap();
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE identity_account_bindings
+                     SET device_auth_generation = '2'
+                     WHERE owner_identity_id = ?1",
+                    [&bootstrap.identity_id],
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+
+        assert!(matches!(
+            client.active_sync_account_binding().await,
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        let inbox = client
+            .messages()
+            .local_inbox_projection_with_metadata_async(crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            })
+            .await
+            .expect("a newer trusted binding must not block committed local reads");
+
+        assert_eq!(inbox.items.len(), 1);
+        assert_eq!(inbox.items[0].id.as_str(), "msg-before-promotion");
+    }
+
+    #[tokio::test]
     async fn recovery_limit_is_closed_and_hosted_client_has_no_binding() {
         let fixture = Fixture::new();
         let bootstrap = fixture
@@ -2892,64 +2953,50 @@ impl<'a> MessageService<'a> {
                 "limit must be greater than zero",
             ));
         }
-        let binding_result = self.client.active_sync_account_binding().await;
-        if binding_result.is_err()
-            && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-        {
-            eprintln!("[awiki-im-core][root-import] stage=local_projection_binding status=failed");
-        }
-        let binding = binding_result?;
-        if binding.owner_identity_id != self.client.current_identity().id.as_str()
-            || binding.current_did != self.client.did().as_str()
-        {
-            return Err(crate::ImError::IdentityBindingConflict {
-                detail: "active sync binding does not match the local Inbox owner".to_owned(),
-            });
-        }
+        // This is a committed local read. Do not resolve Handle state or
+        // upsert through active_sync_account_binding(): an exact-device
+        // promotion may have advanced the durable binding beyond this
+        // client's immutable runtime seed. Any existing durable binding still
+        // has to match account, device and DID; authorization generation is
+        // not part of the local message ownership key.
+        let context = self.client.sync_account_context()?;
+        let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
+        let current_did = self.client.did().as_str().to_owned();
         #[cfg(feature = "sqlite")]
         {
             let requested_limit = i64::from(query.limit.0);
-            let db_result = self.client.core_inner().local_state_db().await;
-            if db_result.is_err()
-                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+            let db = self.client.core_inner().local_state_db().await?;
+            if let Some(binding) = db
+                .load_identity_account_binding(owner_identity_id.clone())
+                .await?
             {
-                eprintln!(
-                    "[awiki-im-core][root-import] stage=local_projection_database status=failed"
-                );
+                if binding.account_id != context.account_id
+                    || binding.protocol_device_id != context.protocol_device_id
+                    || binding.current_did != current_did
+                {
+                    return Err(crate::ImError::IdentityBindingConflict {
+                        detail: "stored sync binding does not match the local Inbox owner"
+                            .to_owned(),
+                    });
+                }
             }
-            let records_result = db_result?
+            let mut records = db
                 .list_local_inbox_messages(
-                    binding.owner_identity_id,
-                    binding.current_did,
+                    owner_identity_id,
+                    current_did,
                     query.scope,
                     query.unread_only,
                     requested_limit.saturating_add(1),
                 )
-                .await;
-            if records_result.is_err()
-                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-            {
-                eprintln!(
-                    "[awiki-im-core][root-import] stage=local_projection_query status=failed"
-                );
-            }
-            let mut records = records_result?;
+                .await?;
             let has_more = records.len() > usize::try_from(requested_limit).unwrap_or(usize::MAX);
             if has_more {
                 records.truncate(usize::try_from(requested_limit).unwrap_or(usize::MAX));
             }
-            let items_result = records
+            let items = records
                 .iter()
                 .map(crate::internal::message_runtime::conversations::message_from_record)
-                .collect::<crate::ImResult<Vec<_>>>();
-            if items_result.is_err()
-                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-            {
-                eprintln!(
-                    "[awiki-im-core][root-import] stage=local_projection_conversion status=failed"
-                );
-            }
-            let items = items_result?;
+                .collect::<crate::ImResult<Vec<_>>>()?;
             Ok(super::MessagePage {
                 items,
                 next_cursor: None,
@@ -2961,7 +3008,7 @@ impl<'a> MessageService<'a> {
         }
         #[cfg(not(feature = "sqlite"))]
         {
-            let _ = binding;
+            let _ = (context, owner_identity_id, current_did);
             Err(crate::ImError::unsupported("local-inbox-projection"))
         }
     }
@@ -2981,29 +3028,14 @@ impl<'a> MessageService<'a> {
         // Root import can advance this exact device's authorization generation
         // independently of ordinary message sync. Finish any accepted local
         // transition first so callers never reuse the pre-promotion bearer.
-        let recovery =
-            crate::internal::identity_root_import_completion::recover_root_import_completions(
-                self.client,
-            )
-            .await;
-        if recovery.is_err()
-            && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-        {
-            eprintln!(
-                "[awiki-im-core][root-import] stage=recover_before_secure_inbox status=failed"
-            );
-        }
-        recovery?;
+        crate::internal::identity_root_import_completion::recover_root_import_completions(
+            self.client,
+        )
+        .await?;
         if !self.client.core_inner().direct_e2ee_v2_enabled() {
             return Ok(Vec::new());
         }
-        let binding_result = self.client.active_sync_account_binding().await;
-        if binding_result.is_err()
-            && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-        {
-            eprintln!("[awiki-im-core][root-import] stage=load_active_sync_binding status=failed");
-        }
-        let binding = binding_result?;
+        let binding = self.client.active_sync_account_binding().await?;
         if binding.owner_identity_id != self.client.current_identity().id.as_str()
             || binding.current_did != self.client.did().as_str()
         {
@@ -3015,50 +3047,30 @@ impl<'a> MessageService<'a> {
         {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
             let db = self.client.core_inner().local_state_db().await?;
-            let negotiation_required = db
+            if db
                 .lane_capability_negotiation_required(
                     binding.owner_identity_id.clone(),
                     binding.device_auth_generation.clone(),
                 )
-                .await;
-            if negotiation_required.is_err()
-                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+                .await?
             {
-                eprintln!("[awiki-im-core][root-import] stage=read_lane_capability status=failed");
-            }
-            if negotiation_required? {
-                let refresh = crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
+                crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
                     self.client,
                     &mut transport,
                     &db,
                     &binding,
                 )
-                .await;
-                if refresh.is_err()
-                    && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-                {
-                    eprintln!(
-                        "[awiki-im-core][root-import] stage=refresh_lane_bootstrap status=failed"
-                    );
-                }
-                refresh?;
+                .await?;
             }
             let mut directory_transport =
                 crate::internal::transport::CoreHttpTransport::new(self.client);
-            let hydration =
-                crate::internal::message_runtime::read::hydrate_exact_device_secure_inbox_async(
-                    self.client,
-                    &mut transport,
-                    &mut directory_transport,
-                    limit.0,
-                )
-                .await;
-            if hydration.is_err()
-                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
-            {
-                eprintln!("[awiki-im-core][root-import] stage=hydrate_secure_inbox status=failed");
-            }
-            return hydration;
+            return crate::internal::message_runtime::read::hydrate_exact_device_secure_inbox_async(
+                self.client,
+                &mut transport,
+                &mut directory_transport,
+                limit.0,
+            )
+            .await;
         }
         #[cfg(not(feature = "sqlite"))]
         {

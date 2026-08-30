@@ -502,30 +502,12 @@ pub async fn read_inbox_via_im_core_async(
     query: InboxQuery,
     mut secure_warnings: Vec<String>,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let readiness = require_messaging_ready(client);
-    if readiness.is_err() {
-        root_import_projection_safe_diagnostic("read_projection_readiness");
-    }
-    readiness?;
+    require_messaging_ready(client)?;
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
     let reconciled = reconcile_foreground_message_sync_async(client).await;
     rpc_phase.finish();
-    if reconciled.is_err() {
-        root_import_projection_safe_diagnostic("read_projection_foreground_sync");
-    }
     secure_warnings.extend(reconciled?);
-    let projection =
-        read_local_inbox_projection_via_im_core_async(client, query, secure_warnings).await;
-    if projection.is_err() {
-        root_import_projection_safe_diagnostic("read_projection_local_state");
-    }
-    projection
-}
-
-fn root_import_projection_safe_diagnostic(stage: &str) {
-    if std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1") {
-        eprintln!("[awiki-im-core][root-import] stage={stage} status=failed");
-    }
+    read_local_inbox_projection_via_im_core_async(client, query, secure_warnings).await
 }
 
 pub async fn read_local_inbox_projection_via_im_core_async(
