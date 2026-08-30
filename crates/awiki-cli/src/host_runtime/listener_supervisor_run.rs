@@ -394,7 +394,10 @@ impl BridgeRuntime {
                         )
                         .await
                         .map_err(|error| {
-                            anyhow::anyhow!("local inbox reconciliation failed: {error}")
+                            anyhow::anyhow!(
+                                "local inbox reconciliation failed: {}",
+                                local_inbox_reconciliation_error_category(&error)
+                            )
                         })?;
                     warnings.extend(
                         crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
@@ -473,6 +476,24 @@ impl BridgeRuntime {
                 Value::Array(result.warnings.into_iter().map(Value::String).collect()),
             ),
         ]))
+    }
+}
+
+fn local_inbox_reconciliation_error_category(
+    error: &crate::m_core_cli_adapter::message_result::MessageAdapterError,
+) -> &'static str {
+    use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+    match error {
+        MessageAdapterError::TransportUnavailable(_) => "transport_unavailable",
+        MessageAdapterError::LocalStateUnavailable(_) => "local_state_unavailable",
+        MessageAdapterError::IdentityRequired(_) => "identity_required",
+        MessageAdapterError::PermissionDenied => "permission_denied",
+        MessageAdapterError::PublicServiceCode(_) | MessageAdapterError::Service(_) => {
+            "service_error"
+        }
+        MessageAdapterError::Identity(_) => "identity_error",
+        _ => "other",
     }
 }
 
@@ -1202,6 +1223,24 @@ mod tests {
         SystemNotificationState,
     };
     use serde_json::Value;
+
+    #[test]
+    fn local_inbox_reconciliation_errors_are_secret_free_categories() {
+        use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+        assert_eq!(
+            local_inbox_reconciliation_error_category(&MessageAdapterError::TransportUnavailable(
+                "secret-bearing-detail".to_owned()
+            ),),
+            "transport_unavailable"
+        );
+        assert_eq!(
+            local_inbox_reconciliation_error_category(&MessageAdapterError::LocalStateUnavailable(
+                "secret-bearing-detail".to_owned()
+            ),),
+            "local_state_unavailable"
+        );
+    }
 
     #[test]
     fn reliable_sync_scheduler_starts_once_and_coalesces_hints_during_sync() {

@@ -27,7 +27,23 @@ fn listener_local_command_error(method: &str, error: &anyhow::Error) -> ExitErro
                     .message
                     .starts_with("local inbox reconciliation failed:")
                 {
-                    return "inbox_reconciliation";
+                    return match error
+                        .message
+                        .strip_prefix("local inbox reconciliation failed:")
+                        .map(str::trim)
+                    {
+                        Some("transport_unavailable") => {
+                            "inbox_reconciliation_transport_unavailable"
+                        }
+                        Some("local_state_unavailable") => {
+                            "inbox_reconciliation_local_state_unavailable"
+                        }
+                        Some("identity_required") => "inbox_reconciliation_identity_required",
+                        Some("permission_denied") => "inbox_reconciliation_permission_denied",
+                        Some("service_error") => "inbox_reconciliation_service_error",
+                        Some("identity_error") => "inbox_reconciliation_identity_error",
+                        _ => "inbox_reconciliation_other",
+                    };
                 }
                 if error
                     .message
@@ -117,6 +133,23 @@ mod listener_local_command_error_tests {
         assert_eq!(
             mapped.detail.message,
             "the running listener failed during bridge_connection."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-cause"));
+    }
+
+    #[test]
+    fn classifies_inbox_reconciliation_category_without_exposing_detail() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_read",
+            "local inbox reconciliation failed: transport_unavailable",
+            "secret-bearing-cause",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during inbox_reconciliation_transport_unavailable."
         );
         assert!(!mapped.detail.message.contains("secret-bearing-cause"));
     }
