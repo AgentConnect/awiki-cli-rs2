@@ -2955,14 +2955,29 @@ impl<'a> MessageService<'a> {
         // Root import can advance this exact device's authorization generation
         // independently of ordinary message sync. Finish any accepted local
         // transition first so callers never reuse the pre-promotion bearer.
-        crate::internal::identity_root_import_completion::recover_root_import_completions(
-            self.client,
-        )
-        .await?;
+        let recovery =
+            crate::internal::identity_root_import_completion::recover_root_import_completions(
+                self.client,
+            )
+            .await;
+        if recovery.is_err()
+            && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+        {
+            eprintln!(
+                "[awiki-im-core][root-import] stage=recover_before_secure_inbox status=failed"
+            );
+        }
+        recovery?;
         if !self.client.core_inner().direct_e2ee_v2_enabled() {
             return Ok(Vec::new());
         }
-        let binding = self.client.active_sync_account_binding().await?;
+        let binding_result = self.client.active_sync_account_binding().await;
+        if binding_result.is_err()
+            && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+        {
+            eprintln!("[awiki-im-core][root-import] stage=load_active_sync_binding status=failed");
+        }
+        let binding = binding_result?;
         if binding.owner_identity_id != self.client.current_identity().id.as_str()
             || binding.current_did != self.client.did().as_str()
         {
@@ -2974,30 +2989,50 @@ impl<'a> MessageService<'a> {
         {
             let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
             let db = self.client.core_inner().local_state_db().await?;
-            if db
+            let negotiation_required = db
                 .lane_capability_negotiation_required(
                     binding.owner_identity_id.clone(),
                     binding.device_auth_generation.clone(),
                 )
-                .await?
+                .await;
+            if negotiation_required.is_err()
+                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
             {
-                crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
+                eprintln!("[awiki-im-core][root-import] stage=read_lane_capability status=failed");
+            }
+            if negotiation_required? {
+                let refresh = crate::internal::message_runtime::sync_v2::refresh_lane_bootstrap_with_transport_async(
                     self.client,
                     &mut transport,
                     &db,
                     &binding,
                 )
-                .await?;
+                .await;
+                if refresh.is_err()
+                    && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+                {
+                    eprintln!(
+                        "[awiki-im-core][root-import] stage=refresh_lane_bootstrap status=failed"
+                    );
+                }
+                refresh?;
             }
             let mut directory_transport =
                 crate::internal::transport::CoreHttpTransport::new(self.client);
-            return crate::internal::message_runtime::read::hydrate_exact_device_secure_inbox_async(
-                self.client,
-                &mut transport,
-                &mut directory_transport,
-                limit.0,
-            )
-            .await;
+            let hydration =
+                crate::internal::message_runtime::read::hydrate_exact_device_secure_inbox_async(
+                    self.client,
+                    &mut transport,
+                    &mut directory_transport,
+                    limit.0,
+                )
+                .await;
+            if hydration.is_err()
+                && std::env::var("AWIKI_ROOT_TRANSFER_SAFE_DIAGNOSTICS").as_deref() == Ok("1")
+            {
+                eprintln!("[awiki-im-core][root-import] stage=hydrate_secure_inbox status=failed");
+            }
+            return hydration;
         }
         #[cfg(not(feature = "sqlite"))]
         {
