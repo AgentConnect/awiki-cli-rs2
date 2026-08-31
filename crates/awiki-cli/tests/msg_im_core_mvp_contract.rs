@@ -1115,7 +1115,10 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
         "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(
             request,
             json!({
-                "supported_profiles": ["awiki.message-sync.explicit-negotiation.v1"]
+                "supported_profiles": [
+                    "awiki.message-sync.explicit-negotiation.v1",
+                    "sync.snapshot_paging.v1"
+                ]
             }),
         ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
@@ -1159,6 +1162,7 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                 "read_state_baseline": [],
                 "group_state_baseline": [],
                 "warnings": [],
+                "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
                 "sync_capabilities": requested,
                 "lanes": lanes
             });

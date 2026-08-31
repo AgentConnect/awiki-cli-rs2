@@ -69,6 +69,7 @@ fn sync_outcome(status: MessageSyncStatus) -> MessageSyncOutcome {
         pages_fetched: 0,
         messages_hydrated: 0,
         duplicates_skipped: 0,
+        older_history_excluded: false,
         changed_conversation_ids: Vec::new(),
         committed_incoming_messages: Vec::new(),
         error_code: None,
