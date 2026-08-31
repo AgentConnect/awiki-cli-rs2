@@ -3443,6 +3443,7 @@ mod tests {
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
+            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
             "p6_delivery": {
                 "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
                 "client_instance_id": "client-installation-1",
