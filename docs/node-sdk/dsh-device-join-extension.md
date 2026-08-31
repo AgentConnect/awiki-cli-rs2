@@ -1,11 +1,16 @@
 # DSH 多设备 Join 与管理的 Node SDK 增量合同
 
-状态：planned，尚未进入当前公开 Node API（2026-08-23 根据独立代码复核修订）
+状态：native API v10 已实现；当前源码版本 `0.2.1`，正式发布与完整 Darwin prerelease 待闭合
 
 跨仓导航：[Harness Feature](../../../awiki-harness/features/dsh-device-join.md) ·
 [DSH 产品设计](../../../dsh-awiki/docs/dsh-device-join-design.md) ·
 [现有 Node SDK](awiki-im-core-node.md) ·
-[Core Device Join API](../api/im-core-public-api.md#51-device-join-host-facade)
+[Core Device Join API](../api/im-core-public-api.md#51-device-join-host-facade) ·
+[当前开发计划](../../../awiki-plan/20260831-dsh-awiki-multi-device-productization/plan.md)
+
+2026-08-31 源码已经实现本文第 3～7 节的 Join、local-session restore、SAS/expiry、Registry、
+approve/reject/revoke 和 native API v10 合同。当前开发不重复实现这些 facade；后续只在现有 Core
+能力缺少公开 Node 映射时做最小增量，例如 Schema 3 的 TypeScript 诊断字段和 G4 Root Transfer。
 
 ## 1. 范围
 
@@ -30,17 +35,16 @@ resumePreparedRegistrationJoin(input): Promise<PreparedRegistrationJoinProgress>
 `ExistingHandleRegistration`。`continuationId` 是当前进程中 Core preparation 的一次性引用，
 不得进入 Browser、日志、配置或持久化；Host crash 后必须重新走真实 OTP。
 
-现有 `resumePreparedRegistrationJoin()` 对 ordinary Join 也会调用 Core
-`resume_authorized_join_activation()`，而该函数当前无条件执行 Handle Recovery gate。这是必须
-修复的实现缺口，不是 DSH 部署前置：只有存在 joined-device Recovery marker 的 rebind session
-才检查 recovery flag/audience；ordinary session 直接 poll。
+当前 `resumePreparedRegistrationJoin()` 已按 session 类型区分 ordinary Join 与 joined-device
+Recovery rebind：只有存在 Recovery marker 的 rebind session 检查 recovery flag/audience，ordinary
+session 可以直接 poll/activate。
 
 ## 3. 精确 API 增量
 
 ### 3.1 准确传入 user presence
 
-当前 native binding 在 `beginPreparedRegistrationJoin()` 内部固定提交
-`user_presence_confirmed=true`。它改为由可信 Host 显式传入：
+native API v10 的 `beginPreparedRegistrationJoin()` 已由可信 Host 显式传入
+`user_presence_confirmed`，不再固定为 true：
 
 ```ts
 export interface PreparedRegistrationJoinInput {
@@ -209,13 +213,15 @@ operation ID，并固定 `challengeTtlSeconds=240`（且不超过 Core public �
 该变更修改 native input、native output 并增加 native method，必须：
 
 1. native API version 从 `9` 提升到 `10`；
-2. Rust crate、wrapper 和全部平台包进入同一个版本；该能力最初进入 `0.1.8` candidate，当前
-   `release/0815` 由 `0.2.0` candidate 连同 External Identity Provider bridge 一并承载；
+2. Rust crate、wrapper 和平台包必须进入同一个版本；该能力最初进入 `0.1.8` candidate，当前
+   `release/0815` 源码清单为 `0.2.1` 并连同 External Identity Provider bridge 一并承载；
 3. loader 拒绝 v9 addon，不能用 optional field 静默兼容缺少 cancel/SAS 的旧二进制；
 4. `stage-package.mjs`、pack audit、checksums、SBOM、provenance 和 packed-install gate 使用同一
    committed source OID；
-5. DSH 只固定依赖已经发布且 root wrapper + 五个平台 addon integrity 闭合的新版本，不使用
-   workspace link 作为远端通过证据。
+5. DSH 只固定依赖 root wrapper + 当前 required 平台 addon integrity 闭合的新版本，不使用
+   workspace link 作为发布或远端通过证据。2026-08-31 registry 审计发现
+   `@awiki/im-core-node@0.2.1-dsh-test.20260831.1` 指向当前不存在的 Darwin x64 同版本 addon，
+   因此该 prerelease 不能作为 Darwin 可安装候选，必须发布新的 immutable prerelease。
 
 ## 5. Rust/TypeScript 映射
 
@@ -304,5 +310,6 @@ pnpm --filter @awiki/im-core-node run typecheck
 pnpm --filter @awiki/im-core-node run test
 ```
 
-完整 workspace、root + 五个平台制品和 `awiki-info-testing` E2E 属于后续实施/发布 gate；
-`production-awiki-ai` 只做无写只读 smoke。本文提交本身不代表 API v10 或 npm patch 已发布。
+完整 workspace、required 平台制品、RWiki.cn System Test 和三端 UI 属于后续独立测试/发布任务；
+当前开发计划只做产品代码与单元测试。本文状态表示源码合同已实现，不代表 `0.2.1` 正式版本或
+完整 Darwin prerelease 已发布。
