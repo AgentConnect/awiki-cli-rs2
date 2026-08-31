@@ -181,6 +181,14 @@ impl SafeError {
         }
     }
 
+    pub(crate) fn from_root_transfer(error: im_core::identity::RootKeyTransferError) -> Self {
+        Self::new(
+            error.to_string(),
+            "The AWiki root transfer could not be completed.",
+            error.retryable,
+        )
+    }
+
     pub(crate) fn into_napi(self) -> Error {
         let reason = serde_json::to_string(&self).unwrap_or_else(|_| {
             r#"{"code":"internal","safeMessage":"The IM operation failed internally.","retryable":false}"#.to_owned()

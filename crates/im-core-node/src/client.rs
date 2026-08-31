@@ -1075,6 +1075,97 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn prepare_root_key_transfer(
+        &self,
+        input: NodeRootKeyTransferPrepareInput,
+    ) -> napi::Result<NodeRootKeyTransferPreparation> {
+        napi_result(self.prepare_root_key_transfer_inner(input).await)
+    }
+
+    async fn prepare_root_key_transfer_inner(
+        &self,
+        input: NodeRootKeyTransferPrepareInput,
+    ) -> SafeResult<NodeRootKeyTransferPreparation> {
+        let recipient_device_id = im_core::ids::ProtocolDeviceId::parse(input.recipient_device_id)
+            .map_err(SafeError::from_im)?;
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        self.inner
+            .wait_safe(
+                async move {
+                    client
+                        .root_key_transfer()
+                        .prepare(im_core::identity::RootKeyTransferPrepareRequest {
+                            recipient_device_id,
+                        })
+                        .await
+                        .map_err(SafeError::from_root_transfer)
+                },
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::root_key_transfer_preparation)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn confirm_and_send_root_key_transfer(
+        &self,
+        input: NodeRootKeyTransferSendInput,
+    ) -> napi::Result<NodeRootKeyTransferSendResult> {
+        napi_result(self.confirm_and_send_root_key_transfer_inner(input).await)
+    }
+
+    async fn confirm_and_send_root_key_transfer_inner(
+        &self,
+        input: NodeRootKeyTransferSendInput,
+    ) -> SafeResult<NodeRootKeyTransferSendResult> {
+        let authorization_handle = serde_json::from_value(serde_json::Value::String(
+            input.authorization_handle,
+        ))
+        .map_err(|_| {
+            SafeError::new(
+                "root_transfer.authorization_invalid",
+                "The AWiki root transfer authorization is invalid.",
+                false,
+            )
+        })?;
+        let _mutation = self.inner.mutation.lock().await;
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        self.inner
+            .wait_safe(
+                async move {
+                    client
+                        .root_key_transfer()
+                        .confirm_and_send(im_core::identity::RootKeyTransferSendRequest {
+                            authorization_handle,
+                            user_presence_confirmed: input.user_presence_confirmed,
+                        })
+                        .await
+                        .map_err(SafeError::from_root_transfer)
+                },
+                self.inner.operation_timeout,
+            )
+            .await
+            .map(crate::dto::root_key_transfer_send_result)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn confirm_user_presence(&self, input: NodeUserPresenceInput) -> napi::Result<bool> {
+        napi_result(self.confirm_user_presence_inner(input).await)
+    }
+
+    async fn confirm_user_presence_inner(&self, input: NodeUserPresenceInput) -> SafeResult<bool> {
+        drop(self.inner.operation().await?);
+        let confirmed = crate::user_presence::confirm(input.reason).await?;
+        if confirmed {
+            drop(self.inner.operation().await?);
+        }
+        Ok(confirmed)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn update_display_name(&self, display_name: String) -> napi::Result<NodeIdentity> {
         napi_result(self.update_display_name_inner(display_name).await)
     }

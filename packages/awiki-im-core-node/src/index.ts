@@ -74,6 +74,8 @@ import {
   type RealtimeOptions,
   type RealtimeSession,
   type RealtimeStatus,
+  type RootKeyTransferPreparation,
+  type RootKeyTransferSendResult,
   type UpdateProfileInput,
 } from './types.js'
 
@@ -201,6 +203,24 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
 
   public revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult> {
     return call(async () => ({ ...await this.native.revokeDevice(input) }))
+  }
+
+  public prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation> {
+    return call(async () => {
+      const value = await this.native.prepareRootKeyTransfer(input)
+      return { ...value, recipient: { ...value.recipient } }
+    })
+  }
+
+  public confirmAndSendRootKeyTransfer(input: {
+    readonly authorizationHandle: string
+    readonly userPresenceConfirmed: boolean
+  }): Promise<RootKeyTransferSendResult> {
+    return call(async () => ({ ...await this.native.confirmAndSendRootKeyTransfer(input) }))
+  }
+
+  public confirmUserPresence(input: { readonly reason: string }): Promise<boolean> {
+    return call(() => this.native.confirmUserPresence(input))
   }
 
   public updateDisplayName(displayName: string): Promise<NodeIdentity> {

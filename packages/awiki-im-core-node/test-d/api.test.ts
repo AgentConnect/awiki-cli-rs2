@@ -66,6 +66,16 @@ void opened.then(async client => {
   currentDevice.canManage satisfies boolean
   const registry = await client.getDeviceRegistry()
   registry.devices[0]?.authGeneration satisfies string | undefined
+  const rootPreparation = await client.prepareRootKeyTransfer({ recipientDeviceId: 'device-member' })
+  rootPreparation.authorizationHandle satisfies string
+  rootPreparation.recipient.registryVersion satisfies string
+  const presence = await client.confirmUserPresence({ reason: 'Grant AWiki device management access' })
+  presence satisfies boolean
+  const rootSent = await client.confirmAndSendRootKeyTransfer({
+    authorizationHandle: rootPreparation.authorizationHandle,
+    userPresenceConfirmed: presence,
+  })
+  rootSent.recipientDeviceId satisfies string
   const requests = await client.listLocalDeviceJoinRequests()
   if (requests[0]?.canStartVerification) {
     const verification = await client.startDeviceJoinVerification({

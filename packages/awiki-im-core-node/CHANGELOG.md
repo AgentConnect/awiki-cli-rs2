@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 (unreleased)
+
+- Add secret-free Root Transfer prepare/send facade methods and a Darwin
+  device-owner authentication method for trusted local Hosts.
+- Raise the native API contract to v11; non-Darwin user presence fails closed.
+
 ## 0.2.1 (unreleased)
 
 - Publish the current native API v10 External Provider source as a new immutable

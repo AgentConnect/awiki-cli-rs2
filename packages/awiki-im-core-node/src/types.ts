@@ -464,6 +464,33 @@ export interface DeviceRevokeResult {
   readonly status: 'revoked'
 }
 
+/** Host-only, short-lived Core authorization for one exact-device Root Transfer. */
+export interface RootKeyTransferPreparation {
+  readonly authorizationHandle: string
+  readonly recipient: RootKeyTransferRecipientSummary
+  readonly expiresAt: string
+}
+
+export interface RootKeyTransferRecipientSummary {
+  readonly did: string
+  readonly deviceId: string
+  readonly signingKeyId: string
+  readonly e2eeKeyId: string
+  readonly registryVersion: string
+}
+
+export interface RootKeyTransferSendResult {
+  readonly did: string
+  readonly senderDeviceId: string
+  readonly recipientDeviceId: string
+  readonly messageId: string
+  readonly acceptedAt: string
+}
+
+export interface UserPresenceInput {
+  readonly reason: string
+}
+
 /** Server-issued retry boundary for a registration OTP. */
 export interface OtpChallenge {
   readonly retryAfterSeconds: number
@@ -946,6 +973,9 @@ export interface ImCoreNodeClient {
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
+  prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
+  confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>
+  confirmUserPresence(input: UserPresenceInput): Promise<boolean>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>

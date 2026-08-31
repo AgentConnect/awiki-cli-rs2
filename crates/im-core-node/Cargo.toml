@@ -1,6 +1,6 @@
 [package]
 name = "awiki-im-core-node"
-version = "0.2.1"
+version = "0.2.2"
 description = "Node-API facade for the Awiki Rust IM SDK"
 edition.workspace = true
 rust-version.workspace = true
@@ -25,6 +25,12 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "=0.6.2", default-features = false, features = ["alloc"] }
+objc2 = { version = "=0.6.2", default-features = false, features = ["std"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSError", "NSString", "std"] }
+objc2-local-authentication = { version = "=0.3.2", default-features = false, features = ["LAContext", "block2", "std"] }
 
 [build-dependencies]
 napi-build = "=2.4.1"

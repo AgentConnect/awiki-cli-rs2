@@ -456,6 +456,72 @@ pub struct NodeDeviceRevokeResult {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRootKeyTransferPrepareInput {
+    pub recipient_device_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRootKeyTransferPreparation {
+    pub authorization_handle: String,
+    pub recipient: NodeRootKeyTransferRecipientSummary,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for NodeRootKeyTransferPreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeRootKeyTransferPreparation")
+            .field("authorization_handle", &"<redacted-authorization-handle>")
+            .field("recipient", &self.recipient)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRootKeyTransferRecipientSummary {
+    pub did: String,
+    pub device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub registry_version: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRootKeyTransferSendInput {
+    pub authorization_handle: String,
+    pub user_presence_confirmed: bool,
+}
+
+impl std::fmt::Debug for NodeRootKeyTransferSendInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeRootKeyTransferSendInput")
+            .field("authorization_handle", &"<redacted-authorization-handle>")
+            .field("user_presence_confirmed", &self.user_presence_confirmed)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeRootKeyTransferSendResult {
+    pub did: String,
+    pub sender_device_id: String,
+    pub recipient_device_id: String,
+    pub message_id: String,
+    pub accepted_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeUserPresenceInput {
+    pub reason: String,
+}
+
 pub(crate) fn current_device_summary(
     value: im_core::identity::IdentityDeviceSummary,
 ) -> NodeCurrentDeviceSummary {
@@ -553,6 +619,40 @@ pub(crate) fn device_revoke_result(
             im_core::identity::DeviceRevokeStatus::Revoked => "revoked",
         }
         .to_owned(),
+    }
+}
+
+pub(crate) fn root_key_transfer_preparation(
+    value: im_core::identity::RootKeyTransferPreparation,
+) -> NodeRootKeyTransferPreparation {
+    let serde_json::Value::String(authorization_handle) =
+        serde_json::to_value(value.authorization_handle)
+            .expect("root transfer authorization handle serialization is infallible")
+    else {
+        unreachable!("root transfer authorization handle must serialize as a string")
+    };
+    NodeRootKeyTransferPreparation {
+        authorization_handle,
+        recipient: NodeRootKeyTransferRecipientSummary {
+            did: value.recipient.did.as_str().to_owned(),
+            device_id: value.recipient.device_id.as_str().to_owned(),
+            signing_key_id: value.recipient.signing_key_id,
+            e2ee_key_id: value.recipient.e2ee_key_id,
+            registry_version: value.recipient.registry_version.to_string(),
+        },
+        expires_at: value.expires_at,
+    }
+}
+
+pub(crate) fn root_key_transfer_send_result(
+    value: im_core::identity::RootKeyTransferSendResult,
+) -> NodeRootKeyTransferSendResult {
+    NodeRootKeyTransferSendResult {
+        did: value.did.as_str().to_owned(),
+        sender_device_id: value.sender_device_id.as_str().to_owned(),
+        recipient_device_id: value.recipient_device_id.as_str().to_owned(),
+        message_id: value.message_id.as_str().to_owned(),
+        accepted_at: value.accepted_at,
     }
 }
 

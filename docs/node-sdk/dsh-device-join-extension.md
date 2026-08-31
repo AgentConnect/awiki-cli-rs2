@@ -1,6 +1,6 @@
 # DSH 多设备 Join 与管理的 Node SDK 增量合同
 
-状态：native API v10 已实现；当前源码版本 `0.2.1`，正式发布与完整 Darwin prerelease 待闭合
+状态：native API v11 已实现；当前源码版本 `0.2.2`，正式发布与完整 Darwin prerelease 待闭合
 
 跨仓导航：[Harness Feature](../../../awiki-harness/features/dsh-device-join.md) ·
 [DSH 产品设计](../../../dsh-awiki/docs/dsh-device-join-design.md) ·
@@ -9,8 +9,8 @@
 [当前开发计划](../../../awiki-plan/20260831-dsh-awiki-multi-device-productization/plan.md)
 
 2026-08-31 源码已经实现本文第 3～7 节的 Join、local-session restore、SAS/expiry、Registry、
-approve/reject/revoke 和 native API v10 合同。当前开发不重复实现这些 facade；后续只在现有 Core
-能力缺少公开 Node 映射时做最小增量，例如 Schema 3 的 TypeScript 诊断字段和 G4 Root Transfer。
+approve/reject/revoke、Schema 3 诊断和 native API v11 Root Transfer 合同。当前开发不重复实现
+Core 状态机；Node 只保留必要的 typed facade。
 
 ## 1. 范围
 
@@ -208,13 +208,25 @@ operation ID，并固定 `challengeTtlSeconds=240`（且不超过 Core public �
 进入 local progress 等待，若被其他设备 claim 则只读，只有仍 `canStartVerification=true` 时才允许
 以同一 operation ID 重试。
 
+### 3.6 Root Transfer 与可信 user presence
+
+native API v11 新增 `prepareRootKeyTransfer()`、`confirmAndSendRootKeyTransfer()` 和
+`confirmUserPresence()`。前两项一对一映射现有 Core Root Transfer；authorization handle 只供可信
+Host 暂存，Root material、P5 payload、proof 和 ACK 不进入 JavaScript。Darwin 使用系统
+LocalAuthentication 的 device-owner policy；取消、拒绝、不可交互和非 Darwin 均失败关闭。
+
+DSH 必须按“fresh member eligibility → prepare → 原生认证 → fresh context recheck → confirm/send”
+执行。Browser 点击、确认词、Agent approval 和 keyring 解锁都不是可信 user presence。Recovery
+rebind 可复用同一个原生认证端口，但只完成 member re-Join；Root Transfer 必须再次独立认证。
+
 ## 4. N-API 与版本
 
 该变更修改 native input、native output 并增加 native method，必须：
 
-1. native API version 从 `9` 提升到 `10`；
+1. Join/External Provider 把 native API version 从 `9` 提升到 `10`；Root Transfer 与原生认证继续
+   提升到 `11`；
 2. Rust crate、wrapper 和平台包必须进入同一个版本；该能力最初进入 `0.1.8` candidate，当前
-   `release/0815` 源码清单为 `0.2.1` 并连同 External Identity Provider bridge 一并承载；
+   `release/0815` 当前源码清单为 `0.2.2`，并连同 External Identity Provider bridge 一并承载；
 3. loader 拒绝 v9 addon，不能用 optional field 静默兼容缺少 cancel/SAS 的旧二进制；
 4. `stage-package.mjs`、pack audit、checksums、SBOM、provenance 和 packed-install gate 使用同一
    committed source OID；
@@ -311,5 +323,5 @@ pnpm --filter @awiki/im-core-node run test
 ```
 
 完整 workspace、required 平台制品、RWiki.cn System Test 和三端 UI 属于后续独立测试/发布任务；
-当前开发计划只做产品代码与单元测试。本文状态表示源码合同已实现，不代表 `0.2.1` 正式版本或
+当前开发计划只做产品代码与单元测试。本文状态表示源码合同已实现，不代表 `0.2.2` 正式版本或
 完整 Darwin prerelease 已发布。
