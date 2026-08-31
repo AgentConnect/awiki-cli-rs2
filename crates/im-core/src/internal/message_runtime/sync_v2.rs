@@ -8570,14 +8570,14 @@ END;
     }
 
     #[tokio::test]
-    async fn schema_two_recovery_rejects_schema_one_snapshot_without_advancing_cursor() {
-        let fixture = SyncSnapshotFixture::new("schema-two-missing-snapshot-fields");
+    async fn schema3_recovery_rejects_schema2_descriptor_without_advancing_cursor() {
+        let fixture = SyncSnapshotFixture::new("schema3-rejects-schema2-descriptor");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
         seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
         let mut recovery = sync_snapshot_recovery(
-            "recovery-schema-two",
-            "snapshot-token-schema-two",
+            "recovery-schema3-rejects-schema2",
+            "snapshot-token-schema3-rejects-schema2",
             "2",
             "20",
         );
@@ -8593,7 +8593,7 @@ END;
                     Ok(sync_snapshot_response(
                         &client,
                         &binding,
-                        "recovery-schema-two",
+                        "recovery-schema3-rejects-schema2",
                         "2",
                         "20",
                         Vec::new(),
@@ -8609,7 +8609,7 @@ END;
         assert!(matches!(
             error,
             crate::ImError::Service { code: Some(code), .. }
-                if code == "SYNC_INVALID_SNAPSHOT"
+                if code == "SYNC_INVALID_PAGE"
         ));
         let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
         assert_eq!(
@@ -8622,27 +8622,26 @@ END;
                 .iter()
                 .map(|call| call.method.as_str())
                 .collect::<Vec<_>>(),
-            ["sync.delta", "sync.snapshot"]
+            ["sync.delta"]
         );
     }
 
     #[tokio::test]
-    async fn schema_two_empty_notification_snapshot_commits_and_resumes_delta() {
-        let fixture = SyncSnapshotFixture::new("schema-two-empty-notifications");
+    async fn schema3_empty_notification_snapshot_commits_and_resumes_delta() {
+        let fixture = SyncSnapshotFixture::new("schema3-empty-notifications");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
         seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
-        let mut recovery = sync_snapshot_recovery(
-            "recovery-schema-two-empty",
-            "snapshot-token-schema-two-empty",
+        let recovery = sync_snapshot_recovery(
+            "recovery-schema3-empty",
+            "snapshot-token-schema3-empty",
             "2",
             "20",
         );
-        recovery["recovery"]["snapshot_schema"] = json!(2);
         let snapshot = sync_snapshot_response(
             &client,
             &binding,
-            "recovery-schema-two-empty",
+            "recovery-schema3-empty",
             "2",
             "20",
             Vec::new(),

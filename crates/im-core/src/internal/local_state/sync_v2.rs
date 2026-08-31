@@ -10118,7 +10118,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_two_snapshot_rolls_back_on_second_notification_then_commits_mixed_state() {
+    fn schema3_snapshot_rolls_back_on_second_notification_then_commits_mixed_state() {
         let mut db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -10149,7 +10149,7 @@ mod tests {
                 mode: "compact_recovery".to_owned(),
                 requested_from_epoch: "1".to_owned(),
                 requested_from_seq: "10".to_owned(),
-                recovery_id_hash: Some("schema-two-recovery".to_owned()),
+                recovery_id_hash: Some("schema3-recovery".to_owned()),
                 snapshot_scan_seq: Some("20".to_owned()),
                 status: "applying".to_owned(),
                 retry_count: 0,
@@ -10194,7 +10194,7 @@ mod tests {
             expected_stream_epoch: "1".to_owned(),
             expected_scan_seq: "10".to_owned(),
             allow_missing_previous: false,
-            recovery_id_hash: "schema-two-recovery".to_owned(),
+            recovery_id_hash: "schema3-recovery".to_owned(),
             stream_epoch: "2".to_owned(),
             snapshot_scan_seq: "20".to_owned(),
             server_time: "2026-07-23T02:00:01Z".to_owned(),
