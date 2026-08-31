@@ -1058,6 +1058,7 @@ class DartMessageSyncOutcome {
   final int pagesFetched;
   final int messagesHydrated;
   final int duplicatesSkipped;
+  final bool olderHistoryExcluded;
   final List<String> changedConversationIds;
   final List<DartCommittedIncomingMessage> committedIncomingMessages;
   final String? errorCode;
@@ -1069,6 +1070,7 @@ class DartMessageSyncOutcome {
     required this.pagesFetched,
     required this.messagesHydrated,
     required this.duplicatesSkipped,
+    required this.olderHistoryExcluded,
     required this.changedConversationIds,
     required this.committedIncomingMessages,
     this.errorCode,
@@ -1082,6 +1084,7 @@ class DartMessageSyncOutcome {
       pagesFetched.hashCode ^
       messagesHydrated.hashCode ^
       duplicatesSkipped.hashCode ^
+      olderHistoryExcluded.hashCode ^
       changedConversationIds.hashCode ^
       committedIncomingMessages.hashCode ^
       errorCode.hashCode ^
@@ -1097,6 +1100,7 @@ class DartMessageSyncOutcome {
           pagesFetched == other.pagesFetched &&
           messagesHydrated == other.messagesHydrated &&
           duplicatesSkipped == other.duplicatesSkipped &&
+          olderHistoryExcluded == other.olderHistoryExcluded &&
           changedConversationIds == other.changedConversationIds &&
           committedIncomingMessages == other.committedIncomingMessages &&
           errorCode == other.errorCode &&

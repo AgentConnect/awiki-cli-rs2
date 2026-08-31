@@ -1326,8 +1326,8 @@ Schema 34 completes the ordinary read/recovery boundary. Owner-scoped
 Group thread key to exactly one canonical local conversation; Core never guesses
 that mapping from a DID. `sync_remote_read_states` is a durable unresolved
 Direct read-state backlog. Snapshot/delta may advance after transactionally
-storing a current read state whose recent message was outside the 48-hour/500
-message window; a later ordinary message binding replays and removes that
+storing a current read state whose recent message was outside the Schema 3
+bounded ordinary-history suffix; a later ordinary message binding replays and removes that
 backlog in the same transaction. `thread_read_state.remote_state_version`
 provides monotonic stale/conflict rejection. For `message.created`, the remote
 thread binding is committed only after the message has passed verified-Persona
@@ -1339,15 +1339,21 @@ verified message fact may perform the single allowed
 `dm:<DID>` → `dm:peer-scope:v1:<hash>` canonical upgrade; canonical-to-canonical
 and all Group rebinding remain conflicts.
 
-`syncNow` closes compact recovery inside one call:
+`syncNow` closes Schema 3 compact recovery inside one call:
 delta (or existing-device bootstrap recovery) → process-local opaque token →
-snapshot validation/atomic merge → post-anchor delta. Snapshot application
+manifest + opaque page-ref collection (at most 100 pages) → complete package validation → one
+snapshot atomic merge → post-anchor delta. Core keeps token, page ref, manifest, section, page count,
+cursor and boundary only in the Rust process stack; it never applies a page to formal projection.
+Snapshot application
 merges current read/Group state and recent ordinary messages without deleting
 older local messages, commits receipts/projections/cursor/recovery completion in
 one SQLite transaction, and returns only the existing high-level `changed` or
 `idle` terminal outcome after the post-anchor delta succeeds. A raw token,
 cursor, cutoff, policy limit, or returned snapshot count never crosses the Rust
-public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
+public, Dart, Flutter, CLI, or App boundary and is never persisted. The only new public product-safe
+field is `MessageSyncOutcome.older_history_excluded`; the same boolean is committed transactionally
+to `sync_history_scope`. A normal history budget boundary is success, while required-state or
+single-item overflow returns the stable capacity error codes. Startup
 changes an interrupted recovery to `retryable` while retaining the original
 cursor, so the next `syncNow` obtains a fresh process-local token.
 
@@ -1374,7 +1380,9 @@ recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent
 workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and
 rejects unknown top-level/policy/exclusion/read/Group fields, duplicate event
 IDs or sequences, messages before the server cutoff, and malformed state
-timestamps. Core does not calculate or widen the 48-hour/500-message policy.
+timestamps, section/keyset order, page/section/manifest digest, count, JCS bytes and duplicate IDs.
+Core validates the server-declared 10,000-item/64-MiB/100-page policy but never guesses its
+truncation reason or widens it.
 An HTTP 401 or 403 observed anywhere in this authenticated sync operation,
 including JWT refresh, or a JSON-RPC `1401` remaining after the transport's
 bounded auth retry, is classified as terminal `authRevoked`. For the live

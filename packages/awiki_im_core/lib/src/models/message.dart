@@ -396,6 +396,7 @@ class MessageSyncOutcome {
     required this.pagesFetched,
     required this.messagesHydrated,
     required this.duplicatesSkipped,
+    this.olderHistoryExcluded = false,
     this.changedConversationIds = const [],
     this.committedIncomingMessages = const [],
     this.errorCode,
@@ -407,6 +408,7 @@ class MessageSyncOutcome {
   final int pagesFetched;
   final int messagesHydrated;
   final int duplicatesSkipped;
+  final bool olderHistoryExcluded;
   final List<String> changedConversationIds;
   final List<CommittedIncomingMessage> committedIncomingMessages;
   final String? errorCode;

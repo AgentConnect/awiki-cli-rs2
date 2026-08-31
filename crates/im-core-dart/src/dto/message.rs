@@ -330,6 +330,7 @@ pub struct DartMessageSyncOutcome {
     pub pages_fetched: u32,
     pub messages_hydrated: u32,
     pub duplicates_skipped: u32,
+    pub older_history_excluded: bool,
     pub changed_conversation_ids: Vec<String>,
     pub committed_incoming_messages: Vec<DartCommittedIncomingMessage>,
     pub error_code: Option<String>,

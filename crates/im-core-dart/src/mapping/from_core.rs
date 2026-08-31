@@ -1934,6 +1934,7 @@ impl From<im_core::messages::MessageSyncOutcome> for DartMessageSyncOutcome {
             pages_fetched: value.pages_fetched,
             messages_hydrated: value.messages_hydrated,
             duplicates_skipped: value.duplicates_skipped,
+            older_history_excluded: value.older_history_excluded,
             changed_conversation_ids: value.changed_conversation_ids,
             committed_incoming_messages: value
                 .committed_incoming_messages
@@ -2368,6 +2369,7 @@ mod tests {
             pages_fetched: 20,
             messages_hydrated: 20,
             duplicates_skipped: 0,
+            older_history_excluded: true,
             changed_conversation_ids: vec!["dm:peer".to_owned()],
             committed_incoming_messages: Vec::new(),
             error_code: None,
@@ -2375,6 +2377,7 @@ mod tests {
         });
         assert_eq!(mapped.status, DartMessageSyncStatus::Changed);
         assert_eq!(mapped.pages_fetched, 20);
+        assert!(mapped.older_history_excluded);
         assert_eq!(mapped.warnings, ["sync.budget_exhausted"]);
         assert_eq!(
             DartMessageSyncStatus::from(im_core::messages::MessageSyncStatus::Blocked),

@@ -531,6 +531,10 @@ fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
         "server_cutoff",
         "message_limit",
         "returned_logical_messages",
+        "page_ref",
+        "manifest_digest",
+        "oldest_included_event_seq",
+        "total_encoded_bytes",
     ] {
         assert!(!request_debug.contains(forbidden));
     }
@@ -541,6 +545,7 @@ fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
         pages_fetched: 1,
         messages_hydrated: 0,
         duplicates_skipped: 0,
+        older_history_excluded: true,
         changed_conversation_ids: Vec::new(),
         committed_incoming_messages: Vec::new(),
         error_code: Some("SYNC_RECOVERY_REQUIRED".to_owned()),
@@ -553,6 +558,7 @@ fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
     ));
     assert_eq!(dart.pages_fetched, 1);
     assert_eq!(dart.error_code.as_deref(), Some("SYNC_RECOVERY_REQUIRED"));
+    assert!(dart.older_history_excluded);
     assert!(dart.committed_incoming_messages.is_empty());
 }
 

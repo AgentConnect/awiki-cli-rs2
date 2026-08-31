@@ -759,6 +759,7 @@ pub struct NodeSyncResult {
     pub pages_fetched: u32,
     pub messages_hydrated: u32,
     pub duplicates_skipped: u32,
+    pub older_history_excluded: bool,
     pub changed_conversation_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -1663,6 +1664,7 @@ pub(crate) fn sync_result(value: im_core::messages::MessageSyncOutcome) -> NodeS
         pages_fetched: value.pages_fetched,
         messages_hydrated: value.messages_hydrated,
         duplicates_skipped: value.duplicates_skipped,
+        older_history_excluded: value.older_history_excluded,
         changed_conversation_ids: value.changed_conversation_ids,
         warnings: value.warnings,
     }

@@ -22,6 +22,177 @@ pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     run_deadline: StdDuration,
 }
 
+struct SnapshotAccumulatorV3 {
+    manifest: crate::internal::wire::sync_v2::SyncSnapshotManifestV3,
+    sections: BTreeMap<crate::internal::wire::sync_v2::SnapshotSectionV3, Vec<Value>>,
+    page_counts: BTreeMap<crate::internal::wire::sync_v2::SnapshotSectionV3, u64>,
+    last_section: Option<crate::internal::wire::sync_v2::SnapshotSectionV3>,
+    last_items: BTreeMap<crate::internal::wire::sync_v2::SnapshotSectionV3, Value>,
+    pages_received: u64,
+}
+
+impl SnapshotAccumulatorV3 {
+    fn new(manifest: crate::internal::wire::sync_v2::SyncSnapshotManifestV3) -> Self {
+        Self {
+            manifest,
+            sections: BTreeMap::new(),
+            page_counts: BTreeMap::new(),
+            last_section: None,
+            last_items: BTreeMap::new(),
+            pages_received: 0,
+        }
+    }
+
+    fn push_page(
+        &mut self,
+        page: crate::internal::wire::sync_v2::SnapshotPageV3,
+    ) -> crate::ImResult<Option<String>> {
+        if self
+            .last_section
+            .is_some_and(|previous| page.section < previous)
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "snapshot pages reordered their fixed section sequence",
+            ));
+        }
+        if let Some(previous) = self.last_items.get(&page.section) {
+            if let Some(first) = page.items.first() {
+                require_snapshot_item_after(page.section, previous, first)?;
+            }
+        }
+        for pair in page.items.windows(2) {
+            require_snapshot_item_after(page.section, &pair[0], &pair[1])?;
+        }
+        if page.items.is_empty()
+            && !(self.manifest.total_items == 0
+                && self.manifest.total_pages == 1
+                && page.section == crate::internal::wire::sync_v2::SnapshotSectionV3::ReadStates
+                && !page.has_more)
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "snapshot returned an unexpected empty page",
+            ));
+        }
+        if let Some(last) = page.items.last() {
+            self.last_items.insert(page.section, last.clone());
+        }
+        self.sections
+            .entry(page.section)
+            .or_default()
+            .extend(page.items);
+        *self.page_counts.entry(page.section).or_default() += 1;
+        self.pages_received = self.pages_received.saturating_add(1);
+        if self.pages_received > self.manifest.total_pages
+            || page.has_more != (self.pages_received < self.manifest.total_pages)
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "snapshot page continuation does not match manifest total_pages",
+            ));
+        }
+        self.last_section = Some(page.section);
+        Ok(page.next_page_ref)
+    }
+}
+
+fn require_snapshot_item_after(
+    section: crate::internal::wire::sync_v2::SnapshotSectionV3,
+    previous: &Value,
+    current: &Value,
+) -> crate::ImResult<()> {
+    use crate::internal::wire::sync_v2::SnapshotSectionV3;
+    let text = |value: &Value, pointer: &str| -> crate::ImResult<String> {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                sync_error(
+                    "SYNC_INVALID_SNAPSHOT",
+                    "snapshot item is missing its stable ordering key",
+                )
+            })
+    };
+    let decimal_cmp = |left: &str, right: &str| {
+        crate::internal::local_state::sync_v2::compare_decimal(left, right)
+    };
+    let ordering = match section {
+        SnapshotSectionV3::ReadStates => {
+            let previous_kind = text(previous, "/thread_kind")?;
+            let current_kind = text(current, "/thread_kind")?;
+            previous_kind
+                .cmp(&current_kind)
+                .then_with(|| {
+                    text(previous, "/thread_key")
+                        .and_then(|left| text(current, "/thread_key").map(|right| left.cmp(&right)))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    text(previous, "/state_version")
+                        .and_then(|left| {
+                            text(current, "/state_version")
+                                .and_then(|right| decimal_cmp(&left, &right))
+                        })
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        }
+        SnapshotSectionV3::Groups => text(previous, "/group_did")?
+            .cmp(&text(current, "/group_did")?)
+            .then_with(|| {
+                text(previous, "/group_state_version")
+                    .and_then(|left| {
+                        text(current, "/group_state_version")
+                            .and_then(|right| decimal_cmp(&left, &right))
+                    })
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+        SnapshotSectionV3::RecentPlainMessages => {
+            let previous_time = text(previous, "/message/created_at")?;
+            let current_time = text(current, "/message/created_at")?;
+            let previous_time = chrono::DateTime::parse_from_rfc3339(&previous_time)
+                .map_err(|_| sync_error("SYNC_INVALID_SNAPSHOT", "invalid message order time"))?;
+            let current_time = chrono::DateTime::parse_from_rfc3339(&current_time)
+                .map_err(|_| sync_error("SYNC_INVALID_SNAPSHOT", "invalid message order time"))?;
+            previous_time
+                .cmp(&current_time)
+                .then_with(|| {
+                    text(previous, "/event/event_seq")
+                        .and_then(|left| {
+                            text(current, "/event/event_seq")
+                                .and_then(|right| decimal_cmp(&left, &right))
+                        })
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    text(previous, "/event/event_id")
+                        .and_then(|left| {
+                            text(current, "/event/event_id").map(|right| left.cmp(&right))
+                        })
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        }
+        SnapshotSectionV3::UnexpiredSystemNotifications => text(previous, "/event/event_seq")
+            .and_then(|left| {
+                text(current, "/event/event_seq").and_then(|right| decimal_cmp(&left, &right))
+            })?
+            .then_with(|| {
+                text(previous, "/event/event_id")
+                    .and_then(|left| text(current, "/event/event_id").map(|right| left.cmp(&right)))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+    };
+    if ordering != std::cmp::Ordering::Less {
+        return Err(sync_error(
+            "SYNC_INVALID_SNAPSHOT",
+            "snapshot section keyset is not strictly increasing",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RealtimeInlineMessageApplyOutcome {
     NotApplicable,
@@ -2005,37 +2176,92 @@ where
             updated_at: now,
         })
         .await?;
-        let params = crate::internal::wire::sync_v2::build_snapshot_params(
-            &wire_identity(self.client),
-            recovery,
-        )?;
-        let raw = self
-            .transport
-            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.snapshot", params)
+        if recovery.snapshot_schema != 3 || recovery.snapshot_delivery != "paged_v1" {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "compact recovery authorization is not Schema 3 paged_v1",
+            ));
+        }
+        let client_instance_id = db
+            .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
             .await?;
-        let snapshot = crate::internal::wire::sync_v2::parse_snapshot(&raw)?;
-        if snapshot.snapshot_schema != recovery.snapshot_schema {
-            return Err(sync_error(
+        let mut accumulator: Option<SnapshotAccumulatorV3> = None;
+        let mut next_page_ref: Option<String> = None;
+        let snapshot_server_time = loop {
+            let first_page = accumulator.is_none();
+            let params = crate::internal::wire::sync_v2::build_snapshot_page_params(
+                &wire_identity(self.client),
+                recovery,
+                next_page_ref.as_deref(),
+            )?;
+            let raw = self
+                .transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.snapshot", params)
+                .await?;
+            let page = crate::internal::wire::sync_v2::parse_snapshot_page_v3(&raw, first_page)?;
+            if page.recovery_id != recovery.recovery_id
+                || page.account_id != binding.account_id
+                || page.device_id != binding.protocol_device_id
+                || page.device_auth_generation != binding.device_auth_generation
+                || page.client_instance_id != client_instance_id
+                || page.snapshot_cursor.stream_epoch != recovery.stream_epoch
+                || page.snapshot_cursor.scan_seq != recovery.snapshot_scan_seq
+            {
+                return Err(sync_error(
+                    "SYNC_ACCOUNT_BINDING_MISMATCH",
+                    "snapshot page does not match the exact recovery binding and anchor",
+                ));
+            }
+            if let Some(manifest) = page.manifest.as_ref() {
+                if manifest.snapshot_cursor != page.snapshot_cursor
+                    || manifest.manifest_digest != page.manifest_digest
+                {
+                    return Err(sync_error(
+                        "SYNC_INVALID_SNAPSHOT",
+                        "first snapshot page conflicts with its manifest",
+                    ));
+                }
+            }
+            if accumulator.is_none() {
+                accumulator = Some(SnapshotAccumulatorV3::new(
+                    page.manifest.clone().ok_or_else(|| {
+                        sync_error(
+                            "SYNC_INVALID_SNAPSHOT",
+                            "first snapshot page did not carry a manifest",
+                        )
+                    })?,
+                ));
+            }
+            let accumulator_ref = accumulator
+                .as_mut()
+                .expect("snapshot accumulator was initialized");
+            if accumulator_ref.manifest.manifest_digest != page.manifest_digest {
+                return Err(sync_error(
+                    "SYNC_INVALID_SNAPSHOT",
+                    "snapshot page belongs to a mixed manifest",
+                ));
+            }
+            let current_server_time = page.server_time.clone();
+            next_page_ref = accumulator_ref.push_page(page.page)?;
+            result.pages_fetched = result.pages_fetched.saturating_add(1);
+            if next_page_ref.is_none() {
+                break current_server_time;
+            }
+        };
+        let accumulator = accumulator.ok_or_else(|| {
+            sync_error(
                 "SYNC_INVALID_SNAPSHOT",
-                "sync.snapshot schema does not match the authorized recovery schema",
-            ));
-        }
-        if snapshot.account_id != binding.account_id
-            || snapshot.device_id != binding.protocol_device_id
-        {
-            return Err(sync_error(
-                "SYNC_ACCOUNT_BINDING_MISMATCH",
-                "sync.snapshot response does not match the active account device",
-            ));
-        }
-        if snapshot.snapshot_cursor.stream_epoch != recovery.stream_epoch
-            || snapshot.snapshot_cursor.scan_seq != recovery.snapshot_scan_seq
-        {
-            return Err(sync_error(
-                "SYNC_INVALID_SNAPSHOT",
-                "sync.snapshot cursor does not match the authorized recovery anchor",
-            ));
-        }
+                "snapshot recovery returned no pages",
+            )
+        })?;
+        let snapshot = crate::internal::wire::sync_v2::finalize_snapshot_package_v3(
+            &accumulator.manifest,
+            binding.account_id.clone(),
+            binding.protocol_device_id.clone(),
+            snapshot_server_time,
+            &accumulator.sections,
+            &accumulator.page_counts,
+        )?;
         db.upsert_sync_recovery_state(crate::internal::local_state::sync_v2::RecoveryState {
             owner_identity_id: binding.owner_identity_id.clone(),
             mode: "compact_recovery".to_owned(),
@@ -2120,6 +2346,7 @@ where
                     snapshot_scan_seq: snapshot.snapshot_cursor.scan_seq.clone(),
                     server_time: snapshot.server_time.clone(),
                     server_cutoff: snapshot.server_cutoff.clone(),
+                    older_history_excluded: snapshot.older_history_excluded,
                     lane_capability_reconcile,
                     events,
                     groups,
@@ -2127,7 +2354,7 @@ where
                 },
             )
             .await?;
-        result.pages_fetched = result.pages_fetched.saturating_add(1);
+        result.older_history_excluded |= snapshot.older_history_excluded;
         result.messages_hydrated = result.messages_hydrated.saturating_add(
             u32::try_from(snapshot.recent_plain_messages.len()).unwrap_or(u32::MAX),
         );
@@ -2155,7 +2382,13 @@ where
             last_server_time: Some(snapshot.server_time),
             last_success_at: Some(unix_time_i64()),
             last_error_code: None,
-            metadata_json: Some("{\"mode\":\"compact_recovery\"}".to_owned()),
+            metadata_json: Some(
+                json!({
+                    "mode": "compact_recovery",
+                    "older_history_excluded": snapshot.older_history_excluded,
+                })
+                .to_string(),
+            ),
             updated_at: unix_time_i64(),
         };
         let next = best_effort_cleanup(db, &next, next.clone()).await;
@@ -2214,15 +2447,13 @@ where
             .await?;
         let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
         if let crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
-            account_id,
-            device_id,
             recovery,
             lane_bootstrap,
             p6_delivery_client_instance_id,
+            snapshot_paging_v1,
         } = &response
         {
-            if account_id != &binding.account_id
-                || device_id != &binding.protocol_device_id
+            if !snapshot_paging_v1
                 || lane_bootstrap.capabilities != requested_lanes
                 || !bootstrap_p6_activation_matches(
                     lane_bootstrap,
@@ -2298,6 +2529,7 @@ where
         };
         if bootstrap.account_id != binding.account_id
             || bootstrap.device_id != binding.protocol_device_id
+            || !bootstrap.snapshot_paging_v1
             || bootstrap.lane_bootstrap.capabilities != requested_lanes
             || !bootstrap_p6_activation_matches(
                 &bootstrap.lane_bootstrap,
@@ -2455,28 +2687,31 @@ where
         .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.bootstrap", params)
         .await?;
     let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
-    let (account_id, device_id, lane_bootstrap, activated_client_instance_id) = match &response {
-        crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) => (
-            bootstrap.account_id.as_str(),
-            bootstrap.device_id.as_str(),
-            &bootstrap.lane_bootstrap,
-            bootstrap.p6_delivery_client_instance_id.as_deref(),
-        ),
-        crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
-            account_id,
-            device_id,
-            lane_bootstrap,
-            p6_delivery_client_instance_id,
-            ..
-        } => (
-            account_id.as_str(),
-            device_id.as_str(),
-            lane_bootstrap,
-            p6_delivery_client_instance_id.as_deref(),
-        ),
-    };
+    let (account_id, device_id, lane_bootstrap, activated_client_instance_id, snapshot_paging_v1) =
+        match &response {
+            crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) => (
+                bootstrap.account_id.as_str(),
+                bootstrap.device_id.as_str(),
+                &bootstrap.lane_bootstrap,
+                bootstrap.p6_delivery_client_instance_id.as_deref(),
+                bootstrap.snapshot_paging_v1,
+            ),
+            crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
+                lane_bootstrap,
+                p6_delivery_client_instance_id,
+                snapshot_paging_v1,
+                ..
+            } => (
+                binding.account_id.as_str(),
+                binding.protocol_device_id.as_str(),
+                lane_bootstrap,
+                p6_delivery_client_instance_id.as_deref(),
+                *snapshot_paging_v1,
+            ),
+        };
     if account_id != binding.account_id
         || device_id != binding.protocol_device_id
+        || !snapshot_paging_v1
         || lane_bootstrap.capabilities != requested_lanes
         || !bootstrap_p6_activation_matches(
             lane_bootstrap,
@@ -3916,6 +4151,7 @@ fn empty_outcome() -> crate::messages::MessageSyncOutcome {
         pages_fetched: 0,
         messages_hydrated: 0,
         duplicates_skipped: 0,
+        older_history_excluded: false,
         changed_conversation_ids: Vec::new(),
         committed_incoming_messages: Vec::new(),
         error_code: None,
@@ -3978,6 +4214,18 @@ pub(crate) fn failure_outcome(
             (
                 crate::messages::MessageSyncStatus::Blocked,
                 "server_repair_required".to_owned(),
+            )
+        }
+        crate::ImError::Service { code, .. }
+            if matches!(
+                code.as_deref(),
+                Some("sync.snapshot_item_too_large" | "sync.snapshot_required_state_too_large")
+            ) =>
+        {
+            (
+                crate::messages::MessageSyncStatus::Blocked,
+                code.clone()
+                    .unwrap_or_else(|| "SYNC_CAPACITY_EXCEEDED".to_owned()),
             )
         }
         crate::ImError::Service { code, .. }
@@ -4202,6 +4450,113 @@ fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
 mod tests {
     use super::*;
 
+    fn accumulator_manifest(total_pages: u64, total_items: u64) -> SnapshotAccumulatorV3 {
+        use crate::internal::wire::sync_v2::{
+            SnapshotHistoryPolicyV3, SnapshotRecoveryBudgetV3, SnapshotSectionSummaryV3,
+            SnapshotSectionV3, SyncCursorV2, SyncSnapshotManifestV3,
+        };
+        SnapshotAccumulatorV3::new(SyncSnapshotManifestV3 {
+            frozen_at: "2026-08-31T10:00:00Z".to_owned(),
+            snapshot_cursor: SyncCursorV2 {
+                stream_epoch: "3".to_owned(),
+                scan_seq: "20".to_owned(),
+            },
+            sections: BTreeMap::from([
+                (
+                    SnapshotSectionV3::ReadStates,
+                    SnapshotSectionSummaryV3 {
+                        item_count: total_items,
+                        digest: format!("sha256:{}", "a".repeat(64)),
+                    },
+                ),
+                (
+                    SnapshotSectionV3::Groups,
+                    SnapshotSectionSummaryV3 {
+                        item_count: 0,
+                        digest: format!("sha256:{}", "b".repeat(64)),
+                    },
+                ),
+                (
+                    SnapshotSectionV3::RecentPlainMessages,
+                    SnapshotSectionSummaryV3 {
+                        item_count: 0,
+                        digest: format!("sha256:{}", "b".repeat(64)),
+                    },
+                ),
+                (
+                    SnapshotSectionV3::UnexpiredSystemNotifications,
+                    SnapshotSectionSummaryV3 {
+                        item_count: 0,
+                        digest: format!("sha256:{}", "b".repeat(64)),
+                    },
+                ),
+            ]),
+            recovery_budget: SnapshotRecoveryBudgetV3 {
+                required_state_items: total_items,
+                required_state_encoded_bytes: 0,
+                required_state_pages: total_pages,
+            },
+            history_policy: SnapshotHistoryPolicyV3 {
+                returned_items: 0,
+                returned_encoded_bytes: 0,
+                returned_pages: 0,
+                oldest_included_event_seq: None,
+                excluded_older_messages: 0,
+                older_history_excluded: false,
+                truncation_reason: None,
+            },
+            server_cutoff: "2026-08-29T10:00:00Z".to_owned(),
+            total_items,
+            total_encoded_bytes: 0,
+            total_pages,
+            manifest_digest: format!("sha256:{}", "c".repeat(64)),
+            raw: json!({}),
+        })
+    }
+
+    fn read_page(
+        thread_key: &str,
+        has_more: bool,
+    ) -> crate::internal::wire::sync_v2::SnapshotPageV3 {
+        crate::internal::wire::sync_v2::SnapshotPageV3 {
+            section: crate::internal::wire::sync_v2::SnapshotSectionV3::ReadStates,
+            items: vec![json!({
+                "thread_kind": "direct",
+                "thread_key": thread_key,
+                "state_version": "1",
+            })],
+            returned_items: 1,
+            returned_encoded_bytes: 1,
+            page_digest: format!("sha256:{}", "d".repeat(64)),
+            has_more,
+            next_page_ref: has_more.then(|| "opaque-page-ref".to_owned()),
+        }
+    }
+
+    #[test]
+    fn schema3_accumulator_rejects_missing_reordered_and_mixed_sections() {
+        let mut valid = accumulator_manifest(2, 2);
+        assert!(valid.push_page(read_page("a", true)).unwrap().is_some());
+        assert!(valid.push_page(read_page("b", false)).unwrap().is_none());
+        assert_eq!(
+            valid.sections[&crate::internal::wire::sync_v2::SnapshotSectionV3::ReadStates].len(),
+            2
+        );
+
+        let mut reordered = accumulator_manifest(2, 2);
+        reordered.push_page(read_page("b", true)).unwrap();
+        assert!(reordered.push_page(read_page("a", false)).is_err());
+
+        let mut missing = accumulator_manifest(2, 2);
+        assert!(missing.push_page(read_page("a", false)).is_err());
+
+        let mut mixed = accumulator_manifest(2, 2);
+        let mut group_page = read_page("group-a", true);
+        group_page.section = crate::internal::wire::sync_v2::SnapshotSectionV3::Groups;
+        mixed.push_page(group_page).unwrap();
+        assert!(mixed.push_page(read_page("a", false)).is_err());
+    }
+
     #[test]
     fn failure_outcome_treats_http_auth_rejection_as_terminal() {
         for status_code in [401, 403] {
@@ -4240,6 +4595,24 @@ mod tests {
                 outcome.status,
                 crate::messages::MessageSyncStatus::AuthRevoked
             );
+            assert_eq!(outcome.error_code.as_deref(), Some(code));
+        }
+    }
+
+    #[test]
+    fn failure_outcome_maps_schema3_hard_capacity_to_typed_blocked_code() {
+        for code in [
+            "sync.snapshot_item_too_large",
+            "sync.snapshot_required_state_too_large",
+        ] {
+            let outcome = failure_outcome(&crate::ImError::Service {
+                status_code: Some(200),
+                code: Some(code.to_owned()),
+                message: "snapshot capacity exceeded".to_owned(),
+                data: None,
+            })
+            .expect("capacity failure must produce a typed outcome");
+            assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Blocked);
             assert_eq!(outcome.error_code.as_deref(), Some(code));
         }
     }
@@ -4863,10 +5236,11 @@ mod tests {
             "recovery": {
                 "recovery_id": recovery_id,
                 "token": token,
+                "snapshot_schema": 3,
+                "snapshot_delivery": "paged_v1",
                 "stream_epoch": stream_epoch,
                 "snapshot_scan_seq": snapshot_scan_seq,
                 "message_cutoff": "2026-07-26T12:00:03Z",
-                "message_limit": 500,
                 "expires_at": "2026-07-28T12:10:03Z"
             },
             "warnings": []
@@ -4874,7 +5248,7 @@ mod tests {
     }
 
     fn sync_snapshot_bootstrap_recovery(
-        binding: &crate::identity::ActiveSyncAccountBinding,
+        _binding: &crate::identity::ActiveSyncAccountBinding,
         client_instance_id: &str,
         recovery_id: &str,
         token: &str,
@@ -4883,15 +5257,14 @@ mod tests {
     ) -> Value {
         let mut response = json!({
             "mode": "compact_recovery_required",
-            "account_id": binding.account_id,
-            "device_id": binding.protocol_device_id,
             "recovery": {
                 "recovery_id": recovery_id,
                 "token": token,
+                "snapshot_schema": 3,
+                "snapshot_delivery": "paged_v1",
                 "stream_epoch": stream_epoch,
                 "snapshot_scan_seq": snapshot_scan_seq,
                 "message_cutoff": "2026-07-26T12:00:03Z",
-                "message_limit": 500,
                 "expires_at": "2026-07-28T12:10:03Z"
             }
         });
@@ -4948,6 +5321,7 @@ mod tests {
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
+            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
             "sync_capabilities": sync_capabilities,
             "lanes": lanes
         });
@@ -4979,7 +5353,8 @@ mod tests {
     fn explicit_sync_negotiation_response() -> Value {
         json!({
             "supported_profiles": [
-                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
+                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1,
+                crate::internal::wire::sync_v2::SNAPSHOT_PAGING_V1
             ]
         })
     }
@@ -4990,6 +5365,7 @@ mod tests {
         p5_stream_epoch: &str,
         p6_stream_epoch: &str,
     ) {
+        response["snapshot_capability"] = json!({"schema": 3, "delivery": "paged_v1"});
         #[allow(unused_mut)]
         let mut capabilities = Vec::new();
         #[allow(unused_mut)]
@@ -5628,34 +6004,194 @@ mod tests {
         }
     }
 
-    fn sync_snapshot_response(
+    async fn sync_snapshot_response(
+        client: &crate::core::ImClient,
         binding: &crate::identity::ActiveSyncAccountBinding,
+        recovery_id: &str,
         stream_epoch: &str,
         snapshot_scan_seq: &str,
         recent_plain_messages: Vec<Value>,
     ) -> Value {
-        json!({
-            "mode": "compact_recovery",
-            "account_id": binding.account_id,
-            "device_id": binding.protocol_device_id,
-            "server_time": "2026-07-28T12:00:04Z",
+        let db = client.core_inner().local_state_db().await.unwrap();
+        let client_instance_id = db
+            .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
+            .await
+            .unwrap();
+        let empty_items = Vec::<Value>::new();
+        let empty_digest = crate::internal::wire::sync_v2::canonical_digest(&empty_items).unwrap();
+        let message_digest =
+            crate::internal::wire::sync_v2::canonical_digest(&recent_plain_messages).unwrap();
+        let message_item_bytes = recent_plain_messages
+            .iter()
+            .map(|item| serde_json_canonicalizer::to_vec(item).unwrap().len())
+            .sum::<usize>();
+        let logical_package = json!({
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": recent_plain_messages,
+            "unexpired_system_notifications": [],
+        });
+        let total_encoded_bytes = serde_json_canonicalizer::to_vec(&logical_package)
+            .unwrap()
+            .len();
+        let returned_items = logical_package["recent_plain_messages"]
+            .as_array()
+            .unwrap()
+            .len();
+        let oldest_included_event_seq = logical_package["recent_plain_messages"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.pointer("/event/event_seq"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let page_section = if returned_items == 0 {
+            "read_states"
+        } else {
+            "recent_plain_messages"
+        };
+        let page_items = if returned_items == 0 {
+            Vec::new()
+        } else {
+            logical_package["recent_plain_messages"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let page_digest = crate::internal::wire::sync_v2::canonical_digest(&page_items).unwrap();
+        let mut manifest = json!({
+            "manifest_schema": 1,
+            "frozen_at": "2026-07-28T12:00:04Z",
             "snapshot_cursor": {
                 "stream_epoch": stream_epoch,
                 "scan_seq": snapshot_scan_seq
             },
-            "read_states": [],
-            "groups": [],
+            "sections": {
+                "read_states": {"item_count": 0, "digest": empty_digest},
+                "groups": {"item_count": 0, "digest": empty_digest},
+                "recent_plain_messages": {"item_count": returned_items, "digest": message_digest},
+                "unexpired_system_notifications": {"item_count": 0, "digest": empty_digest}
+            },
+            "recovery_budget": {
+                "max_items": 10000,
+                "max_encoded_bytes": 67108864,
+                "max_pages": 100,
+                "required_state_items": 0,
+                "required_state_encoded_bytes": 0,
+                "required_state_pages": 0
+            },
+            "history_policy": {
+                "selection": "newest_complete_suffix",
+                "returned_items": returned_items,
+                "returned_encoded_bytes": message_item_bytes,
+                "returned_pages": usize::from(returned_items > 0),
+                "oldest_included_event_seq": oldest_included_event_seq,
+                "excluded_older_messages": 0,
+                "older_history_excluded": false,
+                "truncation_reason": null,
+                "complete_within_policy": true
+            },
             "message_policy": {
                 "server_cutoff": "2026-07-26T12:00:03Z",
-                "max_logical_messages": 500,
-                "returned_logical_messages": recent_plain_messages.len()
+                "selection": "ordinary_plain_only"
+            },
+            "system_notification_policy": {
+                "scope": "exact_device_unexpired",
+                "complete_through_scan_seq": snapshot_scan_seq,
+                "complete": true
             },
             "excluded": {
                 "e2ee_messages": true,
                 "plain_messages_before_cutoff": true
             },
-            "recent_plain_messages": recent_plain_messages
+            "total_items": returned_items,
+            "total_encoded_bytes": total_encoded_bytes,
+            "total_pages": 1
+        });
+        manifest["manifest_digest"] =
+            json!(crate::internal::wire::sync_v2::canonical_digest(&manifest).unwrap());
+        json!({
+            "mode": "compact_recovery",
+            "recovery_id": recovery_id,
+            "account_id": binding.account_id,
+            "device_id": binding.protocol_device_id,
+            "device_auth_generation": binding.device_auth_generation,
+            "client_instance_id": client_instance_id,
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_schema": 3,
+            "snapshot_delivery": "paged_v1",
+            "snapshot_cursor": {
+                "stream_epoch": stream_epoch,
+                "scan_seq": snapshot_scan_seq
+            },
+            "manifest": manifest,
+            "page": {
+                "section": page_section,
+                "items": page_items,
+                "returned_items": returned_items,
+                "returned_encoded_bytes": message_item_bytes,
+                "page_digest": page_digest,
+                "has_more": false,
+                "next_page_ref": null
+            }
         })
+    }
+
+    async fn sync_snapshot_two_page_responses(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        recovery_id: &str,
+        stream_epoch: &str,
+        snapshot_scan_seq: &str,
+        items: Vec<Value>,
+        older_history_excluded: bool,
+    ) -> (Value, Value) {
+        assert_eq!(items.len(), 2);
+        let mut first = sync_snapshot_response(
+            client,
+            binding,
+            recovery_id,
+            stream_epoch,
+            snapshot_scan_seq,
+            items.clone(),
+        )
+        .await;
+        first["manifest"]["history_policy"]["returned_pages"] = json!(2);
+        first["manifest"]["total_pages"] = json!(2);
+        if older_history_excluded {
+            first["manifest"]["history_policy"]["excluded_older_messages"] = json!(1);
+            first["manifest"]["history_policy"]["older_history_excluded"] = json!(true);
+            first["manifest"]["history_policy"]["truncation_reason"] = json!("max_pages");
+        }
+        let mut unsigned = first["manifest"].clone();
+        unsigned.as_object_mut().unwrap().remove("manifest_digest");
+        let manifest_digest = crate::internal::wire::sync_v2::canonical_digest(&unsigned).unwrap();
+        first["manifest"]["manifest_digest"] = json!(manifest_digest);
+        let first_item = vec![items[0].clone()];
+        first["page"]["items"] = json!(first_item);
+        first["page"]["returned_items"] = json!(1);
+        first["page"]["returned_encoded_bytes"] =
+            json!(serde_json_canonicalizer::to_vec(&items[0]).unwrap().len());
+        first["page"]["page_digest"] = json!(crate::internal::wire::sync_v2::canonical_digest(
+            &vec![items[0].clone()]
+        )
+        .unwrap());
+        first["page"]["has_more"] = json!(true);
+        first["page"]["next_page_ref"] = json!("opaque-page-ref-2");
+
+        let mut second = first.clone();
+        second.as_object_mut().unwrap().remove("manifest");
+        second["manifest_digest"] = json!(manifest_digest);
+        second["page"]["items"] = json!([items[1].clone()]);
+        second["page"]["returned_items"] = json!(1);
+        second["page"]["returned_encoded_bytes"] =
+            json!(serde_json_canonicalizer::to_vec(&items[1]).unwrap().len());
+        second["page"]["page_digest"] = json!(crate::internal::wire::sync_v2::canonical_digest(
+            &vec![items[1].clone()]
+        )
+        .unwrap());
+        second["page"]["has_more"] = json!(false);
+        second["page"]["next_page_ref"] = Value::Null;
+        (first, second)
     }
 
     async fn seed_sync_snapshot_ready_state(
@@ -7596,7 +8132,9 @@ END;
                     "20",
                 )),
                 Ok(sync_snapshot_response(
+                    &client,
                     &binding,
+                    "recovery-direct",
                     "2",
                     "20",
                     vec![json!({
@@ -7608,7 +8146,8 @@ END;
                             "snapshot direct body",
                         )
                     })],
-                )),
+                )
+                .await),
                 Ok(sync_snapshot_delta("2", "20", vec![])),
             ],
         );
@@ -7800,6 +8339,21 @@ END;
             "19",
             "snapshot ordinary message",
         );
+        let snapshot_event_20 = sync_snapshot_message_event(
+            &binding,
+            "event-snapshot-20",
+            "2",
+            "20",
+            "message-from-snapshot-20",
+            "did:example:sync-snapshot-recovered",
+        );
+        let snapshot_message_20 = sync_snapshot_message(
+            &binding,
+            "message-from-snapshot-20",
+            "did:example:sync-snapshot-recovered",
+            "20",
+            "second snapshot ordinary message",
+        );
         let live_event = sync_snapshot_message_event(
             &binding,
             "event-live-21",
@@ -7816,6 +8370,19 @@ END;
             "post-anchor ordinary message",
         );
         let calls = Rc::new(RefCell::new(Vec::new()));
+        let (first_snapshot_page, last_snapshot_page) = sync_snapshot_two_page_responses(
+            &client,
+            &binding,
+            "recovery-preserve",
+            "2",
+            "20",
+            vec![
+                json!({"event": snapshot_event, "message": snapshot_message}),
+                json!({"event": snapshot_event_20, "message": snapshot_message_20}),
+            ],
+            true,
+        )
+        .await;
         let transport = SyncSnapshotTransport::queued(
             Rc::clone(&calls),
             vec![
@@ -7825,15 +8392,8 @@ END;
                     "2",
                     "20",
                 )),
-                Ok(sync_snapshot_response(
-                    &binding,
-                    "2",
-                    "20",
-                    vec![json!({
-                        "event": snapshot_event,
-                        "message": snapshot_message
-                    })],
-                )),
+                Ok(first_snapshot_page),
+                Ok(last_snapshot_page),
                 Ok(sync_snapshot_delta("2", "22", vec![live_event])),
                 Ok(json!({
                     "items": [{
@@ -7857,6 +8417,7 @@ END;
 
         assert!(fixture.has_message_content("must survive compact recovery"));
         assert!(fixture.has_message_content("snapshot ordinary message"));
+        assert!(fixture.has_message_content("second snapshot ordinary message"));
         assert!(fixture.has_message_content("post-anchor ordinary message"));
         let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
         assert_eq!(
@@ -7864,6 +8425,7 @@ END;
             ("2", "22")
         );
         assert_eq!(outcome.committed_incoming_messages.len(), 1);
+        assert!(outcome.older_history_excluded);
         assert_eq!(
             outcome.committed_incoming_messages[0].event_id,
             "event-live-21"
@@ -7882,6 +8444,7 @@ END;
             [
                 "sync.delta",
                 "sync.snapshot",
+                "sync.snapshot",
                 "sync.delta",
                 "message.get_batch"
             ]
@@ -7891,9 +8454,22 @@ END;
             Some(&json!("10"))
         );
         assert_eq!(
-            calls[2].params.pointer("/body/cursor/scan_seq"),
+            calls[2].params.pointer("/body/page_ref"),
+            Some(&json!("opaque-page-ref-2"))
+        );
+        assert_eq!(
+            calls[3].params.pointer("/body/cursor/scan_seq"),
             Some(&json!("20"))
         );
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let history_scope_marker: i64 = db
+            .query_row(
+                "SELECT older_history_excluded FROM sync_history_scope WHERE owner_identity_id=?1",
+                [&binding.owner_identity_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_scope_marker, 1);
     }
 
     #[tokio::test]
@@ -7926,15 +8502,18 @@ END;
             "must not commit",
         );
         let mut invalid_snapshot = sync_snapshot_response(
+            &client,
             &binding,
+            "recovery-invalid-snapshot",
             "2",
             "20",
             vec![json!({
                 "event": snapshot_event,
                 "message": snapshot_message
             })],
-        );
-        invalid_snapshot["message_policy"]["max_logical_messages"] = json!(499);
+        )
+        .await;
+        invalid_snapshot["manifest"]["total_items"] = json!(99);
         let calls = Rc::new(RefCell::new(Vec::new()));
         let error = MessageSyncRuntimeV2::new(
             &client,
@@ -8011,7 +8590,15 @@ END;
                 Rc::clone(&calls),
                 vec![
                     Ok(recovery),
-                    Ok(sync_snapshot_response(&binding, "2", "20", Vec::new())),
+                    Ok(sync_snapshot_response(
+                        &client,
+                        &binding,
+                        "recovery-schema-two",
+                        "2",
+                        "20",
+                        Vec::new(),
+                    )
+                    .await),
                 ],
             ),
             NoopAsyncDirectoryTransport,
@@ -8052,15 +8639,15 @@ END;
             "20",
         );
         recovery["recovery"]["snapshot_schema"] = json!(2);
-        let mut snapshot = sync_snapshot_response(&binding, "2", "20", Vec::new());
-        snapshot["snapshot_schema"] = json!(2);
-        snapshot["unexpired_system_notifications"] = json!([]);
-        snapshot["system_notification_policy"] = json!({
-            "scope": "exact_device_unexpired",
-            "complete_through_scan_seq": "20",
-            "returned_events": 0,
-            "complete": true
-        });
+        let snapshot = sync_snapshot_response(
+            &client,
+            &binding,
+            "recovery-schema-two-empty",
+            "2",
+            "20",
+            Vec::new(),
+        )
+        .await;
         let calls = Rc::new(RefCell::new(Vec::new()));
         MessageSyncRuntimeV2::new(
             &client,
@@ -8174,7 +8761,15 @@ END;
                         "3",
                         "40",
                     )),
-                    Ok(sync_snapshot_response(&binding, "3", "40", vec![])),
+                    Ok(sync_snapshot_response(
+                        &client,
+                        &binding,
+                        "recovery-bootstrap",
+                        "3",
+                        "40",
+                        vec![],
+                    )
+                    .await),
                     Ok(sync_snapshot_delta("3", "41", vec![])),
                 ],
             ),
@@ -8308,7 +8903,15 @@ END;
                         "2",
                         "20",
                     )),
-                    Ok(sync_snapshot_response(&binding, "2", "20", vec![])),
+                    Ok(sync_snapshot_response(
+                        &client,
+                        &binding,
+                        "recovery-token-restart",
+                        "2",
+                        "20",
+                        vec![],
+                    )
+                    .await),
                     Ok(sync_snapshot_delta("2", "21", vec![])),
                 ],
             ),

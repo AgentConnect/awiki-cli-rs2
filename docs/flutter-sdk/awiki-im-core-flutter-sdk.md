@@ -947,11 +947,13 @@ final diagnostics = await client.messages.syncDiagnostics();
   receipt/cursor advance, then retries authoritative DID-to-Handle resolution
   on later sync calls.
 - A compact-recovery response is handled inside the same call:
-  delta/bootstrap → process-local opaque token → strict snapshot validation and
-  atomic merge → post-anchor delta. The snapshot merges current Direct/Group
+  delta/bootstrap → process-local opaque token → Schema 3 manifest and opaque-page collection →
+  strict complete-package validation → one atomic merge → post-anchor delta. The snapshot merges current Direct/Group
   read state, active Group state, and recent ordinary messages without deleting
   older local messages. The successful call ends in the existing
-  `MessageSyncStatus.changed` or `MessageSyncStatus.idle`; snapshot or
+  `MessageSyncStatus.changed` or `MessageSyncStatus.idle`. A bounded ordinary-history suffix is
+  successful and exposes only `MessageSyncOutcome.olderHistoryExcluded`; required-state or single-item
+  hard overflow retains a stable capacity error code. Snapshot or
   post-anchor failure ends in `retryableFailure`, while an authorization or
   generation fence ends in `authRevoked`. HTTP 401/403 from authenticated
   sync or its JWT refresh, JSON-RPC `1401` after Core's bounded auth retry,
@@ -962,14 +964,15 @@ final diagnostics = await client.messages.syncDiagnostics();
   ordinary sync exactly once only when Core proves that the local authorization
   context advanced during the pass; a genuinely revoked device observes no
   context change and remains terminal. There is no second recover API.
-- The raw recovery token remains on the Rust process stack only and is never
+- The raw recovery token and page refs remain on the Rust process stack only and are never
   written to SQLite or logs. Dart cannot observe or persist the token, recovery
-  cursor/anchor, cutoff, policy limit, or returned snapshot count.
+  cursor/anchor, cutoff, policy limit, manifest, section, page count, event boundary, byte count,
+  or returned snapshot count.
 - Core serializes recovery per owner and commits a snapshot only when the
   previous cursor, recovery-id hash, authorized anchor, and recovery phase still
-  match in SQLite. Snapshot decoding is closed-schema, rejects duplicate
-  event IDs/sequences and pre-cutoff messages, and never lets Dart choose the
-  48-hour/500-message policy.
+  match in SQLite. Snapshot decoding is closed-schema, rejects missing/reordered/mixed pages,
+  duplicate event IDs/sequences, page/section/manifest digest or count conflict, invalid keyset order,
+  and pre-cutoff messages. Dart never chooses or recomputes the 10,000-item/64-MiB/100-page policy.
 - `committedIncomingMessages` contains only incoming messages whose projection
   transaction committed, with `CommittedMessageSource.liveDelta`; realtime
   hints, snapshot hydration, and Group system timeline records never appear in

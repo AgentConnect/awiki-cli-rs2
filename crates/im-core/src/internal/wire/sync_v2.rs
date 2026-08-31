@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use super::common::{self, WireIdentity};
 
 pub(crate) const SYNC_V2_PROFILE: &str = "anp.sync.local.v2";
 pub(crate) const MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1: &str =
     "awiki.message-sync.explicit-negotiation.v1";
+pub(crate) const SNAPSHOT_PAGING_V1: &str = "sync.snapshot_paging.v1";
 pub(crate) const SYNC_CAPABILITY_P5_DEVICE_V1: &str = "lanes.p5_device.v1";
 pub(crate) const SYNC_CAPABILITY_P6_GROUP_V1: &str = "lanes.p6_group.v1";
 pub(crate) const P6_DELIVERY_CONTEXT_CAPABILITY_V1: &str = "p6.delivery_context.v1";
@@ -64,17 +66,17 @@ pub(crate) struct SyncBootstrapV2 {
     pub(crate) warnings: Vec<String>,
     pub(crate) lane_bootstrap: SyncLaneBootstrapV3,
     pub(crate) p6_delivery_client_instance_id: Option<String>,
+    pub(crate) snapshot_paging_v1: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SyncBootstrapResponseV2 {
     TailOnly(SyncBootstrapV2),
     RecoveryRequired {
-        account_id: String,
-        device_id: String,
         recovery: SyncRecoveryV2,
         lane_bootstrap: SyncLaneBootstrapV3,
         p6_delivery_client_instance_id: Option<String>,
+        snapshot_paging_v1: bool,
     },
 }
 
@@ -145,7 +147,7 @@ pub(crate) enum SyncDeltaResponseV2 {
     RecoveryRequired(SyncRecoveryV2),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SyncRecoveryV2 {
     pub(crate) recovery_id: String,
     pub(crate) token: String,
@@ -153,8 +155,25 @@ pub(crate) struct SyncRecoveryV2 {
     pub(crate) snapshot_scan_seq: String,
     pub(crate) expires_at: String,
     pub(crate) snapshot_schema: u32,
+    pub(crate) snapshot_delivery: String,
 }
 
+impl std::fmt::Debug for SyncRecoveryV2 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SyncRecoveryV2")
+            .field("recovery_id", &"<redacted>")
+            .field("token", &"<redacted>")
+            .field("stream_epoch", &"<redacted>")
+            .field("snapshot_scan_seq", &"<redacted>")
+            .field("expires_at", &"<redacted>")
+            .field("snapshot_schema", &self.snapshot_schema)
+            .field("snapshot_delivery", &self.snapshot_delivery)
+            .finish()
+    }
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SyncSnapshotV2 {
     pub(crate) snapshot_schema: u32,
@@ -167,6 +186,20 @@ pub(crate) struct SyncSnapshotV2 {
     pub(crate) groups: Vec<Value>,
     pub(crate) recent_plain_messages: Vec<SnapshotPlainMessageV2>,
     pub(crate) unexpired_system_notifications: Vec<SnapshotSystemNotificationV2>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SyncSnapshotV3 {
+    pub(crate) account_id: String,
+    pub(crate) device_id: String,
+    pub(crate) server_time: String,
+    pub(crate) server_cutoff: String,
+    pub(crate) snapshot_cursor: SyncCursorV2,
+    pub(crate) read_states: Vec<Value>,
+    pub(crate) groups: Vec<Value>,
+    pub(crate) recent_plain_messages: Vec<SnapshotPlainMessageV2>,
+    pub(crate) unexpired_system_notifications: Vec<SnapshotSystemNotificationV2>,
+    pub(crate) older_history_excluded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -214,6 +247,161 @@ pub(crate) struct MessageBatchV2 {
     pub(crate) unavailable: Vec<String>,
 }
 
+pub(crate) const SNAPSHOT_PAGE_MAX_ITEMS: u64 = 100;
+pub(crate) const SNAPSHOT_PAGE_MAX_ENCODED_BYTES: u64 = 1_048_576;
+pub(crate) const SNAPSHOT_PACKAGE_MAX_ITEMS: u64 = 10_000;
+pub(crate) const SNAPSHOT_PACKAGE_MAX_ENCODED_BYTES: u64 = 67_108_864;
+pub(crate) const SNAPSHOT_PACKAGE_MAX_PAGES: u64 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SnapshotSectionV3 {
+    ReadStates,
+    Groups,
+    RecentPlainMessages,
+    UnexpiredSystemNotifications,
+}
+
+impl SnapshotSectionV3 {
+    pub(crate) const ORDERED: [Self; 4] = [
+        Self::ReadStates,
+        Self::Groups,
+        Self::RecentPlainMessages,
+        Self::UnexpiredSystemNotifications,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadStates => "read_states",
+            Self::Groups => "groups",
+            Self::RecentPlainMessages => "recent_plain_messages",
+            Self::UnexpiredSystemNotifications => "unexpired_system_notifications",
+        }
+    }
+
+    fn parse(value: &str) -> crate::ImResult<Self> {
+        match value {
+            "read_states" => Ok(Self::ReadStates),
+            "groups" => Ok(Self::Groups),
+            "recent_plain_messages" => Ok(Self::RecentPlainMessages),
+            "unexpired_system_notifications" => Ok(Self::UnexpiredSystemNotifications),
+            _ => Err(invalid_page("snapshot page section is unknown")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotSectionSummaryV3 {
+    pub(crate) item_count: u64,
+    pub(crate) digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotRecoveryBudgetV3 {
+    pub(crate) required_state_items: u64,
+    pub(crate) required_state_encoded_bytes: u64,
+    pub(crate) required_state_pages: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotHistoryPolicyV3 {
+    pub(crate) returned_items: u64,
+    pub(crate) returned_encoded_bytes: u64,
+    pub(crate) returned_pages: u64,
+    pub(crate) oldest_included_event_seq: Option<String>,
+    pub(crate) excluded_older_messages: u64,
+    pub(crate) older_history_excluded: bool,
+    pub(crate) truncation_reason: Option<String>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct SyncSnapshotManifestV3 {
+    pub(crate) frozen_at: String,
+    pub(crate) snapshot_cursor: SyncCursorV2,
+    pub(crate) sections: BTreeMap<SnapshotSectionV3, SnapshotSectionSummaryV3>,
+    pub(crate) recovery_budget: SnapshotRecoveryBudgetV3,
+    pub(crate) history_policy: SnapshotHistoryPolicyV3,
+    pub(crate) server_cutoff: String,
+    pub(crate) total_items: u64,
+    pub(crate) total_encoded_bytes: u64,
+    pub(crate) total_pages: u64,
+    pub(crate) manifest_digest: String,
+    pub(crate) raw: Value,
+}
+
+impl std::fmt::Debug for SyncSnapshotManifestV3 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SyncSnapshotManifestV3")
+            .field("total_items", &self.total_items)
+            .field("total_encoded_bytes", &self.total_encoded_bytes)
+            .field("total_pages", &self.total_pages)
+            .field(
+                "older_history_excluded",
+                &self.history_policy.older_history_excluded,
+            )
+            .field("private_fields", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct SnapshotPageV3 {
+    pub(crate) section: SnapshotSectionV3,
+    pub(crate) items: Vec<Value>,
+    pub(crate) returned_items: u64,
+    pub(crate) returned_encoded_bytes: u64,
+    pub(crate) page_digest: String,
+    pub(crate) has_more: bool,
+    pub(crate) next_page_ref: Option<String>,
+}
+
+impl std::fmt::Debug for SnapshotPageV3 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SnapshotPageV3")
+            .field("section", &self.section)
+            .field("returned_items", &self.returned_items)
+            .field("returned_encoded_bytes", &self.returned_encoded_bytes)
+            .field("page_digest", &self.page_digest)
+            .field("has_more", &self.has_more)
+            .field("items", &"<redacted>")
+            .field("next_page_ref", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct SyncSnapshotPageV3 {
+    pub(crate) recovery_id: String,
+    pub(crate) account_id: String,
+    pub(crate) device_id: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) client_instance_id: String,
+    pub(crate) server_time: String,
+    pub(crate) snapshot_cursor: SyncCursorV2,
+    pub(crate) manifest: Option<SyncSnapshotManifestV3>,
+    pub(crate) manifest_digest: String,
+    pub(crate) page: SnapshotPageV3,
+}
+
+impl std::fmt::Debug for SyncSnapshotPageV3 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SyncSnapshotPageV3")
+            .field("recovery_id", &"<redacted>")
+            .field("account_id", &"<redacted>")
+            .field("device_id", &"<redacted>")
+            .field("device_auth_generation", &"<redacted>")
+            .field("client_instance_id", &"<redacted>")
+            .field("server_time", &self.server_time)
+            .field("snapshot_cursor", &"<redacted>")
+            .field("manifest", &self.manifest)
+            .field("manifest_digest", &self.manifest_digest)
+            .field("page", &self.page)
+            .finish()
+    }
+}
+
 pub(crate) fn build_capability_discovery_params(identity: &WireIdentity) -> crate::ImResult<Value> {
     let did = required_string("identity.did", identity.did.as_str())?;
     Ok(json!({
@@ -228,15 +416,15 @@ pub(crate) fn require_explicit_sync_negotiation_capability(raw: &Value) -> crate
         .get("supported_profiles")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid_page("supported_profiles must be an array"))?;
-    if profiles
-        .iter()
-        .any(|value| value.as_str() == Some(MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1))
-    {
+    let has_profile = |expected: &str| {
+        profiles
+            .iter()
+            .any(|value| value.as_str() == Some(expected))
+    };
+    if has_profile(MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1) && has_profile(SNAPSHOT_PAGING_V1) {
         return Ok(());
     }
-    Err(crate::ImError::unsupported(
-        MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1,
-    ))
+    Err(crate::ImError::unsupported(SNAPSHOT_PAGING_V1))
 }
 
 pub(crate) fn build_bootstrap_params(
@@ -268,7 +456,11 @@ pub(crate) fn build_bootstrap_params_with_lanes(
             "capabilities": {
                 "sync_profile": SYNC_V2_PROFILE,
                 "event_schema_max": 1,
-                "requested_sync_capabilities": requested
+                "requested_sync_capabilities": requested,
+                "requested_snapshot_capabilities": {
+                    "schema_max": 3,
+                    "deliveries": ["paged_v1"]
+                }
             }
         }
     });
@@ -392,16 +584,28 @@ pub(crate) fn build_snapshot_params(
     identity: &WireIdentity,
     recovery: &SyncRecoveryV2,
 ) -> crate::ImResult<Value> {
+    build_snapshot_page_params(identity, recovery, None)
+}
+
+pub(crate) fn build_snapshot_page_params(
+    identity: &WireIdentity,
+    recovery: &SyncRecoveryV2,
+    page_ref: Option<&str>,
+) -> crate::ImResult<Value> {
     let did = required_string("identity.did", identity.did.as_str())?;
     let recovery_id = required_string("recovery_id", &recovery.recovery_id)?;
     let token = required_string("token", &recovery.token)?;
-    Ok(json!({
+    let mut params = json!({
         "meta": common::local_meta(&did, SYNC_V2_PROFILE),
         "body": {
             "recovery_id": recovery_id,
             "token": token
         }
-    }))
+    });
+    if let Some(page_ref) = page_ref {
+        params["body"]["page_ref"] = Value::String(required_string("page_ref", page_ref)?);
+    }
+    Ok(params)
 }
 
 pub(crate) fn build_thread_after_params(
@@ -478,6 +682,7 @@ pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
 
 pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBootstrapResponseV2> {
     let object = object(raw, "sync.bootstrap response")?;
+    let snapshot_paging_v1 = parse_snapshot_capability(object)?;
     let lane_bootstrap = parse_lane_bootstrap_v3(object)?;
     let p6_delivery_client_instance_id = parse_p6_delivery_bootstrap(object)?;
     if lane_bootstrap.capabilities.contains(&SyncLaneV3::P6Group)
@@ -494,27 +699,11 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
                 .ok_or_else(|| invalid_page("bootstrap recovery is required"))?,
             "bootstrap recovery",
         )?;
-        canonical_string_field(recovery, "message_cutoff")?;
-        let message_limit = recovery
-            .get("message_limit")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| invalid_page("message_limit must be a positive integer"))?;
-        if message_limit == 0 || message_limit > 500 {
-            return Err(invalid_page("message_limit must be between 1 and 500"));
-        }
         return Ok(SyncBootstrapResponseV2::RecoveryRequired {
-            account_id: canonical_string_field(object, "account_id")?,
-            device_id: canonical_string_field(object, "device_id")?,
-            recovery: SyncRecoveryV2 {
-                recovery_id: canonical_string_field(recovery, "recovery_id")?,
-                token: canonical_string_field(recovery, "token")?,
-                stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
-                snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
-                expires_at: canonical_string_field(recovery, "expires_at")?,
-                snapshot_schema: optional_snapshot_schema(recovery)?,
-            },
+            recovery: parse_recovery_descriptor_v3(recovery)?,
             lane_bootstrap,
             p6_delivery_client_instance_id,
+            snapshot_paging_v1,
         });
     }
     exact_mode(object, "tail_only")?;
@@ -553,7 +742,24 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
         warnings: warnings(object.get("warnings"))?,
         lane_bootstrap,
         p6_delivery_client_instance_id,
+        snapshot_paging_v1,
     }))
+}
+
+fn parse_snapshot_capability(response: &Map<String, Value>) -> crate::ImResult<bool> {
+    let capability = response
+        .get("snapshot_capability")
+        .ok_or_else(|| invalid_page("snapshot_capability is required"))?;
+    let capability = object(capability, "snapshot_capability")?;
+    exact_fields(capability, &["schema", "delivery"], "snapshot_capability")?;
+    if capability.get("schema").and_then(Value::as_u64) != Some(3)
+        || capability.get("delivery").and_then(Value::as_str) != Some("paged_v1")
+    {
+        return Err(invalid_page(
+            "snapshot_capability must confirm Schema 3 paged_v1",
+        ));
+    }
+    Ok(true)
 }
 
 fn parse_p6_delivery_bootstrap(response: &Map<String, Value>) -> crate::ImResult<Option<String>> {
@@ -690,24 +896,9 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
                     .ok_or_else(|| invalid_page("recovery is required"))?,
                 "sync recovery",
             )?;
-            // Validate the server-owned policy fields without retaining them beyond
-            // the private wire decoder.
-            canonical_string_field(recovery, "message_cutoff")?;
-            let message_limit = recovery
-                .get("message_limit")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| invalid_page("message_limit must be a positive integer"))?;
-            if message_limit == 0 || message_limit > 500 {
-                return Err(invalid_page("message_limit must be between 1 and 500"));
-            }
-            return Ok(SyncDeltaResponseV2::RecoveryRequired(SyncRecoveryV2 {
-                recovery_id: canonical_string_field(recovery, "recovery_id")?,
-                token: canonical_string_field(recovery, "token")?,
-                stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
-                snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
-                expires_at: canonical_string_field(recovery, "expires_at")?,
-                snapshot_schema: optional_snapshot_schema(recovery)?,
-            }));
+            return Ok(SyncDeltaResponseV2::RecoveryRequired(
+                parse_recovery_descriptor_v3(recovery)?,
+            ));
         }
         Some("delta") => {}
         _ => return Err(invalid_page("sync.delta response has an unsupported mode")),
@@ -946,6 +1137,732 @@ pub(crate) fn validate_lane_envelope_v3(
     Ok(())
 }
 
+pub(crate) fn parse_snapshot_page_v3(
+    raw: &Value,
+    first_page: bool,
+) -> crate::ImResult<SyncSnapshotPageV3> {
+    let response = object(raw, "Schema 3 sync.snapshot response")?;
+    let mut expected = vec![
+        "mode",
+        "recovery_id",
+        "account_id",
+        "device_id",
+        "device_auth_generation",
+        "client_instance_id",
+        "server_time",
+        "snapshot_schema",
+        "snapshot_delivery",
+        "snapshot_cursor",
+        "page",
+    ];
+    expected.push(if first_page {
+        "manifest"
+    } else {
+        "manifest_digest"
+    });
+    exact_fields(response, &expected, "Schema 3 sync.snapshot response")?;
+    exact_mode(response, "compact_recovery")?;
+    if response.get("snapshot_schema").and_then(Value::as_u64) != Some(3)
+        || response.get("snapshot_delivery").and_then(Value::as_str) != Some("paged_v1")
+    {
+        return Err(invalid_page(
+            "sync.snapshot must use Schema 3 paged_v1 without fallback",
+        ));
+    }
+    let manifest = if first_page {
+        Some(parse_snapshot_manifest_v3(
+            response
+                .get("manifest")
+                .ok_or_else(|| invalid_page("first snapshot page requires manifest"))?,
+        )?)
+    } else {
+        None
+    };
+    let manifest_digest = match &manifest {
+        Some(manifest) => manifest.manifest_digest.clone(),
+        None => digest_field(response, "manifest_digest")?,
+    };
+    let page = parse_snapshot_page_envelope_v3(
+        response
+            .get("page")
+            .ok_or_else(|| invalid_page("snapshot page is required"))?,
+    )?;
+    Ok(SyncSnapshotPageV3 {
+        recovery_id: canonical_string_field(response, "recovery_id")?,
+        account_id: canonical_string_field(response, "account_id")?,
+        device_id: canonical_string_field(response, "device_id")?,
+        device_auth_generation: positive_decimal_field(response, "device_auth_generation")?,
+        client_instance_id: canonical_string_field(response, "client_instance_id")?,
+        server_time: canonical_timestamp_field(response, "server_time")?,
+        snapshot_cursor: parse_cursor(
+            response
+                .get("snapshot_cursor")
+                .ok_or_else(|| invalid_page("snapshot_cursor is required"))?,
+        )?,
+        manifest,
+        manifest_digest,
+        page,
+    })
+}
+
+fn parse_snapshot_page_envelope_v3(raw: &Value) -> crate::ImResult<SnapshotPageV3> {
+    let page = object(raw, "snapshot page")?;
+    exact_fields(
+        page,
+        &[
+            "section",
+            "items",
+            "returned_items",
+            "returned_encoded_bytes",
+            "page_digest",
+            "has_more",
+            "next_page_ref",
+        ],
+        "snapshot page",
+    )?;
+    let section = SnapshotSectionV3::parse(&canonical_string_field(page, "section")?)?;
+    let items = page
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| invalid_page("snapshot page items must be an array"))?;
+    let returned_items = u64_field(page, "returned_items")?;
+    if returned_items != items.len() as u64 || returned_items > SNAPSHOT_PAGE_MAX_ITEMS {
+        return Err(invalid_page(
+            "snapshot page returned_items does not match its bounded item array",
+        ));
+    }
+    let actual_item_bytes = items.iter().try_fold(0_u64, |total, item| {
+        let encoded = serde_json_canonicalizer::to_vec(item)
+            .map_err(|_| invalid_page("snapshot page item is not canonicalizable"))?;
+        Ok::<_, crate::ImError>(
+            total.saturating_add(u64::try_from(encoded.len()).unwrap_or(u64::MAX)),
+        )
+    })?;
+    let returned_encoded_bytes = u64_field(page, "returned_encoded_bytes")?;
+    if returned_encoded_bytes != actual_item_bytes
+        || returned_encoded_bytes > SNAPSHOT_PAGE_MAX_ENCODED_BYTES
+    {
+        return Err(invalid_page(
+            "snapshot page returned_encoded_bytes does not match item JCS",
+        ));
+    }
+    let page_digest = digest_field(page, "page_digest")?;
+    if page_digest != canonical_digest(&items)? {
+        return Err(invalid_page("snapshot page digest mismatch"));
+    }
+    let has_more = page
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid_page("snapshot page has_more must be a boolean"))?;
+    let next_page_ref = match page.get("next_page_ref") {
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(required_string("next_page_ref", value)?),
+        _ => {
+            return Err(invalid_page(
+                "snapshot page next_page_ref has invalid shape",
+            ))
+        }
+    };
+    if has_more != next_page_ref.is_some() || (has_more && items.is_empty()) {
+        return Err(invalid_page(
+            "snapshot page continuation fields are inconsistent",
+        ));
+    }
+    Ok(SnapshotPageV3 {
+        section,
+        items,
+        returned_items,
+        returned_encoded_bytes,
+        page_digest,
+        has_more,
+        next_page_ref,
+    })
+}
+
+fn parse_snapshot_manifest_v3(raw: &Value) -> crate::ImResult<SyncSnapshotManifestV3> {
+    let manifest = object(raw, "snapshot manifest")?;
+    exact_fields(
+        manifest,
+        &[
+            "manifest_schema",
+            "frozen_at",
+            "snapshot_cursor",
+            "sections",
+            "recovery_budget",
+            "history_policy",
+            "message_policy",
+            "system_notification_policy",
+            "excluded",
+            "total_items",
+            "total_encoded_bytes",
+            "total_pages",
+            "manifest_digest",
+        ],
+        "snapshot manifest",
+    )?;
+    if manifest.get("manifest_schema").and_then(Value::as_u64) != Some(1) {
+        return Err(invalid_page("snapshot manifest_schema must equal 1"));
+    }
+    let sections_object = object(
+        manifest
+            .get("sections")
+            .ok_or_else(|| invalid_page("snapshot manifest sections are required"))?,
+        "snapshot manifest sections",
+    )?;
+    exact_fields(
+        sections_object,
+        &SnapshotSectionV3::ORDERED.map(SnapshotSectionV3::as_str),
+        "snapshot manifest sections",
+    )?;
+    let mut sections = BTreeMap::new();
+    for section in SnapshotSectionV3::ORDERED {
+        let summary = object(
+            sections_object
+                .get(section.as_str())
+                .ok_or_else(|| invalid_page("snapshot section summary is missing"))?,
+            "snapshot section summary",
+        )?;
+        exact_fields(
+            summary,
+            &["item_count", "digest"],
+            "snapshot section summary",
+        )?;
+        sections.insert(
+            section,
+            SnapshotSectionSummaryV3 {
+                item_count: u64_field(summary, "item_count")?,
+                digest: digest_field(summary, "digest")?,
+            },
+        );
+    }
+    let budget = object(
+        manifest
+            .get("recovery_budget")
+            .ok_or_else(|| invalid_page("recovery_budget is required"))?,
+        "snapshot recovery budget",
+    )?;
+    exact_fields(
+        budget,
+        &[
+            "max_items",
+            "max_encoded_bytes",
+            "max_pages",
+            "required_state_items",
+            "required_state_encoded_bytes",
+            "required_state_pages",
+        ],
+        "snapshot recovery budget",
+    )?;
+    if u64_field(budget, "max_items")? != SNAPSHOT_PACKAGE_MAX_ITEMS
+        || u64_field(budget, "max_encoded_bytes")? != SNAPSHOT_PACKAGE_MAX_ENCODED_BYTES
+        || u64_field(budget, "max_pages")? != SNAPSHOT_PACKAGE_MAX_PAGES
+    {
+        return Err(invalid_page("snapshot recovery budget constants mismatch"));
+    }
+    let recovery_budget = SnapshotRecoveryBudgetV3 {
+        required_state_items: u64_field(budget, "required_state_items")?,
+        required_state_encoded_bytes: u64_field(budget, "required_state_encoded_bytes")?,
+        required_state_pages: u64_field(budget, "required_state_pages")?,
+    };
+    let history = object(
+        manifest
+            .get("history_policy")
+            .ok_or_else(|| invalid_page("history_policy is required"))?,
+        "snapshot history policy",
+    )?;
+    exact_fields(
+        history,
+        &[
+            "selection",
+            "returned_items",
+            "returned_encoded_bytes",
+            "returned_pages",
+            "oldest_included_event_seq",
+            "excluded_older_messages",
+            "older_history_excluded",
+            "truncation_reason",
+            "complete_within_policy",
+        ],
+        "snapshot history policy",
+    )?;
+    if history.get("selection").and_then(Value::as_str) != Some("newest_complete_suffix")
+        || history
+            .get("complete_within_policy")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err(invalid_page("snapshot history policy is not complete"));
+    }
+    let returned_items = u64_field(history, "returned_items")?;
+    let oldest_included_event_seq = match history.get("oldest_included_event_seq") {
+        Some(Value::Null) if returned_items == 0 => None,
+        Some(Value::String(value)) if returned_items > 0 => {
+            crate::internal::local_state::sync_v2::validate_decimal(
+                "oldest_included_event_seq",
+                value,
+            )?;
+            Some(value.clone())
+        }
+        _ => {
+            return Err(invalid_page(
+                "oldest_included_event_seq does not match returned history",
+            ))
+        }
+    };
+    let excluded_older_messages = u64_field(history, "excluded_older_messages")?;
+    let older_history_excluded = history
+        .get("older_history_excluded")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid_page("older_history_excluded must be a boolean"))?;
+    let truncation_reason = match history.get("truncation_reason") {
+        Some(Value::Null) => None,
+        Some(Value::String(value))
+            if matches!(
+                value.as_str(),
+                "max_items" | "max_encoded_bytes" | "max_pages"
+            ) =>
+        {
+            Some(value.clone())
+        }
+        _ => return Err(invalid_page("snapshot truncation_reason is invalid")),
+    };
+    if older_history_excluded != (excluded_older_messages > 0 && truncation_reason.is_some())
+        || (!older_history_excluded
+            && (excluded_older_messages != 0 || truncation_reason.is_some()))
+    {
+        return Err(invalid_page(
+            "snapshot bounded-history declaration is inconsistent",
+        ));
+    }
+    let history_policy = SnapshotHistoryPolicyV3 {
+        returned_items,
+        returned_encoded_bytes: u64_field(history, "returned_encoded_bytes")?,
+        returned_pages: u64_field(history, "returned_pages")?,
+        oldest_included_event_seq,
+        excluded_older_messages,
+        older_history_excluded,
+        truncation_reason,
+    };
+    let message_policy = object(
+        manifest
+            .get("message_policy")
+            .ok_or_else(|| invalid_page("message_policy is required"))?,
+        "snapshot message policy",
+    )?;
+    exact_fields(
+        message_policy,
+        &["server_cutoff", "selection"],
+        "snapshot message policy",
+    )?;
+    if message_policy.get("selection").and_then(Value::as_str) != Some("ordinary_plain_only") {
+        return Err(invalid_page("snapshot message selection is invalid"));
+    }
+    let system_policy = object(
+        manifest
+            .get("system_notification_policy")
+            .ok_or_else(|| invalid_page("system_notification_policy is required"))?,
+        "snapshot system notification policy",
+    )?;
+    exact_fields(
+        system_policy,
+        &["scope", "complete_through_scan_seq", "complete"],
+        "snapshot system notification policy",
+    )?;
+    if system_policy.get("scope").and_then(Value::as_str) != Some("exact_device_unexpired")
+        || system_policy.get("complete").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(invalid_page(
+            "snapshot system notification policy is incomplete",
+        ));
+    }
+    let excluded = object(
+        manifest
+            .get("excluded")
+            .ok_or_else(|| invalid_page("snapshot excluded policy is required"))?,
+        "snapshot excluded policy",
+    )?;
+    exact_fields(
+        excluded,
+        &["e2ee_messages", "plain_messages_before_cutoff"],
+        "snapshot excluded policy",
+    )?;
+    if excluded.get("e2ee_messages").and_then(Value::as_bool) != Some(true)
+        || excluded
+            .get("plain_messages_before_cutoff")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err(invalid_page("snapshot excluded policy is invalid"));
+    }
+    let total_items = u64_field(manifest, "total_items")?;
+    let total_encoded_bytes = u64_field(manifest, "total_encoded_bytes")?;
+    let total_pages = u64_field(manifest, "total_pages")?;
+    if total_items > SNAPSHOT_PACKAGE_MAX_ITEMS
+        || total_encoded_bytes > SNAPSHOT_PACKAGE_MAX_ENCODED_BYTES
+        || !(1..=SNAPSHOT_PACKAGE_MAX_PAGES).contains(&total_pages)
+        || sections
+            .values()
+            .map(|summary| summary.item_count)
+            .sum::<u64>()
+            != total_items
+        || sections[&SnapshotSectionV3::RecentPlainMessages].item_count
+            != history_policy.returned_items
+        || sections[&SnapshotSectionV3::ReadStates]
+            .item_count
+            .saturating_add(sections[&SnapshotSectionV3::Groups].item_count)
+            .saturating_add(sections[&SnapshotSectionV3::UnexpiredSystemNotifications].item_count)
+            != recovery_budget.required_state_items
+    {
+        return Err(invalid_page("snapshot manifest totals are inconsistent"));
+    }
+    let page_sum = recovery_budget
+        .required_state_pages
+        .saturating_add(history_policy.returned_pages);
+    if page_sum != total_pages && !(total_items == 0 && page_sum == 0 && total_pages == 1) {
+        return Err(invalid_page(
+            "snapshot manifest page totals are inconsistent",
+        ));
+    }
+    let snapshot_cursor = parse_cursor(
+        manifest
+            .get("snapshot_cursor")
+            .ok_or_else(|| invalid_page("manifest snapshot_cursor is required"))?,
+    )?;
+    if decimal_field(system_policy, "complete_through_scan_seq")? != snapshot_cursor.scan_seq {
+        return Err(invalid_page(
+            "notification policy does not match the snapshot anchor",
+        ));
+    }
+    let manifest_digest = digest_field(manifest, "manifest_digest")?;
+    let mut unsigned = raw.clone();
+    unsigned
+        .as_object_mut()
+        .expect("manifest was validated as object")
+        .remove("manifest_digest");
+    if manifest_digest != canonical_digest(&unsigned)? {
+        return Err(invalid_page("snapshot manifest digest mismatch"));
+    }
+    Ok(SyncSnapshotManifestV3 {
+        frozen_at: canonical_timestamp_field(manifest, "frozen_at")?,
+        snapshot_cursor,
+        sections,
+        recovery_budget,
+        history_policy,
+        server_cutoff: canonical_timestamp_field(message_policy, "server_cutoff")?,
+        total_items,
+        total_encoded_bytes,
+        total_pages,
+        manifest_digest,
+        raw: raw.clone(),
+    })
+}
+
+fn u64_field(object: &Map<String, Value>, field: &str) -> crate::ImResult<u64> {
+    object
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_page(format!("{field} must be a non-negative integer")))
+}
+
+fn digest_field(object: &Map<String, Value>, field: &'static str) -> crate::ImResult<String> {
+    let digest = canonical_string_field(object, field)?;
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(invalid_page(format!(
+            "{field} must use sha256 lowercase hex"
+        )));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(invalid_page(format!(
+            "{field} must use sha256 lowercase hex"
+        )));
+    }
+    Ok(digest)
+}
+
+pub(crate) fn canonical_digest<T: serde::Serialize>(value: &T) -> crate::ImResult<String> {
+    let encoded = serde_json_canonicalizer::to_vec(value)
+        .map_err(|_| invalid_page("snapshot value is not canonicalizable"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+}
+
+pub(crate) fn finalize_snapshot_package_v3(
+    manifest: &SyncSnapshotManifestV3,
+    account_id: String,
+    device_id: String,
+    server_time: String,
+    sections: &BTreeMap<SnapshotSectionV3, Vec<Value>>,
+    page_counts: &BTreeMap<SnapshotSectionV3, u64>,
+) -> crate::ImResult<SyncSnapshotV3> {
+    let empty = Vec::new();
+    for section in SnapshotSectionV3::ORDERED {
+        let items = sections.get(&section).unwrap_or(&empty);
+        let expected = manifest
+            .sections
+            .get(&section)
+            .ok_or_else(|| invalid_page("snapshot manifest section is missing"))?;
+        if expected.item_count != items.len() as u64 || expected.digest != canonical_digest(items)?
+        {
+            return Err(invalid_page(
+                "snapshot section count or digest does not match the manifest",
+            ));
+        }
+    }
+    let read_values = sections
+        .get(&SnapshotSectionV3::ReadStates)
+        .cloned()
+        .unwrap_or_default();
+    let group_values = sections
+        .get(&SnapshotSectionV3::Groups)
+        .cloned()
+        .unwrap_or_default();
+    let message_values = sections
+        .get(&SnapshotSectionV3::RecentPlainMessages)
+        .cloned()
+        .unwrap_or_default();
+    let notification_values = sections
+        .get(&SnapshotSectionV3::UnexpiredSystemNotifications)
+        .cloned()
+        .unwrap_or_default();
+    let logical_package = json!({
+        "read_states": read_values,
+        "groups": group_values,
+        "recent_plain_messages": message_values,
+        "unexpired_system_notifications": notification_values,
+    });
+    let total_encoded_bytes = serde_json_canonicalizer::to_vec(&logical_package)
+        .map_err(|_| invalid_page("snapshot package is not canonicalizable"))?
+        .len() as u64;
+    if total_encoded_bytes != manifest.total_encoded_bytes {
+        return Err(invalid_page(
+            "snapshot package byte count does not match the manifest",
+        ));
+    }
+    let item_bytes = |section: SnapshotSectionV3| -> crate::ImResult<u64> {
+        sections
+            .get(&section)
+            .into_iter()
+            .flatten()
+            .try_fold(0_u64, |total, item| {
+                let bytes = serde_json_canonicalizer::to_vec(item)
+                    .map_err(|_| invalid_page("snapshot item is not canonicalizable"))?
+                    .len() as u64;
+                Ok(total.saturating_add(bytes))
+            })
+    };
+    let required_bytes = item_bytes(SnapshotSectionV3::ReadStates)?
+        .saturating_add(item_bytes(SnapshotSectionV3::Groups)?)
+        .saturating_add(item_bytes(SnapshotSectionV3::UnexpiredSystemNotifications)?);
+    if required_bytes != manifest.recovery_budget.required_state_encoded_bytes
+        || item_bytes(SnapshotSectionV3::RecentPlainMessages)?
+            != manifest.history_policy.returned_encoded_bytes
+    {
+        return Err(invalid_page(
+            "snapshot item byte totals do not match the manifest",
+        ));
+    }
+    let pages = |section| page_counts.get(&section).copied().unwrap_or_default();
+    let actual_required_pages = pages(SnapshotSectionV3::ReadStates)
+        .saturating_add(pages(SnapshotSectionV3::Groups))
+        .saturating_add(pages(SnapshotSectionV3::UnexpiredSystemNotifications));
+    let empty_terminal_page = manifest.total_items == 0
+        && actual_required_pages == 1
+        && manifest.recovery_budget.required_state_pages == 0;
+    if pages(SnapshotSectionV3::RecentPlainMessages) != manifest.history_policy.returned_pages
+        || (actual_required_pages != manifest.recovery_budget.required_state_pages
+            && !empty_terminal_page)
+        || page_counts.values().copied().sum::<u64>() != manifest.total_pages
+    {
+        return Err(invalid_page(
+            "snapshot section page counts do not match the manifest",
+        ));
+    }
+
+    let parsed_cutoff = chrono::DateTime::parse_from_rfc3339(&manifest.server_cutoff)
+        .map_err(|_| invalid_page("snapshot server cutoff is invalid"))?;
+    let mut event_ids = BTreeSet::new();
+    let mut event_seqs = BTreeSet::new();
+    let recent_plain_messages = sections
+        .get(&SnapshotSectionV3::RecentPlainMessages)
+        .into_iter()
+        .flatten()
+        .map(|item| {
+            let item = object(item, "snapshot plain message")?;
+            exact_fields(item, &["event", "message"], "snapshot plain message")?;
+            let event = parse_event(
+                item.get("event")
+                    .ok_or_else(|| invalid_page("snapshot message event is required"))?,
+            )?;
+            if event.event_type != "message.created"
+                || event.account_id != account_id
+                || event.stream_epoch != manifest.snapshot_cursor.stream_epoch
+                || event.recipient_device_id.is_some()
+                || crate::internal::local_state::sync_v2::compare_decimal(
+                    &event.event_seq,
+                    &manifest.snapshot_cursor.scan_seq,
+                )? == std::cmp::Ordering::Greater
+                || !event_ids.insert(event.event_id.clone())
+                || !event_seqs.insert(event.event_seq.clone())
+            {
+                return Err(invalid_page(
+                    "snapshot message event is outside its unique account anchor",
+                ));
+            }
+            let message = item
+                .get("message")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("snapshot message must be an object"))?;
+            let accepted_at = message
+                .get("accepted_at")
+                .or_else(|| message.get("created_at"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_page("snapshot message timestamp is required"))?;
+            let accepted_at = chrono::DateTime::parse_from_rfc3339(accepted_at)
+                .map_err(|_| invalid_page("snapshot message timestamp must be RFC3339"))?;
+            if accepted_at < parsed_cutoff {
+                return Err(invalid_page(
+                    "snapshot message timestamp is before the server cutoff",
+                ));
+            }
+            reject_e2ee_value(&message)?;
+            validate_message_kind_matches_hydration(&event, &message)?;
+            Ok(SnapshotPlainMessageV2 { event, message })
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    if let Some(oldest) = manifest.history_policy.oldest_included_event_seq.as_deref() {
+        if recent_plain_messages
+            .first()
+            .map(|item| item.event.event_seq.as_str())
+            != Some(oldest)
+        {
+            return Err(invalid_page(
+                "snapshot oldest included event does not match history",
+            ));
+        }
+    }
+
+    let unexpired_system_notifications = sections
+        .get(&SnapshotSectionV3::UnexpiredSystemNotifications)
+        .into_iter()
+        .flatten()
+        .map(|item| {
+            let item = object(item, "snapshot system notification")?;
+            exact_fields(item, &["event", "message"], "snapshot system notification")?;
+            let event = parse_event(
+                item.get("event")
+                    .ok_or_else(|| invalid_page("snapshot notification event is required"))?,
+            )?;
+            if event.event_type != "system.notification"
+                || event.account_id != account_id
+                || event.stream_epoch != manifest.snapshot_cursor.stream_epoch
+                || event.recipient_device_id.as_deref() != Some(device_id.as_str())
+                || crate::internal::local_state::sync_v2::compare_decimal(
+                    &event.event_seq,
+                    &manifest.snapshot_cursor.scan_seq,
+                )? == std::cmp::Ordering::Greater
+                || !event_ids.insert(event.event_id.clone())
+                || !event_seqs.insert(event.event_seq.clone())
+            {
+                return Err(invalid_page(
+                    "snapshot notification is outside its unique exact-device anchor",
+                ));
+            }
+            let message = item
+                .get("message")
+                .and_then(Value::as_object)
+                .ok_or_else(|| invalid_page("snapshot notification must be an object"))?;
+            exact_fields(
+                message,
+                &["projection_kind", "meta", "auth", "body"],
+                "snapshot notification message",
+            )?;
+            if !crate::internal::system_notification::wire::is_trusted_delivery_marker(
+                item.get("message").expect("message field was validated"),
+            ) {
+                return Err(invalid_page(
+                    "snapshot notification must use its trusted projection marker",
+                ));
+            }
+            Ok(SnapshotSystemNotificationV2 {
+                event,
+                message: item
+                    .get("message")
+                    .expect("message field was validated")
+                    .clone(),
+            })
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+
+    let read_states = sections
+        .get(&SnapshotSectionV3::ReadStates)
+        .cloned()
+        .unwrap_or_default();
+    for value in &read_states {
+        let state = object(value, "snapshot read state")?;
+        exact_fields(
+            state,
+            &[
+                "thread_kind",
+                "thread_key",
+                "read_up_to_thread_seq",
+                "read_up_to_message_id",
+                "state_version",
+                "updated_by_device_id",
+                "updated_at",
+            ],
+            "snapshot read state",
+        )?;
+        canonical_timestamp_field(state, "updated_at")?;
+        optional_canonical_string_field(state, "read_up_to_message_id")?;
+        optional_canonical_string_field(state, "updated_by_device_id")?;
+        reject_e2ee_value(value)?;
+    }
+    let groups = sections
+        .get(&SnapshotSectionV3::Groups)
+        .cloned()
+        .unwrap_or_default();
+    for value in &groups {
+        let state = object(value, "snapshot group state")?;
+        exact_fields(
+            state,
+            &[
+                "group_did",
+                "host_service_did",
+                "creator_did",
+                "group_state_version",
+                "group_event_seq",
+                "required_security_profile",
+                "group_profile",
+                "member_role",
+                "membership_status",
+                "member_count",
+                "updated_at",
+            ],
+            "snapshot group state",
+        )?;
+        canonical_timestamp_field(state, "updated_at")?;
+        reject_e2ee_value(value)?;
+    }
+    Ok(SyncSnapshotV3 {
+        account_id,
+        device_id,
+        server_time,
+        server_cutoff: manifest.server_cutoff.clone(),
+        snapshot_cursor: manifest.snapshot_cursor.clone(),
+        read_states,
+        groups,
+        recent_plain_messages,
+        unexpired_system_notifications,
+        older_history_excluded: manifest.history_policy.older_history_excluded,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
     let object = object(raw, "sync.snapshot response")?;
     let snapshot_schema = match object.get("snapshot_schema") {
@@ -1323,6 +2240,41 @@ fn exact_fields(
     Ok(())
 }
 
+fn parse_recovery_descriptor_v3(recovery: &Map<String, Value>) -> crate::ImResult<SyncRecoveryV2> {
+    exact_fields(
+        recovery,
+        &[
+            "recovery_id",
+            "token",
+            "snapshot_schema",
+            "snapshot_delivery",
+            "stream_epoch",
+            "snapshot_scan_seq",
+            "message_cutoff",
+            "expires_at",
+        ],
+        "Schema 3 recovery descriptor",
+    )?;
+    if recovery.get("snapshot_schema").and_then(Value::as_u64) != Some(3)
+        || recovery.get("snapshot_delivery").and_then(Value::as_str) != Some("paged_v1")
+    {
+        return Err(invalid_page(
+            "compact recovery must use Schema 3 paged_v1 without fallback",
+        ));
+    }
+    canonical_timestamp_field(recovery, "message_cutoff")?;
+    Ok(SyncRecoveryV2 {
+        recovery_id: canonical_string_field(recovery, "recovery_id")?,
+        token: canonical_string_field(recovery, "token")?,
+        stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
+        snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
+        expires_at: canonical_timestamp_field(recovery, "expires_at")?,
+        snapshot_schema: 3,
+        snapshot_delivery: "paged_v1".to_owned(),
+    })
+}
+
+#[cfg(test)]
 fn optional_snapshot_schema(object: &Map<String, Value>) -> crate::ImResult<u32> {
     match object.get("snapshot_schema") {
         None => Ok(1),
@@ -1809,6 +2761,176 @@ mod tests {
             "payload": {},
             "source": {}
         })
+    }
+
+    fn empty_schema3_snapshot_response() -> Value {
+        let empty_digest = canonical_digest(&Vec::<Value>::new()).unwrap();
+        let logical_package = json!({
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [],
+            "unexpired_system_notifications": [],
+        });
+        let total_encoded_bytes = serde_json_canonicalizer::to_vec(&logical_package)
+            .unwrap()
+            .len();
+        let mut manifest = json!({
+            "manifest_schema": 1,
+            "frozen_at": "2026-08-31T10:00:00Z",
+            "snapshot_cursor": {"stream_epoch": "3", "scan_seq": "20"},
+            "sections": {
+                "read_states": {"item_count": 0, "digest": empty_digest},
+                "groups": {"item_count": 0, "digest": empty_digest},
+                "recent_plain_messages": {"item_count": 0, "digest": empty_digest},
+                "unexpired_system_notifications": {"item_count": 0, "digest": empty_digest},
+            },
+            "recovery_budget": {
+                "max_items": SNAPSHOT_PACKAGE_MAX_ITEMS,
+                "max_encoded_bytes": SNAPSHOT_PACKAGE_MAX_ENCODED_BYTES,
+                "max_pages": SNAPSHOT_PACKAGE_MAX_PAGES,
+                "required_state_items": 0,
+                "required_state_encoded_bytes": 0,
+                "required_state_pages": 0,
+            },
+            "history_policy": {
+                "selection": "newest_complete_suffix",
+                "returned_items": 0,
+                "returned_encoded_bytes": 0,
+                "returned_pages": 0,
+                "oldest_included_event_seq": null,
+                "excluded_older_messages": 0,
+                "older_history_excluded": false,
+                "truncation_reason": null,
+                "complete_within_policy": true,
+            },
+            "message_policy": {
+                "server_cutoff": "2026-08-29T10:00:00Z",
+                "selection": "ordinary_plain_only",
+            },
+            "system_notification_policy": {
+                "scope": "exact_device_unexpired",
+                "complete_through_scan_seq": "20",
+                "complete": true,
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true,
+            },
+            "total_items": 0,
+            "total_encoded_bytes": total_encoded_bytes,
+            "total_pages": 1,
+        });
+        let manifest_digest = canonical_digest(&manifest).unwrap();
+        manifest["manifest_digest"] = json!(manifest_digest);
+        json!({
+            "mode": "compact_recovery",
+            "recovery_id": "recovery-fixture",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "device_auth_generation": "3",
+            "client_instance_id": "installation-1",
+            "server_time": "2026-08-31T10:00:01Z",
+            "snapshot_schema": 3,
+            "snapshot_delivery": "paged_v1",
+            "snapshot_cursor": {"stream_epoch": "3", "scan_seq": "20"},
+            "manifest": manifest,
+            "page": {
+                "section": "read_states",
+                "items": [],
+                "returned_items": 0,
+                "returned_encoded_bytes": 0,
+                "page_digest": empty_digest,
+                "has_more": false,
+                "next_page_ref": null,
+            }
+        })
+    }
+
+    #[test]
+    fn schema3_snapshot_decoder_accepts_empty_terminal_package_and_rejects_tamper() {
+        let response = empty_schema3_snapshot_response();
+        let page = parse_snapshot_page_v3(&response, true).unwrap();
+        assert_eq!(page.page.section, SnapshotSectionV3::ReadStates);
+        let debug = format!("{page:?}");
+        for private in [
+            "recovery-fixture",
+            "account-1",
+            "device-1",
+            "installation-1",
+        ] {
+            assert!(!debug.contains(private));
+        }
+        let manifest = page.manifest.as_ref().unwrap();
+        let snapshot = finalize_snapshot_package_v3(
+            manifest,
+            page.account_id.clone(),
+            page.device_id.clone(),
+            page.server_time.clone(),
+            &BTreeMap::from([(SnapshotSectionV3::ReadStates, Vec::new())]),
+            &BTreeMap::from([(SnapshotSectionV3::ReadStates, 1)]),
+        )
+        .unwrap();
+        assert!(!snapshot.older_history_excluded);
+
+        let mut tampered_page = response.clone();
+        tampered_page["page"]["page_digest"] = json!(format!("sha256:{}", "0".repeat(64)));
+        assert!(parse_snapshot_page_v3(&tampered_page, true).is_err());
+        let mut extra = response.clone();
+        extra["page"]["offset"] = json!(0);
+        assert!(parse_snapshot_page_v3(&extra, true).is_err());
+        let mut tampered_manifest = response;
+        tampered_manifest["manifest"]["total_items"] = json!(1);
+        assert!(parse_snapshot_page_v3(&tampered_manifest, true).is_err());
+    }
+
+    #[test]
+    fn schema3_recovery_and_bootstrap_requests_have_no_legacy_fallback_shape() {
+        let identity = WireIdentity {
+            did: "did:example:alice".to_owned(),
+        };
+        require_explicit_sync_negotiation_capability(&json!({
+            "supported_profiles": [
+                MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1,
+                SNAPSHOT_PAGING_V1
+            ]
+        }))
+        .unwrap();
+        assert!(require_explicit_sync_negotiation_capability(&json!({
+            "supported_profiles": [MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1]
+        }))
+        .is_err());
+        let bootstrap = build_bootstrap_params(&identity, "installation-1").unwrap();
+        assert_eq!(
+            bootstrap["body"]["capabilities"]["requested_snapshot_capabilities"],
+            json!({"schema_max": 3, "deliveries": ["paged_v1"]})
+        );
+        let recovery = parse_delta_response(&json!({
+            "mode": "compact_recovery_required",
+            "server_time": "2026-08-31T10:00:00Z",
+            "events": [],
+            "next_cursor": null,
+            "has_more": false,
+            "recovery": {
+                "recovery_id": "recovery-1",
+                "token": "opaque-token",
+                "snapshot_schema": 3,
+                "snapshot_delivery": "paged_v1",
+                "stream_epoch": "3",
+                "snapshot_scan_seq": "20",
+                "message_cutoff": "2026-08-29T10:00:00Z",
+                "expires_at": "2026-08-31T10:10:00Z"
+            },
+            "warnings": []
+        }))
+        .unwrap();
+        assert!(matches!(
+            recovery,
+            SyncDeltaResponseV2::RecoveryRequired(SyncRecoveryV2 {
+                snapshot_schema: 3,
+                ref snapshot_delivery,
+                ..
+            }) if snapshot_delivery == "paged_v1"
+        ));
     }
 
     #[test]
@@ -2399,7 +3521,10 @@ mod tests {
         assert_eq!(discovery["body"], json!({}));
         assert_eq!(discovery["meta"]["profile"], "anp.core.binding.v1");
         require_explicit_sync_negotiation_capability(&json!({
-            "supported_profiles": [MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1]
+            "supported_profiles": [
+                MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1,
+                SNAPSHOT_PAGING_V1
+            ]
         }))
         .unwrap();
         assert!(require_explicit_sync_negotiation_capability(&json!({
@@ -2411,6 +3536,10 @@ mod tests {
         assert_eq!(
             bootstrap["body"]["capabilities"]["requested_sync_capabilities"],
             json!([])
+        );
+        assert_eq!(
+            bootstrap["body"]["capabilities"]["requested_snapshot_capabilities"],
+            json!({"schema_max": 3, "deliveries": ["paged_v1"]})
         );
         assert!(bootstrap["body"]["capabilities"]
             .get("p6_delivery")
