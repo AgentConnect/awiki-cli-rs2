@@ -1244,7 +1244,7 @@ impl NativeImCoreNodeClient {
         let _mutation = self.inner.mutation.lock().await;
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
-        let request = crate::dto::group_create_request(input, client.handle())?;
+        let request = crate::dto::group_create_request(input)?;
         let fallback_title = request.name.clone();
         let result = self
             .inner
@@ -1348,7 +1348,7 @@ impl NativeImCoreNodeClient {
         let _mutation = self.inner.mutation.lock().await;
         let operation = self.inner.operation().await?;
         let client = operation.client()?;
-        let request = crate::dto::group_join_request(input, client.handle())?;
+        let request = crate::dto::group_join_request(input)?;
         let fallback = request.group.as_str().to_owned();
         let result = self
             .inner

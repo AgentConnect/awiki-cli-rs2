@@ -5,14 +5,10 @@ use crate::dto::{
 
 #[test]
 fn group_create_contract_trims_input_and_pins_safe_mvp_defaults() {
-    let handle = im_core::ids::Handle::parse("alice.awiki.info", "").unwrap();
-    let request = group_create_request(
-        NodeCreateGroupInput {
-            name: "  Release Crew  ".to_owned(),
-            description: Some("  ships together  ".to_owned()),
-        },
-        Some(&handle),
-    )
+    let request = group_create_request(NodeCreateGroupInput {
+        name: "  Release Crew  ".to_owned(),
+        description: Some("  ships together  ".to_owned()),
+    })
     .unwrap();
 
     assert_eq!(request.name, "Release Crew");
@@ -24,35 +20,28 @@ fn group_create_contract_trims_input_and_pins_safe_mvp_defaults() {
         "transport-protected"
     );
     assert!(!request.e2ee);
-    assert_eq!(request.creator_handle.as_ref(), Some(&handle));
+    assert_eq!(request.creator_handle, None);
 }
 
 #[test]
 fn group_create_contract_rejects_blank_name() {
-    let error = group_create_request(
-        NodeCreateGroupInput {
-            name: " \n ".to_owned(),
-            description: None,
-        },
-        None,
-    )
+    let error = group_create_request(NodeCreateGroupInput {
+        name: " \n ".to_owned(),
+        description: None,
+    })
     .unwrap_err();
 
     assert_eq!(error.code, "invalid_input");
 }
 
 #[test]
-fn group_join_contract_attaches_the_current_handle_without_public_input() {
-    let handle = im_core::ids::Handle::parse("alice.awiki.info", "").unwrap();
-    let request = group_join_request(
-        NodeGroupInput {
-            group_did: "did:wba:awiki.info:groups:release-crew".to_owned(),
-        },
-        Some(&handle),
-    )
+fn group_join_contract_uses_authenticated_did_without_handle_membership() {
+    let request = group_join_request(NodeGroupInput {
+        group_did: "did:wba:awiki.info:groups:release-crew".to_owned(),
+    })
     .unwrap();
 
-    assert_eq!(request.member_handle.as_ref(), Some(&handle));
+    assert_eq!(request.member_handle, None);
     assert_eq!(
         request.group.as_str(),
         "did:wba:awiki.info:groups:release-crew"
