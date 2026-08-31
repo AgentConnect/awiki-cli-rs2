@@ -155,5 +155,9 @@ export interface NativeImCoreNodeClient {
 
 export interface NativeBinding {
   readonly nativeApiVersion: () => number
-  readonly openNativeClient: (options: ImCoreNodeOpenOptions) => Promise<NativeImCoreNodeClient>
+  readonly openNativeClient: (options: ImCoreNodeOpenOptions & {
+    readonly clientVersionProduct: string
+    readonly clientVersionRelease: string
+    readonly clientVersionVersion: string
+  }) => Promise<NativeImCoreNodeClient>
 }

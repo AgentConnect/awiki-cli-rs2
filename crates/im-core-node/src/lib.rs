@@ -38,14 +38,14 @@ pub async fn open_native_client(options: NodeOpenOptions) -> napi::Result<Native
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    10
+    11
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn mail_attachment_download_uses_native_api_v10() {
-        assert_eq!(super::native_api_version(), 10);
+    fn client_version_metadata_uses_native_api_v11() {
+        assert_eq!(super::native_api_version(), 11);
     }
 
     #[test]

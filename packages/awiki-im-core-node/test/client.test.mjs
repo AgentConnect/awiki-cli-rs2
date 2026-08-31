@@ -27,7 +27,11 @@ async function startRecoveryService(t) {
     request.on('data', chunk => chunks.push(chunk))
     request.on('end', () => {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      requests.push({ path: request.url, body })
+      requests.push({
+        path: request.url,
+        body,
+        clientVersion: request.headers['x-awiki-client-version'],
+      })
       let result
       if (request.url === '/user-service/v1/handle/rpc') {
         result = {
@@ -81,6 +85,10 @@ test('recovery progress exposes the stable E2EE field through the real native bi
     didDomain: 'awiki.test',
     multiDeviceHandleRecoveryEnabled: true,
     multiDeviceAudience: 'awiki-user-service',
+    // Even an untyped JavaScript caller cannot override the wrapper-owned lineage.
+    clientVersionProduct: 'awiki-me',
+    clientVersionRelease: '0714',
+    clientVersionVersion: '0.0.1',
   })
   t.after(() => client.close())
 
@@ -102,6 +110,10 @@ test('recovery progress exposes the stable E2EE field through the real native bi
     '/user-service/v1/handle/rpc',
     '/user-service/v1/auth/handle-recovery/v4/exchange',
   ])
+  assert.deepEqual(
+    service.requests.map(request => request.clientVersion),
+    ['awiki-cli/0815/1.0.16', 'awiki-cli/0815/1.0.16'],
+  )
 })
 
 test('opens an empty Rust state, closes idempotently, and rejects later work', async t => {
@@ -228,7 +240,7 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })
 
-test('routes group, profile, recovery attestation, and payload operations through native v10 with structured identity errors', async t => {
+test('routes group, profile, recovery attestation, and payload operations through native v11 with structured identity errors', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
