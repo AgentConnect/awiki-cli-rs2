@@ -118,6 +118,10 @@ recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取
 stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
 恢复，不得只退出监听循环，也不得跳过 canonical sync。
 
+`syncNow()` 返回的 `olderHistoryExcluded` 是 Schema 3 bounded-history 成功标记，不是容量错误。
+公开结果只包含安全计数、closed warnings 和 changed conversation IDs，不包含 cursor、page ref、
+token、manifest 或消息正文。
+
 exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使用既有
 `awiki.sync.event.v3.p6-delivery-context.v1` 和同一 bootstrap client instance；未协商 P6 lane
 （包括不编译 group-e2ee 的 Node build）时使用既有 `awiki.sync.event.v3`，不得伪造 P6 activation。

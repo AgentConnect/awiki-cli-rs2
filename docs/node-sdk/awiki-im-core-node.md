@@ -149,6 +149,10 @@ reconnect；Node 只订阅消息提示，不实现 WebSocket、URL、bearer 或�
 sequence、cursor 或 checkpoint。Realtime hint 不是可靠 checkpoint；host 必须在启动及每个
 `sync_required` 后调用 canonical `syncNow()`，成功后再读取 committed conversation/history。
 
+`syncNow()` 的公开 `SyncResult` 只返回产品安全的计数、changed conversation IDs、closed warnings
+和 `olderHistoryExcluded`。该 boolean 表示 Schema 3 在预算内保留最新完整普通历史后缀并排除了更旧
+历史，仍是成功结果；它不暴露 recovery cursor、page ref、token、manifest 或消息正文。
+
 Core event buffer 满或 native stream 因其他原因关闭时没有可再投递的事件，`nextEvent()` 返回
 `null`。`null` 本身就是 stream recovery 边界，Host 必须按固定顺序执行：停止并 join 旧 session、
 调用 `syncNow({ reason: 'websocket_reconnect' })` 完成 canonical reconciliation、再调用

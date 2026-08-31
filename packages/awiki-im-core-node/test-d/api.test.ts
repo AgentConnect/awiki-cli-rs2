@@ -103,6 +103,8 @@ void opened.then(async client => {
   await client.leaveGroup({ groupDid: group.did })
   const localTimeline = await client.getLocalConversationTimeline({ conversationId: group.conversationId })
   localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
+  const sync = await client.syncNow({ reason: 'manual_refresh' })
+  sync.olderHistoryExcluded satisfies boolean
   const profiles = await client.hydrateDisplayProfiles({ peers: ['did:wba:awiki.info:user:alice'] })
   profiles satisfies readonly import('../src/index.js').NodeDisplayProfile[]
   let realtime = await client.startRealtime()

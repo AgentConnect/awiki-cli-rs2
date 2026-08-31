@@ -602,6 +602,7 @@ export interface SyncResult {
   readonly pagesFetched: number
   readonly messagesHydrated: number
   readonly duplicatesSkipped: number
+  readonly olderHistoryExcluded: boolean
   readonly changedConversationIds: readonly string[]
   readonly warnings: readonly string[]
 }
