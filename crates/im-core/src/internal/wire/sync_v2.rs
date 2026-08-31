@@ -3040,6 +3040,7 @@ mod tests {
                 "state_version": "2"
             }],
             "group_state_baseline": [],
+            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
             "warnings": []
         }))
         .unwrap();
@@ -3091,18 +3092,19 @@ mod tests {
     fn recovery_and_snapshot_keep_policy_and_token_inside_private_wire_types() {
         let recovery = match parse_delta_response(&json!({
             "mode": "compact_recovery_required",
-            "server_time": "2026-07-28T12:00:03Z",
+            "server_time": "2026-08-31T10:00:00Z",
             "events": [],
             "next_cursor": null,
             "has_more": false,
             "recovery": {
                 "recovery_id": "recovery-123",
                 "token": "opaque-secret",
-                "stream_epoch": "2",
-                "snapshot_scan_seq": "15020",
-                "message_cutoff": "2026-07-26T12:00:03Z",
-                "message_limit": 500,
-                "expires_at": "2026-07-28T12:10:03Z"
+                "snapshot_schema": 3,
+                "snapshot_delivery": "paged_v1",
+                "stream_epoch": "3",
+                "snapshot_scan_seq": "20",
+                "message_cutoff": "2026-08-29T10:00:00Z",
+                "expires_at": "2026-08-31T10:10:00Z"
             },
             "warnings": []
         }))
@@ -3111,7 +3113,11 @@ mod tests {
             SyncDeltaResponseV2::RecoveryRequired(recovery) => recovery,
             SyncDeltaResponseV2::Delta(_) => panic!("expected recovery"),
         };
-        assert_eq!(recovery.snapshot_schema, 1);
+        assert_eq!(recovery.snapshot_schema, 3);
+        assert_eq!(recovery.snapshot_delivery, "paged_v1");
+        let recovery_debug = format!("{recovery:?}");
+        assert!(!recovery_debug.contains("recovery-123"));
+        assert!(!recovery_debug.contains("opaque-secret"));
         let params = build_snapshot_params(
             &WireIdentity {
                 did: "did:example:alice".to_owned(),
@@ -3121,29 +3127,21 @@ mod tests {
         .unwrap();
         assert_eq!(params.pointer("/body/token"), Some(&json!("opaque-secret")));
 
-        let snapshot = parse_snapshot(&json!({
-            "mode": "compact_recovery",
-            "account_id": "account-1",
-            "device_id": "device-1",
-            "server_time": "2026-07-28T12:00:04Z",
-            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "15020"},
-            "read_states": [],
-            "groups": [],
-            "recent_plain_messages": [],
-            "message_policy": {
-                "server_cutoff": "2026-07-26T12:00:03Z",
-                "max_logical_messages": 500,
-                "returned_logical_messages": 0
-            },
-            "excluded": {
-                "e2ee_messages": true,
-                "plain_messages_before_cutoff": true
-            }
-        }))
+        let page = parse_snapshot_page_v3(&empty_schema3_snapshot_response(), true).unwrap();
+        let manifest = page.manifest.as_ref().unwrap();
+        let snapshot = finalize_snapshot_package_v3(
+            manifest,
+            page.account_id.clone(),
+            page.device_id.clone(),
+            page.server_time.clone(),
+            &BTreeMap::from([(SnapshotSectionV3::ReadStates, Vec::new())]),
+            &BTreeMap::from([(SnapshotSectionV3::ReadStates, 1)]),
+        )
         .unwrap();
-        assert_eq!(snapshot.snapshot_cursor.scan_seq, "15020");
-        assert_eq!(snapshot.snapshot_schema, 1);
+        assert_eq!(snapshot.snapshot_cursor.scan_seq, "20");
+        assert_eq!(snapshot.server_cutoff, "2026-08-29T10:00:00Z");
         assert!(snapshot.recent_plain_messages.is_empty());
+        assert!(!snapshot.older_history_excluded);
     }
 
     #[test]
@@ -3443,6 +3441,7 @@ mod tests {
             "read_state_baseline": [],
             "group_state_baseline": [],
             "warnings": [],
+            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
             "p6_delivery": {
                 "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
                 "client_instance_id": "client-installation-1",

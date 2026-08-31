@@ -6408,6 +6408,7 @@ mod tests {
                     "read_state_baseline": [],
                     "group_state_baseline": [],
                     "warnings": [],
+                    "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
                     "sync_capabilities": []
                 })),
                 Ok(sync_snapshot_delta("1", "0", Vec::new())),
@@ -9603,11 +9604,7 @@ END;
                             message: "device authorization epoch is stale".to_owned(),
                             data: None,
                         }),
-                        Ok(json!({
-                            "supported_profiles": [
-                                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                            ]
-                        })),
+                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Ok(sync_group_read_ack(
                             &binding,
@@ -9802,11 +9799,7 @@ END;
                     Rc::clone(&calls),
                     vec![
                         Err(rejected()),
-                        Ok(json!({
-                            "supported_profiles": [
-                                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                            ]
-                        })),
+                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Err(rejected()),
                     ],

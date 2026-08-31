@@ -138,6 +138,10 @@ pub(crate) const OWNER_BUSINESS_DELETE_TABLES: &[OwnerDeleteTable] = &[
         delete_owner_dids: false,
     },
     OwnerDeleteTable {
+        table: "sync_history_scope",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
         table: "sync_installation_state",
         delete_owner_dids: false,
     },

@@ -2053,6 +2053,7 @@ mod tests {
                 pages_fetched: 1,
                 messages_hydrated: 3,
                 duplicates_skipped: 4,
+                older_history_excluded: false,
                 changed_conversation_ids: vec!["group:did:example:group".to_owned()],
                 committed_incoming_messages: Vec::new(),
                 error_code: None,
@@ -2064,6 +2065,7 @@ mod tests {
                 pages_fetched: 1,
                 messages_hydrated: 3,
                 duplicates_skipped: 4,
+                older_history_excluded: false,
                 changed_conversation_ids: vec!["group:did:example:group".to_owned()],
                 warnings: vec!["safe-warning".to_owned()],
             }
