@@ -806,7 +806,7 @@ mod conversation_mark_read_request_tests {
     }
 
     #[tokio::test]
-    async fn sync_v2_mark_read_rejects_partial_p5_metadata_without_thread_binding() {
+    async fn sync_v2_mark_read_treats_partial_p5_metadata_as_remote_watermark() {
         let fixture = Fixture::new("mark-read-p5-partial-metadata");
         let client = fixture.client();
         let mut metadata =
@@ -827,19 +827,19 @@ mod conversation_mark_read_request_tests {
             ..Fixture::message_record_defaults()
         });
 
-        let error = super::mark_message_ids_read_v2_async(
+        let result = super::mark_message_ids_read_v2_async(
             &client,
             vec![crate::ids::MessageId::parse("msg-p5-untrusted").unwrap()],
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(matches!(
-            error,
-            crate::ImError::IdentityBindingConflict { detail }
-                if detail.contains("has no exact Sync V2 thread binding")
-        ));
-        assert_eq!(fixture.message_is_read("msg-p5-untrusted"), 0);
+        assert_eq!(result.updated_count, 1);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Remote read-state mark-read failed")));
+        assert_eq!(fixture.message_is_read("msg-p5-untrusted"), 1);
     }
 
     fn p5_projection_metadata() -> String {

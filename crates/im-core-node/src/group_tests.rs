@@ -1,7 +1,6 @@
 use crate::dto::{
     created_group_from_snapshot, group_create_request, group_join_request, group_member,
-    group_member_mutation_request, rebind_recovery_summary, NodeAddGroupMemberInput,
-    NodeCreateGroupInput, NodeGroupInput,
+    group_member_mutation_request, NodeAddGroupMemberInput, NodeCreateGroupInput, NodeGroupInput,
 };
 
 #[test]

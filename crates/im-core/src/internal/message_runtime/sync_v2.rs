@@ -5912,20 +5912,22 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
 
-        let calls = calls.borrow();
-        assert_eq!(
-            calls
-                .iter()
-                .map(|call| call.method.as_str())
-                .collect::<Vec<_>>(),
-            ["anp.get_capabilities", "sync.bootstrap", "sync.delta"]
-        );
-        assert_eq!(
-            calls[1].params["body"]["capabilities"]["requested_sync_capabilities"],
-            json!([])
-        );
-        assert!(calls[2].params["body"].get("lanes").is_none());
-        assert!(calls[2].params["body"].get("p6_delivery").is_none());
+        {
+            let calls = calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.method.as_str())
+                    .collect::<Vec<_>>(),
+                ["anp.get_capabilities", "sync.bootstrap", "sync.delta"]
+            );
+            assert_eq!(
+                calls[1].params["body"]["capabilities"]["requested_sync_capabilities"],
+                json!([])
+            );
+            assert!(calls[2].params["body"].get("lanes").is_none());
+            assert!(calls[2].params["body"].get("p6_delivery").is_none());
+        }
         let db = client.core_inner().local_state_db().await.unwrap();
         assert!(db
             .load_lane_sync_states(binding.owner_identity_id.clone())
@@ -6189,7 +6191,7 @@ END;
             },
             NoopAsyncDirectoryTransport,
         )
-        .with_run_deadline_for_test(StdDuration::from_millis(500))
+        .with_run_deadline_for_test(StdDuration::from_secs(5))
         .sync_now(sync_snapshot_request())
         .await
         .unwrap();

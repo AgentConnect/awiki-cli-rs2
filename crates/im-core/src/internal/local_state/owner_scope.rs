@@ -294,7 +294,7 @@ pub(crate) fn delete_owner_data_in_transaction(
         .map_err(super::local_state_unavailable)?;
 
     let mut owner_dids = BTreeSet::from([current_did]);
-    if table_has_column(&transaction, "identity_did_history", "owner_identity_id")? {
+    if table_has_column(transaction, "identity_did_history", "owner_identity_id")? {
         let mut statement = transaction
             .prepare("SELECT did FROM identity_did_history WHERE owner_identity_id=?1")
             .map_err(super::local_state_unavailable)?;
