@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Send the version-managed `awiki-cli/0815/1.0.16` client lineage on every
+  User, Message, Mail, Content, and Site service request so admission cannot
+  reject the Node host as an unversioned client.
+- Raise the native API contract to v11 so an older wrapper cannot silently
+  omit the validated client-version fields.
+
 ## 0.1.9
 
 - Add byte-oriented mail attachment send/download APIs with strict filename, size, MIME, and canonical transport validation.

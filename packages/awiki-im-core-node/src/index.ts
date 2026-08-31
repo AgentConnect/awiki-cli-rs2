@@ -71,6 +71,13 @@ import {
   type UpdateProfileInput,
 } from './types.js'
 
+/** Version-managed AWiki engine lineage carried by every Node SDK request. */
+const CLIENT_VERSION = Object.freeze({
+  product: 'awiki-cli',
+  release: '0815',
+  version: '1.0.16',
+})
+
 export * from './types.js'
 
 interface NativeSafeError {
@@ -431,6 +438,11 @@ class RustRealtimeSession implements RealtimeSession {
  */
 export async function openImCoreNodeClient(options: ImCoreNodeOpenOptions): Promise<ImCoreNodeClient> {
   const binding = loadNativeBinding()
-  const native = await call(() => binding.openNativeClient(options))
+  const native = await call(() => binding.openNativeClient({
+    ...options,
+    clientVersionProduct: CLIENT_VERSION.product,
+    clientVersionRelease: CLIENT_VERSION.release,
+    clientVersionVersion: CLIENT_VERSION.version,
+  }))
   return new RustImCoreNodeClient(native)
 }

@@ -2032,6 +2032,15 @@ pub(crate) fn core_config(options: &NodeOpenOptions) -> SafeResult<im_core::ImCo
         .map(im_core::ids::Did::parse)
         .transpose()
         .map_err(SafeError::from_im)?;
+    config.client_version_info = Some(
+        im_core::ClientVersionInfo::new(
+            options.client_version_product.clone(),
+            options.client_version_release.clone(),
+            options.client_version_version.clone(),
+            None,
+        )
+        .map_err(SafeError::from_im)?,
+    );
     config.transport_policy = im_core::MessageTransportPolicy::RealtimePreferred;
     Ok(config)
 }
@@ -2482,6 +2491,9 @@ mod tests {
             mail_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
+            client_version_product: "awiki-cli".to_owned(),
+            client_version_release: "0815".to_owned(),
+            client_version_version: "1.0.16".to_owned(),
             operation_timeout_ms: Some(1_000),
             sync_timeout_ms: Some(100),
             multi_device_handle_recovery_enabled: None,

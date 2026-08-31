@@ -137,8 +137,9 @@ stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconne
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前开发源码的 Native contract version 为 `10`，在已发布 v9 recovery attestation contract
-  之上增加邮件附件下载；wrapper 拒绝缺少 `downloadMailAttachment` 的旧平台 addon。
+- 当前 `0.1.10` 开发源码的 Native contract version 为 `11`，由 wrapper 固定注入
+  `awiki-cli/0815/1.0.16` 客户端谱系，并在已发布 v10 邮件附件 contract 之上扩展；
+  wrapper 拒绝缺少版本元数据或 `downloadMailAttachment` 的旧平台 addon。
 
 `issueHandleRecoveryAttestation({ operationId })` 是 Host-only 恢复对账方法，只允许在本机恢复
 已 `applied` 后调用。返回的短时 opaque token 必须由 Host 立即转交固定 Model Proxy 受众并丢弃；

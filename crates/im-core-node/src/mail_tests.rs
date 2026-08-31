@@ -18,6 +18,9 @@ fn open_options() -> NodeOpenOptions {
         mail_service_endpoint: None,
         anp_service_endpoint: None,
         anp_service_did: None,
+        client_version_product: "awiki-cli".to_owned(),
+        client_version_release: "0815".to_owned(),
+        client_version_version: "1.0.16".to_owned(),
         operation_timeout_ms: None,
         sync_timeout_ms: None,
         multi_device_handle_recovery_enabled: None,
@@ -51,6 +54,14 @@ fn summary(subject: String) -> im_core::email::EmailMessageSummary {
 fn mail_endpoint_is_optional_and_maps_to_core_config() {
     let absent = core_config(&open_options()).unwrap();
     assert_eq!(absent.mail_service_endpoint, None);
+    assert_eq!(
+        absent
+            .client_version_info
+            .as_ref()
+            .map(im_core::ClientVersionInfo::header_value)
+            .as_deref(),
+        Some("awiki-cli/0815/1.0.16")
+    );
 
     let mut options = open_options();
     options.mail_service_endpoint = Some("https://mail.example.test/".to_owned());
