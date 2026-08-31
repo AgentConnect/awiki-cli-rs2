@@ -755,7 +755,8 @@ Root transfer is an identity-scoped `ImClient::root_key_transfer()` capability
 with no rollout gate. The host first calls `prepare` with only the exact
 recipient `ProtocolDeviceId`. Core verifies the current ready Admin, the active
 Member/not-ready recipient, Manifest/Registry bindings, ANP Identity root
-capability and P5 Session or PreKey readiness. It returns an opaque 60-second, single-use
+capability and either P5 Session/PreKey readiness or an exact existing P5
+`pending_delivery`. It returns an opaque 60-second, single-use
 authorization handle plus a secret-free recipient summary. The host then calls
 `confirm_and_send` once with that handle and local user presence; Core, not the
 host, generates the message ID. A false confirmation fails before ANP Identity
@@ -771,11 +772,14 @@ There is no private endpoint, delivery class, sidecar, empty-Init handshake,
 imported ACK, public list/retry state, or host-supplied message ID. Core commits
 the standard P5 pending state and its secret-free sender delivery ledger in the
 same SQLite transaction, and an uncertain transport response is retried only
-with the identical P5 bytes and message ID. Startup and an explicit later
-prepare first recover any `pending_delivery` by resuming those durable bytes;
+with the identical P5 bytes and message ID. Startup never sends a pending root
+transfer. An explicit later `prepare` only performs fresh eligibility checks and
+issues a handle bound to the exact durable `pending_delivery`; it does not send
+network data. Only `confirm_and_send(user_presence_confirmed=true)` resumes the
+identical bytes, while false confirmation consumes the handle without sending.
 P5 acceptance and the sender `sent` fact commit atomically. Core never re-exports
-the root or creates a replacement message during recovery, and it rejects
-a new transfer while that recipient already has a pending or sent fact.
+the root or creates a replacement message during pending recovery, and it
+rejects a new transfer while that recipient already has a sent fact.
 
 On the recipient, authenticated Mailbox delivery supplies the exact accepted
 tuple and timestamp. Core validates the outer P5 binding, Registry/Manifest,
@@ -945,6 +949,11 @@ origin-scoped in-memory Bearer token when available; otherwise it signs the
 method, target URI, authority and optional body digest with the current device
 request-signing key. The host cannot choose the key, nonce, algorithm or auth
 mode.
+
+For configured-origin AWiki User/Message/Mail URLs, Core also injects the
+configured `X-AWiki-Client-Version` into the prepared request and returned
+header patch before signing. Callers cannot pre-populate or override this
+managed field. Unrelated external origins receive no AWiki product version.
 
 ```rust
 pub const EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -1249,7 +1258,10 @@ Reliable sync 补充：
   清理失败不改变已经返回的同步成功语义。
 - `sync_now` 在一次调用内闭合 compact recovery：
   delta（或 existing-device bootstrap）→ 只存在于 Rust 进程栈的不透明 token →
-  snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；
+  Schema 3 manifest/opaque pages 全量收集与严格校验 → 单次原子 snapshot merge →
+  post-anchor delta。成功只返回既有 `changed` / `idle`；普通历史触及 10,000 items、64 MiB 或
+  100 pages 仍是成功，并只增加产品安全的 `older_history_excluded=true`；必需状态或单 item
+  超限返回稳定 capacity error code；
   snapshot 或 post-anchor delta 失败返回 `retryable_failure`，授权或 generation fence 返回
   `auth_revoked`；同步链路在认证刷新或服务调用中收到 HTTP 401/403，或 Core transport
   完成有界认证重试后仍收到 JSON-RPC `1401`，属于终止性 `auth_revoked`。在线 Registry
@@ -1258,16 +1270,26 @@ Reliable sync 补充：
   read outbox；刷新失败或再次收到 Registry fence 才终止为 `auth_revoked`。没有第二个
   public recover API，raw token、
   cursor/anchor、cutoff、policy
-  limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
+  limit、manifest、section、page ref、页数、snapshot 返回数量和 event boundary 都不得进入
+  Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。`older_history_excluded` 是唯一新增
+  public recovery 字段，SQLite 同一事务只保存对应的 secret-free `sync_history_scope` marker。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
   projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按
-  `owner_identity_id` 使用进程内 single-flight coordinator：第一个 `sync_now_async` 调用执行
+  同一 local state root 中的 `owner_identity_id` 使用进程内 single-flight coordinator：即使
+  host 重新打开另一个 `ImCore` 实例，也共享同一轮；不同 state root 不互相阻塞。第一个
+  `sync_now_async` 调用执行
   完整 run，并发 foreground 调用共享同一 outcome；Rust Listener 使用隐藏的
   `request_sync_async` 提交后台变化，运行中的重复 hint 只合并为一轮 follow-up。等待者取消不取消
   Core 持有的公共 run。该协调不替代跨进程 `run_generation` fencing，也不把真实失败改成成功。
+  Core 不再使用覆盖完整网络同步、Realtime、secure consumer 和本地读取的第二把 owner-wide
+  operation lock。`local_inbox_projection` / `local_history` 在同步请求等待网络时仍可读取 SQLite
+  已提交投影；结果只代表 committed local view，不代表远端最新。写入一致性继续由 SQLite actor、
+  原子事务、`run_generation` 与 P5/P6 peer/group scope fence 保证。要求 freshness 的入口仍等待
+  single-flight 同步结果，并在同步失败时 fail closed。
   Snapshot 仍在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
-  CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed schema，消息时间不得
-  早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法。
+  CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed Schema 3，消息时间不得
+  早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法；全部
+  page/count/JCS-byte/digest/section/keyset 验证通过前不得调用正式 apply 或推进 cursor。
 - `committed_incoming_messages` 只包含 post-snapshot/live delta 实际提交的 incoming messages；
   snapshot hydration 与 realtime hint 不进入该列表。
 - 本地 read watermark 更新与 durable `read_state_mark_read` outbox enqueue 是同一 SQLite
@@ -1286,8 +1308,8 @@ Reliable sync 补充：
   发生在最终 delta commit 之后，不能覆盖已提交的同步结果；损坏的本地 payload 进入
   `permanent_failure`。Registry fence 的 mutation 在上述单次 session/binding 刷新后立即
   重发。本行为调整不修改 `anp.read_state.local.v1` wire schema 或 public DTO，不升级协议版本。
-- Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
-  snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
+- Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 Schema 3 bounded
+  history suffix 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
   durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，
   Core 必须先用 verified Persona canonicalize 消息，再把该 canonical conversation ID 与
   remote thread binding 在同一事务提交并 replay/删除 backlog；不得把 hydration 阶段的

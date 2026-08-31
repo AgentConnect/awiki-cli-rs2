@@ -755,11 +755,6 @@ where
     P: AsyncRealtimeNotificationProjector + Send,
 {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3_async(
             &self.client,
             &notification,
@@ -2416,9 +2411,6 @@ pub(crate) async fn spawn_default_async(
 
 #[cfg(feature = "sqlite")]
 async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
-    let _ =
-        crate::internal::identity_root_transfer_runtime::recover_pending_root_key_transfers(client)
-            .await;
     let _ =
         crate::internal::identity_root_import_completion::recover_root_import_completions(client)
             .await;

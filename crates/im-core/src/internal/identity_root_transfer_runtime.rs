@@ -18,7 +18,7 @@ use crate::internal::identity_device_join_runtime::{
     DeviceJoinRemoteRegistry,
 };
 use crate::internal::secure_direct::v2_runtime::{
-    V2EstablishedDirectRuntime, V2ExactSessionPreflight,
+    PreparedV2Outbound, V2EstablishedDirectRuntime, V2ExactSessionPreflight,
 };
 use crate::internal::secure_direct::v2_store::{SqliteV2DirectStateStore, V2OwnerScope};
 
@@ -42,6 +42,17 @@ enum PreparedRootTransport {
 }
 
 #[derive(Clone)]
+enum PreparedRootDelivery {
+    New {
+        message_id: crate::ids::MessageId,
+        transport: PreparedRootTransport,
+    },
+    ResumePending {
+        message_id: crate::ids::MessageId,
+    },
+}
+
+#[derive(Clone)]
 pub(crate) struct RootKeyTransferAuthorizationState {
     identity_id: crate::ids::IdentityId,
     did: crate::ids::Did,
@@ -51,8 +62,7 @@ pub(crate) struct RootKeyTransferAuthorizationState {
     checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
     root_key_id: String,
     root_public_key_fingerprint: String,
-    message_id: crate::ids::MessageId,
-    transport: PreparedRootTransport,
+    delivery: PreparedRootDelivery,
     expires_at: OffsetDateTime,
 }
 
@@ -169,18 +179,21 @@ pub(crate) async fn prepare_root_key_transfer(
         .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
 
-    recover_pending_root_key_transfers(client)
-        .await
+    let recipient_device_id = request.recipient_device_id.as_str().to_owned();
+    let existing_delivery = sender_delivery_for_recipient(&core, client, &recipient_device_id)
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
-    if sender_delivery_exists_for_recipient(&core, client, request.recipient_device_id.as_str())
-        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?
-    {
+    if matches!(existing_delivery, Some(SenderDeliveryState::Sent)) {
         return Err(root_error(RootTransferErrorCode::RecipientNotEligible));
     }
-
-    let message_id = crate::ids::MessageId::parse(generate_root_key_transfer_message_id())
-        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
-    let recipient_device_id = request.recipient_device_id.as_str().to_owned();
+    let message_id = match &existing_delivery {
+        Some(SenderDeliveryState::Pending(delivery)) => {
+            crate::ids::MessageId::parse(&delivery.message_id)
+                .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?
+        }
+        Some(SenderDeliveryState::Sent) => unreachable!("sent delivery returned above"),
+        None => crate::ids::MessageId::parse(generate_root_key_transfer_message_id())
+            .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
+    };
 
     let preflight = tokio::time::timeout(
         std::time::Duration::from_secs(ROOT_TRANSFER_PREFLIGHT_DEADLINE_SECONDS),
@@ -216,27 +229,53 @@ pub(crate) async fn prepare_root_key_transfer(
                 local_state,
             )
             .map_err(|_| root_error(RootTransferErrorCode::SenderNotEligible))?;
-            let transport = match with_v2_runtime(&core, &scope, |direct| {
-                direct.exact_session_preflight(&binding)
-            })
-            .map_err(map_preflight_error)?
-            {
-                V2ExactSessionPreflight::Established => PreparedRootTransport::EstablishedSession,
-                V2ExactSessionPreflight::Conflict => {
-                    return Err(root_error(RootTransferErrorCode::PrekeyInvalid));
-                }
-                V2ExactSessionPreflight::Absent => {
-                    let prekey =
-                        crate::internal::secure_direct::v2_prekey_runtime::fetch_verified_prekey(
-                            client,
-                            client.did().as_str(),
-                            &recipient.device_id,
-                            &document,
-                            message_id.as_str(),
+            let delivery = match &existing_delivery {
+                Some(SenderDeliveryState::Pending(existing)) => {
+                    let resumable = with_v2_runtime(&core, &scope, |direct| {
+                        direct.resume_outbound_for_exact_device(
+                            &existing.message_id,
+                            &existing.recipient_device_id,
                         )
-                        .await
-                        .map_err(map_preflight_error)?;
-                    PreparedRootTransport::Prekey(prekey)
+                    })
+                    .map_err(map_preflight_error)?
+                    .is_some();
+                    if !resumable {
+                        return Err(root_error(RootTransferErrorCode::TemporarilyUnavailable));
+                    }
+                    PreparedRootDelivery::ResumePending {
+                        message_id: message_id.clone(),
+                    }
+                }
+                Some(SenderDeliveryState::Sent) => unreachable!("sent delivery returned above"),
+                None => {
+                    let transport = match with_v2_runtime(&core, &scope, |direct| {
+                        direct.exact_session_preflight(&binding)
+                    })
+                    .map_err(map_preflight_error)?
+                    {
+                        V2ExactSessionPreflight::Established => {
+                            PreparedRootTransport::EstablishedSession
+                        }
+                        V2ExactSessionPreflight::Conflict => {
+                            return Err(root_error(RootTransferErrorCode::PrekeyInvalid));
+                        }
+                        V2ExactSessionPreflight::Absent => {
+                            let prekey = crate::internal::secure_direct::v2_prekey_runtime::fetch_verified_prekey(
+                                client,
+                                client.did().as_str(),
+                                &recipient.device_id,
+                                &document,
+                                message_id.as_str(),
+                            )
+                            .await
+                            .map_err(map_preflight_error)?;
+                            PreparedRootTransport::Prekey(prekey)
+                        }
+                    };
+                    PreparedRootDelivery::New {
+                        message_id: message_id.clone(),
+                        transport,
+                    }
                 }
             };
             Ok::<_, RootTransferError>((
@@ -244,7 +283,7 @@ pub(crate) async fn prepare_root_key_transfer(
                 recipient.clone(),
                 root_key_id,
                 fingerprint,
-                transport,
+                delivery,
                 registry,
             ))
         },
@@ -252,7 +291,7 @@ pub(crate) async fn prepare_root_key_transfer(
     .await
     .map_err(|_| root_error(RootTransferErrorCode::PrekeyUnavailable))??;
 
-    let (sender, recipient, root_key_id, root_public_key_fingerprint, transport, registry) =
+    let (sender, recipient, root_key_id, root_public_key_fingerprint, delivery, registry) =
         preflight;
     if authorization.protocol_device_id.as_str() != sender.device_id {
         return Err(root_error(RootTransferErrorCode::SenderNotEligible));
@@ -274,8 +313,7 @@ pub(crate) async fn prepare_root_key_transfer(
         checkpoint: registry.checkpoint.clone(),
         root_key_id,
         root_public_key_fingerprint,
-        message_id,
-        transport,
+        delivery,
         expires_at,
     };
     let handle = client
@@ -385,6 +423,30 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::StateChanged));
     }
 
+    let scope =
+        V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), local_state)
+            .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+    if let PreparedRootDelivery::ResumePending { message_id } = &state.delivery {
+        let prepared = with_v2_runtime(&core, &scope, |direct| {
+            direct.resume_outbound_for_exact_device(message_id.as_str(), &recipient.device_id)
+        })
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?
+        .ok_or_else(|| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+        let accepted =
+            post_and_mark_root_key_transfer(client, &core, &scope, &prepared, message_id.as_str())
+                .await?;
+        return root_key_transfer_send_result(state.did, &sender.device_id, accepted);
+    }
+    let (message_id, transport) = match state.delivery.clone() {
+        PreparedRootDelivery::New {
+            message_id,
+            transport,
+        } => (message_id, transport),
+        PreparedRootDelivery::ResumePending { .. } => {
+            unreachable!("pending delivery returned above")
+        }
+    };
+
     let custody_manager = crate::internal::identity_custody::controller_custody_provider(&core)
         .await
         .map_err(|_| root_error(RootTransferErrorCode::RootVaultUnavailable))?;
@@ -454,7 +516,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(exported_root.as_pkcs8_der()));
     let envelope = zeroize::Zeroizing::new(RootKeyEnvelopeV1 {
         system_type: ROOT_KEY_ENVELOPE_V1.to_owned(),
-        message_id: state.message_id.as_str().to_owned(),
+        message_id: message_id.as_str().to_owned(),
         did: state.did.as_str().to_owned(),
         root_key_id: state.root_key_id,
         root_public_key_fingerprint: state.root_public_key_fingerprint,
@@ -478,14 +540,11 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
     let plaintext = V2SecretJsonPayload::from_canonical_json_object(canonical.to_vec())
         .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     let binding = same_did_binding(client.did().as_str(), sender, recipient);
-    let scope =
-        V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), local_state)
-            .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
     let now = format_time(issued_at)
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
     ensure_sender_envelope_format_column(&core)
         .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
-    let prekey_local_static_dh = match &state.transport {
+    let prekey_local_static_dh = match &transport {
         PreparedRootTransport::Prekey(prekey) => {
             let recipient_signed_prekey: [u8; 32] = URL_SAFE_NO_PAD
                 .decode(&prekey.prekey_bundle.signed_prekey.public_key_b64u)
@@ -494,7 +553,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                 .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
             Some(
                 crate::internal::identity_provider::derive_shared_secret_or_fallback(
-                    client.runtime().identity_session.as_ref(),
+                    Some(&custody_identity),
                     &client.runtime().key_provider,
                     &sender.e2ee_key_id,
                     recipient_signed_prekey,
@@ -505,11 +564,11 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         }
         PreparedRootTransport::EstablishedSession => None,
     };
-    let prepared = with_v2_runtime(&core, &scope, |direct| match &state.transport {
+    let prepared = with_v2_runtime(&core, &scope, |direct| match &transport {
         PreparedRootTransport::EstablishedSession => direct
             .prepare_outbound_secret_json_with_commit(
                 &binding,
-                state.message_id.as_str(),
+                message_id.as_str(),
                 &plaintext,
                 &now,
                 |transaction| {
@@ -518,7 +577,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                         client.current_identity().id.as_str(),
                         client.did().as_str(),
                         &sender.device_id,
-                        state.message_id.as_str(),
+                        message_id.as_str(),
                         &recipient.device_id,
                         &now,
                     )
@@ -535,7 +594,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                 .ok_or(crate::ImError::PermissionDenied)?;
             direct.prepare_session_init_secret_json_with_commit(
                 &binding,
-                state.message_id.as_str(),
+                message_id.as_str(),
                 &plaintext,
                 local_static_dh,
                 prekey,
@@ -547,7 +606,7 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
                         client.current_identity().id.as_str(),
                         client.did().as_str(),
                         &sender.device_id,
-                        state.message_id.as_str(),
+                        message_id.as_str(),
                         &recipient.device_id,
                         &now,
                     )
@@ -556,8 +615,21 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
         }
     })
     .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?;
+    let accepted =
+        post_and_mark_root_key_transfer(client, &core, &scope, &prepared, message_id.as_str())
+            .await?;
+    root_key_transfer_send_result(state.did, &sender.device_id, accepted)
+}
+
+async fn post_and_mark_root_key_transfer(
+    client: &crate::core::ImClient,
+    core: &crate::core::ImCore,
+    scope: &V2OwnerScope,
+    prepared: &PreparedV2Outbound,
+    message_id: &str,
+) -> RootTransferResult<anp::direct_e2ee::V2DirectSendResult> {
     let accepted = match crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct(
-        client, &prepared,
+        client, prepared,
     )
     .await
     {
@@ -567,20 +639,20 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
             // One response-loss retry therefore reuses the exact same
             // operation/message ID and ciphertext.
             crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct(
-                client, &prepared,
+                client, prepared,
             )
             .await
             .map_err(|_| root_error(RootTransferErrorCode::TransportPending))?
         }
         Err(_) => return Err(root_error(RootTransferErrorCode::TransportRejected)),
     };
-    if !with_v2_runtime(&core, &scope, |direct| {
-        direct.mark_outbound_accepted_with_commit(&prepared, |transaction| {
+    if !with_v2_runtime(core, scope, |direct| {
+        direct.mark_outbound_accepted_with_commit(prepared, |transaction| {
             persist_sender_delivery_accepted_tx(
                 transaction,
                 client.current_identity().id.as_str(),
                 client.exact_protocol_device_id()?.as_str(),
-                state.message_id.as_str(),
+                message_id,
                 &accepted.accepted_at,
             )
         })
@@ -589,10 +661,18 @@ pub(crate) async fn confirm_and_send_root_key_transfer(
     {
         return Err(root_error(RootTransferErrorCode::TemporarilyUnavailable));
     }
+    Ok(accepted)
+}
+
+fn root_key_transfer_send_result(
+    did: crate::ids::Did,
+    sender_device_id: &str,
+    accepted: anp::direct_e2ee::V2DirectSendResult,
+) -> RootTransferResult<crate::identity::RootKeyTransferSendResult> {
     Ok(crate::identity::RootKeyTransferSendResult {
-        did: state.did,
-        sender_device_id: crate::ids::ProtocolDeviceId::parse(sender.device_id.clone())
-            .map_err(|_| root_error(RootTransferErrorCode::StateChanged))?,
+        did,
+        sender_device_id: crate::ids::ProtocolDeviceId::parse(sender_device_id)
+            .map_err(|_| root_error(RootTransferErrorCode::TransportRejected))?,
         recipient_device_id: crate::ids::ProtocolDeviceId::parse(accepted.recipient_device_id)
             .map_err(|_| root_error(RootTransferErrorCode::TransportRejected))?,
         message_id: crate::ids::MessageId::parse(accepted.message_id)
@@ -678,77 +758,37 @@ struct PendingRootKeyTransferDelivery {
     recipient_device_id: String,
 }
 
-/// Replays only already-sealed standard P5 bytes after process or response
-/// loss. This path never opens the Root Vault, creates a new message, advances
-/// a ratchet, changes the recipient, or asks for user presence again.
-pub(crate) async fn recover_pending_root_key_transfers(
-    client: &crate::core::ImClient,
-) -> crate::ImResult<usize> {
-    let core = client.core_handle();
-    let local_entry = local_device_entry(&core, client)?;
-    let local_state = local_entry
-        .device_state
-        .as_ref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let scope = V2OwnerScope::from_identity_state(
-        &client.current_identity().id,
-        client.did(),
-        local_state,
-    )?;
-    let local_device_id = client.exact_protocol_device_id()?;
-    let pending = load_pending_sender_deliveries(&core, client, &local_device_id)?;
-    let mut recovered = 0_usize;
-    for delivery in pending {
-        let prepared = with_v2_runtime(&core, &scope, |direct| {
-            direct.resume_outbound_for_exact_device(
-                &delivery.message_id,
-                &delivery.recipient_device_id,
-            )
-        })?
-        .ok_or(crate::ImError::PermissionDenied)?;
-        let accepted =
-            match crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct(
-                client, &prepared,
-            )
-            .await
-            {
-                Ok(accepted) => accepted,
-                Err(error) if is_retryable_transport_error(&error) => {
-                    crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct(
-                        client, &prepared,
-                    )
-                    .await?
-                }
-                Err(error) => return Err(error),
-            };
-        let marked = with_v2_runtime(&core, &scope, |direct| {
-            direct.mark_outbound_accepted_with_commit(&prepared, |transaction| {
-                persist_sender_delivery_accepted_tx(
-                    transaction,
-                    client.current_identity().id.as_str(),
-                    &local_device_id,
-                    &delivery.message_id,
-                    &accepted.accepted_at,
-                )
-            })
-        })?;
-        if !marked {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        recovered = recovered.saturating_add(1);
-    }
-    Ok(recovered)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SenderDeliveryState {
+    Pending(PendingRootKeyTransferDelivery),
+    Sent,
 }
 
-fn load_pending_sender_deliveries(
+fn sender_delivery_for_recipient(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
-    local_device_id: &str,
-) -> crate::ImResult<Vec<PendingRootKeyTransferDelivery>> {
+    recipient_device_id: &str,
+) -> crate::ImResult<Option<SenderDeliveryState>> {
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
     ensure_sender_envelope_format_column_with_connection(&connection)?;
+    sender_delivery_for_recipient_with_connection(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        client.exact_protocol_device_id()?.as_str(),
+        recipient_device_id,
+    )
+}
+
+fn sender_delivery_for_recipient_with_connection(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    local_device_id: &str,
+    recipient_device_id: &str,
+) -> crate::ImResult<Option<SenderDeliveryState>> {
     let retired = connection
         .execute(
             r#"UPDATE identity_root_transfer_sender_v1
@@ -756,11 +796,7 @@ SET phase = 'terminal_failed', failure_code = 'wrapped_retry_forbidden',
     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
   AND phase = 'pending_delivery' AND envelope_format = 'wrapped_v1'"#,
-            rusqlite::params![
-                client.current_identity().id.as_str(),
-                client.did().as_str(),
-                local_device_id,
-            ],
+            rusqlite::params![owner_identity_id, owner_did, local_device_id],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if retired > 0 {
@@ -770,10 +806,11 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
     }
     let mut statement = connection
         .prepare(
-            r#"SELECT message_id, recipient_device_id
+            r#"SELECT message_id, recipient_device_id, phase
 FROM identity_root_transfer_sender_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
-  AND phase = 'pending_delivery'
+  AND recipient_device_id = ?4
+  AND phase IN ('pending_delivery', 'sent')
   AND envelope_format = 'legacy_v1'
 ORDER BY created_at, message_id"#,
         )
@@ -781,47 +818,36 @@ ORDER BY created_at, message_id"#,
     let deliveries = statement
         .query_map(
             rusqlite::params![
-                client.current_identity().id.as_str(),
-                client.did().as_str(),
+                owner_identity_id,
+                owner_did,
                 local_device_id,
+                recipient_device_id,
             ],
             |row| {
-                Ok(PendingRootKeyTransferDelivery {
-                    message_id: row.get(0)?,
-                    recipient_device_id: row.get(1)?,
-                })
+                Ok((
+                    PendingRootKeyTransferDelivery {
+                        message_id: row.get(0)?,
+                        recipient_device_id: row.get(1)?,
+                    },
+                    row.get::<_, String>(2)?,
+                ))
             },
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    Ok(deliveries)
-}
-
-fn sender_delivery_exists_for_recipient(
-    core: &crate::core::ImCore,
-    client: &crate::core::ImClient,
-    recipient_device_id: &str,
-) -> crate::ImResult<bool> {
-    let connection = crate::internal::local_state::open_writable(
-        &core.inner().sdk_paths().local_state.sqlite_path,
-    )?;
-    ensure_sender_envelope_format_column_with_connection(&connection)?;
-    let count: i64 = connection
-        .query_row(
-            r#"SELECT COUNT(*) FROM identity_root_transfer_sender_v1
-WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
-  AND recipient_device_id = ?4 AND phase IN ('pending_delivery', 'sent')"#,
-            rusqlite::params![
-                client.current_identity().id.as_str(),
-                client.did().as_str(),
-                client.exact_protocol_device_id()?,
-                recipient_device_id,
-            ],
-            |row| row.get(0),
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
-    Ok(count > 0)
+    let mut deliveries = deliveries;
+    if deliveries.len() > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let Some((delivery, phase)) = deliveries.pop() else {
+        return Ok(None);
+    };
+    match phase.as_str() {
+        "pending_delivery" => Ok(Some(SenderDeliveryState::Pending(delivery))),
+        "sent" => Ok(Some(SenderDeliveryState::Sent)),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
 }
 
 fn ensure_sender_envelope_format_column(core: &crate::core::ImCore) -> crate::ImResult<()> {
@@ -1331,5 +1357,43 @@ PRIMARY KEY (owner_identity_id, local_device_id, message_id)
             .unwrap();
         assert_eq!(format, "legacy_v1");
         assert_eq!(phase, "pending_delivery");
+        assert_eq!(
+            sender_delivery_for_recipient_with_connection(
+                &connection,
+                "identity-1",
+                "did:example:alice",
+                "device-admin",
+                "device-member",
+            )
+            .unwrap(),
+            Some(SenderDeliveryState::Pending(
+                PendingRootKeyTransferDelivery {
+                    message_id: "msg-root-key-1".to_owned(),
+                    recipient_device_id: "device-member".to_owned(),
+                },
+            ))
+        );
+
+        let transaction = connection.transaction().unwrap();
+        persist_sender_delivery_accepted_tx(
+            &transaction,
+            "identity-1",
+            "device-admin",
+            "msg-root-key-1",
+            "2026-08-21T00:01:00Z",
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        assert_eq!(
+            sender_delivery_for_recipient_with_connection(
+                &connection,
+                "identity-1",
+                "did:example:alice",
+                "device-admin",
+                "device-member",
+            )
+            .unwrap(),
+            Some(SenderDeliveryState::Sent)
+        );
     }
 }

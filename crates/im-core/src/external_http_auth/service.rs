@@ -14,6 +14,18 @@ use super::dto::{
 
 const FIXED_COMPONENTS: [&str; 3] = ["@method", "@target-uri", "@authority"];
 
+fn client_version_patch(request: &PreparedRequest) -> crate::ImResult<Vec<ExternalHttpHeader>> {
+    request
+        .headers
+        .get(&crate::CLIENT_VERSION_HEADER.to_ascii_lowercase())
+        .map(|value| {
+            ExternalHttpHeader::new(crate::CLIENT_VERSION_HEADER, value.clone())
+                .map(|header| vec![header])
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
 #[derive(Default)]
 pub(crate) struct ExternalHttpAuthState {
     tokens: Mutex<HashMap<TokenKey, StoredToken>>,
@@ -52,11 +64,13 @@ impl<'a> ExternalHttpAuthService<'a> {
         };
 
         if let Some((token, fingerprint)) = self.cached_token(&token_key)? {
+            let mut header_patch = client_version_patch(&prepared)?;
+            header_patch.push(ExternalHttpHeader::new(
+                "Authorization",
+                format!("Bearer {}", token.as_str()),
+            )?);
             return Ok(ExternalHttpAuthAttempt {
-                header_patch: vec![ExternalHttpHeader::new(
-                    "Authorization",
-                    format!("Bearer {}", token.as_str()),
-                )?],
+                header_patch,
                 request: prepared,
                 token_key,
                 credential: AttemptCredential::Bearer { fingerprint },
@@ -85,11 +99,13 @@ impl<'a> ExternalHttpAuthService<'a> {
         };
 
         if let Some((token, fingerprint)) = self.cached_token(&token_key)? {
+            let mut header_patch = client_version_patch(&prepared)?;
+            header_patch.push(ExternalHttpHeader::new(
+                "Authorization",
+                format!("Bearer {}", token.as_str()),
+            )?);
             return Ok(ExternalHttpAuthAttempt {
-                header_patch: vec![ExternalHttpHeader::new(
-                    "Authorization",
-                    format!("Bearer {}", token.as_str()),
-                )?],
+                header_patch,
                 request: prepared,
                 token_key,
                 credential: AttemptCredential::Bearer { fingerprint },
@@ -184,13 +200,20 @@ impl<'a> ExternalHttpAuthService<'a> {
             None if canonical_host.contains(':') => format!("[{canonical_host}]"),
             None => host.to_owned(),
         };
+        let mut headers = request.headers;
+        if let Some((name, value)) = crate::internal::transport::client_version_header(
+            self.client.core_inner().sdk_config(),
+            url.as_str(),
+        ) {
+            headers.insert(name.to_ascii_lowercase(), value);
+        }
         Ok(PreparedRequest {
             url: url.as_str().to_owned(),
             method: request.method,
             origin: url.origin().ascii_serialization(),
             authority,
             host: canonical_host.to_ascii_lowercase(),
-            headers: request.headers,
+            headers,
             body: request.body,
         })
     }
@@ -219,10 +242,13 @@ impl<'a> ExternalHttpAuthService<'a> {
                 },
             )
             .map_err(|_| crate::ImError::PermissionDenied)?;
-        let header_patch = patch
-            .into_iter()
-            .map(|(name, value)| ExternalHttpHeader::new(name, value))
-            .collect::<crate::ImResult<Vec<_>>>()?;
+        let mut header_patch = client_version_patch(&request)?;
+        header_patch.extend(
+            patch
+                .into_iter()
+                .map(|(name, value)| ExternalHttpHeader::new(name, value))
+                .collect::<crate::ImResult<Vec<_>>>()?,
+        );
         Ok(ExternalHttpAuthAttempt {
             header_patch,
             request,
@@ -271,11 +297,14 @@ impl<'a> ExternalHttpAuthService<'a> {
         if signed.kid != token_key.signing_key_id {
             return Err(crate::ImError::PermissionDenied);
         }
-        let header_patch = signed
-            .header_patch
-            .into_iter()
-            .map(|header| ExternalHttpHeader::new(header.name, header.value))
-            .collect::<crate::ImResult<Vec<_>>>()?;
+        let mut header_patch = client_version_patch(&request)?;
+        header_patch.extend(
+            signed
+                .header_patch
+                .into_iter()
+                .map(|header| ExternalHttpHeader::new(header.name, header.value))
+                .collect::<crate::ImResult<Vec<_>>>()?,
+        );
         Ok(ExternalHttpAuthAttempt {
             header_patch,
             request,

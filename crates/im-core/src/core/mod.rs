@@ -37,8 +37,6 @@ pub(crate) struct ImCoreInner {
     pub(crate) direct_rebind_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
-    pub(crate) message_sync_coordinators:
-        crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinatorRegistry,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
     pub(crate) registration_join_preparations:
@@ -146,7 +144,6 @@ impl ImCore {
                     .external_http_allow_insecure_loopback_for_testing,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 direct_rebind_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
-                message_sync_coordinators: Default::default(),
                 device_join_approvals: Default::default(),
                 registration_join_preparations: Default::default(),
                 root_key_transfer_authorizations: Default::default(),
@@ -1146,7 +1143,17 @@ impl ImCoreInner {
         &self,
         owner_identity_id: &str,
     ) -> Arc<crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinator> {
-        self.message_sync_coordinators.for_owner(owner_identity_id)
+        static COORDINATORS: std::sync::OnceLock<
+            crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinatorRegistry,
+        > = std::sync::OnceLock::new();
+        let scope = format!(
+            "{}\0{}",
+            crate::internal::identity_transition_pending::state_root_fingerprint(
+                &self.sdk_paths.local_state.sqlite_path,
+            ),
+            owner_identity_id,
+        );
+        COORDINATORS.get_or_init(Default::default).for_owner(&scope)
     }
 
     #[cfg(feature = "sqlite")]
@@ -1409,6 +1416,24 @@ mod tests {
                 temp_dir: root.join("tmp"),
             },
         }
+    }
+
+    #[test]
+    fn message_sync_coordinator_is_process_shared_by_state_root_and_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let other_root = tempfile::tempdir().unwrap();
+        let first = ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let reopened = ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let isolated = ImCore::new(test_config(), test_paths(other_root.path())).unwrap();
+
+        let first_owner = first.inner().message_sync_coordinator("owner-alice");
+        let reopened_owner = reopened.inner().message_sync_coordinator("owner-alice");
+        let another_owner = reopened.inner().message_sync_coordinator("owner-bob");
+        let isolated_owner = isolated.inner().message_sync_coordinator("owner-alice");
+
+        assert!(Arc::ptr_eq(&first_owner, &reopened_owner));
+        assert!(!Arc::ptr_eq(&first_owner, &another_owner));
+        assert!(!Arc::ptr_eq(&first_owner, &isolated_owner));
     }
 
     #[tokio::test]

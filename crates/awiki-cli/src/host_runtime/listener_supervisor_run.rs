@@ -388,21 +388,31 @@ impl BridgeRuntime {
                         .ok_or_else(|| anyhow::anyhow!("local inbox query is missing"))?,
                 )?;
                 self.runtime.block_on(async {
-                    let mut warnings =
+                    let mut warnings = listener_local_inbox_transport_or_warning(
                         crate::m_core_cli_adapter::messages::reconcile_foreground_message_sync_async(
                             &client,
                         )
-                        .await
-                        .map_err(|error| {
-                            anyhow::anyhow!("local inbox reconciliation failed: {error}")
-                        })?;
-                    warnings.extend(
-                        crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
-                            &client, &query,
+                        .await,
+                        "sync.foreground_reconcile_deferred",
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "local inbox reconciliation failed: {}",
+                            local_inbox_reconciliation_error_category(&error)
                         )
-                        .await
+                    })?;
+                    warnings.extend(
+                        listener_local_inbox_secure_hydration_or_warning(
+                            crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
+                                &client, &query,
+                            )
+                            .await,
+                        )
                         .map_err(|error| {
-                            anyhow::anyhow!("local inbox secure hydration failed: {error}")
+                            anyhow::anyhow!(
+                                "local inbox secure hydration failed: {}",
+                                local_inbox_reconciliation_error_category(&error)
+                            )
                         })?,
                     );
                     crate::m_core_cli_adapter::messages::read_local_inbox_projection_via_im_core_async(
@@ -412,7 +422,10 @@ impl BridgeRuntime {
                     )
                     .await
                     .map_err(|error| {
-                        anyhow::anyhow!("local inbox reconciliation/read failed: {error}")
+                        anyhow::anyhow!(
+                            "local inbox reconciliation/read failed: {}",
+                            local_inbox_reconciliation_error_category(&error)
+                        )
                     })
                 })?
             }
@@ -473,6 +486,54 @@ impl BridgeRuntime {
                 Value::Array(result.warnings.into_iter().map(Value::String).collect()),
             ),
         ]))
+    }
+}
+
+fn listener_local_inbox_secure_hydration_or_warning(
+    result: Result<Vec<String>, crate::m_core_cli_adapter::message_result::MessageAdapterError>,
+) -> Result<Vec<String>, crate::m_core_cli_adapter::message_result::MessageAdapterError> {
+    use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+    match result {
+        Ok(warnings) => Ok(warnings),
+        Err(MessageAdapterError::TransportUnavailable(_)) => {
+            Ok(vec!["sync.secure_inbox_hydration_deferred".to_owned()])
+        }
+        Err(MessageAdapterError::LocalStateUnavailable(_)) => Ok(vec![
+            "sync.secure_inbox_hydration_local_state_deferred".to_owned(),
+        ]),
+        Err(error) => Err(error),
+    }
+}
+
+fn listener_local_inbox_transport_or_warning(
+    result: Result<Vec<String>, crate::m_core_cli_adapter::message_result::MessageAdapterError>,
+    warning: &'static str,
+) -> Result<Vec<String>, crate::m_core_cli_adapter::message_result::MessageAdapterError> {
+    match result {
+        Ok(warnings) => Ok(warnings),
+        Err(
+            crate::m_core_cli_adapter::message_result::MessageAdapterError::TransportUnavailable(_),
+        ) => Ok(vec![warning.to_owned()]),
+        Err(error) => Err(error),
+    }
+}
+
+fn local_inbox_reconciliation_error_category(
+    error: &crate::m_core_cli_adapter::message_result::MessageAdapterError,
+) -> &'static str {
+    use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+    match error {
+        MessageAdapterError::TransportUnavailable(_) => "transport_unavailable",
+        MessageAdapterError::LocalStateUnavailable(_) => "local_state_unavailable",
+        MessageAdapterError::IdentityRequired(_) => "identity_required",
+        MessageAdapterError::PermissionDenied => "permission_denied",
+        MessageAdapterError::PublicServiceCode(_) | MessageAdapterError::Service(_) => {
+            "service_error"
+        }
+        MessageAdapterError::Identity(_) => "identity_error",
+        _ => "other",
     }
 }
 
@@ -1202,6 +1263,73 @@ mod tests {
         SystemNotificationState,
     };
     use serde_json::Value;
+
+    #[test]
+    fn local_inbox_reconciliation_errors_are_secret_free_categories() {
+        use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+        assert_eq!(
+            local_inbox_reconciliation_error_category(&MessageAdapterError::TransportUnavailable(
+                "secret-bearing-detail".to_owned()
+            ),),
+            "transport_unavailable"
+        );
+        assert_eq!(
+            local_inbox_reconciliation_error_category(&MessageAdapterError::LocalStateUnavailable(
+                "secret-bearing-detail".to_owned()
+            ),),
+            "local_state_unavailable"
+        );
+    }
+
+    #[test]
+    fn local_inbox_transport_failure_becomes_warning_but_auth_stays_closed() {
+        use crate::m_core_cli_adapter::message_result::MessageAdapterError;
+
+        assert_eq!(
+            listener_local_inbox_transport_or_warning(
+                Err(MessageAdapterError::TransportUnavailable(
+                    "secret-bearing-detail".to_owned(),
+                )),
+                "sync.foreground_reconcile_deferred",
+            )
+            .unwrap(),
+            vec!["sync.foreground_reconcile_deferred"]
+        );
+        assert!(matches!(
+            listener_local_inbox_transport_or_warning(
+                Err(MessageAdapterError::IdentityRequired(
+                    "secret-bearing-detail".to_owned(),
+                )),
+                "sync.foreground_reconcile_deferred",
+            ),
+            Err(MessageAdapterError::IdentityRequired(_))
+        ));
+    }
+
+    #[test]
+    fn secure_hydration_local_state_failure_defers_but_service_stays_closed() {
+        use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
+
+        assert_eq!(
+            listener_local_inbox_secure_hydration_or_warning(Err(
+                MessageAdapterError::LocalStateUnavailable("secret-bearing-detail".to_owned()),
+            ))
+            .unwrap(),
+            vec!["sync.secure_inbox_hydration_local_state_deferred"]
+        );
+        assert!(matches!(
+            listener_local_inbox_secure_hydration_or_warning(Err(MessageAdapterError::Service(
+                ServiceError {
+                    status_code: 409,
+                    rpc_code: 1409,
+                    message: "secret-bearing-detail".to_owned(),
+                    data: None,
+                }
+            ),)),
+            Err(MessageAdapterError::Service(_))
+        ));
+    }
 
     #[test]
     fn reliable_sync_scheduler_starts_once_and_coalesces_hints_during_sync() {

@@ -18,6 +18,94 @@ fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
     }
 }
 
+fn listener_local_command_error(method: &str, error: &anyhow::Error) -> ExitError {
+    let stage = error
+        .downcast_ref::<crate::host_runtime::bridge::BridgeCallError>()
+        .map(|error| {
+            if method == "local.inbox" && error.phase == "bridge_read" {
+                if error
+                    .message
+                    .starts_with("local inbox reconciliation failed:")
+                {
+                    return match error
+                        .message
+                        .strip_prefix("local inbox reconciliation failed:")
+                        .map(str::trim)
+                    {
+                        Some("transport_unavailable") => {
+                            "inbox_reconciliation_transport_unavailable"
+                        }
+                        Some("local_state_unavailable") => {
+                            "inbox_reconciliation_local_state_unavailable"
+                        }
+                        Some("identity_required") => "inbox_reconciliation_identity_required",
+                        Some("permission_denied") => "inbox_reconciliation_permission_denied",
+                        Some("service_error") => "inbox_reconciliation_service_error",
+                        Some("identity_error") => "inbox_reconciliation_identity_error",
+                        _ => "inbox_reconciliation_other",
+                    };
+                }
+                if error
+                    .message
+                    .starts_with("local inbox secure hydration failed:")
+                {
+                    return match error
+                        .message
+                        .strip_prefix("local inbox secure hydration failed:")
+                        .map(str::trim)
+                    {
+                        Some("transport_unavailable") => {
+                            "inbox_secure_hydration_transport_unavailable"
+                        }
+                        Some("local_state_unavailable") => {
+                            "inbox_secure_hydration_local_state_unavailable"
+                        }
+                        Some("identity_required") => "inbox_secure_hydration_identity_required",
+                        Some("permission_denied") => "inbox_secure_hydration_permission_denied",
+                        Some("service_error") => "inbox_secure_hydration_service_error",
+                        Some("identity_error") => "inbox_secure_hydration_identity_error",
+                        _ => "inbox_secure_hydration_other",
+                    };
+                }
+                if error
+                    .message
+                    .starts_with("local inbox reconciliation/read failed:")
+                {
+                    return match error
+                        .message
+                        .strip_prefix("local inbox reconciliation/read failed:")
+                        .map(str::trim)
+                    {
+                        Some("local_state_unavailable") => {
+                            "inbox_local_projection_local_state_unavailable"
+                        }
+                        Some("identity_required") => "inbox_local_projection_identity_required",
+                        Some("permission_denied") => "inbox_local_projection_permission_denied",
+                        Some("service_error") => "inbox_local_projection_service_error",
+                        Some("identity_error") => "inbox_local_projection_identity_error",
+                        Some("transport_unavailable") => {
+                            "inbox_local_projection_transport_unavailable"
+                        }
+                        _ => "inbox_local_projection_other",
+                    };
+                }
+            }
+            match error.phase.as_str() {
+                "bridge_health_probe" | "bridge_dial" => "bridge_connection",
+                "bridge_write" => "bridge_write",
+                "bridge_read" => "bridge_read",
+                _ => "bridge_unknown",
+            }
+        })
+        .unwrap_or("bridge_unknown");
+    ExitError::new(
+        "local_state_unavailable",
+        5,
+        format!("the running listener failed during {stage}."),
+        "Check `awiki-cli runtime listener status`; do not start a second foreground writer while the listener is active.",
+    )
+}
+
 fn try_listener_local_command(
     resolved: &Resolved,
     requested_identity: &str,
@@ -39,15 +127,81 @@ fn try_listener_local_command(
         },
         resolved,
     )
-    .map_err(|_| {
-        ExitError::new(
-            "local_state_unavailable",
-            5,
-            "the running listener could not complete the local message operation.",
-            "Check `awiki-cli runtime listener status`; do not start a second foreground writer while the listener is active.",
-        )
-    })?;
+    .map_err(|error| listener_local_command_error(method, &error))?;
     parse_listener_local_result(result).map(Some)
+}
+
+#[cfg(test)]
+mod listener_local_command_error_tests {
+    #[test]
+    fn classifies_inbox_stage_without_exposing_bridge_detail() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_read",
+            "local inbox secure hydration failed: secret-bearing-detail",
+            "",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(mapped.detail.code, "local_state_unavailable");
+        assert_eq!(mapped.exit_code, 5);
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during inbox_secure_hydration_other."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-detail"));
+    }
+
+    #[test]
+    fn classifies_bridge_connection_without_exposing_cause() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_dial",
+            "local websocket bridge unavailable",
+            "secret-bearing-cause",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during bridge_connection."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-cause"));
+    }
+
+    #[test]
+    fn classifies_inbox_reconciliation_category_without_exposing_detail() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_read",
+            "local inbox reconciliation failed: transport_unavailable",
+            "secret-bearing-cause",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during inbox_reconciliation_transport_unavailable."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-cause"));
+    }
+
+    #[test]
+    fn classifies_secure_hydration_category_without_exposing_detail() {
+        let error = anyhow::Error::new(crate::host_runtime::bridge::BridgeCallError::new(
+            "bridge_read",
+            "local inbox secure hydration failed: local_state_unavailable",
+            "secret-bearing-cause",
+        ));
+
+        let mapped = super::listener_local_command_error("local.inbox", &error);
+
+        assert_eq!(
+            mapped.detail.message,
+            "the running listener failed during inbox_secure_hydration_local_state_unavailable."
+        );
+        assert!(!mapped.detail.message.contains("secret-bearing-cause"));
+    }
 }
 
 fn parse_listener_local_result(result: Map<String, Value>) -> Result<CommandResult, ExitError> {

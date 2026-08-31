@@ -9361,19 +9361,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessageSyncOutcome dco_decode_dart_message_sync_outcome(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return DartMessageSyncOutcome(
       status: dco_decode_dart_message_sync_status(arr[0]),
       eventsApplied: dco_decode_u_32(arr[1]),
       pagesFetched: dco_decode_u_32(arr[2]),
       messagesHydrated: dco_decode_u_32(arr[3]),
       duplicatesSkipped: dco_decode_u_32(arr[4]),
-      changedConversationIds: dco_decode_list_String(arr[5]),
+      olderHistoryExcluded: dco_decode_bool(arr[5]),
+      changedConversationIds: dco_decode_list_String(arr[6]),
       committedIncomingMessages:
-          dco_decode_list_dart_committed_incoming_message(arr[6]),
-      errorCode: dco_decode_opt_String(arr[7]),
-      warnings: dco_decode_list_String(arr[8]),
+          dco_decode_list_dart_committed_incoming_message(arr[7]),
+      errorCode: dco_decode_opt_String(arr[8]),
+      warnings: dco_decode_list_String(arr[9]),
     );
   }
 
@@ -14067,6 +14068,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_pagesFetched = sse_decode_u_32(deserializer);
     var var_messagesHydrated = sse_decode_u_32(deserializer);
     var var_duplicatesSkipped = sse_decode_u_32(deserializer);
+    var var_olderHistoryExcluded = sse_decode_bool(deserializer);
     var var_changedConversationIds = sse_decode_list_String(deserializer);
     var var_committedIncomingMessages =
         sse_decode_list_dart_committed_incoming_message(deserializer);
@@ -14078,6 +14080,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       pagesFetched: var_pagesFetched,
       messagesHydrated: var_messagesHydrated,
       duplicatesSkipped: var_duplicatesSkipped,
+      olderHistoryExcluded: var_olderHistoryExcluded,
       changedConversationIds: var_changedConversationIds,
       committedIncomingMessages: var_committedIncomingMessages,
       errorCode: var_errorCode,
@@ -18680,6 +18683,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.pagesFetched, serializer);
     sse_encode_u_32(self.messagesHydrated, serializer);
     sse_encode_u_32(self.duplicatesSkipped, serializer);
+    sse_encode_bool(self.olderHistoryExcluded, serializer);
     sse_encode_list_String(self.changedConversationIds, serializer);
     sse_encode_list_dart_committed_incoming_message(
       self.committedIncomingMessages,

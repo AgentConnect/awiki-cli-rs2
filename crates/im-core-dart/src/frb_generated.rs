@@ -11720,6 +11720,7 @@ impl SseDecode for crate::dto::message::DartMessageSyncOutcome {
         let mut var_pagesFetched = <u32>::sse_decode(deserializer);
         let mut var_messagesHydrated = <u32>::sse_decode(deserializer);
         let mut var_duplicatesSkipped = <u32>::sse_decode(deserializer);
+        let mut var_olderHistoryExcluded = <bool>::sse_decode(deserializer);
         let mut var_changedConversationIds = <Vec<String>>::sse_decode(deserializer);
         let mut var_committedIncomingMessages =
             <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_decode(deserializer);
@@ -11731,6 +11732,7 @@ impl SseDecode for crate::dto::message::DartMessageSyncOutcome {
             pages_fetched: var_pagesFetched,
             messages_hydrated: var_messagesHydrated,
             duplicates_skipped: var_duplicatesSkipped,
+            older_history_excluded: var_olderHistoryExcluded,
             changed_conversation_ids: var_changedConversationIds,
             committed_incoming_messages: var_committedIncomingMessages,
             error_code: var_errorCode,
@@ -17797,6 +17799,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncOutco
             self.pages_fetched.into_into_dart().into_dart(),
             self.messages_hydrated.into_into_dart().into_dart(),
             self.duplicates_skipped.into_into_dart().into_dart(),
+            self.older_history_excluded.into_into_dart().into_dart(),
             self.changed_conversation_ids.into_into_dart().into_dart(),
             self.committed_incoming_messages
                 .into_into_dart()
@@ -21368,6 +21371,7 @@ impl SseEncode for crate::dto::message::DartMessageSyncOutcome {
         <u32>::sse_encode(self.pages_fetched, serializer);
         <u32>::sse_encode(self.messages_hydrated, serializer);
         <u32>::sse_encode(self.duplicates_skipped, serializer);
+        <bool>::sse_encode(self.older_history_excluded, serializer);
         <Vec<String>>::sse_encode(self.changed_conversation_ids, serializer);
         <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_encode(
             self.committed_incoming_messages,

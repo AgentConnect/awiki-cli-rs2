@@ -1,5 +1,6 @@
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::json;
 use std::collections::BTreeSet;
 
 pub(crate) const APPLIED_EVENT_MIN_RECEIPTS_PER_OWNER: i64 = 10_000;
@@ -498,6 +499,15 @@ CREATE TABLE IF NOT EXISTS sync_recovery_state (
 CREATE INDEX IF NOT EXISTS sync_recovery_state_status_idx
 ON sync_recovery_state(status, updated_at);
 
+CREATE TABLE IF NOT EXISTS sync_history_scope (
+    owner_identity_id        TEXT PRIMARY KEY,
+    older_history_excluded   INTEGER NOT NULL CHECK (older_history_excluded IN (0, 1)),
+    updated_at               INTEGER NOT NULL,
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS local_mutation_outbox (
     owner_identity_id  TEXT NOT NULL,
     mutation_id        TEXT NOT NULL,
@@ -953,6 +963,7 @@ pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) snapshot_scan_seq: String,
     pub(crate) server_time: String,
     pub(crate) server_cutoff: String,
+    pub(crate) older_history_excluded: bool,
     pub(crate) lane_capability_reconcile: Option<LaneCapabilityReconcileInputV1a>,
     pub(crate) events: Vec<DeltaApplyEventV2>,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
@@ -3938,6 +3949,24 @@ pub(crate) fn apply_snapshot_v2(
         )?;
     }
 
+    transaction
+        .execute(
+            r#"
+INSERT INTO sync_history_scope (
+    owner_identity_id, older_history_excluded, updated_at
+) VALUES (?1, ?2, ?3)
+ON CONFLICT(owner_identity_id) DO UPDATE SET
+    older_history_excluded = excluded.older_history_excluded,
+    updated_at = excluded.updated_at
+"#,
+            params![
+                input.owner_identity_id,
+                i64::from(input.older_history_excluded),
+                now,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+
     let next_state = MessageSyncState {
         owner_identity_id: input.owner_identity_id,
         account_id: input.account_id,
@@ -3949,7 +3978,13 @@ pub(crate) fn apply_snapshot_v2(
         last_server_time: Some(input.server_time),
         last_success_at: Some(now),
         last_error_code: None,
-        metadata_json: Some("{\"mode\":\"compact_recovery\"}".to_owned()),
+        metadata_json: Some(
+            json!({
+                "mode": "compact_recovery",
+                "older_history_excluded": input.older_history_excluded,
+            })
+            .to_string(),
+        ),
         updated_at: now,
     };
     // Snapshot is the one server-authorized boundary allowed to replace an
@@ -8143,6 +8178,7 @@ mod tests {
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-08-27T01:00:00Z".to_owned(),
                 server_cutoff: "2026-08-25T01:00:00Z".to_owned(),
+                older_history_excluded: true,
                 lane_capability_reconcile: None,
                 events: Vec::new(),
                 groups: Vec::new(),
@@ -8150,6 +8186,15 @@ mod tests {
             },
         )
         .unwrap();
+
+        let history_scope_marker: i64 = db
+            .query_row(
+                "SELECT older_history_excluded FROM sync_history_scope WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_scope_marker, 1);
 
         let message_ids = {
             let mut statement = db
@@ -9082,6 +9127,7 @@ mod tests {
                 snapshot_scan_seq: "50".to_owned(),
                 server_time: "2026-07-28T10:00:01Z".to_owned(),
                 server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+                older_history_excluded: false,
                 lane_capability_reconcile: None,
                 events: Vec::new(),
                 groups: Vec::new(),
@@ -9917,6 +9963,7 @@ mod tests {
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-07-31T10:00:02Z".to_owned(),
                 server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+                older_history_excluded: false,
                 lane_capability_reconcile: None,
                 events: vec![DeltaApplyEventV2 {
                     event_id: "snapshot-event-20".to_owned(),
@@ -10047,6 +10094,7 @@ mod tests {
                 snapshot_scan_seq: "20".to_owned(),
                 server_time: "2026-07-28T10:00:02Z".to_owned(),
                 server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+                older_history_excluded: false,
                 lane_capability_reconcile: None,
                 events: Vec::new(),
                 groups: Vec::new(),
@@ -10070,7 +10118,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_two_snapshot_rolls_back_on_second_notification_then_commits_mixed_state() {
+    fn schema3_snapshot_rolls_back_on_second_notification_then_commits_mixed_state() {
         let mut db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -10101,7 +10149,7 @@ mod tests {
                 mode: "compact_recovery".to_owned(),
                 requested_from_epoch: "1".to_owned(),
                 requested_from_seq: "10".to_owned(),
-                recovery_id_hash: Some("schema-two-recovery".to_owned()),
+                recovery_id_hash: Some("schema3-recovery".to_owned()),
                 snapshot_scan_seq: Some("20".to_owned()),
                 status: "applying".to_owned(),
                 retry_count: 0,
@@ -10146,11 +10194,12 @@ mod tests {
             expected_stream_epoch: "1".to_owned(),
             expected_scan_seq: "10".to_owned(),
             allow_missing_previous: false,
-            recovery_id_hash: "schema-two-recovery".to_owned(),
+            recovery_id_hash: "schema3-recovery".to_owned(),
             stream_epoch: "2".to_owned(),
             snapshot_scan_seq: "20".to_owned(),
             server_time: "2026-07-23T02:00:01Z".to_owned(),
             server_cutoff: "2026-07-26T00:00:00Z".to_owned(),
+            older_history_excluded: false,
             lane_capability_reconcile: None,
             events,
             groups: Vec::new(),

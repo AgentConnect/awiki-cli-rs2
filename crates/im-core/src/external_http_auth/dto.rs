@@ -4,11 +4,12 @@ use std::fmt;
 /// Maximum buffered and replayable body accepted by external HTTP auth.
 pub const EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-const MANAGED_HEADERS: [&str; 4] = [
+const MANAGED_HEADERS: [&str; 5] = [
     "authorization",
     "signature-input",
     "signature",
     "content-digest",
+    "x-awiki-client-version",
 ];
 
 /// One validated HTTP field. Debug output always redacts the value.

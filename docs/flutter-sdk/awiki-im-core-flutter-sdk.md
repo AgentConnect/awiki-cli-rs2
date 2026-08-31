@@ -430,6 +430,14 @@ root key from ANP Identity. When it is true, Core uses ANP Identity's Rust root
 export to build the legacy `RootKeyEnvelopeV1`; Flutter never receives the key
 or envelope and the existing confirmation interaction remains unchanged.
 
+The same API is valid both immediately after Join and later from an eligible
+device-list row. Each action starts with a fresh `prepare`; the App must not
+reuse a Join session or an old authorization handle. If Core already has an
+uncertain `pending_delivery`, `prepare` binds the new handle to its original
+message ID and sealed P5 bytes without sending them. Startup also leaves those
+bytes unsent. Only the fresh `confirmAndSend(userPresenceConfirmed: true)` may
+resume them; `false` consumes the handle without root export or network send.
+
 `RootKeyTransferSendResult` contains only DID, sender/recipient device IDs,
 Core-generated message ID, and accepted time. Acceptance means that encrypted
 delivery was accepted; it does not claim that recipient import or management
@@ -705,6 +713,11 @@ and `history(thread, ...)` remain migration adapters:
 - it is the correct API for chat first paint before background reconcile;
 - `history` keeps remote history + projection/reconcile semantics and should be called in the background when freshness is required.
 
+本地 timeline/History/Inbox API 只读取已提交投影，不加入正在等待网络的 `syncNow` run。即使同一
+owner 的同步、Realtime 或 secure consumer 正在等待外部 I/O，这些本地读取也可以完成；调用方必须
+继续把结果理解为 committed local view，而不是远端 freshness 证明。需要 freshness 的页面应等待
+现有 `syncNow` 或 thread reconcile 结果，失败时不得用本地结果冒充同步成功。
+
 Both APIs are async `Future<MessagePage>` methods. Apps must not bypass the SDK or read SQLite directly.
 
 ## Conversation send and local echo
@@ -906,7 +919,11 @@ final diagnostics = await client.messages.syncDiagnostics();
   coordinator 合并。第一个调用执行完整同步，后续调用等待并共享该 outcome，不创建第二个
   `runGeneration`。后台 realtime/hint 调度产生的新变化由 Rust host 的内部请求入口合并为最多一轮
   follow-up；Dart API 形态不变，也不暴露 coordinator、waiter 或 generation。一个 Dart caller
-  取消等待不会取消 Core 持有的公共同步。
+  取消等待不会取消 Core 持有的公共同步。同一进程重新打开、且绑定相同 local state root 的
+  native Core 也共享该 owner coordinator；隔离 state root 不互相阻塞。
+- single-flight 只负责 run 唯一性，不持有覆盖网络 I/O 与本地读取的 owner-wide operation lock。
+  SQLite actor、原子 apply、`runGeneration` 和 secure peer/group scope fence 继续负责提交一致性；
+  App 不需要也不能增加第二把锁或第二套同步状态。
 - Rust `im-core` reads the active account/device binding and v2 cursor from
   private SQLite; Dart supplies only `reason` and optional `limit`.
 - When fenced or missing, Rust runs `sync.bootstrap`. A new device takes the
@@ -930,11 +947,13 @@ final diagnostics = await client.messages.syncDiagnostics();
   receipt/cursor advance, then retries authoritative DID-to-Handle resolution
   on later sync calls.
 - A compact-recovery response is handled inside the same call:
-  delta/bootstrap → process-local opaque token → strict snapshot validation and
-  atomic merge → post-anchor delta. The snapshot merges current Direct/Group
+  delta/bootstrap → process-local opaque token → Schema 3 manifest and opaque-page collection →
+  strict complete-package validation → one atomic merge → post-anchor delta. The snapshot merges current Direct/Group
   read state, active Group state, and recent ordinary messages without deleting
   older local messages. The successful call ends in the existing
-  `MessageSyncStatus.changed` or `MessageSyncStatus.idle`; snapshot or
+  `MessageSyncStatus.changed` or `MessageSyncStatus.idle`. A bounded ordinary-history suffix is
+  successful and exposes only `MessageSyncOutcome.olderHistoryExcluded`; required-state or single-item
+  hard overflow retains a stable capacity error code. Snapshot or
   post-anchor failure ends in `retryableFailure`, while an authorization or
   generation fence ends in `authRevoked`. HTTP 401/403 from authenticated
   sync or its JWT refresh, JSON-RPC `1401` after Core's bounded auth retry,
@@ -945,14 +964,15 @@ final diagnostics = await client.messages.syncDiagnostics();
   ordinary sync exactly once only when Core proves that the local authorization
   context advanced during the pass; a genuinely revoked device observes no
   context change and remains terminal. There is no second recover API.
-- The raw recovery token remains on the Rust process stack only and is never
+- The raw recovery token and page refs remain on the Rust process stack only and are never
   written to SQLite or logs. Dart cannot observe or persist the token, recovery
-  cursor/anchor, cutoff, policy limit, or returned snapshot count.
+  cursor/anchor, cutoff, policy limit, manifest, section, page count, event boundary, byte count,
+  or returned snapshot count.
 - Core serializes recovery per owner and commits a snapshot only when the
   previous cursor, recovery-id hash, authorized anchor, and recovery phase still
-  match in SQLite. Snapshot decoding is closed-schema, rejects duplicate
-  event IDs/sequences and pre-cutoff messages, and never lets Dart choose the
-  48-hour/500-message policy.
+  match in SQLite. Snapshot decoding is closed-schema, rejects missing/reordered/mixed pages,
+  duplicate event IDs/sequences, page/section/manifest digest or count conflict, invalid keyset order,
+  and pre-cutoff messages. Dart never chooses or recomputes the 10,000-item/64-MiB/100-page policy.
 - `committedIncomingMessages` contains only incoming messages whose projection
   transaction committed, with `CommittedMessageSource.liveDelta`; realtime
   hints, snapshot hydration, and Group system timeline records never appear in

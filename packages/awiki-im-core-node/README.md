@@ -70,6 +70,10 @@ finally {
 DSH Host 必须通过受限 Provider lease 的 `authenticatedHttp.dispatch` 完成签名和发送，普通
 插件只能提交精确请求并接收响应。
 
+当目标属于配置的 AWiki User/Message/Mail origin 时，Core 会把配置中的
+`X-AWiki-Client-Version` 作为受管 header 加入同一个 attempt，再对完整请求签名；Host 必须发送
+`headerPatch` 中的该字段，调用方不能自行覆盖。其他外部 origin 不继承产品版本 header。
+
 ## DSH External Identity Provider
 
 DSH Host 将 `ctx.anpIdentity.acquireProvider(...)` 返回的 Host-only lease 作为
@@ -127,12 +131,12 @@ exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使�
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.2.0` 源码 candidate 的 Native contract version 为 `10`，增加 Host-only External
+- 当前 `0.2.1` 源码 candidate 的 Native contract version 为 `10`，增加 Host-only External
   Identity Provider Promise bridge，并保留 `0.1.8` 引入的新设备 Join 恢复/SAS/cancel、
   ready-admin Registry、审批/拒绝和设备撤销；同时保留 prepared registration
   Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send。registry `0.1.5` 是
   v5，包含 external HTTP auth、local timeline、群管理展示、realtime 与 mail facade；`0.1.6`
-  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.0` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他
+  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.1` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他
   版本的 addon。
 
 ## 邮件

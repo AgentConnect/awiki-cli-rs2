@@ -72,7 +72,7 @@ async function startRecoveryService(t) {
   return { baseUrl: `http://127.0.0.1:${address.port}`, requests }
 }
 
-test('recovery progress exposes the stable impact fields through the real native binding', async t => {
+test('recovery progress exposes only the current stable impact fields through the real native binding', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-recovery-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const service = await startRecoveryService(t)
@@ -99,9 +99,10 @@ test('recovery progress exposes the stable impact fields through the real native
   })
 
   assert.equal(progress.phase, 'ready_to_commit')
-  assert.equal(progress.impact.localOrdinaryDataWillMigrate, false)
-  assert.equal(progress.impact.otherDevicesMustRejoin, true)
-  assert.equal(Object.hasOwn(progress.impact, 'unsupportedE2eeGroupCount'), false)
+  assert.deepEqual(progress.impact, {
+    localOrdinaryDataWillMigrate: false,
+    otherDevicesMustRejoin: true,
+  })
   assert.deepEqual(JSON.parse(JSON.stringify(progress)), progress)
   assert.deepEqual(service.requests.map(request => request.path), [
     '/user-service/v1/handle/rpc',

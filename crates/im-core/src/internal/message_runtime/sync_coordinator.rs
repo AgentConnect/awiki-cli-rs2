@@ -41,7 +41,6 @@ impl MessageSyncCoordinatorRegistry {
 #[derive(Default)]
 pub(crate) struct MessageSyncCoordinator {
     state: Mutex<MessageSyncCoordinatorState>,
-    local_state_operation_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -74,10 +73,6 @@ pub(crate) struct MessageSyncLeaderRun {
 }
 
 impl MessageSyncCoordinator {
-    pub(crate) async fn lock_local_state_operation(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.local_state_operation_lock.lock().await
-    }
-
     pub(crate) fn register(
         &self,
         request: crate::messages::MessageSyncRequest,

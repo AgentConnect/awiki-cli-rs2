@@ -22,12 +22,8 @@ where
 
 async fn execute_message_sync_once(
     client: crate::core::ImClient,
-    coordinator: std::sync::Arc<
-        crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinator,
-    >,
     request: crate::messages::MessageSyncRequest,
 ) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
-    let _operation_guard = coordinator.lock_local_state_operation().await;
     let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
         &client,
         crate::internal::auth::session::FileSessionProvider::new(&client),
@@ -213,6 +209,7 @@ mod incoming_recovery_tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
     use std::fs;
+    use std::net::TcpListener;
 
     #[tokio::test]
     async fn exact_client_reads_only_its_hydrated_incoming_projection_oldest_first() {
@@ -394,6 +391,67 @@ mod incoming_recovery_tests {
     }
 
     #[tokio::test]
+    async fn newer_promoted_binding_does_not_block_committed_local_inbox_read() {
+        let fixture = Fixture::new();
+        let bootstrap = fixture
+            .core
+            .generate_vnext_agent_bootstrap(
+                crate::identity::AgentIdentityKind::Daemon,
+                "daemon-promoted-local-read",
+            )
+            .unwrap();
+        let client = fixture
+            .core
+            .client_with_device_identity_material(host_material(
+                &bootstrap,
+                "daemon-promoted-local-read.awiki.info",
+                "daemon-promoted-local-read-account",
+            ))
+            .unwrap();
+        client.active_sync_account_binding().await.unwrap();
+        fixture.seed(record(
+            "msg-before-promotion",
+            &bootstrap.identity_id,
+            bootstrap.did.as_str(),
+            0,
+            "2026-08-01T00:01:00Z",
+            crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+        ));
+        let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path).unwrap();
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE identity_account_bindings
+                     SET device_auth_generation = '2'
+                     WHERE owner_identity_id = ?1",
+                    [&bootstrap.identity_id],
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+
+        assert!(matches!(
+            client.active_sync_account_binding().await,
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        let inbox = client
+            .messages()
+            .local_inbox_projection_with_metadata_async(crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            })
+            .await
+            .expect("a newer trusted binding must not block committed local reads");
+
+        assert_eq!(inbox.items.len(), 1);
+        assert_eq!(inbox.items[0].id.as_str(), "msg-before-promotion");
+    }
+
+    #[tokio::test]
     async fn recovery_limit_is_closed_and_hosted_client_has_no_binding() {
         let fixture = Fixture::new();
         let bootstrap = fixture
@@ -474,6 +532,105 @@ mod incoming_recovery_tests {
         }
     }
 
+    #[tokio::test]
+    async fn blocked_sync_transport_does_not_block_committed_local_reads() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (connected_sender, connected_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            connected_sender.send(()).unwrap();
+            release_receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            drop(stream);
+        });
+
+        let fixture = Fixture::new_with_service_base_url(&endpoint);
+        let bootstrap = fixture
+            .core
+            .generate_vnext_agent_bootstrap(
+                crate::identity::AgentIdentityKind::Daemon,
+                "daemon-concurrent-read",
+            )
+            .unwrap();
+        let client = fixture
+            .core
+            .client_with_device_identity_material(host_material(
+                &bootstrap,
+                "daemon-concurrent-read.awiki.info",
+                "daemon-concurrent-read-account",
+            ))
+            .unwrap();
+        fixture.seed(record(
+            "msg-committed-before-sync",
+            &bootstrap.identity_id,
+            bootstrap.did.as_str(),
+            0,
+            "2026-08-01T00:01:00Z",
+            crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+        ));
+
+        let sync_client = client.clone();
+        let sync = tokio::spawn(async move {
+            sync_client
+                .messages()
+                .sync_now_async(crate::messages::MessageSyncRequest {
+                    reason: "concurrent_local_read_test".to_owned(),
+                    limit: Some(100),
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), connected_receiver)
+            .await
+            .expect("sync must reach the blocked transport")
+            .unwrap();
+
+        let inbox = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client
+                .messages()
+                .local_inbox_projection_with_metadata_async(crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::DirectOnly,
+                    limit: crate::ids::PageLimit(10),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: None,
+                }),
+        )
+        .await
+        .expect("blocked sync transport must not block committed Inbox reads")
+        .unwrap();
+        assert_eq!(inbox.items.len(), 1);
+        assert_eq!(inbox.items[0].id.as_str(), "msg-committed-before-sync");
+
+        let history = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.messages().local_history_with_metadata_async(
+                crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:wba:awiki.info:user:peer:e1_peer", "").unwrap(),
+                ),
+                crate::messages::LocalHistoryQuery {
+                    limit: crate::ids::PageLimit(10),
+                    cursor: None,
+                },
+            ),
+        )
+        .await
+        .expect("blocked sync transport must not block committed History reads")
+        .unwrap();
+        assert_eq!(history.items.len(), 1);
+        assert_eq!(history.items[0].id.as_str(), "msg-committed-before-sync");
+
+        release_sender.send(()).unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), sync)
+            .await
+            .expect("sync must stop after the test transport closes")
+            .unwrap();
+        server.join().unwrap();
+    }
+
     struct Fixture {
         _root: tempfile::TempDir,
         core: crate::core::ImCore,
@@ -482,6 +639,10 @@ mod incoming_recovery_tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::new_with_service_base_url("https://awiki.info")
+        }
+
+        fn new_with_service_base_url(service_base_url: &str) -> Self {
             let root = tempfile::tempdir().unwrap();
             let workspace = root.path().join("workspace");
             for directory in ["identities", "local", "cache", "tmp"] {
@@ -490,7 +651,7 @@ mod incoming_recovery_tests {
             let sqlite_path = workspace.join("local/im.sqlite");
             let core = crate::core::ImCore::new(
                 crate::ImCoreConfig {
-                    service_base_url: crate::ServiceEndpoint::parse("https://awiki.info").unwrap(),
+                    service_base_url: crate::ServiceEndpoint::parse(service_base_url).unwrap(),
                     did_domain: "awiki.info".to_owned(),
                     client_version_info: None,
                     user_service_endpoint: None,
@@ -2791,11 +2952,6 @@ impl<'a> MessageService<'a> {
         &self,
         query: super::InboxQuery,
     ) -> crate::ImResult<super::MessagePage> {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         if query.cursor.is_some() {
             return Err(crate::ImError::invalid_input(
                 Some("cursor".to_owned()),
@@ -2813,25 +2969,37 @@ impl<'a> MessageService<'a> {
                 "limit must be greater than zero",
             ));
         }
-        let binding = self.client.active_sync_account_binding().await?;
-        if binding.owner_identity_id != self.client.current_identity().id.as_str()
-            || binding.current_did != self.client.did().as_str()
-        {
-            return Err(crate::ImError::IdentityBindingConflict {
-                detail: "active sync binding does not match the local Inbox owner".to_owned(),
-            });
-        }
+        // This is a committed local read. Do not resolve Handle state or
+        // upsert through active_sync_account_binding(): an exact-device
+        // promotion may have advanced the durable binding beyond this
+        // client's immutable runtime seed. Any existing durable binding still
+        // has to match account, device and DID; authorization generation is
+        // not part of the local message ownership key.
+        let context = self.client.sync_account_context()?;
+        let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
+        let current_did = self.client.did().as_str().to_owned();
         #[cfg(feature = "sqlite")]
         {
             let requested_limit = i64::from(query.limit.0);
-            let mut records = self
-                .client
-                .core_inner()
-                .local_state_db()
+            let db = self.client.core_inner().local_state_db().await?;
+            if let Some(binding) = db
+                .load_identity_account_binding(owner_identity_id.clone())
                 .await?
+            {
+                if binding.account_id != context.account_id
+                    || binding.protocol_device_id != context.protocol_device_id
+                    || binding.current_did != current_did
+                {
+                    return Err(crate::ImError::IdentityBindingConflict {
+                        detail: "stored sync binding does not match the local Inbox owner"
+                            .to_owned(),
+                    });
+                }
+            }
+            let mut records = db
                 .list_local_inbox_messages(
-                    binding.owner_identity_id,
-                    binding.current_did,
+                    owner_identity_id,
+                    current_did,
                     query.scope,
                     query.unread_only,
                     requested_limit.saturating_add(1),
@@ -2856,7 +3024,7 @@ impl<'a> MessageService<'a> {
         }
         #[cfg(not(feature = "sqlite"))]
         {
-            let _ = binding;
+            let _ = (context, owner_identity_id, current_did);
             Err(crate::ImError::unsupported("local-inbox-projection"))
         }
     }
@@ -2873,11 +3041,6 @@ impl<'a> MessageService<'a> {
         &self,
         limit: crate::ids::PageLimit,
     ) -> crate::ImResult<Vec<String>> {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         // Root import can advance this exact device's authorization generation
         // independently of ordinary message sync. Finish any accepted local
         // transition first so callers never reuse the pre-promotion bearer.
@@ -3151,11 +3314,6 @@ impl<'a> MessageService<'a> {
         thread: super::ThreadRef,
         query: super::LocalHistoryQuery,
     ) -> crate::ImResult<super::MessagePage> {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3349,11 +3507,6 @@ impl<'a> MessageService<'a> {
         &self,
         ids: Vec<crate::ids::MessageId>,
     ) -> crate::ImResult<super::MarkReadResult> {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         if self.client.realtime_requires_sync_changed_v2()? {
             self.client.active_sync_account_binding().await?;
             return mark_message_ids_read_v2_async(self.client, ids).await;
@@ -3400,11 +3553,6 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MarkThreadReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3446,11 +3594,6 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MarkConversationReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
-        let coordinator = self
-            .client
-            .core_inner()
-            .message_sync_coordinator(self.client.current_identity().id.as_str());
-        let _operation_guard = coordinator.lock_local_state_operation().await;
         let mapped = mark_read_input_for_conversation_async(self.client, request).await?;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
@@ -3670,14 +3813,10 @@ impl<'a> MessageService<'a> {
             .core_inner()
             .message_sync_coordinator(self.client.current_identity().id.as_str());
         let client = self.client.clone();
-        let executor_coordinator = std::sync::Arc::clone(&coordinator);
         let executor: crate::internal::message_runtime::sync_coordinator::MessageSyncExecutor =
             std::sync::Arc::new(move |request| {
                 let client = client.clone();
-                let coordinator = std::sync::Arc::clone(&executor_coordinator);
-                Box::pin(
-                    async move { execute_message_sync_once(client, coordinator, request).await },
-                )
+                Box::pin(async move { execute_message_sync_once(client, request).await })
             });
         coordinator.execute(request, kind, executor).await
     }

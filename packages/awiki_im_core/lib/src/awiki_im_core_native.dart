@@ -1430,6 +1430,7 @@ class MessageApi {
         pagesFetched: outcome.pagesFetched,
         messagesHydrated: outcome.messagesHydrated,
         duplicatesSkipped: outcome.duplicatesSkipped,
+        olderHistoryExcluded: outcome.olderHistoryExcluded,
         changedConversationIds: outcome.changedConversationIds,
         committedIncomingMessages: outcome.committedIncomingMessages,
         errorCode: outcome.errorCode,
@@ -3958,6 +3959,7 @@ extension on gen_message.DartMessageSyncOutcome {
     pagesFetched: pagesFetched,
     messagesHydrated: messagesHydrated,
     duplicatesSkipped: duplicatesSkipped,
+    olderHistoryExcluded: olderHistoryExcluded,
     changedConversationIds: changedConversationIds,
     committedIncomingMessages: committedIncomingMessages
         .map((message) => message._toModel())

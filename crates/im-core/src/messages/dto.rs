@@ -654,6 +654,10 @@ pub struct MessageSyncOutcome {
     pub pages_fetched: u32,
     pub messages_hydrated: u32,
     pub duplicates_skipped: u32,
+    /// True when Compact Recovery intentionally selected the newest complete
+    /// ordinary-history suffix within the server policy budget.
+    #[serde(default)]
+    pub older_history_excluded: bool,
     pub changed_conversation_ids: Vec<String>,
     pub committed_incoming_messages: Vec<CommittedIncomingMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

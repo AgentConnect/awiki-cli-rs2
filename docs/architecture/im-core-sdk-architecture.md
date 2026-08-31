@@ -251,9 +251,10 @@ replacing the one persisted access token. V1 has no device-token issue or
 refresh RPC and stores no device refresh token.
 
 Product version metadata is typed host input but Core-owned wire behavior. Core
-adds exactly one `X-AWiki-Client-Version` after authentication headers have been
-constructed for configured-origin AWiki product HTTP requests, and also adds it
-to Message WebSocket handshakes. Raw DID/ANP and attachment-object traffic does
+adds exactly one `X-AWiki-Client-Version` to configured-origin AWiki product HTTP
+requests, including Host-owned External HTTP attempts before they are signed,
+and also adds it to Message WebSocket handshakes. Callers cannot override the
+managed field. Raw DID/ANP, unrelated external origins, and attachment-object traffic do
 not inherit it. User Service product traffic uses only canonical
 `/user-service/v1/...` paths; the server's unversioned aliases are not a client
 fallback mechanism.
@@ -471,6 +472,16 @@ Cipher; when no session exists, the first standard Init carries the same
 passes `user_presence_confirmed=true` does Core call ANP Identity's public Rust
 root export and construct that envelope in zeroizing memory. Core never sends
 an empty Init and never asks for a second confirmation.
+
+If an earlier confirmed attempt committed standard P5 pending bytes but its
+acceptance outcome is unknown, Core does not resend them at startup or while
+`prepare` is running. A later `prepare` performs the same fresh
+Registry/Manifest/sender/recipient checks and returns a short-lived handle bound
+to the existing message ID and sealed P5 bytes. Only a subsequent
+`confirm_and_send(user_presence_confirmed=true)` may resume those exact bytes;
+false confirmation consumes the handle without network I/O. Pending recovery
+never re-exports the root, advances the ratchet, changes the target, or creates
+a replacement message.
 
 The envelope object, canonical JSON output and P5 `V2SecretJsonPayload` are all
 owned by zeroizing containers. This is an SDK allocation-lifetime guarantee,
@@ -1316,8 +1327,8 @@ Schema 34 completes the ordinary read/recovery boundary. Owner-scoped
 Group thread key to exactly one canonical local conversation; Core never guesses
 that mapping from a DID. `sync_remote_read_states` is a durable unresolved
 Direct read-state backlog. Snapshot/delta may advance after transactionally
-storing a current read state whose recent message was outside the 48-hour/500
-message window; a later ordinary message binding replays and removes that
+storing a current read state whose recent message was outside the Schema 3
+bounded ordinary-history suffix; a later ordinary message binding replays and removes that
 backlog in the same transaction. `thread_read_state.remote_state_version`
 provides monotonic stale/conflict rejection. For `message.created`, the remote
 thread binding is committed only after the message has passed verified-Persona
@@ -1329,32 +1340,50 @@ verified message fact may perform the single allowed
 `dm:<DID>` → `dm:peer-scope:v1:<hash>` canonical upgrade; canonical-to-canonical
 and all Group rebinding remain conflicts.
 
-`syncNow` closes compact recovery inside one call:
+`syncNow` closes Schema 3 compact recovery inside one call:
 delta (or existing-device bootstrap recovery) → process-local opaque token →
-snapshot validation/atomic merge → post-anchor delta. Snapshot application
+manifest + opaque page-ref collection (at most 100 pages) → complete package validation → one
+snapshot atomic merge → post-anchor delta. Core keeps token, page ref, manifest, section, page count,
+cursor and boundary only in the Rust process stack; it never applies a page to formal projection.
+Snapshot application
 merges current read/Group state and recent ordinary messages without deleting
 older local messages, commits receipts/projections/cursor/recovery completion in
 one SQLite transaction, and returns only the existing high-level `changed` or
 `idle` terminal outcome after the post-anchor delta succeeds. A raw token,
 cursor, cutoff, policy limit, or returned snapshot count never crosses the Rust
-public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
+public, Dart, Flutter, CLI, or App boundary and is never persisted. The only new public product-safe
+field is `MessageSyncOutcome.older_history_excluded`; the same boolean is committed transactionally
+to `sync_history_scope`. A normal history budget boundary is success, while required-state or
+single-item overflow returns the stable capacity error codes. Startup
 changes an interrupted recovery to `retryable` while retaining the original
 cursor, so the next `syncNow` obtains a fresh process-local token.
 
-Core uses one process-local single-flight coordinator per `owner_identity_id`.
+Core uses one process-local single-flight coordinator per
+`state-root + owner_identity_id`. Reopened `ImCore` instances that point to the
+same SQLite root share it; isolated roots with the same owner do not block one
+another.
 The first request owns the complete `begin_message_sync_run → sync → finish_message_sync_run`
 run. Concurrent foreground callers wait for and reuse that outcome instead of creating another
 generation. Listener startup/reconnect/hint/timer requests that arrive during a run are coalesced
 into at most one immediate follow-up; cancelling one waiter does not cancel the coordinator-owned
 run. This is process-local scheduling only: durable `run_generation` continues to fence another
 process or a stale process, and genuine retryable/blocked/auth failures remain fail-closed.
+The coordinator does not own a second owner-wide local-state operation mutex. Network, Directory,
+Realtime, and P5/P6 waits never hold a lock that blocks an unrelated committed local projection
+read. SQLite actor commands, atomic apply transactions, `run_generation`, and the existing
+peer/group lane-consumer scope locks remain the write-side serialization and stale-result fences.
+Consequently `local_inbox_projection` and `local_history` may return the latest committed view while
+a sync run is still in flight; they do not claim that view is remotely fresh. Operations whose
+contract requires freshness still await the coordinated sync result and fail closed when it fails.
 Snapshot commit additionally
 uses a SQLite compare-and-swap fence over the exact previous epoch/cursor,
 recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent
 workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and
 rejects unknown top-level/policy/exclusion/read/Group fields, duplicate event
 IDs or sequences, messages before the server cutoff, and malformed state
-timestamps. Core does not calculate or widen the 48-hour/500-message policy.
+timestamps, section/keyset order, page/section/manifest digest, count, JCS bytes and duplicate IDs.
+Core validates the server-declared 10,000-item/64-MiB/100-page policy but never guesses its
+truncation reason or widens it.
 An HTTP 401 or 403 observed anywhere in this authenticated sync operation,
 including JWT refresh, or a JSON-RPC `1401` remaining after the transport's
 bounded auth retry, is classified as terminal `authRevoked`. For the live
