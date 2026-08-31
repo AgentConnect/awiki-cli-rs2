@@ -3921,7 +3921,14 @@ pub(crate) fn p5_lane_projection_record(
     client: &crate::core::ImClient,
     envelope: &Value,
     outcome: &crate::internal::secure_direct::v2_product::V2InboundProductOutcome,
-) -> crate::ImResult<Option<crate::internal::local_state::messages::MessageRecord>> {
+) -> crate::ImResult<
+    Option<(
+        crate::internal::local_state::messages::MessageRecord,
+        Option<
+            crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord,
+        >,
+    )>,
+> {
     use crate::internal::secure_direct::v2_product::V2InboundProductOutcome;
     let wire_peer_did = match outcome {
         V2InboundProductOutcome::Business(projection) => projection.sender_did.as_str(),
@@ -3936,6 +3943,7 @@ pub(crate) fn p5_lane_projection_record(
     let cache_binding = p5_cache_binding(&metadata, &body)?;
     let mut projected = envelope.clone();
     apply_p5_v2_product_outcome(&mut projected, outcome.clone());
+    let attachment_manifest_cache = attachment_manifest_cache_record(client, &projected);
     redact_attachment_manifests_for_public_projection(std::slice::from_mut(&mut projected));
     let raw = serde_json::json!({"messages": [projected], "has_more": false});
     let page = page_from_raw(client, &raw, crate::ids::PageLimit::new(1)?)?;
@@ -3950,7 +3958,7 @@ pub(crate) fn p5_lane_projection_record(
         )?
         .with_resolved_wire_thread("direct", wire_peer_did);
     persist_p5_cache_binding_metadata(&mut record, &cache_binding)?;
-    Ok(Some(record))
+    Ok(Some((record, attachment_manifest_cache)))
 }
 
 #[cfg(feature = "sqlite")]

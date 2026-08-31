@@ -60,7 +60,8 @@ fn run_listener(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result
 
 async fn run_listener_async(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result<()> {
     let runner = im_core_realtime_adapter::listener_runner_selection(host);
-    let mut supervisor = ListenerSupervisor::new(resolved, runner.mode, host)?;
+    let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
+    let mut supervisor = ListenerSupervisor::new(resolved, core, runner.mode, host)?;
     let result = supervisor.run_async().await;
     supervisor.cleanup_runtime_artifacts();
     result
@@ -68,10 +69,12 @@ async fn run_listener_async(resolved: Resolved, host: ListenerRunHostKind) -> an
 
 struct ListenerSupervisor {
     resolved: Arc<Resolved>,
+    core: im_core::ImCore,
     status: Arc<Mutex<Status>>,
     shutdown: Arc<AtomicBool>,
     listener: Option<bridge::BridgeListener>,
     host_notify: Arc<HostNotifySinkImpl>,
+    clients: Arc<Mutex<HashMap<String, im_core::ImClient>>>,
     runner_mode: ListenerRunnerMode,
     host: ListenerRunHostKind,
 }
@@ -79,6 +82,7 @@ struct ListenerSupervisor {
 impl ListenerSupervisor {
     fn new(
         resolved: Resolved,
+        core: im_core::ImCore,
         runner_mode: ListenerRunnerMode,
         host: ListenerRunHostKind,
     ) -> anyhow::Result<Self> {
@@ -106,10 +110,12 @@ impl ListenerSupervisor {
         };
         Ok(Self {
             resolved: Arc::new(resolved),
+            core,
             status: Arc::new(Mutex::new(status)),
             shutdown: Arc::new(AtomicBool::new(false)),
             listener: None,
             host_notify: Arc::new(host_notify),
+            clients: Arc::new(Mutex::new(HashMap::new())),
             runner_mode,
             host,
         })
@@ -153,6 +159,8 @@ impl ListenerSupervisor {
         let status = self.status.clone();
         let resolved = self.resolved.clone();
         let host_notify = self.host_notify.clone();
+        let clients = self.clients.clone();
+        let runtime = tokio::runtime::Handle::current();
         let shutdown = self.shutdown.clone();
         thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
@@ -161,7 +169,9 @@ impl ListenerSupervisor {
                         let runtime = BridgeRuntime {
                             status: status.clone(),
                             host_notify: host_notify.clone(),
-                            _resolved: resolved.clone(),
+                            resolved: resolved.clone(),
+                            clients: clients.clone(),
+                            runtime: runtime.clone(),
                         };
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
                     }
@@ -176,8 +186,7 @@ impl ListenerSupervisor {
     }
 
     async fn start_known_sessions_async(&self) -> anyhow::Result<()> {
-        let core = crate::m_core_cli_adapter::build_im_core_async(&self.resolved).await?;
-        let identities = core.identities().list_async().await?;
+        let identities = self.core.identities().list_async().await?;
         let sessions: Vec<(String, String)> = identities
             .iter()
             .map(|summary| {
@@ -208,9 +217,10 @@ impl ListenerSupervisor {
         }
         for (identity_name, did) in sessions {
             spawn_im_core_runner_session_async(
-                self.resolved.clone(),
+                self.core.clone(),
                 self.status.clone(),
                 self.host_notify.clone(),
+                self.clients.clone(),
                 self.shutdown.clone(),
                 identity_name,
                 did,
@@ -237,9 +247,10 @@ impl ListenerSupervisor {
             return Ok(());
         };
         spawn_im_core_runner_session_async(
-            self.resolved.clone(),
+            self.core.clone(),
             self.status.clone(),
             self.host_notify.clone(),
+            self.clients.clone(),
             self.shutdown.clone(),
             identity_name.to_string(),
             did.to_string(),
@@ -288,7 +299,9 @@ impl ListenerSupervisor {
 struct BridgeRuntime {
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
-    _resolved: Arc<Resolved>,
+    resolved: Arc<Resolved>,
+    clients: Arc<Mutex<HashMap<String, im_core::ImClient>>>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl ListenerBridgeRuntime for BridgeRuntime {
@@ -346,16 +359,143 @@ impl Drop for BridgeRuntime {
     }
 }
 
+impl BridgeRuntime {
+    fn execute_local_request(
+        &self,
+        request: &bridge::BridgeRequest,
+    ) -> anyhow::Result<Map<String, Value>> {
+        let client = self
+            .clients
+            .lock()
+            .map_err(|_| anyhow::anyhow!("listener client registry is unavailable"))?
+            .get(request.identity_name.trim())
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}",
+                    super::listener_service_did::disconnected_websocket_session_error(
+                        request.identity_name.trim()
+                    )
+                )
+            })?;
+        let result = match request.method.as_str() {
+            "local.inbox" => {
+                let query = serde_json::from_value::<im_core::messages::InboxQuery>(
+                    request
+                        .params
+                        .get("query")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("local inbox query is missing"))?,
+                )?;
+                self.runtime.block_on(async {
+                    let mut warnings =
+                        crate::m_core_cli_adapter::messages::reconcile_foreground_message_sync_async(
+                            &client,
+                        )
+                        .await
+                        .map_err(|error| {
+                            anyhow::anyhow!("local inbox reconciliation failed: {error}")
+                        })?;
+                    warnings.extend(
+                        crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
+                            &client, &query,
+                        )
+                        .await
+                        .map_err(|error| {
+                            anyhow::anyhow!("local inbox secure hydration failed: {error}")
+                        })?,
+                    );
+                    crate::m_core_cli_adapter::messages::read_local_inbox_projection_via_im_core_async(
+                        &client,
+                        query,
+                        warnings,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("local inbox reconciliation/read failed: {error}")
+                    })
+                })?
+            }
+            "local.history" => {
+                let thread = serde_json::from_value::<im_core::messages::ThreadRef>(
+                    request
+                        .params
+                        .get("thread")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("local history thread is missing"))?,
+                )?;
+                let query = serde_json::from_value::<im_core::messages::HistoryQuery>(
+                    request
+                        .params
+                        .get("query")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("local history query is missing"))?,
+                )?;
+                self.runtime.block_on(
+                    crate::m_core_cli_adapter::messages::read_history_via_im_core_async(
+                        &self.resolved,
+                        &client,
+                        thread,
+                        query,
+                    ),
+                )?
+            }
+            "local.mark_read" => {
+                let message_ids = request
+                    .params
+                    .get("message_ids")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| anyhow::anyhow!("local mark-read message_ids are missing"))?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_owned)
+                            .ok_or_else(|| anyhow::anyhow!("local mark-read message id is invalid"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                self.runtime.block_on(
+                    crate::m_core_cli_adapter::messages::mark_read_via_im_core_async(
+                        &self.resolved,
+                        &client,
+                        message_ids,
+                    ),
+                )?
+            }
+            _ => anyhow::bail!("unsupported local listener bridge method"),
+        };
+        Ok(Map::from_iter([
+            ("data".to_owned(), result.data),
+            ("summary".to_owned(), Value::String(result.summary)),
+            (
+                "warnings".to_owned(),
+                Value::Array(result.warnings.into_iter().map(Value::String).collect()),
+            ),
+        ]))
+    }
+}
+
 fn handle_bridge_stream(stream: bridge::BridgeStream, mut runtime: BridgeRuntime) {
     let _ = bridge::handle_bridge_connection_once(stream, |request| {
-        execute_listener_bridge_request(&mut runtime, request)
+        let method = request.method.clone();
+        let result = if method.starts_with("local.") {
+            runtime.execute_local_request(&request)
+        } else {
+            execute_listener_bridge_request(&mut runtime, request)
+        };
+        if let Err(error) = &result {
+            eprintln!("listener bridge request {method} failed: {error:#}");
+        }
+        result
     });
 }
 
 async fn spawn_im_core_runner_session_async(
-    resolved: Arc<Resolved>,
+    core: im_core::ImCore,
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
+    clients: Arc<Mutex<HashMap<String, im_core::ImClient>>>,
     shutdown: Arc<AtomicBool>,
     identity_name: String,
     did: String,
@@ -375,7 +515,7 @@ async fn spawn_im_core_runner_session_async(
         let _ = listener::write_status(&guard.status_file, &guard);
     }
     let selector = im_core::IdentitySelector::LocalAlias(identity_name.clone());
-    let client = match crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await {
+    let client = match core.client_async(selector).await {
         Ok(client) => client,
         Err(err) => {
             mark_session_disconnected(
@@ -444,6 +584,13 @@ async fn spawn_im_core_runner_session_async(
             return;
         }
     };
+    {
+        let mut registry = clients
+            .lock()
+            .expect("listener client registry mutex poisoned");
+        registry.insert(identity_name.clone(), client.clone());
+        registry.insert(did.clone(), client.clone());
+    }
     tokio::spawn(async move {
         let mut event_error = None;
         let mut scheduler = ListenerSyncScheduler::new();
@@ -465,7 +612,7 @@ async fn spawn_im_core_runner_session_async(
                     sync_task = Some(tokio::spawn(async move {
                         sync_client
                             .messages()
-                            .sync_now_async(im_core::messages::MessageSyncRequest {
+                            .request_sync_async(im_core::messages::MessageSyncRequest {
                                 reason: reason.as_str().to_owned(),
                                 limit: Some(RELIABLE_SYNC_LIMIT),
                             })
@@ -615,6 +762,7 @@ async fn spawn_im_core_runner_session_async(
             .await
             .map_err(im_core_realtime_adapter::map_sdk_runner_error);
         if shutdown.load(Ordering::SeqCst) {
+            remove_listener_client(&clients, &identity_name, &did);
             mark_session_disconnected(
                 &status,
                 &identity_name,
@@ -624,6 +772,7 @@ async fn spawn_im_core_runner_session_async(
             return;
         }
         if let Some(error) = event_error {
+            remove_listener_client(&clients, &identity_name, &did);
             mark_session_disconnected(
                 &status,
                 &identity_name,
@@ -636,6 +785,7 @@ async fn spawn_im_core_runner_session_async(
             Ok(exit) => realtime_exit_error_text(&exit),
             Err(err) => err.to_string(),
         };
+        remove_listener_client(&clients, &identity_name, &did);
         mark_session_disconnected(
             &status,
             &identity_name,
@@ -643,6 +793,17 @@ async fn spawn_im_core_runner_session_async(
             Some(SessionDisconnectReason::Other(error)),
         );
     });
+}
+
+fn remove_listener_client(
+    clients: &Arc<Mutex<HashMap<String, im_core::ImClient>>>,
+    identity_name: &str,
+    did: &str,
+) {
+    if let Ok(mut registry) = clients.lock() {
+        registry.remove(identity_name);
+        registry.remove(did);
+    }
 }
 
 fn emit_listener_system_notification(

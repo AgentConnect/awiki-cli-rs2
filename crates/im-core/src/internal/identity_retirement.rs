@@ -57,20 +57,78 @@ pub(crate) fn retire(
     core: &crate::core::ImCore,
     input: IdentityRetirementInput,
 ) -> crate::ImResult<IdentityRetirementOutcome> {
-    let mut record = IdentityRetirementRecord {
+    ensure_prepared(core, &input)?;
+    let path = retirement_record_path(core, &input.identity_id);
+    let raw = fs::read(&path)?;
+    let mut record: IdentityRetirementRecord =
+        serde_json::from_slice(&raw).map_err(|error| crate::ImError::Serialization {
+            detail: error.to_string(),
+        })?;
+    validate_record(core, &record)?;
+    advance(core, &path, &mut record)
+}
+
+pub(crate) fn ensure_prepared(
+    core: &crate::core::ImCore,
+    input: &IdentityRetirementInput,
+) -> crate::ImResult<()> {
+    let record = IdentityRetirementRecord {
         schema_version: RETIREMENT_SCHEMA_VERSION,
-        identity_id: input.identity_id,
-        did: input.did,
-        local_alias: input.local_alias,
-        identity_dir_name: input.identity_dir_name,
-        next_default_alias: input.next_default_alias,
-        protocol_device_id: input.protocol_device_id,
+        identity_id: input.identity_id.clone(),
+        did: input.did.clone(),
+        local_alias: input.local_alias.clone(),
+        identity_dir_name: input.identity_dir_name.clone(),
+        next_default_alias: input.next_default_alias.clone(),
+        protocol_device_id: input.protocol_device_id.clone(),
         phase: IdentityRetirementPhase::Prepared,
     };
     validate_record(core, &record)?;
     let path = retirement_record_path(core, &record.identity_id);
-    write_record(&path, &record)?;
-    advance(core, &path, &mut record)
+    match fs::read(&path) {
+        Ok(raw) => {
+            let existing: IdentityRetirementRecord =
+                serde_json::from_slice(&raw).map_err(|error| crate::ImError::Serialization {
+                    detail: error.to_string(),
+                })?;
+            validate_record(core, &existing)?;
+            if existing.identity_id != record.identity_id
+                || existing.did != record.did
+                || existing.local_alias != record.local_alias
+                || existing.identity_dir_name != record.identity_dir_name
+                || existing.next_default_alias != record.next_default_alias
+                || existing.protocol_device_id != record.protocol_device_id
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => write_record(&path, &record),
+        Err(error) => Err(crate::ImError::from(error)),
+    }
+}
+
+pub(crate) fn is_completed(
+    core: &crate::core::ImCore,
+    input: &IdentityRetirementInput,
+) -> crate::ImResult<bool> {
+    let path = retirement_record_path(core, &input.identity_id);
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(crate::ImError::from(error)),
+    };
+    let record: IdentityRetirementRecord =
+        serde_json::from_slice(&raw).map_err(|error| crate::ImError::Serialization {
+            detail: error.to_string(),
+        })?;
+    validate_record(core, &record)?;
+    Ok(record.phase == IdentityRetirementPhase::Completed
+        && record.identity_id == input.identity_id
+        && record.did == input.did
+        && record.local_alias == input.local_alias
+        && record.identity_dir_name == input.identity_dir_name
+        && record.next_default_alias == input.next_default_alias
+        && record.protocol_device_id == input.protocol_device_id)
 }
 
 pub(crate) fn recover_all(core: &crate::core::ImCore) -> crate::ImResult<()> {
@@ -181,6 +239,8 @@ fn advance(
         store.sync_default_identity(next_default.as_deref())?;
         record.phase = IdentityRetirementPhase::Tombstoned;
         write_record(path, record)?;
+        #[cfg(test)]
+        fail_after_phase_for_test(IdentityRetirementTestCut::Tombstoned)?;
     }
 
     if record.phase == IdentityRetirementPhase::Tombstoned {
@@ -216,6 +276,8 @@ fn advance(
         }
         record.phase = IdentityRetirementPhase::FilesRemoved;
         write_record(path, record)?;
+        #[cfg(test)]
+        fail_after_phase_for_test(IdentityRetirementTestCut::FilesRemoved)?;
     }
 
     // Repeat this cleanup even for Completed markers. An operation admitted
@@ -229,7 +291,19 @@ fn advance(
     // identity's secrets and make the next open fail closed with
     // identity_vault_record_open_failed. Only replay cleanup when the retired
     // identity is not present in the registry anymore.
-    if identity_is_registered(core, record)? {
+    let rollover_supersedes = match record.protocol_device_id.as_deref() {
+        Some(protocol_device_id) => {
+            crate::internal::identity_registration_retired_join::completed_rollover_supersedes_retirement(
+                core,
+                &record.identity_id,
+                &record.did,
+                protocol_device_id,
+            )
+            ?
+        }
+        None => false,
+    };
+    if identity_is_registered(core, record)? || rollover_supersedes {
         outcome.warnings.push(format!(
             "identity {} is currently registered; skipping retirement vault cleanup",
             record.identity_id
@@ -247,6 +321,8 @@ fn advance(
     if record.phase != IdentityRetirementPhase::Completed {
         record.phase = IdentityRetirementPhase::Completed;
         write_record(path, record)?;
+        #[cfg(test)]
+        fail_after_phase_for_test(IdentityRetirementTestCut::Completed)?;
     }
     Ok(outcome)
 }
@@ -395,4 +471,35 @@ fn write_record(path: &Path, record: &IdentityRetirementRecord) -> crate::ImResu
         detail: error.to_string(),
     })?;
     crate::internal::identity_store::write_secure_bytes_atomic(path, &raw)
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityRetirementTestCut {
+    Tombstoned,
+    FilesRemoved,
+    Completed,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_CUT: std::cell::Cell<Option<IdentityRetirementTestCut>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_cut(cut: IdentityRetirementTestCut) {
+    TEST_CUT.with(|value| value.set(Some(cut)));
+}
+
+#[cfg(test)]
+fn fail_after_phase_for_test(cut: IdentityRetirementTestCut) -> crate::ImResult<()> {
+    if TEST_CUT.with(|value| value.get() == Some(cut)) {
+        TEST_CUT.with(|value| value.set(None));
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!("injected identity retirement cut after {cut:?}"),
+        });
+    }
+    Ok(())
 }

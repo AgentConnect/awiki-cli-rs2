@@ -93,12 +93,6 @@ async fn secure_service_async_api_shape_is_available_from_client() {
         .await
         .unwrap();
     assert_eq!(group.group.as_str(), "did:example:groups:secure-api");
-    #[cfg(feature = "group-e2ee")]
-    assert_eq!(
-        group.state,
-        awiki_im_core::secure::GroupSecureState::MissingLocalState
-    );
-    #[cfg(not(feature = "group-e2ee"))]
     assert_eq!(
         group.state,
         awiki_im_core::secure::GroupSecureState::Unavailable
@@ -108,7 +102,7 @@ async fn secure_service_async_api_shape_is_available_from_client() {
     #[cfg(feature = "group-e2ee")]
     assert_eq!(
         group.problem.as_ref().map(|problem| &problem.code),
-        Some(&SecureProblemCode::GroupStateUnavailable)
+        Some(&SecureProblemCode::IdentityNotReady)
     );
     #[cfg(not(feature = "group-e2ee"))]
     assert_eq!(

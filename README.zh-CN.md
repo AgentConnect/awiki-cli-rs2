@@ -231,6 +231,7 @@ flowchart LR
 | [Workspace 组件说明](docs/workspace-components.zh-CN.md) | CLI、Core、Daemon、Dart SDK 和 Skills 的边界 |
 | [兼容性与成熟度](docs/compatibility.zh-CN.md) | 平台、功能状态、服务端与安全消息边界 |
 | [开发指南](docs/development.zh-CN.md) | Rust/Flutter 构建、测试、发布和本地状态 |
+| [配置说明](docs/configuration.zh-CN.md) | CLI / daemon / im-core 配置项、来源与默认值 |
 | [截图计划](docs/screenshot-plan.zh-CN.md) | README 终端演示和架构素材 |
 | [`onboarding.md`](onboarding.md) | 当前完整首次安装流程（发布前需替换 channel 占位符） |
 | [`docs/README.md`](docs/README.md) | 现有稳定文档索引 |

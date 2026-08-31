@@ -580,6 +580,27 @@ impl<'a> DeviceJoinService<'a> {
         })
     }
 
+    pub(crate) async fn resume_new_device_remote_create(
+        &self,
+        join_session_id: &str,
+        account_verification_grant: DeviceJoinAccountVerificationGrant,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        let token = account_verification_grant.into_secret();
+        let mut runtime =
+            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production(
+                self.core,
+            );
+        let session = runtime
+            .resume_remote_create(join_session_id, &token)
+            .await?;
+        Ok(DeviceJoinProgress {
+            session: session.into(),
+            remote_state: DeviceJoinRemoteState::Pending,
+            sas: None,
+            authorized_device: None,
+        })
+    }
+
     pub async fn poll_new_device_join(
         &self,
         join_session_id: &str,

@@ -755,6 +755,11 @@ where
     P: AsyncRealtimeNotificationProjector + Send,
 {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         match crate::internal::message_runtime::sync_v2::apply_realtime_inline_message_v3_async(
             &self.client,
             &notification,

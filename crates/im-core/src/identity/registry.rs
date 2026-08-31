@@ -64,28 +64,110 @@ impl<'a> IdentityRegistry<'a> {
         selector: super::IdentitySelector,
         delete_owner_data: bool,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        let context = self.deletion_context(selector)?;
+        let mode = if delete_owner_data {
+            crate::internal::identity_local_deletion::LocalIdentityDeletionMode::FullDataCore
+        } else {
+            crate::internal::identity_local_deletion::LocalIdentityDeletionMode::CredentialOnly
+        };
+        let record = crate::internal::identity_local_deletion::prepare(
+            &self.core.inner().sdk_paths().local_state.sqlite_path,
+            &context.snapshot,
+            mode,
+        )?;
+        let (_, warnings) = crate::internal::identity_local_deletion::complete(
+            self.core,
+            &record.deletion_id,
+            false,
+        )?;
+        Ok(context.into_result(warnings))
+    }
+
+    pub fn prepare_local_identity_data_deletion(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::LocalIdentityDeletionTicket> {
+        let context = self.deletion_context(selector)?;
+        let record = crate::internal::identity_local_deletion::prepare(
+            &self.core.inner().sdk_paths().local_state.sqlite_path,
+            &context.snapshot,
+            crate::internal::identity_local_deletion::LocalIdentityDeletionMode::FullDataApp,
+        )?;
+        crate::internal::identity_local_deletion::ticket(&record)
+    }
+
+    pub fn complete_local_identity_data_deletion(
+        &self,
+        deletion_id: &str,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        let record = crate::internal::identity_local_deletion::load(
+            &self.core.inner().sdk_paths().local_state.sqlite_path,
+            deletion_id,
+        )?
+        .ok_or(crate::ImError::PermissionDenied)?;
+        if record.mode
+            != crate::internal::identity_local_deletion::LocalIdentityDeletionMode::FullDataApp
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let context = self
+            .deletion_context(super::IdentitySelector::Id(crate::ids::IdentityId::parse(
+                &record.owner_identity_id,
+            )?))
+            .ok();
+        let (_, warnings) =
+            crate::internal::identity_local_deletion::complete(self.core, deletion_id, true)?;
+        if let Some(context) = context {
+            return Ok(context.into_result(warnings));
+        }
+        Ok(super::DeleteLocalIdentityResult {
+            deleted: super::IdentitySummary {
+                id: crate::ids::IdentityId::parse(&record.owner_identity_id)?,
+                did: crate::ids::Did::parse(&record.current_did)?,
+                handle: record
+                    .full_handle
+                    .as_deref()
+                    .map(|handle| {
+                        crate::ids::Handle::parse(
+                            handle,
+                            &self.core.inner().sdk_config().did_domain,
+                        )
+                    })
+                    .transpose()?,
+                display_name: None,
+                local_alias: Some(record.local_alias),
+                device_id: record.protocol_device_id,
+                is_default: false,
+                readiness: super::IdentityReadiness {
+                    ready_for_auth: false,
+                    ready_for_messaging: false,
+                    missing: Vec::new(),
+                },
+            },
+            was_default: false,
+            next_default: self.default_identity()?,
+            warnings,
+        })
+    }
+
+    pub fn pending_local_identity_data_deletions(
+        &self,
+    ) -> crate::ImResult<Vec<super::LocalIdentityDeletionTicket>> {
+        crate::internal::identity_local_deletion::pending_full_data_app(
+            &self.core.inner().sdk_paths().local_state.sqlite_path,
+        )
+    }
+
+    fn deletion_context(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<IdentityDeletionContext> {
         let mut registry = self.load_registry()?;
         let deleted_index = registry.find_index(selector)?;
         let deleted_entry = registry.entries.remove(deleted_index);
         let deleted = deleted_entry.summary.clone();
-        #[cfg(feature = "sqlite")]
-        if delete_owner_data {
-            crate::internal::local_state::owner_scope::delete_owner_data(
-                &self.core.inner().sdk_paths().local_state.sqlite_path,
-                deleted.id.as_str(),
-                deleted.did.as_str(),
-            )?;
-        }
-        #[cfg(not(feature = "sqlite"))]
-        let _ = delete_owner_data;
-        let protocol_device_id = deleted_entry
-            .device_state
-            .as_ref()
-            .and_then(|state| state.authorization.as_ref())
-            .map(|authorization| authorization.protocol_device_id.as_str().to_owned());
         let was_default = deleted.is_default
             || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
-
         if was_default {
             registry.default_alias = registry
                 .entries
@@ -101,23 +183,27 @@ impl<'a> IdentityRegistry<'a> {
                 .ok_or_else(|| crate::ImError::IdentityNotFound {
                     selector: deleted.id.as_str().to_owned(),
                 })?;
-        let outcome = crate::internal::identity_retirement::retire(
-            self.core,
-            crate::internal::identity_retirement::IdentityRetirementInput {
-                identity_id: deleted.id.as_str().to_owned(),
-                did: deleted.did.as_str().to_owned(),
+        let protocol_device_id = deleted_entry
+            .device_state
+            .as_ref()
+            .and_then(|state| state.authorization.as_ref())
+            .map(|authorization| authorization.protocol_device_id.as_str().to_owned());
+        Ok(IdentityDeletionContext {
+            snapshot: crate::internal::identity_local_deletion::LocalIdentityDeletionSnapshot {
+                owner_identity_id: deleted.id.as_str().to_owned(),
+                current_did: deleted.did.as_str().to_owned(),
+                full_handle: deleted
+                    .handle
+                    .as_ref()
+                    .map(|handle| handle.as_str().to_owned()),
                 local_alias,
                 identity_dir_name: deleted_entry.identity_dir_name(),
-                next_default_alias: registry.default_alias.clone(),
+                next_default_alias: registry.default_alias,
                 protocol_device_id,
             },
-        )?;
-
-        Ok(super::DeleteLocalIdentityResult {
             deleted,
             was_default,
             next_default,
-            warnings: outcome.warnings,
         })
     }
 
@@ -125,9 +211,107 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        self.delete_local_identity_inner_async(selector, false)
+            .await
+    }
+
+    pub async fn delete_local_identity_data_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        self.delete_local_identity_inner_async(selector, true).await
+    }
+
+    pub async fn prepare_local_identity_data_deletion_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::LocalIdentityDeletionTicket> {
+        let (_, record) = self
+            .prepare_deletion_record_async(
+                selector,
+                crate::internal::identity_local_deletion::LocalIdentityDeletionMode::FullDataApp,
+            )
+            .await?;
+        crate::internal::identity_local_deletion::ticket(&record)
+    }
+
+    async fn delete_local_identity_inner_async(
+        &self,
+        selector: super::IdentitySelector,
+        delete_owner_data: bool,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        let mode = if delete_owner_data {
+            crate::internal::identity_local_deletion::LocalIdentityDeletionMode::FullDataCore
+        } else {
+            crate::internal::identity_local_deletion::LocalIdentityDeletionMode::CredentialOnly
+        };
+        let (context, record) = self.prepare_deletion_record_async(selector, mode).await?;
+        let core = self.core.clone();
+        let deletion_id = record.deletion_id;
+        let warnings = crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_local_deletion::complete(&core, &deletion_id, false)
+                .map(|(_, warnings)| warnings)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })??;
+        Ok(context.into_result(warnings))
+    }
+
+    async fn prepare_deletion_record_async(
+        &self,
+        selector: super::IdentitySelector,
+        mode: crate::internal::identity_local_deletion::LocalIdentityDeletionMode,
+    ) -> crate::ImResult<(
+        IdentityDeletionContext,
+        crate::internal::identity_local_deletion::LocalIdentityDeletionRecord,
+    )> {
+        let core = self.core.clone();
+        let context = crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).deletion_context(selector)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })??;
+        let handle_lock = context.snapshot.full_handle.as_ref().map(|handle| {
+            self.core
+                .inner()
+                .handle_recovery_lock(&format!("handle:{handle}"))
+        });
+        let _handle_guard = match handle_lock.as_ref() {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        let owner_lock = self
+            .core
+            .inner()
+            .handle_recovery_lock(&context.snapshot.owner_identity_id);
+        let _owner_guard = owner_lock.lock().await;
+        let core = self.core.clone();
+        let snapshot = context.snapshot.clone();
+        let record = crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_local_deletion::prepare(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &snapshot,
+                mode,
+            )
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })??;
+        Ok((context, record))
+    }
+
+    pub async fn complete_local_identity_data_deletion_async(
+        &self,
+        deletion_id: String,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
         let core = self.core.clone();
         crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).delete_local_identity(selector)
+            IdentityRegistry::new(&core).complete_local_identity_data_deletion(&deletion_id)
         })
         .await
         .map_err(|error| crate::ImError::Internal {
@@ -135,13 +319,12 @@ impl<'a> IdentityRegistry<'a> {
         })?
     }
 
-    pub async fn delete_local_identity_data_async(
+    pub async fn pending_local_identity_data_deletions_async(
         &self,
-        selector: super::IdentitySelector,
-    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+    ) -> crate::ImResult<Vec<super::LocalIdentityDeletionTicket>> {
         let core = self.core.clone();
         crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).delete_local_identity_data(selector)
+            IdentityRegistry::new(&core).pending_local_identity_data_deletions()
         })
         .await
         .map_err(|error| crate::ImError::Internal {
@@ -2896,6 +3079,24 @@ struct RegistryEntry {
     device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
 
+struct IdentityDeletionContext {
+    snapshot: crate::internal::identity_local_deletion::LocalIdentityDeletionSnapshot,
+    deleted: super::IdentitySummary,
+    was_default: bool,
+    next_default: Option<super::IdentitySummary>,
+}
+
+impl IdentityDeletionContext {
+    fn into_result(self, warnings: Vec<String>) -> super::DeleteLocalIdentityResult {
+        super::DeleteLocalIdentityResult {
+            deleted: self.deleted,
+            was_default: self.was_default,
+            next_default: self.next_default,
+            warnings,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum RevokeDaemonSubkeyPrepared {
     AlreadyRevoked {
@@ -5135,6 +5336,492 @@ mod tests {
                     profiles: vec!["anp.core.binding.v1".to_string()],
                 }],
             }],
+        }
+    }
+
+    #[tokio::test]
+    async fn deletion_apis_share_recovery_admission_and_preserve_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let identity = save_deletion_identity(&paths, "alice", true);
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        let operation = crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
+            "recover_delete_guard_12345678".to_owned(),
+            identity.unique_id.clone(),
+            "alice.awiki.test".to_owned(),
+            "vault-delete-guard".to_owned(),
+            "2026-08-29T00:00:00Z".to_owned(),
+        )
+        .unwrap();
+        crate::internal::identity_handle_recovery_operation::insert(
+            &paths.local_state.sqlite_path,
+            &operation,
+        )
+        .unwrap();
+
+        for delete_owner_data in [false, true] {
+            let error = if delete_owner_data {
+                core.identities()
+                    .delete_local_identity_data(crate::identity::IdentitySelector::Default)
+                    .unwrap_err()
+            } else {
+                core.identities()
+                    .delete_local_identity(crate::identity::IdentitySelector::Default)
+                    .unwrap_err()
+            };
+            assert_eq!(
+                deletion_service_code(&error),
+                Some("handle_recovery.precommit_discard_required")
+            );
+            let error = if delete_owner_data {
+                core.identities()
+                    .delete_local_identity_data_async(crate::identity::IdentitySelector::Default)
+                    .await
+                    .unwrap_err()
+            } else {
+                core.identities()
+                    .delete_local_identity_async(crate::identity::IdentitySelector::Default)
+                    .await
+                    .unwrap_err()
+            };
+            assert_eq!(
+                deletion_service_code(&error),
+                Some("handle_recovery.precommit_discard_required")
+            );
+        }
+        assert_eq!(core.identities().list().unwrap().len(), 1);
+        assert!(crate::internal::identity_handle_recovery_operation::load(
+            &paths.local_state.sqlite_path,
+            "recover_delete_guard_12345678"
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    #[tokio::test]
+    async fn identity_local_deletion_async_prepare_acquires_handle_then_owner_locks() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let alice = save_deletion_identity(&paths, "alice", true);
+        let core = crate::ImCore::new(test_config(), paths).unwrap();
+        let handle_lock = core.inner().handle_recovery_lock("handle:alice.awiki.test");
+        let handle_guard = handle_lock.lock().await;
+        let identities = core.identities();
+        let mut prepare = Box::pin(identities.prepare_local_identity_data_deletion_async(
+            crate::identity::IdentitySelector::Default,
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut prepare)
+                .await
+                .is_err()
+        );
+
+        let owner_lock = core.inner().handle_recovery_lock(&alice.unique_id);
+        let owner_guard = owner_lock.lock().await;
+        drop(handle_guard);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut prepare)
+                .await
+                .is_err()
+        );
+        drop(owner_guard);
+
+        let ticket = prepare.await.unwrap();
+        assert_eq!(ticket.owner_identity_id.as_str(), alice.unique_id);
+    }
+
+    #[test]
+    fn full_data_app_prepare_complete_deletes_target_and_preserves_sibling() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let alice = save_deletion_identity(&paths, "alice", true);
+        let sibling = save_deletion_identity(&paths, "sibling", false);
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        for (msg_id, identity) in [("alice-message", &alice), ("sibling-message", &sibling)] {
+            connection
+                .execute(
+                    "INSERT INTO messages(msg_id,owner_identity_id,owner_did,thread_id,stored_at) VALUES (?1,?2,?3,'dm:test','now')",
+                    rusqlite::params![msg_id, identity.unique_id, identity.did.as_str()],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        let ticket = core
+            .identities()
+            .prepare_local_identity_data_deletion(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert_eq!(ticket.owner_identity_id.as_str(), alice.unique_id);
+        assert_eq!(core.identities().list().unwrap().len(), 2);
+        assert_eq!(
+            core.identities()
+                .pending_local_identity_data_deletions()
+                .unwrap(),
+            vec![ticket.clone()]
+        );
+
+        core.identities()
+            .complete_local_identity_data_deletion(&ticket.deletion_id)
+            .unwrap();
+        let identities = core.identities().list().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].id.as_str(), sibling.unique_id);
+        assert!(core
+            .identities()
+            .pending_local_identity_data_deletions()
+            .unwrap()
+            .is_empty());
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE owner_identity_id=?1",
+                    [alice.unique_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE owner_identity_id=?1",
+                    [sibling.unique_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            crate::internal::identity_local_deletion::load(
+                &paths.local_state.sqlite_path,
+                &ticket.deletion_id,
+            )
+            .unwrap()
+            .unwrap()
+            .phase,
+            crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::Completed
+        );
+    }
+
+    #[test]
+    fn core_open_resumes_retirement_ready_deletion() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let alice = save_deletion_identity(&paths, "alice", true);
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        let alice_device_id =
+            crate::internal::identity_store::IdentityStore::new(&paths.identities)
+                .load_index()
+                .unwrap()
+                .credentials
+                .get("alice")
+                .unwrap()
+                .device_state
+                .as_ref()
+                .unwrap()
+                .authorization
+                .as_ref()
+                .unwrap()
+                .protocol_device_id
+                .as_str()
+                .to_owned();
+        let ticket = core
+            .identities()
+            .prepare_local_identity_data_deletion(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        crate::internal::identity_local_deletion::advance_sqlite_phase(
+            &paths.local_state.sqlite_path,
+            &ticket.deletion_id,
+            true,
+        )
+        .unwrap();
+        assert_eq!(core.identities().list().unwrap().len(), 1);
+        drop(core);
+
+        let reopened = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        assert!(reopened.identities().list().unwrap().is_empty());
+        let record = crate::internal::identity_local_deletion::load(
+            &paths.local_state.sqlite_path,
+            &ticket.deletion_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            record.phase,
+            crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::Completed
+        );
+        assert!(
+            crate::internal::identity_retirement::matches_completed_binding(
+                &paths.identities.identity_root_dir,
+                &alice.unique_id,
+                alice.did.as_str(),
+                &alice_device_id,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn identity_local_deletion_resumes_each_retirement_and_completed_journal_crash_cut() {
+        use crate::internal::identity_retirement::IdentityRetirementTestCut;
+
+        fn run(cut: Option<IdentityRetirementTestCut>) {
+            let root = tempfile::tempdir().unwrap();
+            let paths = test_paths(root.path());
+            let alice = save_deletion_identity(&paths, "alice", true);
+            let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+            let ticket = core
+                .identities()
+                .prepare_local_identity_data_deletion(crate::identity::IdentitySelector::Default)
+                .unwrap();
+            let record = crate::internal::identity_local_deletion::advance_sqlite_phase(
+                &paths.local_state.sqlite_path,
+                &ticket.deletion_id,
+                true,
+            )
+            .unwrap();
+            assert_eq!(
+                record.phase,
+                crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::RetirementReady
+            );
+            let retirement = crate::internal::identity_retirement::IdentityRetirementInput {
+                identity_id: record.owner_identity_id.clone(),
+                did: record.current_did.clone(),
+                local_alias: record.local_alias.clone(),
+                identity_dir_name: record.identity_dir_name.clone(),
+                next_default_alias: record.next_default_alias.clone(),
+                protocol_device_id: record.protocol_device_id.clone(),
+            };
+            if let Some(cut) = cut {
+                crate::internal::identity_retirement::set_test_cut(cut);
+                assert!(core
+                    .identities()
+                    .complete_local_identity_data_deletion(&ticket.deletion_id)
+                    .is_err());
+            } else {
+                crate::internal::identity_retirement::ensure_prepared(&core, &retirement).unwrap();
+            }
+            assert_eq!(
+                crate::internal::identity_local_deletion::load(
+                    &paths.local_state.sqlite_path,
+                    &ticket.deletion_id,
+                )
+                .unwrap()
+                .unwrap()
+                .phase,
+                crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::RetirementReady
+            );
+            drop(core);
+
+            let reopened = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+            assert!(reopened.identities().list().unwrap().is_empty());
+            assert_eq!(
+                crate::internal::identity_local_deletion::load(
+                    &paths.local_state.sqlite_path,
+                    &ticket.deletion_id,
+                )
+                .unwrap()
+                .unwrap()
+                .phase,
+                crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::Completed
+            );
+            assert!(
+                crate::internal::identity_retirement::is_completed(&reopened, &retirement).unwrap()
+            );
+            assert_eq!(alice.unique_id, record.owner_identity_id);
+        }
+
+        run(None);
+        run(Some(IdentityRetirementTestCut::Tombstoned));
+        run(Some(IdentityRetirementTestCut::FilesRemoved));
+        run(Some(IdentityRetirementTestCut::Completed));
+    }
+
+    #[test]
+    fn credential_only_journal_preserves_business_data_and_resumes_retirement() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let alice = save_deletion_identity(&paths, "alice", true);
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages(msg_id,owner_identity_id,owner_did,thread_id,stored_at) VALUES ('alice-message',?1,?2,'dm:test','now')",
+                rusqlite::params![alice.unique_id, alice.did.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,'account-alice','alice.awiki.test',?2,'device-alice','1','1',1,1)",
+                rusqlite::params![alice.unique_id, alice.did.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+        let context = core
+            .identities()
+            .deletion_context(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        let record = crate::internal::identity_local_deletion::prepare_with_id(
+            &paths.local_state.sqlite_path,
+            &context.snapshot,
+            crate::internal::identity_local_deletion::LocalIdentityDeletionMode::CredentialOnly,
+            "delete_credential_resume_12345678",
+            "2026-08-29T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(
+            record.phase,
+            crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::Prepared
+        );
+        drop(core);
+
+        let reopened = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        assert!(reopened.identities().list().unwrap().is_empty());
+        assert_eq!(
+            crate::internal::identity_local_deletion::load(
+                &paths.local_state.sqlite_path,
+                &record.deletion_id,
+            )
+            .unwrap()
+            .unwrap()
+            .phase,
+            crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::Completed
+        );
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE owner_identity_id=?1",
+                    [alice.unique_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM identity_account_bindings WHERE owner_identity_id=?1",
+                    [alice.unique_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn credential_only_journal_preserves_business_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let alice = save_deletion_identity(&paths, "alice", true);
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages(msg_id,owner_identity_id,owner_did,thread_id,stored_at) VALUES ('alice-message',?1,?2,'dm:test','now')",
+                rusqlite::params![alice.unique_id, alice.did.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+
+        core.identities()
+            .delete_local_identity(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        let connection =
+            crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE owner_identity_id=?1",
+                    [alice.unique_id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT phase FROM local_identity_deletions WHERE owner_identity_id=?1",
+                    [alice.unique_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "completed"
+        );
+    }
+
+    fn save_deletion_identity(
+        paths: &crate::ImCorePaths,
+        local_part: &str,
+        make_default: bool,
+    ) -> crate::internal::identity_store::StoredIdentity {
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.test",
+            local_part,
+            None,
+            None,
+        )
+        .unwrap();
+        let signing_key_id = generated.device_signing_key_id.clone();
+        let e2ee_key_id = generated.device_e2ee_key_id.clone();
+        crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .save_identity(crate::internal::identity_store::SaveIdentityInput {
+                local_alias: local_part.to_owned(),
+                did: generated.did.clone(),
+                unique_id: generated.unique_id.clone(),
+                user_id: format!("account-{local_part}"),
+                display_name: local_part.to_owned(),
+                handle: local_part.to_owned(),
+                full_handle: format!("{local_part}.awiki.test"),
+                binding_generation: Some("1".to_owned()),
+                jwt_token: "device-token".to_owned(),
+                did_document: Some(generated.did_document),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                    root_key_id: generated.root_key_id,
+                    device_signing_key_id: signing_key_id.clone(),
+                    device_e2ee_key_id: e2ee_key_id.clone(),
+                },
+                device_state: Some(crate::internal::identity_device_state::IdentityDeviceState {
+                    schema_version: crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                    mode: crate::internal::identity_device_state::IdentityDeviceMode::VNext,
+                    authorization: Some(crate::internal::identity_device_state::DeviceAuthorizationProjection {
+                        protocol_device_id: generated.protocol_device_id,
+                        signing_key_id,
+                        e2ee_key_id,
+                        status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                        role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                        management_ready: true,
+                        auth_generation: 1,
+                    }),
+                    checkpoint: Some(crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                        document_version: 1,
+                        document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                        registry_version: 1,
+                    }),
+                }),
+                key1_private_pem: generated.root_private_pem,
+                key1_public_pem: generated.root_public_pem,
+                e2ee_signing_private_pem: generated.device_signing_private_pem,
+                e2ee_agreement_private_pem: generated.device_e2ee_private_pem,
+                daemon_subkey_package: None,
+                make_default,
+            })
+            .unwrap()
+    }
+
+    fn deletion_service_code(error: &crate::ImError) -> Option<&str> {
+        match error {
+            crate::ImError::Service { code, .. } => code.as_deref(),
+            _ => None,
         }
     }
 

@@ -500,23 +500,27 @@ pub async fn read_inbox_via_im_core_async(
     _resolved: &Resolved,
     client: &im_core::ImClient,
     query: InboxQuery,
-    secure_warnings: Vec<String>,
+    mut secure_warnings: Vec<String>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
-    let reconciled = async {
-        let mut secure_warnings = secure_warnings;
-        secure_warnings.extend(reconcile_foreground_message_sync_async(client).await?);
-        let page = client
-            .messages()
-            .local_inbox_projection_with_metadata_async(query.clone())
-            .await
-            .map_err(im_error_to_message_error)?;
-        Ok::<_, MessageAdapterError>((page, secure_warnings))
-    }
-    .await;
+    let reconciled = reconcile_foreground_message_sync_async(client).await;
     rpc_phase.finish();
-    let (page, secure_warnings) = reconciled?;
+    secure_warnings.extend(reconciled?);
+    read_local_inbox_projection_via_im_core_async(client, query, secure_warnings).await
+}
+
+pub async fn read_local_inbox_projection_via_im_core_async(
+    client: &im_core::ImClient,
+    query: InboxQuery,
+    warnings: Vec<String>,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let page = client
+        .messages()
+        .local_inbox_projection_with_metadata_async(query.clone())
+        .await
+        .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -538,7 +542,7 @@ pub async fn read_inbox_via_im_core_async(
     Ok(CommandResult {
         data,
         summary: format!("Loaded {total} inbox messages"),
-        warnings: compact_warnings(secure_warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -580,9 +584,13 @@ fn require_foreground_message_sync(
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message recovery did not complete".to_owned(),
         )),
-        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::TransportUnavailable(
-            "foreground message reconciliation did not complete".to_owned(),
-        )),
+        MessageSyncStatus::RetryableFailure => {
+            Err(MessageAdapterError::TransportUnavailable(format!(
+                "foreground message reconciliation did not complete (error_code={}, warnings={})",
+                outcome.error_code.as_deref().unwrap_or("none"),
+                outcome.warnings.join(",")
+            )))
+        }
         MessageSyncStatus::Blocked => Err(MessageAdapterError::LocalStateUnavailable(
             "foreground message synchronization is blocked and requires intervention".to_owned(),
         )),
@@ -609,7 +617,7 @@ fn reconcile_foreground_message_sync(
     })
 }
 
-async fn reconcile_foreground_message_sync_async(
+pub async fn reconcile_foreground_message_sync_async(
     client: &im_core::ImClient,
 ) -> Result<Vec<String>, MessageAdapterError> {
     let outcome = client

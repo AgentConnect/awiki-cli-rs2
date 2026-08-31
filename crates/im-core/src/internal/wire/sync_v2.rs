@@ -1918,11 +1918,6 @@ mod tests {
                 "state_version": "2"
             }],
             "group_state_baseline": [],
-            "p6_delivery": {
-                "profile": P6_DELIVERY_CONTEXT_CAPABILITY_V1,
-                "client_instance_id": "client-installation-1",
-                "activated": true
-            },
             "warnings": []
         }))
         .unwrap();

@@ -308,15 +308,24 @@ version/hash, and other internal checkpoints do not cross the host facade or
 CLI output boundary.
 
 Local identity deletion is an offline Core transaction, not a remote logout
-operation. Core first persists a secret-free retirement marker keyed by the
-immutable identity ID, then atomically removes the identity from the registry
-and default pointer before deleting its owned directory and every Vault record
-whose `identity_id` matches exactly. Startup recovery resumes incomplete phases.
-Completed identity-ID tombstones repeat Vault cleanup on later opens so an
-operation admitted before host teardown cannot resurrect credentials after
-deletion returns. Directory deletion additionally verifies the persisted
-identity ID and DID, preventing an old retirement record from deleting a path
-that has since been reused by another identity.
+operation. Schema 39 adds one secret-free deletion journal. Both legacy local
+deletion APIs enter the same admission coordinator, which rejects active
+Recovery/transition/Join authority by stable owner or canonical Handle before
+mutating registry or business state. Async deletion acquires the existing
+Handle lock and then the stable-owner lock to reduce process-local contention;
+the SQLite immediate transaction remains the sync/async safety boundary.
+Credential-only deletion uses the short journal without deleting business
+rows. Full-data App deletion is explicitly split into Core prepare, an
+idempotent host Product-store deletion, and Core complete; a committed ticket
+has no cancel path and is resumed on the next App bootstrap. Core business
+rows, DID history, and the binding are deleted in one transaction while
+Recovery/transition/rollover/deletion control rows are preserved. Only after
+that transaction does Core create or resume the existing retirement marker,
+remove the registry/default projection, exact identity directory, and matching
+Vault records. Startup recovery resumes incomplete Core phases without making
+network requests or mutating the host Product store. Completed identity-ID
+tombstones repeat Vault cleanup on later opens so an operation admitted before
+host teardown cannot resurrect credentials after deletion returns.
 
 Identity retirement deliberately retains the stable account binding used by
 message projections. When registration later receives an existing-Handle
@@ -326,6 +335,31 @@ exact completed retirement marker matches the binding's identity ID, DID, and
 protocol device ID. That state returns the ordinary `join_required` path;
 missing, partial, mismatched, duplicate, or still-live state continues to fail
 closed as `handle_recovery.transition_missing`.
+
+When the existing-Handle response carries a closed Recovery transition, the
+registration-specific classifier distinguishes an exact live direct predecessor
+from an exact completed retirement. A unique retired binding may be either the
+authoritative current epoch or its direct predecessor; both return ordinary Join,
+reuse the retired stable `owner_identity_id`, and never create a Recovery marker,
+Commit, or reset reference. N-2, live-current, partial, multiple, wrong-marker,
+or unfinished Recovery/transition state remains fail closed. Before remote Join
+creation, Core excludes completed Recovery epochs from unpublished provider
+candidate reuse. If the current provider identity is still present after the
+exact retirement, the existing Join-creation journal removes only that exact
+retired identity before creating or resuming a fresh rootless device enrollment;
+an old completed transition without the exact retirement marker/binding does not
+authorize provider deletion. Ambiguous, live, or mismatched provider state
+remains fail closed. Core then
+writes a secret-free, session/device-bound
+`registration_retired_join_rollovers` row. After Registry save, one SQLite
+transaction CASes the exact retired binding to the current DID/generation/new
+device, retires old write-capable crypto/outbox and sync/control state, preserves
+ordinary business projections, records `registration_retired_join_v1` DID
+history metadata, and completes the journal. Core open runs this convergence
+before retirement replay, selecting only the unique Registry-device winner;
+terminal/expired prepared orphans are removed without querying or cancelling a
+remote session. A completed exact journal can supersede only its matching old
+tombstone, so a later retirement tuple still performs normal Vault cleanup.
 
 An authorized New Device Join record is a crash-recovery journal for the local
 identity/device activation, not a permanent active session. When identity
@@ -900,6 +934,12 @@ ANP-resolver `verified` / `recovery_verified` predecessor-to-successor edges. It
 route, Persona, canonical-conversation, historical-wire, or recovery-job projection;
 migration and cache writes never mutate those existing owners and do not create speculative
 conflict/reconcile tables.
+Schema 38 adds only `registration_retired_join_rollovers` and its
+owner/phase/update-time index. The 37-to-38 migration is transactional and
+idempotent; schema-37 Core cannot open a schema-38 database. The table is a
+Core-private, secret-free ordinary-Join convergence authority, not a Recovery
+wire contract, generic resume platform, deletion journal, route, or business
+projection.
 The source allowlist is pinned to the exact deployed release/0710 daemon
 artifact, source ref, and schema fingerprint. Its checked-in fixture is built
 by that binary in an isolated state root and contains synthetic rows only.
@@ -1024,7 +1064,10 @@ control whether transport moves from legacy Inbox/per-group catch-up to lanes.
   epoch. After negotiation, one `sync.delta` request carries ordinary plus all
   enabled lanes; without lanes its body remains the exact legacy V2 shape.
 - P5 applies an exact-device delivery through the existing Direct E2EE v2
-  decrypt/ratchet/replay and durable projection pipeline. Only after that
+  decrypt/ratchet/replay and durable projection pipeline. Reliable lane input
+  carries its server `accepted_at` and exact route as a trusted delivery context,
+  so Root-transfer control is intercepted before ordinary message projection.
+  Only after that
   succeeds may delta write the P5 receipt and advance both `scan_seq` and
   `committed_seq`. A poison delivery leaves the P5 cursor unchanged for retry
   but does not stop ordinary or P6. P6 uses aggregate per-device sequence for
@@ -1298,7 +1341,14 @@ public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
 changes an interrupted recovery to `retryable` while retaining the original
 cursor, so the next `syncNow` obtains a fresh process-local token.
 
-Core serializes `syncNow` per `owner_identity_id`. Snapshot commit additionally
+Core uses one process-local single-flight coordinator per `owner_identity_id`.
+The first request owns the complete `begin_message_sync_run → sync → finish_message_sync_run`
+run. Concurrent foreground callers wait for and reuse that outcome instead of creating another
+generation. Listener startup/reconnect/hint/timer requests that arrive during a run are coalesced
+into at most one immediate follow-up; cancelling one waiter does not cancel the coordinator-owned
+run. This is process-local scheduling only: durable `run_generation` continues to fence another
+process or a stale process, and genuine retryable/blocked/auth failures remain fail-closed.
+Snapshot commit additionally
 uses a SQLite compare-and-swap fence over the exact previous epoch/cursor,
 recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent
 workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and

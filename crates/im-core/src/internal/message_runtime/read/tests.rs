@@ -2552,6 +2552,46 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
     );
 }
 
+#[test]
+fn p5_lane_projection_keeps_internal_attachment_manifest_before_public_redaction() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_init_message(
+        "wire-p5-attachment",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let outcome = crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+        crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+            logical_message_id: "logical-p5-attachment".to_owned(),
+            conversation_id: None,
+            sender_did: "did:example:bob-new".to_owned(),
+            sender_device_id: "device-bob".to_owned(),
+            recipient_did: fixture.did.clone(),
+            wire_message_id: "wire-p5-attachment".to_owned(),
+            body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Attachment {
+                full_manifest: direct_e2ee_attachment_manifest(),
+            },
+            session_reply_pending: false,
+        },
+    );
+
+    let (record, cache) = p5_lane_projection_record(&client, &wire, &outcome)
+        .unwrap()
+        .unwrap();
+    let cache = cache.expect("P5 attachment projection must retain one internal manifest");
+
+    assert!(!record.content.contains("object_key_b64u"));
+    assert!(!record.content.contains("OBJECT-KEY-SECRET"));
+    assert_eq!(cache.thread_kind, "direct");
+    assert_eq!(cache.thread_id, "did:example:bob-new");
+    assert_eq!(cache.message_id, "logical-p5-attachment");
+    assert!(cache.content.contains("object_key_b64u"));
+    assert!(cache.content.contains("OBJECT-KEY-SECRET"));
+}
+
 fn direct_e2ee_attachment_plaintext() -> Value {
     json!({
         "application_content_type": crate::attachments::manifest::attachment_manifest_content_type(),

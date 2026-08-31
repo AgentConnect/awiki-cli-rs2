@@ -714,6 +714,41 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<LocalIdentityDeletionTicket> prepareLocalIdentityDataDeletion(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final ticket = await _mapNativeErrors(
+      () => gen_identity_api.prepareLocalIdentityDataDeletion(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return ticket._toModel();
+  }
+
+  Future<DeleteLocalIdentityResult> completeLocalIdentityDataDeletion(
+    String deletionId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.completeLocalIdentityDataDeletion(
+        core: _inner,
+        deletionId: deletionId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<List<LocalIdentityDeletionTicket>>
+  pendingLocalIdentityDataDeletions() async {
+    _ensureNotDisposed();
+    final tickets = await _mapNativeErrors(
+      () => gen_identity_api.pendingLocalIdentityDataDeletions(core: _inner),
+    );
+    return tickets.map((ticket) => ticket._toModel()).toList(growable: false);
+  }
+
   Future<DaemonSubkeyPublicPackage> authorizeDaemonSubkey({
     required IdentitySelector selector,
     required DaemonSubkeyPublicProposal proposal,
@@ -2703,6 +2738,14 @@ extension on gen_identity.DartDeleteLocalIdentityResult {
     wasDefault: wasDefault,
     nextDefault: nextDefault?._toModel(),
     warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartLocalIdentityDeletionTicket {
+  LocalIdentityDeletionTicket _toModel() => LocalIdentityDeletionTicket(
+    deletionId: deletionId,
+    ownerIdentityId: ownerIdentityId,
+    currentDid: currentDid,
   );
 }
 

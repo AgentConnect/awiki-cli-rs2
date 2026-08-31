@@ -131,6 +131,8 @@ pub(crate) async fn provision_registration_identity_async(
             message: error.to_string(),
         })??;
         let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+        let full_handle = format!("{local_part}.{domain}");
+        let historical_dids = registration_historical_dids(core, &full_handle)?;
         let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
         let mut matches = Vec::new();
         for descriptor in custody
@@ -140,6 +142,7 @@ pub(crate) async fn provision_registration_identity_async(
         {
             if descriptor.state != crate::internal::identity_provider::ProviderIdentityState::Active
                 || projected.contains(&descriptor.reference.identity_id)
+                || historical_dids.contains(&descriptor.reference.did)
                 || !descriptor.reference.did.starts_with(&did_prefix)
             {
                 continue;
@@ -319,6 +322,21 @@ pub(crate) fn prepare_join_enrollment(
         .map_err(map_facade_error)?
         .into_iter()
         .find(|item| item.reference.did == did.as_str());
+    let existing = match existing {
+        Some(descriptor)
+            if descriptor.state == anp_identity::PublicIdentityState::Active
+                && did_has_exact_completed_retirement(core, did)? =>
+        {
+            manager
+                .delete(
+                    &descriptor.reference,
+                    anp_identity::DeleteIdentityRequest::default(),
+                )
+                .map_err(map_facade_error)?;
+            None
+        }
+        existing => existing,
+    };
     let proposal = match existing {
         Some(descriptor) => {
             let identity = manager
@@ -427,6 +445,17 @@ pub(crate) async fn prepare_join_enrollment_async(
             .collect::<Vec<_>>();
         if matching.len() > 1 {
             return Err(crate::ImError::PermissionDenied);
+        }
+        if matching
+            .first()
+            .is_some_and(|descriptor| descriptor.state == ProviderIdentityState::Active)
+            && did_has_exact_completed_retirement(core, did)?
+        {
+            let descriptor = matching.pop().ok_or(crate::ImError::PermissionDenied)?;
+            provider
+                .delete_identity(&descriptor.reference)
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?;
         }
         match matching.pop() {
             Some(descriptor) => {
@@ -2856,6 +2885,104 @@ fn open_managed_identity(
         .map_err(map_facade_error)
 }
 
+fn registration_historical_dids(
+    core: &crate::core::ImCore,
+    full_handle: &str,
+) -> crate::ImResult<std::collections::BTreeSet<String>> {
+    crate::internal::identity_wire::handle_recovery::canonical_handle(full_handle)?;
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let mut historical = std::collections::BTreeSet::new();
+    let mut transitions = connection
+        .prepare(
+            "SELECT previous_did,current_did FROM identity_transition_pending \
+             WHERE handle=?1 AND phase='completed' ORDER BY recovery_id",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let transition_dids = transitions
+        .query_map(rusqlite::params![full_handle], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    for (previous_did, current_did) in transition_dids {
+        historical.insert(crate::ids::Did::parse(previous_did)?.as_str().to_owned());
+        historical.insert(crate::ids::Did::parse(current_did)?.as_str().to_owned());
+    }
+
+    let mut bindings = connection
+        .prepare(
+            "SELECT owner_identity_id,current_did,device_id FROM identity_account_bindings \
+             WHERE handle_scope=?1 ORDER BY owner_identity_id",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let retired_bindings = bindings
+        .query_map(rusqlite::params![full_handle], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    for (owner_identity_id, did, protocol_device_id) in retired_bindings {
+        if crate::internal::identity_retirement::matches_completed_binding(
+            &core.inner().sdk_paths().identities.identity_root_dir,
+            &owner_identity_id,
+            &did,
+            &protocol_device_id,
+        )? {
+            historical.insert(crate::ids::Did::parse(did)?.as_str().to_owned());
+        }
+    }
+    Ok(historical)
+}
+
+fn did_has_exact_completed_retirement(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+) -> crate::ImResult<bool> {
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    if index
+        .credentials
+        .values()
+        .any(|entry| entry.did == did.as_str())
+    {
+        return Ok(false);
+    }
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let mut statement = connection
+        .prepare(
+            "SELECT owner_identity_id,device_id FROM identity_account_bindings \
+             WHERE current_did=?1 ORDER BY owner_identity_id",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let bindings = statement
+        .query_map(rusqlite::params![did.as_str()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if bindings.len() != 1 {
+        return Ok(false);
+    }
+    crate::internal::identity_retirement::matches_completed_binding(
+        &core.inner().sdk_paths().identities.identity_root_dir,
+        &bindings[0].0,
+        did.as_str(),
+        &bindings[0].1,
+    )
+}
+
 #[cfg(feature = "identity-native-anp")]
 fn find_unprojected_registration_identity(
     core: &crate::core::ImCore,
@@ -2872,11 +2999,14 @@ fn find_unprojected_registration_identity(
         .filter_map(|entry| entry.anp_identity_id.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+    let full_handle = format!("{local_part}.{domain}");
+    let historical_dids = registration_historical_dids(core, &full_handle)?;
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
     for descriptor in manager.list().map_err(map_facade_error)? {
         if descriptor.state != anp_identity::PublicIdentityState::Active
             || projected.contains(descriptor.reference.identity_id.as_str())
+            || historical_dids.contains(&descriptor.reference.did)
             || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
@@ -3216,6 +3346,166 @@ mod tests {
         let encoded = serde_json::to_string(&first).unwrap();
         assert!(!encoded.contains("PRIVATE KEY"));
         assert!(!encoded.contains("private_pem"));
+    }
+
+    #[test]
+    fn registration_provisioning_excludes_completed_recovery_epochs() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let previous = provision_registration_identity(&core, "example.test", "alice").unwrap();
+        let mut manager = open_controller_manager(&core).unwrap();
+        let create = crate::internal::identity_generation::vnext_handle_anp_identity_create_spec(
+            "example.test",
+            "alice",
+            core.inner().sdk_config().anp_service_endpoint.as_ref(),
+            core.inner().sdk_config().anp_service_did.as_ref(),
+        )
+        .unwrap();
+        let current = manager
+            .create(native_create_spec(create.spec))
+            .unwrap()
+            .public_identity()
+            .unwrap()
+            .reference
+            .did;
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_transition_pending(\
+                 recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,\
+                 state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,\
+                 current_did,binding_generation,metadata_json,phase,created_at,updated_at) \
+                 VALUES ('recovery-1',1,'contract','hash','initiator','source-1','sha256:test',\
+                 'account-alice','owner-alice','alice.example.test',?1,?2,'2','{}','completed',\
+                 '2026-08-29T00:00:00Z','2026-08-29T00:00:01Z')",
+                rusqlite::params![previous.did.as_str(), current],
+            )
+            .unwrap();
+
+        let fresh = provision_registration_identity(&core, "example.test", "alice").unwrap();
+        assert_ne!(fresh.did, previous.did);
+        assert_ne!(fresh.did.as_str(), current);
+        assert_eq!(
+            open_controller_manager(&core)
+                .unwrap()
+                .list()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn retired_current_join_replaces_active_provider_identity_with_enrollment() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let retired = provision_registration_identity(&core, "example.test", "alice").unwrap();
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_account_bindings(\
+                 owner_identity_id,account_id,handle_scope,current_did,device_id,\
+                 identity_generation,device_auth_generation,created_at,updated_at) \
+                 VALUES ('owner-alice','account-alice','alice.example.test',?1,?2,'1','1',1,1)",
+                rusqlite::params![retired.did.as_str(), retired.protocol_device_id.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+        crate::internal::identity_retirement::retire(
+            &core,
+            crate::internal::identity_retirement::IdentityRetirementInput {
+                identity_id: "owner-alice".to_owned(),
+                did: retired.did.as_str().to_owned(),
+                local_alias: "alice".to_owned(),
+                identity_dir_name: None,
+                next_default_alias: None,
+                protocol_device_id: Some(retired.protocol_device_id.as_str().to_owned()),
+            },
+        )
+        .unwrap();
+
+        let (custody, proposal, _) =
+            prepare_join_enrollment_async(&core, &retired.did, &retired.did_document, None)
+                .await
+                .unwrap();
+        let new_device_id = match &proposal.kind {
+            crate::internal::identity_provider::ProviderEnrollmentProposalKind::Device {
+                device_id,
+                ..
+            } => device_id,
+            crate::internal::identity_provider::ProviderEnrollmentProposalKind::RequestSigning {
+                ..
+            } => panic!("ordinary Join must prepare a device enrollment"),
+        };
+        assert_eq!(proposal.identity.did, retired.did.as_str());
+        assert_ne!(
+            proposal.identity.identity_id,
+            retired.controller_identity_id
+        );
+        assert_ne!(new_device_id, retired.protocol_device_id.as_str());
+        assert_eq!(custody.identity_id, proposal.identity.identity_id);
+        let identities = controller_custody_provider(&core)
+            .await
+            .unwrap()
+            .list_identities()
+            .await
+            .unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(
+            identities[0].state,
+            crate::internal::identity_provider::ProviderIdentityState::Enrolling
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_transition_without_retirement_keeps_active_provider_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let active = provision_registration_identity(&core, "example.test", "alice").unwrap();
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_transition_pending(\
+                 recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,\
+                 state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,\
+                 current_did,binding_generation,metadata_json,phase,created_at,updated_at) \
+                 VALUES ('recovery-1',1,'contract','hash','initiator','source-1','sha256:test',\
+                 'account-alice','owner-alice','alice.example.test',\
+                 'did:wba:example.test:user:alice:e1_previous',?1,'2','{}','completed',\
+                 '2026-08-29T00:00:00Z','2026-08-29T00:00:01Z')",
+                [active.did.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            prepare_join_enrollment_async(&core, &active.did, &active.did_document, None).await,
+            Err(crate::ImError::PermissionDenied)
+        ));
+        let identities = controller_custody_provider(&core)
+            .await
+            .unwrap()
+            .list_identities()
+            .await
+            .unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(
+            identities[0].reference.identity_id,
+            active.controller_identity_id
+        );
+        assert_eq!(
+            identities[0].state,
+            crate::internal::identity_provider::ProviderIdentityState::Active
+        );
     }
 
     #[cfg(feature = "provider-traits")]

@@ -37,6 +37,8 @@ pub(crate) struct ImCoreInner {
     pub(crate) direct_rebind_locks: std::sync::Mutex<
         std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
+    pub(crate) message_sync_coordinators:
+        crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinatorRegistry,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
     pub(crate) registration_join_preparations:
@@ -144,6 +146,7 @@ impl ImCore {
                     .external_http_allow_insecure_loopback_for_testing,
                 handle_recovery_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
                 direct_rebind_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+                message_sync_coordinators: Default::default(),
                 device_join_approvals: Default::default(),
                 registration_join_preparations: Default::default(),
                 root_key_transfer_authorizations: Default::default(),
@@ -151,7 +154,11 @@ impl ImCore {
                 local_state_db: OnceCell::new(),
             }),
         };
+        crate::internal::identity_registration_join_continuation::recover_all(&core)?;
+        crate::internal::identity_registration_retired_join::recover_all(&core)?;
+        crate::internal::identity_local_deletion::recover_before_retirement(&core)?;
         crate::internal::identity_retirement::recover_all(&core)?;
+        crate::internal::identity_local_deletion::recover_after_retirement(&core)?;
         Ok(core)
     }
 
@@ -1133,6 +1140,13 @@ impl ImCoreInner {
         let lock = Arc::new(tokio::sync::Mutex::new(()));
         locks.insert(scope, Arc::downgrade(&lock));
         lock
+    }
+
+    pub(crate) fn message_sync_coordinator(
+        &self,
+        owner_identity_id: &str,
+    ) -> Arc<crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinator> {
+        self.message_sync_coordinators.for_owner(owner_identity_id)
     }
 
     #[cfg(feature = "sqlite")]

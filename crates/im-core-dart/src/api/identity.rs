@@ -15,7 +15,8 @@ use crate::dto::{
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartInitialProfile,
         DartLegacyRegistryEpochAdoptionAuthority, DartLegacyUpgradeStatus,
-        DartRootKeyTransferError, DartRootKeyTransferPreparation, DartRootKeyTransferSendResult,
+        DartLocalIdentityDeletionTicket, DartRootKeyTransferError, DartRootKeyTransferPreparation,
+        DartRootKeyTransferSendResult,
     },
 };
 
@@ -646,6 +647,44 @@ pub async fn delete_local_identity_data(
         .delete_local_identity_data_async(selector.try_into()?)
         .await
         .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn prepare_local_identity_data_deletion(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartLocalIdentityDeletionTicket, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .prepare_local_identity_data_deletion_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn complete_local_identity_data_deletion(
+    core: &Arc<crate::api::core::DartImCore>,
+    deletion_id: String,
+) -> Result<DartDeleteLocalIdentityResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .complete_local_identity_data_deletion_async(deletion_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn pending_local_identity_data_deletions(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<Vec<DartLocalIdentityDeletionTicket>, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .pending_local_identity_data_deletions_async()
+        .await
+        .map(|tickets| tickets.into_iter().map(Into::into).collect())
         .map_err(DartImError::from)
 }
 

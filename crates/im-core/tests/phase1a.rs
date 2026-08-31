@@ -60,7 +60,7 @@ fn message_security_mode_mismatches_fail_closed() {
     });
     assert!(matches!(
         secure,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+        Err(ImError::UnsupportedCapability { capability }) if capability == "direct-e2ee-v2"
     ));
 
     let group_e2ee = client.messages().send(SendMessageRequest {
@@ -124,7 +124,7 @@ fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
 
     assert!(matches!(
         result,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+        Err(ImError::UnsupportedCapability { capability }) if capability == "direct-e2ee-v2"
     ));
 }
 
@@ -151,7 +151,7 @@ fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
 
     assert!(matches!(
         result,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+        Err(ImError::UnsupportedCapability { capability }) if capability == "direct-e2ee-v2"
     ));
 }
 

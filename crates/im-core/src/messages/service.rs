@@ -20,6 +20,36 @@ where
     }
 }
 
+async fn execute_message_sync_once(
+    client: crate::core::ImClient,
+    coordinator: std::sync::Arc<
+        crate::internal::message_runtime::sync_coordinator::MessageSyncCoordinator,
+    >,
+    request: crate::messages::MessageSyncRequest,
+) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
+    let _operation_guard = coordinator.lock_local_state_operation().await;
+    let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
+        &client,
+        crate::internal::auth::session::FileSessionProvider::new(&client),
+        crate::internal::transport::CoreHttpTransport::new(&client),
+        crate::internal::transport::CoreHttpTransport::new(&client),
+    )
+    .sync_now(request)
+    .await;
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            if let Some(outcome) =
+                crate::internal::message_runtime::sync_v2::failure_outcome(&error)
+            {
+                Ok(outcome)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod secure_lane_drain_tests {
     #[tokio::test]
@@ -2761,6 +2791,11 @@ impl<'a> MessageService<'a> {
         &self,
         query: super::InboxQuery,
     ) -> crate::ImResult<super::MessagePage> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         if query.cursor.is_some() {
             return Err(crate::ImError::invalid_input(
                 Some("cursor".to_owned()),
@@ -2838,6 +2873,11 @@ impl<'a> MessageService<'a> {
         &self,
         limit: crate::ids::PageLimit,
     ) -> crate::ImResult<Vec<String>> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         // Root import can advance this exact device's authorization generation
         // independently of ordinary message sync. Finish any accepted local
         // transition first so callers never reuse the pre-promotion bearer.
@@ -3111,6 +3151,11 @@ impl<'a> MessageService<'a> {
         thread: super::ThreadRef,
         query: super::LocalHistoryQuery,
     ) -> crate::ImResult<super::MessagePage> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3304,6 +3349,11 @@ impl<'a> MessageService<'a> {
         &self,
         ids: Vec<crate::ids::MessageId>,
     ) -> crate::ImResult<super::MarkReadResult> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         if self.client.realtime_requires_sync_changed_v2()? {
             self.client.active_sync_account_binding().await?;
             return mark_message_ids_read_v2_async(self.client, ids).await;
@@ -3350,6 +3400,11 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MarkThreadReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3391,6 +3446,11 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MarkConversationReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let _operation_guard = coordinator.lock_local_state_operation().await;
         let mapped = mark_read_input_for_conversation_async(self.client, request).await?;
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
@@ -3575,26 +3635,51 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MessageSyncRequest,
     ) -> crate::ImResult<super::MessageSyncOutcome> {
-        let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
-            self.client,
-            crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::CoreHttpTransport::new(self.client),
-            crate::internal::transport::CoreHttpTransport::new(self.client),
+        self.coordinated_sync_now_async(
+            request,
+            crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::EnsureCurrent,
         )
-        .sync_now(request)
-        .await;
-        match result {
-            Ok(outcome) => Ok(outcome),
-            Err(error) => {
-                if let Some(outcome) =
-                    crate::internal::message_runtime::sync_v2::failure_outcome(&error)
-                {
-                    Ok(outcome)
-                } else {
-                    Err(error)
-                }
-            }
-        }
+        .await
+    }
+
+    /// Schedules reliable sync for a newly observed background change.
+    ///
+    /// Duplicate background requests that arrive during an active run are
+    /// coalesced into one follow-up run. Foreground reads use
+    /// [`Self::sync_now_async`] so they can share the current result without
+    /// manufacturing another dirty edge.
+    #[doc(hidden)]
+    pub async fn request_sync_async(
+        &self,
+        request: super::MessageSyncRequest,
+    ) -> crate::ImResult<super::MessageSyncOutcome> {
+        self.coordinated_sync_now_async(
+            request,
+            crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::DirtyAfterCurrent,
+        )
+        .await
+    }
+
+    async fn coordinated_sync_now_async(
+        &self,
+        request: super::MessageSyncRequest,
+        kind: crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind,
+    ) -> crate::ImResult<super::MessageSyncOutcome> {
+        let coordinator = self
+            .client
+            .core_inner()
+            .message_sync_coordinator(self.client.current_identity().id.as_str());
+        let client = self.client.clone();
+        let executor_coordinator = std::sync::Arc::clone(&coordinator);
+        let executor: crate::internal::message_runtime::sync_coordinator::MessageSyncExecutor =
+            std::sync::Arc::new(move |request| {
+                let client = client.clone();
+                let coordinator = std::sync::Arc::clone(&executor_coordinator);
+                Box::pin(
+                    async move { execute_message_sync_once(client, coordinator, request).await },
+                )
+            });
+        coordinator.execute(request, kind, executor).await
     }
 
     /// Gives independently committed P5/P6 inputs a bounded processing window.
@@ -5042,41 +5127,66 @@ mod group_e2ee_public_send_tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use anp::group_e2ee::operations::{CreateGroupInput, FinalizeCommitInput};
+    use anp::group_e2ee::operations::v2::{
+        V2CreateGroupInput, V2FinalizeInput, V2PrepareKeyPackagePublishInput,
+    };
+    use anp::group_e2ee::{
+        V2GroupStateRef, V2ServiceMetadata, V2Target, GROUP_E2EE_PROFILE_V2,
+        GROUP_E2EE_SECURITY_PROFILE_V2, GROUP_E2EE_TRANSPORT_PROFILE_V2,
+    };
     use serde_json::{json, Value};
-
-    use crate::internal::group_e2ee::provider::GroupMlsProvider;
 
     #[cfg(feature = "blocking")]
     #[test]
     fn public_group_e2ee_send_uses_native_provider_and_sends_cipher_only() {
-        let fixture = Fixture::new();
+        let fixture = Fixture::vnext();
         let server = RpcTestServer::spawn(vec![
             json!({
-                "group_state_ref": {
-                    "group_did": "did:wba:awiki.test:groups:group-e2ee-preflight",
-                    "group_state_version": "preflight-state"
+                "group_snapshot": {
+                    "group_did": fixture.group_did,
+                    "my_role": "member",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected"
                 }
             }),
             json!({
-                "group_state_ref": {
+                "group_did": fixture.group_did,
+                "group_state_version": "p4-state-1",
+                "group_profile": {"display_name": "Public E2EE group"},
+                "group_policy": {"message_security_profile": "group-e2ee"}
+            }),
+            json!({
+                "group_snapshot": {
                     "group_did": fixture.group_did,
-                    "group_state_version": "service-state-1"
+                    "my_role": "member",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected"
                 }
+            }),
+            json!({
+                "group_did": fixture.group_did,
+                "group_state_version": "p4-state-1",
+                "group_profile": {"display_name": "Public E2EE group"},
+                "group_policy": {"message_security_profile": "group-e2ee"}
             }),
             json!({
                 "accepted": true,
-                "final_acceptance": true,
                 "group_did": fixture.group_did,
-                "message_id": "server-message-id",
+                "message_id": "msg-public-group-e2ee",
                 "operation_id": "op-public-group-e2ee",
                 "group_event_seq": "91",
-                "group_state_version": "service-state-2",
-                "accepted_at": "2026-05-21T00:00:00Z"
+                "group_state_version": "p4-state-1",
+                "accepted_at": "2026-05-21T00:00:00Z",
+                "epoch": "0",
+                "group_receipt": {"test": true}
             }),
         ]);
-        let core =
-            crate::core::ImCore::new(fixture.config(server.base_url()), fixture.paths()).unwrap();
+        let core = crate::core::ImCore::new_with_options(
+            fixture.config(server.base_url()),
+            fixture.paths(),
+            fixture.vnext_open_options(),
+        )
+        .unwrap();
         let client = core
             .client(crate::identity::IdentitySelector::LocalAlias(
                 "alice".to_owned(),
@@ -5106,41 +5216,43 @@ mod group_e2ee_public_send_tests {
             })
             .unwrap();
 
-        assert_eq!(result.message.metadata.server_sequence, Some(91));
+        assert!(result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "group_event_seq" && attribute.value == "91"));
         assert!(matches!(
             result.delivery,
             crate::messages::DeliveryState::Accepted
         ));
         let requests = server.requests();
-        assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0].rpc_method, "group.e2ee.head");
+        assert_eq!(requests.len(), 5);
+        assert_eq!(requests[0].rpc_method, "group.get");
+        assert_eq!(requests[1].rpc_method, "group.get_info");
+        assert_eq!(requests[2].rpc_method, "group.get");
+        assert_eq!(requests[3].rpc_method, "group.get_info");
+        assert_eq!(requests[4].rpc_method, "group.e2ee.send");
         assert_eq!(
-            requests[0].params["body"]["group_did"],
-            "did:wba:awiki.test:groups:group-e2ee-preflight"
-        );
-        assert_eq!(requests[1].rpc_method, "group.e2ee.head");
-        assert_eq!(requests[1].params["body"]["group_did"], fixture.group_did);
-        assert_eq!(requests[2].rpc_method, "group.e2ee.send");
-        assert_eq!(
-            requests[2].params["meta"]["security_profile"],
+            requests[4].params["meta"]["security_profile"],
             anp::group_e2ee::SECURITY_PROFILE
         );
         assert_eq!(
-            requests[2].params["meta"]["content_type"],
+            requests[4].params["meta"]["content_type"],
             anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
         );
         assert_eq!(
-            requests[2].params["body"]["group_state_ref"]["group_state_version"],
-            "service-state-1"
+            requests[4].params["body"]["group_state_ref"]["group_state_version"],
+            "p4-state-1"
         );
         assert!(
-            requests[2].params["body"]["private_message_b64u"]
+            requests[4].params["body"]["private_message_b64u"]
                 .as_str()
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false),
             "group.e2ee.send must carry an MLS private message"
         );
-        let encoded_send = serde_json::to_string(&requests[2].params).unwrap();
+        let encoded_send = serde_json::to_string(&requests[4].params).unwrap();
         assert!(!encoded_send.contains("public group secret"));
         assert!(!encoded_send.contains("application_plaintext"));
         assert!(!encoded_send.contains("provider"));
@@ -5182,41 +5294,26 @@ mod group_e2ee_public_send_tests {
 
         assert!(matches!(
             result,
-            Err(crate::ImError::UnsupportedCapability { capability }) if capability == "sync-group-e2ee-send"
+            Err(crate::ImError::UnsupportedCapability { capability }) if capability == "group-e2ee-v2"
         ));
     }
 
     #[tokio::test]
-    async fn public_group_e2ee_send_async_uses_async_transport_and_db_actor_projection() {
+    async fn public_group_e2ee_send_async_rejects_legacy_identity_before_transport() {
         let fixture = Fixture::new();
-        let server = RpcTestServer::spawn(vec![
-            json!({
-                "group_state_ref": {
-                    "group_did": fixture.group_did,
-                    "group_state_version": "service-state-async-1"
-                }
-            }),
-            json!({
-                "accepted": true,
-                "final_acceptance": true,
-                "group_did": fixture.group_did,
-                "message_id": "server-message-async-id",
-                "operation_id": "op-public-group-e2ee-async",
-                "group_event_seq": "92",
-                "group_state_version": "service-state-async-2",
-                "accepted_at": "2026-05-21T00:00:00Z"
-            }),
-        ]);
-        let core = crate::core::ImCore::open(fixture.config(server.base_url()), fixture.paths())
-            .await
-            .unwrap();
+        let core = crate::core::ImCore::open_with_options(
+            fixture.config("https://example.test".to_owned()),
+            fixture.paths(),
+            crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(true),
+        )
+        .await
+        .unwrap();
         let client = core
             .client_async(crate::identity::IdentitySelector::LocalAlias(
                 "alice".to_owned(),
             ))
             .await
             .unwrap();
-        prepare_local_mls_group(&client, &fixture.group_did);
 
         let result = client
             .messages()
@@ -5238,30 +5335,9 @@ mod group_e2ee_public_send_tests {
                 },
                 delegated_signing: None,
             })
-            .await
-            .unwrap();
+            .await;
 
-        assert_eq!(result.message.metadata.server_sequence, Some(92));
-        let requests = server.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].rpc_method, "group.e2ee.head");
-        assert_eq!(requests[0].params["body"]["group_did"], fixture.group_did);
-        assert_eq!(requests[1].rpc_method, "group.e2ee.send");
-        assert_eq!(
-            requests[1].params["meta"]["content_type"],
-            anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
-        );
-        let encoded_send = serde_json::to_string(&requests[1].params).unwrap();
-        assert!(!encoded_send.contains("async group secret"));
-
-        let stored = stored_group_message(&fixture, &client, result.message.id.as_str());
-        assert_eq!(stored.thread_id, format!("group:{}", fixture.group_did));
-        assert_eq!(stored.group_did, fixture.group_did);
-        assert_eq!(stored.content, "async group secret");
-        assert!(stored.is_e2ee);
-        assert_eq!(stored.server_seq, Some(92));
-        let metadata: Value = serde_json::from_str(&stored.metadata).unwrap();
-        assert_eq!(metadata["security"], "group-e2ee");
+        assert_eq!(result.unwrap_err(), crate::ImError::PermissionDenied);
     }
 
     #[test]
@@ -5299,24 +5375,77 @@ mod group_e2ee_public_send_tests {
     }
 
     fn prepare_local_mls_group(client: &crate::core::ImClient, group_did: &str) {
-        let provider = crate::internal::group_e2ee::storage::native_provider_for_client(client)
-            .expect("native provider");
-        let prepared = provider
-            .create_group_prepare(CreateGroupInput {
-                creator_did: client.did().as_str().to_owned(),
-                device_id: crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
-                group_did: group_did.to_owned(),
-                operation_id: "op-public-group-e2ee-create".to_owned(),
+        let device_id = client.exact_protocol_device_id().unwrap();
+        let signer = client.runtime().key_provider.as_ref();
+        let signing_key_id = signer.request_signing_key_id().unwrap();
+        let did_document = signer.optional_did_document().unwrap().unwrap();
+        let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client).unwrap();
+        let now = "2026-08-29T00:00:00Z".to_owned();
+        let prepared_key_package = runtime
+            .prepare_or_resume_key_package_publish(
+                V2PrepareKeyPackagePublishInput {
+                    meta: V2ServiceMetadata {
+                        anp_version: Some("2.0".to_owned()),
+                        profile: GROUP_E2EE_PROFILE_V2.to_owned(),
+                        security_profile: GROUP_E2EE_TRANSPORT_PROFILE_V2.to_owned(),
+                        sender_did: client.did().as_str().to_owned(),
+                        sender_device_id: device_id.clone(),
+                        target: V2Target {
+                            kind: "service".to_owned(),
+                            did: "did:wba:awiki.test".to_owned(),
+                        },
+                        operation_id: "op-public-group-e2ee-key-package".to_owned(),
+                        created_at: Some(now.clone()),
+                    },
+                    owner_did: client.did().as_str().to_owned(),
+                    owner_device_id: device_id.clone(),
+                    verification_method: signing_key_id.clone(),
+                    key_package_id: "kp-public-group-e2ee".to_owned(),
+                    issued_at: now.clone(),
+                    expires_at: "2026-09-28T00:00:00Z".to_owned(),
+                    now: now.clone(),
+                    draft_extension_negotiated: true,
+                    request_id: "req-public-group-e2ee-key-package".to_owned(),
+                },
+                &did_document,
+                signer,
+            )
+            .expect("prepare current device key package");
+        let prepared = runtime
+            .create_group_prepare(V2CreateGroupInput {
+                meta: V2ServiceMetadata {
+                    anp_version: Some("2.0".to_owned()),
+                    profile: GROUP_E2EE_PROFILE_V2.to_owned(),
+                    security_profile: GROUP_E2EE_SECURITY_PROFILE_V2.to_owned(),
+                    sender_did: client.did().as_str().to_owned(),
+                    sender_device_id: device_id,
+                    target: V2Target {
+                        kind: "service".to_owned(),
+                        did: "did:wba:awiki.test".to_owned(),
+                    },
+                    operation_id: "op-public-group-e2ee-create".to_owned(),
+                    created_at: Some(now.clone()),
+                },
+                group_state_ref: V2GroupStateRef {
+                    group_did: group_did.to_owned(),
+                    group_state_version: "service-state-1".to_owned(),
+                    policy_hash: None,
+                    roster_hash: None,
+                },
+                creator_key_package: prepared_key_package.body.group_key_package,
+                creator_did_document: did_document,
+                now,
+                draft_extension_negotiated: true,
+                pending_commit_id: "pc-public-group-e2ee-create".to_owned(),
                 request_id: "req-public-group-e2ee-create".to_owned(),
-                pending_commit_id: Some("pc-public-group-e2ee-create".to_owned()),
             })
-            .expect("create group");
-        provider
-            .finalize_commit(FinalizeCommitInput {
+            .expect("create P6 v2 group");
+        runtime
+            .finalize_commit(V2FinalizeInput {
                 pending_commit_id: prepared.pending_commit_id,
                 request_id: "req-public-group-e2ee-finalize".to_owned(),
             })
-            .expect("finalize group");
+            .expect("finalize P6 v2 group");
     }
 
     struct Fixture {
@@ -5325,9 +5454,22 @@ mod group_e2ee_public_send_tests {
     }
 
     impl Fixture {
+        const VAULT_SEED: [u8; 32] = [0x71; 32];
+        const VAULT_WORKSPACE_ID: &'static str = "group-e2ee-public-send";
+        const VAULT_DEVICE_ID: &'static str = "group-e2ee-test-host";
+
         fn new() -> Self {
             let root = unique_temp_root();
-            write_identity_fixture(&root, "alice", "did:example:alice");
+            write_legacy_identity_fixture(&root, "alice", "did:example:alice");
+            Self {
+                root,
+                group_did: "did:example:groups:public-e2ee".to_owned(),
+            }
+        }
+
+        fn vnext() -> Self {
+            let root = unique_temp_root();
+            write_vnext_identity_fixture(&root, "alice");
             Self {
                 root,
                 group_did: "did:example:groups:public-e2ee".to_owned(),
@@ -5365,9 +5507,102 @@ mod group_e2ee_public_send_tests {
                 },
             }
         }
+
+        fn vnext_open_options(&self) -> crate::ImCoreOpenOptions {
+            crate::ImCoreOpenOptions::default()
+                .with_multi_device_group_e2ee_enabled(true)
+                .with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        crate::vault::DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                        self.root.join("vault"),
+                        Self::VAULT_WORKSPACE_ID,
+                        Self::VAULT_DEVICE_ID,
+                    ),
+                )
+        }
     }
 
-    fn write_identity_fixture(root: &Path, alias: &str, did: &str) {
+    fn write_vnext_identity_fixture(root: &Path, alias: &str) {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+        use crate::internal::identity_store::{
+            IdentityStore, SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
+        };
+
+        let paths = crate::IdentityRegistryPaths {
+            identity_root_dir: root.join("identities"),
+            registry_path: root.join("identities").join("registry.json"),
+            default_identity_path: Some(root.join("identities").join("default")),
+        };
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.test",
+            alias,
+            None,
+            None,
+        )
+        .unwrap();
+        let vault = Arc::new(crate::internal::secret_vault::FileSecretVault::new(
+            crate::vault::DeviceVaultRootKey::from_bytes(Fixture::VAULT_SEED),
+            crate::internal::secret_vault::FileSecretVaultStore::new(root.join("vault")),
+        ));
+        IdentityStore::new(&paths)
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: alias.to_owned(),
+                    did: generated.did.clone(),
+                    unique_id: generated.unique_id,
+                    user_id: "account-alice".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    handle: alias.to_owned(),
+                    full_handle: format!("{alias}.awiki.test"),
+                    binding_generation: Some("1".to_owned()),
+                    jwt_token: "test-token".to_owned(),
+                    did_document: Some(generated.did_document),
+                    key_mode: SaveIdentityKeyMode::VNext {
+                        root_key_id: generated.root_key_id,
+                        device_signing_key_id: generated.device_signing_key_id.clone(),
+                        device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                    },
+                    device_state: Some(IdentityDeviceState {
+                        schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: IdentityDeviceMode::VNext,
+                        authorization: Some(DeviceAuthorizationProjection {
+                            protocol_device_id: generated.protocol_device_id,
+                            signing_key_id: generated.device_signing_key_id,
+                            e2ee_key_id: generated.device_e2ee_key_id,
+                            status: DeviceAuthorizationStatus::Active,
+                            role: DeviceAuthorizationRole::Admin,
+                            management_ready: true,
+                            auth_generation: 1,
+                        }),
+                        checkpoint: Some(IdentityInternalCheckpoint {
+                            document_version: 1,
+                            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                .to_owned(),
+                            registry_version: 1,
+                        }),
+                    }),
+                    key1_private_pem: generated.root_private_pem,
+                    key1_public_pem: generated.root_public_pem,
+                    e2ee_signing_private_pem: generated.device_signing_private_pem,
+                    e2ee_agreement_private_pem: generated.device_e2ee_private_pem,
+                    daemon_subkey_package: Some(generated.daemon_subkey_package),
+                    make_default: true,
+                },
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id: Fixture::VAULT_WORKSPACE_ID.to_owned(),
+                    device_id: Fixture::VAULT_DEVICE_ID.to_owned(),
+                    vault,
+                },
+            )
+            .unwrap();
+    }
+
+    fn write_legacy_identity_fixture(root: &Path, alias: &str, did: &str) {
         let identity_root = root.join("identities");
         let identity_dir = identity_root.join(alias);
         fs::create_dir_all(&identity_dir).unwrap();

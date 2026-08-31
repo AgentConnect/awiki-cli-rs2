@@ -290,6 +290,23 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<LocalIdentityDeletionTicket> prepareLocalIdentityDataDeletion(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeleteLocalIdentityResult> completeLocalIdentityDataDeletion(
+    String deletionId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<List<LocalIdentityDeletionTicket>>
+  pendingLocalIdentityDataDeletions() async {
+    throw _unsupported();
+  }
+
   Future<DaemonSubkeyPublicPackage> authorizeDaemonSubkey({
     required IdentitySelector selector,
     required DaemonSubkeyPublicProposal proposal,
@@ -497,7 +514,6 @@ class SecureApi {
   DirectSecureConversation direct(String peer) => DirectSecureConversation._();
 
   GroupSecureConversation group(String group) => GroupSecureConversation._();
-
 }
 
 class DirectSecureConversation {
@@ -506,7 +522,6 @@ class DirectSecureConversation {
   Future<DirectSecureStatus> status() async {
     throw _unsupported();
   }
-
 }
 
 class GroupSecureConversation {

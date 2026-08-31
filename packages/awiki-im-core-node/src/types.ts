@@ -587,7 +587,13 @@ export interface SyncOptions {
   readonly timeoutMs?: number
 }
 
-export type SyncStatus = 'idle' | 'changed' | 'recovery_required' | 'retryable_failure' | 'auth_revoked'
+export type SyncStatus =
+  | 'idle'
+  | 'changed'
+  | 'recovery_required'
+  | 'retryable_failure'
+  | 'auth_revoked'
+  | 'blocked'
 
 /** Product-safe reliable-sync result. */
 export interface SyncResult {

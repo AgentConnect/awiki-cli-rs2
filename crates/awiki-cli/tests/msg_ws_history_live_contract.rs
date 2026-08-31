@@ -24,6 +24,7 @@ fn msg_history_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
@@ -50,6 +51,13 @@ fn msg_history_websocket_mode_uses_im_core_http_not_legacy_bridge() {
         ],
         workspace.path(),
     );
+
+    if !output.status.success() {
+        panic!(
+            "history failed after methods {:?}",
+            rpc_methods(&request_json_bodies(&server.requests()))
+        );
+    }
 
     assert_success(&output);
     let envelope = success_json(&output);
@@ -79,6 +87,7 @@ fn msg_history_websocket_handle_resolution_uses_directory_then_im_core_http() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
@@ -105,6 +114,13 @@ fn msg_history_websocket_handle_resolution_uses_directory_then_im_core_http() {
         ],
         workspace.path(),
     );
+
+    if !output.status.success() {
+        panic!(
+            "history failed after methods {:?}",
+            rpc_methods(&request_json_bodies(&server.requests()))
+        );
+    }
 
     assert_success(&output);
     let envelope = success_json(&output);
@@ -234,6 +250,7 @@ fn assert_sync_v2_history_without_legacy(bodies: &[Value], resolves_handle: bool
     assert_eq!(
         methods,
         vec![
+            "anp.get_capabilities",
             "sync.bootstrap",
             "sync.delta",
             "message.get_batch",
@@ -242,7 +259,10 @@ fn assert_sync_v2_history_without_legacy(bodies: &[Value], resolves_handle: bool
     );
     if resolves_handle {
         assert_eq!(
-            bodies[3]["params"]["did"],
+            bodies
+                .iter()
+                .find(|body| body["method"] == "lookup")
+                .expect("directory lookup request")["params"]["did"],
             "did:wba:awiki.ai:alice:e1_alice"
         );
     }
@@ -290,6 +310,7 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli binary")
 }
 
+#[track_caller]
 fn assert_success(output: &Output) {
     assert_eq!(
         output.status.code(),
@@ -409,6 +430,10 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
     }
 
+    fn capabilities() -> Self {
+        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
+    }
+
     fn sync_delta_direct() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__")
     }
@@ -514,6 +539,12 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
+        "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "supported_profiles": ["awiki.message-sync.explicit-negotiation.v1"]
+            }),
+        ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = device_binding_from_request(request);
             let rpc: Value =
@@ -521,28 +552,51 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
             let client_instance_id = rpc["params"]["body"]["client_instance_id"]
                 .as_str()
                 .expect("sync.bootstrap client_instance_id");
-            assert_eq!(
-                rpc["params"]["body"]["capabilities"]["p6_delivery"],
-                "p6.delivery_context.v1"
-            );
-            rpc_result_for_request(
-                request,
-                json!({
-                    "mode": "tail_only",
-                    "account_id": binding.account_id,
-                    "device_id": binding.device_id,
-                    "server_time": "2026-08-02T00:00:00Z",
-                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
-                    "read_state_baseline": [],
-                    "group_state_baseline": [],
-                    "warnings": [],
-                    "p6_delivery": {
-                        "profile": "p6.delivery_context.v1",
-                        "client_instance_id": client_instance_id,
-                        "activated": true
-                    }
-                }),
-            )
+            let requested = rpc["params"]["body"]["capabilities"]["requested_sync_capabilities"]
+                .as_array()
+                .expect("sync.bootstrap requested capabilities")
+                .clone();
+            let has_p5 = requested.iter().any(|value| value == "lanes.p5_device.v1");
+            let has_p6 = requested.iter().any(|value| value == "lanes.p6_group.v1");
+            let mut lanes = serde_json::Map::new();
+            if has_p5 {
+                lanes.insert(
+                    "p5_device".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            if has_p6 {
+                lanes.insert(
+                    "p6_group".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "42", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            let mut result = json!({
+                "mode": "tail_only",
+                "account_id": binding.account_id,
+                "device_id": binding.device_id,
+                "server_time": "2026-08-02T00:00:00Z",
+                "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                "read_state_baseline": [],
+                "group_state_baseline": [],
+                "warnings": [],
+                "sync_capabilities": requested,
+                "lanes": lanes
+            });
+            if has_p6 {
+                result["p6_delivery"] = json!({
+                    "profile": "p6.delivery_context.v1",
+                    "client_instance_id": client_instance_id,
+                    "activated": true
+                });
+            }
+            rpc_result_for_request(request, result)
         }
         "__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__" => {
             let binding = device_binding_from_request(request);

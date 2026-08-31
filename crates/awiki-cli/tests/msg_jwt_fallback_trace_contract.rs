@@ -89,9 +89,10 @@ fn inbox_preflight_http_1401_refreshes_inside_im_core_transport() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::ok(&json_rpc_error(1401, "expired sync bootstrap jwt")),
-        TestResponse::sync_bootstrap().with_dynamic_access_token(),
-        TestResponse::empty_secure_inbox(),
+        TestResponse::ok(&json_rpc_error(1401, "expired capability discovery jwt")),
+        TestResponse::capabilities().with_dynamic_access_token(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::capabilities(),
         TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
@@ -143,26 +144,23 @@ fn inbox_preflight_http_1401_refreshes_inside_im_core_transport() {
     assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 8);
     assert_eq!(json_body(&requests[0])["method"], "register");
     assert_eq!(
         json_body(&requests[1])["method"],
         "direct.e2ee.publish_prekey_bundle"
     );
-    assert_eq!(json_body(&requests[2])["method"], "sync.bootstrap");
+    assert_eq!(json_body(&requests[2])["method"], "anp.get_capabilities");
     assert!(!bearer_token(&requests[2]).is_empty());
-    assert_eq!(json_body(&requests[3])["method"], "sync.bootstrap");
+    assert_eq!(json_body(&requests[3])["method"], "anp.get_capabilities");
     assert_contains_text(&requests[3], "signature-input:");
-    assert_eq!(json_body(&requests[4])["method"], "inbox.get");
+    assert_eq!(json_body(&requests[4])["method"], "sync.bootstrap");
+    assert_eq!(json_body(&requests[5])["method"], "anp.get_capabilities");
+    assert_eq!(json_body(&requests[6])["method"], "sync.bootstrap");
+    assert_eq!(json_body(&requests[7])["method"], "sync.delta");
+    let refreshed_token = bearer_token(&requests[7]);
     assert_eq!(
-        json_body(&requests[4])["params"]["body"]["security_profile"],
-        "direct-e2ee"
-    );
-    assert_eq!(json_body(&requests[5])["method"], "sync.bootstrap");
-    assert_eq!(json_body(&requests[6])["method"], "sync.delta");
-    let refreshed_token = bearer_token(&requests[6]);
-    assert_eq!(
-        json_body(&requests[6])["params"]["body"]["reason"],
+        json_body(&requests[7])["params"]["body"]["reason"],
         "foreground_reconcile"
     );
 
@@ -261,10 +259,7 @@ fn assert_vault_auth_token_is_used(
 ) {
     let is_inbox = args.windows(2).any(|pair| pair == ["msg", "inbox"]);
     let responses = if is_inbox {
-        vec![
-            TestResponse::empty_secure_inbox(),
-            TestResponse::sync_delta_empty(),
-        ]
+        vec![TestResponse::sync_delta_empty()]
     } else {
         vec![TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
@@ -280,7 +275,7 @@ fn assert_vault_auth_token_is_used(
     let output = awiki_cmd(args, workspace);
     assert_success(&output);
     let requests = server.requests();
-    assert_eq!(requests.len(), if is_inbox { 2 } else { 1 });
+    assert_eq!(requests.len(), 1);
     for request in &requests {
         assert_contains_text(
             request,
@@ -516,12 +511,12 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn empty_secure_inbox() -> Self {
-        Self::ok("__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__")
-    }
-
     fn sync_bootstrap() -> Self {
         Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
+    }
+
+    fn capabilities() -> Self {
+        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
     }
 
     fn sync_delta_empty() -> Self {
@@ -603,9 +598,11 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
-        "__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__" => rpc_result_for_request(
+        "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(
             request,
-            json!({"messages": [], "has_more": false, "warnings": []}),
+            json!({
+                "supported_profiles": ["awiki.message-sync.explicit-negotiation.v1"]
+            }),
         ),
         "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
             let binding = device_binding_from_authentication(request);
@@ -614,28 +611,51 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
             let client_instance_id = rpc["params"]["body"]["client_instance_id"]
                 .as_str()
                 .expect("sync.bootstrap client_instance_id");
-            assert_eq!(
-                rpc["params"]["body"]["capabilities"]["p6_delivery"],
-                "p6.delivery_context.v1"
-            );
-            rpc_result_for_request(
-                request,
-                json!({
-                    "mode": "tail_only",
-                    "account_id": binding.account_id,
-                    "device_id": binding.device_id,
-                    "server_time": "2026-08-02T00:00:00Z",
-                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
-                    "read_state_baseline": [],
-                    "group_state_baseline": [],
-                    "warnings": [],
-                    "p6_delivery": {
-                        "profile": "p6.delivery_context.v1",
-                        "client_instance_id": client_instance_id,
-                        "activated": true
-                    }
-                }),
-            )
+            let requested = rpc["params"]["body"]["capabilities"]["requested_sync_capabilities"]
+                .as_array()
+                .expect("sync.bootstrap requested capabilities")
+                .clone();
+            let has_p5 = requested.iter().any(|value| value == "lanes.p5_device.v1");
+            let has_p6 = requested.iter().any(|value| value == "lanes.p6_group.v1");
+            let mut lanes = serde_json::Map::new();
+            if has_p5 {
+                lanes.insert(
+                    "p5_device".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "41", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            if has_p6 {
+                lanes.insert(
+                    "p6_group".to_owned(),
+                    json!({
+                        "cursor": {"stream_epoch": "42", "scan_seq": "0"},
+                        "committed_seq": "0"
+                    }),
+                );
+            }
+            let mut result = json!({
+                "mode": "tail_only",
+                "account_id": binding.account_id,
+                "device_id": binding.device_id,
+                "server_time": "2026-08-02T00:00:00Z",
+                "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                "read_state_baseline": [],
+                "group_state_baseline": [],
+                "warnings": [],
+                "sync_capabilities": requested,
+                "lanes": lanes
+            });
+            if has_p6 {
+                result["p6_delivery"] = json!({
+                    "profile": "p6.delivery_context.v1",
+                    "client_instance_id": client_instance_id,
+                    "activated": true
+                });
+            }
+            rpc_result_for_request(request, result)
         }
         "__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__" => rpc_result_for_request(
             request,

@@ -56,13 +56,13 @@ pub use crate::identity::{
     IdentityDeviceAuthorizationStatus, IdentityDeviceRole, IdentityMissingItem, IdentityReadiness,
     IdentityRegistry, IdentitySecretStorageBackend, IdentitySelector, IdentityService,
     IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
-    IdentityVaultVerificationReport, InitialProfile, LegacyRegistryEpochAdoptionAuthority, Profile,
-    ProfileAttribute, ProfilePatch, RegisterHandleRequest, RegistrationMethod,
-    RootKeyTransferAuthorizationHandle, RootKeyTransferError, RootKeyTransferErrorCode,
-    RootKeyTransferPreparation, RootKeyTransferPrepareRequest, RootKeyTransferRecipientSummary,
-    RootKeyTransferResult, RootKeyTransferSendRequest, RootKeyTransferSendResult,
-    RootKeyTransferService, VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
-    VNextAgentLegacyUpgradeSession, VerificationInput,
+    IdentityVaultVerificationReport, InitialProfile, LegacyRegistryEpochAdoptionAuthority,
+    LocalIdentityDeletionTicket, Profile, ProfileAttribute, ProfilePatch, RegisterHandleRequest,
+    RegistrationMethod, RootKeyTransferAuthorizationHandle, RootKeyTransferError,
+    RootKeyTransferErrorCode, RootKeyTransferPreparation, RootKeyTransferPrepareRequest,
+    RootKeyTransferRecipientSummary, RootKeyTransferResult, RootKeyTransferSendRequest,
+    RootKeyTransferSendResult, RootKeyTransferService, VNextAgentBootstrapMaterial,
+    VNextAgentLegacyUpgradeReconciliation, VNextAgentLegacyUpgradeSession, VerificationInput,
 };
 #[cfg(feature = "service-trusted-registration")]
 pub use crate::identity::{

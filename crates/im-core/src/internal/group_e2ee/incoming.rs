@@ -678,13 +678,8 @@ fn default_string(value: &str, fallback: &str) -> String {
 }
 
 fn device_id_for_client(client: &crate::core::ImClient) -> String {
-    client
-        .current_identity()
-        .device_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
-        .to_owned()
+    super::storage::device_id_for_client(client)
+        .unwrap_or_else(|_| DEFAULT_GROUP_MLS_DEVICE_ID.to_owned())
 }
 
 fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
