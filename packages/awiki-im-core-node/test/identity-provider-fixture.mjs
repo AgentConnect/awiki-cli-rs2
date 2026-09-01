@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 const require = createRequire(import.meta.url)
 const { IdentityProvider } = require(
-  '../../../../anp-identity/bindings/node/provider.js',
+  '../../../../anp/anp-identity/bindings/node/provider.js',
 )
 
 const CAPABILITIES = [

@@ -199,7 +199,7 @@ cargo publish -p awiki-im-core --dry-run
 发布到 crates.io 时，每个 non-dev dependency 都必须带 crates.io `version`。本地 path dependency 可以保留，但需要同时写上已发布版本，例如：
 
 ```toml
-anp = { version = "1.0.0", path = "../anp/rust", default-features = false }
+anp = { version = "1.0.0", path = "../anp/anp/rust", default-features = false }
 ```
 
 ## 相关文档

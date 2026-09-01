@@ -54,14 +54,14 @@ jobs:
         with:
           repository: ${{ steps.release.outputs.anp_repository }}
           ref: ${{ steps.release.outputs.anp_commit }}
-          path: anp
+          path: anp/anp
 
       - name: Checkout pinned ANP Identity
         uses: actions/checkout@v6
         with:
           repository: agent-network-protocol/anp-identity
           ref: ${{ steps.release.outputs.anp_identity_commit }}
-          path: anp-identity
+          path: anp/anp-identity
 
       - name: Set up Rust 1.88
         shell: bash
@@ -84,7 +84,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build pinned ANP Identity Node binding
-        working-directory: anp-identity
+        working-directory: anp/anp-identity
         shell: bash
         run: |
           npm --prefix bindings/node ci

@@ -52,13 +52,21 @@ jobs:
           set -euo pipefail
           node scripts/release/cli/config.js release scripts/release/cli/release-config.json >/dev/null
           echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
+          echo "anp_identity_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_identity_commit)" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
         with:
           repository: agent-network-protocol/anp
           ref: ${{ steps.release.outputs.anp_commit }}
-          path: anp
+          path: anp/anp
+
+      - name: Checkout pinned ANP Identity
+        uses: actions/checkout@v6
+        with:
+          repository: agent-network-protocol/anp-identity
+          ref: ${{ steps.release.outputs.anp_identity_commit }}
+          path: anp/anp-identity
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
