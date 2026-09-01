@@ -56,7 +56,7 @@ the next run.
 
 | Key | Source | Purpose | Default |
 | --- | --- | --- | --- |
-| `AWIKI_DAEMON_BASE_URL` | env | Override base URL | file or `https://awiki.ai` |
+| `AWIKI_DAEMON_BASE_URL` | env | Override base URL | persisted file or fresh install `https://awiki.me` |
 | `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` | env | Daemon vault root | required in vault mode |
 | `AWIKI_HERMES_TUI_TOOLSETS` | env | TUI toolsets | `terminal,skills` |
 | `AWIKI_CLI_ENABLE_DIAGNOSTIC` | env | Diagnostic commands (`=1`) | off |

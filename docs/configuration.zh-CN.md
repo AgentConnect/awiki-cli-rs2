@@ -58,7 +58,7 @@
 
 | 标识符 | 来源 | 作用 | 默认值 |
 | --- | --- | --- | --- |
-| `AWIKI_DAEMON_BASE_URL` | 环境变量 | 覆盖 base_url | 未设则文件或 `https://awiki.ai` |
+| `AWIKI_DAEMON_BASE_URL` | 环境变量 | 覆盖 base_url | 已安装读取持久化文件；全新安装为 `https://awiki.me` |
 | `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` | 环境变量 | daemon vault 根密钥 | vault 模式必填 |
 | `AWIKI_HERMES_TUI_TOOLSETS` | 环境变量 | TUI toolset | `terminal,skills` |
 | `AWIKI_CLI_ENABLE_DIAGNOSTIC` | 环境变量 | diagnostic 命令闸（`=1`） | 关闭 |

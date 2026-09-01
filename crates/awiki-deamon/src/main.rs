@@ -319,7 +319,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
                 options: InstallOptions {
                     token,
                     state_root: state_root_or_default(state_root)?,
-                    base_url: base_url.unwrap_or_else(|| "https://awiki.ai".to_string()),
+                    base_url: base_url.unwrap_or_else(|| "https://awiki.me".to_string()),
                     download_base_url,
                     foreground,
                     no_service,
