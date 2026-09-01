@@ -205,9 +205,18 @@ fn root_preflight_exempts_local_recovery_commands_from_update_check() {
 }
 
 fn seed_metadata(workspace: &Path, latest: &str, minimum: &str) {
-    let path = workspace.join("cache").join("update").join("metadata.json");
+    let path = workspace
+        .join("tenants")
+        .join("china")
+        .join("cache")
+        .join("update")
+        .join("metadata.json");
     fs::create_dir_all(path.parent().unwrap()).expect("create cache dir");
     let payload = json!({
+        "product": "awiki-cli",
+        "channel": "stable",
+        "policy_origin": "https://awiki.me",
+        "policy_revision": 1,
         "latest_version": latest,
         "min_supported_version": minimum,
         "retrieved_at": "2020-01-01T00:00:00Z",

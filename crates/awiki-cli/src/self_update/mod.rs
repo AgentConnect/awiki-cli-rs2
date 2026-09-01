@@ -2,7 +2,7 @@ mod cache;
 mod version;
 
 use crate::build_info;
-use crate::workspace_config::{self, Resolved};
+use crate::workspace_config::{self, Resolved, UpdatePolicyContext};
 use std::path::PathBuf;
 
 const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 43_200;
@@ -16,18 +16,35 @@ static TEST_CURRENT_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
+    pub product: String,
+    pub channel: String,
+    pub policy_origin: String,
+    pub policy_revision: u64,
+    pub published_at: String,
+    pub release_notes_url: String,
     pub latest_version: String,
     pub min_supported_version: String,
     pub installer_url: String,
+    pub installer_mirrors: Vec<String>,
+    pub installer_sha256: String,
+    pub installer_size: u64,
+    pub installer_integrity: String,
     pub source: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Decision {
+    pub tenant_alias: String,
+    pub policy_origin: String,
+    pub policy_revision: u64,
     pub current_version: String,
     pub latest_version: String,
     pub min_supported_version: String,
     pub installer_url: String,
+    pub installer_mirrors: Vec<String>,
+    pub installer_sha256: String,
+    pub installer_size: u64,
+    pub installer_integrity: String,
     pub metadata_source: String,
     pub strict_disabled: bool,
     pub dev_build: bool,
@@ -49,6 +66,26 @@ pub fn check_fresh(resolved: &Resolved) -> CheckOutcome {
     check_with_settings(check_settings_from_resolved(resolved), true)
 }
 
+pub fn check_context(context: &UpdatePolicyContext) -> CheckOutcome {
+    let tenant_origin = service_origin(&context.service_base_url).unwrap_or_default();
+    let manifest_urls = manifest_urls_for_origin(&tenant_origin);
+    let policy_origin = manifest_urls
+        .first()
+        .and_then(|url| service_origin(url).ok())
+        .unwrap_or(tenant_origin);
+    check_with_settings(
+        CheckSettings {
+            strict_disabled: context.disable_strict_version,
+            metadata_cache_ttl_seconds: context.metadata_cache_ttl_seconds,
+            cache_dir: non_empty_path(&context.cache_dir),
+            tenant_alias: context.tenant_alias.clone(),
+            policy_origin,
+            manifest_urls,
+        },
+        false,
+    )
+}
+
 pub fn check_preflight() -> CheckOutcome {
     check_with_settings(CheckSettings::preflight(), false)
 }
@@ -58,25 +95,49 @@ struct CheckSettings {
     strict_disabled: bool,
     metadata_cache_ttl_seconds: i64,
     cache_dir: Option<PathBuf>,
+    tenant_alias: String,
+    policy_origin: String,
+    manifest_urls: Vec<String>,
 }
 
 impl CheckSettings {
     fn preflight() -> Self {
+        let manifest_urls = manifest_urls_for_origin("https://awiki.ai");
+        let policy_origin = manifest_urls
+            .first()
+            .and_then(|url| service_origin(url).ok())
+            .unwrap_or_else(|| "https://awiki.ai".to_string());
         Self {
             strict_disabled: false,
             metadata_cache_ttl_seconds: 0,
             cache_dir: workspace_config::product_cache_dir()
                 .ok()
                 .and_then(|path| non_empty_path(&path)),
+            tenant_alias: "global".to_string(),
+            policy_origin,
+            manifest_urls,
         }
     }
 }
 
 fn check_settings_from_resolved(resolved: &Resolved) -> CheckSettings {
+    let tenant_origin = service_origin(&resolved.service_base_url).unwrap_or_default();
+    let manifest_urls = manifest_urls_for_origin(&tenant_origin);
+    let policy_origin = manifest_urls
+        .first()
+        .and_then(|url| service_origin(url).ok())
+        .unwrap_or(tenant_origin);
     CheckSettings {
         strict_disabled: resolved.update_disable_strict_version,
         metadata_cache_ttl_seconds: resolved.update_metadata_cache_ttl_seconds,
         cache_dir: update_cache_dir(resolved),
+        tenant_alias: resolved
+            .sources
+            .get("active_tenant")
+            .map(|source| source.value.clone())
+            .unwrap_or_default(),
+        manifest_urls,
+        policy_origin,
     }
 }
 
@@ -92,7 +153,9 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
         ..Decision::default()
     };
 
-    let urls = manifest_urls();
+    let urls = settings.manifest_urls.clone();
+    decision.tenant_alias = settings.tenant_alias.clone();
+    decision.policy_origin = settings.policy_origin.clone();
     decision.installer_url =
         installer_url_from_manifest_url(urls.first().map(String::as_str).unwrap_or_default());
     let mut metadata = match cache::load_metadata(
@@ -101,6 +164,7 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
         prefer_fresh,
         update_cache_only_enabled(),
         &urls,
+        &settings.policy_origin,
     ) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -117,6 +181,12 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
     decision.latest_version = metadata.latest_version;
     decision.min_supported_version = metadata.min_supported_version;
     decision.installer_url = metadata.installer_url;
+    decision.installer_mirrors = metadata.installer_mirrors;
+    decision.installer_sha256 = metadata.installer_sha256;
+    decision.installer_size = metadata.installer_size;
+    decision.installer_integrity = metadata.installer_integrity;
+    decision.policy_origin = metadata.policy_origin;
+    decision.policy_revision = metadata.policy_revision;
     decision.metadata_source = metadata.source;
 
     if version::compare_versions(&decision.latest_version, &decision.current_version)
@@ -185,16 +255,6 @@ fn metadata_cache_ttl_seconds(configured: i64) -> i64 {
 }
 
 fn update_cache_dir(resolved: &Resolved) -> Option<PathBuf> {
-    if std::env::var("AWIKI_CLI_WORKSPACE_HOME_DIR")
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return workspace_config::product_cache_dir()
-            .ok()
-            .and_then(|path| non_empty_path(&path))
-            .or_else(|| non_empty_path(&resolved.paths.cache_dir));
-    }
     non_empty_path(&resolved.paths.cache_dir)
 }
 
@@ -215,7 +275,7 @@ fn parse_bool(raw: &str) -> bool {
     )
 }
 
-fn manifest_urls() -> Vec<String> {
+fn manifest_urls_for_origin(policy_origin: &str) -> Vec<String> {
     #[cfg(test)]
     {
         if let Some(urls) = TEST_NPM_LATEST_URLS
@@ -228,7 +288,7 @@ fn manifest_urls() -> Vec<String> {
     }
     let configured = std::env::var("AWIKI_CLI_UPDATE_BASE_URL").unwrap_or_default();
     let base = if configured.trim().is_empty() {
-        "https://awiki.ai/cli/stable".to_string()
+        format!("{}/cli/stable", policy_origin.trim_end_matches('/'))
     } else {
         configured.trim().trim_end_matches('/').to_string()
     };
@@ -237,6 +297,26 @@ fn manifest_urls() -> Vec<String> {
     } else {
         vec![format!("{base}/manifest.json")]
     }
+}
+
+fn service_origin(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let (scheme, rest) = trimmed
+        .split_once("://")
+        .ok_or_else(|| "tenant backend URL is missing a scheme".to_string())?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return Err("tenant backend URL is missing a valid host".to_string());
+    }
+    let loopback = authority
+        .trim_matches(['[', ']'])
+        .split(':')
+        .next()
+        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    if scheme != "https" && !(cfg!(debug_assertions) && scheme == "http" && loopback) {
+        return Err("tenant update policy must use HTTPS".to_string());
+    }
+    Ok(format!("{}://{}", scheme.to_ascii_lowercase(), authority))
 }
 
 fn installer_url_from_manifest_url(manifest_url: &str) -> String {

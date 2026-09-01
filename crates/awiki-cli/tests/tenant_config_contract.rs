@@ -733,9 +733,14 @@ fn legacy_single_workspace_state_is_archived_and_not_used() {
 }
 
 #[test]
-fn update_metadata_cache_is_global_not_tenant_local() {
+fn update_metadata_cache_is_tenant_local_and_never_falls_back_to_global() {
     let workspace = TempDir::new("tenant-global-update-cache").expect("workspace");
-    seed_metadata(workspace.path(), "0.0.1-beta.5", "10.0.1");
+    seed_metadata(
+        &workspace.path().join("cache"),
+        "https://awiki.ai",
+        "0.0.1-beta.5",
+        "10.0.1",
+    );
     assert_success(&awiki_cmd(
         &[
             "tenant",
@@ -757,25 +762,35 @@ fn update_metadata_cache_is_global_not_tenant_local() {
     );
     assert_success(&output);
     let envelope = success_json(&output);
-    assert_eq!(envelope["data"]["update_metadata_source"], "cache");
-    assert_eq!(envelope["data"]["latest_version"], "0.0.1-beta.5");
-    assert!(
-        !workspace
-            .path()
-            .join("tenants")
-            .join("acme")
-            .join("cache")
-            .join("update")
-            .join("metadata.json")
-            .exists(),
-        "update metadata cache must not move into a tenant workspace"
+    assert_eq!(envelope["data"]["tenant"], "acme");
+    assert_eq!(envelope["data"]["update_check_status"], "unavailable");
+    assert_eq!(envelope["data"].get("update_metadata_source"), None);
+
+    seed_metadata(
+        &workspace.path().join("tenants").join("acme").join("cache"),
+        "https://api.acme.test",
+        "0.0.2-beta.1",
+        "0.0.1",
     );
+    let tenant_output = awiki_cmd_extra(
+        &["upgrade", "--format", "json"],
+        workspace.path(),
+        &[("AWIKI_CLI_UPDATE_CACHE_TTL", "3153600000")],
+    );
+    assert_success(&tenant_output);
+    let tenant_envelope = success_json(&tenant_output);
+    assert_eq!(tenant_envelope["data"]["update_metadata_source"], "cache");
+    assert_eq!(tenant_envelope["data"]["latest_version"], "0.0.2-beta.1");
 }
 
-fn seed_metadata(workspace: &Path, latest: &str, minimum: &str) {
-    let path = workspace.join("cache").join("update").join("metadata.json");
+fn seed_metadata(cache_dir: &Path, policy_origin: &str, latest: &str, minimum: &str) {
+    let path = cache_dir.join("update").join("metadata.json");
     fs::create_dir_all(path.parent().unwrap()).expect("create cache dir");
     let payload = json!({
+        "product": "awiki-cli",
+        "channel": "stable",
+        "policy_origin": policy_origin,
+        "policy_revision": 1,
         "latest_version": latest,
         "min_supported_version": minimum,
         "retrieved_at": "2020-01-01T00:00:00Z",
