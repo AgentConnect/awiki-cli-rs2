@@ -1434,8 +1434,8 @@ fn write_group_config(workspace: &Path, base_url: &str) {
     let output = awiki_cmd(
         &[
             "tenant",
-            "reconfigure",
-            "default",
+            "create",
+            "group-test",
             "--backend-base-url",
             base_url,
             "--did-host",
@@ -1444,6 +1444,7 @@ fn write_group_config(workspace: &Path, base_url: &str) {
         workspace,
     );
     assert_code(&output, 0);
+    assert_code(&awiki_cmd(&["tenant", "use", "group-test"], workspace), 0);
     write_tenant_config(workspace, "runtime:\n  mode: http\n");
 }
 

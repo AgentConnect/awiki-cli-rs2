@@ -562,14 +562,14 @@ fn write_tenant_config(product_home: &Path, text: &str) {
 fn tenant_config_path(product_home: &Path) -> std::path::PathBuf {
     product_home
         .join("tenants")
-        .join("default")
+        .join("china")
         .join("config.yaml")
 }
 
 fn tenant_runtime_path(product_home: &Path, file_name: &str) -> std::path::PathBuf {
     product_home
         .join("tenants")
-        .join("default")
+        .join("china")
         .join("runtime")
         .join(file_name)
 }

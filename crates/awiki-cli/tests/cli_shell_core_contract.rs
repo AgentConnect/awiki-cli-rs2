@@ -172,9 +172,9 @@ fn config_show_reports_resolved_configuration_snapshot() {
         ],
     );
     assert_eq!(envelope["data"]["output_format"], "json");
-    assert_eq!(envelope["data"]["did_domain"], "awiki.ai");
+    assert_eq!(envelope["data"]["did_domain"], "awiki.me");
     assert_eq!(envelope["data"]["config_exists"], true);
-    assert_eq!(envelope["data"]["tenant"]["active"], "default");
+    assert_eq!(envelope["data"]["tenant"]["active"], "china");
     assert_has_keys(
         &envelope["data"]["identity_store"],
         &[
@@ -464,7 +464,7 @@ fn static_schema_and_docs_do_not_require_valid_workspace_config() {
     let config = workspace
         .path()
         .join("tenants")
-        .join("default")
+        .join("china")
         .join("config.yaml");
     std::fs::create_dir_all(config.parent().expect("config parent")).expect("tenant dir");
     std::fs::write(
@@ -900,7 +900,7 @@ fn dry_run_init_returns_plan_without_writing_workspace() {
         workspace
             .path()
             .join("tenants")
-            .join("default")
+            .join("china")
             .to_string_lossy()
             .as_ref()
     );
@@ -913,7 +913,7 @@ fn dry_run_init_returns_plan_without_writing_workspace() {
         !workspace
             .path()
             .join("tenants")
-            .join("default")
+            .join("china")
             .join("data")
             .join("awiki-cli.db")
             .exists(),
@@ -944,7 +944,7 @@ fn init_creates_real_sqlite_schema() {
         workspace
             .path()
             .join("tenants")
-            .join("default")
+            .join("china")
             .join("data")
             .join("awiki-cli.db"),
     )
@@ -1021,7 +1021,7 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
         "people.contacts.save"
     );
     assert_eq!(envelope["data"]["plan"]["did"], "did:example:alice");
-    assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.ai");
+    assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.me");
     assert_eq!(envelope["data"]["plan"]["display_name"], "Alice");
     assert_eq!(envelope["data"]["plan"]["name"], "Alice");
     assert_eq!(envelope["data"]["plan"]["note"], "migration smoke");

@@ -924,6 +924,37 @@ fn write_msg_config_with_runtime(workspace: &Path, base_url: &str, runtime_mode:
 }
 
 fn configure_default_tenant_if_needed(workspace: &Path, base_url: &str) {
+    let registry_path = workspace.join("tenants").join("registry.json");
+    if !registry_path.exists() {
+        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("create tenant registry directory");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 1,
+                "tenants": [{
+                    "name": "default",
+                    "display_name": "Attachment test",
+                    "backend_base_url": base_url,
+                    "did_host": "awiki.ai",
+                    "dir_name": "default",
+                    "created_at": "2026-08-28T00:00:00Z",
+                    "updated_at": "2026-08-28T00:00:00Z"
+                }]
+            }))
+            .expect("serialize tenant registry"),
+        )
+        .expect("write tenant registry");
+        std::fs::write(
+            workspace.join("global.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 1,
+                "active_tenant": "default"
+            }))
+            .expect("serialize global config"),
+        )
+        .expect("write global config");
+    }
     let current = awiki_cmd(&["tenant", "current"], workspace);
     assert_success(&current);
     let envelope: Value = serde_json::from_slice(&current.stdout).expect("tenant current JSON");

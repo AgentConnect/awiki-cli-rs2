@@ -20,12 +20,23 @@ Authoritative configuration for **awiki-cli-rs2** (CLI, daemon, im-core). Source
 
 | Key | Source | Purpose | Default |
 | --- | --- | --- | --- |
-| `global.active_tenant` | `global.json`; `--tenant` | Active tenant | `default` |
-| `registry.tenants[].backend_base_url` | `tenants/registry.json` | Backend base | `https://awiki.ai` |
-| `registry.tenants[].did_host` | same | DID host | `awiki.ai` |
-| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | env | Default tenant backend | empty → `https://awiki.ai` |
-| `AWIKI_CLI_DEFAULT_DID_HOST` | env | Default tenant DID host | empty → `awiki.ai` |
+| `global.active_tenant` | `global.json`; `--tenant` | Active tenant | fresh workspace → `china` |
+| `registry.schema_version` | `tenants/registry.json` | Tenant registry format | `2` |
+| `registry.official_catalog_version` | same | Reconciled official catalog | `1` |
+| `registry.aliases.default` | same | Compatibility alias | fresh workspace → `china` |
+| `registry.tenants[].kind` | same | `built_in` or `custom` | official entries → `built_in` |
+| official `china` endpoint | same | Shanghai tenant | `https://awiki.me` / `awiki.me` |
+| official `global` endpoint | same | Silicon Valley tenant | `https://awiki.ai` / `awiki.ai` |
+| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | env | Private-release initial backend (paired override) | empty → official China |
+| `AWIKI_CLI_DEFAULT_DID_HOST` | env | Private-release initial DID host (paired override) | empty → official China |
 | `AWIKI_CLI_WORKSPACE_HOME_DIR` | env | Product home | unset → `~/.awiki-cli` |
+
+Official tenants cannot be reconfigured. On first read, a v1 `default` profile that
+targets `awiki.ai` becomes the canonical `global` profile without changing its
+`dir_name=default`; the `default` alias continues to resolve to `global`. Before the
+v2 registry and active-tenant control files are atomically replaced, `.v1.bak`
+copies are created. A failed migration keeps the v1 registry usable and retries on
+the next run.
 
 ## Runtime / secrets / multi-device
 

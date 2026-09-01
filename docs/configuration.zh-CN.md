@@ -21,12 +21,22 @@
 
 | 标识符 | 来源 | 作用 | 默认值 |
 | --- | --- | --- | --- |
-| `global.active_tenant` | `global.json`；`--tenant` 覆盖 | 当前租户 | `default` |
-| `registry.tenants[].backend_base_url` | `tenants/registry.json` | 后端基址 | `https://awiki.ai` |
-| `registry.tenants[].did_host` | 同上 | DID 主机 | `awiki.ai` |
-| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | 环境变量 | 创建默认租户时的 backend | 空 → `https://awiki.ai` |
-| `AWIKI_CLI_DEFAULT_DID_HOST` | 环境变量 | 创建默认租户时的 DID host | 空 → `awiki.ai` |
+| `global.active_tenant` | `global.json`；`--tenant` 覆盖 | 当前租户 | 全新工作区 → `china` |
+| `registry.schema_version` | `tenants/registry.json` | 租户注册表格式 | `2` |
+| `registry.official_catalog_version` | 同上 | 已对齐的官方目录 | `1` |
+| `registry.aliases.default` | 同上 | 兼容别名 | 全新工作区 → `china` |
+| `registry.tenants[].kind` | 同上 | `built_in` 或 `custom` | 官方项 → `built_in` |
+| 官方 `china` 端点 | 同上 | 上海租户 | `https://awiki.me` / `awiki.me` |
+| 官方 `global` 端点 | 同上 | 硅谷租户 | `https://awiki.ai` / `awiki.ai` |
+| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | 环境变量 | 私有发行首次初始化 backend（成对覆盖） | 空 → 官方中国租户 |
+| `AWIKI_CLI_DEFAULT_DID_HOST` | 环境变量 | 私有发行首次初始化 DID host（成对覆盖） | 空 → 官方中国租户 |
 | `AWIKI_CLI_WORKSPACE_HOME_DIR` | 环境变量 | 产品工作区根 | 未设 → `~/.awiki-cli` |
+
+官方租户不允许重新配置。首次读取 v1 注册表时，指向 `awiki.ai` 的历史
+`default` profile 会变成标准 `global` profile，但保留 `dir_name=default`；
+`default` 别名仍指向 `global`。原子替换 v2 注册表和 active tenant
+控制文件前会先生成 `.v1.bak` 备份。迁移失败时继续使用 v1 注册表，
+下次运行再重试。
 
 ## 运行时 / 通知 / 密钥
 
