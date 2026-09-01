@@ -3040,7 +3040,8 @@ mod tests {
                 "state_version": "2"
             }],
             "group_state_baseline": [],
-            "warnings": []
+            "warnings": [],
+            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"}
         }))
         .unwrap();
         assert_eq!(parsed.read_state_baseline.len(), 1);
@@ -3098,10 +3099,11 @@ mod tests {
             "recovery": {
                 "recovery_id": "recovery-123",
                 "token": "opaque-secret",
+                "snapshot_schema": 3,
+                "snapshot_delivery": "paged_v1",
                 "stream_epoch": "2",
                 "snapshot_scan_seq": "15020",
                 "message_cutoff": "2026-07-26T12:00:03Z",
-                "message_limit": 500,
                 "expires_at": "2026-07-28T12:10:03Z"
             },
             "warnings": []
@@ -3111,7 +3113,7 @@ mod tests {
             SyncDeltaResponseV2::RecoveryRequired(recovery) => recovery,
             SyncDeltaResponseV2::Delta(_) => panic!("expected recovery"),
         };
-        assert_eq!(recovery.snapshot_schema, 1);
+        assert_eq!(recovery.snapshot_schema, 3);
         let params = build_snapshot_params(
             &WireIdentity {
                 did: "did:example:alice".to_owned(),
@@ -3121,29 +3123,10 @@ mod tests {
         .unwrap();
         assert_eq!(params.pointer("/body/token"), Some(&json!("opaque-secret")));
 
-        let snapshot = parse_snapshot(&json!({
-            "mode": "compact_recovery",
-            "account_id": "account-1",
-            "device_id": "device-1",
-            "server_time": "2026-07-28T12:00:04Z",
-            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "15020"},
-            "read_states": [],
-            "groups": [],
-            "recent_plain_messages": [],
-            "message_policy": {
-                "server_cutoff": "2026-07-26T12:00:03Z",
-                "max_logical_messages": 500,
-                "returned_logical_messages": 0
-            },
-            "excluded": {
-                "e2ee_messages": true,
-                "plain_messages_before_cutoff": true
-            }
-        }))
-        .unwrap();
-        assert_eq!(snapshot.snapshot_cursor.scan_seq, "15020");
-        assert_eq!(snapshot.snapshot_schema, 1);
-        assert!(snapshot.recent_plain_messages.is_empty());
+        let snapshot_page =
+            parse_snapshot_page_v3(&empty_schema3_snapshot_response(), true).unwrap();
+        assert_eq!(snapshot_page.snapshot_cursor.scan_seq, "20");
+        assert!(snapshot_page.manifest.is_some());
     }
 
     #[test]

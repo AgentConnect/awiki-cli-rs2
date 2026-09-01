@@ -584,7 +584,7 @@ pub(crate) fn mark_new_device_remote_create_attempting(
     let store = JoinStateStore::new(core);
     let mut stored = store
         .load(&join_session_id, DeviceJoinSide::NewDevice)?
-        .ok_or_else(|| crate::ImError::IdentityNotFound {
+        .ok_or(crate::ImError::IdentityNotFound {
             selector: join_session_id,
         })?;
     ensure_not_expired(&stored)?;
