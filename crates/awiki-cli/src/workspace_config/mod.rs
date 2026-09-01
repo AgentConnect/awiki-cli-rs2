@@ -129,6 +129,16 @@ pub struct TenantSetupResult {
     pub tenant: TenantContext,
 }
 
+/// Minimal tenant-scoped update inputs resolved without creating or migrating files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePolicyContext {
+    pub tenant_alias: String,
+    pub service_base_url: String,
+    pub cache_dir: String,
+    pub disable_strict_version: bool,
+    pub metadata_cache_ttl_seconds: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceConfigErrorKind {
     InvalidArgument,
@@ -660,6 +670,70 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
         config_error,
         env_hits: collect_env_hits(),
         sources,
+    })
+}
+
+/// Resolve the selected tenant for root update preflight without mutating the workspace.
+pub fn resolve_update_policy_context(
+    tenant_override: &str,
+    tenant_changed: bool,
+) -> anyhow::Result<UpdatePolicyContext> {
+    let home = try_home_dir();
+    let (product_home_dir, _) = resolve_workspace_home(home.as_deref())?;
+    let registry_path = tenant_registry_path(&product_home_dir);
+    let (registry, default_active) = if registry_path.exists() {
+        let raw = fs::read_to_string(&registry_path).map_err(|error| {
+            anyhow::anyhow!("read tenant registry {}: {error}", registry_path.display())
+        })?;
+        let registry: TenantRegistry = serde_json::from_str(&raw).map_err(|error| {
+            anyhow::anyhow!("parse tenant registry {}: {error}", registry_path.display())
+        })?;
+        if registry.schema_version != 1 && registry.schema_version != TENANT_REGISTRY_SCHEMA_VERSION
+        {
+            anyhow::bail!(
+                "unsupported tenant registry schema_version {}",
+                registry.schema_version
+            );
+        }
+        let active = if global_config_path(&product_home_dir).exists() {
+            load_global_config(&product_home_dir)?.active_tenant
+        } else {
+            CHINA_TENANT_NAME.to_string()
+        };
+        (registry, active)
+    } else {
+        let (tenants, aliases, active) = default_tenant_profiles()?;
+        (
+            TenantRegistry {
+                schema_version: TENANT_REGISTRY_SCHEMA_VERSION,
+                official_catalog_version: OFFICIAL_TENANT_CATALOG_VERSION,
+                aliases,
+                tenants,
+            },
+            active,
+        )
+    };
+    let requested = if tenant_changed {
+        normalize_tenant_name(tenant_override)?
+    } else if default_active.trim().is_empty() {
+        CHINA_TENANT_NAME.to_string()
+    } else {
+        normalize_tenant_name(&default_active)?
+    };
+    let selected = resolve_tenant_alias(&registry, &requested);
+    let profile = registry
+        .tenants
+        .iter()
+        .find(|tenant| tenant.name == selected)
+        .ok_or_else(|| tenant_not_found_error("active tenant", &selected))?;
+    let paths = build_paths(home.as_deref(), &tenant_dir(&product_home_dir, profile));
+    let (config, _, _) = read_file_config(&paths.config_file);
+    Ok(UpdatePolicyContext {
+        tenant_alias: selected,
+        service_base_url: normalize_base_url(&profile.backend_base_url),
+        cache_dir: paths.cache_dir,
+        disable_strict_version: config.update.disable_strict_version,
+        metadata_cache_ttl_seconds: config.update.metadata_cache_ttl_seconds,
     })
 }
 
