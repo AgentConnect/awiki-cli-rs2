@@ -7,7 +7,7 @@ use im_core::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_BASE_URL: &str = "https://awiki.ai";
+const DEFAULT_BASE_URL: &str = "https://awiki.me";
 const PERSISTENT_CONFIG_FILE_NAME: &str = "config.json";
 const LOCAL_RPC_DIR_NAME: &str = "run";
 const LOCAL_RPC_SOCKET_FILE_NAME: &str = "d.sock";
@@ -515,7 +515,7 @@ fn host_from_base_url(base_url: &str) -> String {
     authority
         .split(':')
         .next()
-        .unwrap_or("awiki.ai")
+        .unwrap_or("awiki.me")
         .trim()
         .to_ascii_lowercase()
 }
@@ -654,14 +654,14 @@ mod tests {
             root.join("identity").join("registry.json")
         );
         assert_eq!(config.secret_vault_dir, root.join("secrets").join("vault"));
-        assert_eq!(config.service_base_url, "https://awiki.ai");
-        assert_eq!(config.user_service_base_url, "https://awiki.ai");
-        assert_eq!(config.message_service_base_url, "https://awiki.ai");
-        assert_eq!(config.mail_service_base_url, "https://awiki.ai");
-        assert_eq!(config.download_base_url, "https://awiki.ai/daemon");
-        assert_eq!(config.did_domain, "awiki.ai");
-        assert_eq!(config.anp_service_endpoint, "https://awiki.ai/anp-im/rpc");
-        assert_eq!(config.anp_service_did, "did:wba:awiki.ai");
+        assert_eq!(config.service_base_url, "https://awiki.me");
+        assert_eq!(config.user_service_base_url, "https://awiki.me");
+        assert_eq!(config.message_service_base_url, "https://awiki.me");
+        assert_eq!(config.mail_service_base_url, "https://awiki.me");
+        assert_eq!(config.download_base_url, "https://awiki.me/daemon");
+        assert_eq!(config.did_domain, "awiki.me");
+        assert_eq!(config.anp_service_endpoint, "https://awiki.me/anp-im/rpc");
+        assert_eq!(config.anp_service_did, "did:wba:awiki.me");
         config.validate().unwrap();
     }
 
@@ -791,6 +791,29 @@ mod tests {
     }
 
     #[test]
+    fn persisted_global_install_is_not_retargeted_to_the_new_china_default() {
+        let _env = EnvGuard::clear();
+        let root = tempfile::tempdir().unwrap();
+        let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.service_base_url = "https://awiki.ai".to_string();
+        config.user_service_base_url = "https://awiki.ai".to_string();
+        config.message_service_base_url = "https://awiki.ai".to_string();
+        config.mail_service_base_url = "https://awiki.ai".to_string();
+        config.download_base_url = "https://awiki.ai/daemon".to_string();
+        config.did_domain = "awiki.ai".to_string();
+        config.anp_service_endpoint = "https://awiki.ai/anp-im/rpc".to_string();
+        config.anp_service_did = "did:wba:awiki.ai".to_string();
+        config.write_persistent_config().unwrap();
+
+        let loaded = DaemonConfig::for_state_root(root.path()).unwrap();
+
+        assert_eq!(loaded.service_base_url, "https://awiki.ai");
+        assert_eq!(loaded.did_domain, "awiki.ai");
+        assert_eq!(loaded.download_base_url, "https://awiki.ai/daemon");
+        assert_eq!(loaded.anp_service_did, "did:wba:awiki.ai");
+    }
+
+    #[test]
     fn hermes_gateway_env_overrides_persistent_config() {
         let _env = EnvGuard::clear();
         let root = tempfile::tempdir().unwrap();
@@ -818,26 +841,26 @@ mod tests {
 
         let im_core_config = config.im_core_config().unwrap();
 
-        assert_eq!(im_core_config.service_base_url.as_str(), "https://awiki.ai");
+        assert_eq!(im_core_config.service_base_url.as_str(), "https://awiki.me");
         assert_eq!(
             im_core_config.user_service_endpoint.unwrap().as_str(),
-            "https://awiki.ai"
+            "https://awiki.me"
         );
         assert_eq!(
             im_core_config.message_service_endpoint.unwrap().as_str(),
-            "https://awiki.ai"
+            "https://awiki.me"
         );
         assert_eq!(
             im_core_config.mail_service_endpoint.unwrap().as_str(),
-            "https://awiki.ai"
+            "https://awiki.me"
         );
         assert_eq!(
             im_core_config.anp_service_endpoint.unwrap().as_str(),
-            "https://awiki.ai/anp-im/rpc"
+            "https://awiki.me/anp-im/rpc"
         );
         assert_eq!(
             im_core_config.anp_service_did.unwrap().as_str(),
-            "did:wba:awiki.ai"
+            "did:wba:awiki.me"
         );
         assert_eq!(
             im_core_config.transport_policy,
