@@ -1034,12 +1034,6 @@ pub struct NodeHandleRecoveryOperationInput {
     pub operation_id: String,
 }
 
-#[napi(object)]
-pub struct NodeHandleRecoveryAttestationResult {
-    pub attestation: String,
-    pub expires_at: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
 pub struct NodeHandleRecoveryImpact {
@@ -1673,16 +1667,6 @@ pub(crate) fn recovery_progress(
             local_ordinary_data_will_migrate: value.impact.local_ordinary_data_will_migrate,
             other_devices_must_rejoin: value.impact.other_devices_must_rejoin,
         },
-    }
-}
-
-pub(crate) fn recovery_attestation(
-    value: im_core::identity::HandleRecoveryAttestation,
-) -> NodeHandleRecoveryAttestationResult {
-    let attestation = value.expose_attestation().to_owned();
-    NodeHandleRecoveryAttestationResult {
-        attestation,
-        expires_at: value.expires_at,
     }
 }
 

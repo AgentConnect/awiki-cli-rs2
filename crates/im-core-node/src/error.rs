@@ -243,23 +243,6 @@ fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
             true,
         );
     }
-    if code == "recovery_attestation.temporarily_unavailable" {
-        return SafeError::new(
-            "recovery_reconciliation_unavailable",
-            "Identity recovery reconciliation is temporarily unavailable.",
-            true,
-        );
-    }
-    if matches!(
-        code.as_str(),
-        "recovery_attestation.not_found" | "recovery_attestation.invalid_request"
-    ) {
-        return SafeError::new(
-            "recovery_reconciliation_invalid",
-            "Identity recovery cannot be reconciled from this operation.",
-            false,
-        );
-    }
     if status == Some(403) || code == "anp.forbidden" {
         return SafeError::new(
             "permission_denied",

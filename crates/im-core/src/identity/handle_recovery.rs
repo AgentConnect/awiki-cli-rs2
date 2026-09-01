@@ -59,41 +59,6 @@ pub struct HandleRecoveryResumeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HandleRecoveryAttestationRequest {
-    pub operation_id: String,
-}
-
-/// Short-lived Host-only reconciliation authority. Debug output is always redacted.
-pub struct HandleRecoveryAttestation {
-    attestation: zeroize::Zeroizing<String>,
-    pub expires_at: String,
-}
-
-impl HandleRecoveryAttestation {
-    pub(crate) fn new(attestation: String, expires_at: String) -> Self {
-        Self {
-            attestation: zeroize::Zeroizing::new(attestation),
-            expires_at,
-        }
-    }
-
-    /// Exposes the opaque token only to a trusted host transport.
-    pub fn expose_attestation(&self) -> &str {
-        self.attestation.as_str()
-    }
-}
-
-impl std::fmt::Debug for HandleRecoveryAttestation {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("HandleRecoveryAttestation")
-            .field("attestation", &"<redacted>")
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRecoveryDiscardRequest {
     pub operation_id: String,
 }
@@ -342,14 +307,6 @@ impl<'a> HandleRecoveryService<'a> {
         request: HandleRecoveryResumeRequest,
     ) -> crate::ImResult<HandleRecoveryProgress> {
         crate::internal::identity_handle_recovery_runtime::resume(self.core, request).await
-    }
-
-    pub async fn issue_handle_recovery_attestation(
-        &self,
-        request: HandleRecoveryAttestationRequest,
-    ) -> crate::ImResult<HandleRecoveryAttestation> {
-        crate::internal::identity_handle_recovery_runtime::issue_attestation(self.core, request)
-            .await
     }
 
     pub fn handle_recovery_status(

@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node-darwin-arm64",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "macOS arm64 native addon for @awiki/im-core-node",
   "type": "commonjs",
   "license": "AGPL-3.0-only",

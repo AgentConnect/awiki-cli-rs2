@@ -258,7 +258,7 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })
 
-test('routes group, profile, recovery attestation, and payload operations through native v10 with structured identity errors', async t => {
+test('routes group, profile, and payload operations through native v10 with structured identity errors', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))

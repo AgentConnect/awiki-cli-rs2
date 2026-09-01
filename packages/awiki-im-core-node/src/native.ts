@@ -17,7 +17,6 @@ import type {
   GroupMembersInput,
   HandleRecoveryOperationInput,
   HandleRecoveryOperationSummary,
-  HandleRecoveryAttestationResult,
   HandleRecoveryOtpInput,
   HandleRecoveryOtpResult,
   HandleRecoveryPrepareInput,
@@ -158,7 +157,6 @@ export interface NativeImCoreNodeClient {
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
-  issueHandleRecoveryAttestation(input: HandleRecoveryOperationInput): Promise<HandleRecoveryAttestationResult>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   close(): Promise<void>

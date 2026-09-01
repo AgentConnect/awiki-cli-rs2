@@ -218,12 +218,6 @@ bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 调用 high-level `resumeGroupRebindRecovery()`；不得解析原始服务消息、拼接底层 group RPC，或把
 summary 的 `warnings` 暴露给浏览器。
 
-`issueHandleRecoveryAttestation({ operationId })` 仅供受信 Host 在恢复状态已 `applied` 后执行
-Model Proxy 对账。Node facade 不允许 caller 提供 claims/audience，只返回短时 opaque attestation
-与 `expiresAt`；Host 必须立即使用并丢弃，不得写入文件、数据库、日志、diagnostic DTO、Browser
-remote 或 Agent 工具。临时服务故障映射为可重试 `recovery_reconciliation_unavailable`；operation
-不匹配映射为不可重试 `recovery_reconciliation_invalid`，原始服务正文和 token 均不会进入 JS 错误。
-
 `0.1.8` candidate 首次增加 DSH 所需的新设备 Join 恢复/SAS/cancel，以及 ready-admin Registry、
 审批、拒绝和撤销 facade。当前 `release/0815` 的 `0.2.0` candidate 在保留这些能力的同时增加
 External Identity Provider bridge，Native contract version 仍为 `10`；wrapper 与全部 Tier 1

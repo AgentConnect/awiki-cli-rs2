@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node-win32-x64-msvc",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Windows x64 MSVC native addon for @awiki/im-core-node",
   "type": "commonjs",
   "license": "AGPL-3.0-only",

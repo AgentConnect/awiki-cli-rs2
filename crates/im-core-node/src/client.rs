@@ -2140,37 +2140,6 @@ impl NativeImCoreNodeClient {
         napi_result(self.resume_handle_recovery_inner(input).await)
     }
 
-    #[napi(catch_unwind)]
-    pub async fn issue_handle_recovery_attestation(
-        &self,
-        input: NodeHandleRecoveryOperationInput,
-    ) -> napi::Result<NodeHandleRecoveryAttestationResult> {
-        napi_result(self.issue_handle_recovery_attestation_inner(input).await)
-    }
-
-    async fn issue_handle_recovery_attestation_inner(
-        &self,
-        input: NodeHandleRecoveryOperationInput,
-    ) -> SafeResult<NodeHandleRecoveryAttestationResult> {
-        let operation = self.inner.operation().await?;
-        let environment = operation.environment()?;
-        let value = self
-            .inner
-            .wait_im(
-                environment
-                    .core
-                    .handle_recovery()
-                    .issue_handle_recovery_attestation(
-                        im_core::identity::HandleRecoveryAttestationRequest {
-                            operation_id: input.operation_id,
-                        },
-                    ),
-                self.inner.operation_timeout,
-            )
-            .await?;
-        Ok(crate::dto::recovery_attestation(value))
-    }
-
     async fn resume_handle_recovery_inner(
         &self,
         input: NodeHandleRecoveryOperationInput,

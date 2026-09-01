@@ -795,12 +795,6 @@ export interface HandleRecoveryOperationInput {
   readonly operationId: string
 }
 
-/** Short-lived opaque authority for trusted Host reconciliation only. Never log or persist it. */
-export interface HandleRecoveryAttestationResult {
-  readonly attestation: string
-  readonly expiresAt: string
-}
-
 export type HandleRecoveryPhase =
   | 'awaiting_factor'
   | 'ready_to_commit'
@@ -1011,7 +1005,6 @@ export interface ImCoreNodeClient {
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
-  issueHandleRecoveryAttestation(input: HandleRecoveryOperationInput): Promise<HandleRecoveryAttestationResult>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
   clearLocalData(): Promise<{ readonly cleared: boolean }>
