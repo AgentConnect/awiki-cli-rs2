@@ -125,7 +125,13 @@ function readAnpCandidateLock(filePath) {
   }
   rejectUnknownKeys(
     lock.anp,
-    new Set(['repository', 'commit', 'rustTreeSha256', 'pythonWheel']),
+    new Set([
+      'repository',
+      'commit',
+      'rustTreeSha256',
+      'didTransitionVectorsTreeSha256',
+      'pythonWheel',
+    ]),
     'ANP candidate SDK',
   );
   rejectUnknownKeys(
@@ -137,6 +143,7 @@ function readAnpCandidateLock(filePath) {
   if (lock.anp.repository !== 'https://github.com/agent-network-protocol/anp.git'
       || !/^[a-f0-9]{40}$/.test(lock.anp.commit || '')
       || !/^[a-f0-9]{64}$/.test(lock.anp.rustTreeSha256 || '')
+      || !/^[a-f0-9]{64}$/.test(lock.anp.didTransitionVectorsTreeSha256 || '')
       || lock.anp.pythonWheel.filename !== 'anp-1.0.0-py3-none-any.whl'
       || !/^[a-f0-9]{64}$/.test(lock.anp.pythonWheel.sha256 || '')) {
     throw new Error('ANP candidate SDK provenance is invalid');

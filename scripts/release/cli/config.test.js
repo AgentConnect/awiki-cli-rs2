@@ -67,8 +67,8 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
     assert.equal(parsed.channels.stable.version, '1.0.48');
     assert.equal(parsed.channels.stable.min_supported_version, '1.0.48');
-    assert.equal(parsed.anp_commit, 'c64bfb086acb1930803bb95db8b4e28b67cc2983');
-    assert.equal(parsed.anp_identity_commit, 'afcbe1a36b5e6b060d072961d59115b2bb3ed14f');
+    assert.equal(parsed.anp_commit, 'e312a0fec6b5374262c7104d5e2c57a7e7e708e3');
+    assert.equal(parsed.anp_identity_commit, 'b63dde744bbb1151a158260eb9d51ccb716dbef8');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
@@ -97,6 +97,7 @@ test('release config is bound to the closed ANP candidate lock', () => {
   const parsed = readReleaseConfig(release, lockPath);
   assert.equal(parsed.anp_commit, lock.anp.commit);
   assert.equal(parsed.anp_identity_commit, lock.identity.commit);
+  assert.match(lock.anp.didTransitionVectorsTreeSha256, /^[a-f0-9]{64}$/);
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-candidate-lock-'));
   try {
