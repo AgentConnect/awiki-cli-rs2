@@ -4521,6 +4521,15 @@ pub(crate) fn resolve_conversation_send_target(
     conversation_send_target(resolve_service_conversation_thread(client, conversation)?)
 }
 
+pub(crate) fn resolve_conversation_thread(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<(super::ThreadRef, Option<String>)> {
+    ensure_conversation_registry(client, conversation)?;
+    let resolved = resolve_service_conversation_thread(client, conversation)?;
+    Ok((resolved.thread, resolved.resolved_did))
+}
+
 fn validate_plain_conversation_send(request: &super::SendMessageRequest) -> crate::ImResult<()> {
     validate_body(&request.body)?;
     if matches!(request.body, super::MessageBody::Attachment { .. }) {
