@@ -618,7 +618,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 - `directory`: DID/Handle lookup, public profile, contact projection, relationship APIs.
 - `messages`: direct/group send, inbox, history, conversations, mark-read, retry plan, local message projection.
 - `groups`: group lifecycle, members, profile/policy, group message reads, group E2EE lifecycle hooks.
-- Node Group facade 从 identity-bound client 自动附加当前完整 Handle，Group Host 再 fresh resolve 并验证 DID；Browser 不选择成员锚定方式，也不能把 Handle-backed 本地账户静默降级为 DID-only。
+- Node Group facade 的创建者和加入者身份只使用 identity-bound client 已认证的 DID，不向 Group Base v2 请求附加 Handle 字段。成员输入仍可接受 Handle 或 DID；Handle 由 Core 通过权威目录解析为 DID 后再提交，Browser 不选择线上成员锚定方式。
 - `attachments`: streaming upload, digest, manifest, message send, ticket download, resumable local-file or memory sinks, cancellation and atomic publication.
 - `secure`: Direct E2EE 状态与发送策略；Group E2EE status/prepare/repair；加密编排。阶段五不再公开旧 Direct prepare/repair 或 secure-outbox 操作面。
 - `realtime`: embeddable WebSocket runner, reconnect, notification projection, host notification events.

@@ -1404,7 +1404,6 @@ pub(crate) fn display_profiles(
 
 pub(crate) fn group_create_request(
     input: NodeCreateGroupInput,
-    creator_handle: Option<&im_core::ids::Handle>,
 ) -> SafeResult<im_core::groups::GroupCreateRequest> {
     let name = input.name.trim().to_owned();
     if name.is_empty() {
@@ -1415,7 +1414,6 @@ pub(crate) fn group_create_request(
         ));
     }
     let mut request = im_core::groups::GroupCreateRequest::new(name);
-    request.creator_handle = creator_handle.cloned();
     request.description = input
         .description
         .map(|description| description.trim().to_owned())
@@ -1429,11 +1427,10 @@ pub(crate) fn group_create_request(
 
 pub(crate) fn group_join_request(
     input: NodeGroupInput,
-    member_handle: Option<&im_core::ids::Handle>,
 ) -> SafeResult<im_core::groups::GroupJoinRequest> {
     Ok(im_core::groups::GroupJoinRequest {
         group: im_core::ids::GroupRef::parse(input.group_did).map_err(SafeError::from_im)?,
-        member_handle: member_handle.cloned(),
+        member_handle: None,
         reason_text: None,
     })
 }
