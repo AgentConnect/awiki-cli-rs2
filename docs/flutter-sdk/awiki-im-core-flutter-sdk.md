@@ -708,6 +708,7 @@ canonical `conversationId` and does not call remote history. `localHistory(threa
 and `history(thread, ...)` remain migration adapters:
 
 - `localConversationTimeline` / `localHistory` read only the local SQLite projection and return an opaque local cursor;
+- Direct `localHistory` compatibility reads resolve Handle/DID targets through the committed owner-scoped Persona and Direct-route projection; Handle text, including an `e1` prefix, is not interpreted as a DID credential segment;
 - local timeline APIs return only complete hydrated rows. A metadata-only sync discovery may already increase conversation activity/unread counts while its body is still absent; the SDK does not expose that placeholder as a normal Message;
 - it does not call message-service history RPCs, directory lookup, or remote E2EE projection;
 - it is the correct API for chat first paint before background reconcile;
