@@ -2602,6 +2602,7 @@ LIMIT 1"#,
                 message_id: requested_id.to_owned(),
             });
         }
+        let p5_v2_claimed = claims_p5_v2_cache_profile(&metadata);
         if authenticated_p5_v2_raw_message_id(&metadata).is_some() {
             push_unique(&mut local_only_message_ids, message_id);
             continue;
@@ -2630,6 +2631,11 @@ LIMIT 1"#,
                 thread_kind,
                 &metadata,
             )?;
+        }
+        if sync_binding.is_none() && p5_v2_claimed {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: format!("message {requested_id} has no exact Sync V2 thread binding"),
+            });
         }
         if sync_binding
             .as_ref()
@@ -3939,6 +3945,15 @@ fn authenticated_p5_v2_raw_message_id(metadata: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(feature = "sqlite")]
+fn claims_p5_v2_cache_profile(metadata: &str) -> bool {
+    parse_metadata(metadata)
+        .get("p5_cache_profile")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
 }
 
 #[cfg(feature = "sqlite")]

@@ -1355,13 +1355,7 @@ where
         self.transport.reload_authentication_state()?;
         let binding = self.client.active_sync_account_binding().await?;
         let db = self.client.core_inner().local_state_db().await?;
-        if !db
-            .load_lane_sync_states(binding.owner_identity_id.clone())
-            .await?
-            .is_empty()
-        {
-            let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
-        }
+        let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
         Ok(())
     }
 
@@ -6408,6 +6402,7 @@ mod tests {
                     "read_state_baseline": [],
                     "group_state_baseline": [],
                     "warnings": [],
+                    "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
                     "sync_capabilities": []
                 })),
                 Ok(sync_snapshot_delta("1", "0", Vec::new())),
@@ -6425,20 +6420,22 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
 
-        let calls = calls.borrow();
-        assert_eq!(
-            calls
-                .iter()
-                .map(|call| call.method.as_str())
-                .collect::<Vec<_>>(),
-            ["anp.get_capabilities", "sync.bootstrap", "sync.delta"]
-        );
-        assert_eq!(
-            calls[1].params["body"]["capabilities"]["requested_sync_capabilities"],
-            json!([])
-        );
-        assert!(calls[2].params["body"].get("lanes").is_none());
-        assert!(calls[2].params["body"].get("p6_delivery").is_none());
+        {
+            let calls = calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.method.as_str())
+                    .collect::<Vec<_>>(),
+                ["anp.get_capabilities", "sync.bootstrap", "sync.delta"]
+            );
+            assert_eq!(
+                calls[1].params["body"]["capabilities"]["requested_sync_capabilities"],
+                json!([])
+            );
+            assert!(calls[2].params["body"].get("lanes").is_none());
+            assert!(calls[2].params["body"].get("p6_delivery").is_none());
+        }
         let db = client.core_inner().local_state_db().await.unwrap();
         assert!(db
             .load_lane_sync_states(binding.owner_identity_id.clone())
@@ -9601,11 +9598,7 @@ END;
                             message: "device authorization epoch is stale".to_owned(),
                             data: None,
                         }),
-                        Ok(json!({
-                            "supported_profiles": [
-                                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                            ]
-                        })),
+                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Ok(sync_group_read_ack(
                             &binding,
@@ -9800,11 +9793,7 @@ END;
                     Rc::clone(&calls),
                     vec![
                         Err(rejected()),
-                        Ok(json!({
-                            "supported_profiles": [
-                                crate::internal::wire::sync_v2::MESSAGE_SYNC_EXPLICIT_NEGOTIATION_V1
-                            ]
-                        })),
+                        Ok(explicit_sync_negotiation_response()),
                         Ok(lane_bootstrap),
                         Err(rejected()),
                     ],
