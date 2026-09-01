@@ -1806,9 +1806,9 @@ impl NativeImCoreNodeClient {
         let attachments = client.attachments();
         let conversation = im_core::messages::ConversationReadRef::new(input.conversation_id)
             .map_err(SafeError::from_im)?;
-        let download = box_im_future(attachments.download_async(
-            im_core::attachments::DownloadAttachmentRequest {
-                thread: conversation.as_thread_ref().map_err(SafeError::from_im)?,
+        let download = box_im_future(attachments.download_conversation_async(
+            im_core::attachments::DownloadConversationAttachmentRequest {
+                conversation,
                 message_id:
                     im_core::ids::MessageId::parse(input.message_id).map_err(SafeError::from_im)?,
                 attachment_id: non_empty_optional(input.attachment_id),

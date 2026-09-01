@@ -544,6 +544,69 @@ impl<'a> AttachmentService<'a> {
         .map(|result| result.sdk_result)
     }
 
+    /// Download one attachment through a canonical conversation ID.
+    ///
+    /// Host-facing clients should use this entry point because canonical
+    /// `dm:peer-scope:*` IDs must be resolved through Core's conversation
+    /// registry before the attachment runtime can address the remote thread.
+    pub fn download_conversation(
+        &self,
+        request: super::DownloadConversationAttachmentRequest,
+    ) -> crate::ImResult<super::DownloadedAttachment> {
+        let (request, resolved_peer_did) = self.resolve_conversation_download_request(request)?;
+        crate::internal::attachment_runtime::download::AttachmentDownloadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .download(
+            crate::internal::attachment_runtime::download::AttachmentDownloadInput {
+                request,
+                resolved_peer_did,
+            },
+        )
+        .map(|result| result.sdk_result)
+    }
+
+    /// Async canonical-conversation variant of [`Self::download_conversation`].
+    pub async fn download_conversation_async(
+        &self,
+        request: super::DownloadConversationAttachmentRequest,
+    ) -> crate::ImResult<super::DownloadedAttachment> {
+        let (request, resolved_peer_did) = self.resolve_conversation_download_request(request)?;
+        crate::internal::attachment_runtime::download::AttachmentDownloadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .download_async(
+            crate::internal::attachment_runtime::download::AttachmentDownloadInput {
+                request,
+                resolved_peer_did,
+            },
+        )
+        .await
+        .map(|result| result.sdk_result)
+    }
+
+    fn resolve_conversation_download_request(
+        &self,
+        request: super::DownloadConversationAttachmentRequest,
+    ) -> crate::ImResult<(super::DownloadAttachmentRequest, Option<String>)> {
+        let (thread, resolved_peer_did) =
+            crate::messages::resolve_conversation_thread(self.client, &request.conversation)?;
+        Ok((
+            super::DownloadAttachmentRequest {
+                thread,
+                message_id: request.message_id,
+                attachment_id: request.attachment_id,
+                destination: request.destination,
+                overwrite: request.overwrite,
+            },
+            resolved_peer_did,
+        ))
+    }
+
     fn resolve_conversation_attachment_request(
         &self,
         request: super::SendConversationAttachmentRequest,
