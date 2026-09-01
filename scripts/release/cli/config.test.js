@@ -130,5 +130,21 @@ test('daemon release checks out the configured immutable ANP revision', () => {
   );
   assert.match(workflow, /name: Read pinned ANP SDK revision/);
   assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_commit \}\}/);
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_identity_commit \}\}/);
+  assert.match(workflow, /path: anp\/anp(?:\s|$)/);
+  assert.match(workflow, /path: anp\/anp-identity(?:\s|$)/);
   assert.doesNotMatch(workflow, /repository: agent-network-protocol\/anp\s+ref: master/);
+});
+
+
+test('CLI release uses the canonical nested ANP workspace layout', () => {
+  const workflow = fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/build-cli-release.yml'),
+    'utf8',
+  );
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_commit \}\}/);
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_identity_commit \}\}/);
+  assert.match(workflow, /path: anp\/anp(?:\s|$)/);
+  assert.match(workflow, /path: anp\/anp-identity(?:\s|$)/);
+  assert.doesNotMatch(workflow, /path: anp-identity(?:\s|$)/);
 });
