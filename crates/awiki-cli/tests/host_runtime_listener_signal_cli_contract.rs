@@ -84,7 +84,7 @@ fn write_runtime_config(workspace: &Path, socket_path: &Path) {
 }
 
 fn tenant_workspace(product_home: &Path) -> PathBuf {
-    product_home.join("tenants").join("default")
+    product_home.join("tenants").join("china")
 }
 
 fn wait_for_path(path: &Path) {

@@ -28,10 +28,17 @@ const TENANT_REGISTRY_FILE_NAME: &str = "registry.json";
 const TENANTS_DIR_NAME: &str = "tenants";
 const LEGACY_ARCHIVE_DIR_NAME: &str = "legacy-archive";
 const LEGACY_ARCHIVE_LOCK_DIR_NAME: &str = ".legacy-archive.lock";
-const DEFAULT_TENANT_NAME: &str = "default";
-const DEFAULT_TENANT_DISPLAY_NAME: &str = "AWiki";
-const DEFAULT_SERVICE_BASE_URL: &str = "https://awiki.ai";
-const DEFAULT_DID_DOMAIN: &str = "awiki.ai";
+const DEFAULT_TENANT_ALIAS: &str = "default";
+const CHINA_TENANT_NAME: &str = "china";
+const CHINA_TENANT_DISPLAY_NAME: &str = "AWiki China (Shanghai)";
+const CHINA_SERVICE_BASE_URL: &str = "https://awiki.me";
+const CHINA_DID_DOMAIN: &str = "awiki.me";
+const GLOBAL_TENANT_NAME: &str = "global";
+const GLOBAL_TENANT_DISPLAY_NAME: &str = "AWiki Global (Silicon Valley)";
+const GLOBAL_SERVICE_BASE_URL: &str = "https://awiki.ai";
+const GLOBAL_DID_DOMAIN: &str = "awiki.ai";
+const TENANT_REGISTRY_SCHEMA_VERSION: i64 = 2;
+const OFFICIAL_TENANT_CATALOG_VERSION: i64 = 1;
 const DEFAULT_SERVICE_BASE_URL_ENV: &str = "AWIKI_CLI_DEFAULT_BACKEND_BASE_URL";
 const DEFAULT_DID_DOMAIN_ENV: &str = "AWIKI_CLI_DEFAULT_DID_HOST";
 const DEFAULT_ANP_PATH: &str = "/anp-im/rpc";
@@ -78,12 +85,27 @@ pub struct Paths {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantKind {
+    BuiltIn,
+    Custom,
+}
+
+impl Default for TenantKind {
+    fn default() -> Self {
+        Self::Custom
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TenantProfile {
     pub name: String,
     pub display_name: String,
     pub backend_base_url: String,
     pub did_host: String,
     pub dir_name: String,
+    #[serde(default)]
+    pub kind: TenantKind,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -176,10 +198,14 @@ struct GlobalConfig {
     active_tenant: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 struct TenantRegistry {
     #[serde(default)]
     schema_version: i64,
+    #[serde(default)]
+    official_catalog_version: i64,
+    #[serde(default)]
+    aliases: BTreeMap<String, String>,
     #[serde(default)]
     tenants: Vec<TenantProfile>,
 }
@@ -747,10 +773,11 @@ pub fn tenant_context_for_resolved(resolved: &Resolved) -> anyhow::Result<Tenant
         .unwrap_or(ValueSource {
             source: "default".to_string(),
             key: String::new(),
-            value: DEFAULT_TENANT_NAME.to_string(),
+            value: CHINA_TENANT_NAME.to_string(),
         });
-    let name = normalize_tenant_name(&active_source.value)?;
     let registry = load_tenant_registry(&product_home_dir)?;
+    let requested_name = normalize_tenant_name(&active_source.value)?;
+    let name = resolve_tenant_alias(&registry, &requested_name);
     let profile = registry
         .tenants
         .iter()
@@ -817,8 +844,9 @@ pub fn preview_use_tenant(name: &str) -> anyhow::Result<TenantContext> {
     let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
-    let name = normalize_tenant_name(name)?;
     let registry = load_tenant_registry(&product_home_dir)?;
+    let requested_name = normalize_tenant_name(name)?;
+    let name = resolve_tenant_alias(&registry, &requested_name);
     let profile = registry
         .tenants
         .iter()
@@ -843,7 +871,9 @@ fn prepare_tenant_create(
     validate_service_base_url(&backend_base_url)?;
     let did_host = normalize_did_domain(&input.did_host)?;
     let registry = load_tenant_registry(&product_home_dir)?;
-    if registry.tenants.iter().any(|tenant| tenant.name == name) {
+    if registry.tenants.iter().any(|tenant| tenant.name == name)
+        || registry.aliases.contains_key(&name)
+    {
         return Err(WorkspaceConfigError::conflict(
             format!("tenant {name:?} already exists"),
             "Run `awiki-cli tenant list` to inspect existing tenants, or choose a different tenant name.",
@@ -870,6 +900,7 @@ fn prepare_tenant_create(
         backend_base_url,
         did_host,
         dir_name: name.clone(),
+        kind: TenantKind::Custom,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -888,6 +919,23 @@ fn prepare_tenant_setup(
     let did_host = normalize_did_domain(&input.did_host)?;
     let registry = load_tenant_registry(&product_home_dir)?;
 
+    if registry.aliases.contains_key(&name) {
+        let canonical = resolve_tenant_alias(&registry, &name);
+        let existing = registry
+            .tenants
+            .iter()
+            .find(|tenant| tenant.name == canonical)
+            .expect("validated tenant alias")
+            .clone();
+        if existing.backend_base_url == backend_base_url && existing.did_host == did_host {
+            return Ok((product_home_dir, registry, existing, "reused".to_string()));
+        }
+        return Err(WorkspaceConfigError::conflict(
+            format!("tenant alias {name:?} already points to tenant {canonical:?}"),
+            "Use the canonical tenant name shown by `awiki-cli tenant list`.",
+        )
+        .into());
+    }
     if let Some(existing) = registry.tenants.iter().find(|tenant| tenant.name == name) {
         if existing.backend_base_url == backend_base_url && existing.did_host == did_host {
             let existing = existing.clone();
@@ -923,6 +971,7 @@ fn prepare_tenant_setup(
         backend_base_url,
         did_host,
         dir_name: name,
+        kind: TenantKind::Custom,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -933,8 +982,9 @@ pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
     let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
-    let name = normalize_tenant_name(name)?;
     let registry = load_tenant_registry(&product_home_dir)?;
+    let requested_name = normalize_tenant_name(name)?;
+    let name = resolve_tenant_alias(&registry, &requested_name);
     let profile = registry
         .tenants
         .iter()
@@ -950,9 +1000,11 @@ pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
 }
 
 fn activate_tenant(product_home_dir: &Path, name: &str) -> anyhow::Result<()> {
+    let registry = load_tenant_registry(product_home_dir)?;
+    let name = resolve_tenant_alias(&registry, name);
     let mut global = load_global_config(product_home_dir)?;
     global.schema_version = 1;
-    global.active_tenant = name.to_string();
+    global.active_tenant = name;
     write_global_config(product_home_dir, &global)
 }
 
@@ -995,11 +1047,12 @@ fn prepare_tenant_reconfigure(
     let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
-    let name = normalize_tenant_name(name)?;
+    let requested_name = normalize_tenant_name(name)?;
     let backend_base_url = normalize_base_url(backend_base_url);
     validate_service_base_url(&backend_base_url)?;
     let did_host = normalize_did_domain(did_host)?;
     let registry = load_tenant_registry(&product_home_dir)?;
+    let name = resolve_tenant_alias(&registry, &requested_name);
     let Some(index) = registry
         .tenants
         .iter()
@@ -1007,6 +1060,13 @@ fn prepare_tenant_reconfigure(
     else {
         return Err(tenant_not_found_error("tenant", &name).into());
     };
+    if registry.tenants[index].kind == TenantKind::BuiltIn {
+        return Err(WorkspaceConfigError::conflict(
+            format!("official tenant {name:?} cannot be reconfigured"),
+            "Create a custom tenant for different backend or DID endpoints.",
+        )
+        .into());
+    }
     if tenant_has_data(&product_home_dir, &registry.tenants[index])? {
         return Err(WorkspaceConfigError::conflict(
             format!(
@@ -1042,7 +1102,7 @@ fn resolve_active_tenant(
     ensure_tenant_state(product_home_dir)?;
     let registry = load_tenant_registry(product_home_dir)?;
     let global = load_global_config(product_home_dir)?;
-    let (active, active_source) = if overrides.tenant_changed {
+    let (requested_active, active_source) = if overrides.tenant_changed {
         (
             normalize_tenant_name(&overrides.tenant)?,
             "flag".to_string(),
@@ -1053,8 +1113,9 @@ fn resolve_active_tenant(
             "global_config".to_string(),
         )
     } else {
-        (DEFAULT_TENANT_NAME.to_string(), "default".to_string())
+        (CHINA_TENANT_NAME.to_string(), "default".to_string())
     };
+    let active = resolve_tenant_alias(&registry, &requested_active);
     let profile = registry
         .tenants
         .iter()
@@ -1087,29 +1148,41 @@ fn ensure_tenant_state(product_home_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(product_home_dir.join(TENANTS_DIR_NAME))
         .map_err(|err| anyhow::anyhow!("create tenant directory: {err}"))?;
     if !tenant_registry_path(product_home_dir).exists() {
-        let profile = default_tenant_profile()?;
-        write_tenant_config(product_home_dir, &profile)?;
+        let (profiles, aliases, active_tenant) = default_tenant_profiles()?;
+        for profile in &profiles {
+            write_tenant_config(product_home_dir, profile)?;
+        }
         write_tenant_registry(
             product_home_dir,
             &TenantRegistry {
-                schema_version: 1,
-                tenants: vec![profile],
+                schema_version: TENANT_REGISTRY_SCHEMA_VERSION,
+                official_catalog_version: OFFICIAL_TENANT_CATALOG_VERSION,
+                aliases,
+                tenants: profiles,
             },
         )?;
-    }
-    if !global_config_path(product_home_dir).exists() {
         write_global_config(
             product_home_dir,
             &GlobalConfig {
                 schema_version: 1,
-                active_tenant: DEFAULT_TENANT_NAME.to_string(),
+                active_tenant,
+            },
+        )?;
+    } else if !global_config_path(product_home_dir).exists() {
+        write_global_config(
+            product_home_dir,
+            &GlobalConfig {
+                schema_version: 1,
+                active_tenant: CHINA_TENANT_NAME.to_string(),
             },
         )?;
     }
+    let _ = load_tenant_registry(product_home_dir)?;
     Ok(())
 }
 
-fn default_tenant_profile() -> anyhow::Result<TenantProfile> {
+fn default_tenant_profiles(
+) -> anyhow::Result<(Vec<TenantProfile>, BTreeMap<String, String>, String)> {
     let configured_base_url = env::var(DEFAULT_SERVICE_BASE_URL_ENV).unwrap_or_default();
     let configured_did_host = env::var(DEFAULT_DID_DOMAIN_ENV).unwrap_or_default();
     let has_base_url = !configured_base_url.trim().is_empty();
@@ -1119,40 +1192,258 @@ fn default_tenant_profile() -> anyhow::Result<TenantProfile> {
             "{DEFAULT_SERVICE_BASE_URL_ENV} and {DEFAULT_DID_DOMAIN_ENV} must be configured together"
         );
     }
-    let (backend_base_url, did_host) = if has_base_url {
+    let configured_endpoint = if has_base_url {
         let backend_base_url = normalize_base_url(&configured_base_url);
         validate_service_base_url(&backend_base_url)?;
         let did_host = normalize_did_domain(&configured_did_host)?;
-        (backend_base_url, did_host)
+        Some((backend_base_url, did_host))
     } else {
-        (
-            DEFAULT_SERVICE_BASE_URL.to_string(),
-            DEFAULT_DID_DOMAIN.to_string(),
-        )
+        None
     };
     let now = now_compact();
-    Ok(TenantProfile {
-        name: DEFAULT_TENANT_NAME.to_string(),
-        display_name: DEFAULT_TENANT_DISPLAY_NAME.to_string(),
-        backend_base_url,
-        did_host,
-        dir_name: DEFAULT_TENANT_NAME.to_string(),
-        created_at: now.clone(),
-        updated_at: now,
-    })
+    let mut china = official_tenant_profile(CHINA_TENANT_NAME, &now);
+    let mut global = official_tenant_profile(GLOBAL_TENANT_NAME, &now);
+    let mut aliases = BTreeMap::new();
+    let (profiles, active) = match configured_endpoint {
+        None => {
+            aliases.insert(
+                DEFAULT_TENANT_ALIAS.to_string(),
+                CHINA_TENANT_NAME.to_string(),
+            );
+            (vec![china, global], CHINA_TENANT_NAME.to_string())
+        }
+        Some((backend_base_url, did_host)) if is_endpoint(&china, &backend_base_url, &did_host) => {
+            china.dir_name = DEFAULT_TENANT_ALIAS.to_string();
+            aliases.insert(
+                DEFAULT_TENANT_ALIAS.to_string(),
+                CHINA_TENANT_NAME.to_string(),
+            );
+            (vec![china, global], CHINA_TENANT_NAME.to_string())
+        }
+        Some((backend_base_url, did_host))
+            if is_endpoint(&global, &backend_base_url, &did_host) =>
+        {
+            global.dir_name = DEFAULT_TENANT_ALIAS.to_string();
+            aliases.insert(
+                DEFAULT_TENANT_ALIAS.to_string(),
+                GLOBAL_TENANT_NAME.to_string(),
+            );
+            (vec![china, global], GLOBAL_TENANT_NAME.to_string())
+        }
+        Some((backend_base_url, did_host)) => {
+            let custom = TenantProfile {
+                name: DEFAULT_TENANT_ALIAS.to_string(),
+                display_name: "AWiki".to_string(),
+                backend_base_url,
+                did_host,
+                dir_name: DEFAULT_TENANT_ALIAS.to_string(),
+                kind: TenantKind::Custom,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            (
+                vec![china, custom, global],
+                DEFAULT_TENANT_ALIAS.to_string(),
+            )
+        }
+    };
+    Ok((profiles, aliases, active))
 }
 
 fn load_tenant_registry(product_home_dir: &Path) -> anyhow::Result<TenantRegistry> {
     let path = tenant_registry_path(product_home_dir);
     let raw = fs::read_to_string(&path)
         .map_err(|err| anyhow::anyhow!("read tenant registry {}: {err}", path.display()))?;
-    let mut registry: TenantRegistry = serde_json::from_str(&raw)
+    let registry: TenantRegistry = serde_json::from_str(&raw)
         .map_err(|err| anyhow::anyhow!("parse tenant registry {}: {err}", path.display()))?;
-    registry.schema_version = 1;
-    registry
+    if registry.schema_version != 1 && registry.schema_version != TENANT_REGISTRY_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported tenant registry schema_version {}",
+            registry.schema_version
+        );
+    }
+    let global = load_global_config(product_home_dir)?;
+    let original_registry = registry.clone();
+    let (mut upgraded, canonical_active, changed) =
+        reconcile_tenant_registry(registry, &global.active_tenant)?;
+    sort_tenant_profiles(&mut upgraded.tenants);
+    if changed {
+        if original_registry.schema_version == 1 {
+            if let Err(error) = backup_v1_control_files(product_home_dir) {
+                eprintln!("warning: tenant registry v2 migration skipped: {error}");
+                return Ok(original_registry);
+            }
+        }
+        if let Err(error) = write_tenant_registry(product_home_dir, &upgraded) {
+            eprintln!("warning: tenant registry v2 migration skipped: {error}");
+            return Ok(original_registry);
+        }
+    }
+    if !canonical_active.is_empty() && global.active_tenant != canonical_active {
+        let canonical_global = GlobalConfig {
+            schema_version: 1,
+            active_tenant: canonical_active,
+        };
+        if let Err(error) = write_global_config(product_home_dir, &canonical_global) {
+            eprintln!("warning: active tenant migration will retry: {error}");
+        }
+    }
+    Ok(upgraded)
+}
+
+fn official_tenant_profile(name: &str, timestamp: &str) -> TenantProfile {
+    let (display_name, backend_base_url, did_host) = match name {
+        CHINA_TENANT_NAME => (
+            CHINA_TENANT_DISPLAY_NAME,
+            CHINA_SERVICE_BASE_URL,
+            CHINA_DID_DOMAIN,
+        ),
+        GLOBAL_TENANT_NAME => (
+            GLOBAL_TENANT_DISPLAY_NAME,
+            GLOBAL_SERVICE_BASE_URL,
+            GLOBAL_DID_DOMAIN,
+        ),
+        _ => unreachable!("official tenant name"),
+    };
+    TenantProfile {
+        name: name.to_string(),
+        display_name: display_name.to_string(),
+        backend_base_url: backend_base_url.to_string(),
+        did_host: did_host.to_string(),
+        dir_name: name.to_string(),
+        kind: TenantKind::BuiltIn,
+        created_at: timestamp.to_string(),
+        updated_at: timestamp.to_string(),
+    }
+}
+
+fn is_endpoint(profile: &TenantProfile, backend_base_url: &str, did_host: &str) -> bool {
+    profile.backend_base_url == backend_base_url && profile.did_host == did_host
+}
+
+fn reconcile_tenant_registry(
+    mut registry: TenantRegistry,
+    active_tenant: &str,
+) -> anyhow::Result<(TenantRegistry, String, bool)> {
+    let original = registry.clone();
+    let now = now_compact();
+    for canonical_name in [CHINA_TENANT_NAME, GLOBAL_TENANT_NAME] {
+        let expected = official_tenant_profile(canonical_name, &now);
+        let matches = registry
+            .tenants
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tenant)| {
+                is_endpoint(tenant, &expected.backend_base_url, &expected.did_host).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            anyhow::bail!(
+                "multiple tenant profiles use official endpoint {} / {}",
+                expected.backend_base_url,
+                expected.did_host
+            );
+        }
+        if let Some(index) = matches.first().copied() {
+            let old_name = registry.tenants[index].name.clone();
+            if old_name != canonical_name {
+                if registry
+                    .tenants
+                    .iter()
+                    .enumerate()
+                    .any(|(other, tenant)| other != index && tenant.name == canonical_name)
+                {
+                    anyhow::bail!(
+                        "tenant name {canonical_name:?} conflicts with the official catalog"
+                    );
+                }
+                registry.tenants[index].name = canonical_name.to_string();
+                registry
+                    .aliases
+                    .insert(old_name, canonical_name.to_string());
+            }
+            let profile = &mut registry.tenants[index];
+            profile.kind = TenantKind::BuiltIn;
+            profile.display_name = expected.display_name;
+            profile.backend_base_url = expected.backend_base_url;
+            profile.did_host = expected.did_host;
+            if profile.dir_name.trim().is_empty() {
+                profile.dir_name = canonical_name.to_string();
+            }
+            if profile.created_at.trim().is_empty() {
+                profile.created_at = now.clone();
+            }
+            if profile.updated_at.trim().is_empty() || original.schema_version == 1 {
+                profile.updated_at = now.clone();
+            }
+        } else {
+            registry.tenants.push(expected);
+        }
+    }
+    registry.schema_version = TENANT_REGISTRY_SCHEMA_VERSION;
+    registry.official_catalog_version = OFFICIAL_TENANT_CATALOG_VERSION;
+    registry.aliases.retain(|alias, target| alias != target);
+    let requested_active = if active_tenant.trim().is_empty() {
+        CHINA_TENANT_NAME
+    } else {
+        active_tenant.trim()
+    };
+    let canonical_active = resolve_tenant_alias(&registry, requested_active);
+    if !registry
         .tenants
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(registry)
+        .iter()
+        .any(|tenant| tenant.name == canonical_active)
+    {
+        anyhow::bail!("active tenant {requested_active:?} does not exist");
+    }
+    for (alias, target) in &registry.aliases {
+        if !registry.tenants.iter().any(|tenant| tenant.name == *target) {
+            anyhow::bail!("tenant alias {alias:?} points to missing tenant {target:?}");
+        }
+    }
+    sort_tenant_profiles(&mut registry.tenants);
+    let changed = registry != original;
+    Ok((registry, canonical_active, changed))
+}
+
+fn sort_tenant_profiles(tenants: &mut [TenantProfile]) {
+    tenants.sort_by(|left, right| {
+        let rank = |name: &str| match name {
+            CHINA_TENANT_NAME => 0,
+            GLOBAL_TENANT_NAME => 1,
+            _ => 2,
+        };
+        rank(&left.name)
+            .cmp(&rank(&right.name))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+}
+
+fn resolve_tenant_alias(registry: &TenantRegistry, name: &str) -> String {
+    registry
+        .aliases
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn backup_v1_control_files(product_home_dir: &Path) -> anyhow::Result<()> {
+    for source in [
+        tenant_registry_path(product_home_dir),
+        global_config_path(product_home_dir),
+    ] {
+        let backup = source.with_extension("json.v1.bak");
+        if backup.exists() {
+            continue;
+        }
+        fs::copy(&source, &backup)
+            .map_err(|error| anyhow::anyhow!("back up {}: {error}", source.display()))?;
+        if let Some(parent) = backup.parent() {
+            durable_fs::sync_directory(parent)
+                .map_err(|error| anyhow::anyhow!("sync backup directory: {error}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn write_tenant_registry(product_home_dir: &Path, registry: &TenantRegistry) -> anyhow::Result<()> {
@@ -2248,10 +2539,10 @@ fn service_host_from_base_url(service_base_url: &str) -> String {
         .trim_start_matches("http://")
         .split('/')
         .next()
-        .unwrap_or(DEFAULT_DID_DOMAIN)
+        .unwrap_or(CHINA_DID_DOMAIN)
         .split(':')
         .next()
-        .unwrap_or(DEFAULT_DID_DOMAIN)
+        .unwrap_or(CHINA_DID_DOMAIN)
         .to_ascii_lowercase()
 }
 

@@ -479,8 +479,8 @@ fn write_group_config_with_runtime(workspace: &Path, base_url: &str, runtime_mod
     let output = awiki_cmd(
         &[
             "tenant",
-            "reconfigure",
-            "default",
+            "create",
+            "group-live-test",
             "--backend-base-url",
             base_url,
             "--did-host",
@@ -489,6 +489,7 @@ fn write_group_config_with_runtime(workspace: &Path, base_url: &str, runtime_mod
         workspace,
     );
     assert_success(&output);
+    assert_success(&awiki_cmd(&["tenant", "use", "group-live-test"], workspace));
     write_tenant_config(
         workspace,
         &format!(

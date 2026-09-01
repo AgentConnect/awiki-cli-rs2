@@ -231,7 +231,7 @@ fn assert_warning_absent(envelope: &Value, unexpected: &str) {
 fn tenant_config_path(product_home: &Path) -> std::path::PathBuf {
     product_home
         .join("tenants")
-        .join("default")
+        .join("china")
         .join("config.yaml")
 }
 

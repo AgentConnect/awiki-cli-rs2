@@ -45,7 +45,7 @@ fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() 
     );
     assert_eq!(register["data"]["plan"]["action"], "register_handle");
     assert_eq!(register["data"]["plan"]["identity_name"], "alice-local");
-    assert_eq!(register["data"]["plan"]["full_handle"], "alice.awiki.ai");
+    assert_eq!(register["data"]["plan"]["full_handle"], "alice.awiki.me");
     assert_eq!(register["data"]["plan"]["phone"], "+15551234567");
     assert!(register["data"]["plan"]["remote_calls"]
         .as_array()

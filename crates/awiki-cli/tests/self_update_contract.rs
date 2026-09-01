@@ -55,7 +55,7 @@ fn upgrade_strict_disable_follows_config_and_env_override() {
     let config_path = config_workspace
         .path()
         .join("tenants")
-        .join("default")
+        .join("china")
         .join("config.yaml");
     fs::create_dir_all(config_path.parent().expect("tenant config parent"))
         .expect("create tenant config parent");

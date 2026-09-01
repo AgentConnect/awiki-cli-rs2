@@ -137,7 +137,7 @@ fn config_writer_never_persists_identity_vault_root_key() {
     let text = std::fs::read_to_string(
         temp.path()
             .join("tenants")
-            .join("default")
+            .join("china")
             .join("config.yaml"),
     )
     .expect("read config");

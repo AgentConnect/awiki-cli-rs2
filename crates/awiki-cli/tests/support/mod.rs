@@ -147,7 +147,27 @@ pub fn test_paths(workspace: &Path) -> Paths {
 }
 
 pub fn tenant_workspace(product_home: &Path) -> PathBuf {
-    product_home.join("tenants").join("default")
+    let tenants_dir = product_home.join("tenants");
+    let global = std::fs::read(product_home.join("global.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
+    let registry = std::fs::read(tenants_dir.join("registry.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
+    if let (Some(global), Some(registry)) = (global, registry) {
+        let requested = global["active_tenant"].as_str().unwrap_or("china");
+        let active = registry["aliases"][requested].as_str().unwrap_or(requested);
+        if let Some(profile) = registry["tenants"]
+            .as_array()
+            .and_then(|profiles| profiles.iter().find(|profile| profile["name"] == active))
+        {
+            return tenants_dir.join(profile["dir_name"].as_str().unwrap_or(active));
+        }
+    }
+    if tenants_dir.join("default").exists() && !tenants_dir.join("china").exists() {
+        return tenants_dir.join("default");
+    }
+    tenants_dir.join("china")
 }
 
 pub fn tenant_config_path(product_home: &Path) -> PathBuf {

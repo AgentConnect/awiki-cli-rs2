@@ -299,6 +299,9 @@ fn register_ready_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) -> String {
+    if !workspace.join("tenants").join("registry.json").exists() {
+        write_default_tenant_registry(workspace, "https://placeholder.invalid", "awiki.ai");
+    }
     set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
