@@ -992,6 +992,13 @@ Because snapshots and patches contain message preview fields, diagnostics and te
 
 `messages.history()` keeps its remote history + projection/reconcile semantics. AWiki Me first paint should use `messages.local_conversation_timeline()` / Dart `client.messages.localConversationTimeline(...)` with a `ConversationReadRef`. Hot compatibility paths that only need already-projected local messages can still use `messages.local_history()` / Dart `client.messages.localHistory(...)`.
 
+For a Direct compatibility read addressed by Handle or DID, Core resolves the
+owner-scoped canonical conversation through the committed
+`peer_identifiers` → `peer_personas` → `direct_peer_routes` projection. It does
+not infer Handle identity from DID path segments. This keeps valid Handle text,
+including a local part beginning with `e1`, opaque to message routing while the
+final DID credential segment remains a DID concern.
+
 Local conversation timeline:
 
 - reads only the local SQLite `messages` projection through `owner_identity_id` and canonical `ConversationReadRef.conversation_id`;

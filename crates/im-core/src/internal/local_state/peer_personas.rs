@@ -102,6 +102,93 @@ WHERE i.owner_identity_id = ?1
     }))
 }
 
+pub(crate) fn resolve_by_handle(
+    connection: &Connection,
+    owner_identity_id: &str,
+    full_handle: &str,
+) -> crate::ImResult<Option<ResolvedPeerPersona>> {
+    let owner_identity_id = owner_identity_id.trim();
+    if owner_identity_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner_identity_id is required",
+        ));
+    }
+    let full_handle = crate::ids::Handle::parse(full_handle, "")?;
+    let mut statement = connection
+        .prepare(
+            r#"SELECT p.peer_persona_id, p.authority_namespace,
+                      p.authority_subject_id, p.full_handle, r.conversation_id,
+                      r.current_did
+FROM peer_identifiers i
+JOIN peer_personas p
+  ON p.owner_identity_id = i.owner_identity_id
+ AND p.peer_persona_id = i.peer_persona_id
+JOIN direct_peer_routes r
+  ON r.owner_identity_id = p.owner_identity_id
+ AND r.peer_persona_id = p.peer_persona_id
+JOIN peer_identifiers current_did
+  ON current_did.owner_identity_id = r.owner_identity_id
+ AND current_did.peer_persona_id = r.peer_persona_id
+ AND current_did.identifier_kind = 'did'
+ AND current_did.identifier_value = r.current_did
+ AND current_did.is_current = 1
+WHERE i.owner_identity_id = ?1
+  AND i.identifier_kind = 'handle'
+  AND i.identifier_value = ?2
+  AND i.is_current = 1"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map((owner_identity_id, full_handle.as_str()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut matches = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(super::local_state_unavailable)?;
+    if matches.len() > 1 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Handle is bound to multiple canonical Direct routes".to_owned(),
+        });
+    }
+    let Some((stored_persona_id, authority, subject, handle, stored_conversation_id, current_did)) =
+        matches.pop()
+    else {
+        return Ok(None);
+    };
+    let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+        &authority,
+        &subject,
+        &handle,
+        Some("verified"),
+    )?;
+    if persona.full_handle != full_handle.as_str() || persona.peer_persona_id != stored_persona_id {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "stored Handle binding does not match its immutable Persona identity"
+                .to_owned(),
+        });
+    }
+    let conversation_id = persona.direct_conversation_id();
+    if conversation_id != stored_conversation_id {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "stored Direct route does not match its immutable Persona identity".to_owned(),
+        });
+    }
+    crate::ids::Did::parse(current_did)?;
+    Ok(Some(ResolvedPeerPersona {
+        peer_persona_id: persona.peer_persona_id,
+        conversation_id,
+    }))
+}
+
 pub(crate) fn unresolved_dids(
     connection: &Connection,
     owner_identity_id: &str,
@@ -461,6 +548,32 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_by_handle_uses_canonical_owner_scoped_projection() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("E1Alice.Example.COM.", "").unwrap(),
+            did: crate::ids::Did::parse("did:example:alice-current").unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("example.com".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        let conversation_id =
+            project_verified_handle(&mut db, "owner-a", "did:example:owner-a", &lookup).unwrap();
+
+        let resolved = resolve_by_handle(&db, "owner-a", "e1alice.example.com")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.conversation_id, conversation_id);
+        assert!(resolve_by_handle(&db, "owner-b", "e1alice.example.com")
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn verified_handle_projection_is_owner_scoped_and_rotation_keeps_canonical_ids() {

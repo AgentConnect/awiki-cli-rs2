@@ -1150,6 +1150,14 @@ impl MessageService<'_> {
 }
 ```
 
+Direct `local_history` compatibility reads addressed by Handle or DID resolve
+the canonical conversation from the current owner-scoped Persona projection
+(`peer_identifiers` / `peer_personas` / `direct_peer_routes`). Handle values are
+opaque identifiers: an `e1`-prefixed Handle is not a DID credential segment,
+and normal history lookup never derives routing identity by splitting a DID
+string. Missing or conflicting canonical bindings do not authorize a guessed
+route.
+
 P3+ API：
 
 ```rust
