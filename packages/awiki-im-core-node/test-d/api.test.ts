@@ -30,9 +30,6 @@ void opened.then(async client => {
   attempt.headerPatch satisfies readonly { readonly name: string, readonly value: string }[]
   const retry = await attempt.handleResponse({ statusCode: 200, headers: [] })
   retry satisfies import('../src/index.js').ExternalHttpAuthAttempt | null
-  const reconciliation = await client.issueHandleRecoveryAttestation({ operationId: 'recovery-1' })
-  reconciliation.attestation satisfies string
-  reconciliation.expiresAt satisfies string
   const registration = await client.completeRegistrationWithOutcome({
     handle: 'alice',
     phone: '+8613800000000',
@@ -66,6 +63,16 @@ void opened.then(async client => {
   currentDevice.canManage satisfies boolean
   const registry = await client.getDeviceRegistry()
   registry.devices[0]?.authGeneration satisfies string | undefined
+  const rootPreparation = await client.prepareRootKeyTransfer({ recipientDeviceId: 'device-member' })
+  rootPreparation.authorizationHandle satisfies string
+  rootPreparation.recipient.registryVersion satisfies string
+  const presence = await client.confirmUserPresence({ reason: 'Grant AWiki device management access' })
+  presence satisfies boolean
+  const rootSent = await client.confirmAndSendRootKeyTransfer({
+    authorizationHandle: rootPreparation.authorizationHandle,
+    userPresenceConfirmed: presence,
+  })
+  rootSent.recipientDeviceId satisfies string
   const requests = await client.listLocalDeviceJoinRequests()
   if (requests[0]?.canStartVerification) {
     const verification = await client.startDeviceJoinVerification({
@@ -103,6 +110,8 @@ void opened.then(async client => {
   await client.leaveGroup({ groupDid: group.did })
   const localTimeline = await client.getLocalConversationTimeline({ conversationId: group.conversationId })
   localTimeline.items satisfies readonly import('../src/index.js').NodeMessage[]
+  const sync = await client.syncNow({ reason: 'manual_refresh' })
+  sync.olderHistoryExcluded satisfies boolean
   const profiles = await client.hydrateDisplayProfiles({ peers: ['did:wba:awiki.info:user:alice'] })
   profiles satisfies readonly import('../src/index.js').NodeDisplayProfile[]
   let realtime = await client.startRealtime()

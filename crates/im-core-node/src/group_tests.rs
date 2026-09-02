@@ -35,7 +35,7 @@ fn group_create_contract_rejects_blank_name() {
 }
 
 #[test]
-fn group_join_contract_uses_the_authenticated_did_without_handle_fields() {
+fn group_join_contract_uses_authenticated_did_without_handle_membership() {
     let request = group_join_request(NodeGroupInput {
         group_did: "did:wba:awiki.info:groups:release-crew".to_owned(),
     })

@@ -1168,6 +1168,7 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                     "delivery": "paged_v1"
                 },
                 "warnings": [],
+                "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
                 "sync_capabilities": requested,
                 "lanes": lanes
             });

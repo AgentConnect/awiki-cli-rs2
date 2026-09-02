@@ -1150,6 +1150,14 @@ impl MessageService<'_> {
 }
 ```
 
+Direct `local_history` compatibility reads addressed by Handle or DID resolve
+the canonical conversation from the current owner-scoped Persona projection
+(`peer_identifiers` / `peer_personas` / `direct_peer_routes`). Handle values are
+opaque identifiers: an `e1`-prefixed Handle is not a DID credential segment,
+and normal history lookup never derives routing identity by splitting a DID
+string. Missing or conflicting canonical bindings do not authorize a guessed
+route.
+
 P3+ API：
 
 ```rust
@@ -1361,6 +1369,10 @@ Reliable sync 补充：
 - `local_conversation_timeline` 读取 `conversation_id` 对应的 committed SQLite projection，
   是 App local-first timeline 的事实源，并且只返回 Core 已确认完整的 hydrated 消息；远端 history/backfill 结果只有持久化到 projection
   后才能成为 UI 可见事实。
+- `Message::matches_identity` 只用于受信 host 在同一 owner、同一 conversation 的 committed
+  local timeline 内核对消息身份。Group transport 将 client message ID 规范化为 Group
+  sequence ID 时，Core 会用 `raw_message_id` 等受控 alias 保留原身份；host 必须调用该 helper，
+  不得复制 alias key 规则，也不得把它当作跨 owner 查询或授权判断。
 - `send_conversation_text` / `send_conversation_payload` 是 conversation-surface send 主路径。
   该边界只接受 verified Persona route 对应的 `dm:peer-scope:v1:*`，或存在 active local
   membership projection 的 `group:<Group DID>`；`dm:<DID>` / `legacy_unresolved` 会在 local

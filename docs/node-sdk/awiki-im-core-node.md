@@ -149,6 +149,10 @@ reconnect；Node 只订阅消息提示，不实现 WebSocket、URL、bearer 或�
 sequence、cursor 或 checkpoint。Realtime hint 不是可靠 checkpoint；host 必须在启动及每个
 `sync_required` 后调用 canonical `syncNow()`，成功后再读取 committed conversation/history。
 
+`syncNow()` 的公开 `SyncResult` 只返回产品安全的计数、changed conversation IDs、closed warnings
+和 `olderHistoryExcluded`。该 boolean 表示 Schema 3 在预算内保留最新完整普通历史后缀并排除了更旧
+历史，仍是成功结果；它不暴露 recovery cursor、page ref、token、manifest 或消息正文。
+
 Core event buffer 满或 native stream 因其他原因关闭时没有可再投递的事件，`nextEvent()` 返回
 `null`。`null` 本身就是 stream recovery 边界，Host 必须按固定顺序执行：停止并 join 旧 session、
 调用 `syncNow({ reason: 'websocket_reconnect' })` 完成 canonical reconciliation、再调用
@@ -213,12 +217,6 @@ bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
 `group_not_member` 和 `group_identity_stale`。Host 应在账号同步把恢复出的旧群聊写入本地投影后
 调用 high-level `resumeGroupRebindRecovery()`；不得解析原始服务消息、拼接底层 group RPC，或把
 summary 的 `warnings` 暴露给浏览器。
-
-`issueHandleRecoveryAttestation({ operationId })` 仅供受信 Host 在恢复状态已 `applied` 后执行
-Model Proxy 对账。Node facade 不允许 caller 提供 claims/audience，只返回短时 opaque attestation
-与 `expiresAt`；Host 必须立即使用并丢弃，不得写入文件、数据库、日志、diagnostic DTO、Browser
-remote 或 Agent 工具。临时服务故障映射为可重试 `recovery_reconciliation_unavailable`；operation
-不匹配映射为不可重试 `recovery_reconciliation_invalid`，原始服务正文和 token 均不会进入 JS 错误。
 
 `0.1.8` candidate 首次增加 DSH 所需的新设备 Join 恢复/SAS/cancel，以及 ready-admin Registry、
 审批、拒绝和撤销 facade。当前 `release/0815` 的 `0.2.0` candidate 在保留这些能力的同时增加

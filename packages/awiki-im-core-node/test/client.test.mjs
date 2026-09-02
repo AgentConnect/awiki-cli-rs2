@@ -192,8 +192,8 @@ test('realtime facade requires an identity and returns only the stable redacted 
   )
 })
 
-test('loads native v10 candidate Join and device-management methods', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v10-'))
+test('loads native v11 candidate Join, device-management, and Root Transfer methods', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v11-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
   t.after(() => client.close())
@@ -204,6 +204,14 @@ test('loads native v10 candidate Join and device-management methods', async t =>
     error => error instanceof ImCoreNodeError
       && error.code === 'identity_required'
       && !error.message.includes(root),
+  )
+  await assert.rejects(
+    client.prepareRootKeyTransfer({ recipientDeviceId: 'device-member' }),
+    error => error instanceof ImCoreNodeError && error.code === 'identity_required',
+  )
+  await assert.rejects(
+    client.confirmUserPresence({ reason: '' }),
+    error => error instanceof ImCoreNodeError && error.code === 'invalid_input',
   )
 })
 
@@ -250,7 +258,7 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   assert.deepEqual(await client.clearLocalData(), { cleared: true })
 })
 
-test('routes group, profile, recovery attestation, and payload operations through native v10 with structured identity errors', async t => {
+test('routes group, profile, and payload operations through native v10 with structured identity errors', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-groups-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))

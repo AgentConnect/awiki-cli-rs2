@@ -3040,8 +3040,8 @@ mod tests {
                 "state_version": "2"
             }],
             "group_state_baseline": [],
-            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"},
-            "warnings": []
+            "warnings": [],
+            "snapshot_capability": {"schema": 3, "delivery": "paged_v1"}
         }))
         .unwrap();
         assert_eq!(parsed.read_state_baseline.len(), 1);
@@ -3101,10 +3101,10 @@ mod tests {
                 "token": "opaque-secret",
                 "snapshot_schema": 3,
                 "snapshot_delivery": "paged_v1",
-                "stream_epoch": "3",
-                "snapshot_scan_seq": "20",
-                "message_cutoff": "2026-08-29T10:00:00Z",
-                "expires_at": "2026-08-31T10:10:00Z"
+                "stream_epoch": "2",
+                "snapshot_scan_seq": "15020",
+                "message_cutoff": "2026-07-26T12:00:03Z",
+                "expires_at": "2026-07-28T12:10:03Z"
             },
             "warnings": []
         }))

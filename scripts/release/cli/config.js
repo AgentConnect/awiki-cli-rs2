@@ -126,7 +126,10 @@ function readAnpCandidateLock(filePath) {
   rejectUnknownKeys(
     lock.anp,
     new Set([
-      'repository', 'commit', 'rustTreeSha256', 'didTransitionVectorsTreeSha256',
+      'repository',
+      'commit',
+      'rustTreeSha256',
+      'didTransitionVectorsTreeSha256',
       'pythonWheel',
     ]),
     'ANP candidate SDK',

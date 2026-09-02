@@ -464,6 +464,33 @@ export interface DeviceRevokeResult {
   readonly status: 'revoked'
 }
 
+/** Host-only, short-lived Core authorization for one exact-device Root Transfer. */
+export interface RootKeyTransferPreparation {
+  readonly authorizationHandle: string
+  readonly recipient: RootKeyTransferRecipientSummary
+  readonly expiresAt: string
+}
+
+export interface RootKeyTransferRecipientSummary {
+  readonly did: string
+  readonly deviceId: string
+  readonly signingKeyId: string
+  readonly e2eeKeyId: string
+  readonly registryVersion: string
+}
+
+export interface RootKeyTransferSendResult {
+  readonly did: string
+  readonly senderDeviceId: string
+  readonly recipientDeviceId: string
+  readonly messageId: string
+  readonly acceptedAt: string
+}
+
+export interface UserPresenceInput {
+  readonly reason: string
+}
+
 /** Server-issued retry boundary for a registration OTP. */
 export interface OtpChallenge {
   readonly retryAfterSeconds: number
@@ -602,6 +629,7 @@ export interface SyncResult {
   readonly pagesFetched: number
   readonly messagesHydrated: number
   readonly duplicatesSkipped: number
+  readonly olderHistoryExcluded: boolean
   readonly changedConversationIds: readonly string[]
   readonly warnings: readonly string[]
 }
@@ -765,12 +793,6 @@ export interface HandleRecoveryPrepareInput {
 
 export interface HandleRecoveryOperationInput {
   readonly operationId: string
-}
-
-/** Short-lived opaque authority for trusted Host reconciliation only. Never log or persist it. */
-export interface HandleRecoveryAttestationResult {
-  readonly attestation: string
-  readonly expiresAt: string
 }
 
 export type HandleRecoveryPhase =
@@ -945,6 +967,9 @@ export interface ImCoreNodeClient {
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
+  prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
+  confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>
+  confirmUserPresence(input: UserPresenceInput): Promise<boolean>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
@@ -980,7 +1005,6 @@ export interface ImCoreNodeClient {
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
-  issueHandleRecoveryAttestation(input: HandleRecoveryOperationInput): Promise<HandleRecoveryAttestationResult>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
   clearLocalData(): Promise<{ readonly cleared: boolean }>

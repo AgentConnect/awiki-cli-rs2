@@ -8,7 +8,10 @@ mod external_identity;
 mod mail_tests;
 #[cfg(test)]
 mod registration_tests;
+#[cfg(test)]
+mod root_transfer_tests;
 mod state;
+mod user_presence;
 
 pub use client::{NativeExternalHttpAuthAttempt, NativeImCoreNodeClient, NativeRealtimeSession};
 pub use dto::*;
@@ -43,14 +46,14 @@ pub async fn open_native_client(
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    10
+    11
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn external_identity_provider_and_device_management_use_native_api_v10() {
-        assert_eq!(super::native_api_version(), 10);
+    fn external_identity_provider_and_device_management_use_native_api_v11() {
+        assert_eq!(super::native_api_version(), 11);
     }
 
     #[test]

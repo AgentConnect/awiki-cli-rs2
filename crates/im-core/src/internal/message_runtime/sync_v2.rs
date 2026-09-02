@@ -1355,13 +1355,7 @@ where
         self.transport.reload_authentication_state()?;
         let binding = self.client.active_sync_account_binding().await?;
         let db = self.client.core_inner().local_state_db().await?;
-        if !db
-            .load_lane_sync_states(binding.owner_identity_id.clone())
-            .await?
-            .is_empty()
-        {
-            let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
-        }
+        let _ = self.refresh_lane_bootstrap(&db, &binding).await?;
         Ok(())
     }
 

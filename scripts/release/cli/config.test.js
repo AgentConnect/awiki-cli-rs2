@@ -97,6 +97,7 @@ test('release config is bound to the closed ANP candidate lock', () => {
   const parsed = readReleaseConfig(release, lockPath);
   assert.equal(parsed.anp_commit, lock.anp.commit);
   assert.equal(parsed.anp_identity_commit, lock.identity.commit);
+  assert.match(lock.anp.didTransitionVectorsTreeSha256, /^[a-f0-9]{64}$/);
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-candidate-lock-'));
   try {
@@ -130,5 +131,21 @@ test('daemon release checks out the configured immutable ANP revision', () => {
   );
   assert.match(workflow, /name: Read pinned ANP SDK revision/);
   assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_commit \}\}/);
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_identity_commit \}\}/);
+  assert.match(workflow, /path: anp\/anp(?:\s|$)/);
+  assert.match(workflow, /path: anp\/anp-identity(?:\s|$)/);
   assert.doesNotMatch(workflow, /repository: agent-network-protocol\/anp\s+ref: master/);
+});
+
+
+test('CLI release uses the canonical nested ANP workspace layout', () => {
+  const workflow = fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/build-cli-release.yml'),
+    'utf8',
+  );
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_commit \}\}/);
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_identity_commit \}\}/);
+  assert.match(workflow, /path: anp\/anp(?:\s|$)/);
+  assert.match(workflow, /path: anp\/anp-identity(?:\s|$)/);
+  assert.doesNotMatch(workflow, /path: anp-identity(?:\s|$)/);
 });

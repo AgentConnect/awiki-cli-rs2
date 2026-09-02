@@ -103,6 +103,27 @@ pub struct Message {
     pub metadata: MessageMetadata,
 }
 
+impl Message {
+    /// Returns whether `requested` identifies this message in the committed
+    /// local projection.
+    ///
+    /// Group transports can replace a client-generated message id with a
+    /// canonical group sequence id. Core preserves the former as an identity
+    /// alias; trusted hosts can use this helper to reconcile an ambiguous send
+    /// without duplicating Core's alias rules.
+    pub fn matches_identity(&self, requested: &crate::ids::MessageId) -> bool {
+        let requested = requested.as_str();
+        self.id.as_str() == requested
+            || self.metadata.operation_id.as_deref() == Some(requested)
+            || self.metadata.attributes.iter().any(|attribute| {
+                matches!(
+                    attribute.key.as_str(),
+                    "raw_message_id" | "client_message_id" | "operation_id"
+                ) && attribute.value == requested
+            })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessagePage {
     pub items: Vec<Message>,

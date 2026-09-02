@@ -13,6 +13,7 @@ use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use awiki_im_core::prelude::*;
 use awiki_im_core::vault::DeviceVaultRootKey;
+#[cfg(feature = "service-trusted-registration")]
 use awiki_im_core::ClientVersionInfo;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};

@@ -2602,6 +2602,7 @@ LIMIT 1"#,
                 message_id: requested_id.to_owned(),
             });
         }
+        let p5_v2_claimed = claims_p5_v2_cache_profile(&metadata);
         if authenticated_p5_v2_raw_message_id(&metadata).is_some() {
             push_unique(&mut local_only_message_ids, message_id);
             continue;
@@ -2630,6 +2631,11 @@ LIMIT 1"#,
                 thread_kind,
                 &metadata,
             )?;
+        }
+        if sync_binding.is_none() && p5_v2_claimed {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: format!("message {requested_id} has no exact Sync V2 thread binding"),
+            });
         }
         if sync_binding
             .as_ref()
@@ -3761,6 +3767,18 @@ fn conversation_ids_for_direct_peer(
         return Ok(ids);
     }
     push_unique(&mut ids, direct_conversation_id_for_peer_ref(peer));
+    let canonical = if peer.starts_with("did:") {
+        super::peer_personas::resolve_by_did(connection, owner_identity_id, peer)?
+    } else {
+        super::peer_personas::resolve_by_handle(
+            connection,
+            owner_identity_id,
+            &normalize_full_handle(peer),
+        )?
+    };
+    if let Some(canonical) = canonical {
+        push_unique(&mut ids, canonical.conversation_id);
+    }
     for id in peer_scope_direct_conversation_ids_matching_peer(
         connection,
         owner_identity_id,
@@ -3927,6 +3945,15 @@ fn authenticated_p5_v2_raw_message_id(metadata: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(feature = "sqlite")]
+fn claims_p5_v2_cache_profile(metadata: &str) -> bool {
+    parse_metadata(metadata)
+        .get("p5_cache_profile")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
 }
 
 #[cfg(feature = "sqlite")]
@@ -4645,11 +4672,14 @@ fn did_full_handle(did: &str) -> Option<String> {
     if domain.is_empty() {
         return None;
     }
-    let path_parts = parts
+    let mut path_parts = parts
         .map(str::trim)
         .filter(|part| !part.is_empty())
-        .take_while(|part| !part.starts_with("e1"))
         .collect::<Vec<_>>();
+    let credential = path_parts.pop()?;
+    if credential.strip_prefix("e1_").is_none_or(str::is_empty) {
+        return None;
+    }
     let first_path = path_parts.first().copied()?;
     let local = match first_path {
         "user" | "users" => path_parts.get(1).copied()?,
@@ -4657,7 +4687,7 @@ fn did_full_handle(did: &str) -> Option<String> {
         "group" | "groups" => return None,
         other => other,
     };
-    if local.is_empty() || local.starts_with("e1") {
+    if local.is_empty() {
         return None;
     }
     Some(normalize_full_handle(&format!("{local}.{domain}")))
@@ -6293,6 +6323,82 @@ WHERE owner_identity_id = 'alice-id' AND msg_id = 'rich-message'"#,
         assert_eq!(
             summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
             1
+        );
+    }
+
+    #[test]
+    fn local_history_e1_prefixed_handle_uses_canonical_persona_route() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:example:owner";
+        let peer_did = "did:example:opaque-peer";
+        let peer_handle = "e1alice.example.com";
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse(peer_handle, "").unwrap(),
+            did: crate::ids::Did::parse(peer_did).unwrap(),
+            user_id: "peer-user-id".to_owned(),
+            domain: Some("example.com".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        let conversation_id = crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut db,
+            owner_identity_id,
+            owner_did,
+            &lookup,
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "e1-handle-message".to_owned(),
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id,
+                thread_id: "remote-direct-thread".to_owned(),
+                direction: 0,
+                sender_did: peer_did.to_owned(),
+                receiver_did: owner_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "canonical Handle history".to_owned(),
+                stored_at: "2026-09-01T00:00:00Z".to_owned(),
+                metadata: "{}".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        for peer in [peer_handle, peer_did] {
+            let records = list_messages_for_thread_ref_for_owner_identity(
+                &db,
+                owner_identity_id,
+                owner_did,
+                &crate::messages::ThreadRef::Direct(crate::ids::PeerRef::parse(peer, "").unwrap()),
+                10,
+                None,
+            )
+            .unwrap();
+            assert_eq!(records.records.len(), 1);
+            assert_eq!(records.records[0].msg_id, "e1-handle-message");
+        }
+    }
+
+    #[test]
+    fn did_full_handle_distinguishes_e1_handle_from_final_credential_segment() {
+        assert_eq!(
+            did_full_handle("did:wba:example.com:user:e1alice:e1_credential").as_deref(),
+            Some("e1alice.example.com")
+        );
+        assert_eq!(
+            did_full_handle("did:wba:example.com:user:e1_alice:e1_credential").as_deref(),
+            Some("e1_alice.example.com")
+        );
+        assert_eq!(
+            did_full_handle("did:wba:example.com:user:e1alice").as_deref(),
+            None
         );
     }
 

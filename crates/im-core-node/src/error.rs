@@ -181,6 +181,14 @@ impl SafeError {
         }
     }
 
+    pub(crate) fn from_root_transfer(error: im_core::identity::RootKeyTransferError) -> Self {
+        Self::new(
+            error.to_string(),
+            "The AWiki root transfer could not be completed.",
+            error.retryable,
+        )
+    }
+
     pub(crate) fn into_napi(self) -> Error {
         let reason = serde_json::to_string(&self).unwrap_or_else(|_| {
             r#"{"code":"internal","safeMessage":"The IM operation failed internally.","retryable":false}"#.to_owned()
@@ -233,23 +241,6 @@ fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
             "group_identity_stale",
             "The group identity binding requires recovery.",
             true,
-        );
-    }
-    if code == "recovery_attestation.temporarily_unavailable" {
-        return SafeError::new(
-            "recovery_reconciliation_unavailable",
-            "Identity recovery reconciliation is temporarily unavailable.",
-            true,
-        );
-    }
-    if matches!(
-        code.as_str(),
-        "recovery_attestation.not_found" | "recovery_attestation.invalid_request"
-    ) {
-        return SafeError::new(
-            "recovery_reconciliation_invalid",
-            "Identity recovery cannot be reconciled from this operation.",
-            false,
         );
     }
     if status == Some(403) || code == "anp.forbidden" {

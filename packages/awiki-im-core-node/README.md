@@ -118,6 +118,21 @@ recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取
 stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
 恢复，不得只退出监听循环，也不得跳过 canonical sync。
 
+`syncNow()` 返回的 `olderHistoryExcluded` 是 Schema 3 bounded-history 成功标记，不是容量错误。
+公开结果只包含安全计数、closed warnings 和 changed conversation IDs，不包含 cursor、page ref、
+token、manifest 或消息正文。
+
+## Root Transfer 与本机认证
+
+`prepareRootKeyTransfer()` 和 `confirmAndSendRootKeyTransfer()` 只映射 Core 的 exact-device
+Root Transfer。短生命周期 `authorizationHandle` 只能保留在可信 Host，不能进入 Browser、日志或
+持久化；Root material、P5 密文和 ACK 均不进入 TypeScript。
+
+Darwin Host 可调用 `confirmUserPresence()` 请求系统级 device-owner authentication。取消、拒绝、
+不可交互和非 Darwin 平台均返回 `false`，调用方不得改用 Browser 点击、确认词或 keyring 解锁替代。
+认证成功只证明一次本机用户操作；Host 仍须重新检查业务上下文，再用同一 authorization handle
+调用 Core。
+
 exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使用既有
 `awiki.sync.event.v3.p6-delivery-context.v1` 和同一 bootstrap client instance；未协商 P6 lane
 （包括不编译 group-e2ee 的 Node build）时使用既有 `awiki.sync.event.v3`，不得伪造 P6 activation。
@@ -131,12 +146,13 @@ exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使�
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.2.1` 源码 candidate 的 Native contract version 为 `10`，增加 Host-only External
+- 当前 `0.2.2` 源码 candidate 的 Native contract version 为 `11`，增加 Root Transfer 与 Darwin
+  user-presence facade，并保留 `0.2.1` 的 Host-only External
   Identity Provider Promise bridge，并保留 `0.1.8` 引入的新设备 Join 恢复/SAS/cancel、
   ready-admin Registry、审批/拒绝和设备撤销；同时保留 prepared registration
   Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send。registry `0.1.5` 是
   v5，包含 external HTTP auth、local timeline、群管理展示、realtime 与 mail facade；`0.1.6`
-  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.1` 必须同步发布 v10 wrapper 与全部平台 addon，wrapper 拒绝其他
+  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.2` 必须同步发布 v11 wrapper 与全部平台 addon，wrapper 拒绝其他
   版本的 addon。
 
 ## 邮件

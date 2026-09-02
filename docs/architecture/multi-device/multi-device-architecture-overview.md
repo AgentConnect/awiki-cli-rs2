@@ -1,11 +1,14 @@
 # AWiki 多设备架构概览（V1）
 
-**状态：待 Review**
+**状态：多设备 V1 主体已实现；Handle Recovery V4 作为独立扩展已实现**
 
 > 本文用于快速理解 V1。完整状态、事务和安全边界以
 > [多设备架构设计](./multi-device-architecter.md)为准；精确 JSON/RPC 契约以
 > [新设备加入消息与 RPC 契约](../../../../awiki-plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-contract.md)
 > 为准。
+>
+> DSH 当前扩展开发与单元测试边界见
+> [DSH AWiki 多设备与恢复 V1 计划](../../../../awiki-plan/20260831-dsh-awiki-multi-device-productization/plan.md)。
 
 ---
 
@@ -20,7 +23,8 @@
 ```
 
 V1 是长期架构的首个完整版本，不是临时旁路。它完成注册、Legacy 单设备升级、设备认证、消息驱动
-Join、通用系统通知、根密钥传输、管理员升级和设备撤销；Recovery 等高级能力以后独立增加。
+Join、通用系统通知、根密钥传输、管理员升级和设备撤销。Handle Recovery V4 后续已作为独立 Core
+扩展实现，不改变本页的 Manifest/Registry/SecretVault 主边界。
 
 ---
 
@@ -245,8 +249,8 @@ document/registry version 递增
 各 MLS 群异步 Remove/Commit
 ```
 
-任何管理 mutation 都必须保证提交后仍至少有一台 ready admin。V1 没有最后管理员丢失后的
-Recovery，因此这条保护不能绕过。
+任何普通管理 mutation 都必须保证提交后仍至少有一台 ready admin，不能通过 revoke 等路径绕过。
+最后管理员凭证丢失时必须进入独立 Handle Recovery V4，不能伪装成普通管理 mutation。
 
 ---
 
@@ -307,5 +311,5 @@ V1 的稳定骨架是：
 > Manifest 管公开设备，Registry 管域内权限，设备签名管日常认证，SecretVault 管本地密钥，
 > 通用 Message 通知驱动旧设备审批，普通 P5 承载 root，独立 completion 原子授予管理员。
 
-这套边界覆盖第一版主体能力。未来的 Recovery、透明日志、复杂通知产品和历史迁移可以独立演进，
-不需要破坏 V1 身份模型或重新引入并行注册、Token、Join 和根传输流程。
+这套边界覆盖第一版主体能力。Handle Recovery V4 已按独立扩展落地；透明日志、复杂通知产品和历史
+迁移仍可独立演进，不需要破坏 V1 身份模型或重新引入并行注册、Token、Join 和根传输流程。

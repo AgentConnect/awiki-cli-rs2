@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.3 (unreleased)
+
+- Remove the retired User Service recovery-attestation facade and its Host-only
+  reconciliation errors; Handle Recovery V4 and Mail ownership remain unchanged.
+
+## 0.2.2 (unreleased)
+
+- Add secret-free Root Transfer prepare/send facade methods and a Darwin
+  device-owner authentication method for trusted local Hosts.
+- Raise the native API contract to v11; non-Darwin user presence fails closed.
+
 ## 0.2.1 (unreleased)
 
 - Publish the current native API v10 External Provider source as a new immutable
@@ -20,16 +31,6 @@
 - Raise the native API contract to v10 so the wrapper rejects published v9
   binaries that do not implement the External Provider bridge, and release the
   ThreadsafeFunction during explicit client close.
-
-## 0.1.7
-
-- Add a Host-only opaque recovery-attestation method for post-recovery service
-  reconciliation; the SDK never logs or persists the token.
-- Add stable `recovery_reconciliation_unavailable` and
-  `recovery_reconciliation_invalid` errors without exposing the remote
-  response.
-- Raise the native API contract to v9 so wrappers reject v8 binaries that do
-  not provide the recovery-attestation method.
 
 ## 0.1.6
 

@@ -17,7 +17,6 @@ import type {
   GroupMembersInput,
   HandleRecoveryOperationInput,
   HandleRecoveryOperationSummary,
-  HandleRecoveryAttestationResult,
   HandleRecoveryOtpInput,
   HandleRecoveryOtpResult,
   HandleRecoveryPrepareInput,
@@ -63,6 +62,9 @@ import type {
   RealtimeEvent,
   RealtimeOptions,
   RealtimeStatus,
+  RootKeyTransferPreparation,
+  RootKeyTransferSendResult,
+  UserPresenceInput,
 } from './types.js'
 
 /** Raw N-API recovery shape. Keep it separate from the stable public facade. */
@@ -119,6 +121,9 @@ export interface NativeImCoreNodeClient {
   confirmDeviceJoinApproval(input: { readonly approvalHandle: string; readonly userPresenceConfirmed: boolean }): Promise<AdminDeviceJoinProgress>
   rejectDeviceJoin(input: { readonly joinSessionId: string; readonly reason: 'user_rejected' | 'sas_mismatch' }): Promise<AdminDeviceJoinProgress>
   revokeDevice(input: { readonly targetDeviceId: string; readonly userPresenceConfirmed: boolean }): Promise<DeviceRevokeResult>
+  prepareRootKeyTransfer(input: { readonly recipientDeviceId: string }): Promise<RootKeyTransferPreparation>
+  confirmAndSendRootKeyTransfer(input: { readonly authorizationHandle: string; readonly userPresenceConfirmed: boolean }): Promise<RootKeyTransferSendResult>
+  confirmUserPresence(input: UserPresenceInput): Promise<boolean>
   updateDisplayName(displayName: string): Promise<NodeIdentity>
   getProfile(): Promise<NodeProfile>
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
@@ -152,7 +157,6 @@ export interface NativeImCoreNodeClient {
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
-  issueHandleRecoveryAttestation(input: HandleRecoveryOperationInput): Promise<HandleRecoveryAttestationResult>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   close(): Promise<void>
