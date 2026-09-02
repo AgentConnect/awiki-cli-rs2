@@ -3092,7 +3092,7 @@ mod tests {
     fn recovery_and_snapshot_keep_policy_and_token_inside_private_wire_types() {
         let recovery = match parse_delta_response(&json!({
             "mode": "compact_recovery_required",
-            "server_time": "2026-07-28T12:00:03Z",
+            "server_time": "2026-08-31T10:00:00Z",
             "events": [],
             "next_cursor": null,
             "has_more": false,
@@ -3114,6 +3114,10 @@ mod tests {
             SyncDeltaResponseV2::Delta(_) => panic!("expected recovery"),
         };
         assert_eq!(recovery.snapshot_schema, 3);
+        assert_eq!(recovery.snapshot_delivery, "paged_v1");
+        let recovery_debug = format!("{recovery:?}");
+        assert!(!recovery_debug.contains("recovery-123"));
+        assert!(!recovery_debug.contains("opaque-secret"));
         let params = build_snapshot_params(
             &WireIdentity {
                 did: "did:example:alice".to_owned(),
@@ -3123,10 +3127,21 @@ mod tests {
         .unwrap();
         assert_eq!(params.pointer("/body/token"), Some(&json!("opaque-secret")));
 
-        let snapshot_page =
-            parse_snapshot_page_v3(&empty_schema3_snapshot_response(), true).unwrap();
-        assert_eq!(snapshot_page.snapshot_cursor.scan_seq, "20");
-        assert!(snapshot_page.manifest.is_some());
+        let page = parse_snapshot_page_v3(&empty_schema3_snapshot_response(), true).unwrap();
+        let manifest = page.manifest.as_ref().unwrap();
+        let snapshot = finalize_snapshot_package_v3(
+            manifest,
+            page.account_id.clone(),
+            page.device_id.clone(),
+            page.server_time.clone(),
+            &BTreeMap::from([(SnapshotSectionV3::ReadStates, Vec::new())]),
+            &BTreeMap::from([(SnapshotSectionV3::ReadStates, 1)]),
+        )
+        .unwrap();
+        assert_eq!(snapshot.snapshot_cursor.scan_seq, "20");
+        assert_eq!(snapshot.server_cutoff, "2026-08-29T10:00:00Z");
+        assert!(snapshot.recent_plain_messages.is_empty());
+        assert!(!snapshot.older_history_excluded);
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub use self::dto::{
 };
 pub(crate) use self::service::{
     normalize_direct_send_result_for_peer_scope, resolve_conversation_send_target,
+    resolve_conversation_thread,
 };
 
 pub use self::mention::{

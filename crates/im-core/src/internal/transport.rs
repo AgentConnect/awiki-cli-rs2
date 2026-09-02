@@ -1348,7 +1348,7 @@ impl<'a> CorePlainTransport<'a> {
         }
     }
 
-    #[cfg(feature = "mcp-trusted-registration")]
+    #[cfg(feature = "service-trusted-registration")]
     pub(crate) fn new_with_register_bearer_token(
         core: &'a crate::core::ImCore,
         token: impl Into<String>,

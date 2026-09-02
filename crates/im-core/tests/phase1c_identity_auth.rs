@@ -13,6 +13,8 @@ use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use awiki_im_core::prelude::*;
 use awiki_im_core::vault::DeviceVaultRootKey;
+#[cfg(feature = "service-trusted-registration")]
+use awiki_im_core::ClientVersionInfo;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -282,6 +284,227 @@ async fn register_handle_with_service_bearer_adds_authorization_header() {
     );
     assert_eq!(requests[0].json_body()["method"], "register");
     assert_prekey_publication_request(&requests[1]);
+}
+
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_prepare_is_local_and_stable() {
+    let server = TestServer::spawn(Vec::new());
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required(server.base_url(), [42_u8; 32])
+        .await;
+    let request = TrustedServiceRegisterHandleRequest {
+        registration: RegisterHandleRequest {
+            local_alias: Some("guest".to_string()),
+            requested_handle: Handle::parse(
+                "guest-0123456789abcdef0123456789abcdef.awiki.test",
+                "",
+            )
+            .unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("AWiki Guest 7K3M".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        },
+        provision_operation_id: "018fb2d7-3c4d-7abc-8def-0123456789ab".to_string(),
+    };
+
+    let first = core
+        .identities()
+        .prepare_handle_with_trusted_service_async(&request, "guest-internal-token")
+        .await
+        .unwrap();
+    let second = core
+        .identities()
+        .prepare_handle_with_trusted_service_async(&request, "guest-internal-token")
+        .await
+        .unwrap();
+
+    assert_eq!(first, second);
+    assert_ne!(first.canonical_request_sha256, [0; 32]);
+    assert!(server.join().is_empty());
+}
+
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_sends_bearer_and_operation_id() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required(server.base_url(), [43_u8; 32])
+        .await;
+    let operation_id = "018fb2d7-3c4d-7abc-8def-0123456789ab";
+
+    let result = core
+        .identities()
+        .register_handle_with_trusted_service_async(
+            TrustedServiceRegisterHandleRequest {
+                registration: RegisterHandleRequest {
+                    local_alias: Some("guest".to_string()),
+                    requested_handle: Handle::parse(
+                        "guest-0123456789abcdef0123456789abcdef.awiki.test",
+                        "",
+                    )
+                    .unwrap(),
+                    verification: VerificationInput::AlreadyVerified,
+                    invite_code: None,
+                    profile: InitialProfile {
+                        display_name: Some("AWiki Guest 7K3M".to_string()),
+                        avatar_url: None,
+                    },
+                    make_default: true,
+                },
+                provision_operation_id: operation_id.to_string(),
+            },
+            "guest-internal-token",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer guest-internal-token")
+    );
+    assert_eq!(
+        requests[0].json_body()["params"]["provision_operation_id"],
+        operation_id
+    );
+    assert_prekey_publication_request(&requests[1]);
+}
+
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_live_contract_when_explicitly_configured() {
+    let Ok(user_service_url) = std::env::var("AWIKI_GUEST_LIVE_USER_SERVICE_URL") else {
+        return;
+    };
+    let message_service_url = std::env::var("AWIKI_GUEST_LIVE_MESSAGE_SERVICE_URL")
+        .expect("AWIKI_GUEST_LIVE_MESSAGE_SERVICE_URL is required with the live User Service URL");
+    let registration_token = std::env::var("AWIKI_GUEST_LIVE_REGISTRATION_TOKEN")
+        .expect("AWIKI_GUEST_LIVE_REGISTRATION_TOKEN is required with the live User Service URL");
+    let handle_domain = std::env::var("AWIKI_GUEST_LIVE_HANDLE_DOMAIN")
+        .unwrap_or_else(|_| "awiki.test".to_string());
+
+    let fixture = Fixture::new();
+    let user_endpoint = ServiceEndpoint::parse(&user_service_url).unwrap();
+    let message_endpoint = ServiceEndpoint::parse(&message_service_url).unwrap();
+    let mut config = fixture.config(&user_service_url);
+    config.did_domain = handle_domain.clone();
+    config.client_version_info =
+        Some(ClientVersionInfo::new("awiki-daemon", "0815", "0.1.91", None).unwrap());
+    config.user_service_endpoint = Some(user_endpoint);
+    config.message_service_endpoint = Some(message_endpoint.clone());
+    config.anp_service_endpoint = Some(message_endpoint);
+    let core = ImCore::open_with_options(
+        config,
+        fixture.paths(),
+        ImCoreOpenOptions::default().with_identity_secret_vault(
+            IdentitySecretStoragePolicy::VaultRequired,
+            ImCoreSecretVaultOptions::new(
+                DeviceVaultRootKey::from_bytes([45_u8; 32]),
+                fixture.root.join("identity-vault"),
+                "guest-live-contract-workspace",
+                "guest-live-contract-device",
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+    let seed = Sha256::digest(format!(
+        "{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let suffix = seed[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let full_handle = format!("guest-{suffix}.{handle_domain}");
+    let operation_id = format!("018fb2d7-3c4d-7abc-8def-{}", &suffix[..12]);
+
+    let result = core
+        .identities()
+        .register_handle_with_trusted_service_async(
+            TrustedServiceRegisterHandleRequest {
+                registration: RegisterHandleRequest {
+                    local_alias: Some("guest-live-contract".to_string()),
+                    requested_handle: Handle::parse(&full_handle, "").unwrap(),
+                    verification: VerificationInput::AlreadyVerified,
+                    invite_code: None,
+                    profile: InitialProfile {
+                        display_name: Some("AWiki Guest LIVE".to_string()),
+                        avatar_url: None,
+                    },
+                    make_default: true,
+                },
+                provision_operation_id: operation_id,
+            },
+            registration_token,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    assert_eq!(result.handle.as_str(), full_handle);
+    let identity = result.identity.expect("live registration commits locally");
+    assert!(identity.readiness.ready_for_auth);
+    assert!(identity.readiness.ready_for_messaging);
+}
+
+#[cfg(feature = "service-trusted-registration")]
+#[tokio::test]
+async fn trusted_service_registration_rejects_noncanonical_operation_id_before_network() {
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required("http://127.0.0.1:1", [44_u8; 32])
+        .await;
+
+    for operation_id in [
+        "",
+        "not-a-uuid",
+        "018FB2D7-3C4D-7ABC-8DEF-0123456789AB",
+        "018fb2d73c4d7abc8def0123456789ab",
+    ] {
+        let error = core
+            .identities()
+            .register_handle_with_trusted_service_async(
+                TrustedServiceRegisterHandleRequest {
+                    registration: RegisterHandleRequest {
+                        local_alias: Some("guest".to_string()),
+                        requested_handle: Handle::parse(
+                            "guest-0123456789abcdef0123456789abcdef.awiki.test",
+                            "",
+                        )
+                        .unwrap(),
+                        verification: VerificationInput::AlreadyVerified,
+                        invite_code: None,
+                        profile: InitialProfile {
+                            display_name: None,
+                            avatar_url: None,
+                        },
+                        make_default: true,
+                    },
+                    provision_operation_id: operation_id.to_string(),
+                },
+                "guest-internal-token",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ImError::InvalidInput { .. }));
+    }
 }
 
 #[tokio::test]

@@ -397,6 +397,28 @@ pub struct RegisterHandleRequest {
     pub make_default: bool,
 }
 
+/// Registration input reserved for trusted Rust backend services.
+///
+/// The operation id is sent to User Service as the durable idempotency key. It
+/// deliberately stays out of the Node, Dart and CLI bindings.
+#[cfg(feature = "service-trusted-registration")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedServiceRegisterHandleRequest {
+    pub registration: RegisterHandleRequest,
+    pub provision_operation_id: String,
+}
+
+/// Durable local preparation result for a trusted backend registration.
+///
+/// The digest covers the canonical RPC params that will be submitted by
+/// `register_handle_with_trusted_service_async`. Preparing does not perform any
+/// network request.
+#[cfg(feature = "service-trusted-registration")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedServiceRegistrationPreparation {
+    pub canonical_request_sha256: [u8; 32],
+}
+
 pub(crate) const DAEMON_SUBKEY_PACKAGE_SCHEMA_V1: &str = "awiki.daemon.user_subkey_package.v1";
 pub(crate) const DAEMON_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
 pub(crate) const DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM: &str = "pem";

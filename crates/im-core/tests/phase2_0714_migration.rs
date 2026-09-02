@@ -73,12 +73,12 @@ const SNAPSHOT_QUERIES: &[(&str, usize)] = &[
 ];
 
 #[test]
-fn locked_0714_schema_36_fixture_migrates_to_37_without_data_drift() {
+fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
     let fixture_dir = std::env::var_os("AWIKI_0714_E2EE_FIXTURE_DIR")
         .expect("AWIKI_0714_E2EE_FIXTURE_DIR must name the locked offline fixture");
     let source = std::path::Path::new(&fixture_dir).join("core-schema-36.sqlite");
     let temp = tempfile::tempdir().unwrap();
-    let migrated = temp.path().join("core-schema-37.sqlite");
+    let migrated = temp.path().join("core-schema-current.sqlite");
     fs::copy(source, &migrated).unwrap();
 
     let before = Connection::open_with_flags(&migrated, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
@@ -115,7 +115,7 @@ fn locked_0714_schema_36_fixture_migrates_to_37_without_data_drift() {
     awiki_im_core::compat::local_state::ensure_schema(&connection).unwrap();
     assert_eq!(
         awiki_im_core::compat::local_state::current_schema_version(&connection).unwrap(),
-        37
+        awiki_im_core::compat::local_state::SCHEMA_VERSION
     );
     assert_eq!(conservation_digest(&connection), before_digest);
     assert_eq!(

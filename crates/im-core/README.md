@@ -125,10 +125,20 @@ awiki-im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attach
 | `group-e2ee` | no | Group E2EE/MLS surfaces; also enables `sqlite` and the ANP `mls` feature. |
 | `email` | no | Email/mail product namespace. |
 | `provider-traits` | no | Reserved provider extension points. |
-| `mcp-trusted-registration` | no | Internal trusted-registration integration surface. |
+| `service-trusted-registration` | no | Rust-only trusted backend registration with a durable operation ID. Not exported by the CLI, Node, or Dart bindings. |
+| `mcp-trusted-registration` | no | Backward-compatible MCP trusted-registration surface; implies `service-trusted-registration`. |
 | `internal-test-helpers` | no | Test-only helpers; do not enable in downstream production builds. |
 
 The default feature set is `sqlite` + `http`.
+
+### Trusted backend registration
+
+Rust backend services may opt into `service-trusted-registration` and call
+`IdentityRegistry::prepare_handle_with_trusted_service_async` followed by
+`register_handle_with_trusted_service_async`. The caller supplies a canonical UUID operation ID
+and a dedicated User Service bearer token. The operation ID and prepared identity material must
+be reused for every retry. This surface is intended only for trusted service processes; it does
+not replace ordinary user registration and must not be exposed through public client bindings.
 
 ## Minimal Rust example
 

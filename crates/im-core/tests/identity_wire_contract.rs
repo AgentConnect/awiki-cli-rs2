@@ -160,10 +160,12 @@ fn identity_register_recover_and_replace_rpc_params_match_go_service() {
     let register = identity::build_register_rpc_call(identity::RegisterRpcParams {
         did_document: did_document(),
         handle: " alice ".to_string(),
+        name: None,
         phone: Some("13800138000".to_string()),
         otp_code: Some(" 12 34 56 ".to_string()),
         email: None,
         invite_code: "invite-1".to_string(),
+        provision_operation_id: None,
     })
     .unwrap();
     assert_eq!(register.endpoint, identity::DID_AUTH_RPC_ENDPOINT);
@@ -178,6 +180,20 @@ fn identity_register_recover_and_replace_rpc_params_match_go_service() {
             "invite_code": "invite-1",
         })
     );
+
+    let trusted_register = identity::build_register_rpc_call(identity::RegisterRpcParams {
+        did_document: did_document(),
+        handle: "guest-0123456789abcdef0123456789abcdef".to_string(),
+        name: Some(" AWiki Guest 7K3M ".to_string()),
+        provision_operation_id: Some("018fb2d7-3c4d-7abc-8def-0123456789ab".to_string()),
+        ..identity::RegisterRpcParams::default()
+    })
+    .unwrap();
+    assert_eq!(
+        trusted_register.params["provision_operation_id"],
+        "018fb2d7-3c4d-7abc-8def-0123456789ab"
+    );
+    assert_eq!(trusted_register.params["name"], "AWiki Guest 7K3M");
 
     let register_email = identity::build_register_rpc_call(identity::RegisterRpcParams {
         did_document: did_document(),

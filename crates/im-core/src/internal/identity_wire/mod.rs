@@ -70,10 +70,12 @@ pub struct RestCall {
 pub struct RegisterRpcParams {
     pub did_document: Value,
     pub handle: String,
+    pub name: Option<String>,
     pub phone: Option<String>,
     pub otp_code: Option<String>,
     pub email: Option<String>,
     pub invite_code: String,
+    pub provision_operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

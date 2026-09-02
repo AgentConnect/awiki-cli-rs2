@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -100,6 +101,27 @@ pub struct Message {
     pub sent_at: Option<String>,
     pub received_at: Option<String>,
     pub metadata: MessageMetadata,
+}
+
+impl Message {
+    /// Returns whether `requested` identifies this message in the committed
+    /// local projection.
+    ///
+    /// Group transports can replace a client-generated message id with a
+    /// canonical group sequence id. Core preserves the former as an identity
+    /// alias; trusted hosts can use this helper to reconcile an ambiguous send
+    /// without duplicating Core's alias rules.
+    pub fn matches_identity(&self, requested: &crate::ids::MessageId) -> bool {
+        let requested = requested.as_str();
+        self.id.as_str() == requested
+            || self.metadata.operation_id.as_deref() == Some(requested)
+            || self.metadata.attributes.iter().any(|attribute| {
+                matches!(
+                    attribute.key.as_str(),
+                    "raw_message_id" | "client_message_id" | "operation_id"
+                ) && attribute.value == requested
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -564,7 +586,7 @@ pub struct IncomingMessageRecoveryItem {
 ///
 /// The token is intentionally opaque to hosts and is bound to the exact
 /// account/device identity that created it.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingMessageRecoveryPageToken {
     pub(crate) owner_identity_id: String,
     pub(crate) account_id: String,
@@ -575,6 +597,53 @@ pub struct IncomingMessageRecoveryPageToken {
     pub(crate) timestamp: String,
     pub(crate) server_sequence_key: i64,
     pub(crate) logical_message_id: String,
+}
+
+impl IncomingMessageRecoveryPageToken {
+    const PERSISTED_PREFIX: &'static str = "incoming-recovery:v1:";
+
+    /// Serializes a Core-issued recovery position for durable host checkpoints.
+    ///
+    /// The value is opaque to hosts and is still validated against the exact
+    /// active account/device binding when it is presented to Core again.
+    pub fn to_persisted_cursor(&self) -> crate::ImResult<String> {
+        let encoded = serde_json::to_vec(self).map_err(|error| {
+            crate::ImError::invalid_input(
+                Some("recovery_cursor".to_owned()),
+                format!("cannot encode incoming recovery cursor: {error}"),
+            )
+        })?;
+        Ok(format!(
+            "{}{}",
+            Self::PERSISTED_PREFIX,
+            URL_SAFE_NO_PAD.encode(encoded)
+        ))
+    }
+
+    /// Restores a previously persisted Core recovery position.
+    pub fn from_persisted_cursor(value: &str) -> crate::ImResult<Self> {
+        let encoded = value
+            .trim()
+            .strip_prefix(Self::PERSISTED_PREFIX)
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("recovery_cursor".to_owned()),
+                    "incoming recovery cursor is malformed",
+                )
+            })?;
+        let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("recovery_cursor".to_owned()),
+                "incoming recovery cursor is malformed",
+            )
+        })?;
+        serde_json::from_slice(&bytes).map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("recovery_cursor".to_owned()),
+                "incoming recovery cursor is malformed",
+            )
+        })
+    }
 }
 
 impl std::fmt::Debug for IncomingMessageRecoveryPageToken {

@@ -51,6 +51,7 @@ function writeArtifacts(directory, version) {
 test('stages a complete self-hosted package, manifest, Skill, and onboarding snapshot', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-stage-release-'));
   try {
+    const expectedRelease = JSON.parse(fs.readFileSync(releaseConfig, 'utf8'));
     const artifacts = path.join(temp, 'artifacts');
     const output = path.join(temp, 'output');
     const serverConfig = path.join(temp, 'server.toml');
@@ -99,7 +100,10 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     assert.match(sourceDocument.stdout, /Version: 1\.0\.20-beta\.1/);
     assert.match(sourceDocument.stdout, new RegExp(`Commit: ${'a'.repeat(40)}`));
     assert.match(sourceDocument.stdout, new RegExp(`tree/${'a'.repeat(40)}`));
-    assert.match(sourceDocument.stdout, new RegExp(`ANP dependency commit: ${'97f321376ff97fdfb2837eb0db7ad90d11040406'}`));
+    assert.match(
+      sourceDocument.stdout,
+      new RegExp(`ANP dependency commit: ${expectedRelease.anp_commit}`),
+    );
 
     const onboarding = fs.readFileSync(path.join(output, 'onboarding.md'), 'utf8');
     assert.match(onboarding, /https:\/\/awiki\.info\/cli\/beta\/awiki-cli\.tgz/);

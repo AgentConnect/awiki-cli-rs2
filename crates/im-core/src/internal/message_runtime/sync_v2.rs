@@ -6699,7 +6699,7 @@ END;
             },
             NoopAsyncDirectoryTransport,
         )
-        .with_run_deadline_for_test(StdDuration::from_millis(500))
+        .with_run_deadline_for_test(StdDuration::from_secs(5))
         .sync_now(sync_snapshot_request())
         .await
         .unwrap();

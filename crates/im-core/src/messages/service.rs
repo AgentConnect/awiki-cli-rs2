@@ -305,7 +305,23 @@ mod incoming_recovery_tests {
             .unwrap();
         assert_eq!(second.items[0].logical_message_id, "msg-later");
         assert!(!second.has_more);
-        assert!(second.next_page_token.is_none());
+        let final_token = second.next_page_token.clone().unwrap();
+        let persisted = final_token.to_persisted_cursor().unwrap();
+        let restored =
+            crate::messages::IncomingMessageRecoveryPageToken::from_persisted_cursor(&persisted)
+                .unwrap();
+        assert_eq!(restored, final_token);
+        let empty = client
+            .messages()
+            .local_hydrated_incoming_recovery_async(crate::messages::IncomingMessageRecoveryQuery {
+                limit: 1,
+                page_token: Some(restored),
+            })
+            .await
+            .unwrap();
+        assert!(empty.items.is_empty());
+        assert!(!empty.has_more);
+        assert!(empty.next_page_token.is_none());
 
         let other_bootstrap = fixture
             .core
@@ -951,7 +967,7 @@ mod conversation_mark_read_request_tests {
     }
 
     #[tokio::test]
-    async fn sync_v2_mark_read_rejects_partial_p5_metadata_without_thread_binding() {
+    async fn sync_v2_mark_read_treats_partial_p5_metadata_as_remote_watermark() {
         let fixture = Fixture::new("mark-read-p5-partial-metadata");
         let client = fixture.client();
         let mut metadata =
@@ -972,19 +988,19 @@ mod conversation_mark_read_request_tests {
             ..Fixture::message_record_defaults()
         });
 
-        let error = super::mark_message_ids_read_v2_async(
+        let result = super::mark_message_ids_read_v2_async(
             &client,
             vec![crate::ids::MessageId::parse("msg-p5-untrusted").unwrap()],
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(matches!(
-            error,
-            crate::ImError::IdentityBindingConflict { detail }
-                if detail.contains("has no exact Sync V2 thread binding")
-        ));
-        assert_eq!(fixture.message_is_read("msg-p5-untrusted"), 0);
+        assert_eq!(result.updated_count, 1);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Remote read-state mark-read failed")));
+        assert_eq!(fixture.message_is_read("msg-p5-untrusted"), 1);
     }
 
     fn p5_projection_metadata() -> String {
@@ -3406,27 +3422,26 @@ impl<'a> MessageService<'a> {
             if has_more {
                 records.truncate(usize::try_from(query.limit).unwrap_or(usize::MAX));
             }
-            let next_page_token = if has_more {
-                records.last().map(|record| {
-                    let cursor =
-                        crate::internal::local_state::messages::hydrated_incoming_message_cursor(
-                            record,
-                        );
-                    super::IncomingMessageRecoveryPageToken {
-                        owner_identity_id: binding.owner_identity_id.clone(),
-                        account_id: binding.account_id.clone(),
-                        current_did: binding.current_did.clone(),
-                        protocol_device_id: binding.protocol_device_id.clone(),
-                        identity_generation: binding.identity_generation.clone(),
-                        device_auth_generation: binding.device_auth_generation.clone(),
-                        timestamp: cursor.timestamp,
-                        server_sequence_key: cursor.server_sequence_key,
-                        logical_message_id: cursor.message_id,
-                    }
-                })
-            } else {
-                None
-            };
+            // Return the durable position even at the end of the current
+            // projection. Hosts need that checkpoint to resume strictly after
+            // the last item when more messages arrive later.
+            let next_page_token = records.last().map(|record| {
+                let cursor =
+                    crate::internal::local_state::messages::hydrated_incoming_message_cursor(
+                        record,
+                    );
+                super::IncomingMessageRecoveryPageToken {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    account_id: binding.account_id.clone(),
+                    current_did: binding.current_did.clone(),
+                    protocol_device_id: binding.protocol_device_id.clone(),
+                    identity_generation: binding.identity_generation.clone(),
+                    device_auth_generation: binding.device_auth_generation.clone(),
+                    timestamp: cursor.timestamp,
+                    server_sequence_key: cursor.server_sequence_key,
+                    logical_message_id: cursor.message_id,
+                }
+            });
             let items = records
                 .iter()
                 .map(|record| {
@@ -4504,6 +4519,15 @@ pub(crate) fn resolve_conversation_send_target(
 ) -> crate::ImResult<ResolvedConversationSendTarget> {
     ensure_conversation_registry(client, conversation)?;
     conversation_send_target(resolve_service_conversation_thread(client, conversation)?)
+}
+
+pub(crate) fn resolve_conversation_thread(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<(super::ThreadRef, Option<String>)> {
+    ensure_conversation_registry(client, conversation)?;
+    let resolved = resolve_service_conversation_thread(client, conversation)?;
+    Ok((resolved.thread, resolved.resolved_did))
 }
 
 fn validate_plain_conversation_send(request: &super::SendMessageRequest) -> crate::ImResult<()> {
