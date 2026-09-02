@@ -176,6 +176,41 @@ fn roster_reconcile_adds_successor_devices_before_removing_predecessor_leaves() 
 }
 
 #[test]
+fn self_did_device_manager_only_selects_revoked_sibling_removals() {
+    let current_did = "did:example:member";
+    let own_revoked = (current_did.to_owned(), "device-old".to_owned());
+    let other_member = ("did:example:other".to_owned(), "device-other".to_owned());
+    let own_missing = (current_did.to_owned(), "device-new".to_owned());
+
+    let (selected_extra, selected_missing) = next_roster_change_for_authority(
+        current_did,
+        RosterReconcileAuthority::SelfDidDeviceManager,
+        vec![other_member, own_revoked.clone()],
+        vec![own_missing],
+    );
+
+    assert_eq!(selected_extra, Some(own_revoked));
+    assert!(selected_missing.is_none());
+}
+
+#[test]
+fn self_did_device_manager_cannot_change_other_members_or_add_leaves() {
+    let current_did = "did:example:member";
+    let other_extra = ("did:example:other".to_owned(), "device-old".to_owned());
+    let own_missing = (current_did.to_owned(), "device-new".to_owned());
+
+    let (selected_extra, selected_missing) = next_roster_change_for_authority(
+        current_did,
+        RosterReconcileAuthority::SelfDidDeviceManager,
+        vec![other_extra],
+        vec![own_missing],
+    );
+
+    assert!(selected_extra.is_none());
+    assert!(selected_missing.is_none());
+}
+
+#[test]
 fn empty_eligible_manifest_set_can_drive_whole_roster_leaf_removal() {
     let manifest = DeviceManifest {
         manifest_type: anp::authentication::DEVICE_MANIFEST_TYPE.to_owned(),

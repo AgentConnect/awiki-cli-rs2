@@ -861,6 +861,7 @@ pub struct NodeSyncResult {
     pub duplicates_skipped: u32,
     pub older_history_excluded: bool,
     pub changed_conversation_ids: Vec<String>,
+    pub error_code: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -1747,6 +1748,7 @@ pub(crate) fn sync_result(value: im_core::messages::MessageSyncOutcome) -> NodeS
         duplicates_skipped: value.duplicates_skipped,
         older_history_excluded: value.older_history_excluded,
         changed_conversation_ids: value.changed_conversation_ids,
+        error_code: value.error_code,
         warnings: value.warnings,
     }
 }
@@ -2148,6 +2150,7 @@ mod tests {
                 duplicates_skipped: 4,
                 older_history_excluded: true,
                 changed_conversation_ids: vec!["group:did:example:group".to_owned()],
+                error_code: None,
                 warnings: vec!["safe-warning".to_owned()],
             }
         );

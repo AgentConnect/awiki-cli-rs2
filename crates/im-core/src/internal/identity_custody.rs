@@ -55,9 +55,14 @@ pub(crate) fn provision_registration_identity(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
-    let mut manager = open_controller_manager(core)?;
+    let mut manager = open_controller_manager(core)
+        .map_err(|error| registration_identity_stage_error(error, "native_manager_open"))?;
+    remove_exact_retired_registration_identities(core, &mut manager, domain, local_part)
+        .map_err(|error| registration_identity_stage_error(error, "native_retirement_cleanup"))?;
     let controller =
-        match find_unprojected_registration_identity(core, &manager, domain, local_part)? {
+        match find_unprojected_registration_identity(core, &manager, domain, local_part)
+            .map_err(|error| registration_identity_stage_error(error, "native_candidate"))?
+        {
             Some(identity) => identity,
             None => {
                 let create =
@@ -66,18 +71,38 @@ pub(crate) fn provision_registration_identity(
                         local_part,
                         core.inner().sdk_config().anp_service_endpoint.as_ref(),
                         core.inner().sdk_config().anp_service_did.as_ref(),
-                    )?;
+                    )
+                    .map_err(|error| {
+                        registration_identity_stage_error(error, "native_create_spec")
+                    })?;
                 manager
                     .create(native_create_spec(create.spec))
-                    .map_err(map_facade_error)?
+                    .map_err(map_facade_error)
+                    .map_err(|error| registration_identity_stage_error(error, "native_create"))?
             }
         };
-    let public = controller.public_identity().map_err(map_facade_error)?;
+    let public = controller
+        .public_identity()
+        .map_err(map_facade_error)
+        .map_err(|error| registration_identity_stage_error(error, "native_public"))?;
     let manifest = anp::authentication::validate_device_manifest(public.document.as_value())
-        .map_err(|_| crate::ImError::PermissionDenied)?
-        .ok_or(crate::ImError::PermissionDenied)?;
+        .map_err(|_| {
+            registration_identity_stage_error(
+                crate::ImError::PermissionDenied,
+                "native_manifest_invalid",
+            )
+        })?
+        .ok_or_else(|| {
+            registration_identity_stage_error(
+                crate::ImError::PermissionDenied,
+                "native_manifest_missing",
+            )
+        })?;
     if manifest.devices.len() != 1 {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(registration_identity_stage_error(
+            crate::ImError::PermissionDenied,
+            "native_manifest_device_count",
+        ));
     }
     let device = &manifest.devices[0];
     let protocol_device_id = crate::ids::ProtocolDeviceId::parse(&device.device_id)?;
@@ -89,7 +114,9 @@ pub(crate) fn provision_registration_identity(
                 .contains(&anp_identity::KeyPurpose::RootControl)
         })
         .map(|key| key.kid.clone())
-        .ok_or(crate::ImError::PermissionDenied)?;
+        .ok_or_else(|| {
+            registration_identity_stage_error(crate::ImError::PermissionDenied, "native_root_key")
+        })?;
     let did = crate::ids::Did::parse(&public.reference.did)?;
     let identity = crate::internal::identity_registration_pending::PendingRegistrationIdentity {
         controller_store_id: public.reference.store_id,
@@ -103,8 +130,66 @@ pub(crate) fn provision_registration_identity(
         legacy_daemon_authorization: false,
         controller_revision_id: None,
     };
-    identity.validate()?;
+    identity
+        .validate()
+        .map_err(|error| registration_identity_stage_error(error, "native_projection"))?;
     Ok(identity)
+}
+
+#[cfg(feature = "identity-native-anp")]
+fn remove_exact_retired_registration_identities(
+    core: &crate::core::ImCore,
+    manager: &mut anp_identity::IdentityManager,
+    domain: &str,
+    local_part: &str,
+) -> crate::ImResult<()> {
+    let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
+    let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
+    let mut retired = Vec::new();
+    for descriptor in manager.list().map_err(map_facade_error)? {
+        if descriptor.state != anp_identity::PublicIdentityState::Active
+            || !descriptor.reference.did.starts_with(&did_prefix)
+        {
+            continue;
+        }
+        let mut identity = manager
+            .get(&descriptor.reference)
+            .map_err(map_facade_error)?;
+        let public = identity.public_identity().map_err(map_facade_error)?;
+        let handle_matches = public
+            .document
+            .as_value()
+            .get("service")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|services| {
+                services.iter().any(|service| {
+                    service.get("type").and_then(serde_json::Value::as_str)
+                        == Some("ANPHandleService")
+                        && service
+                            .get("serviceEndpoint")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(endpoint.as_str())
+                })
+            });
+        if !handle_matches
+            || identity
+                .resume_document_change()
+                .map_err(map_facade_error)?
+                .is_some()
+        {
+            continue;
+        }
+        let did = crate::ids::Did::parse(&descriptor.reference.did)?;
+        if did_has_exact_completed_retirement(core, &did)? {
+            retired.push(descriptor.reference);
+        }
+    }
+    for reference in retired {
+        manager
+            .delete(&reference, anp_identity::DeleteIdentityRequest::default())
+            .map_err(map_facade_error)?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn provision_registration_identity_async(
@@ -132,17 +217,18 @@ pub(crate) async fn provision_registration_identity_async(
         })??;
         let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
         let full_handle = format!("{local_part}.{domain}");
-        let historical_dids = registration_historical_dids(core, &full_handle)?;
+        let historical_dids = registration_historical_dids(core, &full_handle)
+            .map_err(|error| registration_identity_stage_error(error, "historical_scan"))?;
         let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
         let mut matches = Vec::new();
         for descriptor in custody
             .list_identities()
             .await
-            .map_err(crate::internal::identity_provider::map_provider_error)?
+            .map_err(crate::internal::identity_provider::map_provider_error)
+            .map_err(|error| registration_identity_stage_error(error, "provider_list"))?
         {
             if descriptor.state != crate::internal::identity_provider::ProviderIdentityState::Active
                 || projected.contains(&descriptor.reference.identity_id)
-                || historical_dids.contains(&descriptor.reference.did)
                 || !descriptor.reference.did.starts_with(&did_prefix)
             {
                 continue;
@@ -150,11 +236,13 @@ pub(crate) async fn provision_registration_identity_async(
             let session = custody
                 .open_identity(&descriptor.reference)
                 .await
-                .map_err(crate::internal::identity_provider::map_provider_error)?;
+                .map_err(crate::internal::identity_provider::map_provider_error)
+                .map_err(|error| registration_identity_stage_error(error, "provider_open"))?;
             let public = session
                 .public_identity()
                 .await
-                .map_err(crate::internal::identity_provider::map_provider_error)?;
+                .map_err(crate::internal::identity_provider::map_provider_error)
+                .map_err(|error| registration_identity_stage_error(error, "provider_public"))?;
             let handle_matches = public
                 .document
                 .get("service")
@@ -169,18 +257,45 @@ pub(crate) async fn provision_registration_identity_async(
                                 == Some(endpoint.as_str())
                     })
                 });
-            if handle_matches
-                && session
-                    .resume_document_change()
-                    .await
-                    .map_err(crate::internal::identity_provider::map_provider_error)?
-                    .is_none()
-            {
-                matches.push(session);
+            let has_pending_document_change = session
+                .resume_document_change()
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)
+                .map_err(|error| registration_identity_stage_error(error, "provider_resume"))?
+                .is_some();
+            if !handle_matches || has_pending_document_change {
+                continue;
             }
+            let did = crate::ids::Did::parse(&descriptor.reference.did)?;
+            if did_has_exact_completed_retirement(core, &did)
+                .map_err(|error| registration_identity_stage_error(error, "retirement_match"))?
+            {
+                drop(session);
+                // Credential retirement is local and does not revoke the
+                // remote DID. Remove only the exact retired local custody
+                // namespace so a new temporary registration identity for the
+                // same Handle can be provisioned. The current-DID binding and
+                // completed marker provide authority even when an ordinary
+                // joined-device binding has no optional handle_scope.
+                custody
+                    .delete_identity(&descriptor.reference)
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)
+                    .map_err(|error| {
+                        registration_identity_stage_error(error, "retirement_delete")
+                    })?;
+                continue;
+            }
+            if historical_dids.contains(&descriptor.reference.did) {
+                continue;
+            }
+            matches.push(session);
         }
         if matches.len() > 1 {
-            return Err(crate::ImError::PermissionDenied);
+            return Err(registration_identity_stage_error(
+                crate::ImError::PermissionDenied,
+                "multiple_candidates",
+            ));
         }
         let session = match matches.pop() {
             Some(session) => session,
@@ -191,18 +306,22 @@ pub(crate) async fn provision_registration_identity_async(
                         local_part,
                         core.inner().sdk_config().anp_service_endpoint.as_ref(),
                         core.inner().sdk_config().anp_service_did.as_ref(),
-                    )?;
+                    )
+                    .map_err(|error| registration_identity_stage_error(error, "create_spec"))?;
                 custody
                     .create_identity(create.spec)
                     .await
-                    .map_err(crate::internal::identity_provider::map_provider_error)?
+                    .map_err(crate::internal::identity_provider::map_provider_error)
+                    .map_err(|error| registration_identity_stage_error(error, "provider_create"))?
             }
         };
         let public = session
             .public_identity()
             .await
-            .map_err(crate::internal::identity_provider::map_provider_error)?;
-        return pending_registration_from_provider(public);
+            .map_err(crate::internal::identity_provider::map_provider_error)
+            .map_err(|error| registration_identity_stage_error(error, "provider_public"))?;
+        return pending_registration_from_provider(public)
+            .map_err(|error| registration_identity_stage_error(error, "identity_projection"));
     }
 
     #[cfg(feature = "identity-native-anp")]
@@ -223,6 +342,37 @@ pub(crate) async fn provision_registration_identity_async(
     Err(crate::ImError::IdentityNotReady {
         identity: format!("did:wba:{domain}:user:{local_part}"),
         missing: vec!["external_identity_provider".to_owned()],
+    })
+}
+
+fn registration_identity_stage_error(error: crate::ImError, stage: &'static str) -> crate::ImError {
+    if !matches!(error, crate::ImError::PermissionDenied) {
+        return error;
+    }
+    crate::internal::identity_registration_join_preparation::continuity_error(match stage {
+        "provider_list" => "identity.registration.provider_list_denied",
+        "provider_open" => "identity.registration.provider_open_denied",
+        "provider_public" => "identity.registration.provider_public_denied",
+        "provider_resume" => "identity.registration.provider_resume_denied",
+        "historical_scan" => "identity.registration.historical_scan_denied",
+        "multiple_candidates" => "identity.registration.multiple_candidates_denied",
+        "retirement_match" => "identity.registration.retirement_match_denied",
+        "retirement_delete" => "identity.registration.retirement_delete_denied",
+        "create_spec" => "identity.registration.create_spec_denied",
+        "provider_create" => "identity.registration.provider_create_denied",
+        "identity_projection" => "identity.registration.identity_projection_denied",
+        "native_manager_open" => "identity.registration.native_manager_open_denied",
+        "native_retirement_cleanup" => "identity.registration.native_retirement_cleanup_denied",
+        "native_candidate" => "identity.registration.native_candidate_denied",
+        "native_create_spec" => "identity.registration.native_create_spec_denied",
+        "native_create" => "identity.registration.native_create_denied",
+        "native_public" => "identity.registration.native_public_denied",
+        "native_manifest_invalid" => "identity.registration.native_manifest_invalid",
+        "native_manifest_missing" => "identity.registration.native_manifest_missing",
+        "native_manifest_device_count" => "identity.registration.native_manifest_device_count",
+        "native_root_key" => "identity.registration.native_root_key_denied",
+        "native_projection" => "identity.registration.native_projection_denied",
+        _ => "identity.registration.identity_provision_denied",
     })
 }
 
@@ -3398,6 +3548,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_registration_replaces_exact_completed_retired_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let retired = provision_registration_identity(&core, "example.test", "alice").unwrap();
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_account_bindings(\
+                 owner_identity_id,account_id,handle_scope,current_did,device_id,\
+                 identity_generation,device_auth_generation,created_at,updated_at) \
+                 VALUES ('owner-alice','account-alice',NULL,?1,?2,'1','1',1,1)",
+                rusqlite::params![retired.did.as_str(), retired.protocol_device_id.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+        crate::internal::identity_retirement::retire(
+            &core,
+            crate::internal::identity_retirement::IdentityRetirementInput {
+                identity_id: "owner-alice".to_owned(),
+                did: retired.did.as_str().to_owned(),
+                local_alias: "alice".to_owned(),
+                identity_dir_name: None,
+                next_default_alias: None,
+                protocol_device_id: Some(retired.protocol_device_id.as_str().to_owned()),
+            },
+        )
+        .unwrap();
+        assert!(open_controller_manager(&core)
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+
+        let replacement = provision_registration_identity(&core, "example.test", "alice").unwrap();
+
+        assert_ne!(replacement.did, retired.did);
+        let identities = open_controller_manager(&core).unwrap().list().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].reference.did, replacement.did.as_str());
+    }
+
     #[tokio::test]
     async fn retired_current_join_replaces_active_provider_identity_with_enrollment() {
         let root = tempfile::tempdir().unwrap();
@@ -3577,6 +3772,71 @@ mod tests {
             client.runtime().key_provider.valid_auth_token().unwrap(),
             Some("registration-access-token".to_owned())
         );
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[tokio::test]
+    async fn external_registration_replaces_exact_completed_retired_identity() {
+        use crate::internal::identity_provider::IdentityCustody as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let provider_root = tempfile::tempdir().unwrap();
+        let manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: provider_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("external-retirement", [0x74; 32]),
+                ),
+            })
+            .unwrap();
+        let provider = std::sync::Arc::new(
+            crate::internal::identity_provider::DirectAnpIdentityCustody::new(manager),
+        );
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions::default().with_identity_custody_provider(provider.clone()),
+        )
+        .unwrap();
+
+        let retired = provision_registration_identity_async(&core, "example.test", "alice")
+            .await
+            .unwrap();
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO identity_account_bindings(\
+                 owner_identity_id,account_id,handle_scope,current_did,device_id,\
+                 identity_generation,device_auth_generation,created_at,updated_at) \
+                 VALUES ('owner-alice','account-alice','alice.example.test',?1,?2,'1','1',1,1)",
+                rusqlite::params![retired.did.as_str(), retired.protocol_device_id.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+        crate::internal::identity_retirement::retire(
+            &core,
+            crate::internal::identity_retirement::IdentityRetirementInput {
+                identity_id: "owner-alice".to_owned(),
+                did: retired.did.as_str().to_owned(),
+                local_alias: "alice".to_owned(),
+                identity_dir_name: None,
+                next_default_alias: None,
+                protocol_device_id: Some(retired.protocol_device_id.as_str().to_owned()),
+            },
+        )
+        .unwrap();
+
+        let replacement = provision_registration_identity_async(&core, "example.test", "alice")
+            .await
+            .unwrap();
+
+        assert_ne!(replacement.did, retired.did);
+        let identities = provider.list_identities().await.unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].reference.did, replacement.did.as_str());
     }
 
     #[test]

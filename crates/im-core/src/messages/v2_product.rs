@@ -387,15 +387,19 @@ async fn send_group_async_impl(
         ));
     }
     let device = current_vnext_device(client)?;
+    let device_revocation_pending =
+        group_device_revocation_pending_for_send_async(client, group_did).await?;
     // P4 membership may have advanced independently (for example, a member
     // called group.leave). Before encrypting at the current MLS epoch, let the
     // active owner converge its accepted local tree to the authoritative P4/P2
     // roster. Non-owners and already-converged owners are no-ops.
-    crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
-        client,
-        group.clone(),
-    )
-    .await?;
+    if !device_revocation_pending {
+        crate::internal::group_e2ee::v2_lifecycle::reconcile_group_device_roster_async(
+            client,
+            group.clone(),
+        )
+        .await?;
+    }
     let logical_message_id = required_message_id(&request)?.to_owned();
     let operation_id = request
         .delivery
@@ -682,6 +686,49 @@ async fn fetch_current_group_state_ref_async(
         policy_hash: None,
         roster_hash: None,
     })
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn group_device_revocation_pending_for_send_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<bool> {
+    let params =
+        crate::internal::wire::group::build_group_get_rpc_params(client.did().as_str(), group_did)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let snapshot = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+        "group.get",
+        params,
+    )
+    .await?;
+    group_device_revocation_pending_for_send(&snapshot)
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_device_revocation_pending_for_send(snapshot: &Value) -> crate::ImResult<bool> {
+    ensure_group_e2ee_v2_send_not_paused(snapshot)?;
+    let Some(maintenance) = snapshot.get("e2ee_maintenance") else {
+        return Ok(false);
+    };
+    let Some(maintenance) = maintenance.as_object() else {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "P6 v2 group maintenance projection is malformed".to_owned(),
+        });
+    };
+    if maintenance.len() != 2
+        || !maintenance.contains_key("reason")
+        || !maintenance.contains_key("send_paused")
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "P6 v2 group maintenance projection is unsupported".to_owned(),
+        });
+    }
+    Ok(
+        maintenance.get("reason").and_then(Value::as_str) == Some("device_revocation_pending")
+            && maintenance.get("send_paused").and_then(Value::as_bool) == Some(false),
+    )
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -1071,5 +1118,36 @@ mod tests {
             crate::ImError::Service { code: Some(code), .. }
                 if code == "group.e2ee.state_not_ready"
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "group-e2ee")]
+    fn p6_v2_send_keeps_device_revocation_pending_out_of_inline_repair() {
+        assert!(
+            !group_device_revocation_pending_for_send(&serde_json::json!({
+                "group_did": "did:example:group"
+            }))
+            .unwrap()
+        );
+        assert!(
+            group_device_revocation_pending_for_send(&serde_json::json!({
+                "group_did": "did:example:group",
+                "e2ee_maintenance": {
+                    "reason": "device_revocation_pending",
+                    "send_paused": false
+                }
+            }))
+            .unwrap()
+        );
+        assert!(
+            group_device_revocation_pending_for_send(&serde_json::json!({
+                "group_did": "did:example:group",
+                "e2ee_maintenance": {
+                    "reason": "group_membership_change_pending",
+                    "send_paused": true
+                }
+            }))
+            .is_err()
+        );
     }
 }

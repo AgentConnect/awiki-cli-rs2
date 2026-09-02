@@ -298,38 +298,80 @@ fn validate_input(input: &RegistrationJoinPreparationInput) -> crate::ImResult<(
             .expose_secret()
             .iter()
             .all(u8::is_ascii_whitespace)
-        || (is_rebind && is_retired_ordinary)
-        || ((is_rebind || is_retired_ordinary) != input.owner_identity_id.is_some())
-        || ((is_rebind || is_retired_ordinary) && input.transition.is_none())
-        || (is_resume && (!is_rebind || input.owner_identity_id.is_none()))
-        || input
-            .resume_join_session_id
-            .as_deref()
-            .is_some_and(|join_session_id| join_session_id.trim().is_empty())
-        || input
-            .pending_registration_cleanup
-            .as_ref()
-            .is_some_and(|cleanup| {
-                cleanup.secret_ref.kind
+    {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_base_invalid",
+        ));
+    }
+    if is_rebind && is_retired_ordinary {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_mode_invalid",
+        ));
+    }
+    if (is_rebind || is_retired_ordinary) != input.owner_identity_id.is_some() {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_owner_invalid",
+        ));
+    }
+    if (is_rebind || is_retired_ordinary) && input.transition.is_none() {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_transition_missing",
+        ));
+    }
+    if is_resume && (!is_rebind || input.owner_identity_id.is_none()) {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_resume_invalid",
+        ));
+    }
+    if input
+        .resume_join_session_id
+        .as_deref()
+        .is_some_and(|join_session_id| join_session_id.trim().is_empty())
+    {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_resume_invalid",
+        ));
+    }
+    if input
+        .pending_registration_cleanup
+        .as_ref()
+        .is_some_and(|cleanup| {
+            cleanup.secret_ref.kind
                 != crate::internal::secret_vault::record::SecretKind::IdentityRegistrationPending
                 || cleanup.identity.validate().is_err()
-            })
-        || input
-            .owner_identity_id
-            .as_deref()
-            .is_some_and(|owner| owner.trim().is_empty())
-        || input
-            .retired_owner_evidence
-            .as_ref()
-            .is_some_and(|evidence| {
-                input.owner_identity_id.as_deref() != Some(evidence.owner_identity_id.as_str())
-                    || evidence.retired_did.trim().is_empty()
-                    || evidence.retired_protocol_device_id.trim().is_empty()
-                    || evidence.retired_binding_generation.trim().is_empty()
-            })
-        || transition_invalid
+        })
     {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(continuity_error(
+            "identity.registration_join.preparation_cleanup_invalid",
+        ));
+    }
+    if input
+        .owner_identity_id
+        .as_deref()
+        .is_some_and(|owner| owner.trim().is_empty())
+    {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_owner_invalid",
+        ));
+    }
+    if input
+        .retired_owner_evidence
+        .as_ref()
+        .is_some_and(|evidence| {
+            input.owner_identity_id.as_deref() != Some(evidence.owner_identity_id.as_str())
+                || evidence.retired_did.trim().is_empty()
+                || evidence.retired_protocol_device_id.trim().is_empty()
+                || evidence.retired_binding_generation.trim().is_empty()
+        })
+    {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_retirement_invalid",
+        ));
+    }
+    if transition_invalid {
+        return Err(continuity_error(
+            "identity.registration_join.preparation_transition_invalid",
+        ));
     }
     Ok(())
 }

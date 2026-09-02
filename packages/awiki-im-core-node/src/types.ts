@@ -631,6 +631,8 @@ export interface SyncResult {
   readonly duplicatesSkipped: number
   readonly olderHistoryExcluded: boolean
   readonly changedConversationIds: readonly string[]
+  /** Closed Core failure code. It never contains an error message or identity data. */
+  readonly errorCode?: string
   readonly warnings: readonly string[]
 }
 

@@ -35,6 +35,13 @@ const KEY_PACKAGE_TTL: Duration = Duration::days(30);
 pub(crate) struct CurrentV2Device {
     pub(crate) device_id: String,
     pub(crate) signing_key_id: String,
+    pub(crate) can_manage_identity_devices: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RosterReconcileAuthority {
+    Owner,
+    SelfDidDeviceManager,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1238,9 +1245,9 @@ pub(crate) fn reconcile_group_device_roster(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
 ) -> crate::ImResult<V2RosterReconcileSummary> {
-    if !current_actor_is_active_owner(client, group.clone())? {
+    let Some(authority) = current_actor_reconcile_authority(client, group.clone())? else {
         return Ok(V2RosterReconcileSummary::default());
-    }
+    };
     let group_did = group.as_str().to_owned();
     let mut summary = V2RosterReconcileSummary::default();
     for _ in 0..256 {
@@ -1262,6 +1269,9 @@ pub(crate) fn reconcile_group_device_roster(
                 "group-roster-reconcile-readiness",
             ))?;
         if inspected.readiness == V2LocalGroupReadiness::Missing {
+            if authority != RosterReconcileAuthority::Owner {
+                return Ok(summary);
+            }
             let (group_state_ref, desired) = fresh_desired_group_roster(client, group.clone())?;
             let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
                 member
@@ -1330,8 +1340,10 @@ pub(crate) fn reconcile_group_device_roster(
             })
             .collect::<BTreeSet<_>>();
         let (extra, missing) = roster_delta(&desired_endpoints, &observed);
-        summary.remaining_devices = extra.len().saturating_add(missing.len());
-        let (extra, missing) = next_roster_change(client.did().as_str(), extra, missing);
+        summary.remaining_devices =
+            reconcile_remaining_devices(client.did().as_str(), authority, &extra, &missing);
+        let (extra, missing) =
+            next_roster_change_for_authority(client.did().as_str(), authority, extra, missing);
         if extra.is_none() && missing.is_none() {
             return Ok(summary);
         }
@@ -1381,9 +1393,10 @@ pub(crate) async fn reconcile_group_device_roster_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
 ) -> crate::ImResult<V2RosterReconcileSummary> {
-    if !current_actor_is_active_owner_async(client, group.clone()).await? {
+    let Some(authority) = current_actor_reconcile_authority_async(client, group.clone()).await?
+    else {
         return Ok(V2RosterReconcileSummary::default());
-    }
+    };
     let group_did = group.as_str().to_owned();
     let mut summary = V2RosterReconcileSummary::default();
     for _ in 0..256 {
@@ -1400,6 +1413,9 @@ pub(crate) async fn reconcile_group_device_roster_async(
                 "group-roster-reconcile-readiness",
             ))?;
         if inspected.readiness == V2LocalGroupReadiness::Missing {
+            if authority != RosterReconcileAuthority::Owner {
+                return Ok(summary);
+            }
             let (group_state_ref, desired) =
                 fresh_desired_group_roster_async(client, group.clone()).await?;
             let Some(current_member) = desired.get(client.did().as_str()).filter(|member| {
@@ -1464,8 +1480,10 @@ pub(crate) async fn reconcile_group_device_roster_async(
             })
             .collect::<BTreeSet<_>>();
         let (extra, missing) = roster_delta(&desired_endpoints, &observed);
-        summary.remaining_devices = extra.len().saturating_add(missing.len());
-        let (extra, missing) = next_roster_change(client.did().as_str(), extra, missing);
+        summary.remaining_devices =
+            reconcile_remaining_devices(client.did().as_str(), authority, &extra, &missing);
+        let (extra, missing) =
+            next_roster_change_for_authority(client.did().as_str(), authority, extra, missing);
         if extra.is_none() && missing.is_none() {
             return Ok(summary);
         }
@@ -1513,10 +1531,10 @@ pub(crate) async fn reconcile_group_device_roster_async(
     })
 }
 
-fn current_actor_is_active_owner(
+fn current_actor_reconcile_authority(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<bool> {
+) -> crate::ImResult<Option<RosterReconcileAuthority>> {
     let group_did = group.as_str().to_owned();
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
@@ -1525,19 +1543,26 @@ fn current_actor_is_active_owner(
     )
     .get_with_policy(group)?;
     if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(authoritative.group.as_ref().is_some_and(|snapshot| {
+    let Some(snapshot) = authoritative.group.as_ref().filter(|snapshot| {
         snapshot.did.as_str() == group_did
             && snapshot.membership_status.as_deref() == Some("active")
-            && snapshot.my_role.as_deref() == Some("owner")
-    }))
+    }) else {
+        return Ok(None);
+    };
+    if snapshot.my_role.as_deref() == Some("owner") {
+        return Ok(Some(RosterReconcileAuthority::Owner));
+    }
+    Ok(current_v2_device(client)?
+        .can_manage_identity_devices
+        .then_some(RosterReconcileAuthority::SelfDidDeviceManager))
 }
 
-async fn current_actor_is_active_owner_async(
+async fn current_actor_reconcile_authority_async(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
-) -> crate::ImResult<bool> {
+) -> crate::ImResult<Option<RosterReconcileAuthority>> {
     let group_did = group.as_str().to_owned();
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
@@ -1547,13 +1572,20 @@ async fn current_actor_is_active_owner_async(
     .get_with_policy_async(group)
     .await?;
     if !crate::groups::authoritative_group_e2ee_classification(&group_did, &authoritative)? {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(authoritative.group.as_ref().is_some_and(|snapshot| {
+    let Some(snapshot) = authoritative.group.as_ref().filter(|snapshot| {
         snapshot.did.as_str() == group_did
             && snapshot.membership_status.as_deref() == Some("active")
-            && snapshot.my_role.as_deref() == Some("owner")
-    }))
+    }) else {
+        return Ok(None);
+    };
+    if snapshot.my_role.as_deref() == Some("owner") {
+        return Ok(Some(RosterReconcileAuthority::Owner));
+    }
+    Ok(current_v2_device(client)?
+        .can_manage_identity_devices
+        .then_some(RosterReconcileAuthority::SelfDidDeviceManager))
 }
 
 #[derive(Debug, Clone)]
@@ -2512,6 +2544,38 @@ fn next_roster_change(
     }
 }
 
+fn next_roster_change_for_authority(
+    current_did: &str,
+    authority: RosterReconcileAuthority,
+    extra: Vec<V2EndpointKey>,
+    missing: Vec<V2EndpointKey>,
+) -> (Option<V2EndpointKey>, Option<V2EndpointKey>) {
+    match authority {
+        RosterReconcileAuthority::Owner => next_roster_change(current_did, extra, missing),
+        RosterReconcileAuthority::SelfDidDeviceManager => (
+            extra
+                .into_iter()
+                .find(|(member_did, _)| member_did == current_did),
+            None,
+        ),
+    }
+}
+
+fn reconcile_remaining_devices(
+    current_did: &str,
+    authority: RosterReconcileAuthority,
+    extra: &[V2EndpointKey],
+    missing: &[V2EndpointKey],
+) -> usize {
+    match authority {
+        RosterReconcileAuthority::Owner => extra.len().saturating_add(missing.len()),
+        RosterReconcileAuthority::SelfDidDeviceManager => extra
+            .iter()
+            .filter(|(member_did, _)| member_did == current_did)
+            .count(),
+    }
+}
+
 fn local_group_can_reconcile_roster(readiness: &V2LocalGroupReadiness) -> bool {
     *readiness == V2LocalGroupReadiness::Active
 }
@@ -2625,6 +2689,9 @@ pub(crate) fn current_v2_device(
     Ok(CurrentV2Device {
         device_id: authorization.protocol_device_id.as_str().to_owned(),
         signing_key_id: authorization.signing_key_id.clone(),
+        can_manage_identity_devices: authorization.role
+            == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+            && authorization.management_ready,
     })
 }
 

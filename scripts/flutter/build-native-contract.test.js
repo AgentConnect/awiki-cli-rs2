@@ -203,6 +203,8 @@ test("Linux native IM Core includes group E2EE and secure-direct support", () =>
     source,
     /--features blocking,sqlite,http,linux,group-e2ee,secure-direct,identity-native-anp/,
   );
+  assert.match(source, /CARGO_OUTPUT_ROOT="\$\{CARGO_TARGET_DIR:-\$\{ROOT_DIR\}\/target\}"/);
+  assert.match(source, /SOURCE_LIB="\$\{CARGO_OUTPUT_ROOT\}\/\$\{TARGET\}\/release\/libawiki_im_core\.so"/);
 });
 
 test("Android native IM Core includes group E2EE and secure-direct support", () => {

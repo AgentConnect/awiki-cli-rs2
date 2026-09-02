@@ -442,10 +442,14 @@ where
         let store =
             crate::internal::identity_registration_pending::PendingRegistrationStore::from_core(
                 self.core,
-            )?;
+            )
+            .map_err(|error| registration_stage_error(error, "pending_store"))?;
         let (pending_ref, mut pending) =
-            load_or_create_pending_registration_async(self.core, &store, &request, &target).await?;
-        verify_pending_matches_request(&pending, &request, &target)?;
+            load_or_create_pending_registration_async(self.core, &store, &request, &target)
+                .await
+                .map_err(|error| registration_stage_error(error, "pending_prepare"))?;
+        verify_pending_matches_request(&pending, &request, &target)
+            .map_err(|error| registration_stage_error(error, "pending_binding"))?;
         if pending.remote_result.is_none() && pending.remote_attempted {
             match self
                 .transport
@@ -458,7 +462,8 @@ where
                         &pending.identity,
                         false,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| registration_stage_error(error, "custody_reconcile"))?;
                 }
                 committed => {
                     crate::internal::identity_custody::reconcile_registration_publication_async(
@@ -466,9 +471,13 @@ where
                         &pending.identity,
                         true,
                     )
-                    .await?;
-                    apply_registration_reconciliation(&mut pending, committed)?;
-                    store.save(&pending)?;
+                    .await
+                    .map_err(|error| registration_stage_error(error, "custody_reconcile"))?;
+                    apply_registration_reconciliation(&mut pending, committed)
+                        .map_err(|error| registration_stage_error(error, "remote_reconcile"))?;
+                    store
+                        .save(&pending)
+                        .map_err(|error| registration_stage_error(error, "pending_save"))?;
                 }
             }
         }
@@ -479,11 +488,15 @@ where
                     self.core,
                     &pending.identity,
                 )
-                .await?;
+                .await
+                .map_err(|error| registration_stage_error(error, "custody_begin"))?;
                 pending.remote_attempted = true;
-                store.save(&pending)?;
+                store
+                    .save(&pending)
+                    .map_err(|error| registration_stage_error(error, "pending_save"))?;
                 let call =
-                    register_call(&pending, &request, self.provision_operation_id.as_deref())?;
+                    register_call(&pending, &request, self.provision_operation_id.as_deref())
+                        .map_err(|error| registration_stage_error(error, "request_build"))?;
                 match self
                     .transport
                     .rpc(call.endpoint, call.method, call.params.clone())
@@ -506,9 +519,12 @@ where
                                 &pending.identity,
                                 false,
                             )
-                            .await?;
+                            .await
+                            .map_err(|error| registration_stage_error(error, "custody_reconcile"))?;
                             pending.remote_attempted = false;
-                            store.save(&pending)?;
+                            store
+                                .save(&pending)
+                                .map_err(|error| registration_stage_error(error, "pending_save"))?;
                             let preparation = prepare_join_required_async(
                                 self.core,
                                 join_required,
@@ -517,7 +533,8 @@ where
                                     identity: pending.identity.clone(),
                                 },
                             )
-                            .await?;
+                            .await
+                            .map_err(|error| registration_stage_error(error, "join_prepare"))?;
                             return join_required_result(&request, target.full_handle, preparation);
                         }
                     },
@@ -708,7 +725,10 @@ async fn load_or_create_pending_registration_async(
     crate::internal::secret_vault::record::SecretRef,
     crate::internal::identity_registration_pending::PendingRegistration,
 )> {
-    if let Some(existing) = store.load(&target.local_part, &target.effective_domain)? {
+    if let Some(existing) = store
+        .load(&target.local_part, &target.effective_domain)
+        .map_err(|error| registration_stage_error(error, "pending_load"))?
+    {
         return Ok(existing);
     }
     let identity = crate::internal::identity_custody::provision_registration_identity_async(
@@ -716,7 +736,8 @@ async fn load_or_create_pending_registration_async(
         &target.effective_domain,
         &target.local_part,
     )
-    .await?;
+    .await
+    .map_err(|error| registration_stage_error(error, "pending_identity"))?;
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         target.local_part.clone(),
         target.effective_domain.clone(),
@@ -731,8 +752,11 @@ async fn load_or_create_pending_registration_async(
         pending_verification_target(&request.verification),
         request.invite_code.clone(),
         identity,
-    )?;
-    let secret_ref = store.save(&pending)?;
+    )
+    .map_err(|error| registration_stage_error(error, "pending_shape"))?;
+    let secret_ref = store
+        .save(&pending)
+        .map_err(|error| registration_stage_error(error, "pending_save"))?;
     Ok((secret_ref, pending))
 }
 
@@ -963,7 +987,7 @@ fn parse_register_outcome(
         let has_account = raw.get("account_user_id").is_some();
         let has_transition = raw.get("identity_transition").is_some();
         if has_account != has_transition {
-            return Err(crate::ImError::PermissionDenied);
+            return Err(registration_join_contract_error("response_shape"));
         }
         let expected = if has_account {
             &[
@@ -986,7 +1010,8 @@ fn parse_register_outcome(
                 "account_verification_token",
             ][..]
         };
-        require_exact_fields(&raw, expected)?;
+        require_exact_fields(&raw, expected)
+            .map_err(|_| registration_join_contract_error("response_shape"))?;
         let handle = required_string(&raw, "handle")?;
         let domain = required_string(&raw, "domain")?;
         let full_handle = required_string(&raw, "full_handle")?;
@@ -998,19 +1023,20 @@ fn parse_register_outcome(
             || crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?
                 != pending.target_domain
         {
-            return Err(crate::ImError::PermissionDenied);
+            return Err(registration_join_contract_error("target_binding"));
         }
         let transition = if has_account {
             let account_user_id = required_string(&raw, "account_user_id")?;
             let raw_transition = raw
                 .get("identity_transition")
-                .ok_or(crate::ImError::PermissionDenied)?;
+                .ok_or_else(|| registration_join_contract_error("transition_shape"))?;
             require_exact_fields(
                 raw_transition,
                 &["kind", "previous_did", "current_did", "binding_generation"],
-            )?;
+            )
+            .map_err(|_| registration_join_contract_error("transition_shape"))?;
             if required_string(raw_transition, "kind")? != "handle_recovery" {
-                return Err(crate::ImError::PermissionDenied);
+                return Err(registration_join_contract_error("transition_shape"));
             }
             let previous_did =
                 crate::ids::Did::parse(required_string(raw_transition, "previous_did")?)?
@@ -1024,10 +1050,10 @@ fn parse_register_outcome(
                 raw_transition,
                 "binding_generation",
             )?)
-            .map_err(|_| crate::ImError::PermissionDenied)?
+            .map_err(|_| registration_join_contract_error("transition_binding"))?
             .to_string();
             if previous_did == current_did || current_did != did.as_str() {
-                return Err(crate::ImError::PermissionDenied);
+                return Err(registration_join_contract_error("transition_binding"));
             }
             Some(
                 crate::internal::identity_registration_join_preparation::RegistrationJoinTransition {
@@ -1111,6 +1137,37 @@ fn parse_register_outcome(
             access_token,
         },
     ))
+}
+
+fn registration_join_contract_error(stage: &'static str) -> crate::ImError {
+    crate::internal::identity_registration_join_preparation::continuity_error(match stage {
+        "response_shape" => "identity.registration_join.response_shape",
+        "target_binding" => "identity.registration_join.target_binding",
+        "transition_shape" => "identity.registration_join.transition_shape",
+        "transition_binding" => "identity.registration_join.transition_binding",
+        _ => "identity.registration_join.contract_invalid",
+    })
+}
+
+fn registration_stage_error(error: crate::ImError, stage: &'static str) -> crate::ImError {
+    if !matches!(error, crate::ImError::PermissionDenied) {
+        return error;
+    }
+    crate::internal::identity_registration_join_preparation::continuity_error(match stage {
+        "pending_store" => "identity.registration.pending_store_denied",
+        "pending_prepare" => "identity.registration.pending_prepare_denied",
+        "pending_load" => "identity.registration.pending_load_denied",
+        "pending_identity" => "identity.registration.pending_identity_denied",
+        "pending_shape" => "identity.registration.pending_shape_denied",
+        "pending_binding" => "identity.registration.pending_binding_denied",
+        "custody_reconcile" => "identity.registration.custody_reconcile_denied",
+        "remote_reconcile" => "identity.registration.remote_reconcile_denied",
+        "pending_save" => "identity.registration.pending_save_denied",
+        "custody_begin" => "identity.registration.custody_begin_denied",
+        "request_build" => "identity.registration.request_build_denied",
+        "join_prepare" => "identity.registration.join_prepare_denied",
+        _ => "identity.registration.stage_denied",
+    })
 }
 
 fn require_exact_fields(raw: &Value, expected: &[&str]) -> crate::ImResult<()> {
@@ -2212,7 +2269,11 @@ mod tests {
                 "account_user_id": "account-alice"
             }),
         );
-        assert!(matches!(malformed, Err(crate::ImError::PermissionDenied)));
+        assert!(matches!(
+            malformed,
+            Err(crate::ImError::Service { code: Some(code), .. })
+                if code == "identity.registration_join.response_shape"
+        ));
     }
 
     #[test]

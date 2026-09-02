@@ -1741,4 +1741,11 @@ fn linux_sdk_build_includes_group_e2ee_support() {
         ),
         "the Linux shared library must contain group E2EE and Direct ANP Identity"
     );
+    assert!(
+        script.contains("CARGO_OUTPUT_ROOT=\"${CARGO_TARGET_DIR:-${ROOT_DIR}/target}\"")
+            && script.contains(
+                "SOURCE_LIB=\"${CARGO_OUTPUT_ROOT}/${TARGET}/release/libawiki_im_core.so\""
+            ),
+        "the Linux shared-library copy must honor an isolated Cargo target directory"
+    );
 }

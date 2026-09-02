@@ -657,9 +657,11 @@ Transport is explicit through configuration and capability checks:
   Group DID and canonical state version, cursor progress and totals are complete, and the
   authoritative `max_members` policy and implementation hard cap are satisfied.
 - Permanent device revoke completes at the validated User Registry/DID Document result and local
-  Identity convergence. It does not scan or wait for every MLS group. Message Service keeps the
-  durable per-group send-pause gate; an owner device with local controller state converges a
-  selected group only through explicit group repair.
+  Identity convergence. After that result, the initiating management-ready device makes one
+  immediate best-effort pass over the currently known MLS groups and invokes existing group repair
+  once per group. It does not persist a second repair queue or retry after restart. Message Service
+  keeps the per-group device-removal fact but does not pause otherwise-valid sends solely for a
+  revoked device leaf.
 
 ## 9.2 Device Revoke And Group MLS Convergence
 
@@ -672,11 +674,12 @@ without Registry or DID Document network access. Only a record without that resu
 exact Registry, generation, checkpoint, DID Document hash and Manifest match. Recovery is bounded,
 shares the revoke lock, never submits a new revoke request, and never touches MLS.
 
-Message Service owns the per-group `device_revocation_pending` fact. Core group secure status reads
-the Host-authoritative, low-sensitivity `group.get.e2ee_maintenance` projection before reporting
-readiness. A gate plus active owner and local controller state becomes `NeedsRepair`; a non-owner
-becomes `WaitingForMembershipUpdate`; a device without controller state becomes
-`MissingLocalState`. A missing or malformed authoritative response fails closed and cannot be
+Message Service owns the per-group maintenance fact. Core group secure status reads the
+Host-authoritative, low-sensitivity `group.get.e2ee_maintenance` projection before reporting
+readiness. `device_revocation_pending + send_paused=false` is a non-blocking warning and preserves
+the local readiness/send result. `group_membership_change_pending + send_paused=true` remains a
+hard gate; the old `device_revocation_pending + true` shape is accepted only as a conservative
+rolling-upgrade input. A missing or malformed authoritative response fails closed and cannot be
 reported as `Ready`. Status is read-only: it does not enumerate the roster, resolve Manifests,
 write the MLS WAL, or build a Commit. The low-sensitivity maintenance object accepts exactly
 `reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than

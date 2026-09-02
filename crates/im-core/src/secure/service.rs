@@ -354,14 +354,28 @@ fn overlay_group_maintenance_status(
     if maintenance.len() != 2
         || !maintenance.contains_key("send_paused")
         || !maintenance.contains_key("reason")
-        || maintenance
-            .get("send_paused")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
-        || maintenance
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            != Some("device_revocation_pending")
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "authoritative group maintenance projection is unsupported".to_owned(),
+        });
+    }
+    let send_paused = maintenance
+        .get("send_paused")
+        .and_then(serde_json::Value::as_bool);
+    let reason = maintenance
+        .get("reason")
+        .and_then(serde_json::Value::as_str);
+    if reason == Some("device_revocation_pending") && send_paused == Some(false) {
+        status
+            .warnings
+            .push("group device revocation removal is pending".to_owned());
+        return Ok(status);
+    }
+    if send_paused != Some(true)
+        || !matches!(
+            reason,
+            Some("device_revocation_pending" | "group_membership_change_pending")
+        )
     {
         return Err(crate::ImError::LocalStateUnavailable {
             detail: "authoritative group maintenance projection is unsupported".to_owned(),
@@ -696,6 +710,35 @@ mod step4_tests {
         assert_eq!(
             owner_without_controller.state,
             crate::secure::GroupSecureState::MissingLocalState
+        );
+    }
+
+    #[test]
+    fn device_revocation_pending_without_send_pause_remains_sendable() {
+        let authoritative = crate::groups::GroupReadResult::from_raw_response(
+            serde_json::json!({
+                "group_did": "did:example:group",
+                "group": {
+                    "group_did": "did:example:group",
+                    "my_role": "member",
+                    "membership_status": "active"
+                },
+                "e2ee_maintenance": {
+                    "send_paused": false,
+                    "reason": "device_revocation_pending"
+                }
+            }),
+            Vec::new(),
+        );
+
+        let status = overlay_group_maintenance_status(local_status(true, true), &authoritative)
+            .expect("device-only pending maintenance is supported");
+
+        assert_eq!(status.state, crate::secure::GroupSecureState::Ready);
+        assert!(status.can_send_secure);
+        assert_eq!(
+            status.warnings,
+            ["group device revocation removal is pending"]
         );
     }
 

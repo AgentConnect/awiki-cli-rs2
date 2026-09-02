@@ -483,7 +483,13 @@ ORDER BY sort_at ASC,
                 }
             }
         }
-        last = Some(row);
+        if last
+            .as_ref()
+            .map(|current| message_is_later_than_message(&row, current))
+            .unwrap_or(true)
+        {
+            last = Some(row);
+        }
     }
 
     if message_count == 0 {
@@ -831,18 +837,29 @@ fn first_unread_mention_for_new_summary(row: &SummaryMessageRow) -> &str {
 }
 
 fn message_is_later_than_summary(row: &SummaryMessageRow, summary: &SummaryStateRow) -> bool {
-    if row.sort_at.as_str() != summary.last_message_at.as_str() {
-        return row.sort_at.as_str() > summary.last_message_at.as_str();
-    }
     match (row.server_seq, summary.last_server_seq) {
         (Some(server_seq), Some(last_server_seq)) if server_seq != last_server_seq => {
             return server_seq > last_server_seq;
         }
-        (Some(_), None) => return true,
-        (None, Some(_)) => return false,
         _ => {}
     }
+    if row.sort_at.as_str() != summary.last_message_at.as_str() {
+        return row.sort_at.as_str() > summary.last_message_at.as_str();
+    }
     row.msg_id.as_str() > summary.last_message_id.as_str()
+}
+
+fn message_is_later_than_message(row: &SummaryMessageRow, current: &SummaryMessageRow) -> bool {
+    match (row.server_seq, current.server_seq) {
+        (Some(server_seq), Some(current_server_seq)) if server_seq != current_server_seq => {
+            return server_seq > current_server_seq;
+        }
+        _ => {}
+    }
+    if row.sort_at != current.sort_at {
+        return row.sort_at > current.sort_at;
+    }
+    row.msg_id > current.msg_id
 }
 
 fn distinct_owner_identity_ids(connection: &Connection) -> crate::ImResult<Vec<String>> {

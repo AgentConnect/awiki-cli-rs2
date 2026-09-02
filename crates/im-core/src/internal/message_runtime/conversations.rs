@@ -812,6 +812,7 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         "sender_name",
         "sender_display_name",
         "sender_peer_persona_id",
+        "message_role",
         "security",
         "decryption_state",
         "secure_wire_content_type",
@@ -1050,7 +1051,7 @@ mod tests {
             content_type: "text/plain".into(),
             content: "hello group".into(),
             server_seq: Some(9),
-            metadata: r#"{"raw_message_id":"msg-group-history-1","group_event_seq":"9"}"#.into(),
+            metadata: r#"{"raw_message_id":"msg-group-history-1","group_event_seq":"9","message_role":"group_system_event"}"#.into(),
             ..crate::internal::local_state::messages::MessageRecord::default()
         })
         .unwrap();
@@ -1058,6 +1059,7 @@ mod tests {
         for (key, value) in [
             ("raw_message_id", "msg-group-history-1"),
             ("group_event_seq", "9"),
+            ("message_role", "group_system_event"),
         ] {
             assert!(message
                 .metadata

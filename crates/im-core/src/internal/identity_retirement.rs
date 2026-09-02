@@ -310,6 +310,7 @@ fn advance(
         ));
     } else {
         cleanup_identity_vault(core, &record.identity_id)?;
+        cleanup_retired_anp_identity(core, record)?;
     }
     if let Some(protocol_device_id) = record.protocol_device_id.as_deref() {
         crate::internal::identity_device_join::retire_authorized_new_device_sessions(
@@ -325,6 +326,64 @@ fn advance(
         fail_after_phase_for_test(IdentityRetirementTestCut::Completed)?;
     }
     Ok(outcome)
+}
+
+#[cfg(feature = "identity-native-anp")]
+fn cleanup_retired_anp_identity(
+    core: &crate::core::ImCore,
+    record: &IdentityRetirementRecord,
+) -> crate::ImResult<()> {
+    let Some(protocol_device_id) = record.protocol_device_id.as_deref() else {
+        return Ok(());
+    };
+    let mut manager = crate::internal::identity_custody::open_controller_manager(core)?;
+    let mut matches = manager
+        .list()
+        .map_err(crate::internal::identity_custody::map_facade_error)?
+        .into_iter()
+        .filter(|descriptor| descriptor.reference.did == record.did)
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let Some(descriptor) = matches.pop() else {
+        return Ok(());
+    };
+    let identity = manager
+        .get(&descriptor.reference)
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    let public = identity
+        .public_identity()
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    let manifest = anp::authentication::validate_device_manifest(public.document.as_value())
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if manifest
+        .devices
+        .iter()
+        .filter(|device| device.device_id == protocol_device_id)
+        .count()
+        != 1
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    manager
+        .delete(
+            &descriptor.reference,
+            anp_identity::DeleteIdentityRequest {
+                discard_pending_changes: true,
+            },
+        )
+        .map_err(crate::internal::identity_custody::map_facade_error)?;
+    Ok(())
+}
+
+#[cfg(not(feature = "identity-native-anp"))]
+fn cleanup_retired_anp_identity(
+    _core: &crate::core::ImCore,
+    _record: &IdentityRetirementRecord,
+) -> crate::ImResult<()> {
+    Ok(())
 }
 
 fn cleanup_identity_vault(core: &crate::core::ImCore, identity_id: &str) -> crate::ImResult<()> {

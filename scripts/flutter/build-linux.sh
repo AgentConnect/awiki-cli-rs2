@@ -16,6 +16,7 @@ package's Linux plugin bundle directory.
 
 Environment:
   AWIKI_IM_CORE_LINUX_TARGET  Rust target triple. Defaults to x86_64-unknown-linux-gnu.
+  CARGO_TARGET_DIR            Optional Cargo output root; relative paths resolve from the repository.
 USAGE
 }
 
@@ -38,7 +39,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 OUT_DIR="${ROOT_DIR}/packages/awiki_im_core/linux/lib"
-SOURCE_LIB="${ROOT_DIR}/target/${TARGET}/release/libawiki_im_core.so"
+CARGO_OUTPUT_ROOT="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+if [[ "${CARGO_OUTPUT_ROOT}" != /* ]]; then
+  CARGO_OUTPUT_ROOT="${ROOT_DIR}/${CARGO_OUTPUT_ROOT}"
+fi
+SOURCE_LIB="${CARGO_OUTPUT_ROOT}/${TARGET}/release/libawiki_im_core.so"
 DEST_LIB="${OUT_DIR}/libawiki_im_core.so"
 
 if [[ "${DRY_RUN}" == "1" ]]; then

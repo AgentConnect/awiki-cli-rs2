@@ -7374,6 +7374,44 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
     }
 
     #[test]
+    fn local_state_messages_summary_uses_server_seq_before_skewed_timestamps() {
+        let db = Connection::open_in_memory().unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:owner";
+        let conversation_id = "dm:did:peer";
+        let mut outgoing = summary_test_message(
+            "msg-z-outgoing",
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            1,
+            "app to cli",
+            "2026-06-27T19:58:59Z",
+            true,
+        );
+        outgoing.server_seq = Some(14233);
+        upsert_message(&db, &outgoing).unwrap();
+
+        let mut incoming = summary_test_message(
+            "msg-a-incoming",
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            0,
+            "cli to app",
+            "2026-06-27T19:58:58Z",
+            false,
+        );
+        incoming.server_seq = Some(14234);
+        upsert_message(&db, &incoming).unwrap();
+
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.last_message_id, "msg-a-incoming");
+        assert_eq!(summary.last_content, "cli to app");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+    }
+
+    #[test]
     fn local_state_group_send_success_replaces_local_echo_with_canonical_id() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
