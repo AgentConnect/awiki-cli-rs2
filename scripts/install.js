@@ -176,10 +176,9 @@ function validateLicenseBundle(directory) {
   }
 }
 
-function binaryProbeEnvironment(metadata, tempDir) {
+function binaryProbeEnvironment(tempDir) {
   const probeHome = path.join(tempDir, 'probe-home');
   const probeWorkspace = path.join(probeHome, '.awiki-cli');
-  const defaults = metadata.default_tenant || {};
   fs.mkdirSync(probeHome, { recursive: true });
   return {
     ...process.env,
@@ -187,9 +186,6 @@ function binaryProbeEnvironment(metadata, tempDir) {
     USERPROFILE: probeHome,
     AWIKI_CLI_WORKSPACE_HOME_DIR: probeWorkspace,
     AWIKI_CLI_UPDATE_CACHE_ONLY: '1',
-    AWIKI_CLI_UPDATE_BASE_URL: metadata.update_base_url || '',
-    AWIKI_CLI_DEFAULT_BACKEND_BASE_URL: defaults.backend_base_url || '',
-    AWIKI_CLI_DEFAULT_DID_HOST: defaults.did_host || '',
   };
 }
 
@@ -235,7 +231,7 @@ async function main() {
     // temp directory so postinstall cannot initialize or alter the user's
     // real workspace before the package wrapper supplies release defaults.
     try {
-      await runCommand(binaryPath, ['version'], { env: binaryProbeEnvironment(metadata, tempDir) });
+      await runCommand(binaryPath, ['version'], { env: binaryProbeEnvironment(tempDir) });
     } catch (err) {
       if (compatibilityFallback) {
         throw new Error(

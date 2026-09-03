@@ -25,6 +25,7 @@
 #![allow(clippy::while_let_on_iterator)]
 
 pub mod build_info;
+mod builtin_tenants;
 pub mod cli_completion;
 pub mod cli_docs;
 #[doc(hidden)]

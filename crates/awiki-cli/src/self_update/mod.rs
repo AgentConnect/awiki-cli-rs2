@@ -2,7 +2,7 @@ mod cache;
 mod version;
 
 use crate::build_info;
-use crate::workspace_config::{self, Resolved, UpdatePolicyContext};
+use crate::workspace_config::{Resolved, UpdatePolicyContext};
 use std::path::PathBuf;
 
 const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 43_200;
@@ -86,10 +86,6 @@ pub fn check_context(context: &UpdatePolicyContext) -> CheckOutcome {
     )
 }
 
-pub fn check_preflight() -> CheckOutcome {
-    check_with_settings(CheckSettings::preflight(), false)
-}
-
 #[derive(Debug, Clone, Default)]
 struct CheckSettings {
     strict_disabled: bool,
@@ -98,26 +94,6 @@ struct CheckSettings {
     tenant_alias: String,
     policy_origin: String,
     manifest_urls: Vec<String>,
-}
-
-impl CheckSettings {
-    fn preflight() -> Self {
-        let manifest_urls = manifest_urls_for_origin("https://awiki.ai");
-        let policy_origin = manifest_urls
-            .first()
-            .and_then(|url| service_origin(url).ok())
-            .unwrap_or_else(|| "https://awiki.ai".to_string());
-        Self {
-            strict_disabled: false,
-            metadata_cache_ttl_seconds: 0,
-            cache_dir: workspace_config::product_cache_dir()
-                .ok()
-                .and_then(|path| non_empty_path(&path)),
-            tenant_alias: "global".to_string(),
-            policy_origin,
-            manifest_urls,
-        }
-    }
 }
 
 fn check_settings_from_resolved(resolved: &Resolved) -> CheckSettings {
@@ -287,11 +263,13 @@ fn manifest_urls_for_origin(policy_origin: &str) -> Vec<String> {
         }
     }
     let configured = std::env::var("AWIKI_CLI_UPDATE_BASE_URL").unwrap_or_default();
-    let base = if configured.trim().is_empty() {
-        format!("{}/cli/stable", policy_origin.trim_end_matches('/'))
-    } else {
-        configured.trim().trim_end_matches('/').to_string()
-    };
+    if configured.trim().is_empty() {
+        return vec![format!(
+            "{}/user-service/v1/server-info?client_platform=cli",
+            policy_origin.trim_end_matches('/')
+        )];
+    }
+    let base = { configured.trim().trim_end_matches('/').to_string() };
     if base.ends_with(".json") {
         vec![base]
     } else {
@@ -368,7 +346,7 @@ mod tests {
         )]);
         let _urls = TestUrls::set(vec![server.url("/latest")]);
         let temp = TempDir::new();
-        seed_metadata(temp.path(), "1.0.9", "1.0.9", "");
+        seed_metadata(temp.path(), "1.0.9", "1.0.9", "", &server.url(""));
 
         let outcome = super::check_fresh(&resolved(temp.path()));
 
@@ -451,7 +429,7 @@ mod tests {
         let server = TestServer::new(vec![TestResponse::status(503, "unavailable")]);
         let _urls = TestUrls::set(vec![server.url("/latest")]);
         let temp = TempDir::new();
-        seed_metadata(temp.path(), "1.0.10", "1.0.9", "");
+        seed_metadata(temp.path(), "1.0.10", "1.0.9", "", &server.url(""));
 
         let outcome = super::check_fresh(&resolved(temp.path()));
 
@@ -462,12 +440,46 @@ mod tests {
     }
 
     #[test]
+    fn expired_cache_remains_a_safe_offline_fallback_for_its_tenant() {
+        let server = TestServer::new(vec![TestResponse::status(503, "unavailable")]);
+        let _urls = TestUrls::set(vec![server.url("/latest")]);
+        let temp = TempDir::new();
+        seed_metadata(
+            temp.path(),
+            "1.0.10",
+            "1.0.9",
+            "2020-01-01T00:00:00Z",
+            &server.url(""),
+        );
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.latest_version, "1.0.10");
+        assert_eq!(outcome.decision.metadata_source, "cache_stale");
+    }
+
+    #[test]
+    fn missing_policy_does_not_keep_an_old_minimum_gate_alive() {
+        let server = TestServer::new(vec![TestResponse::status(404, "not found")]);
+        let _urls = TestUrls::set(vec![server.url("/latest")]);
+        let temp = TempDir::new();
+        seed_metadata(temp.path(), "1.0.10", "1.0.9", "", &server.url(""));
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert!(outcome.error.is_some());
+        assert_eq!(outcome.decision.blocked, false);
+        assert!(outcome.decision.latest_version.is_empty());
+    }
+
+    #[test]
     fn cache_only_uses_cached_metadata_without_network() {
         let server = TestServer::new(vec![TestResponse::status(500, "should not be used")]);
         let _urls = TestUrls::set(vec![server.url("/latest")]);
         let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
         let temp = TempDir::new();
-        seed_metadata(temp.path(), "1.0.10", "1.0.9", "");
+        seed_metadata(temp.path(), "1.0.10", "1.0.9", "", &server.url(""));
 
         let outcome = super::check_fresh(&resolved(temp.path()));
 
@@ -482,7 +494,7 @@ mod tests {
         let _version = TestCurrentVersion::set("1.0.0");
         let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
         let temp = TempDir::new();
-        seed_metadata(temp.path(), "1.0.2", "1.0.1", "");
+        seed_metadata(temp.path(), "1.0.2", "1.0.1", "", "https://awiki.ai");
 
         let outcome = super::check(&resolved(temp.path()));
 
@@ -503,7 +515,7 @@ mod tests {
         let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
         let _strict = EnvVar::set("AWIKI_CLI_DISABLE_STRICT_VERSION", "1");
         let temp = TempDir::new();
-        seed_metadata(temp.path(), "1.0.2", "1.0.1", "");
+        seed_metadata(temp.path(), "1.0.2", "1.0.1", "", "https://awiki.ai");
 
         let outcome = super::check(&resolved(temp.path()));
 
@@ -511,6 +523,25 @@ mod tests {
         assert_eq!(outcome.decision.strict_disabled, true);
         assert_eq!(outcome.decision.blocked, false);
         assert_eq!(outcome.decision.has_newer_version, true);
+    }
+
+    #[test]
+    fn legacy_unscoped_cache_cannot_apply_a_minimum_version_gate() {
+        let _version = TestCurrentVersion::set("1.0.0");
+        let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
+        let temp = TempDir::new();
+        let path = metadata_path(temp.path());
+        fs::create_dir_all(path.parent().expect("metadata parent")).expect("create cache dir");
+        fs::write(
+            path,
+            r#"{"latest_version":"1.0.2","min_supported_version":"1.0.1","retrieved_at":""}"#,
+        )
+        .expect("write legacy cache");
+
+        let outcome = super::check(&resolved(temp.path()));
+
+        assert!(outcome.error.is_some());
+        assert_eq!(outcome.decision.blocked, false);
     }
 
     fn resolved(root: &Path) -> Resolved {
@@ -577,11 +608,21 @@ mod tests {
         root.join("cache").join("update").join("metadata.json")
     }
 
-    fn seed_metadata(root: &Path, latest: &str, minimum: &str, retrieved_at: &str) {
+    fn seed_metadata(
+        root: &Path,
+        latest: &str,
+        minimum: &str,
+        retrieved_at: &str,
+        policy_origin: &str,
+    ) {
         let path = metadata_path(root);
         fs::create_dir_all(path.parent().expect("metadata parent")).expect("create cache dir");
         let raw = format!(
             r#"{{
+  "product": "awiki-cli",
+  "channel": "stable",
+  "policy_origin": "{policy_origin}",
+  "policy_revision": 1,
   "latest_version": "{latest}",
   "min_supported_version": "{minimum}",
   "retrieved_at": "{retrieved_at}",

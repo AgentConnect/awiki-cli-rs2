@@ -10,6 +10,16 @@
 
 编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、Nginx 备份路径、下载并发/限速参数、gateway checkout、gateway 内网 origin 和 GitHub token 只能来自 `publish-server.toml`。
 
+CLI 产品包中的两个内置租户则由构建参数决定：
+
+```bash
+scripts/release/build-release-artifact.sh \
+  --tenant-config config/builtin-tenants.default.json \
+  <其余发布参数>
+```
+
+配置必须一次提供 `primary`、`secondary`、中英文名称、backend Origin、DID Host 和 `default_slot`。省略参数时使用仓库默认文件；传入时完整替换，不与默认官方端点合并。每个平台归档都包含同一份 `BUILTIN-TENANTS.json`，`stage-release.js` 会在组装 NPM 引导包前验证所有归档的内容与摘要完全一致。
+
 Linux AMD64 使用静态 musl 目标构建，并在归档前拒绝包含 GLIBC 版本符号的二进制，避免产物依赖 GitHub runner 的 glibc 版本。
 
 当前 Windows 发布产物是 `windows-amd64`。Windows 11 ARM64 安装器在 manifest 未声明原生 ARM64 条目时选择该 x64 兼容产物；已经声明但无效的 ARM64 条目会直接失败。Manifest、归档名称和安装日志始终保留实际的 `windows-amd64` 架构，不创建伪 ARM64 条目。

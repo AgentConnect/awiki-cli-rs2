@@ -21,22 +21,21 @@
 
 | 标识符 | 来源 | 作用 | 默认值 |
 | --- | --- | --- | --- |
-| `global.active_tenant` | `global.json`；`--tenant` 覆盖 | 当前租户 | 全新工作区 → `china` |
+| `global.active_tenant` | `global.json`；`--tenant` 覆盖 | 当前租户 | 全新工作区 → 打包配置的 `default_slot` |
 | `registry.schema_version` | `tenants/registry.json` | 租户注册表格式 | `2` |
-| `registry.official_catalog_version` | 同上 | 已对齐的官方目录 | `1` |
-| `registry.aliases.default` | 同上 | 兼容别名 | 全新工作区 → `china` |
+| `registry.official_catalog_version` | 同上 | 已对齐的内置目录 | `2` |
+| `registry.aliases.default` | 同上 | 兼容别名 | 全新工作区 → 打包配置的 `default_slot` |
 | `registry.tenants[].kind` | 同上 | `built_in` 或 `custom` | 官方项 → `built_in` |
-| 官方 `china` 端点 | 同上 | 上海租户 | `https://awiki.me` / `awiki.me` |
-| 官方 `global` 端点 | 同上 | 硅谷租户 | `https://awiki.ai` / `awiki.ai` |
-| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | 环境变量 | 私有发行首次初始化 backend（成对覆盖） | 空 → 官方中国租户 |
-| `AWIKI_CLI_DEFAULT_DID_HOST` | 环境变量 | 私有发行首次初始化 DID host（成对覆盖） | 空 → 官方中国租户 |
+| `builtin-primary` / `builtin-secondary` | 包内 `BUILTIN-TENANTS.json` | 稳定内置槽位 | 默认文件：中国 / 全球 |
+| `china` / `global` / `default` | 注册表别名 | 历史命令兼容 | 指向包内槽位 |
 | `AWIKI_CLI_WORKSPACE_HOME_DIR` | 环境变量 | 产品工作区根 | 未设 → `~/.awiki-cli` |
 
-官方租户不允许重新配置。首次读取 v1 注册表时，指向 `awiki.ai` 的历史
-`default` profile 会变成标准 `global` profile，但保留 `dir_name=default`；
-`default` 别名仍指向 `global`。原子替换 v2 注册表和 active tenant
-控制文件前会先生成 `.v1.bak` 备份。迁移失败时继续使用 v1 注册表，
-下次运行再重试。
+`scripts/release/build-release-artifact.sh --tenant-config FILE` 会校验并嵌入一份
+完整的双槽位目录。不传时使用 `config/builtin-tenants.default.json`；传入后会
+完整替换两个槽位和默认选择，不存在隐藏官方回退，运行时环境变量也不能替换
+包内租户。后续包若改变某个槽位的端点，旧 Profile 与目录会保留为唯一命名的
+自定义租户，并创建新的内置 Profile。历史 `china`、`global` 和 v1 `default`
+会迁移到稳定槽位，不移动业务数据。
 
 ## 运行时 / 通知 / 密钥
 

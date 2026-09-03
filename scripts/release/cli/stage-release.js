@@ -14,6 +14,53 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: 'inherit', ...options });
   if (result.status !== 0) die(`${command} failed with exit code ${result.status}`);
 }
+function readArchiveFile(archivePath, target, entry) {
+  const command = target.startsWith('windows-') ? 'unzip' : 'tar';
+  const args = target.startsWith('windows-')
+    ? ['-p', archivePath, entry]
+    : ['-xOzf', archivePath, entry];
+  const result = spawnSync(command, args, { encoding: null, maxBuffer: 1024 * 1024 });
+  if (result.status !== 0) {
+    die(`${path.basename(archivePath)} is missing ${entry}`);
+  }
+  return result.stdout;
+}
+function validateTenantConfig(raw, label) {
+  let config;
+  try { config = JSON.parse(raw.toString('utf8')); } catch (err) {
+    die(`${label} contains invalid JSON: ${err.message}`);
+  }
+  if (config.schema_version !== 1
+      || !['primary', 'secondary'].includes(config.default_slot)
+      || !config.tenants || typeof config.tenants !== 'object'
+      || Object.keys(config.tenants).sort().join(',') !== 'primary,secondary') {
+    die(`${label} is not a two-slot built-in tenant config`);
+  }
+  for (const slot of ['primary', 'secondary']) {
+    const tenant = config.tenants[slot];
+    if (!tenant || typeof tenant.display_name !== 'object'
+        || !tenant.display_name['zh-CN']?.trim() || !tenant.display_name.en?.trim()) {
+      die(`${label} has an invalid ${slot} display name`);
+    }
+    let origin;
+    try { origin = new URL(tenant.backend_origin); } catch {
+      die(`${label} has an invalid ${slot} backend origin`);
+    }
+    const loopback = origin.protocol === 'http:'
+      && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
+    const didHost = String(tenant.did_host || '').trim().toLowerCase().replace(/\.$/u, '');
+    if ((origin.protocol !== 'https:' && !loopback) || origin.username || origin.password
+        || origin.pathname !== '/' || origin.search || origin.hash
+        || (!loopback && origin.port) || origin.hostname !== didHost) {
+      die(`${label} has inconsistent ${slot} endpoints`);
+    }
+  }
+  if (config.tenants.primary.backend_origin === config.tenants.secondary.backend_origin
+      || config.tenants.primary.did_host === config.tenants.secondary.did_host) {
+    die(`${label} must contain distinct tenant endpoints`);
+  }
+  return config;
+}
 function renderTemplate(text, values, label) {
   let rendered = text;
   for (const [token, value] of Object.entries(values)) rendered = rendered.replaceAll(`{{${token}}}`, value);
@@ -56,6 +103,8 @@ function main() {
   fs.mkdirSync(path.join(outputDir, 'artifacts'), { recursive: true });
 
   const packages = {};
+  let tenantConfigRaw = null;
+  let tenantConfig = null;
   const expectedArtifacts = new Set(releaseConfig.targets.map(target => {
     const extension = target.startsWith('windows-') ? 'zip' : 'tar.gz';
     return `awiki-cli-${version}-${target}.${extension}`;
@@ -67,6 +116,14 @@ function main() {
     const fileName = `awiki-cli-${version}-${target}.${extension}`;
     const source = path.join(artifactsDir, fileName);
     if (!fs.statSync(source, { throwIfNoEntry: false })?.isFile()) die(`missing artifact ${source}`);
+    const currentTenantConfigRaw = readArchiveFile(source, target, 'BUILTIN-TENANTS.json');
+    validateTenantConfig(currentTenantConfigRaw, `${fileName}/BUILTIN-TENANTS.json`);
+    if (tenantConfigRaw === null) {
+      tenantConfigRaw = currentTenantConfigRaw;
+      tenantConfig = JSON.parse(currentTenantConfigRaw.toString('utf8'));
+    } else if (!tenantConfigRaw.equals(currentTenantConfigRaw)) {
+      die(`built-in tenant config differs across release artifacts (at ${fileName})`);
+    }
     const destination = path.join(outputDir, 'artifacts', fileName);
     fs.copyFileSync(source, destination);
     packages[target] = {
@@ -82,6 +139,7 @@ function main() {
       fs.copyFileSync(path.join(root, name), path.join(packageStage, name));
     }
     fs.cpSync(path.join(root, 'LICENSES'), path.join(packageStage, 'LICENSES'), { recursive: true });
+    const tenantConfigSha256 = crypto.createHash('sha256').update(tenantConfigRaw).digest('hex');
     fs.writeFileSync(path.join(packageStage, 'SOURCE.md'), `# AWiki CLI S2 Corresponding Source
 
 Version: ${version}
@@ -92,6 +150,7 @@ Source archive: https://github.com/${serverConfig.github_repo}/archive/${sourceC
 Build instructions: https://github.com/${serverConfig.github_repo}/blob/${sourceCommit}/docs/development.md
 
 ANP dependency commit: ${releaseConfig.anp_commit}
+Built-in tenant config SHA-256: ${tenantConfigSha256}
 ANP source: https://github.com/agent-network-protocol/anp/tree/${releaseConfig.anp_commit}
 
 The source location above identifies the exact revision used to build this
@@ -110,12 +169,9 @@ the accompanying LICENSE file.
       schema_version: 1,
       version,
       channel,
-      update_base_url: updateBaseUrl,
       installer_url: `${updateBaseUrl}/awiki-cli.tgz`,
-      default_tenant: {
-        backend_base_url: serverConfig.default_backend_base_url,
-        did_host: serverConfig.default_did_host,
-      },
+      builtin_tenants: tenantConfig,
+      builtin_tenants_sha256: tenantConfigSha256,
       packages,
     }, null, 2)}\n`);
     run('npm', ['pack', '--ignore-scripts', '--pack-destination', outputDir], { cwd: packageStage });
@@ -161,6 +217,7 @@ the accompanying LICENSE file.
     min_supported_version: entry.min_supported_version,
     published_at: new Date().toISOString(),
     source: { tag: sourceTag, commit: sourceCommit },
+    builtin_tenants_sha256: crypto.createHash('sha256').update(tenantConfigRaw).digest('hex'),
     installer: {
       url: `${serverConfig.public_origin}${serverConfig.public_base_path}/${channel}/awiki-cli.tgz`,
       sha256: sha256(path.join(outputDir, 'awiki-cli.tgz')),

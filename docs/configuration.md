@@ -20,23 +20,22 @@ Authoritative configuration for **awiki-cli-rs2** (CLI, daemon, im-core). Source
 
 | Key | Source | Purpose | Default |
 | --- | --- | --- | --- |
-| `global.active_tenant` | `global.json`; `--tenant` | Active tenant | fresh workspace → `china` |
+| `global.active_tenant` | `global.json`; `--tenant` | Active tenant | fresh workspace → package `default_slot` |
 | `registry.schema_version` | `tenants/registry.json` | Tenant registry format | `2` |
-| `registry.official_catalog_version` | same | Reconciled official catalog | `1` |
-| `registry.aliases.default` | same | Compatibility alias | fresh workspace → `china` |
+| `registry.official_catalog_version` | same | Reconciled built-in catalog | `2` |
+| `registry.aliases.default` | same | Compatibility alias | fresh workspace → package `default_slot` |
 | `registry.tenants[].kind` | same | `built_in` or `custom` | official entries → `built_in` |
-| official `china` endpoint | same | Shanghai tenant | `https://awiki.me` / `awiki.me` |
-| official `global` endpoint | same | Silicon Valley tenant | `https://awiki.ai` / `awiki.ai` |
-| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | env | Private-release initial backend (paired override) | empty → official China |
-| `AWIKI_CLI_DEFAULT_DID_HOST` | env | Private-release initial DID host (paired override) | empty → official China |
+| `builtin-primary` / `builtin-secondary` | packaged `BUILTIN-TENANTS.json` | Stable built-in slots | default file: China / Global |
+| `china` / `global` / `default` | registry aliases | Historical command compatibility | point at packaged slots |
 | `AWIKI_CLI_WORKSPACE_HOME_DIR` | env | Product home | unset → `~/.awiki-cli` |
 
-Official tenants cannot be reconfigured. On first read, a v1 `default` profile that
-targets `awiki.ai` becomes the canonical `global` profile without changing its
-`dir_name=default`; the `default` alias continues to resolve to `global`. Before the
-v2 registry and active-tenant control files are atomically replaced, `.v1.bak`
-copies are created. A failed migration keeps the v1 registry usable and retries on
-the next run.
+`scripts/release/build-release-artifact.sh --tenant-config FILE` validates and embeds
+one complete two-slot catalog. Omitting it uses `config/builtin-tenants.default.json`;
+providing it replaces both slots and the default selection without a hidden official
+fallback. Runtime environment variables cannot replace packaged tenants. If a later
+package changes a slot endpoint, the old profile and directory remain as a uniquely
+named custom tenant while a fresh built-in profile is created. Historical `china`,
+`global`, and v1 `default` entries migrate to the stable slots without moving data.
 
 ## Runtime / secrets / multi-device
 

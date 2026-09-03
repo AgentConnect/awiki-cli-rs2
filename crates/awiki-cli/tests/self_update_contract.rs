@@ -24,7 +24,7 @@ fn upgrade_schema_exposes_current_installing_contract() {
 #[test]
 fn upgrade_cache_only_uses_seeded_metadata_for_dev_builds() {
     let workspace = TempDir::new().expect("temp workspace");
-    seed_metadata(workspace.path(), "0.0.1-beta.5", "10.0.1");
+    seed_metadata(workspace.path(), "10.0.2", "10.0.1");
 
     let output = awiki_cmd_with_workspace(
         &["upgrade", "--format", "json"],
@@ -39,7 +39,7 @@ fn upgrade_cache_only_uses_seeded_metadata_for_dev_builds() {
 
     assert_eq!(envelope["command"], "awiki-cli upgrade");
     assert_eq!(envelope["data"]["min_supported_version"], "10.0.1");
-    assert_eq!(envelope["data"]["latest_version"], "0.0.1-beta.5");
+    assert_eq!(envelope["data"]["latest_version"], "10.0.2");
     assert_eq!(envelope["data"]["dev_build"], true);
     assert_eq!(envelope["data"]["blocked"], false);
     assert_eq!(envelope["data"]["strict_disabled"], false);
@@ -51,11 +51,11 @@ fn upgrade_cache_only_uses_seeded_metadata_for_dev_builds() {
 #[test]
 fn upgrade_strict_disable_follows_config_and_env_override() {
     let config_workspace = TempDir::new().expect("temp workspace");
-    seed_metadata(config_workspace.path(), "0.0.1-beta.5", "10.0.1");
+    seed_metadata(config_workspace.path(), "10.0.2", "10.0.1");
     let config_path = config_workspace
         .path()
         .join("tenants")
-        .join("china")
+        .join("builtin-primary")
         .join("config.yaml");
     fs::create_dir_all(config_path.parent().expect("tenant config parent"))
         .expect("create tenant config parent");
@@ -75,7 +75,7 @@ fn upgrade_strict_disable_follows_config_and_env_override() {
     assert_eq!(envelope["data"]["blocked"], false);
 
     let env_workspace = TempDir::new().expect("temp workspace");
-    seed_metadata(env_workspace.path(), "0.0.1-beta.5", "10.0.1");
+    seed_metadata(env_workspace.path(), "10.0.2", "10.0.1");
     let output = awiki_cmd_with_workspace(
         &["upgrade", "--format", "json"],
         env_workspace.path(),
@@ -133,19 +133,15 @@ fn root_preflight_verbose_logs_soft_update_check_failures() {
 }
 
 #[test]
-fn root_preflight_exempts_local_recovery_commands_from_update_check() {
+fn root_preflight_exempts_only_update_help_and_tenant_switch_commands() {
     let workspace = TempDir::new().expect("temp workspace");
     let successful_exempt_commands: &[&[&str]] = &[
         &["version", "--format", "json"],
         &["upgrade", "--format", "json"],
-        &["init", "--dry-run", "--format", "json"],
-        &["docs", "--format", "json"],
-        &["schema", "--format", "json"],
-        &["config", "show", "--format", "json"],
-        &["doctor", "--format", "json"],
         &["--help"],
         &["tenant", "--help"],
-        &["completion", "bash"],
+        &["tenant", "list", "--format", "json"],
+        &["tenant", "current", "--format", "json"],
     ];
 
     for args in successful_exempt_commands {
@@ -167,47 +163,34 @@ fn root_preflight_exempts_local_recovery_commands_from_update_check() {
         );
     }
 
-    let hermes_bridge_exempt_commands: &[&[&str]] = &[
-        &["runtime", "host-notify", "hermes", "bridge", "service-run"],
-        &["runtime", "host-notify", "webhook", "bridge", "service-run"],
-    ];
-
-    for args in hermes_bridge_exempt_commands {
-        let mut verbose_args = vec!["--verbose"];
-        verbose_args.extend_from_slice(args);
-        let output = awiki_cmd_with_workspace(
-            &verbose_args,
-            workspace.path(),
-            &[
-                ("AWIKI_CLI_UPDATE_CACHE_ONLY", "1"),
-                ("AWIKI_CLI_INTERNAL_ENTRY", "1"),
-            ],
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !stderr.contains("[awiki-cli] update check failed:"),
-            "Hermes bridge exempt command {args:?} should not log update check failure, stderr = {stderr}"
-        );
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "Hermes bridge command should still stop at current preflight boundary; stdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            stderr
-        );
-        let envelope = error_json(&output);
-        assert_eq!(envelope["error"]["code"], "internal_error");
-        assert_eq!(
-            envelope["error"]["message"],
-            "Hermes host notify secret is not configured in awiki-cli"
-        );
-    }
+    assert_success(&awiki_cmd_with_workspace(
+        &["init"],
+        workspace.path(),
+        &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+    ));
+    let switched = awiki_cmd_with_workspace(
+        &[
+            "--verbose",
+            "tenant",
+            "use",
+            "builtin-primary",
+            "--format",
+            "json",
+        ],
+        workspace.path(),
+        &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+    );
+    assert_success_with_context(&switched, "tenant use must remain exempt");
+    assert!(
+        !String::from_utf8_lossy(&switched.stderr).contains("[awiki-cli] update check failed:"),
+        "tenant use must not run the update preflight"
+    );
 }
 
 fn seed_metadata(workspace: &Path, latest: &str, minimum: &str) {
     let path = workspace
         .join("tenants")
-        .join("china")
+        .join("builtin-primary")
         .join("cache")
         .join("update")
         .join("metadata.json");
@@ -217,10 +200,16 @@ fn seed_metadata(workspace: &Path, latest: &str, minimum: &str) {
         "channel": "stable",
         "policy_origin": "https://awiki.me",
         "policy_revision": 1,
+        "published_at": "2026-09-03T00:00:00Z",
+        "release_notes_url": "https://awiki.me/cli/releases/10.0.1",
         "latest_version": latest,
         "min_supported_version": minimum,
+        "installer_url": "https://awiki.me/cli/stable/awiki-cli.tgz",
+        "installer_mirrors": [],
+        "installer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "installer_size": 123,
+        "installer_integrity": "sha512-YWJjZA==",
         "retrieved_at": "2020-01-01T00:00:00Z",
-        "source": "network",
     });
     fs::write(
         path,
@@ -283,13 +272,6 @@ fn success_json(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true, "success envelope should set ok=true");
-    envelope
-}
-
-fn error_json(output: &Output) -> Value {
-    let envelope: Value =
-        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false, "error envelope should set ok=false");
     envelope
 }
 
