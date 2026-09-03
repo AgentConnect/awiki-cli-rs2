@@ -2226,6 +2226,21 @@ impl NativeImCoreNodeClient {
     async fn clear_local_data_inner(&self) -> SafeResult<NodeClearLocalDataResult> {
         let _mutation = self.inner.mutation.lock().await;
         self.inner.stop_realtime(None).await?;
+        let identity_provider = self
+            .inner
+            .identity_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let provider = identity_provider
+            .as_ref()
+            .map(|provider| provider as &dyn im_core::provider::IdentityCustody);
+        self.inner
+            .wait_safe(
+                clear_identity_provider_data(provider),
+                self.inner.operation_timeout,
+            )
+            .await?;
         let mut slot = self.inner.write_operation().await?;
         let environment = slot.take().ok_or_else(SafeError::closed)?;
         let Environment {
@@ -2256,12 +2271,6 @@ impl NativeImCoreNodeClient {
                 self.inner.operation_timeout,
             )
             .await?;
-        let identity_provider = self
-            .inner
-            .identity_provider
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
         *slot = Some(
             initialize_environment(
                 self.inner.options.clone(),
@@ -2273,6 +2282,37 @@ impl NativeImCoreNodeClient {
         );
         Ok(NodeClearLocalDataResult { cleared })
     }
+}
+
+async fn clear_identity_provider_data(
+    provider: Option<&dyn im_core::provider::IdentityCustody>,
+) -> SafeResult<()> {
+    let Some(provider) = provider else {
+        return Ok(());
+    };
+    let mut identities = provider
+        .list_identities()
+        .await
+        .map_err(crate::external_identity::safe_provider_error)?;
+    identities.sort_by(|left, right| {
+        (
+            left.reference.store_id.as_str(),
+            left.reference.identity_id.as_str(),
+            left.reference.did.as_str(),
+        )
+            .cmp(&(
+                right.reference.store_id.as_str(),
+                right.reference.identity_id.as_str(),
+                right.reference.did.as_str(),
+            ))
+    });
+    for identity in identities {
+        provider
+            .delete_identity(&identity.reference)
+            .await
+            .map_err(crate::external_identity::safe_provider_error)?;
+    }
+    Ok(())
 }
 
 impl Drop for NativeImCoreNodeClient {
@@ -2874,6 +2914,145 @@ fn ensure_sync_readable(status: im_core::messages::MessageSyncStatus) -> SafeRes
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct ClearingIdentityProvider {
+        identities: std::sync::Mutex<Vec<im_core::provider::ProviderIdentityDescriptor>>,
+        deleted: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl im_core::provider::IdentityCustody for ClearingIdentityProvider {
+        async fn store_info(
+            &self,
+        ) -> im_core::provider::ProviderResult<im_core::provider::ProviderStoreInfo> {
+            Ok(im_core::provider::ProviderStoreInfo {
+                store_id: "profile-store".to_owned(),
+                schema_compatible: true,
+                identity_count: self
+                    .identities
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len(),
+            })
+        }
+
+        async fn list_identities(
+            &self,
+        ) -> im_core::provider::ProviderResult<Vec<im_core::provider::ProviderIdentityDescriptor>>
+        {
+            Ok(self
+                .identities
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone())
+        }
+
+        async fn open_identity(
+            &self,
+            _identity: &im_core::provider::ProviderIdentityRef,
+        ) -> im_core::provider::ProviderResult<std::sync::Arc<dyn im_core::provider::IdentitySession>>
+        {
+            Err(im_core::provider::IdentityProviderError::new(
+                im_core::provider::IdentityProviderErrorCode::IdentityNotFound,
+                false,
+            ))
+        }
+
+        async fn create_identity(
+            &self,
+            _request: im_core::provider::ProviderCreateIdentityRequest,
+        ) -> im_core::provider::ProviderResult<std::sync::Arc<dyn im_core::provider::IdentitySession>>
+        {
+            Err(im_core::provider::IdentityProviderError::new(
+                im_core::provider::IdentityProviderErrorCode::InvalidRequest,
+                false,
+            ))
+        }
+
+        async fn delete_identity(
+            &self,
+            identity: &im_core::provider::ProviderIdentityRef,
+        ) -> im_core::provider::ProviderResult<()> {
+            self.deleted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(identity.identity_id.clone());
+            self.identities
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|candidate| candidate.reference != *identity);
+            Ok(())
+        }
+
+        async fn begin_device_enrollment(
+            &self,
+            _request: im_core::provider::ProviderDeviceEnrollmentRequest,
+        ) -> im_core::provider::ProviderResult<
+            std::sync::Arc<dyn im_core::provider::ProviderEnrollmentSession>,
+        > {
+            Err(provider_capability_unavailable())
+        }
+
+        async fn begin_request_signing_enrollment(
+            &self,
+            _request: im_core::provider::ProviderRequestSigningEnrollmentRequest,
+        ) -> im_core::provider::ProviderResult<
+            std::sync::Arc<dyn im_core::provider::ProviderEnrollmentSession>,
+        > {
+            Err(provider_capability_unavailable())
+        }
+
+        async fn resume_enrollment(
+            &self,
+            _identity: &im_core::provider::ProviderIdentityRef,
+        ) -> im_core::provider::ProviderResult<
+            Option<std::sync::Arc<dyn im_core::provider::ProviderEnrollmentSession>>,
+        > {
+            Ok(None)
+        }
+
+        async fn confirm_root_promotion(
+            &self,
+            _identity: &im_core::provider::ProviderIdentityRef,
+            _remote: im_core::provider::ProviderVerifiedRemoteDocument,
+        ) -> im_core::provider::ProviderResult<()> {
+            Err(provider_capability_unavailable())
+        }
+
+        async fn sign_pending_root_object_proof(
+            &self,
+            _identity: &im_core::provider::ProviderIdentityRef,
+            _request: im_core::provider::ProviderObjectProofRequest,
+        ) -> im_core::provider::ProviderResult<serde_json::Value> {
+            Err(provider_capability_unavailable())
+        }
+
+        async fn recover(&self) -> im_core::provider::ProviderResult<()> {
+            Ok(())
+        }
+    }
+
+    fn provider_capability_unavailable() -> im_core::provider::IdentityProviderError {
+        im_core::provider::IdentityProviderError::new(
+            im_core::provider::IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        )
+    }
+
+    fn provider_identity(
+        identity_id: &str,
+        state: im_core::provider::ProviderIdentityState,
+    ) -> im_core::provider::ProviderIdentityDescriptor {
+        im_core::provider::ProviderIdentityDescriptor {
+            reference: im_core::provider::ProviderIdentityRef {
+                store_id: "profile-store".to_owned(),
+                identity_id: identity_id.to_owned(),
+                did: format!("did:wba:example.test:user:{identity_id}"),
+            },
+            state,
+        }
+    }
+
     fn options(state_root: &std::path::Path) -> NodeOpenOptions {
         NodeOpenOptions {
             state_root: state_root.display().to_string(),
@@ -3031,6 +3210,36 @@ mod tests {
                 .unwrap()
                 .code,
             "state_in_use"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_identity_provider_data_removes_active_and_pending_profile_identities() {
+        let provider = ClearingIdentityProvider {
+            identities: std::sync::Mutex::new(vec![
+                provider_identity("z-active", im_core::provider::ProviderIdentityState::Active),
+                provider_identity(
+                    "a-enrolling",
+                    im_core::provider::ProviderIdentityState::Enrolling,
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        clear_identity_provider_data(Some(&provider)).await.unwrap();
+        clear_identity_provider_data(Some(&provider)).await.unwrap();
+
+        assert!(provider
+            .identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+        assert_eq!(
+            *provider
+                .deleted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["a-enrolling".to_owned(), "z-active".to_owned()]
         );
     }
 

@@ -419,7 +419,7 @@ fn pending_registration_from_provider(
         .map_err(|_| crate::ImError::PermissionDenied)?
         .ok_or(crate::ImError::PermissionDenied)?;
     if manifest.devices.len() != 1 {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(crate::ImError::LocalIdentityRecoveryRequired);
     }
     let device = &manifest.devices[0];
     let root_key_id = public

@@ -98,6 +98,9 @@ impl From<im_core::ImError> for DartImError {
             im_core::ImError::AuthRequired => Self::simple("auth_required", value),
             im_core::ImError::SessionExpired => Self::simple("session_expired", value),
             im_core::ImError::PermissionDenied => Self::simple("permission_denied", value),
+            im_core::ImError::LocalIdentityRecoveryRequired => {
+                Self::simple("local_identity_recovery_required", value)
+            }
             im_core::ImError::PeerNotFound { peer } => {
                 Self::simple("peer_not_found", format!("peer not found: {peer}"))
             }
@@ -273,6 +276,19 @@ impl From<im_core::ImError> for DartImError {
             }
             im_core::ImError::Internal { message } => Self::simple("internal_error", message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_identity_recovery_has_a_stable_dart_code() {
+        let error = DartImError::from(im_core::ImError::LocalIdentityRecoveryRequired);
+
+        assert_eq!(error.code, "local_identity_recovery_required");
+        assert_eq!(error.message, "local identity recovery is required");
     }
 }
 

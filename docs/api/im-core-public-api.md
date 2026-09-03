@@ -293,6 +293,7 @@ pub enum ImError {
     AuthRequired,
     SessionExpired,
     PermissionDenied,
+    LocalIdentityRecoveryRequired,
     PeerNotFound,
     GroupNotFound,
     MessageNotFound,
@@ -308,6 +309,10 @@ pub enum ImError {
 ```
 
 CLI 负责把 `ImError` 映射成 exit code、human hint、pretty/json/table 输出。`ImError` 不包含 CLI exit code。
+当注册 bootstrap 发现同一 Host identity provider 中已有 active、多设备 DID，而 Core 本地
+Registry 已无法把它证明为当前本机身份时，返回 `LocalIdentityRecoveryRequired`。Host 必须
+进入显式本地恢复/清除流程，不得把它降级成注册白名单或通用权限错误，也不得静默复用或覆盖
+该 provider 身份。
 JSON-RPC 收到 HTTP 2xx 但响应体为零字节时返回固定、无响应内容 detail 的
 `TransportUnavailable`；非空畸形 JSON 仍返回 `Serialization`。HTTP 状态、响应体或其片段
 不得被拼入该空响应诊断。

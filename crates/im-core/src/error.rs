@@ -78,6 +78,7 @@ pub enum ImError {
     AuthRequired,
     SessionExpired,
     PermissionDenied,
+    LocalIdentityRecoveryRequired,
     PeerNotFound {
         peer: String,
     },
@@ -213,6 +214,9 @@ impl fmt::Display for ImError {
             Self::AuthRequired => f.write_str("authentication is required"),
             Self::SessionExpired => f.write_str("session expired"),
             Self::PermissionDenied => f.write_str("permission denied"),
+            Self::LocalIdentityRecoveryRequired => {
+                f.write_str("local identity recovery is required")
+            }
             Self::PeerNotFound { peer } => write!(f, "peer not found: {peer}"),
             Self::GroupNotFound { group } => write!(f, "group not found: {group}"),
             Self::CursorInvalid => f.write_str("group page cursor is invalid"),

@@ -106,6 +106,11 @@ impl SafeError {
                 "The IM operation is not permitted.",
                 false,
             ),
+            ImError::LocalIdentityRecoveryRequired => Self::new(
+                "local_identity_recovery_required",
+                "The local IM identity must be recovered before registration can continue.",
+                false,
+            ),
             ImError::PeerNotFound { .. }
             | ImError::GroupNotFound { .. }
             | ImError::MessageNotFound { .. } => {
@@ -291,6 +296,18 @@ mod tests {
         assert_eq!(error.code, "transport_unavailable");
         assert!(!payload.contains("secret-token"));
         assert!(!payload.contains("/private/state"));
+    }
+
+    #[test]
+    fn local_identity_recovery_is_a_stable_non_retryable_node_error() {
+        let error = SafeError::from_im(im_core::ImError::LocalIdentityRecoveryRequired);
+
+        assert_eq!(error.code, "local_identity_recovery_required");
+        assert_eq!(
+            error.safe_message,
+            "The local IM identity must be recovered before registration can continue."
+        );
+        assert!(!error.retryable);
     }
 
     #[test]
