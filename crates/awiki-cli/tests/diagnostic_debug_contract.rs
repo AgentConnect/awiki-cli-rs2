@@ -312,7 +312,7 @@ INSERT INTO contact_handle_bindings (
 }
 
 fn tenant_workspace(product_home: &Path) -> PathBuf {
-    product_home.join("tenants").join("china")
+    product_home.join("tenants").join("builtin-primary")
 }
 
 fn assert_owner(value: &Value, owner_did: &str, current_did: &str, historical_dids: &[&str]) {

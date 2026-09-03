@@ -15,8 +15,8 @@ fn empty_workspace_creates_official_tenants_and_activates_china() {
     assert_success(&output);
     let envelope = success_json(&output);
 
-    let tenant_dir = workspace.path().join("tenants").join("china");
-    assert_eq!(envelope["data"]["tenant"]["active"], "china");
+    let tenant_dir = workspace.path().join("tenants").join("builtin-primary");
+    assert_eq!(envelope["data"]["tenant"]["active"], "builtin-primary");
     assert_eq!(
         envelope["data"]["tenant"]["profile"]["display_name"],
         "AWiki China (Shanghai)"
@@ -47,13 +47,15 @@ fn empty_workspace_creates_official_tenants_and_activates_china() {
     assert!(workspace
         .path()
         .join("tenants")
-        .join("global")
+        .join("builtin-secondary")
         .join("config.yaml")
         .is_file());
     let registry = read_json(&workspace.path().join("tenants").join("registry.json"));
     assert_eq!(registry["schema_version"], 2);
-    assert_eq!(registry["official_catalog_version"], 1);
-    assert_eq!(registry["aliases"]["default"], "china");
+    assert_eq!(registry["official_catalog_version"], 2);
+    assert_eq!(registry["aliases"]["default"], "builtin-primary");
+    assert_eq!(registry["aliases"]["china"], "builtin-primary");
+    assert_eq!(registry["aliases"]["global"], "builtin-secondary");
     assert_eq!(registry["tenants"].as_array().unwrap().len(), 2);
     assert!(!workspace.path().join("config.yaml").exists());
 }
@@ -93,7 +95,7 @@ fn tenant_create_use_and_global_tenant_override_switch_whole_workspace() {
     let list = awiki_cmd(&["tenant", "list"], workspace.path());
     assert_success(&list);
     let envelope = success_json(&list);
-    assert_eq!(envelope["data"]["active"], "china");
+    assert_eq!(envelope["data"]["active"], "builtin-primary");
     assert_eq!(
         envelope["data"]["tenants"]
             .as_array()
@@ -101,7 +103,7 @@ fn tenant_create_use_and_global_tenant_override_switch_whole_workspace() {
             .iter()
             .map(|tenant| tenant["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["china", "global", "acme"]
+        vec!["builtin-primary", "builtin-secondary", "acme"]
     );
 
     let switch = awiki_cmd(&["tenant", "use", "acme"], workspace.path());
@@ -132,7 +134,7 @@ fn tenant_create_use_and_global_tenant_override_switch_whole_workspace() {
     let override_default = awiki_cmd(&["--tenant", "default", "config", "show"], workspace.path());
     assert_success(&override_default);
     let envelope = success_json(&override_default);
-    assert_eq!(envelope["data"]["tenant"]["active"], "china");
+    assert_eq!(envelope["data"]["tenant"]["active"], "builtin-primary");
     assert_eq!(envelope["data"]["service_base_url"], "https://awiki.me");
 
     let current_override = awiki_cmd(
@@ -141,13 +143,13 @@ fn tenant_create_use_and_global_tenant_override_switch_whole_workspace() {
     );
     assert_success(&current_override);
     let envelope = success_json(&current_override);
-    assert_eq!(envelope["data"]["tenant"]["active"], "china");
+    assert_eq!(envelope["data"]["tenant"]["active"], "builtin-primary");
     assert_eq!(envelope["data"]["tenant"]["active_source"], "flag");
 
     let list_override = awiki_cmd(&["--tenant", "default", "tenant", "list"], workspace.path());
     assert_success(&list_override);
     let envelope = success_json(&list_override);
-    assert_eq!(envelope["data"]["active"], "china");
+    assert_eq!(envelope["data"]["active"], "builtin-primary");
     assert_eq!(
         read_json(&workspace.path().join("global.json"))["active_tenant"],
         "acme"
@@ -205,8 +207,8 @@ fn tenant_setup_is_idempotent_switches_and_rejects_endpoint_drift() {
 }
 
 #[test]
-fn tenant_setup_reuses_release_default_when_requested_name_has_the_same_endpoints() {
-    let workspace = TempDir::new("tenant-setup-release-default").expect("workspace");
+fn legacy_runtime_default_variables_do_not_replace_packaged_builtin_tenants() {
+    let workspace = TempDir::new("tenant-runtime-default-ignored").expect("workspace");
     let release_tenant_env = [
         (
             "AWIKI_CLI_DEFAULT_BACKEND_BASE_URL",
@@ -233,20 +235,25 @@ fn tenant_setup_reuses_release_default_when_requested_name_has_the_same_endpoint
 
     assert_success(&setup);
     let setup = success_json(&setup);
-    assert_eq!(setup["data"]["result"]["action"], "reused");
+    assert_eq!(setup["data"]["result"]["action"], "created");
     assert_eq!(
         setup["data"]["result"]["tenant"]["profile"]["name"],
-        "default"
+        "agent-connect-cn"
     );
     assert_eq!(
         read_json(&workspace.path().join("global.json"))["active_tenant"],
-        "default"
+        "agent-connect-cn"
     );
-    assert!(!workspace
+    assert!(workspace
         .path()
         .join("tenants")
         .join("agent-connect-cn")
         .exists());
+    let registry = read_json(&workspace.path().join("tenants/registry.json"));
+    assert!(registry["tenants"].as_array().is_some_and(|tenants| tenants
+        .iter()
+        .any(|tenant| tenant["name"] == "builtin-primary"
+            && tenant["backend_base_url"] == "https://awiki.me")));
 }
 
 #[test]
@@ -273,8 +280,8 @@ fn tenant_setup_dry_run_does_not_create_target_tenant() {
 }
 
 #[test]
-fn empty_workspace_can_take_atomic_default_tenant_endpoints_from_release_wrapper() {
-    let workspace = TempDir::new("tenant-default-env").expect("workspace");
+fn empty_workspace_uses_the_packaged_default_despite_legacy_runtime_variables() {
+    let workspace = TempDir::new("tenant-packaged-default").expect("workspace");
     let output = awiki_cmd_extra(
         &["config", "show"],
         workspace.path(),
@@ -285,8 +292,8 @@ fn empty_workspace_can_take_atomic_default_tenant_endpoints_from_release_wrapper
     );
     assert_success(&output);
     let output = success_json(&output);
-    assert_eq!(output["data"]["service_base_url"], "https://anpclaw.com");
-    assert_eq!(output["data"]["did_domain"], "anpclaw.com");
+    assert_eq!(output["data"]["service_base_url"], "https://awiki.me");
+    assert_eq!(output["data"]["did_domain"], "awiki.me");
 
     let second = awiki_cmd_extra(
         &["config", "show"],
@@ -298,8 +305,8 @@ fn empty_workspace_can_take_atomic_default_tenant_endpoints_from_release_wrapper
     );
     assert_success(&second);
     let second = success_json(&second);
-    assert_eq!(second["data"]["service_base_url"], "https://anpclaw.com");
-    assert_eq!(second["data"]["did_domain"], "anpclaw.com");
+    assert_eq!(second["data"]["service_base_url"], "https://awiki.me");
+    assert_eq!(second["data"]["did_domain"], "awiki.me");
 }
 
 #[test]
@@ -340,7 +347,7 @@ fn legacy_default_global_migrates_to_v2_without_moving_its_directory() {
     let output = awiki_cmd(&["config", "show"], workspace.path());
     assert_success(&output);
     let output = success_json(&output);
-    assert_eq!(output["data"]["tenant"]["active"], "global");
+    assert_eq!(output["data"]["tenant"]["active"], "builtin-secondary");
     assert_eq!(output["data"]["service_base_url"], "https://awiki.ai");
     assert_eq!(
         output["data"]["paths"]["workspace_home_dir"],
@@ -354,8 +361,8 @@ fn legacy_default_global_migrates_to_v2_without_moving_its_directory() {
     let registry_path = tenants_dir.join("registry.json");
     let migrated = read_json(&registry_path);
     assert_eq!(migrated["schema_version"], 2);
-    assert_eq!(migrated["official_catalog_version"], 1);
-    assert_eq!(migrated["aliases"]["default"], "global");
+    assert_eq!(migrated["official_catalog_version"], 2);
+    assert_eq!(migrated["aliases"]["default"], "builtin-secondary");
     assert_eq!(
         migrated["tenants"]
             .as_array()
@@ -363,19 +370,19 @@ fn legacy_default_global_migrates_to_v2_without_moving_its_directory() {
             .iter()
             .map(|tenant| tenant["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["china", "global"]
+        vec!["builtin-primary", "builtin-secondary"]
     );
     let global = migrated["tenants"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|tenant| tenant["name"] == "global")
+        .find(|tenant| tenant["name"] == "builtin-secondary")
         .unwrap();
     assert_eq!(global["dir_name"], "default");
     assert_eq!(global["kind"], "built_in");
     assert_eq!(
         read_json(&workspace.path().join("global.json"))["active_tenant"],
-        "global"
+        "builtin-secondary"
     );
     assert_eq!(
         read_json(&tenants_dir.join("registry.json.v1.bak"))["schema_version"],
@@ -391,7 +398,7 @@ fn legacy_default_global_migrates_to_v2_without_moving_its_directory() {
     assert_success(&repeated);
     assert_eq!(
         success_json(&repeated)["data"]["tenant"]["active"],
-        "global"
+        "builtin-secondary"
     );
     assert_eq!(
         fs::read_to_string(&registry_path).expect("reopened registry"),
@@ -615,7 +622,7 @@ fn tenant_user_errors_are_typed_and_actionable() {
     let envelope = error_json(&invalid_backend);
     assert_eq!(envelope["error"]["code"], "invalid_argument");
     assert_value_contains(&envelope["error"]["message"], "backend_base_url is invalid");
-    assert_value_contains(&envelope["error"]["hint"], "https://awiki.ai");
+    assert_value_contains(&envelope["error"]["hint"], "https://tenant.example");
 
     assert_success(&awiki_cmd(
         &[

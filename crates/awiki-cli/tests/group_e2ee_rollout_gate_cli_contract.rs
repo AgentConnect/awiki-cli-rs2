@@ -89,7 +89,7 @@ fn write_file_compat_config(workspace: &Path) {
     let config = workspace
         .join(".awiki-cli")
         .join("tenants")
-        .join("china")
+        .join("builtin-primary")
         .join("config.yaml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(config, "secret_storage:\n  mode: file_compat\n").unwrap();

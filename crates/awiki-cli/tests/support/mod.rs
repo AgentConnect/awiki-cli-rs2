@@ -155,7 +155,9 @@ pub fn tenant_workspace(product_home: &Path) -> PathBuf {
         .ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
     if let (Some(global), Some(registry)) = (global, registry) {
-        let requested = global["active_tenant"].as_str().unwrap_or("china");
+        let requested = global["active_tenant"]
+            .as_str()
+            .unwrap_or("builtin-primary");
         let active = registry["aliases"][requested].as_str().unwrap_or(requested);
         if let Some(profile) = registry["tenants"]
             .as_array()
@@ -164,10 +166,16 @@ pub fn tenant_workspace(product_home: &Path) -> PathBuf {
             return tenants_dir.join(profile["dir_name"].as_str().unwrap_or(active));
         }
     }
+    if tenants_dir.join("builtin-primary").exists() {
+        return tenants_dir.join("builtin-primary");
+    }
     if tenants_dir.join("default").exists() && !tenants_dir.join("china").exists() {
         return tenants_dir.join("default");
     }
-    tenants_dir.join("china")
+    if tenants_dir.join("china").exists() {
+        return tenants_dir.join("china");
+    }
+    tenants_dir.join("builtin-primary")
 }
 
 pub fn tenant_config_path(product_home: &Path) -> PathBuf {

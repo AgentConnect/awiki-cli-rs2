@@ -4160,7 +4160,9 @@ fn mark_message_ids_read_v2(
     let mut warnings = Vec::new();
     for plan in resolution.watermarks {
         let conversation = super::ConversationReadRef::new(plan.conversation_id)?;
-        let remote_thread = resolve_service_conversation_thread(client, &conversation)?.thread;
+        let remote_thread = resolve_service_conversation_thread(client, &conversation)
+            .ok()
+            .map(|resolved| resolved.thread);
         let result = crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             client,
             crate::internal::auth::session::FileSessionProvider::new(client),
@@ -4177,7 +4179,7 @@ fn mark_message_ids_read_v2(
                     }),
                     fallback_max_message_ids: None,
                 },
-                remote_thread: Some(remote_thread),
+                remote_thread,
             },
         )?
         .sdk_result;
@@ -4236,8 +4238,9 @@ async fn mark_message_ids_read_v2_async(
     for plan in resolution.watermarks {
         let conversation = super::ConversationReadRef::new(plan.conversation_id)?;
         let remote_thread = resolve_service_conversation_thread_async(client, &conversation)
-            .await?
-            .thread;
+            .await
+            .ok()
+            .map(|resolved| resolved.thread);
         let result = crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             client,
             crate::internal::auth::session::FileSessionProvider::new(client),
@@ -4254,7 +4257,7 @@ async fn mark_message_ids_read_v2_async(
                     }),
                     fallback_max_message_ids: None,
                 },
-                remote_thread: Some(remote_thread),
+                remote_thread,
             },
         )
         .await?

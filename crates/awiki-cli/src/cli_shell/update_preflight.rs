@@ -87,32 +87,10 @@ pub(super) fn merge_update_warning(update_warning: &str, warnings: Vec<String>) 
 }
 
 fn is_update_exempt_command(command: &ParsedCommand) -> bool {
-    command.name.starts_with("tenant.")
-        || command.name.starts_with("id.vault")
-        || matches!(
-            command.name.as_str(),
-            "version"
-                | "upgrade"
-                | "init"
-                | "help"
-                | "docs"
-                | "schema"
-                | "config.show"
-                | "doctor"
-                | "onboarding.resume"
-                | "onboarding.recover-legacy-claim"
-                | "onboarding.migrate-legacy"
-                | "group.secure.repair"
-                | "group.e2ee.repair"
-                | "completion"
-                | "completion.bash"
-                | "completion.zsh"
-                | "completion.fish"
-                | "completion.powershell"
-                | "runtime.listener.run"
-                | "runtime.listener.service-run"
-                | "runtime.host-notify.hermes.bridge.service-run"
-        )
+    matches!(
+        command.name.as_str(),
+        "version" | "upgrade" | "help" | "tenant.list" | "tenant.current" | "tenant.use"
+    )
 }
 
 pub(super) fn npm_install_command(installer_url: &str) -> String {
@@ -124,30 +102,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn update_exempt_command_matches_go_recovery_list() {
+    fn update_exempt_command_only_keeps_update_help_and_tenant_switch_available() {
         for name in [
             "help",
             "version",
             "upgrade",
-            "init",
-            "docs",
-            "schema",
-            "config.show",
-            "doctor",
             "tenant.list",
             "tenant.current",
             "tenant.use",
-            "onboarding.resume",
-            "id.vault.status",
-            "group.secure.repair",
-            "completion",
-            "completion.bash",
-            "completion.zsh",
-            "completion.fish",
-            "completion.powershell",
-            "runtime.listener.run",
-            "runtime.listener.service-run",
-            "runtime.host-notify.hermes.bridge.service-run",
         ] {
             let command = ParsedCommand {
                 name: name.to_string(),
@@ -159,11 +121,28 @@ mod tests {
             );
         }
 
-        let guarded = ParsedCommand {
-            name: "status".to_string(),
-            ..ParsedCommand::default()
-        };
-        assert!(!is_update_exempt_command(&guarded));
+        for name in [
+            "status",
+            "init",
+            "config.show",
+            "doctor",
+            "docs",
+            "schema",
+            "completion",
+            "tenant.create",
+            "onboarding.resume",
+            "id.vault.status",
+            "runtime.listener.run",
+        ] {
+            let guarded = ParsedCommand {
+                name: name.to_string(),
+                ..ParsedCommand::default()
+            };
+            assert!(
+                !is_update_exempt_command(&guarded),
+                "{name} must be blocked below the tenant minimum"
+            );
+        }
     }
 
     #[test]

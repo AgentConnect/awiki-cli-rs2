@@ -9,7 +9,7 @@ usage() {
 Build a Rust awiki-cli release archive with the Go release artifact name contract.
 
 Usage:
-  scripts/release/build-release-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--dry-run]
+  scripts/release/build-release-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--tenant-config FILE] [--dry-run]
 
 Options:
   --version VERSION   Package version. Defaults to package.json.version.
@@ -17,6 +17,8 @@ Options:
   --arch ARCH        Release arch name: amd64 or arm64. Defaults to the current host.
   --target TRIPLE    Rust target triple. Defaults from --os/--arch.
   --dist DIR         Output directory. Defaults to dist.
+  --tenant-config FILE
+                     Complete two-slot built-in tenant config. Defaults to the repository config.
   --dry-run          Print the build and archive plan without building.
   -h, --help         Show this help.
 
@@ -111,6 +113,7 @@ OS_NAME=""
 ARCH_NAME=""
 TARGET_TRIPLE=""
 DIST_DIR="${ROOT_DIR}/dist"
+TENANT_CONFIG="${ROOT_DIR}/config/builtin-tenants.default.json"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -140,6 +143,11 @@ while [[ $# -gt 0 ]]; do
       [[ -n "${DIST_DIR}" ]] || die "--dist requires a value"
       shift 2
       ;;
+    --tenant-config)
+      TENANT_CONFIG="${2:-}"
+      [[ -n "${TENANT_CONFIG}" ]] || die "--tenant-config requires a value"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -161,6 +169,44 @@ VERSION="${VERSION#v}"
 OS_NAME="${OS_NAME:-$(host_os)}"
 ARCH_NAME="${ARCH_NAME:-$(host_arch)}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-$(target_for "${OS_NAME}" "${ARCH_NAME}")}"
+case "${TENANT_CONFIG}" in
+  /*) ;;
+  *) TENANT_CONFIG="${ROOT_DIR}/${TENANT_CONFIG}" ;;
+esac
+[[ -f "${TENANT_CONFIG}" ]] || die "tenant config does not exist: ${TENANT_CONFIG}"
+TENANT_CONFIG="$(cd "$(dirname "${TENANT_CONFIG}")" && pwd)/$(basename "${TENANT_CONFIG}")"
+tenant_config_sha256="$(node - "${TENANT_CONFIG}" <<'NODE'
+const crypto = require('crypto');
+const fs = require('fs');
+const raw = fs.readFileSync(process.argv[2]);
+const value = JSON.parse(raw);
+if (value.schema_version !== 1 || !['primary', 'secondary'].includes(value.default_slot)
+  || value.tenants === null || typeof value.tenants !== 'object'
+  || Object.keys(value.tenants).sort().join(',') !== 'primary,secondary') {
+  throw new Error('invalid built-in tenant config');
+}
+for (const slot of ['primary', 'secondary']) {
+  const tenant = value.tenants[slot];
+  if (tenant?.display_name === null || typeof tenant?.display_name !== 'object'
+    || typeof tenant.display_name['zh-CN'] !== 'string' || tenant.display_name['zh-CN'].trim() === ''
+    || typeof tenant.display_name.en !== 'string' || tenant.display_name.en.trim() === '') {
+    throw new Error(`invalid display name for ${slot}`);
+  }
+  const origin = new URL(tenant.backend_origin);
+  const loopback = origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
+  if ((origin.protocol !== 'https:' && !loopback) || origin.username || origin.password
+    || origin.pathname !== '/' || origin.search || origin.hash
+    || (!loopback && origin.port) || origin.hostname !== tenant.did_host.trim().toLowerCase().replace(/\.$/u, '')) {
+    throw new Error(`invalid endpoint for ${slot}`);
+  }
+}
+if (value.tenants.primary.backend_origin === value.tenants.secondary.backend_origin
+  || value.tenants.primary.did_host === value.tenants.secondary.did_host) {
+  throw new Error('built-in tenant endpoints must be distinct');
+}
+process.stdout.write(crypto.createHash('sha256').update(raw).digest('hex'));
+NODE
+)" || die "invalid tenant config: ${TENANT_CONFIG}"
 
 case "${OS_NAME}" in
   linux|darwin|windows) ;;
@@ -217,10 +263,11 @@ fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
-Would run: AWIKI_CLI_VERSION=${VERSION} AWIKI_CLI_COMMIT=${commit} AWIKI_CLI_BUILD_DATE=${build_date} AWIKI_CLI_CGO_ENABLED=0 ${cargo_cmd[*]} build -p awiki-cli --bin awiki-cli --release --locked --target ${TARGET_TRIPLE}
+Would run: AWIKI_CLI_TENANT_CONFIG_PATH=${TENANT_CONFIG} AWIKI_CLI_VERSION=${VERSION} AWIKI_CLI_COMMIT=${commit} AWIKI_CLI_BUILD_DATE=${build_date} AWIKI_CLI_CGO_ENABLED=0 ${cargo_cmd[*]} build -p awiki-cli --bin awiki-cli --release --locked --target ${TARGET_TRIPLE}
+Would embed tenant config SHA-256: ${tenant_config_sha256}
 Would verify: ${cargo_cmd[*]} tree -p awiki-cli -e features --locked includes im-core/secure-direct, im-core/group-e2ee, and anp/mls on Linux/macOS
 Would archive: ${build_bin} -> ${archive_path}
-Would include: ${bin_name} LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md
+Would include: ${bin_name} BUILTIN-TENANTS.json LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md
 EOF
   exit 0
 fi
@@ -231,6 +278,7 @@ AWIKI_CLI_VERSION="${VERSION}" \
 AWIKI_CLI_COMMIT="${commit}" \
 AWIKI_CLI_BUILD_DATE="${build_date}" \
 AWIKI_CLI_CGO_ENABLED=0 \
+AWIKI_CLI_TENANT_CONFIG_PATH="${TENANT_CONFIG}" \
   "${cargo_cmd[@]}" build -p awiki-cli --bin awiki-cli --release --locked --target "${TARGET_TRIPLE}"
 
 [[ -f "${build_bin}" ]] || die "built binary not found: ${build_bin}"
@@ -257,6 +305,7 @@ fi
 cp LICENSE "${stage_dir}/LICENSE"
 cp LICENSES/Apache-2.0.txt "${stage_dir}/LICENSE-APACHE"
 cp COMMERCIAL-LICENSING.md "${stage_dir}/COMMERCIAL-LICENSING.md"
+cp "${TENANT_CONFIG}" "${stage_dir}/BUILTIN-TENANTS.json"
 cat >"${stage_dir}/SOURCE.md" <<EOF
 # AWiki CLI S2 Corresponding Source
 
@@ -267,6 +316,7 @@ Source archive: https://github.com/AgentConnect/awiki-cli-rs2/archive/${commit}.
 Build instructions: https://github.com/AgentConnect/awiki-cli-rs2/blob/${commit}/docs/development.md
 
 ANP dependency commit: ${anp_commit}
+Built-in tenant config SHA-256: ${tenant_config_sha256}
 ANP source: https://github.com/agent-network-protocol/anp/tree/${anp_commit}
 
 The source location above identifies the exact revision used to build this
@@ -276,6 +326,7 @@ EOF
 
 archive_entries=(
   "${bin_name}"
+  BUILTIN-TENANTS.json
   LICENSE
   LICENSE-APACHE
   COMMERCIAL-LICENSING.md

@@ -45,20 +45,6 @@ function getPackageVersion() {
   }
 }
 
-function releaseEnvironment() {
-  try {
-    const metadata = require(path.resolve(__dirname, '..', 'awiki-release.json'));
-    const defaults = metadata.default_tenant || {};
-    return {
-      AWIKI_CLI_UPDATE_BASE_URL: process.env.AWIKI_CLI_UPDATE_BASE_URL || metadata.update_base_url || '',
-      AWIKI_CLI_DEFAULT_BACKEND_BASE_URL: process.env.AWIKI_CLI_DEFAULT_BACKEND_BASE_URL || defaults.backend_base_url || '',
-      AWIKI_CLI_DEFAULT_DID_HOST: process.env.AWIKI_CLI_DEFAULT_DID_HOST || defaults.did_host || '',
-    };
-  } catch {
-    return {};
-  }
-}
-
 function hermesServiceEnvironment(
   platform = process.platform,
   environment = process.env,
@@ -92,7 +78,6 @@ function run() {
     stdio: 'inherit',
     env: {
       ...process.env,
-      ...releaseEnvironment(),
       ...hermesServiceEnvironment(),
     },
   });
@@ -117,7 +102,6 @@ module.exports = {
     fileExists,
     installBinaryCommand,
     quoteCommandArg,
-    releaseEnvironment,
     hermesServiceEnvironment,
   },
 };

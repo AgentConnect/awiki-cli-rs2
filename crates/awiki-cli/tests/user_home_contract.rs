@@ -113,12 +113,16 @@ fn awiki_command(args: &[&str], current_dir: &Path) -> Command {
 fn assert_initialized_at(profile: &Path) {
     let workspace = profile.join(".awiki-cli");
     assert!(
-        workspace.join("tenants/china/config.yaml").is_file(),
+        workspace
+            .join("tenants/builtin-primary/config.yaml")
+            .is_file(),
         "default config should be under {}",
         workspace.display()
     );
     assert!(
-        workspace.join("tenants/china/data/awiki-cli.db").is_file(),
+        workspace
+            .join("tenants/builtin-primary/data/awiki-cli.db")
+            .is_file(),
         "default database should be under {}",
         workspace.display()
     );

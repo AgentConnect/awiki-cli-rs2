@@ -797,7 +797,7 @@ fn test_resolved(root: &Path) -> workspace_config::Resolved {
 }
 
 fn tenant_resolved(product_home: &Path) -> workspace_config::Resolved {
-    test_resolved(&product_home.join("tenants").join("china"))
+    test_resolved(&product_home.join("tenants").join("builtin-primary"))
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

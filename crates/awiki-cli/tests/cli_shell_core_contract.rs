@@ -174,7 +174,7 @@ fn config_show_reports_resolved_configuration_snapshot() {
     assert_eq!(envelope["data"]["output_format"], "json");
     assert_eq!(envelope["data"]["did_domain"], "awiki.me");
     assert_eq!(envelope["data"]["config_exists"], true);
-    assert_eq!(envelope["data"]["tenant"]["active"], "china");
+    assert_eq!(envelope["data"]["tenant"]["active"], "builtin-primary");
     assert_has_keys(
         &envelope["data"]["identity_store"],
         &[
@@ -900,7 +900,7 @@ fn dry_run_init_returns_plan_without_writing_workspace() {
         workspace
             .path()
             .join("tenants")
-            .join("china")
+            .join("builtin-primary")
             .to_string_lossy()
             .as_ref()
     );
@@ -913,7 +913,7 @@ fn dry_run_init_returns_plan_without_writing_workspace() {
         !workspace
             .path()
             .join("tenants")
-            .join("china")
+            .join("builtin-primary")
             .join("data")
             .join("awiki-cli.db")
             .exists(),
@@ -944,7 +944,7 @@ fn init_creates_real_sqlite_schema() {
         workspace
             .path()
             .join("tenants")
-            .join("china")
+            .join("builtin-primary")
             .join("data")
             .join("awiki-cli.db"),
     )
