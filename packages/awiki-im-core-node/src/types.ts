@@ -196,7 +196,6 @@ export interface ImCoreIdentityProvider {
     readonly operationId: string
     readonly successor: ImCoreIdentityReference
     readonly transitionDocument?: unknown
-    readonly providerDocument?: unknown
   }): Promise<ImCoreProviderIdentityTransitionSession>
   resumeIdentityTransition(
     expectedCurrentDid: string,

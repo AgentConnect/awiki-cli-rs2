@@ -339,8 +339,6 @@ pub struct ProviderIdentityTransitionRequest {
     pub successor: ProviderIdentityRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transition_document: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_document: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

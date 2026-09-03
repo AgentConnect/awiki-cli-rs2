@@ -128,7 +128,6 @@ pub(crate) fn resolve_and_cache_verified(
     requested_did: &str,
     fetcher: &dyn DidDocumentFetcher,
     trusted_documents: &HashMap<String, Value>,
-    provider_fetcher: Option<&dyn DidDocumentFetcher>,
 ) -> crate::ImResult<TransitionResult> {
     let mut cache =
         crate::internal::local_state::did_transition_edges::VerifiedDidTransitionCache::load(
@@ -139,7 +138,6 @@ pub(crate) fn resolve_and_cache_verified(
         requested_did,
         fetcher,
         trusted_documents,
-        provider_fetcher,
         &mut cache,
         DEFAULT_MAX_TRANSITION_HOPS,
     )

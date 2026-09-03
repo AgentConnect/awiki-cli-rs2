@@ -251,6 +251,9 @@ retired ordinary registration Join 的 secret-free rollover journal。schema 35 
 schema 37 不更新 route、Persona、conversation、历史 wire identity 或 recovery outbox，
 也不创建 transition conflict/reconcile job 表；只有 ANP resolver 完整验证成功后的
 `verified` / `recovery_verified` edge 可以按 CAS 写入。
+Direct 1019 重试接受完整 resolver 返回的 `verified`、`recovery_verified` 或
+`provider_asserted` 链并使用新 DID 重建请求；`provider_asserted` 只影响本次业务连续性，
+仍不写入 schema 37 verified-edge cache。standalone `unverified` hop 或 successor 不匹配继续失败关闭。
 schema 38 只新增 `registration_retired_join_rollovers` 表和 owner/phase/update-time 索引；
 37→38 迁移失败必须回滚表、索引和 `user_version`。旧 Core 不支持直接打开 v38，回退只能
 恢复升级前完整 scope 备份，不能改写 `user_version` 或删除 journal。

@@ -1604,7 +1604,6 @@ fn unsigned_recovery_predecessor_document(
     if object.get("id").and_then(Value::as_str) != Some(expected_previous_did)
         || object.get("deactivated").and_then(Value::as_bool) == Some(true)
         || object.contains_key("successorDid")
-        || object.contains_key("providerTransitionAssertion")
         || expected_previous_did == successor_did
     {
         return Err(crate::ImError::PermissionDenied);
@@ -3349,7 +3348,6 @@ mod tests {
             };
             if request.expected_current_did != self.predecessor_did
                 || request.transition_document.is_some()
-                || request.provider_document.is_some()
             {
                 return Err(IdentityProviderError::new(
                     IdentityProviderErrorCode::InvalidRequest,

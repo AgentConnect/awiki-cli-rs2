@@ -168,7 +168,6 @@ async fn direct_session_runs_provider_neutral_hot_paths() {
             operation_id: "provider-transition-response-loss".to_owned(),
             successor: successor.reference.clone(),
             transition_document: None,
-            provider_document: None,
         })
         .await
         .unwrap();

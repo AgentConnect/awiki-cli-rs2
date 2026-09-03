@@ -137,20 +137,10 @@ async fn rebind_for_verified_transition(
         &requested_did,
         &fetcher,
         &std::collections::HashMap::new(),
-        None,
     )?;
-    if resolved.current_did != hinted_current_did
-        || resolved.hops.is_empty()
-        || resolved.hops.iter().any(|hop| {
-            !matches!(
-                hop.assurance,
-                anp::authentication::TransitionAssurance::Verified
-                    | anp::authentication::TransitionAssurance::RecoveryVerified
-            )
-        })
-    {
+    if !transition_chain_is_accepted(&resolved, &hinted_current_did) {
         return Err(binding_conflict(
-            "1019 hint was not proven by one strong DID transition chain",
+            "1019 hint was not proven by one accepted DID transition chain",
         ));
     }
     let route =
@@ -163,6 +153,22 @@ async fn rebind_for_verified_transition(
         )?;
     let full_handle = route.full_handle.clone();
     validate_route_result(client.did().as_str(), &request, &full_handle, route)
+}
+
+fn transition_chain_is_accepted(
+    resolved: &anp::authentication::TransitionResult,
+    hinted_current_did: &str,
+) -> bool {
+    resolved.current_did == hinted_current_did
+        && !resolved.hops.is_empty()
+        && resolved.hops.iter().all(|hop| {
+            matches!(
+                hop.assurance,
+                anp::authentication::TransitionAssurance::Verified
+                    | anp::authentication::TransitionAssurance::RecoveryVerified
+                    | anp::authentication::TransitionAssurance::ProviderAsserted
+            )
+        })
 }
 
 struct TransitionDocumentMap {
@@ -452,6 +458,9 @@ fn binding_conflict(detail: &str) -> crate::ImError {
 #[cfg(test)]
 mod tests {
     use crate::internal::local_state::owner_scope::DirectPeerScope;
+    use anp::authentication::{
+        TransitionAssurance, TransitionHop, TransitionResult, TransitionStatus,
+    };
 
     const OWNER_DID: &str = "did:wba:awiki.test:user:alice:e1";
     const OLD_DID: &str = "did:wba:awiki.test:user:bob:e1-old";
@@ -575,5 +584,33 @@ mod tests {
         let result =
             super::validate_route_result(OWNER_DID, &request, "bob.awiki.test", route).unwrap();
         assert_eq!(result.target_did, NEW_DID);
+    }
+
+    #[test]
+    fn provider_asserted_complete_chain_is_accepted_but_unverified_is_rejected() {
+        let result = |assurance| TransitionResult {
+            requested_did: OLD_DID.to_owned(),
+            current_did: NEW_DID.to_owned(),
+            status: TransitionStatus::Superseded,
+            assurance: Some(assurance),
+            hops: vec![TransitionHop {
+                predecessor_did: OLD_DID.to_owned(),
+                successor_did: NEW_DID.to_owned(),
+                assurance,
+            }],
+        };
+
+        assert!(super::transition_chain_is_accepted(
+            &result(TransitionAssurance::ProviderAsserted),
+            NEW_DID
+        ));
+        assert!(!super::transition_chain_is_accepted(
+            &result(TransitionAssurance::Unverified),
+            NEW_DID
+        ));
+        assert!(!super::transition_chain_is_accepted(
+            &result(TransitionAssurance::ProviderAsserted),
+            "did:wba:awiki.test:user:bob:e1-other"
+        ));
     }
 }

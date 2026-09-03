@@ -945,7 +945,6 @@ fn handle_recovery_transition_request(
             did: pending.identity.did.as_str().to_owned(),
         },
         transition_document: None,
-        provider_document: None,
     }
 }
 
