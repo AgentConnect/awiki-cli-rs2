@@ -84,6 +84,12 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: permission denied."),
             "Check identity permissions and service access.",
         ),
+        im_core::ImError::LocalIdentityRecoveryRequired => ExitError::new(
+            "local_identity_recovery_required",
+            3,
+            format!("{context}: the local identity must be recovered."),
+            "Recover the existing local identity or explicitly clear this installation before registering again.",
+        ),
         im_core::ImError::PeerNotFound { peer } => ExitError::new(
             "not_found",
             5,
@@ -415,4 +421,22 @@ pub fn map_identity_boundary_error(err: ExitError) -> ExitError {
         );
     }
     err
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_identity_recovery_is_not_reported_as_permission_denied() {
+        let mapped = map_im_error(
+            im_core::ImError::LocalIdentityRecoveryRequired,
+            "register identity",
+        );
+
+        assert_eq!(mapped.detail.code, "local_identity_recovery_required");
+        assert_eq!(mapped.exit_code, 3);
+        assert!(!mapped.detail.retryable);
+        assert!(!mapped.detail.message.contains("permission denied"));
+    }
 }
