@@ -341,7 +341,10 @@ fn cleanup_retired_anp_identity(
         .list()
         .map_err(crate::internal::identity_custody::map_facade_error)?
         .into_iter()
-        .filter(|descriptor| descriptor.reference.did == record.did)
+        .filter(|descriptor| {
+            descriptor.reference.did == record.did
+                && descriptor.state == anp_identity::PublicIdentityState::Active
+        })
         .collect::<Vec<_>>();
     if matches.len() > 1 {
         return Err(crate::ImError::PermissionDenied);

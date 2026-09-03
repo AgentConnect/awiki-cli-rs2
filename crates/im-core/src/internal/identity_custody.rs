@@ -3594,7 +3594,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retired_current_join_replaces_active_provider_identity_with_enrollment() {
+    async fn retired_current_join_enrollment_survives_core_reopen() {
         let root = tempfile::tempdir().unwrap();
         let core = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
         let retired = provision_registration_identity(&core, "example.test", "alice").unwrap();
@@ -3625,7 +3625,11 @@ mod tests {
         )
         .unwrap();
 
-        let (custody, proposal, _) =
+        let registration_candidate =
+            provision_registration_identity(&core, "example.test", "alice").unwrap();
+        assert_ne!(registration_candidate.did, retired.did);
+
+        let (custody, proposal, enrollment) =
             prepare_join_enrollment_async(&core, &retired.did, &retired.did_document, None)
                 .await
                 .unwrap();
@@ -3651,11 +3655,26 @@ mod tests {
             .list_identities()
             .await
             .unwrap();
-        assert_eq!(identities.len(), 1);
-        assert_eq!(
-            identities[0].state,
-            crate::internal::identity_provider::ProviderIdentityState::Enrolling
-        );
+        assert_eq!(identities.len(), 2);
+        assert!(identities.iter().any(|identity| {
+            identity.reference.identity_id == custody.identity_id
+                && identity.state
+                    == crate::internal::identity_provider::ProviderIdentityState::Enrolling
+        }));
+
+        drop(enrollment);
+        drop(core);
+        let reopened = crate::ImCore::new(test_config(), test_paths(root.path())).unwrap();
+        let (resumed, resumed_proposal, _) = prepare_join_enrollment_async(
+            &reopened,
+            &retired.did,
+            &retired.did_document,
+            Some(&custody),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed, custody);
+        assert_eq!(resumed_proposal.enrollment_id, proposal.enrollment_id);
     }
 
     #[tokio::test]
