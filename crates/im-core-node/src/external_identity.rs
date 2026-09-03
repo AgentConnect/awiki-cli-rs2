@@ -5,17 +5,18 @@ use base64::Engine as _;
 use im_core::provider::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
     ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
-    ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderEnrollmentProposal,
-    ProviderEnrollmentProposalKind, ProviderEnrollmentSession, ProviderExactHttpRequest,
-    ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor,
-    ProviderIdentityMaterialImportRequest, ProviderIdentityRef, ProviderIdentityState,
-    ProviderIdentityTransitionOutcome, ProviderIdentityTransitionPublicationAttempt,
-    ProviderIdentityTransitionPublicationResult, ProviderIdentityTransitionRemoteObservation,
-    ProviderIdentityTransitionRequest, ProviderIdentityTransitionSession,
-    ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderLegacyRootExportRequest, ProviderLegacyRootImportEvidence,
-    ProviderLegacyRootImportOutcome, ProviderLegacyRootImportRequest, ProviderObjectProofRequest,
-    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
+    ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderDocumentProofRequest,
+    ProviderEnrollmentProposal, ProviderEnrollmentProposalKind, ProviderEnrollmentSession,
+    ProviderExactHttpRequest, ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader,
+    ProviderIdentityDescriptor, ProviderIdentityMaterialImportRequest, ProviderIdentityRef,
+    ProviderIdentityState, ProviderIdentityTransitionOutcome,
+    ProviderIdentityTransitionPublicationAttempt, ProviderIdentityTransitionPublicationResult,
+    ProviderIdentityTransitionRemoteObservation, ProviderIdentityTransitionRequest,
+    ProviderIdentityTransitionSession, ProviderKeyAgreementRequest, ProviderKeyAlgorithm,
+    ProviderKeyPurpose, ProviderKeySelector, ProviderLegacyRootExportRequest,
+    ProviderLegacyRootImportEvidence, ProviderLegacyRootImportOutcome,
+    ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
+    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
     ProviderPreparedIdentityTransition, ProviderPrivateKeyEncoding, ProviderPublicIdentity,
     ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationResult,
     ProviderRequestSigningEnrollmentRequest, ProviderResult, ProviderSharedSecret,
@@ -384,6 +385,39 @@ struct PendingRootProofRequestWire<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DocumentProofPayload<'a> {
+    identity: &'a ProviderIdentityRef,
+    request: DocumentProofRequestWire<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentProofRequestWire<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kid: Option<&'a str>,
+    document: &'a serde_json::Value,
+    options: DocumentProofOptionsWire<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentProofOptionsWire<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_purpose: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cryptosuite: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    challenge: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SignPayload<'a> {
     identity: &'a ProviderIdentityRef,
     purpose: &'static str,
@@ -639,6 +673,34 @@ impl IdentityCustody for ExternalIdentityCustody {
                     document: &request.document,
                     issuer_did: &request.issuer_did,
                     created: request.created.as_deref(),
+                },
+            },
+            Vec::new(),
+        )
+        .await
+    }
+
+    async fn sign_document_proof(
+        &self,
+        identity: &ProviderIdentityRef,
+        request: ProviderDocumentProofRequest,
+    ) -> ProviderResult<serde_json::Value> {
+        call_json(
+            &self.dispatch,
+            "signDocumentProof",
+            &DocumentProofPayload {
+                identity,
+                request: DocumentProofRequestWire {
+                    kid: selector_kid(&request.key),
+                    document: &request.document,
+                    options: DocumentProofOptionsWire {
+                        proof_purpose: request.options.proof_purpose.as_deref(),
+                        proof_type: request.options.proof_type.as_deref(),
+                        cryptosuite: request.options.cryptosuite.as_deref(),
+                        created: request.options.created.as_deref(),
+                        domain: request.options.domain.as_deref(),
+                        challenge: request.options.challenge.as_deref(),
+                    },
                 },
             },
             Vec::new(),
@@ -2015,6 +2077,49 @@ mod tests {
                 "document": document,
                 "issuerDid": identity.did,
                 "created": "2026-08-23T00:00:00Z",
+            })
+        );
+        assert!(payload["request"].get("key").is_none());
+    }
+
+    #[test]
+    fn document_proof_wire_uses_the_existing_provider_contract() {
+        let identity = ProviderIdentityRef {
+            store_id: "store-1".to_owned(),
+            identity_id: "identity-1".to_owned(),
+            did: "did:wba:example.test:alice".to_owned(),
+        };
+        let document = serde_json::json!({"id": identity.did});
+        let payload = serde_json::to_value(DocumentProofPayload {
+            identity: &identity,
+            request: DocumentProofRequestWire {
+                kid: Some("did:wba:example.test:alice#key-1"),
+                document: &document,
+                options: DocumentProofOptionsWire {
+                    proof_purpose: Some("assertionMethod"),
+                    proof_type: Some("DataIntegrityProof"),
+                    cryptosuite: Some("eddsa-jcs-2022"),
+                    created: Some("2026-09-03T09:00:00Z"),
+                    domain: Some("example.test"),
+                    challenge: Some("fresh-challenge"),
+                },
+            },
+        })
+        .unwrap();
+
+        assert_eq!(
+            payload["request"],
+            serde_json::json!({
+                "kid": "did:wba:example.test:alice#key-1",
+                "document": document,
+                "options": {
+                    "proofPurpose": "assertionMethod",
+                    "proofType": "DataIntegrityProof",
+                    "cryptosuite": "eddsa-jcs-2022",
+                    "created": "2026-09-03T09:00:00Z",
+                    "domain": "example.test",
+                    "challenge": "fresh-challenge",
+                },
             })
         );
         assert!(payload["request"].get("key").is_none());

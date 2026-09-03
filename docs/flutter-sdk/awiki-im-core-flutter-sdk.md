@@ -388,6 +388,12 @@ Ratchet/MLS material and never creates P6 or `awaitingP6` state. Only exact Hand
 `transport-protected` groups are eligible; every missing, DID-only, E2EE, malformed, or
 conflicting profile fails closed.
 
+For a fresh-install target, Core refreshes only the new DID Document root proof after a successful
+factor exchange and before the first Commit or a `resultAbsent` retry. The DID, root/device keys,
+operation ID, and proof-excluding intent document hash remain unchanged. Once Commit is confirmed,
+Core adopts the checkpointed document into ANP Identity before opening the recovered session. Flutter
+keeps driving the same operation and must not request replacement identity material.
+
 If the remote Commit has succeeded but fresh-JWT or P5 PreKey finalization cannot finish because
 of a retryable transport/auth/session/service/serialization failure, activate/resume throws the
 stable `localTransitionPending` failure while preserving the same durable operation. Flutter code

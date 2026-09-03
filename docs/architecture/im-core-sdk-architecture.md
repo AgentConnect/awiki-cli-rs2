@@ -126,6 +126,12 @@ result is applied locally; `result_absent` permits the same frozen intent to ret
 blindly creates a new intent or key after an uncertain outcome. A non-empty malformed JSON body
 remains `Serialization`; neither classification exposes response content.
 
+For a fresh-install Recovery target, a successful factor exchange refreshes only the successor DID
+Document root proof immediately before the first Commit or a `result_absent` retry. The DID, root and
+device keys, operation ID, and proof-excluding intent document hash stay unchanged. After Commit is
+confirmed, Core adopts that exact checkpointed document into ANP Identity before opening the recovered
+session. This keeps long OTP/resend delays recoverable without weakening the immutable-intent boundary.
+
 Pre-attempt discard first claims `pre_commit && commit_attempted=false` in the SQLite operation
 index and only then idempotently deletes Vault material, so concurrent activation and discard cannot
 both win. When a post-attempt Grant refresh observes a changed authoritative binding, Core performs

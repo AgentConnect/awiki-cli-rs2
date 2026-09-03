@@ -893,6 +893,10 @@ pre-attempt discard 必须先在 SQLite operation index 中原子占有
 `pre_commit && commit_attempted=false`，再幂等删除 Vault key。post-attempt 刷新 Grant 时如果
 fresh binding 已变化，Core 会再次 Result Get；只有仍为 `result_absent` 才将旧 operation 标为
 state-change loser，防止把刚刚完成的延迟 Commit 错判为 superseded。
+fresh-install Recovery 在成功 exchange 后、首次 Commit 或 `result_absent` 重试前，只刷新新 DID
+Document 的 root proof；DID、root/device keys、operation ID 与排除 proof 的 intent document hash
+保持不变。远端 Commit 确认后，Core 先按返回 checkpoint 将该精确 Document 收敛进 ANP Identity，
+再创建新身份 session。Host 不增加重试状态，也不重新请求或替换 operation。
 
 V4.0 不增加 CLI command、Daemon task、Agent 恢复入口或 process-global identity。未来这些 host
 可复用同一 typed service 和显式 `IdentitySelector`，不得绕过 Core 状态机。App 迁移旧

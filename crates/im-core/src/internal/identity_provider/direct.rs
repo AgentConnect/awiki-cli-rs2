@@ -10,17 +10,17 @@ use super::{
     IdentityCustody, IdentityProviderError, IdentityProviderErrorCode, IdentitySession,
     ProviderCreateIdentityRequest, ProviderDeviceEnrollmentRequest, ProviderDocumentChangeOutcome,
     ProviderDocumentChangePhase, ProviderDocumentChangeSession, ProviderDocumentCheckpoint,
-    ProviderEnrollmentProposal, ProviderEnrollmentProposalKind, ProviderEnrollmentPublicKey,
-    ProviderEnrollmentSession, ProviderExactHttpRequest, ProviderExportedRoot, ProviderHostStatus,
-    ProviderHttpHeader, ProviderIdentityDescriptor, ProviderIdentityMaterialImportRequest,
-    ProviderIdentityMaterialKey, ProviderIdentityRef, ProviderIdentityState,
-    ProviderIdentityTransitionOutcome, ProviderIdentityTransitionPublicationAttempt,
-    ProviderIdentityTransitionPublicationResult, ProviderIdentityTransitionRemoteObservation,
-    ProviderIdentityTransitionRequest, ProviderIdentityTransitionSession,
-    ProviderKeyAgreementRequest, ProviderKeyAlgorithm, ProviderKeyPurpose, ProviderKeySelector,
-    ProviderLegacyRootExportRequest, ProviderLegacyRootImportOutcome,
-    ProviderLegacyRootImportRequest, ProviderObjectProofRequest, ProviderOriginProofRequest,
-    ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
+    ProviderDocumentProofRequest, ProviderEnrollmentProposal, ProviderEnrollmentProposalKind,
+    ProviderEnrollmentPublicKey, ProviderEnrollmentSession, ProviderExactHttpRequest,
+    ProviderExportedRoot, ProviderHostStatus, ProviderHttpHeader, ProviderIdentityDescriptor,
+    ProviderIdentityMaterialImportRequest, ProviderIdentityMaterialKey, ProviderIdentityRef,
+    ProviderIdentityState, ProviderIdentityTransitionOutcome,
+    ProviderIdentityTransitionPublicationAttempt, ProviderIdentityTransitionPublicationResult,
+    ProviderIdentityTransitionRemoteObservation, ProviderIdentityTransitionRequest,
+    ProviderIdentityTransitionSession, ProviderKeyAgreementRequest, ProviderKeyAlgorithm,
+    ProviderKeyPurpose, ProviderKeySelector, ProviderLegacyRootExportRequest,
+    ProviderLegacyRootImportOutcome, ProviderLegacyRootImportRequest, ProviderObjectProofRequest,
+    ProviderOriginProofRequest, ProviderPreparedDocumentChange, ProviderPreparedHttpSignature,
     ProviderPreparedIdentityTransition, ProviderPrivateKeyEncoding, ProviderPublicIdentity,
     ProviderPublicKey, ProviderPublicationAttempt, ProviderPublicationEvidence,
     ProviderPublicationResult, ProviderRequestSigningEnrollmentRequest, ProviderResult,
@@ -353,6 +353,39 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                     document: request.document,
                     issuer_did: request.issuer_did,
                     created: request.created,
+                })
+                .map_err(map_identity_error)
+        })
+        .await
+    }
+
+    async fn sign_document_proof(
+        &self,
+        identity: &ProviderIdentityRef,
+        request: ProviderDocumentProofRequest,
+    ) -> ProviderResult<serde_json::Value> {
+        use anp_identity::host::TypedProofPort;
+
+        let manager = self.manager.clone();
+        let identity = identity.clone();
+        run_blocking(move || {
+            let managed = manager
+                .lock()
+                .map_err(|_| internal())?
+                .get(&identity.into())
+                .map_err(map_identity_error)?;
+            managed
+                .sign_document_proof(anp_identity::host::DocumentProofRequest {
+                    key: request.key.into(),
+                    document: request.document,
+                    options: anp_identity::host::DocumentProofOptions {
+                        proof_purpose: request.options.proof_purpose,
+                        proof_type: request.options.proof_type,
+                        cryptosuite: request.options.cryptosuite,
+                        created: request.options.created,
+                        domain: request.options.domain,
+                        challenge: request.options.challenge,
+                    },
                 })
                 .map_err(map_identity_error)
         })

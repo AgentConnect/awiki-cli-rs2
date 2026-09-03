@@ -672,6 +672,10 @@ test('External Provider hot paths make one call and keep binary values out of JS
       calls.push({ operation: 'origin', identity, request })
       return { contentDigest: 'sha-256=:digest:', signatureInput: 'sig1=()', signature: 'sig1=:value:' }
     },
+    signDocumentProof: async (identity, request) => {
+      calls.push({ operation: 'document', identity, request })
+      return { ...request.document, proof: { verificationMethod: request.kid } }
+    },
     prepareHttpSignature: async request => {
       calls.push({ operation: 'http', request })
       return {
@@ -710,6 +714,31 @@ test('External Provider hot paths make one call and keep binary values out of JS
   assert.equal(origin.ok, true)
   assert.equal(origin.buffers.length, 0)
 
+  const document = await dispatch([{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({
+      identity,
+      request: {
+        kid: `${identity.did}#root`,
+        document: { id: identity.did },
+        options: {
+          proofPurpose: 'assertionMethod',
+          proofType: 'DataIntegrityProof',
+          cryptosuite: 'eddsa-jcs-2022',
+          created: '2026-09-03T09:00:00Z',
+          domain: 'example.test',
+          challenge: 'fresh-challenge',
+        },
+      },
+    }),
+    buffers: [],
+  }])
+  assert.equal(document.ok, true)
+  assert.deepEqual(JSON.parse(document.payloadJson), {
+    id: identity.did,
+    proof: { verificationMethod: `${identity.did}#root` },
+  })
+
   const body = Buffer.from('request-body')
   const http = await dispatch([{
     operation: 'prepareHttpSignature',
@@ -737,11 +766,12 @@ test('External Provider hot paths make one call and keep binary values out of JS
   }])
   assert.equal(ecdh.ok, true)
   assert.deepEqual(JSON.parse(ecdh.payloadJson), sealedDelivery())
-  assert.equal(calls.length, 4)
+  assert.equal(calls.length, 5)
   assert.equal(calls[0].request.payload, signInput)
-  assert.equal(calls[2].request.body, body)
-  assert.equal(calls[3].request.peerPublic, peerPublic)
-  assert.equal(calls[3].request.recipientPublicKey, recipientPublicKey)
+  assert.equal(calls[2].request.options.challenge, 'fresh-challenge')
+  assert.equal(calls[3].request.body, body)
+  assert.equal(calls[4].request.peerPublic, peerPublic)
+  assert.equal(calls[4].request.recipientPublicKey, recipientPublicKey)
 })
 
 test('real External Provider matches the shared Direct semantic fixture', async t => {
