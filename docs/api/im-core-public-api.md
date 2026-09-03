@@ -254,6 +254,9 @@ schema 37 不更新 route、Persona、conversation、历史 wire identity 或 re
 Direct 1019 重试接受完整 resolver 返回的 `verified`、`recovery_verified` 或
 `provider_asserted` 链并使用新 DID 重建请求；`provider_asserted` 只影响本次业务连续性，
 仍不写入 schema 37 verified-edge cache。standalone `unverified` hop 或 successor 不匹配继续失败关闭。
+stable owner 的 `attachment_manifest_cache` 同时保留 transport-protected 与 E2EE 附件选择所需的
+原始 message/receiver 绑定；Handle Recovery 后下载历史 transport 附件时使用旧 receiver DID
+请求 continuity 验证，不改写历史 grant，也不把 E2EE secret 暴露到公开投影。
 schema 38 只新增 `registration_retired_join_rollovers` 表和 owner/phase/update-time 索引；
 37→38 迁移失败必须回滚表、索引和 `user_version`。旧 Core 不支持直接打开 v38，回退只能
 恢复升级前完整 scope 备份，不能改写 `user_version` 或删除 journal。

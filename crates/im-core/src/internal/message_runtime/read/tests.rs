@@ -2553,6 +2553,52 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
 }
 
 #[test]
+fn transport_attachment_manifest_cache_preserves_historical_direct_target() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let messages = vec![json!({
+        "id": "logical-direct-transport-1",
+        "message_id": "logical-direct-transport-1",
+        "raw_message_id": "wire-direct-transport-1",
+        "sender_did": "did:example:alice",
+        "receiver_did": client.did().as_str(),
+        "type": "attachment_manifest",
+        "message_security_profile": "transport-protected",
+        "secure": false,
+        "content": {
+            "attachments": [{
+                "attachment_id": "att-transport-1",
+                "filename": "report.txt",
+                "mime_type": "text/plain",
+                "size": "6",
+                "digest": {"alg": "sha-256", "value_b64u": "digest"},
+                "access_info": {"object_uri": "https://objects.example/transport"}
+            }]
+        }
+    })];
+
+    cache_attachment_manifests_for_internal_download(&client, &messages);
+
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+        &connection,
+        client.current_identity().id.as_str(),
+        "direct",
+        "did:example:alice",
+        "logical-direct-transport-1",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(cached["raw_message_id"], "wire-direct-transport-1");
+    assert_eq!(cached["sender_did"], "did:example:alice");
+    assert_eq!(cached["receiver_did"], client.did().as_str());
+    assert_eq!(cached["message_security_profile"], "transport-protected");
+}
+
+#[test]
 fn p5_lane_projection_keeps_internal_attachment_manifest_before_public_redaction() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);

@@ -5516,13 +5516,11 @@ fn attachment_manifest_cache_record(
     let object = message.as_object()?;
     if object.get("content_type").and_then(Value::as_str)
         != Some(crate::attachments::manifest::attachment_manifest_content_type())
+        && object.get("type").and_then(Value::as_str) != Some("attachment_manifest")
     {
         return None;
     }
     let content = decoded_attachment_manifest_content_for_cache(object.get("content")?)?;
-    if !attachment_manifest_contains_object_secrets(&content) {
-        return None;
-    }
     let group_did = first_non_empty_owned([
         string_value(object.get("group_did")),
         string_value(object.get("group")),
@@ -5572,29 +5570,6 @@ fn decoded_attachment_manifest_content_for_cache(content: &Value) -> Option<Valu
         value if value.is_object() => Some(value.clone()),
         _ => None,
     }
-}
-
-#[cfg(feature = "sqlite")]
-fn attachment_manifest_contains_object_secrets(manifest: &Value) -> bool {
-    manifest
-        .get("attachments")
-        .and_then(Value::as_array)
-        .map(|attachments| {
-            attachments.iter().any(|attachment| {
-                let encryption_info = attachment.get("encryption_info").and_then(Value::as_object);
-                encryption_info
-                    .and_then(|info| info.get("object_key_b64u"))
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.trim().is_empty())
-                    .is_some()
-                    && encryption_info
-                        .and_then(|info| info.get("nonce_b64u"))
-                        .and_then(Value::as_str)
-                        .filter(|value| !value.trim().is_empty())
-                        .is_some()
-            })
-        })
-        .unwrap_or(false)
 }
 
 #[cfg(feature = "sqlite")]

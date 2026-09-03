@@ -1554,6 +1554,10 @@ pub(crate) fn upsert_messages_with_touched(
     let mut touched = BTreeSet::new();
     for record in records {
         touched.extend(upsert_message_record(connection, record)?);
+        if let Some(cache) = super::attachment_manifest_cache::transport_direct_cache_record(record)
+        {
+            super::attachment_manifest_cache::upsert_attachment_manifest_cache(connection, &cache)?;
+        }
     }
     Ok(touched)
 }
