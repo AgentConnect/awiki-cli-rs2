@@ -101,9 +101,11 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 
 普通关闭的生命周期固定为 `open → closing → closed`：
 
-- `clearLocalData()` 在持有 mutation/write gate 和 state-root 锁期间等待既有操作退出，释放
-  Core/SQLite 句柄，只删除 `identities`、`local`、`cache`、`tmp`、`vault` 与兼容元数据，然后重新初始化
-  空 Core；client 保持 open，同一 state root 不会暴露给其他实例；
+- `clearLocalData()` 在持有 mutation/write gate 时先停止 realtime，删除该 profile 独占的外部
+  identity provider 中全部 active/enrolling 身份，再在 state-root 锁内等待既有操作退出，释放
+  Core/SQLite 句柄并删除 `identities`、`local`、`cache`、`tmp`、`vault` 与兼容元数据，然后重新初始化
+  空 Core；即使 Core Registry 已空，遗留 provider 身份也会被清除；client 保持 open，同一 state root
+  不会暴露给其他实例；
 - `close()` 进入 closing 后立即拒绝新任务；
 - `close()` 和 `clearLocalData()` 都会先请求 active realtime session 停止并 join Core worker；
 - sync、下载等可安全取消的任务收到取消信号；
@@ -206,12 +208,17 @@ identity ID 到注册 Unix 毫秒的映射，使 `registeredAtMs` 重启稳定�
 key；`clearLocalData()` 删除整个 SDK-owned Vault 后重新生成 key。该文件不是 Host 配置，
 不得复制到 DSH API、日志或诊断 DTO。
 
-`clearLocalData()` 是不可撤销的本地操作，只清理上述 SDK-owned 路径，不删除远端账号或 Handle，
-不跟随被替换为符号链接的运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。
+`clearLocalData()` 是不可撤销的本地操作，清理上述 SDK-owned 路径及该 profile 独占的外部
+identity-provider store，但不删除远端账号或 Handle、不撤销其他设备，不跟随被替换为符号链接的
+运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。provider 清理失败时不会继续
+擦除 Core state，调用方应保留显式清除界面供用户重试。
 
 Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件
 bytes 不进入 JS 错误。未知 native/loader 异常统一为 `internal`。
+注册 bootstrap 发现多设备 provider 身份与空 Core Registry 分裂时返回稳定的
+`local_identity_recovery_required`（不可自动重试）；Host 必须展示本地恢复/完整清除动作，不能映射
+为 `permission_denied` 或注册白名单失败。
 
 群聊服务返回 `group.not_member` 和 `group.handle_binding_stale` 时分别映射为稳定的
 `group_not_member` 和 `group_identity_stale`。Host 应在账号同步把恢复出的旧群聊写入本地投影后

@@ -377,6 +377,21 @@ may stop realtime/dispose runtime only as best-effort cleanup. Network shutdown
 latency is therefore never part of the local deletion result, and a generic UI
 network timeout must not classify this operation.
 
+The Node host's destructive `clearLocalData()` additionally owns its configured
+external identity-provider store. It must stop realtime, enumerate and delete
+every active or enrolling identity in that profile-scoped provider, and only
+then erase the Core-owned state root. This ordering also removes an unpublished
+or orphaned provider identity when the Core Registry is already empty. Provider
+cleanup failure aborts the Core wipe and remains retryable through the same
+explicit destructive action; remote Handle/account state and sibling devices
+are not revoked.
+
+If registration bootstrap encounters an active provider identity whose valid
+device manifest already contains more than one device while no matching local
+Registry identity is available, Core returns
+`LocalIdentityRecoveryRequired`. That state is not authorization evidence for
+a new registration, and hosts must not present it as a server whitelist denial.
+
 Legacy upgrade is likewise one Core-owned, resumable lifecycle operation:
 Vault migration, document update, fresh device authentication, Registry
 verification, and local promotion share one pending record. The host awaits the
