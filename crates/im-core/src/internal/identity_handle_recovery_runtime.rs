@@ -1177,6 +1177,13 @@ async fn advance_v4(
             ReconcileV4Outcome::ResultAbsent => {
                 if grant_is_fresh(&pending)? {
                     let _ = send_commit_v4(core, &store, &mut pending).await?;
+                } else {
+                    persist_nonterminal_error_v4(
+                        core,
+                        &store,
+                        &mut pending,
+                        HandleRecoveryErrorCode::FactorRetryRequired,
+                    )?;
                 }
             }
             ReconcileV4Outcome::FactorRetryRequired => {}
@@ -4536,6 +4543,91 @@ mod tests {
             &refreshed.identity.did_document,
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn absent_result_with_expired_grant_requires_factor_refresh() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(root.path(), &endpoint, [98_u8; 32]);
+        let operation_id = "recover-v4-expired-grant-after-absent";
+        let mut pending = v4_awaiting_factor_pending(operation_id, "owner-expired-grant");
+        pending.identity = crate::internal::identity_custody::provision_handle_recovery_identity(
+            &core,
+            "awiki.test",
+            "alice",
+        )
+        .unwrap();
+        let previous_did = pending.local_previous_did.clone();
+        pending.freeze_fresh_local_owner(&previous_did).unwrap();
+        let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
+        store.create_v4(&pending).unwrap();
+        crate::internal::identity_handle_recovery_operation::insert(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
+                operation_id.to_owned(),
+                pending.owner_identity_id.clone(),
+                pending.full_handle.clone(),
+                crate::internal::identity_handle_recovery_pending::pending_v4_key_id(operation_id),
+                "2026-09-03T09:00:00Z".to_owned(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        make_v4_operation_remote_unresolved(&core, &mut pending);
+        let revision = pending.revision;
+        let binding = pending.authoritative_binding.clone().unwrap();
+        pending
+            .refresh_grant(
+                &binding,
+                "expired-grant".to_owned(),
+                "2020-01-01T00:00:00Z".to_owned(),
+            )
+            .unwrap();
+        store.save_v4_cas(&pending, revision).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut result_get, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut result_get);
+            let body: serde_json::Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["method"], "handle_recovery_result_get_v4");
+            write_json_response(
+                &mut result_get,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {
+                        "state": "result_absent",
+                        "padding": crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_RESULT_ABSENT_PADDING,
+                    },
+                }),
+            );
+        });
+
+        let progress = advance_v4(&core, operation_id).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(progress.phase, HandleRecoveryPhase::RemoteOutcomeUnknown);
+        assert_eq!(
+            progress.failure_code,
+            Some(HandleRecoveryErrorCode::FactorRetryRequired)
+        );
+        let (_, durable) = store.load_v4(operation_id).unwrap().unwrap();
+        assert_eq!(
+            durable.last_error_code.as_deref(),
+            Some(HandleRecoveryErrorCode::FactorRetryRequired.as_str())
+        );
+        let index = crate::internal::identity_handle_recovery_operation::load(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            operation_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            index.last_error_code.as_deref(),
+            Some(HandleRecoveryErrorCode::FactorRetryRequired.as_str())
+        );
     }
 
     #[tokio::test]
