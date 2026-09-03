@@ -172,6 +172,21 @@ export interface ImCoreIdentityProvider {
       }
     },
   ): Promise<unknown>
+  signDocumentProof?(
+    reference: ImCoreIdentityReference,
+    request: {
+      readonly kid?: string
+      readonly document: unknown
+      readonly options: {
+        readonly proofPurpose?: string
+        readonly proofType?: string
+        readonly cryptosuite?: string
+        readonly created?: string
+        readonly domain?: string
+        readonly challenge?: string
+      }
+    },
+  ): Promise<unknown>
   prepareHttpSignature(request: {
     readonly identity: ImCoreIdentityReference
     readonly kid?: string

@@ -916,12 +916,132 @@ pub(crate) async fn handle_recovery_identity_async(
         .map_err(crate::internal::identity_provider::map_provider_error)?;
     if public.reference != reference
         || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
-        || crate::internal::identity_wire::document::document_hash(&public.document)?
-            != crate::internal::identity_wire::document::document_hash(&expected.did_document)?
+        || document_without_proof(&public.document)?
+            != document_without_proof(&expected.did_document)?
+        || anp::authentication::verify_active_e1_document(
+            expected.did.as_str(),
+            &expected.did_document,
+        )
+        .is_err()
     {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(identity)
+}
+
+pub(crate) async fn refresh_fresh_handle_recovery_document_async(
+    core: &crate::core::ImCore,
+    expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
+) -> crate::ImResult<serde_json::Value> {
+    use rand::RngCore as _;
+
+    expected.validate()?;
+    let custody = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: expected.store_id.clone(),
+        identity_id: expected.identity_id.clone(),
+        did: expected.did.as_str().to_owned(),
+    };
+    let identity = custody
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference
+        || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || !public.active_keys.iter().any(|key| {
+            key.kid == expected.root_key_id
+                && key
+                    .purposes
+                    .contains(&crate::internal::identity_provider::ProviderKeyPurpose::RootControl)
+        })
+        || document_without_proof(&public.document)?
+            != document_without_proof(&expected.did_document)?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let proof = expected.did_document.get("proof");
+    let domain = proof
+        .and_then(|value| value.get("domain"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            crate::internal::identity_join_activation_pending::service_domain_from_did(
+                &expected.did,
+            )
+            .ok()
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut unsigned = expected.did_document.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .remove("proof");
+    let created = time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let mut challenge_bytes = [0_u8; 16];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut challenge_bytes)
+        .map_err(|_| crate::ImError::Internal {
+            message: "generate Handle Recovery document proof challenge failed".to_owned(),
+        })?;
+    let challenge = challenge_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let refreshed = custody
+        .sign_document_proof(
+            &reference,
+            crate::internal::identity_provider::ProviderDocumentProofRequest {
+                key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                    expected.root_key_id.clone(),
+                ),
+                document: unsigned,
+                options: crate::internal::identity_provider::ProviderDocumentProofOptions {
+                    proof_purpose: Some("assertionMethod".to_owned()),
+                    proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                    cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                    created: Some(created.clone()),
+                    domain: Some(domain),
+                    challenge: Some(challenge),
+                },
+            },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if refreshed
+        .get("proof")
+        .and_then(|value| value.get("verificationMethod"))
+        .and_then(serde_json::Value::as_str)
+        != Some(expected.root_key_id.as_str())
+        || refreshed
+            .get("proof")
+            .and_then(|value| value.get("created"))
+            .and_then(serde_json::Value::as_str)
+            != Some(created.as_str())
+        || document_without_proof(&refreshed)? != document_without_proof(&expected.did_document)?
+        || anp::authentication::verify_active_e1_document(expected.did.as_str(), &refreshed)
+            .is_err()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(refreshed)
+}
+
+fn document_without_proof(document: &serde_json::Value) -> crate::ImResult<serde_json::Value> {
+    let mut document = document.clone();
+    document
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .remove("proof");
+    Ok(document)
 }
 
 #[derive(Debug, Clone, PartialEq)]

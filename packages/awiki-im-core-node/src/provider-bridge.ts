@@ -85,6 +85,13 @@ export function createIdentityProviderDispatch(
             reference(payload.identity),
             object(payload.request) as never,
           ))
+        case 'signDocumentProof': {
+          if (typeof provider.signDocumentProof !== 'function') throw unavailable()
+          return success(await provider.signDocumentProof(
+            reference(payload.identity),
+            object(payload.request) as never,
+          ))
+        }
         case 'ecdhSealed': {
           const [peerPublic, recipientPublicKey] = pairBuffers(request.buffers)
           return success(await provider.ecdhSealed({

@@ -921,6 +921,15 @@ pub(crate) async fn prepare(
             HandleRecoveryErrorCode::LocalMigrationUnsupported
         }));
     }
+    if pending.fresh_local_state {
+        let refreshed =
+            crate::internal::identity_custody::refresh_fresh_handle_recovery_document_async(
+                core,
+                &pending.identity,
+            )
+            .await?;
+        pending.replace_identity_document_proof(refreshed)?;
+    }
     let recovery_grant = String::from_utf8(grant.recovery_grant.expose_secret().to_vec())
         .map_err(|_| crate::ImError::PermissionDenied)?;
     let expected_revision = pending.revision;
@@ -1934,6 +1943,21 @@ async fn apply_local_transition_v4(
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
     if marker.phase == crate::internal::identity_transition_pending::TransitionPhase::Pending {
+        if pending.fresh_local_state {
+            crate::internal::identity_custody::adopt_controller_document_async(
+                core,
+                &pending.identity.did,
+                &pending.identity.store_id,
+                &pending.identity.identity_id,
+                &pending.identity.did_document,
+                &crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                    document_version: result.checkpoint.document_version,
+                    document_hash: result.checkpoint.document_hash.clone(),
+                    registry_version: result.checkpoint.registry_version,
+                },
+            )
+            .await?;
+        }
         if pending.fresh_local_state {
             crate::internal::identity_transition_pending::migrate_initiator_new_local_state(
                 sqlite_path,
@@ -4213,6 +4237,303 @@ mod tests {
             .mark_commit_attempted("2026-08-07T00:01:00Z".to_owned())
             .unwrap();
         store.save_v4_cas(pending, revision).unwrap();
+    }
+
+    #[cfg(all(feature = "provider-traits", feature = "identity-native-anp"))]
+    #[tokio::test]
+    async fn fresh_recovery_refreshes_expired_root_proof_before_freezing_intent() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(root.path(), &endpoint, [96_u8; 32]);
+        let operation_id = "recover-v4-refresh-stale-document";
+        let mut pending = v4_awaiting_factor_pending(operation_id, "owner-before-refresh");
+        pending.identity = crate::internal::identity_custody::provision_handle_recovery_identity(
+            &core,
+            "awiki.test",
+            "alice",
+        )
+        .unwrap();
+
+        let original_did = pending.identity.did.clone();
+        let original_identity_id = pending.identity.identity_id.clone();
+        let original_device_id = pending.identity.protocol_device_id.clone();
+        let original_signing_key_id = pending.identity.device_signing_key_id.clone();
+        let original_e2ee_key_id = pending.identity.device_e2ee_key_id.clone();
+        let stale_created = time::OffsetDateTime::now_utc()
+            .replace_nanosecond(0)
+            .unwrap()
+            - time::Duration::seconds(600);
+        let stale_created = format_timestamp(stale_created).unwrap();
+        let mut unsigned = pending.identity.did_document.clone();
+        unsigned.as_object_mut().unwrap().remove("proof");
+        let provider = crate::internal::identity_custody::controller_custody_provider(&core)
+            .await
+            .unwrap();
+        let reference = crate::internal::identity_provider::ProviderIdentityRef {
+            store_id: pending.identity.store_id.clone(),
+            identity_id: pending.identity.identity_id.clone(),
+            did: pending.identity.did.as_str().to_owned(),
+        };
+        pending.identity.did_document = provider
+            .sign_document_proof(
+                &reference,
+                crate::internal::identity_provider::ProviderDocumentProofRequest {
+                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                        pending.identity.root_key_id.clone(),
+                    ),
+                    document: unsigned,
+                    options: crate::internal::identity_provider::ProviderDocumentProofOptions {
+                        proof_purpose: Some("assertionMethod".to_owned()),
+                        proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                        cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                        created: Some(stale_created.clone()),
+                        domain: Some("awiki.test".to_owned()),
+                        challenge: Some("stale-proof-fixture".to_owned()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        pending.validate().unwrap();
+        let stale_document_hash =
+            crate::internal::identity_wire::document::document_hash(&pending.identity.did_document)
+                .unwrap();
+        let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
+        store.create_v4(&pending).unwrap();
+        crate::internal::identity_handle_recovery_operation::insert(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
+                operation_id.to_owned(),
+                pending.owner_identity_id.clone(),
+                pending.full_handle.clone(),
+                crate::internal::identity_handle_recovery_pending::pending_v4_key_id(operation_id),
+                "2026-09-03T09:00:00Z".to_owned(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.contains("/user-service/v1/auth/handle-recovery/v4/exchange"));
+            write_json_response(
+                &mut stream,
+                &json!({
+                    "contract_version": crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+                    "recovery_grant": "fresh-root-proof-grant",
+                    "purpose": "awiki.identity.handle-recovery.v1",
+                    "expires_at": "2099-09-03T09:10:00Z",
+                    "current_binding": {
+                        "account_user_id": "account-stale-proof",
+                        "full_handle": "alice.awiki.test",
+                        "current_did": "did:wba:awiki.test:users:alice-old",
+                        "binding_generation": "7",
+                    },
+                }),
+            );
+        });
+
+        let progress = prepare(
+            &core,
+            HandleRecoveryPrepareRequest {
+                operation_id: operation_id.to_owned(),
+                phone: "+15555550100".to_owned(),
+                code: "123456".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(progress.phase, HandleRecoveryPhase::ReadyToCommit);
+        server.join().unwrap();
+
+        let (_, refreshed) = store.load_v4(operation_id).unwrap().unwrap();
+        let refreshed_created = refreshed.identity.did_document["proof"]["created"]
+            .as_str()
+            .unwrap();
+        let refreshed_created = parse_timestamp(refreshed_created).unwrap();
+        let stale_created = parse_timestamp(&stale_created).unwrap();
+        assert!(refreshed_created - stale_created > time::Duration::seconds(300));
+        assert_eq!(refreshed.operation_id, operation_id);
+        assert_eq!(refreshed.identity.did, original_did);
+        assert_eq!(refreshed.identity.identity_id, original_identity_id);
+        assert_eq!(refreshed.identity.protocol_device_id, original_device_id);
+        assert_eq!(
+            refreshed.identity.device_signing_key_id,
+            original_signing_key_id
+        );
+        assert_eq!(refreshed.identity.device_e2ee_key_id, original_e2ee_key_id);
+        assert_ne!(
+            crate::internal::identity_wire::document::document_hash(
+                &refreshed.identity.did_document,
+            )
+            .unwrap(),
+            stale_document_hash
+        );
+        let mut intent_document = refreshed.identity.did_document.clone();
+        intent_document.as_object_mut().unwrap().remove("proof");
+        assert_eq!(
+            refreshed.intent.as_ref().unwrap().new_did_document_hash,
+            crate::internal::identity_wire::document::document_hash(&intent_document).unwrap()
+        );
+        anp::authentication::verify_active_e1_document(
+            refreshed.identity.did.as_str(),
+            &refreshed.identity.did_document,
+        )
+        .unwrap();
+    }
+
+    #[cfg(all(feature = "provider-traits", feature = "identity-native-anp"))]
+    #[tokio::test]
+    async fn absent_result_retry_refreshes_proof_without_rebinding_frozen_intent() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let core = recovery_test_core(root.path(), &endpoint, [97_u8; 32]);
+        let operation_id = "recover-v4-refresh-after-absent";
+        let mut pending = v4_awaiting_factor_pending(operation_id, "owner-before-absent");
+        pending.identity = crate::internal::identity_custody::provision_handle_recovery_identity(
+            &core,
+            "awiki.test",
+            "alice",
+        )
+        .unwrap();
+        let previous_did = pending.local_previous_did.clone();
+        pending.freeze_fresh_local_owner(&previous_did).unwrap();
+        let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
+        store.create_v4(&pending).unwrap();
+        crate::internal::identity_handle_recovery_operation::insert(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord::pre_commit(
+                operation_id.to_owned(),
+                pending.owner_identity_id.clone(),
+                pending.full_handle.clone(),
+                crate::internal::identity_handle_recovery_pending::pending_v4_key_id(operation_id),
+                "2026-09-03T09:00:00Z".to_owned(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        make_v4_operation_remote_unresolved(&core, &mut pending);
+        let frozen_intent_hash = pending.intent_hash.clone().unwrap();
+
+        let stale_created = time::OffsetDateTime::now_utc()
+            .replace_nanosecond(0)
+            .unwrap()
+            - time::Duration::seconds(600);
+        let stale_created = format_timestamp(stale_created).unwrap();
+        let mut unsigned = pending.identity.did_document.clone();
+        unsigned.as_object_mut().unwrap().remove("proof");
+        let provider = crate::internal::identity_custody::controller_custody_provider(&core)
+            .await
+            .unwrap();
+        let stale_document = provider
+            .sign_document_proof(
+                &crate::internal::identity_provider::ProviderIdentityRef {
+                    store_id: pending.identity.store_id.clone(),
+                    identity_id: pending.identity.identity_id.clone(),
+                    did: pending.identity.did.as_str().to_owned(),
+                },
+                crate::internal::identity_provider::ProviderDocumentProofRequest {
+                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                        pending.identity.root_key_id.clone(),
+                    ),
+                    document: unsigned,
+                    options: crate::internal::identity_provider::ProviderDocumentProofOptions {
+                        proof_purpose: Some("assertionMethod".to_owned()),
+                        proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                        cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                        created: Some(stale_created.clone()),
+                        domain: Some("awiki.test".to_owned()),
+                        challenge: Some("stale-post-attempt-proof".to_owned()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let revision = pending.revision;
+        pending
+            .replace_identity_document_proof(stale_document)
+            .unwrap();
+        pending
+            .record_retryable_error(HandleRecoveryErrorCode::ResultAbsent.as_str().to_owned())
+            .unwrap();
+        store.save_v4_cas(&pending, revision).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut result_get, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut result_get);
+            let body: serde_json::Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["method"], "handle_recovery_result_get_v4");
+            write_json_response(
+                &mut result_get,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {
+                        "state": "result_absent",
+                        "padding": crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_RESULT_ABSENT_PADDING,
+                    },
+                }),
+            );
+
+            let (mut exchange, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut exchange);
+            assert!(request.contains("/user-service/v1/auth/handle-recovery/v4/exchange"));
+            write_json_response(
+                &mut exchange,
+                &json!({
+                    "contract_version": crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION,
+                    "recovery_grant": "post-absent-fresh-grant",
+                    "purpose": "awiki.identity.handle-recovery.v1",
+                    "expires_at": "2099-09-03T09:10:00Z",
+                    "current_binding": {
+                        "account_user_id": "user-refresh-1",
+                        "full_handle": "alice.awiki.test",
+                        "current_did": "did:wba:awiki.test:users:alice-old",
+                        "binding_generation": "7",
+                    },
+                }),
+            );
+        });
+
+        let progress = prepare(
+            &core,
+            HandleRecoveryPrepareRequest {
+                operation_id: operation_id.to_owned(),
+                phone: "+15555550100".to_owned(),
+                code: "123456".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(progress.phase, HandleRecoveryPhase::RemoteOutcomeUnknown);
+        server.join().unwrap();
+
+        let (_, refreshed) = store.load_v4(operation_id).unwrap().unwrap();
+        let refreshed_created = parse_timestamp(
+            refreshed.identity.did_document["proof"]["created"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            refreshed_created - parse_timestamp(&stale_created).unwrap()
+                > time::Duration::seconds(300)
+        );
+        assert_eq!(
+            refreshed.intent_hash.as_deref(),
+            Some(frozen_intent_hash.as_str())
+        );
+        assert_eq!(refreshed.operation_id, operation_id);
+        assert!(refreshed.commit_attempted);
+        anp::authentication::verify_active_e1_document(
+            refreshed.identity.did.as_str(),
+            &refreshed.identity.did_document,
+        )
+        .unwrap();
     }
 
     #[tokio::test]
