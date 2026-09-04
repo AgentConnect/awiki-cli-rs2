@@ -71,7 +71,8 @@ scripts/release/daemon/publish-multi-platform.sh
 Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。GitHub Actions
 构建 Linux amd64、macOS arm64 和 macOS amd64 三个平台包；目标服务器下载 artifacts
 后发布到本机 `/var/www/awiki-web/daemon`。
-发布配置文件不配置当前版本号或最低可用版本号；manifest 的 `latest` / `min_supported`
+发布版本固定来自 Daemon crate；普通发布继承已有 manifest 的 `min_supported`，显式调整时
+要求变更原因，且最低版本等于推荐版本时要求强确认。manifest 的 `latest` / `min_supported`
 只服务旧版 Daemon 与发布工具，0.1.93 及以上版本从其注册租户的 User Service Server Info
 读取版本政策。`base_url` 是后端服务/API 根地址；
 `download_base_url` 是当前发布机器提供的 daemon 静态下载根地址，省略时默认使用
