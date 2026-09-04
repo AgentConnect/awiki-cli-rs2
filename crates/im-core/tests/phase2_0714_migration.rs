@@ -149,6 +149,43 @@ fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
         ),
         2
     );
+    for table in [
+        "sync_lane_inbox",
+        "sync_lane_transport_state",
+        "sync_p5_input_outcomes",
+        "sync_p5_did_cutovers",
+        "sync_p6_input_outcomes",
+        "sync_p6_legacy_migration_repairs",
+        "sync_history_scope",
+    ] {
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "schema 41 must create {table} for the locked 0714 predecessor",
+        );
+    }
+    assert_eq!(
+        connection
+            .execute(
+                "INSERT INTO sync_lane_transport_state(owner_identity_id,lane,last_transport_error,updated_at) SELECT owner_identity_id,'p5_device','fixture_probe',1 FROM identity_account_bindings ORDER BY owner_identity_id LIMIT 1",
+                [],
+            )
+            .unwrap(),
+        1,
+    );
+    assert_eq!(
+        scalar(
+            &connection,
+            "SELECT COUNT(*) FROM sync_lane_transport_state WHERE last_transport_error='fixture_probe'",
+        ),
+        1,
+    );
     assert_eq!(
         scalar(&connection, "SELECT COUNT(*) FROM did_transition_edges"),
         0

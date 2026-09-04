@@ -980,6 +980,19 @@ pub(crate) struct LaneCapabilityReconcileInputV1a {
 }
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
+    create_schema_objects(connection)?;
+    let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
+    Ok(())
+}
+
+/// Creates the complete Sync V2 SQLite shape without running data migrations
+/// that manage their own transactions.
+///
+/// Versioned local-state migrations call this while an outer schema
+/// transaction is active. Legacy lane rows are migrated after that transaction
+/// commits by `schema::ensure_schema`, and are also retried when the per-owner
+/// installation identity is created.
+pub(crate) fn create_schema_objects(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(SYNC_V2_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -988,7 +1001,6 @@ pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
         .map_err(super::local_state_unavailable)?;
     create_v1a_reliability_schema(connection)?;
     create_installation_schema(connection)?;
-    let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
     Ok(())
 }
 
