@@ -109,7 +109,7 @@ cp scripts/release/daemon/publish-multi-platform.toml.template \
 ```
 
 配置文件只保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
-`download_mirror_urls`、`source_ref` 和 `github_token`。
+`download_mirror_urls`、`source_ref`、可选的 `workflow_ref` 和 `github_token`。
 它不配置当前版本号或最低可用版本号。当前发布版本固定来自
 `crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验；第一版发布流程中，
 manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是后端服务/API 根地址；
@@ -117,8 +117,9 @@ manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是�
 `<base_url>/daemon`；`download_mirror_urls` 是可选镜像下载源列表，只写入安装脚本，
 发布脚本不会主动推送或校验这些镜像。
 其中 `source_ref` 是实际要构建的源码 ref，可以是分支、tag 或 commit SHA。GitHub
-`workflow_dispatch` 入口本身需要存在于仓库默认分支；发布脚本固定从默认分支触发 workflow，
-再把 `source_ref` 传给 workflow checkout。
+`workflow_dispatch` 入口本身需要存在于仓库默认分支；`workflow_ref` 默认使用 `main`，也可显式
+绑定到包含受审构建契约的远端 branch/tag，再把独立的 `source_ref` 传给 workflow checkout。
+这两个 ref 分离，避免为了一次开发分支发布而提前改动默认分支，同时确保工作流定义和源码来源都可追溯。
 
 脚本行为：
 
