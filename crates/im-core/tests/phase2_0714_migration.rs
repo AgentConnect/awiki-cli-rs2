@@ -8,11 +8,17 @@ use std::fs;
 
 const LOCKED_FIXTURE_SHA256: &str =
     "3f1b1ad19e9f7057bb98f413811038cb99205343c0d054950dcc0e1e2acbe4e0";
+const LOCKED_GENERATOR_PATH: &str = "scripts/generate_release_0714_core_fixture.py";
 const LOCKED_GENERATOR_SHA256: &str =
-    "74d10ee25aaaade2ff37d0afa6cf78ce1e941cdc8c555a8a392a50ecdbf3c0fe";
+    "efb01c57d5e371d315b063bddc79ba29d6eaa8ab47693af663df559b7a3d8e8b";
 const LOCKED_CONSERVATION_SHA256: &str =
     "7d7ca5a4de338ee85627b5bf07e54bd5fcf688ecc28c5ddef3626d42c609791c";
 const LOCKED_SOURCE_REF: &str = "e2cf7f4cd00debba5353980e6d33c3ba682cdd0c";
+const LOCKED_SOURCE_ARTIFACT_SHA256: &str =
+    "12c92398f11b5b8223e02bf68f2f6afa8701b59b7fdeb9bbb38571fe3186c124";
+const LOCKED_ANP_SOURCE_REF: &str = "59475cf76b23838a911a7263287ce6b7399d8e02";
+const LOCKED_SOURCE_SCHEMA_FINGERPRINT: &str =
+    "sha256:72822725c300c3aa03c436a667351c9d653abe2db7c78003289a1b410d3fd9aa";
 
 #[cfg(feature = "group-e2ee")]
 use anp::direct_e2ee::{
@@ -82,40 +88,11 @@ const SNAPSHOT_QUERIES: &[(&str, usize)] = &[
 
 #[test]
 fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
-    let fixture_dir = std::env::var_os("AWIKI_0714_CORE_FIXTURE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/release_0714_core")
-        });
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture_dir.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["formatVersion"], 1);
-    assert_eq!(manifest["fixtureId"], "release-0714-core-schema-36");
-    assert_eq!(manifest["synthetic"], true);
-    assert_eq!(manifest["networkAccess"], false);
-    assert_eq!(manifest["identityDomainSuffix"], ".fixture.invalid");
-    assert_eq!(manifest["fixture"]["containsOnlySyntheticData"], true);
-    assert_eq!(manifest["fixture"]["file"], "local-state.sqlite");
-    assert_eq!(manifest["fixture"]["sha256"], LOCKED_FIXTURE_SHA256);
-    assert_eq!(manifest["generator"]["sha256"], LOCKED_GENERATOR_SHA256);
-    assert_eq!(manifest["sourceArtifact"]["sourceRef"], LOCKED_SOURCE_REF);
-    assert_eq!(manifest["sourceSchema"]["version"], 36);
-    assert_eq!(manifest["oracles"]["messages"], 2);
-    assert_eq!(manifest["oracles"]["unread"], 1);
-    assert_eq!(manifest["oracles"]["unreadMentions"], 1);
-    assert_eq!(manifest["oracles"]["awaitingP6"], 1);
-    assert_eq!(
-        manifest["oracles"]["conservationSha256"],
-        LOCKED_CONSERVATION_SHA256
-    );
-
-    let generator = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../scripts/generate_release_0714_core_fixture.py");
-    assert_eq!(sha256_file(&generator), LOCKED_GENERATOR_SHA256);
+    let fixture_dir = locked_core_fixture_dir();
+    let manifest = read_fixture_manifest(&fixture_dir);
+    validate_locked_fixture_manifest(&manifest, &fixture_dir).unwrap();
 
     let source = fixture_dir.join("local-state.sqlite");
-    assert_eq!(sha256_file(&source), LOCKED_FIXTURE_SHA256);
     let temp = tempfile::tempdir().unwrap();
     let migrated = temp.path().join("core-schema-current.sqlite");
     fs::copy(source, &migrated).unwrap();
@@ -176,8 +153,189 @@ fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
     );
 }
 
+#[test]
+fn locked_0714_manifest_rejects_provenance_and_checksum_mutations() {
+    let fixture_dir = locked_core_fixture_dir();
+    let manifest = read_fixture_manifest(&fixture_dir);
+    let mutation_cases = [
+        ("/generator/path", serde_json::json!("scripts/other.py")),
+        ("/generator/sha256", serde_json::json!("0".repeat(64))),
+        ("/sourceArtifact/sha256", serde_json::json!("1".repeat(64))),
+        (
+            "/sourceDependencies/anp/sourceRef",
+            serde_json::json!("2".repeat(40)),
+        ),
+        (
+            "/sourceSchema/fingerprint",
+            serde_json::json!(format!("sha256:{}", "3".repeat(64))),
+        ),
+        ("/fixture/sha256", serde_json::json!("4".repeat(64))),
+    ];
+
+    for (pointer, replacement) in mutation_cases {
+        let mut mutated = manifest.clone();
+        *mutated.pointer_mut(pointer).unwrap() = replacement;
+        assert!(
+            validate_locked_fixture_manifest(&mutated, &fixture_dir).is_err(),
+            "manifest mutation must fail: {pointer}"
+        );
+    }
+}
+
+fn locked_core_fixture_dir() -> std::path::PathBuf {
+    std::env::var_os("AWIKI_0714_CORE_FIXTURE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/release_0714_core")
+        })
+}
+
+fn read_fixture_manifest(fixture_dir: &std::path::Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(fixture_dir.join("manifest.json")).unwrap()).unwrap()
+}
+
+fn validate_locked_fixture_manifest(
+    manifest: &serde_json::Value,
+    fixture_dir: &std::path::Path,
+) -> Result<(), String> {
+    macro_rules! require_eq {
+        ($actual:expr, $expected:expr, $label:literal) => {
+            if $actual != $expected {
+                return Err($label.to_owned());
+            }
+        };
+    }
+
+    require_eq!(manifest["formatVersion"], 1, "format version");
+    require_eq!(
+        manifest["fixtureId"],
+        "release-0714-core-schema-36",
+        "fixture id"
+    );
+    require_eq!(manifest["synthetic"], true, "synthetic marker");
+    require_eq!(manifest["networkAccess"], false, "offline marker");
+    require_eq!(
+        manifest["identityDomainSuffix"],
+        ".fixture.invalid",
+        "identity domain"
+    );
+    require_eq!(
+        manifest["fixture"]["containsOnlySyntheticData"],
+        true,
+        "synthetic fixture marker"
+    );
+    require_eq!(
+        manifest["fixture"]["file"],
+        "local-state.sqlite",
+        "fixture file"
+    );
+    require_eq!(
+        manifest["fixture"]["sha256"],
+        LOCKED_FIXTURE_SHA256,
+        "fixture checksum"
+    );
+    require_eq!(
+        manifest["generator"]["path"],
+        LOCKED_GENERATOR_PATH,
+        "generator path"
+    );
+    require_eq!(
+        manifest["generator"]["sha256"],
+        LOCKED_GENERATOR_SHA256,
+        "generator checksum"
+    );
+    require_eq!(
+        manifest["sourceArtifact"]["sourceRef"],
+        LOCKED_SOURCE_REF,
+        "source ref"
+    );
+    require_eq!(
+        manifest["sourceArtifact"]["sha256"],
+        LOCKED_SOURCE_ARTIFACT_SHA256,
+        "source artifact checksum"
+    );
+    require_eq!(
+        manifest["sourceDependencies"]["anp"]["sourceRef"],
+        LOCKED_ANP_SOURCE_REF,
+        "ANP source ref"
+    );
+    require_eq!(manifest["sourceSchema"]["version"], 36, "schema version");
+    require_eq!(
+        manifest["sourceSchema"]["fingerprint"],
+        LOCKED_SOURCE_SCHEMA_FINGERPRINT,
+        "schema fingerprint"
+    );
+    require_eq!(manifest["oracles"]["messages"], 2, "message count");
+    require_eq!(manifest["oracles"]["unread"], 1, "unread count");
+    require_eq!(
+        manifest["oracles"]["unreadMentions"],
+        1,
+        "unread mention count"
+    );
+    require_eq!(manifest["oracles"]["awaitingP6"], 1, "P6 job count");
+    require_eq!(
+        manifest["oracles"]["conservationSha256"],
+        LOCKED_CONSERVATION_SHA256,
+        "conservation checksum"
+    );
+
+    let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let generator = repository_root.join(LOCKED_GENERATOR_PATH);
+    require_eq!(
+        sha256_file(&generator),
+        LOCKED_GENERATOR_SHA256,
+        "computed generator checksum"
+    );
+    let fixture = fixture_dir.join("local-state.sqlite");
+    require_eq!(
+        sha256_file(&fixture),
+        LOCKED_FIXTURE_SHA256,
+        "computed fixture checksum"
+    );
+    let connection = Connection::open(&fixture).map_err(|_| "open fixture".to_owned())?;
+    require_eq!(
+        schema_fingerprint(&connection),
+        LOCKED_SOURCE_SCHEMA_FINGERPRINT,
+        "computed schema fingerprint"
+    );
+    Ok(())
+}
+
 fn sha256_file(path: &std::path::Path) -> String {
     format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
+}
+
+fn schema_fingerprint(connection: &Connection) -> String {
+    let mut statement = connection
+        .prepare(
+            "SELECT type, name, COALESCE(sql, '') FROM sqlite_schema \
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap();
+    let mut digest = Sha256::new();
+    for row in rows {
+        let (kind, name, sql) = row.unwrap();
+        digest.update(kind.as_bytes());
+        digest.update([0]);
+        digest.update(name.as_bytes());
+        digest.update([0]);
+        for token in sql.split_whitespace() {
+            digest.update(token.as_bytes());
+            digest.update([b' ']);
+        }
+        digest.update([b'\n']);
+    }
+    format!("sha256:{:x}", digest.finalize())
 }
 
 #[cfg(feature = "group-e2ee")]

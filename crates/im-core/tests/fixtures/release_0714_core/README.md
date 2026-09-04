@@ -18,7 +18,7 @@ response.
 - ANP version: `0.9.3`
 - Source schema: `36`
 - Schema fingerprint:
-  `4c4a9316b1a8f4bea44dd29252c46aca87371a7a9400d6980a35b2a8ef70bfd4`
+  `sha256:72822725c300c3aa03c436a667351c9d653abe2db7c78003289a1b410d3fd9aa`
 - Fixture SHA-256:
   `3f1b1ad19e9f7057bb98f413811038cb99205343c0d054950dcc0e1e2acbe4e0`
 
