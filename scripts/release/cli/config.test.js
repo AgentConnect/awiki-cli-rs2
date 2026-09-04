@@ -68,7 +68,7 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsed.channels.stable.version, '1.0.48');
     assert.equal(parsed.channels.stable.min_supported_version, '1.0.48');
     assert.equal(parsed.anp_commit, 'e312a0fec6b5374262c7104d5e2c57a7e7e708e3');
-    assert.equal(parsed.anp_identity_commit, 'b63dde744bbb1151a158260eb9d51ccb716dbef8');
+    assert.equal(parsed.anp_identity_commit, 'e7e2ac1a1264a9e0cf4348314915002e3ee91fbe');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
