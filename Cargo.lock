@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.92"
+version = "0.1.93"
 dependencies = [
  "anp",
  "anp-identity",
@@ -392,6 +392,7 @@ dependencies = [
  "rand 0.8.6",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
@@ -399,6 +400,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "windows-sys 0.52.0",
  "x25519-dalek",
  "zeroize",
 ]

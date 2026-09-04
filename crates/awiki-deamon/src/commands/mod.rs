@@ -31,8 +31,8 @@ use crate::state::{
     PendingAgentRegistrationRecord, RuntimeAgentCreateRequestRecord,
 };
 use crate::upgrade::{
-    upgrade_daemon_with_progress_and_cancel, DaemonUpgradeCancelToken, DaemonUpgradeProgress,
-    DaemonUpgradeRequest, DAEMON_UPGRADE_CANCELLED_ERROR,
+    check_release_status, upgrade_daemon_with_progress_and_cancel, DaemonUpgradeCancelToken,
+    DaemonUpgradeProgress, DaemonUpgradeRequest, DAEMON_UPGRADE_CANCELLED_ERROR,
 };
 use crate::workspace::WorkspaceMode;
 use crate::{DaemonConfig, ImCoreAdapter};
@@ -1907,13 +1907,36 @@ where
             }),
         );
     }
-    let target_version = optional_arg_string(&payload.args, "target_version")
+    let requested_target_version = optional_arg_string(&payload.args, "target_version")
         .unwrap_or_else(|| "latest".to_string());
-    crate::agent_status::reconcile_daemon_upgrade_state_from_release_status(
+    let release = check_release_status(config);
+    crate::agent_status::reconcile_daemon_upgrade_state(state, daemon_agent, &release)?;
+    let request = match DaemonUpgradeRequest::from_release_status(
         config,
-        state,
-        daemon_agent,
-    )?;
+        &requested_target_version,
+        &release,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            let summary = sanitize_public_error_chain(error.chain());
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("daemon upgrade policy is unavailable".to_string()),
+                json!({
+                    "command": DAEMON_UPGRADE,
+                    "daemon_agent_did": daemon_agent.agent_did,
+                    "target_version": requested_target_version,
+                    "error_code": "upgrade_policy_unavailable",
+                    "last_error_summary": summary,
+                }),
+            );
+        }
+    };
+    let target_version = request.target_version.clone();
     if let Some(existing) = state.load_latest_control_command_state(
         &daemon_agent.agent_did,
         &daemon_agent.controller_scope_key,
@@ -1979,36 +2002,6 @@ where
             "target_version": target_version.clone(),
         }),
     )?;
-    let request = match DaemonUpgradeRequest::from_env(config, target_version.clone()) {
-        Ok(request) => request,
-        Err(error) => {
-            let summary = sanitize_public_error_chain(error.chain());
-            let result = json!({
-                "command": DAEMON_UPGRADE,
-                "daemon_agent_did": daemon_agent.agent_did,
-                "target_version": target_version,
-                "error_code": "upgrade_failed",
-                "last_error_summary": summary,
-            });
-            state.mark_control_command_state(
-                &daemon_agent.agent_did,
-                &daemon_agent.controller_scope_key,
-                &payload.command_id,
-                "failed",
-                result.clone(),
-                Some(&summary),
-            )?;
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("daemon upgrade failed".to_string()),
-                result,
-            );
-        }
-    };
     let task_config = config.clone();
     let task_state = state.clone();
     let task_outbox = (*outbox).clone();
@@ -2133,6 +2126,9 @@ fn finish_daemon_upgrade_task<O>(
                 "manifest_url": report.manifest_url,
                 "download_base_url": report.download_base_url,
                 "download_route": report.download_route,
+                "policy_origin": report.policy_origin,
+                "policy_revision": report.policy_revision,
+                "policy_used_cache": report.policy_used_cache,
                 "service": service_label(report.service.platform),
                 "service_running": report.service.running,
                 "restarted": report.restarted,

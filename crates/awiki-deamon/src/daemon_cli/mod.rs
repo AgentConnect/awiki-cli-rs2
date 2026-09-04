@@ -1263,7 +1263,7 @@ fn update_daemon_latest_status(
                 last_seen_at: None,
                 version: Some(release.current_version.clone()),
                 latest_version: release.latest_version.clone(),
-                min_supported_version: None,
+                min_supported_version: release.minimum_supported_version.clone(),
                 platform: Some(current_platform_label()),
                 service: Some(
                     match service.platform {

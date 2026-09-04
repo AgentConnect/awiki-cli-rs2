@@ -342,7 +342,7 @@ fn latest_status_items_with_release(
         last_seen_at: last_seen_at.clone(),
         version: Some(release.current_version.clone()),
         latest_version: release.latest_version.clone(),
-        min_supported_version: None,
+        min_supported_version: release.minimum_supported_version.clone(),
         platform: Some(crate::service::current_platform_label()),
         service: Some(service_label(service.platform).to_string()),
         needs_upgrade: release.needs_upgrade,
@@ -557,7 +557,7 @@ fn daemon_status_payload(
         "last_seen_at": now,
         "version": release.current_version.clone(),
         "latest_version": release.latest_version.clone(),
-        "min_supported_version": null,
+        "min_supported_version": release.minimum_supported_version.clone(),
         "platform": crate::service::current_platform_label(),
         "service": service_label(service.platform),
         "needs_upgrade": release.needs_upgrade,
@@ -589,7 +589,11 @@ fn daemon_diagnostics_summary(
     let mut config_summary = json!({
         "service_installed": service.installed,
         "release_manifest_url": release.manifest_url.clone(),
-        "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+        "release_policy_url": release.policy_url.clone(),
+        "release_policy_origin": release.policy_origin.clone(),
+        "release_policy_revision": release.policy_revision,
+        "release_policy_source": release.policy_source.clone(),
+        "release_status": if release.latest_version.is_some() || release.policy_revision.is_some() { "ok" } else { "unavailable" },
         "release_error": release.error.clone(),
         "bootstrap_key_status": if bootstrap_key.is_some() { "ready" } else { "missing" },
         "generic_cli": generic_cli_daemon_capability_summary(),
@@ -661,7 +665,7 @@ pub fn reconcile_daemon_upgrade_state(
     daemon: &AgentDefinition,
     release: &DaemonReleaseStatus,
 ) -> Result<()> {
-    if release.error.is_some() || release.latest_version.is_none() {
+    if release.latest_version.is_none() {
         return Ok(());
     }
     let active_command_ids = crate::commands::active_daemon_upgrade_command_ids(
@@ -2415,8 +2419,13 @@ mod tests {
         let release = DaemonReleaseStatus {
             current_version: "test".to_string(),
             latest_version: None,
+            minimum_supported_version: None,
             needs_upgrade: false,
             manifest_url: "test://release".to_string(),
+            policy_url: "test://policy".to_string(),
+            policy_origin: None,
+            policy_revision: None,
+            policy_source: None,
             error: Some("offline-test".to_string()),
         };
 

@@ -48,6 +48,7 @@ pub mod service;
     reason = "state record validation mirrors persisted row contracts"
 )]
 pub mod state;
+pub mod update_policy;
 #[allow(
     clippy::too_many_arguments,
     reason = "upgrade progress helpers keep integrity and destination inputs explicit"
