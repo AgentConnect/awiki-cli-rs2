@@ -137,6 +137,32 @@ test('daemon release checks out the configured immutable ANP revision', () => {
   assert.doesNotMatch(workflow, /repository: agent-network-protocol\/anp\s+ref: master/);
 });
 
+test('IM Core Node CI provisions the locked offline 0714 compatibility fixture', () => {
+  const workflow = fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/im-core-node-ci.yml'),
+    'utf8',
+  );
+  const checkoutStep = workflow.match(
+    /^      - name: Checkout locked 0714 E2EE compatibility fixture\n[\s\S]*?(?=^      - name: )/m,
+  )?.[0];
+  assert.ok(checkoutStep, 'locked 0714 fixture checkout step must exist');
+  assert.match(checkoutStep, /repository: AgentConnect\/awiki-system-test/);
+  assert.match(checkoutStep, /ref: 5fdcbd62df78ca69f8de6399529fa7b36e0afeb5/);
+  assert.match(checkoutStep, /path: awiki-system-test/);
+  assert.match(checkoutStep, /sparse-checkout: suites\/fixtures\/0714-e2ee-compat-v1/);
+  assert.doesNotMatch(checkoutStep, /ref: (?:main|release\/0815)/);
+
+  const verifyStep = workflow.match(
+    /^      - name: Verify Rust facade and Node bridge\n[\s\S]*?(?=^      - name: )/m,
+  )?.[0];
+  assert.ok(verifyStep, 'Rust verification step must exist');
+  assert.match(
+    verifyStep,
+    /AWIKI_0714_E2EE_FIXTURE_DIR: \$\{\{ github\.workspace \}\}\/awiki-system-test\/suites\/fixtures\/0714-e2ee-compat-v1/,
+  );
+  assert.match(verifyStep, /cargo test -p awiki-im-core/);
+});
+
 
 test('CLI release uses the canonical nested ANP workspace layout', () => {
   const workflow = fs.readFileSync(
