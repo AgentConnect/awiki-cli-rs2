@@ -5521,6 +5521,29 @@ fn attachment_manifest_cache_record(
         return None;
     }
     let content = decoded_attachment_manifest_content_for_cache(object.get("content")?)?;
+    let incomplete_object_e2ee = content
+        .get("attachments")
+        .and_then(Value::as_array)
+        .is_some_and(|attachments| {
+            attachments.iter().any(|attachment| {
+                let encryption = attachment.get("encryption_info");
+                encryption
+                    .and_then(|value| value.get("mode"))
+                    .and_then(Value::as_str)
+                    == Some(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_E2EE)
+                    && ["object_key_b64u", "nonce_b64u"].iter().any(|field| {
+                        encryption
+                            .and_then(|value| value.get(field))
+                            .and_then(Value::as_str)
+                            .is_none_or(|value| value.trim().is_empty())
+                    })
+            })
+        });
+    if incomplete_object_e2ee {
+        // Public projections deliberately remove object keys and nonces. They
+        // must never downgrade the separate internal download cache.
+        return None;
+    }
     let group_did = first_non_empty_owned([
         string_value(object.get("group_did")),
         string_value(object.get("group")),

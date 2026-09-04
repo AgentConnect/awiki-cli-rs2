@@ -2390,6 +2390,10 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
     assert!(!public.contains("OBJECT-KEY-SECRET"));
     assert!(!public.contains("NONCE-SECRET"));
 
+    // A later projection can replay the redacted durable message. It must not
+    // downgrade the separate internal manifest cache that owns object secrets.
+    cache_attachment_manifests_for_internal_download(&client, &messages);
+
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )
