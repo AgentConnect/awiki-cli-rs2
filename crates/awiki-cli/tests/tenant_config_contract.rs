@@ -708,11 +708,11 @@ fn tenant_create_rejects_duplicate_backend_and_did_combinations() {
 }
 
 #[test]
-fn legacy_single_workspace_state_is_archived_and_not_used() {
-    let workspace = TempDir::new("tenant-legacy-archive").expect("workspace");
+fn legacy_single_workspace_state_is_migrated_to_matching_custom_tenant() {
+    let workspace = TempDir::new("tenant-legacy-migrate-custom").expect("workspace");
     fs::write(
         workspace.path().join("config.yaml"),
-        "services:\n  service_base_url: https://legacy.example.test\n  did_domain: legacy.example.test\n",
+        "runtime:\n  mode: http\nservices:\n  service_base_url: https://legacy.example.test\n  did_domain: legacy.example.test\n",
     )
     .expect("legacy config");
     fs::create_dir_all(workspace.path().join("data")).expect("data");
@@ -721,22 +721,136 @@ fn legacy_single_workspace_state_is_archived_and_not_used() {
     let output = awiki_cmd(&["config", "show"], workspace.path());
     assert_success(&output);
     let envelope = success_json(&output);
-    assert_eq!(envelope["data"]["service_base_url"], "https://awiki.me");
-    assert_eq!(envelope["data"]["did_domain"], "awiki.me");
+    assert_eq!(envelope["data"]["tenant"]["active"], "legacy");
+    assert_eq!(
+        envelope["data"]["service_base_url"],
+        "https://legacy.example.test"
+    );
+    assert_eq!(envelope["data"]["did_domain"], "legacy.example.test");
     assert!(!workspace.path().join("config.yaml").exists());
     assert!(!workspace.path().join("data").exists());
-    let archive = workspace.path().join("legacy-archive");
-    let entries = fs::read_dir(&archive)
-        .expect("archive dir")
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0].path().join("config.yaml").is_file());
-    assert!(entries[0]
+    let migrated = workspace.path().join("tenants").join("legacy");
+    assert!(migrated.join("config.yaml").is_file());
+    assert!(fs::read_to_string(migrated.join("config.yaml"))
+        .unwrap()
+        .contains("mode: http"));
+    assert_eq!(
+        fs::read_to_string(migrated.join("data").join("awiki-cli.db")).unwrap(),
+        "legacy"
+    );
+    assert!(!workspace.path().join("legacy-archive").exists());
+    assert!(!workspace
         .path()
-        .join("data")
-        .join("awiki-cli.db")
-        .is_file());
+        .join(".legacy-tenant-migration.json")
+        .exists());
+}
+
+#[test]
+fn legacy_default_workspace_keeps_identity_and_activates_global_tenant() {
+    let workspace = TempDir::new("tenant-legacy-migrate-global").expect("workspace");
+    fs::create_dir_all(workspace.path().join("identities").join("alice")).expect("legacy identity");
+    fs::write(
+        workspace
+            .path()
+            .join("identities")
+            .join("alice")
+            .join("identity.json"),
+        "legacy-identity",
+    )
+    .expect("legacy identity state");
+
+    let output = awiki_cmd(&["config", "show"], workspace.path());
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["tenant"]["active"], "builtin-secondary");
+    assert_eq!(envelope["data"]["service_base_url"], "https://awiki.ai");
+    assert_eq!(envelope["data"]["did_domain"], "awiki.ai");
+    assert_eq!(
+        fs::read_to_string(
+            workspace
+                .path()
+                .join("tenants")
+                .join("builtin-secondary")
+                .join("identities")
+                .join("alice")
+                .join("identity.json")
+        )
+        .unwrap(),
+        "legacy-identity"
+    );
+    assert!(!workspace.path().join("legacy-archive").exists());
+}
+
+#[test]
+fn legacy_split_service_endpoints_fail_closed_without_moving_state() {
+    let workspace = TempDir::new("tenant-legacy-ambiguous").expect("workspace");
+    fs::write(
+        workspace.path().join("config.yaml"),
+        "services:\n  service_base_url: https://legacy.example.test\n  user_service_endpoint: https://users.example.test\n  did_domain: legacy.example.test\n",
+    )
+    .expect("legacy config");
+    fs::create_dir_all(workspace.path().join("data")).expect("legacy data");
+    fs::write(workspace.path().join("data").join("awiki-cli.db"), "legacy")
+        .expect("legacy database");
+
+    let output = awiki_cmd(&["config", "show"], workspace.path());
+    assert_code(&output, 2);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "invalid_config");
+    assert_value_contains(
+        &envelope["error"]["message"],
+        "user_service_endpoint differs",
+    );
+    assert!(workspace.path().join("config.yaml").is_file());
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("data").join("awiki-cli.db")).unwrap(),
+        "legacy"
+    );
+    assert!(!workspace.path().join("tenants").exists());
+    assert!(!workspace
+        .path()
+        .join(".legacy-tenant-migration.json")
+        .exists());
+}
+
+#[test]
+fn interrupted_legacy_tenant_migration_resumes_from_durable_journal() {
+    let workspace = TempDir::new("tenant-legacy-resume").expect("workspace");
+    let tenant_dir = workspace.path().join("tenants").join("legacy");
+    fs::create_dir_all(tenant_dir.join("data")).expect("partial migrated data");
+    fs::write(tenant_dir.join("data").join("awiki-cli.db"), "preserved")
+        .expect("partial migrated database");
+    fs::write(
+        workspace.path().join(".legacy-tenant-migration.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "profile": {
+                "name": "legacy",
+                "display_name": "Migrated AWiki workspace",
+                "backend_base_url": "https://legacy.example.test",
+                "did_host": "legacy.example.test",
+                "dir_name": "legacy",
+                "kind": "custom",
+                "created_at": "20260905000000",
+                "updated_at": "20260905000000"
+            }
+        }))
+        .expect("migration journal"),
+    )
+    .expect("write migration journal");
+
+    let output = awiki_cmd(&["config", "show"], workspace.path());
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["tenant"]["active"], "legacy");
+    assert_eq!(
+        fs::read_to_string(tenant_dir.join("data").join("awiki-cli.db")).unwrap(),
+        "preserved"
+    );
+    assert!(!workspace
+        .path()
+        .join(".legacy-tenant-migration.json")
+        .exists());
 }
 
 #[test]

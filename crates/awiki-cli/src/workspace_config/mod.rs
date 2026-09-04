@@ -29,6 +29,7 @@ const TENANT_REGISTRY_FILE_NAME: &str = "registry.json";
 const TENANTS_DIR_NAME: &str = "tenants";
 const LEGACY_ARCHIVE_DIR_NAME: &str = "legacy-archive";
 const LEGACY_ARCHIVE_LOCK_DIR_NAME: &str = ".legacy-archive.lock";
+const LEGACY_TENANT_MIGRATION_JOURNAL_FILE_NAME: &str = ".legacy-tenant-migration.json";
 const DEFAULT_TENANT_ALIAS: &str = "default";
 const CHINA_TENANT_NAME: &str = "builtin-primary";
 const GLOBAL_TENANT_NAME: &str = "builtin-secondary";
@@ -213,6 +214,12 @@ struct TenantRegistry {
     aliases: BTreeMap<String, String>,
     #[serde(default)]
     tenants: Vec<TenantProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyTenantMigration {
+    schema_version: i64,
+    profile: TenantProfile,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -427,7 +434,7 @@ pub struct UpdateConfig {
 pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     let home = try_home_dir();
     let (product_home_dir, product_source) = resolve_workspace_home(home.as_deref())?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     let tenant = resolve_active_tenant(&product_home_dir, &overrides)?;
     let tenant_dir = tenant_dir(&product_home_dir, &tenant.profile);
     let paths = build_paths(home.as_deref(), &tenant_dir);
@@ -820,20 +827,20 @@ pub fn product_cache_dir() -> anyhow::Result<String> {
 
 pub fn list_tenants() -> anyhow::Result<Vec<TenantProfile>> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     Ok(load_tenant_registry(&product_home_dir)?.tenants)
 }
 
 pub fn current_tenant_context() -> anyhow::Result<TenantContext> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     resolve_active_tenant(&product_home_dir, &Overrides::default())
 }
 
 pub fn tenant_context_for_resolved(resolved: &Resolved) -> anyhow::Result<TenantContext> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let active_source = resolved
         .sources
@@ -911,7 +918,7 @@ pub fn preview_create_tenant(input: TenantCreateInput) -> anyhow::Result<TenantC
 
 pub fn preview_use_tenant(name: &str) -> anyhow::Result<TenantContext> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let registry = load_tenant_registry(&product_home_dir)?;
     let requested_name = normalize_tenant_name(name)?;
@@ -933,7 +940,7 @@ fn prepare_tenant_create(
     input: TenantCreateInput,
 ) -> anyhow::Result<(PathBuf, TenantRegistry, TenantProfile)> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(&input.name)?;
     let backend_base_url = normalize_base_url(&input.backend_base_url);
@@ -980,7 +987,7 @@ fn prepare_tenant_setup(
     input: TenantCreateInput,
 ) -> anyhow::Result<(PathBuf, TenantRegistry, TenantProfile, String)> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(&input.name)?;
     let backend_base_url = normalize_base_url(&input.backend_base_url);
@@ -1049,7 +1056,7 @@ fn prepare_tenant_setup(
 
 pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let registry = load_tenant_registry(&product_home_dir)?;
     let requested_name = normalize_tenant_name(name)?;
@@ -1114,7 +1121,7 @@ fn prepare_tenant_reconfigure(
     did_host: &str,
 ) -> anyhow::Result<(PathBuf, TenantRegistry, usize, TenantProfile)> {
     let (product_home_dir, _) = current_workspace_home()?;
-    archive_legacy_product_root(&product_home_dir)?;
+    prepare_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let requested_name = normalize_tenant_name(name)?;
     let backend_base_url = normalize_base_url(backend_base_url);
@@ -1654,6 +1661,287 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn prepare_legacy_product_root(product_home_dir: &Path) -> anyhow::Result<()> {
+    if legacy_tenant_migration_path(product_home_dir).exists()
+        || legacy_root_has_user_state(product_home_dir)
+    {
+        return migrate_legacy_product_root(product_home_dir);
+    }
+    archive_legacy_product_root(product_home_dir)
+}
+
+fn migrate_legacy_product_root(product_home_dir: &Path) -> anyhow::Result<()> {
+    if !legacy_root_has_active_state(product_home_dir)
+        && !legacy_tenant_migration_path(product_home_dir).exists()
+    {
+        return Ok(());
+    }
+    fs::create_dir_all(product_home_dir)
+        .map_err(|err| anyhow::anyhow!("create awiki-cli home: {err}"))?;
+    let lock_dir = product_home_dir.join(LEGACY_ARCHIVE_LOCK_DIR_NAME);
+    let owns_lock = acquire_legacy_archive_lock(&lock_dir)?;
+    if !owns_lock {
+        return Ok(());
+    }
+    let _guard = LegacyArchiveLockGuard { path: lock_dir };
+    let journal_path = legacy_tenant_migration_path(product_home_dir);
+    let migration = if journal_path.exists() {
+        let raw = fs::read_to_string(&journal_path).map_err(|err| {
+            anyhow::anyhow!(
+                "read legacy tenant migration journal {}: {err}",
+                journal_path.display()
+            )
+        })?;
+        let migration: LegacyTenantMigration = serde_json::from_str(&raw).map_err(|err| {
+            anyhow::anyhow!(
+                "parse legacy tenant migration journal {}: {err}",
+                journal_path.display()
+            )
+        })?;
+        if migration.schema_version != 1 {
+            anyhow::bail!(
+                "unsupported legacy tenant migration journal schema_version {}",
+                migration.schema_version
+            );
+        }
+        migration
+    } else {
+        let migration = plan_legacy_tenant_migration(product_home_dir)?;
+        write_json_file(&journal_path, &migration)?;
+        migration
+    };
+    resume_legacy_tenant_migration(product_home_dir, &migration)?;
+    match fs::remove_file(&journal_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => anyhow::bail!(
+            "remove legacy tenant migration journal {}: {err}",
+            journal_path.display()
+        ),
+    }
+    durable_fs::sync_directory(product_home_dir)
+        .map_err(|err| anyhow::anyhow!("sync awiki-cli home after tenant migration: {err}"))?;
+    Ok(())
+}
+
+fn plan_legacy_tenant_migration(product_home_dir: &Path) -> anyhow::Result<LegacyTenantMigration> {
+    let yaml_path = product_home_dir.join(CONFIG_FILE_NAME);
+    let json_path = product_home_dir.join("config.json");
+    if yaml_path.exists() && json_path.exists() {
+        return Err(WorkspaceConfigError::invalid_config(
+            "cannot migrate legacy AWiki workspace because both config.yaml and config.json exist",
+            "Preserve the workspace and reconcile the two legacy configuration files before retrying; no identity or data files were moved.",
+        )
+        .into());
+    }
+    let config_path = if yaml_path.exists() {
+        Some(yaml_path)
+    } else if json_path.exists() {
+        Some(json_path)
+    } else {
+        None
+    };
+    let config = if let Some(path) = config_path.as_ref() {
+        let (config, exists, error) = read_file_config(&path_string(path));
+        if !exists || !error.is_empty() {
+            return Err(WorkspaceConfigError::invalid_config(
+                format!(
+                    "cannot parse legacy AWiki configuration {}: {}",
+                    path.display(),
+                    if error.is_empty() { "file is unavailable" } else { &error }
+                ),
+                "Preserve the workspace and repair the legacy configuration before retrying; no identity or data files were moved.",
+            )
+            .into());
+        }
+        config
+    } else {
+        FileConfig::default()
+    };
+
+    let historical = &builtin_tenants::catalog().secondary;
+    let backend_base_url = if config.services.service_base_url.trim().is_empty() {
+        historical.backend_origin.clone()
+    } else {
+        normalize_base_url(&config.services.service_base_url)
+    };
+    validate_service_base_url(&backend_base_url).map_err(|err| {
+        WorkspaceConfigError::invalid_config(
+            format!("cannot migrate legacy backend endpoint: {err}"),
+            "Preserve the workspace and correct services.service_base_url before retrying; no identity or data files were moved.",
+        )
+    })?;
+    let did_host = if config.services.did_domain.trim().is_empty() {
+        historical.did_host.clone()
+    } else {
+        normalize_did_domain(&config.services.did_domain).map_err(|err| {
+            WorkspaceConfigError::invalid_config(
+                format!("cannot migrate legacy DID host: {err}"),
+                "Preserve the workspace and correct services.did_domain before retrying; no identity or data files were moved.",
+            )
+        })?
+    };
+    for (key, value) in [
+        (
+            "services.user_service_endpoint",
+            config.services.user_service_endpoint.as_str(),
+        ),
+        (
+            "services.message_service_endpoint",
+            config.services.message_service_endpoint.as_str(),
+        ),
+    ] {
+        if !value.trim().is_empty() && normalize_base_url(value) != backend_base_url {
+            return Err(WorkspaceConfigError::invalid_config(
+                format!(
+                    "cannot migrate legacy AWiki workspace because {key} differs from services.service_base_url"
+                ),
+                "The tenant model requires one atomic backend origin. Preserve the workspace and reconcile the legacy service endpoints before retrying; no identity or data files were moved.",
+            )
+            .into());
+        }
+    }
+
+    let timestamp = now_compact();
+    let primary = official_tenant_profile(CHINA_TENANT_NAME, &timestamp);
+    let secondary = official_tenant_profile(GLOBAL_TENANT_NAME, &timestamp);
+    let profile = if is_endpoint(&primary, &backend_base_url, &did_host) {
+        primary
+    } else if is_endpoint(&secondary, &backend_base_url, &did_host) {
+        secondary
+    } else {
+        TenantProfile {
+            name: "legacy".to_string(),
+            display_name: "Migrated AWiki workspace".to_string(),
+            backend_base_url,
+            did_host,
+            dir_name: "legacy".to_string(),
+            kind: TenantKind::Custom,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+        }
+    };
+    Ok(LegacyTenantMigration {
+        schema_version: 1,
+        profile,
+    })
+}
+
+fn resume_legacy_tenant_migration(
+    product_home_dir: &Path,
+    migration: &LegacyTenantMigration,
+) -> anyhow::Result<()> {
+    let target_dir = tenant_dir(product_home_dir, &migration.profile);
+    fs::create_dir_all(&target_dir)
+        .map_err(|err| anyhow::anyhow!("create migrated tenant directory: {err}"))?;
+    for name in ["identities", "data", "runtime", "cache", "logs"] {
+        move_legacy_entry(product_home_dir, &target_dir, name, name)?;
+    }
+    let yaml_path = product_home_dir.join(CONFIG_FILE_NAME);
+    let json_path = product_home_dir.join("config.json");
+    let target_config_path = target_dir.join(CONFIG_FILE_NAME);
+    if yaml_path.exists() && json_path.exists() {
+        return Err(WorkspaceConfigError::invalid_config(
+            "cannot resume legacy AWiki migration because both config.yaml and config.json exist",
+            "Preserve the workspace and reconcile the two legacy configuration files before retrying.",
+        )
+        .into());
+    }
+    if yaml_path.exists() {
+        move_legacy_path(&yaml_path, &target_config_path)?;
+    } else if json_path.exists() {
+        move_legacy_path(&json_path, &target_config_path)?;
+    }
+
+    if target_config_path.exists() {
+        let (mut config, _, error) = read_file_config(&path_string(&target_config_path));
+        if !error.is_empty() {
+            anyhow::bail!(
+                "parse migrated tenant configuration {}: {error}",
+                target_config_path.display()
+            );
+        }
+        config.schema_version = CONFIG_SCHEMA_VERSION;
+        rewrite_tenant_services_config(&mut config.services, &migration.profile);
+        write_file_config_raw(&path_string(&target_config_path), config)?;
+    } else {
+        write_tenant_config(product_home_dir, &migration.profile)?;
+    }
+
+    let (mut profiles, aliases, _) = default_tenant_profiles()?;
+    if migration.profile.kind == TenantKind::Custom {
+        profiles.push(migration.profile.clone());
+    }
+    sort_tenant_profiles(&mut profiles);
+    for profile in &profiles {
+        write_tenant_config(product_home_dir, profile)?;
+    }
+    write_tenant_registry(
+        product_home_dir,
+        &TenantRegistry {
+            schema_version: TENANT_REGISTRY_SCHEMA_VERSION,
+            official_catalog_version: OFFICIAL_TENANT_CATALOG_VERSION,
+            aliases,
+            tenants: profiles,
+        },
+    )?;
+    write_global_config(
+        product_home_dir,
+        &GlobalConfig {
+            schema_version: 1,
+            active_tenant: migration.profile.name.clone(),
+        },
+    )?;
+    durable_fs::sync_directory(&target_dir)
+        .map_err(|err| anyhow::anyhow!("sync migrated tenant directory: {err}"))?;
+    Ok(())
+}
+
+fn move_legacy_entry(
+    product_home_dir: &Path,
+    target_dir: &Path,
+    source_name: &str,
+    target_name: &str,
+) -> anyhow::Result<()> {
+    move_legacy_path(
+        &product_home_dir.join(source_name),
+        &target_dir.join(target_name),
+    )
+}
+
+fn move_legacy_path(source: &Path, target: &Path) -> anyhow::Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if target.exists() {
+        anyhow::bail!(
+            "cannot migrate legacy AWiki state because both {} and {} exist",
+            source.display(),
+            target.display()
+        );
+    }
+    fs::rename(source, target).map_err(|err| {
+        anyhow::anyhow!(
+            "move legacy AWiki state {} to {}: {err}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn legacy_tenant_migration_path(product_home_dir: &Path) -> PathBuf {
+    product_home_dir.join(LEGACY_TENANT_MIGRATION_JOURNAL_FILE_NAME)
+}
+
+fn legacy_root_has_user_state(product_home_dir: &Path) -> bool {
+    legacy_tenant_migration_path(product_home_dir).exists()
+        || product_home_dir.join(CONFIG_FILE_NAME).exists()
+        || ["identities", "data", "runtime"]
+            .iter()
+            .any(|name| product_home_dir.join(name).exists())
+}
+
 fn archive_legacy_product_root(product_home_dir: &Path) -> anyhow::Result<()> {
     if !legacy_root_has_active_state(product_home_dir) {
         return Ok(());
@@ -1712,7 +2000,10 @@ fn acquire_legacy_archive_lock(lock_dir: &Path) -> anyhow::Result<bool> {
             Ok(()) => return Ok(true),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                if !legacy_root_has_active_state(lock_dir.parent().unwrap_or(lock_dir)) {
+                let product_home_dir = lock_dir.parent().unwrap_or(lock_dir);
+                if !legacy_root_has_active_state(product_home_dir)
+                    && !legacy_tenant_migration_path(product_home_dir).exists()
+                {
                     return Ok(false);
                 }
             }

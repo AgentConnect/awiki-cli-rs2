@@ -37,6 +37,14 @@ package changes a slot endpoint, the old profile and directory remain as a uniqu
 named custom tenant while a fresh built-in profile is created. Historical `china`,
 `global`, and v1 `default` entries migrate to the stable slots without moving data.
 
+On first use after upgrading from the former single-workspace layout, a workspace
+that contains identity, database, or runtime state (or a legacy `config.yaml`) is
+moved with its configuration, cache, and logs into one tenant directory, and that
+tenant becomes active. A recognized official endpoint is mapped to its built-in
+slot; an unrecognized endpoint becomes a custom `legacy` tenant. Migration is
+journaled so an interrupted move can resume. Ambiguous or invalid legacy service
+configuration fails before any state is moved.
+
 ## Runtime / secrets / multi-device
 
 | Key | Source | Purpose | Default |
