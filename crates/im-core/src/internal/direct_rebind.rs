@@ -128,7 +128,7 @@ async fn rebind_for_verified_transition(
     }
 
     let core = client.core_handle();
-    let mut transport = crate::internal::transport::CorePlainTransport::new(&core);
+    let mut transport = crate::internal::transport::CorePlainTransport::new_no_redirect(&core);
     let documents = collect_transition_documents(&mut transport, &requested_did).await?;
     let fetcher = TransitionDocumentMap { documents };
     let resolved = crate::internal::did_transition::resolve_and_cache_verified(
@@ -199,10 +199,21 @@ where
                 "DID transition document chain contains a cycle",
             ));
         }
-        let document = crate::internal::discovery::did_document::resolve_did_document_async(
-            transport, &current,
-        )
-        .await?;
+        let url = crate::internal::discovery::did_document::did_document_url(&current)?;
+        let document = transport
+            .get_json_url(
+                &url,
+                std::collections::BTreeMap::from([(
+                    "Accept".to_owned(),
+                    "application/json".to_owned(),
+                )]),
+            )
+            .await?;
+        if document.get("id").and_then(serde_json::Value::as_str) != Some(current.as_str()) {
+            return Err(binding_conflict(
+                "resolved DID transition document id does not match requested DID",
+            ));
+        }
         let successor = document
             .get("successorDid")
             .and_then(serde_json::Value::as_str)
@@ -461,6 +472,7 @@ mod tests {
     use anp::authentication::{
         TransitionAssurance, TransitionHop, TransitionResult, TransitionStatus,
     };
+    use std::collections::{BTreeMap, HashMap};
 
     const OWNER_DID: &str = "did:wba:awiki.test:user:alice:e1";
     const OLD_DID: &str = "did:wba:awiki.test:user:bob:e1-old";
@@ -612,5 +624,89 @@ mod tests {
             &result(TransitionAssurance::ProviderAsserted),
             "did:wba:awiki.test:user:bob:e1-other"
         ));
+    }
+
+    struct TransitionDocumentTransport {
+        documents: HashMap<String, serde_json::Value>,
+    }
+
+    impl crate::internal::transport::AsyncRawJsonTransport for TransitionDocumentTransport {
+        async fn get_json_url(
+            &mut self,
+            url: &str,
+            _headers: BTreeMap<String, String>,
+        ) -> crate::ImResult<serde_json::Value> {
+            self.documents
+                .get(url)
+                .cloned()
+                .ok_or_else(|| crate::ImError::TransportUnavailable {
+                    detail: format!("missing transition document for {url}"),
+                })
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_asserted_collection_accepts_unsigned_predecessor_without_caching_it() {
+        let options = || anp::authentication::DidDocumentOptions {
+            path_segments: vec!["users".to_owned(), "alice".to_owned()],
+            ..Default::default()
+        };
+        let predecessor =
+            anp::authentication::create_did_wba_document("example.com", options()).unwrap();
+        let successor =
+            anp::authentication::create_did_wba_document("example.com", options()).unwrap();
+        let predecessor_did = predecessor.did().unwrap().to_owned();
+        let successor_did = successor.did().unwrap().to_owned();
+        let mut predecessor_document = predecessor.did_document;
+        let predecessor_object = predecessor_document.as_object_mut().unwrap();
+        predecessor_object.remove("proof");
+        predecessor_object.insert("deactivated".to_owned(), serde_json::Value::Bool(true));
+        predecessor_object.insert(
+            "successorDid".to_owned(),
+            serde_json::Value::String(successor_did.clone()),
+        );
+        let mut transport = TransitionDocumentTransport {
+            documents: HashMap::from([
+                (
+                    crate::internal::discovery::did_document::did_document_url(&predecessor_did)
+                        .unwrap(),
+                    predecessor_document,
+                ),
+                (
+                    crate::internal::discovery::did_document::did_document_url(&successor_did)
+                        .unwrap(),
+                    successor.did_document,
+                ),
+            ]),
+        };
+
+        let documents = super::collect_transition_documents(&mut transport, &predecessor_did)
+            .await
+            .expect("collect unsigned predecessor and active successor");
+        let fetcher = super::TransitionDocumentMap { documents };
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        let resolved = crate::internal::did_transition::resolve_and_cache_verified(
+            &connection,
+            "owner-alice",
+            &predecessor_did,
+            &fetcher,
+            &HashMap::new(),
+        )
+        .expect("resolve provider-asserted complete chain");
+
+        assert_eq!(resolved.current_did, successor_did);
+        assert_eq!(
+            resolved.assurance,
+            Some(TransitionAssurance::ProviderAsserted)
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM did_transition_edges", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
     }
 }
