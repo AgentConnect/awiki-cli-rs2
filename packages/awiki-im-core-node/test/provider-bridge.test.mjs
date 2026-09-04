@@ -665,6 +665,36 @@ test('External Provider handshake is bounded by the Core operation timeout', asy
   )
 })
 
+test('External Provider rejects a non-JSON document proof result at the bridge boundary', async () => {
+  let calls = 0
+  const identityProvider = provider({
+    signDocumentProof: async () => {
+      calls += 1
+      return undefined
+    },
+  })
+  const dispatch = createIdentityProviderDispatch(identityProvider)
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+
+  const reply = await dispatch([{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({
+      identity,
+      request: { document: { id: identity.did } },
+    }),
+    buffers: [],
+  }])
+
+  assert.deepEqual(reply, {
+    ok: false,
+    payloadJson: 'null',
+    buffers: [],
+    errorCode: 'invalid_request',
+    retryable: false,
+  })
+  assert.equal(calls, 1)
+})
+
 test('External Provider hot paths make one call and keep binary values out of JSON', async () => {
   const calls = []
   const identityProvider = provider({

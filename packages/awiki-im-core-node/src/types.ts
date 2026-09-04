@@ -195,7 +195,7 @@ export interface ImCoreIdentityProvider {
         readonly challenge?: string
       }
     },
-  ): Promise<ImCoreJsonValue>
+  ): Promise<unknown>
   prepareHttpSignature(request: {
     readonly identity: ImCoreIdentityReference
     readonly kid?: string

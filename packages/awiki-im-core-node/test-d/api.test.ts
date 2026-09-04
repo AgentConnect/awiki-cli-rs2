@@ -1,6 +1,5 @@
 import {
   type ImCoreIdentityProvider,
-  type ImCoreJsonValue,
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
   type RealtimeEvent,
@@ -12,10 +11,16 @@ import {
 const missingDocumentProofSigner: Pick<ImCoreIdentityProvider, 'signDocumentProof'> = {}
 void missingDocumentProofSigner
 
+type HostProviderLeaseDocumentProof = (
+  reference: Parameters<ImCoreIdentityProvider['signDocumentProof']>[0],
+  request: Parameters<ImCoreIdentityProvider['signDocumentProof']>[1],
+) => Promise<unknown>
+const hostProviderLeaseDocumentProof: HostProviderLeaseDocumentProof =
+  async (_reference, request): Promise<unknown> => request.document
 const documentProofSigner: Pick<ImCoreIdentityProvider, 'signDocumentProof'> = {
-  signDocumentProof: async (_reference, request) => request.document,
+  signDocumentProof: hostProviderLeaseDocumentProof,
 }
-const documentProof: Promise<ImCoreJsonValue> = documentProofSigner.signDocumentProof(
+const documentProof: Promise<unknown> = documentProofSigner.signDocumentProof(
   { storeId: 'store-types', identityId: 'identity-types', did: 'did:wba:awiki.info:user:types' },
   { document: { id: 'did:wba:awiki.info:user:types' } },
 )
