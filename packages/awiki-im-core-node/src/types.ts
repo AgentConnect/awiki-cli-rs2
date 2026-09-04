@@ -1007,6 +1007,8 @@ export interface ImCoreNodeClient {
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
+  /** Retires only this device's default identity credential so it can rejoin without deleting ordinary local data. */
+  retireDefaultIdentityForRejoin(): Promise<void>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */

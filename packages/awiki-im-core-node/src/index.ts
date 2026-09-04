@@ -364,6 +364,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.discardHandleRecovery(input))
   }
 
+  public retireDefaultIdentityForRejoin(): Promise<void> {
+    return call(() => this.native.retireDefaultIdentityForRejoin())
+  }
+
   public clearLocalData(): Promise<{ readonly cleared: boolean }> {
     return call(() => this.native.clearLocalData())
   }

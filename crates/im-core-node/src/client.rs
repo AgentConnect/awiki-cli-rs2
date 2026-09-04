@@ -2214,6 +2214,37 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn retire_default_identity_for_rejoin(&self) -> napi::Result<()> {
+        napi_result(self.retire_default_identity_for_rejoin_inner().await)
+    }
+
+    async fn retire_default_identity_for_rejoin_inner(&self) -> SafeResult<()> {
+        let _mutation = self.inner.mutation.lock().await;
+        self.inner.stop_realtime(None).await?;
+        let mut operation = self.inner.write_operation().await?;
+        let environment = operation.as_mut().ok_or_else(SafeError::closed)?;
+        if environment.client.is_none() {
+            return Err(SafeError::new(
+                "identity_required",
+                "A registered IM identity is required.",
+                false,
+            ));
+        }
+        self.inner
+            .wait_im(
+                environment
+                    .core
+                    .identities()
+                    .delete_local_identity_async(im_core::identity::IdentitySelector::Default),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        environment.client = None;
+        environment.state.harden_permissions()?;
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close(&self) -> napi::Result<()> {
         napi_result(self.inner.close().await)
     }

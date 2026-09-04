@@ -192,8 +192,8 @@ test('realtime facade requires an identity and returns only the stable redacted 
   )
 })
 
-test('loads native v11 candidate Join, device-management, and Root Transfer methods', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v11-'))
+test('loads native v12 candidate Join, device-management, Root Transfer, and device rejoin methods', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v12-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
   t.after(() => client.close())
@@ -212,6 +212,12 @@ test('loads native v11 candidate Join, device-management, and Root Transfer meth
   await assert.rejects(
     client.confirmUserPresence({ reason: '' }),
     error => error instanceof ImCoreNodeError && error.code === 'invalid_input',
+  )
+  await assert.rejects(
+    client.retireDefaultIdentityForRejoin(),
+    error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required'
+      && !error.message.includes(root),
   )
 })
 
