@@ -98,6 +98,9 @@ pub(crate) fn ensure_prepared(
                 || existing.next_default_alias != record.next_default_alias
                 || existing.protocol_device_id != record.protocol_device_id
             {
+                if completed_retirement_can_advance_to_current_device(core, &existing, &record)? {
+                    return write_record(&path, &record);
+                }
                 return Err(crate::ImError::PermissionDenied);
             }
             Ok(())
@@ -105,6 +108,59 @@ pub(crate) fn ensure_prepared(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => write_record(&path, &record),
         Err(error) => Err(crate::ImError::from(error)),
     }
+}
+
+/// Allows the per-identity retirement journal to advance after the same
+/// identity successfully joined again with a different device key.
+///
+/// An incomplete record remains immutable. A completed record may be replaced
+/// only when the local identity registry proves that the exact same identity
+/// and DID are currently active under the replacement device. This keeps
+/// crash recovery fail-closed while permitting repeated revoke/rejoin cycles.
+fn completed_retirement_can_advance_to_current_device(
+    core: &crate::core::ImCore,
+    existing: &IdentityRetirementRecord,
+    replacement: &IdentityRetirementRecord,
+) -> crate::ImResult<bool> {
+    if existing.phase != IdentityRetirementPhase::Completed
+        || replacement.phase != IdentityRetirementPhase::Prepared
+        || existing.identity_id != replacement.identity_id
+        || existing.did != replacement.did
+        || existing.local_alias != replacement.local_alias
+        || existing.identity_dir_name != replacement.identity_dir_name
+        || existing.protocol_device_id == replacement.protocol_device_id
+    {
+        return Ok(false);
+    }
+    let Some(replacement_device_id) = replacement.protocol_device_id.as_deref() else {
+        return Ok(false);
+    };
+    let store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let index = store.load_index()?;
+    let mut matches = index.credentials.iter().filter(|(alias, entry)| {
+        alias.as_str() == replacement.local_alias
+            && entry.credential_name == replacement.local_alias
+            && entry.unique_id == replacement.identity_id
+            && entry.did == replacement.did
+            && Some(entry.dir_name.as_str()) == replacement.identity_dir_name.as_deref()
+    });
+    let Some((_, entry)) = matches.next() else {
+        return Ok(false);
+    };
+    if matches.next().is_some() {
+        return Ok(false);
+    }
+    let Some(authorization) = entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+    else {
+        return Ok(false);
+    };
+    Ok(authorization.status
+        == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+        && authorization.protocol_device_id.as_str() == replacement_device_id)
 }
 
 pub(crate) fn is_completed(

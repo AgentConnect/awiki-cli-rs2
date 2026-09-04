@@ -46,14 +46,14 @@ pub async fn open_native_client(
 /// Native facade contract version consumed by the TypeScript loader.
 #[napi(js_name = "nativeApiVersion")]
 pub fn native_api_version() -> u32 {
-    11
+    12
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn external_identity_provider_and_device_management_use_native_api_v11() {
-        assert_eq!(super::native_api_version(), 11);
+    fn device_rejoin_uses_native_api_v12() {
+        assert_eq!(super::native_api_version(), 12);
     }
 
     #[test]

@@ -1716,7 +1716,7 @@ fn map_error_code(code: Option<&str>) -> IdentityProviderErrorCode {
     }
 }
 
-fn safe_provider_error(error: IdentityProviderError) -> crate::error::SafeError {
+pub(crate) fn safe_provider_error(error: IdentityProviderError) -> crate::error::SafeError {
     match error.code {
         IdentityProviderErrorCode::ProviderIncompatible
         | IdentityProviderErrorCode::CorruptState

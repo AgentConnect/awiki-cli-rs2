@@ -4625,6 +4625,82 @@ mod tests {
     }
 
     #[test]
+    fn completed_retirement_can_be_replaced_for_a_later_device_of_the_same_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let alice = save_deletion_identity(&paths, "alice", true);
+        let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+        let original_registry = std::fs::read(&paths.identities.registry_path).unwrap();
+        let first_device_id = store
+            .load_index()
+            .unwrap()
+            .credentials
+            .get("alice")
+            .unwrap()
+            .device_state
+            .as_ref()
+            .unwrap()
+            .authorization
+            .as_ref()
+            .unwrap()
+            .protocol_device_id
+            .as_str()
+            .to_owned();
+
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        core.identities()
+            .delete_local_identity(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        drop(core);
+        assert!(
+            crate::internal::identity_retirement::matches_completed_binding(
+                &paths.identities.identity_root_dir,
+                &alice.unique_id,
+                alice.did.as_str(),
+                &first_device_id,
+            )
+            .unwrap()
+        );
+
+        // Model a successful rejoin of the same account and DID using a fresh
+        // device key. The second revoke must retire this new device rather
+        // than treating the completed first-device tombstone as a conflict.
+        let second_device_id = "dev-second-retirement";
+        let mut reregistered: serde_json::Value =
+            serde_json::from_slice(&original_registry).unwrap();
+        reregistered["credentials"]["alice"]["device_state"]["authorization"]
+            ["protocol_device_id"] = json!(second_device_id);
+        crate::internal::identity_store::write_secure_bytes_atomic(
+            &paths.identities.registry_path,
+            &serde_json::to_vec_pretty(&reregistered).unwrap(),
+        )
+        .unwrap();
+
+        let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+        core.identities()
+            .delete_local_identity(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert!(
+            crate::internal::identity_retirement::matches_completed_binding(
+                &paths.identities.identity_root_dir,
+                &alice.unique_id,
+                alice.did.as_str(),
+                second_device_id,
+            )
+            .unwrap()
+        );
+        assert!(
+            !crate::internal::identity_retirement::matches_completed_binding(
+                &paths.identities.identity_root_dir,
+                &alice.unique_id,
+                alice.did.as_str(),
+                &first_device_id,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
     fn identity_vault_migrate_and_verify_public_api_use_vault_provider() {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());

@@ -419,7 +419,7 @@ fn pending_registration_from_provider(
         .map_err(|_| crate::ImError::PermissionDenied)?
         .ok_or(crate::ImError::PermissionDenied)?;
     if manifest.devices.len() != 1 {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(crate::ImError::LocalIdentityRecoveryRequired);
     }
     let device = &manifest.devices[0];
     let root_key_id = public
@@ -3790,6 +3790,103 @@ mod tests {
             client.runtime().key_provider.valid_auth_token().unwrap(),
             Some("registration-access-token".to_owned())
         );
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[tokio::test]
+    async fn external_registration_rejects_a_multi_device_provider_identity_as_recovery_required() {
+        let root = tempfile::tempdir().unwrap();
+        let provider_root = tempfile::tempdir().unwrap();
+        let manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: provider_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("external-multi-device", [0x75; 32]),
+                ),
+            })
+            .unwrap();
+        let provider = std::sync::Arc::new(
+            crate::internal::identity_provider::DirectAnpIdentityCustody::new(manager),
+        );
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions::default().with_identity_custody_provider(provider),
+        )
+        .unwrap();
+
+        let identity =
+            provision_registration_identity_async(&core, "example.test", "external-multi")
+                .await
+                .unwrap();
+        let session = provider_registration_session(&core, &identity)
+            .await
+            .unwrap();
+        let mut public = session.public_identity().await.unwrap();
+        let manifest = anp::authentication::validate_device_manifest(&public.document)
+            .unwrap()
+            .unwrap();
+        let second = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "example.test",
+            "external-multi-second",
+            None,
+            None,
+        )
+        .unwrap();
+        let second_signing_key_id = format!("{}#second-device-sign", identity.did.as_str());
+        let second_e2ee_key_id = format!("{}#second-device-e2ee", identity.did.as_str());
+        let mut second_signing_method = second.did_document["verificationMethod"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|method| {
+                method["id"]
+                    .as_str()
+                    .is_some_and(|id| id == second.device_signing_key_id)
+            })
+            .unwrap()
+            .clone();
+        second_signing_method["id"] = serde_json::json!(second_signing_key_id);
+        second_signing_method["controller"] = serde_json::json!(identity.did.as_str());
+        let mut second_e2ee_method = second.did_document["verificationMethod"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|method| {
+                method["id"]
+                    .as_str()
+                    .is_some_and(|id| id == second.device_e2ee_key_id)
+            })
+            .unwrap()
+            .clone();
+        second_e2ee_method["id"] = serde_json::json!(second_e2ee_key_id);
+        second_e2ee_method["controller"] = serde_json::json!(identity.did.as_str());
+        public.document = anp::authentication::add_device_to_did_document(
+            &public.document,
+            &identity.root_key_id,
+            &anp::authentication::DeviceManifestEntry {
+                device_id: second.protocol_device_id.as_str().to_owned(),
+                signing_key_id: second_signing_key_id,
+                e2ee_key_id: second_e2ee_key_id,
+                profiles: manifest.devices[0].profiles.clone(),
+            },
+            &second_signing_method,
+            &second_e2ee_method,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            anp::authentication::validate_device_manifest(&public.document)
+                .unwrap()
+                .unwrap()
+                .devices
+                .len(),
+            2
+        );
+
+        let error = pending_registration_from_provider(public).unwrap_err();
+
+        assert_eq!(error.to_string(), "local identity recovery is required");
     }
 
     #[cfg(feature = "provider-traits")]

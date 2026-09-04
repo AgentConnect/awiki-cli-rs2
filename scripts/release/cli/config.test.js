@@ -5,9 +5,99 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { parse: parseYaml } = require('yaml');
 const {
   parseFlatToml, readAnpCandidateLock, readReleaseConfig, readServerConfig,
 } = require('./config.js');
+
+const FIXTURE_ENV =
+  '${{ github.workspace }}/awiki-cli-rs2/crates/im-core/tests/fixtures/release_0714_core';
+const FORBIDDEN_FIXTURE_REPOSITORY = 'agentconnect/awiki-system-test';
+const FORBIDDEN_FIXTURE_CREDENTIAL = 'AWIKI_CI_READ_TOKEN';
+
+function readImCoreNodeCiWorkflow() {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/im-core-node-ci.yml'),
+    'utf8',
+  );
+  return parseYaml(source);
+}
+
+function workflowStep(workflow, name) {
+  const steps = workflow?.jobs?.verify?.steps;
+  assert.ok(Array.isArray(steps), 'IM Core Node CI verify steps must be an array');
+  const matches = steps.filter(step => step?.name === name);
+  assert.equal(matches.length, 1, `expected exactly one ${name} step`);
+  return matches[0];
+}
+
+function assertCannotSkip(value, label) {
+  assert.equal(Object.hasOwn(value, 'if'), false, `${label} must not be conditional`);
+  assert.equal(
+    Object.hasOwn(value, 'continue-on-error'),
+    false,
+    `${label} must not allow failure`,
+  );
+}
+
+function containsForbiddenCredentialReference(value) {
+  if (typeof value === 'string') {
+    return value.includes(FORBIDDEN_FIXTURE_CREDENTIAL);
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsForbiddenCredentialReference);
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value).some(([key, nested]) =>
+      key === FORBIDDEN_FIXTURE_CREDENTIAL || containsForbiddenCredentialReference(nested)
+    );
+  }
+  return false;
+}
+
+function validateImCoreNodeCiWorkflow(workflow) {
+  const verifyJob = workflow?.jobs?.verify;
+  assert.ok(verifyJob && typeof verifyJob === 'object', 'verify job must exist');
+  assertCannotSkip(verifyJob, 'verify job');
+  assert.ok(Array.isArray(verifyJob.steps), 'verify steps must be an array');
+
+  const externalFixtureCheckouts = verifyJob.steps.filter(step =>
+    typeof step?.with?.repository === 'string' &&
+    step.with.repository.toLowerCase() === FORBIDDEN_FIXTURE_REPOSITORY
+  );
+  assert.deepEqual(
+    externalFixtureCheckouts,
+    [],
+    'locked fixture must come from this checkout without a private credential',
+  );
+  assert.equal(
+    containsForbiddenCredentialReference(workflow),
+    false,
+    'workflow must not depend on the unavailable private fixture credential',
+  );
+
+  const ciVerify = workflowStep(workflow, 'Verify CI configuration');
+  assertCannotSkip(ciVerify, 'CI configuration verification');
+  assert.equal(ciVerify['working-directory'], 'awiki-cli-rs2');
+  assert.equal(ciVerify.shell, 'bash');
+  assert.equal(ciVerify.run, 'node --test scripts/release/cli/config.test.js');
+
+  const rustVerify = workflowStep(workflow, 'Verify Rust facade and Node bridge');
+  assertCannotSkip(rustVerify, 'Rust verification');
+  assert.equal(rustVerify['working-directory'], 'awiki-cli-rs2');
+  assert.equal(rustVerify.shell, 'bash');
+  assert.deepEqual(rustVerify.env, { AWIKI_0714_CORE_FIXTURE_DIR: FIXTURE_ENV });
+  assert.deepEqual(
+    rustVerify.run.split('\n').map(line => line.trim()).filter(Boolean),
+    [
+      'cargo fmt --check',
+      'cargo clippy -p awiki-im-core --all-targets --all-features -- -D warnings',
+      'cargo clippy -p awiki-im-core-node --all-targets --all-features -- -D warnings',
+      'cargo test -p awiki-im-core',
+      'cargo test -p awiki-im-core-node',
+    ],
+  );
+}
 
 test('flat TOML parser accepts quoted values and rejects executable syntax', () => {
   assert.deepEqual(parseFlatToml('public_origin = "https://example.com" # comment\n'), {
@@ -67,8 +157,8 @@ test('server and release configuration schemas are strict', () => {
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
     assert.equal(parsed.channels.stable.version, '1.0.48');
     assert.equal(parsed.channels.stable.min_supported_version, '1.0.48');
-    assert.equal(parsed.anp_commit, 'e312a0fec6b5374262c7104d5e2c57a7e7e708e3');
-    assert.equal(parsed.anp_identity_commit, 'b63dde744bbb1151a158260eb9d51ccb716dbef8');
+    assert.equal(parsed.anp_commit, '45031b698e86e094dfef1f6d05fe9839a600854b');
+    assert.equal(parsed.anp_identity_commit, '8dc65ccc388af0f0622263811776a6aadcd11d18');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
@@ -135,6 +225,84 @@ test('daemon release checks out the configured immutable ANP revision', () => {
   assert.match(workflow, /path: anp\/anp(?:\s|$)/);
   assert.match(workflow, /path: anp\/anp-identity(?:\s|$)/);
   assert.doesNotMatch(workflow, /repository: agent-network-protocol\/anp\s+ref: master/);
+});
+
+test('IM Core Node CI uses the locked in-repository 0714 compatibility fixture', () => {
+  validateImCoreNodeCiWorkflow(readImCoreNodeCiWorkflow());
+});
+
+test('IM Core Node CI validation rejects fixture and cargo-test bypass mutations', () => {
+  const mutationCases = [
+    ['checkout v7 with private fixture repository and secret', workflow => {
+      workflow.jobs.verify.steps.splice(3, 0, {
+        name: 'Checkout locked 0714 E2EE compatibility fixture',
+        uses: 'actions/checkout@v7',
+        with: {
+          repository: 'AgentConnect/awiki-system-test',
+          ref: '5fdcbd62df78ca69f8de6399529fa7b36e0afeb5',
+          token: '${{ secrets.AWIKI_CI_READ_TOKEN }}',
+        },
+      });
+    }],
+    ['private fixture repository independent of checkout action', workflow => {
+      workflow.jobs.verify.steps.splice(3, 0, {
+        name: 'Fetch compatibility fixture',
+        uses: 'example/download-repository@v1',
+        with: {
+          repository: 'AgentConnect/awiki-system-test',
+          ref: '5fdcbd62df78ca69f8de6399529fa7b36e0afeb5',
+        },
+      });
+    }],
+    ['private fixture credential independent of repository checkout', workflow => {
+      workflowStep(workflow, 'Verify CI configuration').env = {
+        AWIKI_CI_READ_TOKEN: '${{ secrets.AWIKI_CI_READ_TOKEN }}',
+      };
+    }],
+    ['external fixture environment path', workflow => {
+      workflowStep(workflow, 'Verify Rust facade and Node bridge').env = {
+        AWIKI_0714_CORE_FIXTURE_DIR:
+          '${{ github.workspace }}/awiki-system-test/suites/fixtures/0714-e2ee-compat-v1',
+      };
+    }],
+    ['library-only Core tests', workflow => {
+      const step = workflowStep(workflow, 'Verify Rust facade and Node bridge');
+      step.run = step.run.replace(
+        'cargo test -p awiki-im-core',
+        'cargo test -p awiki-im-core --lib',
+      );
+    }],
+    ['shell success fallback', workflow => {
+      const step = workflowStep(workflow, 'Verify Rust facade and Node bridge');
+      step.run = step.run.replace(
+        'cargo test -p awiki-im-core',
+        'cargo test -p awiki-im-core || true',
+      );
+    }],
+    ['test skip filter', workflow => {
+      const step = workflowStep(workflow, 'Verify Rust facade and Node bridge');
+      step.run = step.run.replace(
+        'cargo test -p awiki-im-core',
+        'cargo test -p awiki-im-core -- --skip phase2_0714_migration',
+      );
+    }],
+    ['continue-on-error', workflow => {
+      workflowStep(workflow, 'Verify Rust facade and Node bridge')['continue-on-error'] = true;
+    }],
+    ['conditional skip', workflow => {
+      workflowStep(workflow, 'Verify Rust facade and Node bridge').if = false;
+    }],
+  ];
+
+  for (const [label, mutate] of mutationCases) {
+    const workflow = structuredClone(readImCoreNodeCiWorkflow());
+    mutate(workflow);
+    assert.throws(
+      () => validateImCoreNodeCiWorkflow(workflow),
+      { name: 'AssertionError' },
+      label,
+    );
+  }
 });
 
 

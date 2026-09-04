@@ -446,6 +446,7 @@ WHERE join_session_id=?3 AND phase='prepared' AND owner_identity_id=?4
 }
 
 pub(crate) fn recover_all(core: &crate::core::ImCore) -> crate::ImResult<()> {
+    reconcile_unjournaled_same_epoch_rejoins(core)?;
     let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
     let records = list(sqlite_path)?;
     if records.is_empty() {
@@ -537,6 +538,129 @@ pub(crate) fn recover_all(core: &crate::core::ImCore) -> crate::ImResult<()> {
         };
         converge_after_registry_save(sqlite_path, winner, auth_generation)?;
         cleanup_prepared_orphans(core, owner_records, Some(&winner.join_session_id))?;
+    }
+    Ok(())
+}
+
+/// Repairs the narrow legacy window where an ordinary same-epoch Join saved
+/// the newly authorized Registry projection without creating a rollover
+/// journal. The completed retirement marker is the authority for replacing
+/// only the exact old device binding; business data remains untouched while
+/// device-bound sync control state is forced to bootstrap again.
+pub(crate) fn reconcile_unjournaled_same_epoch_rejoins(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<()> {
+    let paths = core.inner().sdk_paths();
+    // Core construction must remain read-only for a fresh sandbox. Without an
+    // existing local-state database there cannot be an old device binding to
+    // reconcile, and opening a writable connection here would create the
+    // database before bootstrap explicitly initializes it.
+    if !paths.local_state.sqlite_path.is_file() {
+        return Ok(());
+    }
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&paths.identities).load_index()?;
+    let mut connection =
+        crate::internal::local_state::open_writable(&paths.local_state.sqlite_path)?;
+
+    for entry in index.credentials.values() {
+        let Some(device_state) = entry.device_state.as_ref() else {
+            continue;
+        };
+        let Some(authorization) = device_state.authorization.as_ref() else {
+            continue;
+        };
+        if device_state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || authorization.status
+                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+        {
+            continue;
+        }
+        // Ordinary Join persists the active device projection before the
+        // account binding generation is hydrated. An absent Registry
+        // generation is therefore valid only for this narrow same-DID,
+        // exact-retirement repair; a present value must still match.
+        let binding_generation = entry.binding_generation.as_deref();
+        let binding: Option<(String, Option<String>, String, String, String, String)> = connection
+            .query_row(
+                r#"SELECT account_id,handle_scope,current_did,device_id,
+identity_generation,device_auth_generation
+FROM identity_account_bindings WHERE owner_identity_id=?1"#,
+                [&entry.unique_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let Some((account_id, handle_scope, current_did, old_device_id, identity_generation, _)) =
+            binding
+        else {
+            continue;
+        };
+        if old_device_id == authorization.protocol_device_id.as_str() {
+            continue;
+        }
+        if account_id != entry.user_id
+            || handle_scope.as_deref() != Some(entry.full_handle.as_str())
+            || current_did != entry.did
+            || binding_generation.is_some_and(|value| identity_generation != value)
+            || !crate::internal::identity_retirement::matches_completed_binding(
+                &paths.identities.identity_root_dir,
+                &entry.unique_id,
+                &current_did,
+                &old_device_id,
+            )?
+        {
+            continue;
+        }
+
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE identity_account_bindings
+SET device_id=?2,device_auth_generation=?3,updated_at=?4
+WHERE owner_identity_id=?1 AND account_id=?5 AND handle_scope=?6
+  AND current_did=?7 AND device_id=?8 AND identity_generation=?9"#,
+                rusqlite::params![
+                    entry.unique_id,
+                    authorization.protocol_device_id.as_str(),
+                    authorization.auth_generation.to_string(),
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                    account_id,
+                    entry.full_handle,
+                    current_did,
+                    old_device_id,
+                    identity_generation,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if changed != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let now = now()?;
+        crate::internal::identity_transition_pending::retire_owner_write_state(
+            &transaction,
+            &entry.unique_id,
+            &entry.did,
+            &now,
+        )?;
+        crate::internal::identity_transition_pending::clear_owner_join_control_state(
+            &transaction,
+            &entry.unique_id,
+        )?;
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
     }
     Ok(())
 }

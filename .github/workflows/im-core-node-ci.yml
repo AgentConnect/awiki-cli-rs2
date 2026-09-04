@@ -7,11 +7,13 @@ on:
       - '.github/workflows/im-core-node-ci.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'package.json'
       - 'crates/im-core/**'
       - 'crates/im-core-node/**'
       - 'packages/awiki-im-core-node/**'
       - 'packages/awiki-im-core-node-platforms/**'
       - 'scripts/release/node-sdk/**'
+      - 'scripts/release/cli/config.test.js'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
   push:
@@ -20,11 +22,13 @@ on:
       - '.github/workflows/im-core-node-ci.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'package.json'
       - 'crates/im-core/**'
       - 'crates/im-core-node/**'
       - 'packages/awiki-im-core-node/**'
       - 'packages/awiki-im-core-node-platforms/**'
       - 'scripts/release/node-sdk/**'
+      - 'scripts/release/cli/config.test.js'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
 
@@ -83,6 +87,11 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Verify CI configuration
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: node --test scripts/release/cli/config.test.js
+
       - name: Build pinned ANP Identity Node binding
         working-directory: anp/anp-identity
         shell: bash
@@ -93,6 +102,8 @@ jobs:
       - name: Verify Rust facade and Node bridge
         working-directory: awiki-cli-rs2
         shell: bash
+        env:
+          AWIKI_0714_CORE_FIXTURE_DIR: ${{ github.workspace }}/awiki-cli-rs2/crates/im-core/tests/fixtures/release_0714_core
         run: |
           cargo fmt --check
           cargo clippy -p awiki-im-core --all-targets --all-features -- -D warnings

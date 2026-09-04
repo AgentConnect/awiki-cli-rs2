@@ -113,6 +113,12 @@ than translating the historical binding into an error. Core excludes completed
 Recovery identities from unpublished provider reuse and replaces only the exact
 retired current provider identity with a fresh rootless Join enrollment; this
 custody cleanup and its crash recovery remain private to Core.
+If bootstrap instead finds an active provider identity whose valid manifest
+already contains multiple devices but no matching local Registry identity,
+the Dart facade returns `local_identity_recovery_required`. Flutter hosts must
+present an explicit local identity recovery path and must not translate this
+state into a server registration/whitelist denial or silently replace the
+provider identity.
 If the server also returns a closed Recovery transition, Core accepts only one
 exact retired current/direct-previous tuple, returns `mode=ordinary`, keeps
 `requiresUserPresence=false`, reuses the retired stable local owner internally,
