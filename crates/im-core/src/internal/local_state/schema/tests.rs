@@ -55,6 +55,13 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "identity_account_bindings"),
         ("table", "message_sync_state"),
         ("table", "message_sync_run_state"),
+        ("table", "sync_lane_inbox"),
+        ("table", "sync_lane_transport_state"),
+        ("table", "sync_p5_input_outcomes"),
+        ("table", "sync_p5_did_cutovers"),
+        ("table", "sync_p6_input_outcomes"),
+        ("table", "sync_p6_legacy_migration_repairs"),
+        ("table", "sync_history_scope"),
         ("table", "sync_applied_events"),
         ("table", "sync_recovery_state"),
         ("table", "local_mutation_outbox"),
@@ -98,6 +105,9 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "sync_recovery_state_status_idx");
     assert_index_exists(&db, "local_mutation_outbox_drain_idx");
     assert_index_exists(&db, "sync_thread_bindings_conversation_idx");
+    for index in SYNC_V1B_DURABLE_LANE_INDEXES {
+        assert_index_exists(&db, index);
+    }
     assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
@@ -2506,6 +2516,33 @@ fn schema_39_failed_migration_rolls_back_table_indexes_and_version() {
     assert!(!has_index(&db, "local_identity_deletions_handle_phase_idx").unwrap());
 }
 
+fn drop_sync_v1b_durable_lane_shape(db: &Connection) {
+    db.execute_batch(
+        r#"
+DROP TABLE IF EXISTS sync_p5_input_outcomes;
+DROP TABLE IF EXISTS sync_p6_input_outcomes;
+DROP TABLE IF EXISTS sync_p5_did_cutovers;
+DROP TABLE IF EXISTS sync_p6_legacy_migration_repairs;
+DROP TABLE IF EXISTS sync_lane_transport_state;
+DROP TABLE IF EXISTS sync_lane_inbox;
+DROP TABLE IF EXISTS sync_history_scope;
+"#,
+    )
+    .unwrap();
+}
+
+fn assert_sync_v1b_durable_lane_shape(db: &Connection) {
+    for (table, columns) in SYNC_V1B_DURABLE_LANE_TABLE_COLUMNS {
+        assert_schema_object_exists(db, "table", table);
+        for column in *columns {
+            assert_column_exists(db, table, column);
+        }
+    }
+    for index in SYNC_V1B_DURABLE_LANE_INDEXES {
+        assert_index_exists(db, index);
+    }
+}
+
 fn downgrade_sync_v1a_reliability_shape_to_v39(db: &Connection) {
     db.execute_batch(
         r#"
@@ -2537,7 +2574,7 @@ PRAGMA user_version=39;
 }
 
 #[test]
-fn schema_40_migrates_v39_without_losing_capability_state() {
+fn schema_41_migrates_v39_without_losing_capability_state() {
     let db = Connection::open_in_memory().unwrap();
     create_schema(&db, true).unwrap();
     db.execute(
@@ -2551,10 +2588,12 @@ fn schema_40_migrates_v39_without_losing_capability_state() {
     )
     .unwrap();
     downgrade_sync_v1a_reliability_shape_to_v39(&db);
+    drop_sync_v1b_durable_lane_shape(&db);
 
     ensure_schema(&db).unwrap();
 
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_sync_v1b_durable_lane_shape(&db);
     assert_schema_object_exists(&db, "table", "message_sync_run_state");
     assert_column_exists(&db, "sync_lane_capability_state", "client_instance_id");
     assert_column_exists(
@@ -2586,15 +2625,19 @@ fn schema_40_migrates_v39_without_losing_capability_state() {
 }
 
 #[test]
-fn schema_40_failed_migration_rolls_back_shape_and_version() {
+fn schema_41_failed_v39_migration_rolls_back_shape_and_version() {
     let db = Connection::open_in_memory().unwrap();
     create_schema(&db, true).unwrap();
     downgrade_sync_v1a_reliability_shape_to_v39(&db);
-    FAIL_SCHEMA_40_AFTER_RELIABILITY_CREATE.with(|fail| fail.set(true));
+    drop_sync_v1b_durable_lane_shape(&db);
+    FAIL_SCHEMA_41_AFTER_DURABLE_LANES_CREATE.with(|fail| fail.set(true));
 
     assert!(ensure_schema(&db).is_err());
     assert_eq!(current_schema_version(&db).unwrap(), 39);
     assert!(!has_table(&db, "message_sync_run_state").unwrap());
+    for (table, _) in SYNC_V1B_DURABLE_LANE_TABLE_COLUMNS {
+        assert!(!has_table(&db, table).unwrap());
+    }
     assert!(!has_column(&db, "sync_lane_capability_state", "client_instance_id").unwrap());
     assert!(!has_column(
         &db,
@@ -2605,10 +2648,11 @@ fn schema_40_failed_migration_rolls_back_shape_and_version() {
 }
 
 #[test]
-fn schema_40_rejects_a_malformed_v39_reliability_table_without_repair() {
+fn schema_41_rejects_a_malformed_v39_reliability_table_without_repair() {
     let db = Connection::open_in_memory().unwrap();
     create_schema(&db, true).unwrap();
     downgrade_sync_v1a_reliability_shape_to_v39(&db);
+    drop_sync_v1b_durable_lane_shape(&db);
     db.execute_batch("CREATE TABLE message_sync_run_state(owner_identity_id TEXT PRIMARY KEY);")
         .unwrap();
 
@@ -2621,6 +2665,156 @@ fn schema_40_rejects_a_malformed_v39_reliability_table_without_repair() {
     assert_eq!(current_schema_version(&db).unwrap(), 39);
     assert!(!has_column(&db, "message_sync_run_state", "run_generation").unwrap());
     assert!(!has_column(&db, "sync_lane_capability_state", "client_instance_id").unwrap());
+}
+
+#[test]
+fn schema_41_repairs_incomplete_v40_and_lane_transport_state_is_usable() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('owner-1','account-1','did:wba:example.com:users:alice','device-1','1','1',1,1)",
+        [],
+    )
+    .unwrap();
+    drop_sync_v1b_durable_lane_shape(&db);
+    db.pragma_update(None, "user_version", SYNC_V1A_RELIABILITY_SCHEMA_VERSION)
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_sync_v1b_durable_lane_shape(&db);
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM identity_account_bindings",
+            [],
+            |row| { row.get::<_, i64>(0) }
+        )
+        .unwrap(),
+        1,
+    );
+    crate::internal::local_state::sync_v2::record_lane_transport_error(
+        &db,
+        "owner-1",
+        crate::internal::wire::sync_v2::SyncLaneV3::P5Device,
+        Some("temporary_transport_failure"),
+        1,
+    )
+    .unwrap();
+    let states =
+        crate::internal::local_state::sync_v2::load_lane_transport_states(&db, "owner-1").unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(
+        states[0].last_transport_error.as_deref(),
+        Some("temporary_transport_failure")
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn schema_41_migrates_legacy_p6_rows_after_the_v40_schema_transaction() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('owner-1','account-1','did:wba:example.com:users:alice','device-1','1','1',1,1)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO sync_installation_state(owner_identity_id,client_instance_id,created_at) VALUES ('owner-1','installation-1',1)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        r#"
+INSERT INTO p6_lane_blockers(
+    owner_identity_id,event_id,stream_epoch,event_seq,event_type,
+    group_did,group_event_seq,payload_json,attempt_count,
+    last_error_code,created_at,updated_at
+) VALUES (
+    'owner-1','legacy-event-1','1','1','p6.delivery.created',
+    'did:example:group','1',
+    '{"meta":{},"body":{"group_did":"did:example:group"}}',
+    1,'deferred',1,1
+)
+"#,
+        [],
+    )
+    .unwrap();
+    drop_sync_v1b_durable_lane_shape(&db);
+    db.pragma_update(None, "user_version", SYNC_V1A_RELIABILITY_SCHEMA_VERSION)
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        1,
+    );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM p6_lane_blockers", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        1,
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        1,
+    );
+}
+
+#[test]
+fn schema_41_failed_v40_migration_rolls_back_all_new_lane_objects() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    drop_sync_v1b_durable_lane_shape(&db);
+    db.pragma_update(None, "user_version", SYNC_V1A_RELIABILITY_SCHEMA_VERSION)
+        .unwrap();
+    FAIL_SCHEMA_41_AFTER_DURABLE_LANES_CREATE.with(|fail| fail.set(true));
+
+    assert!(ensure_schema(&db).is_err());
+
+    assert_eq!(
+        current_schema_version(&db).unwrap(),
+        SYNC_V1A_RELIABILITY_SCHEMA_VERSION
+    );
+    for (table, _) in SYNC_V1B_DURABLE_LANE_TABLE_COLUMNS {
+        assert!(!has_table(&db, table).unwrap());
+    }
+    for index in SYNC_V1B_DURABLE_LANE_INDEXES {
+        assert!(!has_index(&db, index).unwrap());
+    }
+}
+
+#[test]
+fn current_schema_with_missing_v1b_table_fails_closed_without_repair() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    set_schema_version(&db, SCHEMA_VERSION).unwrap();
+    db.execute_batch("DROP TABLE sync_lane_transport_state")
+        .unwrap();
+
+    let error = ensure_schema(&db).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { .. }
+    ));
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert!(!has_table(&db, "sync_lane_transport_state").unwrap());
 }
 
 #[test]
