@@ -725,16 +725,76 @@ test('External Provider document proof normalization never executes array access
     retryable: false,
   })
 
-  const document = {
+  const document = Object.freeze({
     id: identity.did,
-    verificationMethod: [{ id: `${identity.did}#root`, purposes: ['assertionMethod'] }],
-    authentication: [`${identity.did}#root`],
-  }
+    verificationMethod: Object.freeze([
+      Object.freeze({
+        id: `${identity.did}#root`,
+        purposes: Object.freeze(['assertionMethod']),
+      }),
+    ]),
+    authentication: Object.freeze([`${identity.did}#root`]),
+  })
   const normalized = await createIdentityProviderDispatch(provider({
     signDocumentProof: async () => document,
   }))(request)
   assert.equal(normalized.ok, true)
   assert.deepEqual(JSON.parse(normalized.payloadJson), document)
+})
+
+test('External Provider document proof normalization rejects Proxies without invoking traps', async () => {
+  function trappedProxy(target) {
+    const calls = { get: 0, getOwnPropertyDescriptor: 0, getPrototypeOf: 0, ownKeys: 0 }
+    return {
+      calls,
+      value: new Proxy(target, {
+        get(inner, property, receiver) {
+          calls.get += 1
+          return Reflect.get(inner, property, receiver)
+        },
+        getOwnPropertyDescriptor(inner, property) {
+          calls.getOwnPropertyDescriptor += 1
+          return Reflect.getOwnPropertyDescriptor(inner, property)
+        },
+        getPrototypeOf(inner) {
+          calls.getPrototypeOf += 1
+          return Reflect.getPrototypeOf(inner)
+        },
+        ownKeys(inner) {
+          calls.ownKeys += 1
+          return Reflect.ownKeys(inner)
+        },
+      }),
+    }
+  }
+
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const request = [{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({ identity, request: { document: { id: identity.did } } }),
+    buffers: [],
+  }]
+  for (const fixture of [
+    trappedProxy([identity.did, { nested: ['dense'] }]),
+    trappedProxy({ id: identity.did, authentication: [`${identity.did}#root`] }),
+  ]) {
+    const reply = await createIdentityProviderDispatch(provider({
+      signDocumentProof: async () => ({ id: identity.did, proxiedValue: fixture.value }),
+    }))(request)
+    assert.deepEqual(reply, {
+      ok: false,
+      payloadJson: 'null',
+      buffers: [],
+      errorCode: 'invalid_request',
+      retryable: false,
+    })
+    assert.deepEqual(fixture.calls, {
+      get: 0,
+      getOwnPropertyDescriptor: 0,
+      getPrototypeOf: 0,
+      ownKeys: 0,
+    })
+  }
 })
 
 test('External Provider hot paths make one call and keep binary values out of JSON', async () => {

@@ -1,3 +1,4 @@
+import { types as nodeUtilTypes } from 'node:util'
 import type {
   NativeIdentityProviderCall,
   NativeIdentityProviderDispatch,
@@ -510,6 +511,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function jsonValue(value: unknown, ancestors = new Set<object>()): ImCoreJsonValue {
+  if (nodeUtilTypes.isProxy(value)) throw new TypeError('identity provider JSON value is invalid')
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return value
   if (typeof value === 'number') {
     if (Number.isFinite(value)) return value
