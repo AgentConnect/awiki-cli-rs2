@@ -6,6 +6,14 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 
+const LOCKED_FIXTURE_SHA256: &str =
+    "3f1b1ad19e9f7057bb98f413811038cb99205343c0d054950dcc0e1e2acbe4e0";
+const LOCKED_GENERATOR_SHA256: &str =
+    "74d10ee25aaaade2ff37d0afa6cf78ce1e941cdc8c555a8a392a50ecdbf3c0fe";
+const LOCKED_CONSERVATION_SHA256: &str =
+    "7d7ca5a4de338ee85627b5bf07e54bd5fcf688ecc28c5ddef3626d42c609791c";
+const LOCKED_SOURCE_REF: &str = "e2cf7f4cd00debba5353980e6d33c3ba682cdd0c";
+
 #[cfg(feature = "group-e2ee")]
 use anp::direct_e2ee::{
     DirectCipherBody, DirectE2eeSession, DirectEnvelopeMetadata, DirectInitBody, DirectSessionState,
@@ -74,9 +82,40 @@ const SNAPSHOT_QUERIES: &[(&str, usize)] = &[
 
 #[test]
 fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
-    let fixture_dir = std::env::var_os("AWIKI_0714_E2EE_FIXTURE_DIR")
-        .expect("AWIKI_0714_E2EE_FIXTURE_DIR must name the locked offline fixture");
-    let source = std::path::Path::new(&fixture_dir).join("core-schema-36.sqlite");
+    let fixture_dir = std::env::var_os("AWIKI_0714_CORE_FIXTURE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/release_0714_core")
+        });
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture_dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["formatVersion"], 1);
+    assert_eq!(manifest["fixtureId"], "release-0714-core-schema-36");
+    assert_eq!(manifest["synthetic"], true);
+    assert_eq!(manifest["networkAccess"], false);
+    assert_eq!(manifest["identityDomainSuffix"], ".fixture.invalid");
+    assert_eq!(manifest["fixture"]["containsOnlySyntheticData"], true);
+    assert_eq!(manifest["fixture"]["file"], "local-state.sqlite");
+    assert_eq!(manifest["fixture"]["sha256"], LOCKED_FIXTURE_SHA256);
+    assert_eq!(manifest["generator"]["sha256"], LOCKED_GENERATOR_SHA256);
+    assert_eq!(manifest["sourceArtifact"]["sourceRef"], LOCKED_SOURCE_REF);
+    assert_eq!(manifest["sourceSchema"]["version"], 36);
+    assert_eq!(manifest["oracles"]["messages"], 2);
+    assert_eq!(manifest["oracles"]["unread"], 1);
+    assert_eq!(manifest["oracles"]["unreadMentions"], 1);
+    assert_eq!(manifest["oracles"]["awaitingP6"], 1);
+    assert_eq!(
+        manifest["oracles"]["conservationSha256"],
+        LOCKED_CONSERVATION_SHA256
+    );
+
+    let generator = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/generate_release_0714_core_fixture.py");
+    assert_eq!(sha256_file(&generator), LOCKED_GENERATOR_SHA256);
+
+    let source = fixture_dir.join("local-state.sqlite");
+    assert_eq!(sha256_file(&source), LOCKED_FIXTURE_SHA256);
     let temp = tempfile::tempdir().unwrap();
     let migrated = temp.path().join("core-schema-current.sqlite");
     fs::copy(source, &migrated).unwrap();
@@ -87,6 +126,7 @@ fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
         36
     );
     let before_digest = conservation_digest(&before);
+    assert_eq!(before_digest, LOCKED_CONSERVATION_SHA256);
     assert_eq!(scalar(&before, "SELECT COUNT(*) FROM messages"), 2);
     assert_eq!(
         scalar(
@@ -134,6 +174,10 @@ fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
         "phase2_0714_core_migrated_sha256={:x}",
         Sha256::digest(fs::read(&migrated).unwrap())
     );
+}
+
+fn sha256_file(path: &std::path::Path) -> String {
+    format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
 }
 
 #[cfg(feature = "group-e2ee")]
