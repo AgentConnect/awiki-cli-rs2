@@ -551,6 +551,13 @@ pub(crate) fn reconcile_unjournaled_same_epoch_rejoins(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<()> {
     let paths = core.inner().sdk_paths();
+    // Core construction must remain read-only for a fresh sandbox. Without an
+    // existing local-state database there cannot be an old device binding to
+    // reconcile, and opening a writable connection here would create the
+    // database before bootstrap explicitly initializes it.
+    if !paths.local_state.sqlite_path.is_file() {
+        return Ok(());
+    }
     let index =
         crate::internal::identity_store::IdentityStore::new(&paths.identities).load_index()?;
     let mut connection =
