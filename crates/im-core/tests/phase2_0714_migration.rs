@@ -136,6 +136,20 @@ fn locked_0714_schema_36_fixture_migrates_to_current_without_data_drift() {
     );
     assert_eq!(conservation_digest(&connection), before_digest);
     assert_eq!(
+        scalar(
+            &connection,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='message_sync_run_state'"
+        ),
+        1
+    );
+    assert_eq!(
+        scalar(
+            &connection,
+            "SELECT COUNT(*) FROM pragma_table_info('sync_lane_capability_state') WHERE name IN ('client_instance_id','negotiated_capabilities_json')"
+        ),
+        2
+    );
+    assert_eq!(
         scalar(&connection, "SELECT COUNT(*) FROM did_transition_edges"),
         0
     );

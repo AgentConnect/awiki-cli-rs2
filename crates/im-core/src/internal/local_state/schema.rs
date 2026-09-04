@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 39;
+pub(crate) const SCHEMA_VERSION: i64 = 40;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -18,6 +18,7 @@ const HANDLE_RECOVERY_V4_SCHEMA_VERSION: i64 = 36;
 const DID_TRANSITION_EDGE_SCHEMA_VERSION: i64 = 37;
 const RETIRED_REGISTRATION_JOIN_SCHEMA_VERSION: i64 = 38;
 const LOCAL_IDENTITY_DELETION_SCHEMA_VERSION: i64 = 39;
+const SYNC_V1A_RELIABILITY_SCHEMA_VERSION: i64 = 40;
 const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
     "identity_account_bindings",
     "message_sync_state",
@@ -1067,19 +1068,29 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == LOCAL_IDENTITY_DELETION_SCHEMA_VERSION {
+        if schema_v39_shape_is_complete(connection)? {
+            return migrate_v39_to_v40(connection);
+        }
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete local identity deletion shape"
+            ),
+        });
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
             target_version: SCHEMA_VERSION,
         });
     }
-    if version == LOCAL_IDENTITY_DELETION_SCHEMA_VERSION {
+    if version == SYNC_V1A_RELIABILITY_SCHEMA_VERSION {
         if current_schema_shape_is_complete(connection)? {
             return Ok(());
         }
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
-                "sqlite schema version {version} has an incomplete local identity deletion shape"
+                "sqlite schema version {version} has an incomplete sync v1a reliability shape"
             ),
         });
     }
@@ -1253,7 +1264,8 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
     super::did_transition_edges::create_schema(&transaction)?;
     create_retired_registration_join_schema(&transaction)?;
     create_local_identity_deletion_schema(&transaction)?;
-    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
+    super::sync_v2::create_v1a_reliability_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1272,7 +1284,8 @@ fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
     super::did_transition_edges::create_schema(&transaction)?;
     create_retired_registration_join_schema(&transaction)?;
     create_local_identity_deletion_schema(&transaction)?;
-    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
+    super::sync_v2::create_v1a_reliability_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1291,7 +1304,8 @@ fn migrate_v37_to_v38(connection: &Connection) -> crate::ImResult<()> {
         .map_err(super::local_state_unavailable)?;
     create_retired_registration_join_schema(&transaction)?;
     create_local_identity_deletion_schema(&transaction)?;
-    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
+    super::sync_v2::create_v1a_reliability_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1309,7 +1323,31 @@ fn migrate_v38_to_v39(connection: &Connection) -> crate::ImResult<()> {
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
     create_local_identity_deletion_schema(&transaction)?;
-    set_schema_version(&transaction, LOCAL_IDENTITY_DELETION_SCHEMA_VERSION)?;
+    super::sync_v2::create_v1a_reliability_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v39_to_v40(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != LOCAL_IDENTITY_DELETION_SCHEMA_VERSION
+        || !schema_v39_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "sqlite schema v39 must be complete before adding sync v1a reliability state"
+                .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    super::sync_v2::create_v1a_reliability_schema(&transaction)?;
+    #[cfg(test)]
+    if FAIL_SCHEMA_40_AFTER_RELIABILITY_CREATE.with(|fail| fail.replace(false)) {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "injected schema 40 migration failure".to_owned(),
+        });
+    }
+    set_schema_version(&transaction, SYNC_V1A_RELIABILITY_SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1351,6 +1389,7 @@ fn create_local_identity_deletion_schema(connection: &Connection) -> crate::ImRe
 std::thread_local! {
     static FAIL_SCHEMA_38_AFTER_TABLE_CREATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_SCHEMA_39_AFTER_TABLE_CREATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_SCHEMA_40_AFTER_RELIABILITY_CREATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn validate_divergent_schema_shape(connection: &Connection, version: i64) -> crate::ImResult<()> {
@@ -1497,11 +1536,90 @@ fn schema_v38_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
         )?)
 }
 
-fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+fn schema_v39_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     Ok(schema_v38_shape_is_complete(connection)?
         && has_table(connection, "local_identity_deletions")?
         && has_index(connection, "local_identity_deletions_active_owner_idx")?
-        && has_index(connection, "local_identity_deletions_handle_phase_idx")?)
+        && has_index(connection, "local_identity_deletions_handle_phase_idx")?
+        && sync_v1a_predecessor_shape_is_valid(connection)?)
+}
+
+fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(schema_v39_shape_is_complete(connection)?
+        && table_has_columns(
+            connection,
+            "message_sync_run_state",
+            &[
+                "owner_identity_id",
+                "sync_pending",
+                "run_generation",
+                "next_retry_at",
+                "last_result_json",
+                "updated_at",
+            ],
+        )?
+        && table_has_columns(
+            connection,
+            "sync_lane_capability_state",
+            &[
+                "owner_identity_id",
+                "negotiated_device_auth_generation",
+                "client_instance_id",
+                "negotiated_capabilities_json",
+            ],
+        )?)
+}
+
+fn sync_v1a_predecessor_shape_is_valid(connection: &Connection) -> crate::ImResult<bool> {
+    let run_state_valid = !has_table(connection, "message_sync_run_state")?
+        || table_has_columns(
+            connection,
+            "message_sync_run_state",
+            &[
+                "owner_identity_id",
+                "sync_pending",
+                "run_generation",
+                "next_retry_at",
+                "last_result_json",
+                "updated_at",
+            ],
+        )?;
+    let capability_table_exists = has_table(connection, "sync_lane_capability_state")?;
+    let capability_base_valid = !capability_table_exists
+        || table_has_columns(
+            connection,
+            "sync_lane_capability_state",
+            &["owner_identity_id", "negotiated_device_auth_generation"],
+        )?;
+    let has_client_instance = capability_table_exists
+        && has_column(
+            connection,
+            "sync_lane_capability_state",
+            "client_instance_id",
+        )?;
+    let has_capabilities = capability_table_exists
+        && has_column(
+            connection,
+            "sync_lane_capability_state",
+            "negotiated_capabilities_json",
+        )?;
+    Ok(run_state_valid && capability_base_valid && has_client_instance == has_capabilities)
+}
+
+fn table_has_columns(
+    connection: &Connection,
+    table: &str,
+    columns: &[&str],
+) -> crate::ImResult<bool> {
+    if !has_table(connection, table)? {
+        return Ok(false);
+    }
+    for column in columns {
+        if !has_column(connection, table, column)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {

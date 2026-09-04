@@ -54,6 +54,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "sync_installation_state"),
         ("table", "identity_account_bindings"),
         ("table", "message_sync_state"),
+        ("table", "message_sync_run_state"),
         ("table", "sync_applied_events"),
         ("table", "sync_recovery_state"),
         ("table", "local_mutation_outbox"),
@@ -110,6 +111,12 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_group_rebind_p6_resume");
     assert_index_exists(&db, "idx_did_transition_edges_owner_successor");
     assert_index_exists(&db, "registration_retired_join_rollovers_owner_phase_idx");
+    assert_column_exists(&db, "sync_lane_capability_state", "client_instance_id");
+    assert_column_exists(
+        &db,
+        "sync_lane_capability_state",
+        "negotiated_capabilities_json",
+    );
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -2497,6 +2504,123 @@ fn schema_39_failed_migration_rolls_back_table_indexes_and_version() {
     assert!(!has_table(&db, "local_identity_deletions").unwrap());
     assert!(!has_index(&db, "local_identity_deletions_active_owner_idx").unwrap());
     assert!(!has_index(&db, "local_identity_deletions_handle_phase_idx").unwrap());
+}
+
+fn downgrade_sync_v1a_reliability_shape_to_v39(db: &Connection) {
+    db.execute_batch(
+        r#"
+DROP TABLE message_sync_run_state;
+ALTER TABLE sync_lane_capability_state RENAME TO sync_lane_capability_state_v40;
+CREATE TABLE sync_lane_capability_state (
+    owner_identity_id                  TEXT PRIMARY KEY,
+    negotiated_device_auth_generation TEXT NOT NULL,
+    CHECK (
+        negotiated_device_auth_generation <> ''
+        AND negotiated_device_auth_generation NOT GLOB '*[^0-9]*'
+        AND substr(negotiated_device_auth_generation, 1, 1) <> '0'
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+INSERT INTO sync_lane_capability_state(
+    owner_identity_id,
+    negotiated_device_auth_generation
+)
+SELECT owner_identity_id, negotiated_device_auth_generation
+FROM sync_lane_capability_state_v40;
+DROP TABLE sync_lane_capability_state_v40;
+PRAGMA user_version=39;
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn schema_40_migrates_v39_without_losing_capability_state() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('owner-1','account-1','did:wba:example.com:users:alice','device-1','1','1',1,1)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO sync_lane_capability_state(owner_identity_id,negotiated_device_auth_generation) VALUES ('owner-1','1')",
+        [],
+    )
+    .unwrap();
+    downgrade_sync_v1a_reliability_shape_to_v39(&db);
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "message_sync_run_state");
+    assert_column_exists(&db, "sync_lane_capability_state", "client_instance_id");
+    assert_column_exists(
+        &db,
+        "sync_lane_capability_state",
+        "negotiated_capabilities_json",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT negotiated_device_auth_generation FROM sync_lane_capability_state WHERE owner_identity_id='owner-1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "1",
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM sync_lane_capability_state WHERE client_instance_id IS NULL AND negotiated_capabilities_json IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn schema_40_failed_migration_rolls_back_shape_and_version() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    downgrade_sync_v1a_reliability_shape_to_v39(&db);
+    FAIL_SCHEMA_40_AFTER_RELIABILITY_CREATE.with(|fail| fail.set(true));
+
+    assert!(ensure_schema(&db).is_err());
+    assert_eq!(current_schema_version(&db).unwrap(), 39);
+    assert!(!has_table(&db, "message_sync_run_state").unwrap());
+    assert!(!has_column(&db, "sync_lane_capability_state", "client_instance_id").unwrap());
+    assert!(!has_column(
+        &db,
+        "sync_lane_capability_state",
+        "negotiated_capabilities_json"
+    )
+    .unwrap());
+}
+
+#[test]
+fn schema_40_rejects_a_malformed_v39_reliability_table_without_repair() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    downgrade_sync_v1a_reliability_shape_to_v39(&db);
+    db.execute_batch("CREATE TABLE message_sync_run_state(owner_identity_id TEXT PRIMARY KEY);")
+        .unwrap();
+
+    let error = ensure_schema(&db).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { .. }
+    ));
+    assert_eq!(current_schema_version(&db).unwrap(), 39);
+    assert!(!has_column(&db, "message_sync_run_state", "run_generation").unwrap());
+    assert!(!has_column(&db, "sync_lane_capability_state", "client_instance_id").unwrap());
 }
 
 #[test]
