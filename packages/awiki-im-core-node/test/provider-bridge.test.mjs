@@ -695,6 +695,48 @@ test('External Provider rejects a non-JSON document proof result at the bridge b
   assert.equal(calls, 1)
 })
 
+test('External Provider document proof normalization never executes array accessors', async () => {
+  let getterCalls = 0
+  const accessorArray = []
+  Object.defineProperty(accessorArray, '0', {
+    get: () => {
+      getterCalls += 1
+      return 'must-not-run'
+    },
+    enumerable: true,
+    configurable: true,
+  })
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const request = [{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({ identity, request: { document: { id: identity.did } } }),
+    buffers: [],
+  }]
+  const rejected = await createIdentityProviderDispatch(provider({
+    signDocumentProof: async () => ({ id: identity.did, authentication: accessorArray }),
+  }))(request)
+
+  assert.equal(getterCalls, 0)
+  assert.deepEqual(rejected, {
+    ok: false,
+    payloadJson: 'null',
+    buffers: [],
+    errorCode: 'invalid_request',
+    retryable: false,
+  })
+
+  const document = {
+    id: identity.did,
+    verificationMethod: [{ id: `${identity.did}#root`, purposes: ['assertionMethod'] }],
+    authentication: [`${identity.did}#root`],
+  }
+  const normalized = await createIdentityProviderDispatch(provider({
+    signDocumentProof: async () => document,
+  }))(request)
+  assert.equal(normalized.ok, true)
+  assert.deepEqual(JSON.parse(normalized.payloadJson), document)
+})
+
 test('External Provider hot paths make one call and keep binary values out of JSON', async () => {
   const calls = []
   const identityProvider = provider({

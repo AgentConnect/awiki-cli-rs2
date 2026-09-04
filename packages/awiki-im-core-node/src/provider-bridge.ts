@@ -517,13 +517,28 @@ function jsonValue(value: unknown, ancestors = new Set<object>()): ImCoreJsonVal
   }
   if (Array.isArray(value)) {
     if (ancestors.has(value)) throw new TypeError('identity provider JSON value is invalid')
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+    if (lengthDescriptor === undefined
+      || !('value' in lengthDescriptor)
+      || typeof lengthDescriptor.value !== 'number'
+      || !Number.isInteger(lengthDescriptor.value)
+      || lengthDescriptor.value < 0
+      || lengthDescriptor.enumerable
+      || lengthDescriptor.configurable) {
+      throw new TypeError('identity provider JSON value is invalid')
+    }
+    const length = lengthDescriptor.value
+    if (Reflect.ownKeys(value).length !== length + 1) {
+      throw new TypeError('identity provider JSON value is invalid')
+    }
     ancestors.add(value)
     const result: ImCoreJsonValue[] = []
-    for (let index = 0; index < value.length; index += 1) {
-      if (!Object.prototype.hasOwnProperty.call(value, index)) {
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
         throw new TypeError('identity provider JSON value is invalid')
       }
-      result.push(jsonValue(value[index], ancestors))
+      result.push(jsonValue(descriptor.value, ancestors))
     }
     ancestors.delete(value)
     return result
