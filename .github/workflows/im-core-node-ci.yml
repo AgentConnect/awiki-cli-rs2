@@ -7,11 +7,13 @@ on:
       - '.github/workflows/im-core-node-ci.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'package.json'
       - 'crates/im-core/**'
       - 'crates/im-core-node/**'
       - 'packages/awiki-im-core-node/**'
       - 'packages/awiki-im-core-node-platforms/**'
       - 'scripts/release/node-sdk/**'
+      - 'scripts/release/cli/config.test.js'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
   push:
@@ -20,11 +22,13 @@ on:
       - '.github/workflows/im-core-node-ci.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'package.json'
       - 'crates/im-core/**'
       - 'crates/im-core-node/**'
       - 'packages/awiki-im-core-node/**'
       - 'packages/awiki-im-core-node-platforms/**'
       - 'scripts/release/node-sdk/**'
+      - 'scripts/release/cli/config.test.js'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
 
@@ -63,13 +67,25 @@ jobs:
           ref: ${{ steps.release.outputs.anp_identity_commit }}
           path: anp/anp-identity
 
+      - name: Require read-only fixture checkout token
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.AWIKI_CI_READ_TOKEN }}
+        run: |
+          test -n "$READ_TOKEN" || {
+            echo "AWIKI_CI_READ_TOKEN is required for the private compatibility fixture checkout" >&2
+            exit 1
+          }
+
       - name: Checkout locked 0714 E2EE compatibility fixture
         uses: actions/checkout@v6
         with:
           repository: AgentConnect/awiki-system-test
           ref: 5fdcbd62df78ca69f8de6399529fa7b36e0afeb5
+          token: ${{ secrets.AWIKI_CI_READ_TOKEN }}
           path: awiki-system-test
           sparse-checkout: suites/fixtures/0714-e2ee-compat-v1
+          persist-credentials: false
 
       - name: Set up Rust 1.88
         shell: bash
@@ -90,6 +106,11 @@ jobs:
         working-directory: awiki-cli-rs2
         shell: bash
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify CI configuration
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: node --test scripts/release/cli/config.test.js
 
       - name: Build pinned ANP Identity Node binding
         working-directory: anp/anp-identity
