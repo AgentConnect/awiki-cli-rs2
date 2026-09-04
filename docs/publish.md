@@ -5,7 +5,7 @@
 发布边界：
 
 - `awiki-cli` 是 npm 包和单二进制命令行产品；`awiki-cli upgrade` 只检查/升级 CLI 自身。
-- `awiki-deamon` 是 awiki-me 客户端安装到宿主机的 daemon 包；它使用 daemon manifest、install.sh 和客户端/daemon 升级路径，不通过 `awiki-cli runtime listener` 管理。
+- `awiki-deamon` 是 awiki-me 客户端安装到宿主机的 daemon 包；它从安装注册时持久化的租户 User Service `server-info?client_platform=daemon` 读取版本政策，再使用该政策指定的精确 daemon manifest 和安装包，不通过 `awiki-cli runtime listener` 管理。
 - `awiki-cli runtime listener` 是 CLI 的本机 WebSocket receiving helper/service，属于 CLI runtime UX，不是 daemon release 包。
 
 ## 1. 版本号约定
@@ -131,6 +131,12 @@ manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是�
 - 发布到本机 Nginx daemon 静态目录 `/var/www/awiki-web/daemon`。
 - 通过 HTTP 校验 manifest、安装脚本和三个平台 tar 包可访问。
 
+Server Info 是 Daemon 推荐版本和最低支持版本的唯一政策来源。Daemon 始终请求其安装注册
+租户的 User Service，不会因 App 临时切换租户而改写更新源；政策中的
+`artifact_manifest_url` 必须与该租户同 Origin，并固定本次允许升级的精确版本。静态 manifest
+中的 `latest` / `min_supported` 仅供旧版客户端和发布工具兼容，0.1.93 及以上版本不再用它们
+覆盖租户政策。
+
 manifest 中的包条目只保存相对 `path` 和 `sha256`，不保存完整 URL。安装脚本会从
 `download_base_url` 和 `download_mirror_urls` 中选择可用且较快的下载源，下载包后用
 manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下一个源。Daemon 自升级也按
@@ -148,9 +154,9 @@ manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下�
 脚本不会修改版本号、提交代码或推送代码。发布前需要先在
 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。
 
-注意：daemon 发布和 CLI 发布是两条发布线。daemon manifest 的 `latest` / `min_supported`
-只约束 awiki-me daemon 安装和升级；不会改变 `@awiki/cli` 的 npm 版本，也不会影响
-`awiki-cli upgrade` 的行为。
+注意：daemon 发布和 CLI 发布是两条发布线。新版 daemon 的推荐版本和最低支持版本由各租户
+Server Info 独立控制；静态 daemon manifest 的同名字段只兼容旧版客户端和发布工具。两者都
+不会改变 `@awiki/cli` 的 npm 版本，也不会影响 `awiki-cli upgrade` 的行为。
 
 ## 5. 手工准备 daemon 下载目录
 

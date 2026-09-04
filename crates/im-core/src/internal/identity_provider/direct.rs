@@ -183,9 +183,6 @@ impl IdentityCustody for DirectAnpIdentityCustody {
                     transition_document: request
                         .transition_document
                         .map(anp_identity::DidDocument::from_value),
-                    provider_document: request
-                        .provider_document
-                        .map(anp_identity::DidDocument::from_value),
                 })
                 .map_err(map_identity_error)?;
             Ok(Arc::new(DirectIdentityTransitionSession {
