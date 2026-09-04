@@ -238,14 +238,15 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 38。pre-open canonical runner 只拥有 schema 27；已经完成
-canonical cutover 的 schema 28 到 38 必须返回 `not_required`，随后由普通 Core open
+当前 target 为 schema 40。pre-open canonical runner 只拥有 schema 27；已经完成
+canonical cutover 的 schema 28 到 40 必须返回 `not_required`，随后由普通 Core open
 推进或校验。普通 open 严格识别 release/0714 schema 28-31 以及两条开发线曾产生的
 v32-v34 合法形态，并在单一事务中收敛为 hydration projection、subject-scoped checkpoint、
 可证明的旧 Direct WireIdentity 修复、v2 account/message sync、read recovery，以及
 未解析消息与 remote-thread binding 的 durable association、schema 36 Handle Recovery
-状态、schema 37 owner-scoped strong-assurance DID transition edge cache，以及 schema 38
-retired ordinary registration Join 的 secret-free rollover journal。schema 35 的 association
+状态、schema 37 owner-scoped strong-assurance DID transition edge cache、schema 38
+retired ordinary registration Join 的 secret-free rollover journal、schema 39 本地身份删除
+journal，以及 schema 40 Sync V1A 可靠运行状态。schema 35 的 association
 使 Persona replay 能原子写入 canonical message/binding，不能把暂定 DID conversation
 写成 durable binding。
 schema 37 不更新 route、Persona、conversation、历史 wire identity 或 recovery outbox，
@@ -254,6 +255,11 @@ schema 37 不更新 route、Persona、conversation、历史 wire identity 或 re
 schema 38 只新增 `registration_retired_join_rollovers` 表和 owner/phase/update-time 索引；
 37→38 迁移失败必须回滚表、索引和 `user_version`。旧 Core 不支持直接打开 v38，回退只能
 恢复升级前完整 scope 备份，不能改写 `user_version` 或删除 journal。
+schema 40 只补齐 `message_sync_run_state`，并为 `sync_lane_capability_state` 增加可空的
+`client_instance_id` 与 `negotiated_capabilities_json`；39→40 在一个事务内升级，既保留
+已有 capability 行，也不会把另一个租户或另一份数据库的状态带入当前 scope。正式兼容输入
+仍从 release/0714 的 schema 36 开始；schema 39 的专用迁移仅用于修复已产生的当前开发版本，
+不扩大对任意中间开发形态的兼容承诺。
 未知、残缺或混合得无法证明的同号形态必须 fail closed，不能被猜测性迁移或静默删除。
 
 P2+ API：
