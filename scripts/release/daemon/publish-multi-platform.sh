@@ -176,7 +176,14 @@ for key in required:
     if not isinstance(value, str) or not value.strip():
         raise SystemExit(f"config field {key!r} is required")
 
-allowed = set(required + ["download_base_url", "download_mirror_urls", "workflow_ref"])
+optional_strings = [
+    "download_base_url",
+    "workflow_ref",
+    "minimum_supported_version",
+    "minimum_change_reason",
+    "confirm_minimum_equals_recommended",
+]
+allowed = set(required + optional_strings + ["download_mirror_urls"])
 for key in data:
     if key not in allowed:
         raise SystemExit(f"unsupported config field {key!r}")
@@ -186,9 +193,11 @@ for key in required:
 download_base_url = data.get("download_base_url")
 if isinstance(download_base_url, str) and download_base_url.strip():
     print(f"download_base_url={shlex.quote(download_base_url.strip())}")
-workflow_ref = data.get("workflow_ref")
-if isinstance(workflow_ref, str) and workflow_ref.strip():
-    print(f"workflow_ref={shlex.quote(workflow_ref.strip())}")
+for key in optional_strings:
+    value = data.get(key, "")
+    if not isinstance(value, str):
+        raise SystemExit(f"config field {key!r} must be a quoted string")
+    print(f"{key}={shlex.quote(value.strip())}")
 mirror_urls = data.get("download_mirror_urls", [])
 if mirror_urls is None:
     mirror_urls = []
@@ -223,6 +232,29 @@ latest = latest.strip()
 if latest.startswith("v"):
     latest = latest[1:]
 print(latest)
+PY
+}
+
+parse_manifest_min_supported() {
+  python3 - "$1" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception as exc:
+    raise SystemExit(f"invalid daemon manifest {path}: {exc}") from exc
+
+minimum = data.get("min_supported")
+if not isinstance(minimum, str) or not minimum.strip():
+    raise SystemExit(f"daemon manifest {path} is missing min_supported")
+
+minimum = minimum.strip()
+if minimum.startswith("v"):
+    minimum = minimum[1:]
+print(minimum)
 PY
 }
 
@@ -274,11 +306,13 @@ ensure_no_arguments() {
 
 read_published_version() {
   PUBLISHED_VERSION=""
+  PUBLISHED_MIN_SUPPORTED_VERSION=""
   PUBLISHED_VERSION_SOURCE="none"
 
   local local_manifest="${NGINX_DAEMON_DIR}/releases/manifest.json"
   if [[ -f "${local_manifest}" ]]; then
     PUBLISHED_VERSION="$(parse_manifest_latest "${local_manifest}")"
+    PUBLISHED_MIN_SUPPORTED_VERSION="$(parse_manifest_min_supported "${local_manifest}")"
     PUBLISHED_VERSION_SOURCE="${local_manifest}"
     return 0
   fi
@@ -287,6 +321,7 @@ read_published_version() {
   tmp_manifest="$(mktemp "${TMPDIR:-/tmp}/awiki-daemon-published-manifest.XXXXXX")"
   if curl -fsSL --max-time 8 "${DOWNLOAD_BASE_URL}/releases/manifest.json" -o "${tmp_manifest}" 2>/dev/null; then
     PUBLISHED_VERSION="$(parse_manifest_latest "${tmp_manifest}")"
+    PUBLISHED_MIN_SUPPORTED_VERSION="$(parse_manifest_min_supported "${tmp_manifest}")"
     PUBLISHED_VERSION_SOURCE="${DOWNLOAD_BASE_URL}/releases/manifest.json"
   fi
   rm -f "${tmp_manifest}"
@@ -440,7 +475,6 @@ ensure_required_commands
 eval "$(read_config)"
 VERSION="$(read_crate_version)"
 VERSION="${VERSION#v}"
-MIN_SUPPORTED_VERSION="${VERSION}"
 BASE_URL="$(trim_trailing_slash "${base_url}")"
 SOURCE_REF="${source_ref}"
 WORKFLOW_REF="${workflow_ref:-${DEFAULT_WORKFLOW_REF}}"
@@ -488,6 +522,28 @@ if [[ -n "${PUBLISHED_VERSION}" ]]; then
   fi
 fi
 
+REQUESTED_MIN_SUPPORTED_VERSION="${minimum_supported_version:-}"
+MINIMUM_CHANGE_REASON="${minimum_change_reason:-}"
+CONFIRM_MINIMUM_EQUALS_RECOMMENDED="${confirm_minimum_equals_recommended:-false}"
+if [[ -n "${REQUESTED_MIN_SUPPORTED_VERSION}" ]]; then
+  MIN_SUPPORTED_VERSION="${REQUESTED_MIN_SUPPORTED_VERSION#v}"
+  validate_numeric_version "${MIN_SUPPORTED_VERSION}" "minimum_supported_version"
+  if [[ -n "${PUBLISHED_MIN_SUPPORTED_VERSION}" && "${MIN_SUPPORTED_VERSION}" != "${PUBLISHED_MIN_SUPPORTED_VERSION}" ]]; then
+    [[ -n "${MINIMUM_CHANGE_REASON}" ]] || die "changing min_supported requires minimum_change_reason"
+    if [[ "${MIN_SUPPORTED_VERSION}" == "${VERSION}" && "${CONFIRM_MINIMUM_EQUALS_RECOMMENDED}" != "true" ]]; then
+      die "setting min_supported equal to the new version requires confirm_minimum_equals_recommended = \"true\""
+    fi
+  fi
+elif [[ -n "${PUBLISHED_MIN_SUPPORTED_VERSION}" ]]; then
+  MIN_SUPPORTED_VERSION="${PUBLISHED_MIN_SUPPORTED_VERSION}"
+else
+  MIN_SUPPORTED_VERSION="${VERSION}"
+fi
+validate_numeric_version "${MIN_SUPPORTED_VERSION}" "minimum supported daemon version"
+if version_gt "${MIN_SUPPORTED_VERSION}" "${VERSION}"; then
+  die "minimum supported daemon version ${MIN_SUPPORTED_VERSION} exceeds release version ${VERSION}"
+fi
+
 RELEASE_TMP_DIR="${TMP_ROOT}/${VERSION}"
 ARTIFACT_DIR="${RELEASE_TMP_DIR}/github-artifacts"
 PACKAGE_DIR="${RELEASE_TMP_DIR}/packages"
@@ -513,6 +569,7 @@ daemon release plan
   workflow: ${WORKFLOW_FILE}@${WORKFLOW_REF}
   nginx_dir: ${NGINX_DAEMON_DIR}
   published_latest: ${PUBLISHED_VERSION:-none}
+  published_min_supported: ${PUBLISHED_MIN_SUPPORTED_VERSION:-none}
   published_latest_source: ${PUBLISHED_VERSION_SOURCE}
 EOF
 

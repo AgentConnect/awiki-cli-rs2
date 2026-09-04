@@ -108,11 +108,12 @@ cp scripts/release/daemon/publish-multi-platform.toml.template \
   scripts/release/daemon/publish-multi-platform.toml
 ```
 
-配置文件只保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
+配置文件保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
 `download_mirror_urls`、`source_ref`、可选的 `workflow_ref` 和 `github_token`。
-它不配置当前版本号或最低可用版本号。当前发布版本固定来自
-`crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验；第一版发布流程中，
-manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是后端服务/API 根地址；
+当前发布版本固定来自 `crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验。
+普通发布的 manifest `min_supported` 自动继承上一版；只有显式填写
+`minimum_supported_version` 和 `minimum_change_reason` 才能调整，若新最低版本等于本次版本，
+还必须把 `confirm_minimum_equals_recommended` 设为 `true`。`base_url` 是后端服务/API 根地址；
 `download_base_url` 是当前发布机器提供的 daemon 静态下载根地址，省略时默认使用
 `<base_url>/daemon`；`download_mirror_urls` 是可选镜像下载源列表，只写入安装脚本，
 发布脚本不会主动推送或校验这些镜像。
