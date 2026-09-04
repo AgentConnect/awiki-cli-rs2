@@ -1,0 +1,40 @@
+{
+  "fixture": {
+    "containsOnlySyntheticData": true,
+    "file": "local-state.sqlite",
+    "sha256": "3f1b1ad19e9f7057bb98f413811038cb99205343c0d054950dcc0e1e2acbe4e0"
+  },
+  "fixtureId": "release-0714-core-schema-36",
+  "formatVersion": 1,
+  "generator": {
+    "path": "scripts/generate_release_0714_core_fixture.py",
+    "sha256": "74d10ee25aaaade2ff37d0afa6cf78ce1e941cdc8c555a8a392a50ecdbf3c0fe"
+  },
+  "identityDomainSuffix": ".fixture.invalid",
+  "networkAccess": false,
+  "oracles": {
+    "awaitingP6": 1,
+    "conservationSha256": "7d7ca5a4de338ee85627b5bf07e54bd5fcf688ecc28c5ddef3626d42c609791c",
+    "messages": 2,
+    "unread": 1,
+    "unreadMentions": 1
+  },
+  "sourceArtifact": {
+    "build": "local locked-source build",
+    "component": "awiki-deamon",
+    "sha256": "12c92398f11b5b8223e02bf68f2f6afa8701b59b7fdeb9bbb38571fe3186c124",
+    "sourceRef": "e2cf7f4cd00debba5353980e6d33c3ba682cdd0c",
+    "version": "0.1.91"
+  },
+  "sourceDependencies": {
+    "anp": {
+      "sourceRef": "59475cf76b23838a911a7263287ce6b7399d8e02",
+      "version": "0.9.3"
+    }
+  },
+  "sourceSchema": {
+    "fingerprint": "4c4a9316b1a8f4bea44dd29252c46aca87371a7a9400d6980a35b2a8ef70bfd4",
+    "version": 36
+  },
+  "synthetic": true
+}
