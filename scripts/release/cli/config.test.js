@@ -12,6 +12,8 @@ const {
 
 const FIXTURE_ENV =
   '${{ github.workspace }}/awiki-cli-rs2/crates/im-core/tests/fixtures/release_0714_core';
+const FORBIDDEN_FIXTURE_REPOSITORY = 'agentconnect/awiki-system-test';
+const FORBIDDEN_FIXTURE_CREDENTIAL = 'AWIKI_CI_READ_TOKEN';
 
 function readImCoreNodeCiWorkflow() {
   const source = fs.readFileSync(
@@ -38,19 +40,40 @@ function assertCannotSkip(value, label) {
   );
 }
 
+function containsForbiddenCredentialReference(value) {
+  if (typeof value === 'string') {
+    return value.includes(FORBIDDEN_FIXTURE_CREDENTIAL);
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsForbiddenCredentialReference);
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value).some(([key, nested]) =>
+      key === FORBIDDEN_FIXTURE_CREDENTIAL || containsForbiddenCredentialReference(nested)
+    );
+  }
+  return false;
+}
+
 function validateImCoreNodeCiWorkflow(workflow) {
   const verifyJob = workflow?.jobs?.verify;
   assert.ok(verifyJob && typeof verifyJob === 'object', 'verify job must exist');
   assertCannotSkip(verifyJob, 'verify job');
+  assert.ok(Array.isArray(verifyJob.steps), 'verify steps must be an array');
 
   const externalFixtureCheckouts = verifyJob.steps.filter(step =>
-    step?.uses === 'actions/checkout@v6' &&
-    step?.with?.repository === 'AgentConnect/awiki-system-test'
+    typeof step?.with?.repository === 'string' &&
+    step.with.repository.toLowerCase() === FORBIDDEN_FIXTURE_REPOSITORY
   );
   assert.deepEqual(
     externalFixtureCheckouts,
     [],
     'locked fixture must come from this checkout without a private credential',
+  );
+  assert.equal(
+    containsForbiddenCredentialReference(workflow),
+    false,
+    'workflow must not depend on the unavailable private fixture credential',
   );
 
   const ciVerify = workflowStep(workflow, 'Verify CI configuration');
@@ -210,16 +233,31 @@ test('IM Core Node CI uses the locked in-repository 0714 compatibility fixture',
 
 test('IM Core Node CI validation rejects fixture and cargo-test bypass mutations', () => {
   const mutationCases = [
-    ['external private fixture checkout', workflow => {
+    ['checkout v7 with private fixture repository and secret', workflow => {
       workflow.jobs.verify.steps.splice(3, 0, {
         name: 'Checkout locked 0714 E2EE compatibility fixture',
-        uses: 'actions/checkout@v6',
+        uses: 'actions/checkout@v7',
         with: {
           repository: 'AgentConnect/awiki-system-test',
           ref: '5fdcbd62df78ca69f8de6399529fa7b36e0afeb5',
           token: '${{ secrets.AWIKI_CI_READ_TOKEN }}',
         },
       });
+    }],
+    ['private fixture repository independent of checkout action', workflow => {
+      workflow.jobs.verify.steps.splice(3, 0, {
+        name: 'Fetch compatibility fixture',
+        uses: 'example/download-repository@v1',
+        with: {
+          repository: 'AgentConnect/awiki-system-test',
+          ref: '5fdcbd62df78ca69f8de6399529fa7b36e0afeb5',
+        },
+      });
+    }],
+    ['private fixture credential independent of repository checkout', workflow => {
+      workflowStep(workflow, 'Verify CI configuration').env = {
+        AWIKI_CI_READ_TOKEN: '${{ secrets.AWIKI_CI_READ_TOKEN }}',
+      };
     }],
     ['external fixture environment path', workflow => {
       workflowStep(workflow, 'Verify Rust facade and Node bridge').env = {

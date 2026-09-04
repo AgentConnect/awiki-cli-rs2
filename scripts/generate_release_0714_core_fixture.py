@@ -79,9 +79,11 @@ def schema_fingerprint(connection: sqlite3.Connection) -> str:
         digest.update(b"\0")
         digest.update(name.encode())
         digest.update(b"\0")
-        digest.update(" ".join(sql.split()).encode())
+        for token in sql.split():
+            digest.update(token.encode())
+            digest.update(b" ")
         digest.update(b"\n")
-    return digest.hexdigest()
+    return f"sha256:{digest.hexdigest()}"
 
 
 def conservation_digest(connection: sqlite3.Connection) -> str:

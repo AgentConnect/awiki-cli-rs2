@@ -8,7 +8,7 @@
   "formatVersion": 1,
   "generator": {
     "path": "scripts/generate_release_0714_core_fixture.py",
-    "sha256": "74d10ee25aaaade2ff37d0afa6cf78ce1e941cdc8c555a8a392a50ecdbf3c0fe"
+    "sha256": "efb01c57d5e371d315b063bddc79ba29d6eaa8ab47693af663df559b7a3d8e8b"
   },
   "identityDomainSuffix": ".fixture.invalid",
   "networkAccess": false,
@@ -33,7 +33,7 @@
     }
   },
   "sourceSchema": {
-    "fingerprint": "4c4a9316b1a8f4bea44dd29252c46aca87371a7a9400d6980a35b2a8ef70bfd4",
+    "fingerprint": "sha256:72822725c300c3aa03c436a667351c9d653abe2db7c78003289a1b410d3fd9aa",
     "version": 36
   },
   "synthetic": true
