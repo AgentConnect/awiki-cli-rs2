@@ -33,7 +33,7 @@ export function createIdentityProviderDispatch(
   if (REQUIRED_CAPABILITIES.some(capability => !capabilities.has(capability))) throw incompatible()
   for (const method of [
     'info', 'recover', 'list', 'publicIdentity', 'hostStatus', 'create', 'delete', 'recoverIdentity',
-    'sign', 'signOriginProof', 'prepareHttpSignature', 'ecdhSealed',
+    'sign', 'signOriginProof', 'signDocumentProof', 'prepareHttpSignature', 'ecdhSealed',
     'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
     'prepareIdentityTransition', 'resumeIdentityTransition',
     'beginDeviceEnrollment', 'beginRequestSigningEnrollment', 'resumeEnrollment',
@@ -86,7 +86,6 @@ export function createIdentityProviderDispatch(
             object(payload.request) as never,
           ))
         case 'signDocumentProof': {
-          if (typeof provider.signDocumentProof !== 'function') throw unavailable()
           return success(await provider.signDocumentProof(
             reference(payload.identity),
             object(payload.request) as never,

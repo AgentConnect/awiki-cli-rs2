@@ -1,10 +1,25 @@
 import {
+  type ImCoreIdentityProvider,
+  type ImCoreJsonValue,
   type ImCoreNodeClient,
   type ImCoreNodeOpenOptions,
   type RealtimeEvent,
   ImCoreNodeError,
   openImCoreNodeClient,
 } from '../src/index.js'
+
+// @ts-expect-error signDocumentProof is required by the provider handshake contract.
+const missingDocumentProofSigner: Pick<ImCoreIdentityProvider, 'signDocumentProof'> = {}
+void missingDocumentProofSigner
+
+const documentProofSigner: Pick<ImCoreIdentityProvider, 'signDocumentProof'> = {
+  signDocumentProof: async (_reference, request) => request.document,
+}
+const documentProof: Promise<ImCoreJsonValue> = documentProofSigner.signDocumentProof(
+  { storeId: 'store-types', identityId: 'identity-types', did: 'did:wba:awiki.info:user:types' },
+  { document: { id: 'did:wba:awiki.info:user:types' } },
+)
+void documentProof
 
 const options: ImCoreNodeOpenOptions = {
   stateRoot: '/tmp/awiki-im-core-node-types',

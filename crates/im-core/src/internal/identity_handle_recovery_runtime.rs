@@ -1953,6 +1953,7 @@ async fn apply_local_transition_v4(
         if pending.fresh_local_state {
             crate::internal::identity_custody::adopt_controller_document_async(
                 core,
+                Some(&pending.operation_id),
                 &pending.identity.did,
                 &pending.identity.store_id,
                 &pending.identity.identity_id,

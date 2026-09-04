@@ -64,6 +64,9 @@ function provider(overrides = {}) {
     signOriginProof: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
+    signDocumentProof: async () => {
+      throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
+    },
     prepareHttpSignature: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
@@ -110,10 +113,11 @@ test('External Provider open performs one versioned readiness handshake', async 
   assert.deepEqual(calls, ['info'])
 })
 
-test('External Provider protocol and capabilities fail closed before Core opens', async t => {
+test('External Provider protocol, capabilities, and proof signer fail closed before Core opens', async t => {
   for (const identityProvider of [
     provider({ protocol: 'anp-identity-provider-ts/0' }),
     provider({ capabilities: ['IDENTITY_READ', 'IDENTITY_SIGN'] }),
+    provider({ signDocumentProof: undefined }),
   ]) {
     const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-invalid-'))
     t.after(() => rm(root, { recursive: true, force: true }))

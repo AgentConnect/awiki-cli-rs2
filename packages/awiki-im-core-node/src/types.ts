@@ -181,12 +181,12 @@ export interface ImCoreIdentityProvider {
       }
     },
   ): Promise<unknown>
-  signDocumentProof?(
+  signDocumentProof(
     reference: ImCoreIdentityReference,
     request: {
       readonly kid?: string
       readonly document: ImCoreJsonValue
-      readonly options: {
+      readonly options?: {
         readonly proofPurpose?: string
         readonly proofType?: string
         readonly cryptosuite?: string
@@ -195,7 +195,7 @@ export interface ImCoreIdentityProvider {
         readonly challenge?: string
       }
     },
-  ): Promise<unknown>
+  ): Promise<ImCoreJsonValue>
   prepareHttpSignature(request: {
     readonly identity: ImCoreIdentityReference
     readonly kid?: string

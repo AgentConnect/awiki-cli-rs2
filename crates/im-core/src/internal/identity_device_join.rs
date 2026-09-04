@@ -1820,6 +1820,7 @@ pub(crate) async fn mark_join_authorized_async(
     if let Some(binding) = prepared.binding.as_ref() {
         crate::internal::identity_custody::adopt_controller_document_async(
             core,
+            None,
             &prepared.did,
             &binding.store_id,
             &binding.identity_id,
