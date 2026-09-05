@@ -1267,6 +1267,122 @@ async fn prepare_external_provider_admin_join(
 }
 
 #[cfg(feature = "provider-traits")]
+async fn assert_external_provider_join_missing_pending_is_rejected(legacy_approval: bool) {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let admin = fixture.admin;
+    let started = fixture.started;
+    let prepared = fixture.prepared;
+    let authorization = fixture.authorization;
+    let store = JoinStateStore::new(&admin);
+    let mut state_before = store
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    let provider_operation_id = state_before
+        .approval
+        .as_ref()
+        .and_then(|approval| approval.provider_document_change_operation_id.as_deref())
+        .expect("the prepared external-provider Join stores its exact operation")
+        .to_owned();
+    if legacy_approval {
+        state_before
+            .approval
+            .as_mut()
+            .unwrap()
+            .provider_document_change_operation_id = None;
+        store.save(&state_before).unwrap();
+    } else {
+        assert_eq!(
+            state_before
+                .approval
+                .as_ref()
+                .unwrap()
+                .provider_document_change_operation_id
+                .as_deref(),
+            Some(provider_operation_id.as_str())
+        );
+    }
+
+    let client = admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let identity = client.runtime().identity_session.as_ref().unwrap();
+    let pending = identity.resume_document_change().await.unwrap().unwrap();
+    assert_eq!(
+        pending.candidate().await.unwrap().operation_id,
+        provider_operation_id
+    );
+    let attempt = pending.begin_publication().await.unwrap();
+    assert!(matches!(
+        pending
+            .complete(
+                attempt,
+                crate::internal::identity_provider::ProviderPublicationResult::RejectedBeforeAcceptance,
+            )
+            .await
+            .unwrap(),
+        crate::internal::identity_provider::ProviderDocumentChangeOutcome::Aborted
+    ));
+    let public_before = identity.public_identity().await.unwrap();
+    let status_before = identity.host_status().await.unwrap();
+    assert_ne!(public_before.document, prepared.new_document);
+    assert_ne!(
+        status_before.checkpoint,
+        Some(
+            crate::internal::identity_provider::ProviderDocumentCheckpoint {
+                document_version: authorization.checkpoint.document_version,
+                registry_version: authorization.checkpoint.registry_version,
+                document_digest: authorization.checkpoint.document_hash.clone(),
+            }
+        )
+    );
+    assert!(identity.resume_document_change().await.unwrap().is_none());
+    drop(client);
+
+    assert!(matches!(
+        mark_join_authorized_async(
+            &admin,
+            &started.session.join_session_id,
+            &authorization,
+            &prepared.new_document,
+        )
+        .await,
+        Err(crate::ImError::PermissionDenied)
+    ));
+    assert_eq!(
+        store
+            .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+            .unwrap()
+            .unwrap(),
+        state_before
+    );
+    let client = admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let identity = client.runtime().identity_session.as_ref().unwrap();
+    assert_eq!(identity.public_identity().await.unwrap(), public_before);
+    assert_eq!(identity.host_status().await.unwrap(), status_before);
+    assert!(identity.resume_document_change().await.unwrap().is_none());
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn external_provider_join_exact_operation_rejects_missing_pending_before_convergence() {
+    assert_external_provider_join_missing_pending_is_rejected(false).await;
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn external_provider_join_legacy_approval_rejects_missing_pending_before_convergence() {
+    assert_external_provider_join_missing_pending_is_rejected(true).await;
+}
+
+#[cfg(feature = "provider-traits")]
 #[tokio::test]
 async fn external_provider_completes_admin_join_signing_and_document_change() {
     let admin_root = tempfile::tempdir().unwrap();

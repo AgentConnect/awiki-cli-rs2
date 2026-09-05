@@ -1815,6 +1815,8 @@ pub(crate) async fn adopt_controller_document_async(
     document: &serde_json::Value,
     checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
+    let allow_verified_adoption_without_pending =
+        matches!(adoption, ControllerDocumentAdoption::HandleRecovery { .. });
     let expected_pending_operation_id = match adoption {
         ControllerDocumentAdoption::HandleRecovery {
             pending_operation_id,
@@ -1955,11 +1957,13 @@ pub(crate) async fn adopt_controller_document_async(
                 .map_err(crate::internal::identity_provider::map_provider_error)?,
             _ => return Err(crate::ImError::PermissionDenied),
         }
-    } else {
+    } else if allow_verified_adoption_without_pending {
         identity
             .adopt_verified_document(remote)
             .await
             .map_err(crate::internal::identity_provider::map_provider_error)?
+    } else {
+        return Err(crate::ImError::PermissionDenied);
     };
     if adopted.reference != reference {
         return Err(crate::ImError::PermissionDenied);
