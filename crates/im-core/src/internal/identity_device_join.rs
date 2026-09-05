@@ -88,6 +88,8 @@ struct DecryptedJoinChallenge {
 struct StoredAdminApproval {
     operation_id: String,
     input_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_document_change_operation_id: Option<String>,
     expected_checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
     new_document: Value,
     pairing_confirmation:
@@ -1477,6 +1479,7 @@ pub(crate) fn prepare_admin_approval(
     let approval = StoredAdminApproval {
         operation_id,
         input_hash,
+        provider_document_change_operation_id: None,
         expected_checkpoint: expected_checkpoint.clone(),
         new_document,
         pairing_confirmation,
@@ -1592,7 +1595,10 @@ pub(crate) async fn prepare_admin_approval_async(
     let agreement_public_key = crate::internal::identity_generation::public_key_multibase(
         &extract_identity_public_key(&snapshot.join_request.e2ee_public_key)?,
     )?;
-    let new_document = provider_document_change_candidate(
+    let ProviderDocumentChangeCandidate {
+        operation_id: provider_document_change_operation_id,
+        document: new_document,
+    } = provider_document_change_candidate(
         &client,
         json!({
             "changes": [{
@@ -1646,6 +1652,7 @@ pub(crate) async fn prepare_admin_approval_async(
     let approval = StoredAdminApproval {
         operation_id,
         input_hash,
+        provider_document_change_operation_id: Some(provider_document_change_operation_id),
         expected_checkpoint: expected_checkpoint.clone(),
         new_document,
         pairing_confirmation,
@@ -1818,8 +1825,19 @@ pub(crate) async fn mark_join_authorized_async(
         prepare_admin_projection_context_async(core, &admin_identity, &authorization.checkpoint)
             .await?;
     if let Some(binding) = prepared.binding.as_ref() {
+        let pending = snapshot
+            .approval
+            .as_ref()
+            .and_then(|approval| approval.provider_document_change_operation_id.as_deref())
+            .map(
+                crate::internal::identity_custody::DeviceJoinPendingDocumentChange::ExactOperation,
+            )
+            .unwrap_or(
+                crate::internal::identity_custody::DeviceJoinPendingDocumentChange::LegacyDocumentDigestCheckpoint,
+            );
         crate::internal::identity_custody::adopt_controller_document_async(
             core,
+            crate::internal::identity_custody::ControllerDocumentAdoption::DeviceJoin { pending },
             &prepared.did,
             &binding.store_id,
             &binding.identity_id,
@@ -4320,10 +4338,16 @@ async fn sign_object_proof_async(
     .map_err(|_| crate::ImError::PermissionDenied)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProviderDocumentChangeCandidate {
+    pub(crate) operation_id: String,
+    pub(crate) document: Value,
+}
+
 pub(crate) async fn provider_document_change_candidate(
     client: &crate::core::ImClient,
     request: Value,
-) -> crate::ImResult<Option<Value>> {
+) -> crate::ImResult<Option<ProviderDocumentChangeCandidate>> {
     let Some(identity) = client.runtime().identity_session.as_ref() else {
         return Ok(None);
     };
@@ -4343,7 +4367,10 @@ pub(crate) async fn provider_document_change_candidate(
     if !provider_candidate_digest_matches(&candidate.candidate_digest, &computed_digest) {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(Some(candidate.candidate_document))
+    Ok(Some(ProviderDocumentChangeCandidate {
+        operation_id: candidate.operation_id,
+        document: candidate.candidate_document,
+    }))
 }
 
 pub(crate) async fn complete_provider_document_change(

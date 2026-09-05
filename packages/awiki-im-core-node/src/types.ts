@@ -88,6 +88,15 @@ export interface ImCoreSealedSecretEnvelope {
   readonly ciphertext: string
 }
 
+/** JSON value accepted by Host identity-provider document operations. */
+export type ImCoreJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ImCoreJsonValue[]
+  | { [key: string]: ImCoreJsonValue }
+
 export interface ImCoreIdentityProvider {
   readonly protocol: 'anp-identity-provider-ts/1'
   readonly capabilities: readonly string[]
@@ -169,6 +178,21 @@ export interface ImCoreIdentityProvider {
         readonly created?: number
         readonly expires?: number
         readonly nonce?: string
+      }
+    },
+  ): Promise<unknown>
+  signDocumentProof(
+    reference: ImCoreIdentityReference,
+    request: {
+      readonly kid?: string
+      readonly document: ImCoreJsonValue
+      readonly options?: {
+        readonly proofPurpose?: string
+        readonly proofType?: string
+        readonly cryptosuite?: string
+        readonly created?: string
+        readonly domain?: string
+        readonly challenge?: string
       }
     },
   ): Promise<unknown>

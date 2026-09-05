@@ -64,6 +64,9 @@ function provider(overrides = {}) {
     signOriginProof: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
+    signDocumentProof: async () => {
+      throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
+    },
     prepareHttpSignature: async () => {
       throw Object.assign(new Error('not found'), { code: 'identity_not_found' })
     },
@@ -110,10 +113,11 @@ test('External Provider open performs one versioned readiness handshake', async 
   assert.deepEqual(calls, ['info'])
 })
 
-test('External Provider protocol and capabilities fail closed before Core opens', async t => {
+test('External Provider protocol, capabilities, and proof signer fail closed before Core opens', async t => {
   for (const identityProvider of [
     provider({ protocol: 'anp-identity-provider-ts/0' }),
     provider({ capabilities: ['IDENTITY_READ', 'IDENTITY_SIGN'] }),
+    provider({ signDocumentProof: undefined }),
   ]) {
     const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-provider-invalid-'))
     t.after(() => rm(root, { recursive: true, force: true }))
@@ -661,6 +665,138 @@ test('External Provider handshake is bounded by the Core operation timeout', asy
   )
 })
 
+test('External Provider rejects a non-JSON document proof result at the bridge boundary', async () => {
+  let calls = 0
+  const identityProvider = provider({
+    signDocumentProof: async () => {
+      calls += 1
+      return undefined
+    },
+  })
+  const dispatch = createIdentityProviderDispatch(identityProvider)
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+
+  const reply = await dispatch([{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({
+      identity,
+      request: { document: { id: identity.did } },
+    }),
+    buffers: [],
+  }])
+
+  assert.deepEqual(reply, {
+    ok: false,
+    payloadJson: 'null',
+    buffers: [],
+    errorCode: 'invalid_request',
+    retryable: false,
+  })
+  assert.equal(calls, 1)
+})
+
+test('External Provider document proof normalization never executes array accessors', async () => {
+  let getterCalls = 0
+  const accessorArray = []
+  Object.defineProperty(accessorArray, '0', {
+    get: () => {
+      getterCalls += 1
+      return 'must-not-run'
+    },
+    enumerable: true,
+    configurable: true,
+  })
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const request = [{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({ identity, request: { document: { id: identity.did } } }),
+    buffers: [],
+  }]
+  const rejected = await createIdentityProviderDispatch(provider({
+    signDocumentProof: async () => ({ id: identity.did, authentication: accessorArray }),
+  }))(request)
+
+  assert.equal(getterCalls, 0)
+  assert.deepEqual(rejected, {
+    ok: false,
+    payloadJson: 'null',
+    buffers: [],
+    errorCode: 'invalid_request',
+    retryable: false,
+  })
+
+  const document = Object.freeze({
+    id: identity.did,
+    verificationMethod: Object.freeze([
+      Object.freeze({
+        id: `${identity.did}#root`,
+        purposes: Object.freeze(['assertionMethod']),
+      }),
+    ]),
+    authentication: Object.freeze([`${identity.did}#root`]),
+  })
+  const normalized = await createIdentityProviderDispatch(provider({
+    signDocumentProof: async () => document,
+  }))(request)
+  assert.equal(normalized.ok, true)
+  assert.deepEqual(JSON.parse(normalized.payloadJson), document)
+})
+
+test('External Provider document proof normalization rejects Proxies without invoking traps', async () => {
+  function trappedProxy(target) {
+    const calls = { get: 0, getOwnPropertyDescriptor: 0, getPrototypeOf: 0, ownKeys: 0 }
+    return {
+      calls,
+      value: new Proxy(target, {
+        get(inner, property, receiver) {
+          calls.get += 1
+          return Reflect.get(inner, property, receiver)
+        },
+        getOwnPropertyDescriptor(inner, property) {
+          calls.getOwnPropertyDescriptor += 1
+          return Reflect.getOwnPropertyDescriptor(inner, property)
+        },
+        getPrototypeOf(inner) {
+          calls.getPrototypeOf += 1
+          return Reflect.getPrototypeOf(inner)
+        },
+        ownKeys(inner) {
+          calls.ownKeys += 1
+          return Reflect.ownKeys(inner)
+        },
+      }),
+    }
+  }
+
+  const identity = { storeId: 'store-1', identityId: 'identity-1', did: 'did:wba:example.test:alice' }
+  const request = [{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({ identity, request: { document: { id: identity.did } } }),
+    buffers: [],
+  }]
+  for (const fixture of [
+    trappedProxy([identity.did, { nested: ['dense'] }]),
+    trappedProxy({ id: identity.did, authentication: [`${identity.did}#root`] }),
+  ]) {
+    const reply = await createIdentityProviderDispatch(provider({
+      signDocumentProof: async () => ({ id: identity.did, proxiedValue: fixture.value }),
+    }))(request)
+    assert.deepEqual(reply, {
+      ok: false,
+      payloadJson: 'null',
+      buffers: [],
+      errorCode: 'invalid_request',
+      retryable: false,
+    })
+    assert.deepEqual(fixture.calls, {
+      get: 0,
+      getOwnPropertyDescriptor: 0,
+      getPrototypeOf: 0,
+      ownKeys: 0,
+    })
+  }
+})
+
 test('External Provider hot paths make one call and keep binary values out of JSON', async () => {
   const calls = []
   const identityProvider = provider({
@@ -671,6 +807,10 @@ test('External Provider hot paths make one call and keep binary values out of JS
     signOriginProof: async (identity, request) => {
       calls.push({ operation: 'origin', identity, request })
       return { contentDigest: 'sha-256=:digest:', signatureInput: 'sig1=()', signature: 'sig1=:value:' }
+    },
+    signDocumentProof: async (identity, request) => {
+      calls.push({ operation: 'document', identity, request })
+      return { ...request.document, proof: { verificationMethod: request.kid } }
     },
     prepareHttpSignature: async request => {
       calls.push({ operation: 'http', request })
@@ -710,6 +850,31 @@ test('External Provider hot paths make one call and keep binary values out of JS
   assert.equal(origin.ok, true)
   assert.equal(origin.buffers.length, 0)
 
+  const document = await dispatch([{
+    operation: 'signDocumentProof',
+    payloadJson: JSON.stringify({
+      identity,
+      request: {
+        kid: `${identity.did}#root`,
+        document: { id: identity.did },
+        options: {
+          proofPurpose: 'assertionMethod',
+          proofType: 'DataIntegrityProof',
+          cryptosuite: 'eddsa-jcs-2022',
+          created: '2026-09-03T09:00:00Z',
+          domain: 'example.test',
+          challenge: 'fresh-challenge',
+        },
+      },
+    }),
+    buffers: [],
+  }])
+  assert.equal(document.ok, true)
+  assert.deepEqual(JSON.parse(document.payloadJson), {
+    id: identity.did,
+    proof: { verificationMethod: `${identity.did}#root` },
+  })
+
   const body = Buffer.from('request-body')
   const http = await dispatch([{
     operation: 'prepareHttpSignature',
@@ -737,11 +902,12 @@ test('External Provider hot paths make one call and keep binary values out of JS
   }])
   assert.equal(ecdh.ok, true)
   assert.deepEqual(JSON.parse(ecdh.payloadJson), sealedDelivery())
-  assert.equal(calls.length, 4)
+  assert.equal(calls.length, 5)
   assert.equal(calls[0].request.payload, signInput)
-  assert.equal(calls[2].request.body, body)
-  assert.equal(calls[3].request.peerPublic, peerPublic)
-  assert.equal(calls[3].request.recipientPublicKey, recipientPublicKey)
+  assert.equal(calls[2].request.options.challenge, 'fresh-challenge')
+  assert.equal(calls[3].request.body, body)
+  assert.equal(calls[4].request.peerPublic, peerPublic)
+  assert.equal(calls[4].request.recipientPublicKey, recipientPublicKey)
 })
 
 test('real External Provider matches the shared Direct semantic fixture', async t => {

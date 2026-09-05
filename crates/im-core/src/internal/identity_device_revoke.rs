@@ -601,6 +601,7 @@ async fn prepare_initial_intent(
         )
         .await?
         .ok_or(crate::ImError::PermissionDenied)?
+        .document
     } else {
         let root_key_id = format!("{}#key-1", did.as_str());
         let mut new_document = anp::authentication::remove_device_from_did_document(

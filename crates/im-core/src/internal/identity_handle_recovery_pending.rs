@@ -488,6 +488,30 @@ impl PendingHandleRecoveryV4 {
         identity_signing_public_jwk(&self.identity)
     }
 
+    /// Replaces only the root proof projection before the enclosing factor
+    /// mutation advances the revision. Recovery intent hashes deliberately
+    /// exclude `proof`, so this is safe both before the first Commit and after
+    /// an absent-result reconciliation of the same frozen intent.
+    pub(crate) fn replace_identity_document_proof(
+        &mut self,
+        did_document: serde_json::Value,
+    ) -> crate::ImResult<()> {
+        let old_intent_hash = self.intent_hash.clone();
+        let old_document_hash = v4_did_document_hash(&self.identity.did_document)?;
+        let mut candidate = self.identity.clone();
+        candidate.did_document = did_document;
+        candidate.validate()?;
+        if v4_did_document_hash(&candidate.did_document)? != old_document_hash {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.identity = candidate;
+        self.validate()?;
+        if self.intent_hash != old_intent_hash {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
+    }
+
     /// Reissues only the expiring Grant/JTI. The immutable intent and its
     /// authoritative binding snapshot must remain byte-for-byte unchanged.
     pub(crate) fn refresh_grant(

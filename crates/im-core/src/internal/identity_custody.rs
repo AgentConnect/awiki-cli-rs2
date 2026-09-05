@@ -916,12 +916,132 @@ pub(crate) async fn handle_recovery_identity_async(
         .map_err(crate::internal::identity_provider::map_provider_error)?;
     if public.reference != reference
         || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
-        || crate::internal::identity_wire::document::document_hash(&public.document)?
-            != crate::internal::identity_wire::document::document_hash(&expected.did_document)?
+        || document_without_proof(&public.document)?
+            != document_without_proof(&expected.did_document)?
+        || anp::authentication::verify_active_e1_document(
+            expected.did.as_str(),
+            &expected.did_document,
+        )
+        .is_err()
     {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(identity)
+}
+
+pub(crate) async fn refresh_fresh_handle_recovery_document_async(
+    core: &crate::core::ImCore,
+    expected: &crate::internal::identity_handle_recovery_pending::HandleRecoveryIdentityRef,
+) -> crate::ImResult<serde_json::Value> {
+    use rand::RngCore as _;
+
+    expected.validate()?;
+    let custody = controller_custody_provider(core).await?;
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: expected.store_id.clone(),
+        identity_id: expected.identity_id.clone(),
+        did: expected.did.as_str().to_owned(),
+    };
+    let identity = custody
+        .open_identity(&reference)
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let public = identity
+        .public_identity()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if public.reference != reference
+        || public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || !public.active_keys.iter().any(|key| {
+            key.kid == expected.root_key_id
+                && key
+                    .purposes
+                    .contains(&crate::internal::identity_provider::ProviderKeyPurpose::RootControl)
+        })
+        || document_without_proof(&public.document)?
+            != document_without_proof(&expected.did_document)?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let proof = expected.did_document.get("proof");
+    let domain = proof
+        .and_then(|value| value.get("domain"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            crate::internal::identity_join_activation_pending::service_domain_from_did(
+                &expected.did,
+            )
+            .ok()
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut unsigned = expected.did_document.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .remove("proof");
+    let created = time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let mut challenge_bytes = [0_u8; 16];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut challenge_bytes)
+        .map_err(|_| crate::ImError::Internal {
+            message: "generate Handle Recovery document proof challenge failed".to_owned(),
+        })?;
+    let challenge = challenge_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let refreshed = custody
+        .sign_document_proof(
+            &reference,
+            crate::internal::identity_provider::ProviderDocumentProofRequest {
+                key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                    expected.root_key_id.clone(),
+                ),
+                document: unsigned,
+                options: crate::internal::identity_provider::ProviderDocumentProofOptions {
+                    proof_purpose: Some("assertionMethod".to_owned()),
+                    proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                    cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                    created: Some(created.clone()),
+                    domain: Some(domain),
+                    challenge: Some(challenge),
+                },
+            },
+        )
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if refreshed
+        .get("proof")
+        .and_then(|value| value.get("verificationMethod"))
+        .and_then(serde_json::Value::as_str)
+        != Some(expected.root_key_id.as_str())
+        || refreshed
+            .get("proof")
+            .and_then(|value| value.get("created"))
+            .and_then(serde_json::Value::as_str)
+            != Some(created.as_str())
+        || document_without_proof(&refreshed)? != document_without_proof(&expected.did_document)?
+        || anp::authentication::verify_active_e1_document(expected.did.as_str(), &refreshed)
+            .is_err()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(refreshed)
+}
+
+fn document_without_proof(document: &serde_json::Value) -> crate::ImResult<serde_json::Value> {
+    let mut document = document.clone();
+    document
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .remove("proof");
+    Ok(document)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1606,8 +1726,7 @@ fn validate_adopted_provider_identity(
     document: &serde_json::Value,
 ) -> crate::ImResult<()> {
     if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
-        || crate::internal::identity_wire::document::document_hash(&public.document)?
-            != crate::internal::identity_wire::document::document_hash(document)?
+        || document_without_proof(&public.document)? != document_without_proof(document)?
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1671,14 +1790,52 @@ pub(crate) fn adopt_controller_document(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ControllerDocumentAdoption<'a> {
+    HandleRecovery {
+        pending_operation_id: &'a str,
+    },
+    DeviceJoin {
+        pending: DeviceJoinPendingDocumentChange<'a>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DeviceJoinPendingDocumentChange<'a> {
+    ExactOperation(&'a str),
+    LegacyDocumentDigestCheckpoint,
+}
+
 pub(crate) async fn adopt_controller_document_async(
     core: &crate::core::ImCore,
+    adoption: ControllerDocumentAdoption<'_>,
     did: &crate::ids::Did,
     store_id: &str,
     identity_id: &str,
     document: &serde_json::Value,
     checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
+    let allow_verified_adoption_without_pending =
+        matches!(adoption, ControllerDocumentAdoption::HandleRecovery { .. });
+    let expected_pending_operation_id = match adoption {
+        ControllerDocumentAdoption::HandleRecovery {
+            pending_operation_id,
+        } => {
+            crate::internal::identity_wire::handle_recovery::validate_operation_id(
+                pending_operation_id,
+            )?;
+            Some(pending_operation_id)
+        }
+        ControllerDocumentAdoption::DeviceJoin {
+            pending: DeviceJoinPendingDocumentChange::ExactOperation(pending_operation_id),
+        } if !pending_operation_id.trim().is_empty() => Some(pending_operation_id),
+        ControllerDocumentAdoption::DeviceJoin {
+            pending: DeviceJoinPendingDocumentChange::LegacyDocumentDigestCheckpoint,
+        } => None,
+        ControllerDocumentAdoption::DeviceJoin { .. } => {
+            return Err(crate::ImError::PermissionDenied)
+        }
+    };
     if crate::internal::identity_wire::document::document_hash(document)?
         != checkpoint.document_hash
     {
@@ -1703,19 +1860,141 @@ pub(crate) async fn adopt_controller_document_async(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    if crate::internal::identity_wire::document::document_hash(&before.document)?
-        == checkpoint.document_hash
-    {
-        return validate_adopted_provider_identity(&before, document);
-    }
-    let adopted = identity
-        .adopt_verified_document(provider_verified_document(document, checkpoint))
+    let before_status = identity
+        .host_status()
         .await
         .map_err(crate::internal::identity_provider::map_provider_error)?;
+    if before_status.root_capability
+        != crate::internal::identity_provider::ProviderRootCapability::Active
+        || checkpoint.document_version == 0
+        || checkpoint.registry_version == 0
+        || before_status.checkpoint.as_ref().is_some_and(|current| {
+            checkpoint.document_version < current.document_version
+                || checkpoint.registry_version < current.registry_version
+                || (checkpoint.document_version == current.document_version
+                    && checkpoint.document_hash != current.document_digest)
+        })
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let remote = provider_verified_document(document, checkpoint);
+    let exact_checkpoint = crate::internal::identity_provider::ProviderDocumentCheckpoint {
+        document_version: checkpoint.document_version,
+        registry_version: checkpoint.registry_version,
+        document_digest: checkpoint.document_hash.clone(),
+    };
+    if before.document == *document && before_status.checkpoint.as_ref() == Some(&exact_checkpoint)
+    {
+        return validate_exact_adopted_controller_document(
+            &identity, &before, document, checkpoint,
+        )
+        .await;
+    }
+    let adopted = if let Some(change) = identity
+        .resume_document_change()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?
+    {
+        let candidate = change
+            .candidate()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        let remote_digest = checkpoint
+            .document_hash
+            .strip_prefix("sha256:")
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if candidate.operation_id.trim().is_empty()
+            || expected_pending_operation_id
+                .is_some_and(|expected| candidate.operation_id != expected)
+            || candidate.candidate_digest != remote_digest
+            || candidate.candidate_document != *document
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let outcome = match change
+            .host_phase()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+        {
+            crate::internal::identity_provider::ProviderDocumentChangePhase::PublicationUncertain => {
+                change
+                    .reconcile(remote.clone())
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?
+            }
+            crate::internal::identity_provider::ProviderDocumentChangePhase::Prepared
+            | crate::internal::identity_provider::ProviderDocumentChangePhase::PublicationInFlight
+            | crate::internal::identity_provider::ProviderDocumentChangePhase::Published => {
+                let attempt = change
+                    .begin_publication()
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?;
+                if attempt.operation_id != candidate.operation_id
+                    || attempt.candidate_digest != candidate.candidate_digest
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                change
+                    .complete(
+                        attempt,
+                        crate::internal::identity_provider::ProviderPublicationResult::Confirmed {
+                            evidence: crate::internal::identity_provider::ProviderPublicationEvidence {
+                                document_digest: candidate.candidate_digest,
+                                ..remote.evidence.clone()
+                            },
+                        },
+                    )
+                    .await
+                    .map_err(crate::internal::identity_provider::map_provider_error)?
+            }
+        };
+        match outcome {
+            crate::internal::identity_provider::ProviderDocumentChangeOutcome::Committed {
+                ..
+            } => identity
+                .adopt_verified_document(remote)
+                .await
+                .map_err(crate::internal::identity_provider::map_provider_error)?,
+            _ => return Err(crate::ImError::PermissionDenied),
+        }
+    } else if allow_verified_adoption_without_pending {
+        identity
+            .adopt_verified_document(remote)
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?
+    } else {
+        return Err(crate::ImError::PermissionDenied);
+    };
     if adopted.reference != reference {
         return Err(crate::ImError::PermissionDenied);
     }
-    validate_adopted_provider_identity(&adopted, document)
+    validate_exact_adopted_controller_document(&identity, &adopted, document, checkpoint).await
+}
+
+async fn validate_exact_adopted_controller_document(
+    identity: &std::sync::Arc<dyn crate::internal::identity_provider::IdentitySession>,
+    public: &crate::internal::identity_provider::ProviderPublicIdentity,
+    document: &serde_json::Value,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+) -> crate::ImResult<()> {
+    let status = identity
+        .host_status()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let expected_checkpoint = crate::internal::identity_provider::ProviderDocumentCheckpoint {
+        document_version: checkpoint.document_version,
+        registry_version: checkpoint.registry_version,
+        document_digest: checkpoint.document_hash.clone(),
+    };
+    if public.state != crate::internal::identity_provider::ProviderIdentityState::Active
+        || public.document != *document
+        || status.root_capability
+            != crate::internal::identity_provider::ProviderRootCapability::Active
+        || status.checkpoint.as_ref() != Some(&expected_checkpoint)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "identity-native-anp")]
@@ -3952,6 +4231,257 @@ mod tests {
         let identities = provider.list_identities().await.unwrap();
         assert_eq!(identities.len(), 1);
         assert_eq!(identities[0].reference.did, replacement.did.as_str());
+    }
+
+    #[cfg(feature = "provider-traits")]
+    #[tokio::test]
+    async fn external_provider_adoption_binds_pending_operation_document_and_checkpoint_exactly() {
+        use crate::internal::identity_provider::IdentityCustody as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let provider_root = tempfile::tempdir().unwrap();
+        let manager =
+            anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+                state_root: provider_root.path().to_path_buf(),
+                root_key: anp_identity::RootKeySource::Injected(
+                    anp_identity::InjectedStoreKey::new("external-adoption", [0x74; 32]),
+                ),
+            })
+            .unwrap();
+        let provider = std::sync::Arc::new(
+            crate::internal::identity_provider::DirectAnpIdentityCustody::new(manager),
+        );
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions::default().with_identity_custody_provider(provider.clone()),
+        )
+        .unwrap();
+
+        let identity = provision_registration_identity_async(&core, "example.test", "adoption")
+            .await
+            .unwrap();
+        let reference = crate::internal::identity_provider::ProviderIdentityRef {
+            store_id: identity.controller_store_id.clone(),
+            identity_id: identity.controller_identity_id.clone(),
+            did: identity.did.as_str().to_owned(),
+        };
+        let before = provider
+            .open_identity(&reference)
+            .await
+            .unwrap()
+            .public_identity()
+            .await
+            .unwrap();
+        let (candidate, operation_id) = refresh_registration_document_async(&core, &identity)
+            .await
+            .unwrap();
+        let reproofed_remote = provider
+            .sign_document_proof(
+                &reference,
+                crate::internal::identity_provider::ProviderDocumentProofRequest {
+                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                        identity.root_key_id.clone(),
+                    ),
+                    document: candidate.clone(),
+                    options: crate::internal::identity_provider::ProviderDocumentProofOptions {
+                        proof_purpose: Some("assertionMethod".to_owned()),
+                        proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                        cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                        created: Some("2026-09-03T11:00:00Z".to_owned()),
+                        domain: Some("example.test".to_owned()),
+                        challenge: Some("test-recovery-challenge".to_owned()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let reproofed_checkpoint =
+            crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: 2,
+                document_hash: crate::internal::identity_wire::document::document_hash(
+                    &reproofed_remote,
+                )
+                .unwrap(),
+                registry_version: 2,
+            };
+        assert_eq!(
+            document_without_proof(&reproofed_remote).unwrap(),
+            document_without_proof(&candidate).unwrap()
+        );
+        assert_ne!(reproofed_remote, candidate);
+        let session = provider.open_identity(&reference).await.unwrap();
+        let prepared = session
+            .resume_document_change()
+            .await
+            .unwrap()
+            .unwrap()
+            .candidate()
+            .await
+            .unwrap();
+        assert_eq!(prepared.candidate_document, candidate);
+        assert_eq!(
+            Some(prepared.candidate_digest.as_str()),
+            crate::internal::identity_wire::document::document_hash(&candidate)
+                .unwrap()
+                .strip_prefix("sha256:")
+        );
+
+        let candidate_checkpoint =
+            crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: 2,
+                document_hash: crate::internal::identity_wire::document::document_hash(&candidate)
+                    .unwrap(),
+                registry_version: 2,
+            };
+        let before_checkpoint = session
+            .host_status()
+            .await
+            .unwrap()
+            .checkpoint
+            .expect("the provisioned provider identity has a checkpoint");
+        let regressed_checkpoint =
+            crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: before_checkpoint.document_version,
+                document_hash: candidate_checkpoint.document_hash.clone(),
+                registry_version: before_checkpoint.registry_version,
+            };
+        for (expected_operation_id, remote, checkpoint) in [
+            (
+                Some("different-recovery-operation"),
+                &candidate,
+                &candidate_checkpoint,
+            ),
+            (
+                Some(operation_id.as_str()),
+                &reproofed_remote,
+                &reproofed_checkpoint,
+            ),
+            (
+                Some(operation_id.as_str()),
+                &candidate,
+                &reproofed_checkpoint,
+            ),
+            (
+                Some(operation_id.as_str()),
+                &candidate,
+                &regressed_checkpoint,
+            ),
+        ] {
+            assert!(matches!(
+                adopt_controller_document_async(
+                    &core,
+                    ControllerDocumentAdoption::HandleRecovery {
+                        pending_operation_id: expected_operation_id.unwrap(),
+                    },
+                    &identity.did,
+                    &identity.controller_store_id,
+                    &identity.controller_identity_id,
+                    remote,
+                    checkpoint,
+                )
+                .await,
+                Err(crate::ImError::PermissionDenied)
+            ));
+            let session = provider.open_identity(&reference).await.unwrap();
+            assert_eq!(session.public_identity().await.unwrap(), before);
+            let preserved = session
+                .resume_document_change()
+                .await
+                .unwrap()
+                .expect("a mismatched recovery must preserve the provider transaction");
+            assert_eq!(preserved.candidate().await.unwrap(), prepared);
+            assert_eq!(
+                preserved.host_phase().await.unwrap(),
+                crate::internal::identity_provider::ProviderDocumentChangePhase::Prepared
+            );
+        }
+
+        adopt_controller_document_async(
+            &core,
+            ControllerDocumentAdoption::HandleRecovery {
+                pending_operation_id: &operation_id,
+            },
+            &identity.did,
+            &identity.controller_store_id,
+            &identity.controller_identity_id,
+            &candidate,
+            &candidate_checkpoint,
+        )
+        .await
+        .unwrap();
+
+        let session = provider.open_identity(&reference).await.unwrap();
+        let public = session.public_identity().await.unwrap();
+        assert_eq!(public.document, candidate);
+        assert_eq!(
+            session.host_status().await.unwrap().checkpoint,
+            Some(
+                crate::internal::identity_provider::ProviderDocumentCheckpoint {
+                    document_version: candidate_checkpoint.document_version,
+                    registry_version: candidate_checkpoint.registry_version,
+                    document_digest: candidate_checkpoint.document_hash.clone(),
+                }
+            )
+        );
+        assert!(session.resume_document_change().await.unwrap().is_none());
+
+        let exact_remote = provider
+            .sign_document_proof(
+                &reference,
+                crate::internal::identity_provider::ProviderDocumentProofRequest {
+                    key: crate::internal::identity_provider::ProviderKeySelector::Kid(
+                        identity.root_key_id.clone(),
+                    ),
+                    document: public.document,
+                    options: crate::internal::identity_provider::ProviderDocumentProofOptions {
+                        proof_purpose: Some("assertionMethod".to_owned()),
+                        proof_type: Some(anp::proof::PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+                        cryptosuite: Some(anp::proof::CRYPTOSUITE_EDDSA_JCS_2022.to_owned()),
+                        created: Some("2026-09-03T11:01:00Z".to_owned()),
+                        domain: Some("example.test".to_owned()),
+                        challenge: Some("exact-remote-proof".to_owned()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let exact_checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+            document_version: 3,
+            document_hash: crate::internal::identity_wire::document::document_hash(&exact_remote)
+                .unwrap(),
+            registry_version: 3,
+        };
+        adopt_controller_document_async(
+            &core,
+            ControllerDocumentAdoption::HandleRecovery {
+                pending_operation_id: "recovery-without-provider-change",
+            },
+            &identity.did,
+            &reference.store_id,
+            &reference.identity_id,
+            &exact_remote,
+            &exact_checkpoint,
+        )
+        .await
+        .unwrap();
+        let session = provider.open_identity(&reference).await.unwrap();
+        let persisted = session.public_identity().await.unwrap();
+        assert_eq!(persisted.document, exact_remote);
+        assert_eq!(
+            crate::internal::identity_wire::document::document_hash(&persisted.document).unwrap(),
+            exact_checkpoint.document_hash
+        );
+        assert_eq!(
+            session.host_status().await.unwrap().checkpoint,
+            Some(
+                crate::internal::identity_provider::ProviderDocumentCheckpoint {
+                    document_version: exact_checkpoint.document_version,
+                    registry_version: exact_checkpoint.registry_version,
+                    document_digest: exact_checkpoint.document_hash,
+                }
+            )
+        );
     }
 
     #[test]

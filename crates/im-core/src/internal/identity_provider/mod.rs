@@ -629,6 +629,26 @@ pub struct ProviderObjectProofRequest {
     pub created: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDocumentProofOptions {
+    pub proof_purpose: Option<String>,
+    pub proof_type: Option<String>,
+    pub cryptosuite: Option<String>,
+    pub created: Option<String>,
+    pub domain: Option<String>,
+    pub challenge: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDocumentProofRequest {
+    pub key: ProviderKeySelector,
+    pub document: Value,
+    #[serde(default)]
+    pub options: ProviderDocumentProofOptions,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProviderSignedOriginProof {
@@ -855,6 +875,17 @@ pub trait IdentityCustody: Send + Sync {
         identity: &ProviderIdentityRef,
         request: ProviderObjectProofRequest,
     ) -> ProviderResult<Value>;
+
+    async fn sign_document_proof(
+        &self,
+        _identity: &ProviderIdentityRef,
+        _request: ProviderDocumentProofRequest,
+    ) -> ProviderResult<Value> {
+        Err(IdentityProviderError::new(
+            IdentityProviderErrorCode::CapabilityUnavailable,
+            false,
+        ))
+    }
 
     async fn import_legacy_root(
         &self,

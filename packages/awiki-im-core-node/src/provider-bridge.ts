@@ -1,3 +1,4 @@
+import { types as nodeUtilTypes } from 'node:util'
 import type {
   NativeIdentityProviderCall,
   NativeIdentityProviderDispatch,
@@ -7,6 +8,7 @@ import {
   ImCoreNodeError,
   type ImCoreIdentityProvider,
   type ImCoreIdentityReference,
+  type ImCoreJsonValue,
   type ImCorePreparedIdentityMaterialImport,
   type ImCoreProviderDocumentChangeSession,
   type ImCoreProviderEnrollmentSession,
@@ -33,7 +35,7 @@ export function createIdentityProviderDispatch(
   if (REQUIRED_CAPABILITIES.some(capability => !capabilities.has(capability))) throw incompatible()
   for (const method of [
     'info', 'recover', 'list', 'publicIdentity', 'hostStatus', 'create', 'delete', 'recoverIdentity',
-    'sign', 'signOriginProof', 'prepareHttpSignature', 'ecdhSealed',
+    'sign', 'signOriginProof', 'signDocumentProof', 'prepareHttpSignature', 'ecdhSealed',
     'prepareDocumentChange', 'resumeDocumentChange', 'adoptVerifiedDocument',
     'prepareIdentityTransition', 'resumeIdentityTransition',
     'beginDeviceEnrollment', 'beginRequestSigningEnrollment', 'resumeEnrollment',
@@ -85,6 +87,12 @@ export function createIdentityProviderDispatch(
             reference(payload.identity),
             object(payload.request) as never,
           ))
+        case 'signDocumentProof': {
+          return success(jsonValue(await provider.signDocumentProof(
+            reference(payload.identity),
+            object(payload.request) as never,
+          )))
+        }
         case 'ecdhSealed': {
           const [peerPublic, recipientPublicKey] = pairBuffers(request.buffers)
           return success(await provider.ecdhSealed({
@@ -500,6 +508,67 @@ function object(value: unknown): Record<string, unknown> {
     throw new TypeError('identity provider payload must be an object')
   }
   return value as Record<string, unknown>
+}
+
+function jsonValue(value: unknown, ancestors = new Set<object>()): ImCoreJsonValue {
+  if (nodeUtilTypes.isProxy(value)) throw new TypeError('identity provider JSON value is invalid')
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return value
+    throw new TypeError('identity provider JSON value is invalid')
+  }
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) throw new TypeError('identity provider JSON value is invalid')
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+    if (lengthDescriptor === undefined
+      || !('value' in lengthDescriptor)
+      || typeof lengthDescriptor.value !== 'number'
+      || !Number.isInteger(lengthDescriptor.value)
+      || lengthDescriptor.value < 0
+      || lengthDescriptor.enumerable
+      || lengthDescriptor.configurable) {
+      throw new TypeError('identity provider JSON value is invalid')
+    }
+    const length = lengthDescriptor.value
+    if (Reflect.ownKeys(value).length !== length + 1) {
+      throw new TypeError('identity provider JSON value is invalid')
+    }
+    ancestors.add(value)
+    const result: ImCoreJsonValue[] = []
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+        throw new TypeError('identity provider JSON value is invalid')
+      }
+      result.push(jsonValue(descriptor.value, ancestors))
+    }
+    ancestors.delete(value)
+    return result
+  }
+  if (typeof value !== 'object'
+    || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+    || ancestors.has(value)) {
+    throw new TypeError('identity provider JSON value is invalid')
+  }
+  ancestors.add(value)
+  const result: { [key: string]: ImCoreJsonValue } = {}
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (typeof key !== 'string'
+      || descriptor === undefined
+      || !descriptor.enumerable
+      || !('value' in descriptor)) {
+      throw new TypeError('identity provider JSON value is invalid')
+    }
+    Object.defineProperty(result, key, {
+      value: jsonValue(descriptor.value, ancestors),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+  }
+  ancestors.delete(value)
+  return result
 }
 
 function reference(value: unknown): ImCoreIdentityReference {
