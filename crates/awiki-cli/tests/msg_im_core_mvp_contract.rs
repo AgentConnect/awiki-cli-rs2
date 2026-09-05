@@ -842,6 +842,7 @@ fn register_generated_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) -> TestIdentity {
+    write_default_tenant_registry(workspace, "https://awiki.ai", "awiki.ai");
     let identity = write_ready_identity(
         workspace,
         TestIdentityOptions {
@@ -862,6 +863,7 @@ fn register_generated_read_identity(
     handle: &str,
     jwt_token: &str,
 ) -> TestIdentity {
+    write_default_tenant_registry(workspace, "https://awiki.ai", "awiki.ai");
     let identity = write_ready_identity(
         workspace,
         TestIdentityOptions {

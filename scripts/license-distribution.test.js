@@ -27,7 +27,10 @@ test('CLI and Daemon release plans include the complete AWiki license bundle', (
     '--os', 'linux', '--arch', 'amd64',
   ]);
   assert.equal(cli.status, 0, cli.stderr || cli.stdout);
-  assert.match(cli.stdout, new RegExp(`Would include: awiki-cli ${bundle}`));
+  assert.match(
+    cli.stdout,
+    new RegExp(`Would include: awiki-cli BUILTIN-TENANTS\\.json ${bundle}`),
+  );
 
   const daemon = run('scripts/release/daemon/_build-artifact.sh', [
     '--dry-run', '--version', '0.1.84', '--os', 'linux', '--arch', 'amd64',

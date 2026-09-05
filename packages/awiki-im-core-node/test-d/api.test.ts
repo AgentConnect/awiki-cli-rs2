@@ -78,6 +78,8 @@ void opened.then(async client => {
     }
   }
   const localJoins = await client.listLocalDeviceJoinSessions()
+  const retiredForRejoin = await client.retireDefaultIdentityForRejoin()
+  retiredForRejoin satisfies void
   localJoins[0]?.side satisfies 'new_device' | 'admin' | undefined
   const currentDevice = await client.getCurrentDeviceSummary()
   currentDevice.canManage satisfies boolean

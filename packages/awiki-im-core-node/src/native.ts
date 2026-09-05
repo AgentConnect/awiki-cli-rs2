@@ -158,6 +158,7 @@ export interface NativeImCoreNodeClient {
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
+  retireDefaultIdentityForRejoin(): Promise<void>
   clearLocalData(): Promise<{ readonly cleared: boolean }>
   close(): Promise<void>
 }

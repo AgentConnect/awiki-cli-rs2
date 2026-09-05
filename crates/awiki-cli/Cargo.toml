@@ -53,6 +53,9 @@ webpki-roots.workspace = true
 zeroize.workspace = true
 x25519-dalek = { workspace = true, optional = true }
 
+[build-dependencies]
+serde_json.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
 windows-sys = { version = "0.52", features = [

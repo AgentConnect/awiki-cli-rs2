@@ -31,6 +31,7 @@
 | 邮件读取 | `readMail` | `email().read_async` |
 | 邮件已读 | `markMailRead` | `email().mark_read_async` |
 | 纯文本邮件发送 | `sendMail` | `email().send_async` |
+| 当前设备重新加入准备 | `retireDefaultIdentityForRejoin` | `delete_local_identity_async(Default)` 的 credential-only 路径 |
 | 清空本地状态 | `clearLocalData` | Node 环境生命周期拥有的 state root |
 
 同一份映射在 `crates/im-core-node/tests/public_parity.rs` 中作为可执行表维护。绑定层没有 legacy
@@ -101,6 +102,9 @@ identity-bound `ImClient`。I/O 方法全部返回 Promise，Rust async I/O 不�
 
 普通关闭的生命周期固定为 `open → closing → closed`：
 
+- `retireDefaultIdentityForRejoin()` 在 mutation/write gate 内停止 realtime，只退役当前设备的
+  default identity credential 并保留消息、会话和附件等普通本地数据；成功后 client 保持 open，
+  但在新设备 Join 完成前所有 identity-bound API 都返回 `identity_required`；
 - `clearLocalData()` 在持有 mutation/write gate 时先停止 realtime，删除该 profile 独占的外部
   identity provider 中全部 active/enrolling 身份，再在 state-root 锁内等待既有操作退出，释放
   Core/SQLite 句柄并删除 `identities`、`local`、`cache`、`tmp`、`vault` 与兼容元数据，然后重新初始化
@@ -212,6 +216,10 @@ key；`clearLocalData()` 删除整个 SDK-owned Vault 后重新生成 key。该�
 identity-provider store，但不删除远端账号或 Handle、不撤销其他设备，不跟随被替换为符号链接的
 运行目录，也不删除 state root 中未声明为 SDK-owned 的其他文件。provider 清理失败时不会继续
 擦除 Core state，调用方应保留显式清除界面供用户重试。
+
+`retireDefaultIdentityForRejoin()` 不等同于清空本地状态。它只为“当前设备已被远端撤销后，以
+新设备密钥重新申请加入”退役旧 credential；普通消息和会话数据继续保留。Host 必须在用户明确
+选择重新加入后调用，并继续走标准 Join、管理设备审批与新凭证激活流程。
 
 Rust 错误和 panic 都在 N-API 边界收敛为固定的
 `{ code, safeMessage, retryable }`。原始 server message/data、token、OTP、路径、密钥和附件

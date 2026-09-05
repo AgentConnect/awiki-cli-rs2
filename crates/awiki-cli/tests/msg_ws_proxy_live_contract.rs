@@ -131,6 +131,7 @@ fn register_ready_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) {
+    write_default_tenant_registry(workspace, "https://awiki.ai", "awiki.ai");
     set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[

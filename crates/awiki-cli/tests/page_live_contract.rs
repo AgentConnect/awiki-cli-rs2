@@ -81,6 +81,7 @@ fn page_create_live_command_dispatches_through_im_core_content_rpc() {
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
+    write_default_tenant_registry(workspace, "https://awiki.ai", "awiki.ai");
     set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[

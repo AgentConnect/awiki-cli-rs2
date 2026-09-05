@@ -206,7 +206,10 @@ impl AgentInventoryClient for MockRegistrationClient {
 
 fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     let root = tempfile::tempdir().unwrap();
-    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+    // Status snapshots must remain an offline contract test even when the
+    // product's fresh-install download host changes.
+    config.download_base_url = format!("file://{}", root.path().join("release-fixture").display());
     config.ensure_state_layout().unwrap();
     let state = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
     state.initialize().unwrap();

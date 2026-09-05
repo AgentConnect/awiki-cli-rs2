@@ -369,6 +369,112 @@ fn retired_registration_join_recovers_after_registry_save_before_binding_commit(
 }
 
 #[test]
+fn unjournaled_same_epoch_rejoin_repairs_old_device_binding_and_preserves_messages() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let record = prepared_record(true);
+    insert_retired_binding(&paths.local_state.sqlite_path, &record);
+    let connection =
+        crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+    connection
+        .execute(
+            r#"INSERT INTO message_sync_state
+(owner_identity_id,account_id,device_id,device_auth_generation,stream_epoch,scan_seq,
+ bootstrap_state,last_server_time,last_success_at,last_error_code,metadata_json,updated_at)
+VALUES (?1,?2,?3,'3','1','4','active',NULL,1,NULL,NULL,1)"#,
+            rusqlite::params![
+                record.owner_identity_id,
+                record.account_user_id,
+                record.retired_device_id,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO messages(msg_id,owner_identity_id,owner_did,thread_id,content,stored_at,credential_name) VALUES ('msg-preserved',?1,?2,'thread-preserved','keep me','2026-09-04T00:00:00Z','alice')",
+            rusqlite::params![record.owner_identity_id, record.current_did],
+        )
+        .unwrap();
+    drop(connection);
+    save_registry_entry(&paths, &record, &record.new_device_id);
+
+    let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+    drop(core);
+
+    let connection =
+        crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+    let binding = connection
+        .query_row(
+            "SELECT device_id,device_auth_generation FROM identity_account_bindings WHERE owner_identity_id=?1",
+            [&record.owner_identity_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(binding, (record.new_device_id.clone(), "4".to_owned()));
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_sync_state WHERE owner_identity_id=?1",
+                [&record.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0,
+        "the next sync must bootstrap with the newly authorized device",
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT content FROM messages WHERE msg_id='msg-preserved'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "keep me",
+        "device rejoin must preserve local message history",
+    );
+}
+
+#[test]
+fn unjournaled_same_epoch_rejoin_repairs_before_registry_generation_hydration() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let record = prepared_record(true);
+    insert_retired_binding(&paths.local_state.sqlite_path, &record);
+    let core = crate::ImCore::new(test_config(), paths.clone()).unwrap();
+    save_registry_entry(&paths, &record, &record.new_device_id);
+
+    // Ordinary Join commits the active device projection before the account
+    // binding generation is hydrated from the service. Reconciliation must
+    // still move the exact retired binding during this short local window.
+    let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+    let lock = store.lock_index_mutation().unwrap();
+    let mut index = store.load_index().unwrap();
+    index
+        .credentials
+        .get_mut("alice")
+        .unwrap()
+        .binding_generation = None;
+    store.save_index_locked(&lock, index).unwrap();
+
+    reconcile_unjournaled_same_epoch_rejoins(&core).unwrap();
+
+    let connection =
+        crate::internal::local_state::open_writable(&paths.local_state.sqlite_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT device_id,device_auth_generation,identity_generation FROM identity_account_bindings WHERE owner_identity_id=?1",
+                [&record.owner_identity_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            )
+            .unwrap(),
+        (record.new_device_id, "4".to_owned(), "8".to_owned()),
+        "the exact same-epoch binding must converge before generation hydration",
+    );
+}
+
+#[test]
 fn retired_registration_join_selects_unique_registry_device_winner() {
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());

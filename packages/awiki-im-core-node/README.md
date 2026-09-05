@@ -96,6 +96,8 @@ shared secret 交给 JavaScript。
   state-root 文件锁；重复调用是幂等的。
 - 每个 client 同时只允许一个 Core-owned realtime session；`close()` 和 `clearLocalData()` 会先
   stop/join active session。
+- `retireDefaultIdentityForRejoin()` 会先 stop/join realtime，只退役当前 default identity 的设备
+  credential，保留普通消息、会话和附件数据；之后须完成标准设备 Join 才能恢复 identity-bound API。
 - `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
   兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
 - JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
@@ -146,7 +148,8 @@ exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使�
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.2.2` 源码 candidate 的 Native contract version 为 `11`，增加 Root Transfer 与 Darwin
+- 当前 `0.2.3` 源码 candidate 的 Native contract version 为 `12`，增加保留普通本地数据的
+  device rejoin retirement facade，并保留 v11 的 Root Transfer 与 Darwin
   user-presence facade，并保留 `0.2.1` 的 Host-only External
   Identity Provider Promise bridge，并保留 `0.1.8` 引入的新设备 Join 恢复/SAS/cancel、
   ready-admin Registry、审批/拒绝和设备撤销；同时保留 prepared registration

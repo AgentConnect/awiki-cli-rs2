@@ -21,12 +21,27 @@
 
 | 标识符 | 来源 | 作用 | 默认值 |
 | --- | --- | --- | --- |
-| `global.active_tenant` | `global.json`；`--tenant` 覆盖 | 当前租户 | `default` |
-| `registry.tenants[].backend_base_url` | `tenants/registry.json` | 后端基址 | `https://awiki.ai` |
-| `registry.tenants[].did_host` | 同上 | DID 主机 | `awiki.ai` |
-| `AWIKI_CLI_DEFAULT_BACKEND_BASE_URL` | 环境变量 | 创建默认租户时的 backend | 空 → `https://awiki.ai` |
-| `AWIKI_CLI_DEFAULT_DID_HOST` | 环境变量 | 创建默认租户时的 DID host | 空 → `awiki.ai` |
+| `global.active_tenant` | `global.json`；`--tenant` 覆盖 | 当前租户 | 全新工作区 → 打包配置的 `default_slot` |
+| `registry.schema_version` | `tenants/registry.json` | 租户注册表格式 | `2` |
+| `registry.official_catalog_version` | 同上 | 已对齐的内置目录 | `2` |
+| `registry.aliases.default` | 同上 | 兼容别名 | 全新工作区 → 打包配置的 `default_slot` |
+| `registry.tenants[].kind` | 同上 | `built_in` 或 `custom` | 官方项 → `built_in` |
+| `builtin-primary` / `builtin-secondary` | 包内 `BUILTIN-TENANTS.json` | 稳定内置槽位 | 默认文件：中国 / 全球 |
+| `china` / `global` / `default` | 注册表别名 | 历史命令兼容 | 指向包内槽位 |
 | `AWIKI_CLI_WORKSPACE_HOME_DIR` | 环境变量 | 产品工作区根 | 未设 → `~/.awiki-cli` |
+
+`scripts/release/build-release-artifact.sh --tenant-config FILE` 会校验并嵌入一份
+完整的双槽位目录。不传时使用 `config/builtin-tenants.default.json`；传入后会
+完整替换两个槽位和默认选择，不存在隐藏官方回退，运行时环境变量也不能替换
+包内租户。后续包若改变某个槽位的端点，旧 Profile 与目录会保留为唯一命名的
+自定义租户，并创建新的内置 Profile。历史 `china`、`global` 和 v1 `default`
+会迁移到稳定槽位，不移动业务数据。
+
+从旧版单工作区布局首次升级时，如果工作区含有身份、数据库、运行时状态（或
+旧版 `config.yaml`），这些状态会连同配置、缓存和日志迁入同一个租户目录，
+并将该租户设为当前租户。能识别为官方端点时归入对应内置槽位，无法识别的
+端点则归入自定义 `legacy` 租户。迁移使用持久化日志，中断后可继续；旧服务
+配置存在歧义或无效时，会在移动任何状态前直接失败。
 
 ## 运行时 / 通知 / 密钥
 
@@ -48,7 +63,7 @@
 
 | 标识符 | 来源 | 作用 | 默认值 |
 | --- | --- | --- | --- |
-| `AWIKI_DAEMON_BASE_URL` | 环境变量 | 覆盖 base_url | 未设则文件或 `https://awiki.ai` |
+| `AWIKI_DAEMON_BASE_URL` | 环境变量 | 覆盖 base_url | 已安装读取持久化文件；全新安装为 `https://awiki.me` |
 | `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` | 环境变量 | daemon vault 根密钥 | vault 模式必填 |
 | `AWIKI_HERMES_TUI_TOOLSETS` | 环境变量 | TUI toolset | `terminal,skills` |
 | `AWIKI_CLI_ENABLE_DIAGNOSTIC` | 环境变量 | diagnostic 命令闸（`=1`） | 关闭 |

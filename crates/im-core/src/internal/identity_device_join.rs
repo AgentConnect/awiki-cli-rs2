@@ -2898,6 +2898,9 @@ fn promote_join_identity_local(
         },
         projection_storage,
     )?;
+    crate::internal::identity_registration_retired_join::reconcile_unjournaled_same_epoch_rejoins(
+        core,
+    )?;
     let committed = identity_store.load_index()?;
     ensure_existing_join_identity_is_rootless(
         &committed,

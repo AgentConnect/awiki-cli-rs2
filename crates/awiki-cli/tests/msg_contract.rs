@@ -74,7 +74,7 @@ fn msg_dry_run_plans_match_go_contracts() {
     assert_eq!(direct["data"]["plan"]["local_writes"], json!(["messages"]));
     assert_eq!(
         direct["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
 
     let secure_direct = success_json(&awiki_cmd(
@@ -147,7 +147,7 @@ fn msg_dry_run_plans_match_go_contracts() {
     assert_eq!(attachment_send["data"]["plan"]["action"], "attachment.send");
     assert_eq!(
         attachment_send["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
     assert_eq!(
         attachment_send["data"]["plan"]["message_type"],
@@ -213,7 +213,7 @@ fn msg_dry_run_plans_match_go_contracts() {
     assert_eq!(download["data"]["plan"]["action"], "attachment.download");
     assert_eq!(
         download["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
     assert_eq!(download["data"]["plan"]["message_id"], "msg-1");
     assert_eq!(download["data"]["plan"]["attachment_id"], "att-1");
@@ -268,7 +268,7 @@ fn msg_dry_run_plans_match_go_contracts() {
     );
     assert_eq!(history["data"]["plan"]["source"], "local");
     assert_eq!(history["data"]["plan"]["with"], "bob");
-    assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.ai");
+    assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.me");
     assert_eq!(history["data"]["plan"]["limit"], 15);
     assert_eq!(history["data"]["plan"]["cursor"], "seq-2");
 
@@ -353,7 +353,7 @@ fn msg_send_default_cutover_dry_run_routes_direct_and_group_text() {
     assert_eq!(direct["data"]["plan"]["identity"], "alice");
     assert_eq!(
         direct["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
 
     let text_path = workspace.path().join("body.txt");
@@ -568,7 +568,7 @@ fn msg_read_default_cutover_dry_run_routes_inbox_and_history_subset() {
     assert_eq!(history["data"]["plan"]["source"], "local");
     assert_eq!(history["data"]["plan"]["identity"], "alice");
     assert_eq!(history["data"]["plan"]["with"], "bob");
-    assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.ai");
+    assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.me");
     assert_eq!(history["data"]["plan"]["limit"], 5);
     assert_eq!(history["data"]["plan"]["cursor"], "seq-2");
 }
@@ -659,7 +659,7 @@ fn msg_secure_status_is_the_only_public_direct_control_surface() {
     assert_eq!(output["data"]["plan"]["with"], "bob");
     assert_eq!(
         output["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
 }
 
