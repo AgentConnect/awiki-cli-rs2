@@ -5,7 +5,7 @@
 发布边界：
 
 - `awiki-cli` 是 npm 包和单二进制命令行产品；`awiki-cli upgrade` 只检查/升级 CLI 自身。
-- `awiki-deamon` 是 awiki-me 客户端安装到宿主机的 daemon 包；它使用 daemon manifest、install.sh 和客户端/daemon 升级路径，不通过 `awiki-cli runtime listener` 管理。
+- `awiki-deamon` 是 awiki-me 客户端安装到宿主机的 daemon 包；它从安装注册时持久化的租户 User Service `server-info?client_platform=daemon` 读取版本政策，再使用该政策指定的精确 daemon manifest 和安装包，不通过 `awiki-cli runtime listener` 管理。
 - `awiki-cli runtime listener` 是 CLI 的本机 WebSocket receiving helper/service，属于 CLI runtime UX，不是 daemon release 包。
 
 ## 1. 版本号约定
@@ -108,17 +108,19 @@ cp scripts/release/daemon/publish-multi-platform.toml.template \
   scripts/release/daemon/publish-multi-platform.toml
 ```
 
-配置文件只保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
-`download_mirror_urls`、`source_ref` 和 `github_token`。
-它不配置当前版本号或最低可用版本号。当前发布版本固定来自
-`crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验；第一版发布流程中，
-manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是后端服务/API 根地址；
+配置文件保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
+`download_mirror_urls`、`source_ref`、可选的 `workflow_ref` 和 `github_token`。
+当前发布版本固定来自 `crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验。
+普通发布的 manifest `min_supported` 自动继承上一版；只有显式填写
+`minimum_supported_version` 和 `minimum_change_reason` 才能调整，若新最低版本等于本次版本，
+还必须把 `confirm_minimum_equals_recommended` 设为 `true`。`base_url` 是后端服务/API 根地址；
 `download_base_url` 是当前发布机器提供的 daemon 静态下载根地址，省略时默认使用
 `<base_url>/daemon`；`download_mirror_urls` 是可选镜像下载源列表，只写入安装脚本，
 发布脚本不会主动推送或校验这些镜像。
 其中 `source_ref` 是实际要构建的源码 ref，可以是分支、tag 或 commit SHA。GitHub
-`workflow_dispatch` 入口本身需要存在于仓库默认分支；发布脚本固定从默认分支触发 workflow，
-再把 `source_ref` 传给 workflow checkout。
+`workflow_dispatch` 入口本身需要存在于仓库默认分支；`workflow_ref` 默认使用 `main`，也可显式
+绑定到包含受审构建契约的远端 branch/tag，再把独立的 `source_ref` 传给 workflow checkout。
+这两个 ref 分离，避免为了一次开发分支发布而提前改动默认分支，同时确保工作流定义和源码来源都可追溯。
 
 脚本行为：
 
@@ -129,6 +131,12 @@ manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是�
 - 生成 `install.sh`、`releases/manifest.json` 和版本化 release 目录。
 - 发布到本机 Nginx daemon 静态目录 `/var/www/awiki-web/daemon`。
 - 通过 HTTP 校验 manifest、安装脚本和三个平台 tar 包可访问。
+
+Server Info 是 Daemon 推荐版本和最低支持版本的唯一政策来源。Daemon 始终请求其安装注册
+租户的 User Service，不会因 App 临时切换租户而改写更新源；政策中的
+`artifact_manifest_url` 必须与该租户同 Origin，并固定本次允许升级的精确版本。静态 manifest
+中的 `latest` / `min_supported` 仅供旧版客户端和发布工具兼容，0.1.93 及以上版本不再用它们
+覆盖租户政策。
 
 manifest 中的包条目只保存相对 `path` 和 `sha256`，不保存完整 URL。安装脚本会从
 `download_base_url` 和 `download_mirror_urls` 中选择可用且较快的下载源，下载包后用
@@ -147,9 +155,9 @@ manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下�
 脚本不会修改版本号、提交代码或推送代码。发布前需要先在
 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。
 
-注意：daemon 发布和 CLI 发布是两条发布线。daemon manifest 的 `latest` / `min_supported`
-只约束 awiki-me daemon 安装和升级；不会改变 `@awiki/cli` 的 npm 版本，也不会影响
-`awiki-cli upgrade` 的行为。
+注意：daemon 发布和 CLI 发布是两条发布线。新版 daemon 的推荐版本和最低支持版本由各租户
+Server Info 独立控制；静态 daemon manifest 的同名字段只兼容旧版客户端和发布工具。两者都
+不会改变 `@awiki/cli` 的 npm 版本，也不会影响 `awiki-cli upgrade` 的行为。
 
 ## 5. 手工准备 daemon 下载目录
 

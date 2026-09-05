@@ -999,7 +999,7 @@ fn assert_not_contains(haystack: &str, needle: &str) {
 }
 
 fn tenant_workspace(product_home: &std::path::Path) -> std::path::PathBuf {
-    product_home.join("tenants").join("default")
+    product_home.join("tenants").join("builtin-primary")
 }
 
 struct TempDir {

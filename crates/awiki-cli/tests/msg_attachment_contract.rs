@@ -34,7 +34,7 @@ fn msg_attachment_send_dry_run_keeps_cli_owned_plan_contract() {
     assert_eq!(direct["data"]["plan"]["identity"], "alice");
     assert_eq!(
         direct["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
     assert_eq!(
         direct["data"]["plan"]["message_type"],
@@ -102,7 +102,7 @@ fn msg_attachment_download_dry_run_exposes_cli_overwrite_policy() {
     assert_eq!(direct["data"]["plan"]["action"], "attachment.download");
     assert_eq!(
         direct["data"]["plan"]["target"],
-        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        json!({ "did": "bob", "handle": "bob.awiki.me", "kind": "direct" })
     );
     assert_eq!(direct["data"]["plan"]["message_id"], "msg-1");
     assert_eq!(direct["data"]["plan"]["attachment_id"], "att-1");

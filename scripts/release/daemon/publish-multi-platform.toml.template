@@ -7,4 +7,12 @@ download_mirror_urls = [
 
 source_ref = "release/0526" # 要发布的 Git ref。可以是远端分支、tag 或 commit SHA；GitHub Actions 会 checkout 这个 ref 来构建。
 
+workflow_ref = "main" # workflow 定义所在的远端 branch/tag。默认 main；当发布分支新增了 main 尚未具备的构建契约时，显式绑定到该受审分支。
+
+minimum_supported_version = "" # 留空时继承已发布 manifest 的最低版本；只在显式调整最低版本时填写。
+
+minimum_change_reason = "" # 调整最低版本时必填，普通推荐版本发布保持为空。
+
+confirm_minimum_equals_recommended = "false" # 新最低版本等于本次版本时必须显式改为 true。
+
 github_token = "ghp_replace_with_token" # GitHub Token，必须有 repo 和 workflow 权限。真实配置文件不要提交到仓库。

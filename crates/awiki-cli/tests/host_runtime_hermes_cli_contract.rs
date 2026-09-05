@@ -481,7 +481,7 @@ fn path_string(path: &Path) -> String {
 fn write_tenant_config(product_home: &Path, text: &str) {
     let config_path = product_home
         .join("tenants")
-        .join("default")
+        .join("builtin-primary")
         .join("config.yaml");
     std::fs::create_dir_all(config_path.parent().expect("tenant config parent"))
         .expect("create tenant config dir");

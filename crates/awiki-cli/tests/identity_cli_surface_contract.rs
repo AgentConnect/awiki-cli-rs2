@@ -475,7 +475,7 @@ fn identity_create_allows_legacy_plaintext_storage_when_file_compat_is_explicit(
     assert!(create["data"]["identity"]["did"]
         .as_str()
         .unwrap()
-        .starts_with("did:wba:awiki.ai:user:"));
+        .starts_with("did:wba:awiki.me:user:"));
     let unique_id = create["data"]["identity"]["unique_id"]
         .as_str()
         .expect("identity unique_id");

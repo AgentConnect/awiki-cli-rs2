@@ -57,6 +57,35 @@ CREATE TABLE IF NOT EXISTS sync_remote_read_states (
 );
 "#;
 
+pub(crate) const SYNC_V1A_RELIABILITY_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS message_sync_run_state (
+    owner_identity_id  TEXT PRIMARY KEY,
+    sync_pending       INTEGER NOT NULL CHECK (sync_pending IN (0, 1)),
+    run_generation     INTEGER NOT NULL CHECK (run_generation > 0),
+    next_retry_at      INTEGER,
+    last_result_json   TEXT,
+    updated_at         INTEGER NOT NULL,
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sync_lane_capability_state (
+    owner_identity_id                  TEXT PRIMARY KEY,
+    negotiated_device_auth_generation TEXT NOT NULL,
+    client_instance_id                 TEXT,
+    negotiated_capabilities_json       TEXT,
+    CHECK (
+        negotiated_device_auth_generation <> ''
+        AND negotiated_device_auth_generation NOT GLOB '*[^0-9]*'
+        AND substr(negotiated_device_auth_generation, 1, 1) <> '0'
+    ),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+"#;
+
 pub(crate) const SYNC_V2_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_account_bindings (
     owner_identity_id       TEXT PRIMARY KEY,
@@ -129,18 +158,6 @@ CREATE TABLE IF NOT EXISTS message_sync_state (
 CREATE UNIQUE INDEX IF NOT EXISTS message_sync_state_account_device_idx
 ON message_sync_state(account_id, device_id);
 
-CREATE TABLE IF NOT EXISTS message_sync_run_state (
-    owner_identity_id  TEXT PRIMARY KEY,
-    sync_pending       INTEGER NOT NULL CHECK (sync_pending IN (0, 1)),
-    run_generation     INTEGER NOT NULL CHECK (run_generation > 0),
-    next_retry_at      INTEGER,
-    last_result_json   TEXT,
-    updated_at         INTEGER NOT NULL,
-    FOREIGN KEY (owner_identity_id)
-        REFERENCES identity_account_bindings(owner_identity_id)
-        ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS lane_sync_state (
     owner_identity_id  TEXT NOT NULL,
     lane               TEXT NOT NULL,
@@ -163,21 +180,6 @@ CREATE TABLE IF NOT EXISTS lane_sync_state (
         committed_seq <> ''
         AND committed_seq NOT GLOB '*[^0-9]*'
         AND (committed_seq = '0' OR substr(committed_seq, 1, 1) <> '0')
-    ),
-    FOREIGN KEY (owner_identity_id)
-        REFERENCES identity_account_bindings(owner_identity_id)
-        ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS sync_lane_capability_state (
-    owner_identity_id                  TEXT PRIMARY KEY,
-    negotiated_device_auth_generation TEXT NOT NULL,
-    client_instance_id                 TEXT,
-    negotiated_capabilities_json       TEXT,
-    CHECK (
-        negotiated_device_auth_generation <> ''
-        AND negotiated_device_auth_generation NOT GLOB '*[^0-9]*'
-        AND substr(negotiated_device_auth_generation, 1, 1) <> '0'
     ),
     FOREIGN KEY (owner_identity_id)
         REFERENCES identity_account_bindings(owner_identity_id)
@@ -978,16 +980,35 @@ pub(crate) struct LaneCapabilityReconcileInputV1a {
 }
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
+    create_schema_objects(connection)?;
+    let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
+    Ok(())
+}
+
+/// Creates the complete Sync V2 SQLite shape without running data migrations
+/// that manage their own transactions.
+///
+/// Versioned local-state migrations call this while an outer schema
+/// transaction is active. Legacy lane rows are migrated after that transaction
+/// commits by `schema::ensure_schema`, and are also retried when the per-owner
+/// installation identity is created.
+pub(crate) fn create_schema_objects(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(SYNC_V2_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(READ_RECOVERY_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)?;
-    ensure_sync_lane_capability_columns_v1a(connection)?;
+    create_v1a_reliability_schema(connection)?;
     create_installation_schema(connection)?;
-    let _ = migrate_legacy_p6_blockers_to_inbox(connection)?;
     Ok(())
+}
+
+pub(crate) fn create_v1a_reliability_schema(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch(SYNC_V1A_RELIABILITY_SCHEMA_SQL)
+        .map_err(super::local_state_unavailable)?;
+    ensure_sync_lane_capability_columns_v1a(connection)
 }
 
 fn ensure_sync_lane_capability_columns_v1a(connection: &Connection) -> crate::ImResult<()> {

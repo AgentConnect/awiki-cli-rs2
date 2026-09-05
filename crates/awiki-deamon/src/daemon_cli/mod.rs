@@ -553,7 +553,7 @@ fn ensure_existing_daemon_matches_token_scope(
 fn daemon_cleanup_command(download_base_url: &str) -> String {
     let base_url = download_base_url.trim().trim_end_matches('/');
     let base_url = if base_url.is_empty() {
-        "https://awiki.ai/daemon"
+        "https://awiki.me/daemon"
     } else {
         base_url
     };
@@ -1030,7 +1030,7 @@ mod tests {
         assert!(message.contains("这台电脑已经安装了属于 @alice.anpclaw.com 的 Daemon"));
         assert!(message.contains("当前安装命令属于 @alice-alt.anpclaw.com"));
         assert!(message.contains("请先清理宿主机上的 AWiki Daemon 数据后再安装"));
-        assert!(message.contains("curl -fsSL https://awiki.ai/daemon/cleanup.sh | sh"));
+        assert!(message.contains("curl -fsSL https://awiki.me/daemon/cleanup.sh | sh"));
         assert!(message.contains("此操作不可恢复"));
         assert!(message.contains("@alice.anpclaw.com"));
         assert!(message.contains("@alice-alt.anpclaw.com"));
@@ -1263,7 +1263,7 @@ fn update_daemon_latest_status(
                 last_seen_at: None,
                 version: Some(release.current_version.clone()),
                 latest_version: release.latest_version.clone(),
-                min_supported_version: None,
+                min_supported_version: release.minimum_supported_version.clone(),
                 platform: Some(current_platform_label()),
                 service: Some(
                     match service.platform {

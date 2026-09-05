@@ -14,6 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use crate::service::{
     manage_service, restart_service_after_upgrade, ServiceAction, ServicePlatform, ServiceStatus,
 };
+use crate::update_policy::{daemon_update_policy_url, load_daemon_update_policy};
 use crate::DaemonConfig;
 
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -35,6 +36,10 @@ pub struct DaemonUpgradeRequest {
     pub download_base_url: String,
     pub bin_root: PathBuf,
     pub restart_service: bool,
+    pub minimum_supported_version: Option<String>,
+    pub policy_origin: Option<String>,
+    pub policy_revision: Option<u64>,
+    pub policy_used_cache: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -68,6 +73,9 @@ pub struct DaemonUpgradeReport {
     pub manifest_url: String,
     pub download_base_url: String,
     pub download_route: Option<String>,
+    pub policy_origin: Option<String>,
+    pub policy_revision: Option<u64>,
+    pub policy_used_cache: bool,
     pub restarted: bool,
     pub service: ServiceStatus,
 }
@@ -102,16 +110,18 @@ pub struct DaemonUpgradeProgress {
 pub struct DaemonReleaseStatus {
     pub current_version: String,
     pub latest_version: Option<String>,
+    pub minimum_supported_version: Option<String>,
     pub needs_upgrade: bool,
     pub manifest_url: String,
+    pub policy_url: String,
+    pub policy_origin: Option<String>,
+    pub policy_revision: Option<u64>,
+    pub policy_source: Option<String>,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct DaemonReleaseManifest {
-    latest: String,
-    #[serde(default)]
-    min_supported: Option<String>,
     #[serde(default)]
     download_base_urls: Vec<String>,
     packages: Vec<DaemonReleasePackage>,
@@ -206,45 +216,92 @@ impl DaemonUpgradeRequest {
                 .unwrap_or_else(|| config.download_base_url.clone()),
             bin_root,
             restart_service,
+            minimum_supported_version: None,
+            policy_origin: None,
+            policy_revision: None,
+            policy_used_cache: false,
+        })
+    }
+
+    pub fn from_release_status(
+        config: &DaemonConfig,
+        requested_target: impl Into<String>,
+        release: &DaemonReleaseStatus,
+    ) -> Result<Self> {
+        let requested_target = normalize_target_version(&requested_target.into())?;
+        let approved_target = release
+            .latest_version
+            .as_deref()
+            .context("selected tenant does not publish an enabled Daemon update policy")?;
+        if requested_target != "latest" && requested_target != approved_target {
+            bail!(
+                "requested daemon target {requested_target} is not approved by the selected tenant"
+            );
+        }
+        if release.manifest_url.trim().is_empty() {
+            bail!("selected tenant Daemon update policy has no artifact manifest");
+        }
+        let download_base_url = download_base_from_manifest_url(&release.manifest_url)?;
+        let bin_root =
+            match std::env::var_os("AWIKI_DAEMON_BIN_ROOT").filter(|value| !value.is_empty()) {
+                Some(value) => PathBuf::from(value),
+                None => default_bin_root()?,
+            };
+        let restart_requested = std::env::var("AWIKI_DAEMON_UPGRADE_SKIP_SERVICE_RESTART")
+            .map(|value| value.trim() != "1")
+            .unwrap_or(true);
+        let restart_service = restart_requested
+            && DaemonConfig::default_product_state_root()
+                .map(|default_root| config.state_root == default_root)
+                .unwrap_or(false);
+        Ok(Self {
+            target_version: approved_target.to_string(),
+            download_base_url,
+            bin_root,
+            restart_service,
+            minimum_supported_version: release.minimum_supported_version.clone(),
+            policy_origin: release.policy_origin.clone(),
+            policy_revision: release.policy_revision,
+            policy_used_cache: release.policy_source.as_deref() == Some("cache"),
         })
     }
 }
 
 pub fn check_release_status(config: &DaemonConfig) -> DaemonReleaseStatus {
     let current_version = CURRENT_DAEMON_VERSION.to_string();
-    let request_sources = DaemonUpgradeRequest {
-        target_version: "latest".to_string(),
-        download_base_url: config.download_base_url.clone(),
-        // Release status reads remote metadata and never touches an install root.
-        bin_root: PathBuf::new(),
-        restart_service: false,
-    };
-    let sources = configured_download_base_urls(config, &request_sources);
-    match read_release_manifest_status_from_sources(&sources) {
-        Ok(selection) => {
-            let manifest = selection.manifest;
-            let latest = manifest.latest.trim().to_string();
-            let latest_version = (!latest.is_empty()).then_some(latest);
-            let needs_upgrade = latest_version
+    let policy_url = daemon_update_policy_url(config)
+        .map(|value| diagnostic_url(&value))
+        .unwrap_or_default();
+    match load_daemon_update_policy(config) {
+        Ok(policy) => DaemonReleaseStatus {
+            current_version: current_version.clone(),
+            latest_version: policy.recommended_version.clone(),
+            minimum_supported_version: policy.minimum_supported_version.clone(),
+            needs_upgrade: policy.enabled && policy.recommends_newer_than(&current_version),
+            manifest_url: policy
+                .artifact_manifest_url
                 .as_deref()
-                .map(|latest| version_is_newer(latest, &current_version))
-                .unwrap_or(false);
-            DaemonReleaseStatus {
-                current_version,
-                latest_version,
-                needs_upgrade,
-                manifest_url: diagnostic_url(&selection.manifest_url),
-                error: None,
-            }
-        }
+                .map(diagnostic_url)
+                .unwrap_or_default(),
+            policy_url: diagnostic_url(&policy.policy_url),
+            policy_origin: Some(policy.policy_origin),
+            policy_revision: Some(policy.policy_revision),
+            policy_source: Some(policy.source.as_str().to_string()),
+            error: policy
+                .refresh_error
+                .as_deref()
+                .map(|error| sanitize_error(error)),
+        },
         Err(error) => DaemonReleaseStatus {
             current_version,
             latest_version: None,
+            minimum_supported_version: None,
             needs_upgrade: false,
-            manifest_url: sources
-                .first()
-                .map(|source| diagnostic_url(&manifest_url(source)))
-                .unwrap_or_default(),
+            manifest_url: String::new(),
+            policy_url,
+            policy_origin: None,
+            policy_revision: None,
+            policy_source: None,
             error: Some(sanitize_error(&error.to_string())),
         },
     }
@@ -354,29 +411,10 @@ where
     }
     cleanup_daemon_bin_root(&request.bin_root, &[CURRENT_DAEMON_VERSION.to_string()])?;
     let target_version = normalize_target_version(&request.target_version)?;
-    emit_upgrade_progress(
-        &mut progress,
-        "manifest",
-        "正在获取版本信息",
-        Some(target_version.clone()),
-        None,
-    );
-    let initial_sources = configured_download_base_urls(config, &request);
-    let manifest_selection = read_release_manifest_from_sources(&initial_sources, &mut progress)
-        .await
-        .context("download daemon manifest")?;
-    cancel_token.check()?;
-    let manifest = manifest_selection.manifest;
-    if manifest.latest.trim().is_empty() {
-        bail!("daemon release manifest latest version is empty");
+    if target_version == "latest" {
+        bail!("daemon upgrade target must be resolved by the selected tenant policy");
     }
-    let version = if target_version == "latest" {
-        manifest.latest.clone()
-    } else {
-        target_version
-    };
-    let package = select_package(&manifest, &version)?;
-    if !version_is_newer(&package.version, CURRENT_DAEMON_VERSION) {
+    if !version_is_newer(&target_version, CURRENT_DAEMON_VERSION) {
         let current_dir = request.bin_root.join("current");
         let previous_version = current_daemon_link_version(&request.bin_root)
             .or_else(|| Some(CURRENT_DAEMON_VERSION.to_string()));
@@ -407,16 +445,34 @@ where
         };
         return Ok(DaemonUpgradeReport {
             previous_version,
-            target_version: package.version,
-            min_supported_version: manifest.min_supported,
-            package_sha256: package.sha256,
-            manifest_url: public_url(&manifest_selection.manifest_url),
-            download_base_url: public_url(&manifest_selection.download_base_url),
+            target_version,
+            min_supported_version: request.minimum_supported_version,
+            package_sha256: String::new(),
+            manifest_url: public_url(&manifest_url(&request.download_base_url)),
+            download_base_url: public_url(&request.download_base_url),
             download_route: None,
+            policy_origin: request.policy_origin,
+            policy_revision: request.policy_revision,
+            policy_used_cache: request.policy_used_cache,
             restarted: false,
             service,
         });
     }
+    emit_upgrade_progress(
+        &mut progress,
+        "manifest",
+        "正在获取版本信息",
+        Some(target_version.clone()),
+        None,
+    );
+    let initial_sources = configured_download_base_urls(config, &request);
+    let manifest_selection = read_release_manifest_from_sources(&initial_sources, &mut progress)
+        .await
+        .context("download daemon manifest")?;
+    cancel_token.check()?;
+    let manifest = manifest_selection.manifest;
+    let version = target_version;
+    let package = select_package(&manifest, &version)?;
 
     std::fs::create_dir_all(&request.bin_root)
         .with_context(|| format!("create daemon bin root {}", request.bin_root.display()))?;
@@ -584,11 +640,14 @@ where
     Ok(DaemonUpgradeReport {
         previous_version,
         target_version: package.version,
-        min_supported_version: manifest.min_supported,
+        min_supported_version: request.minimum_supported_version,
         package_sha256: actual_sha,
         manifest_url: public_url(&manifest_selection.manifest_url),
         download_base_url: public_url(&selected_download.1),
         download_route: selected_download.2,
+        policy_origin: request.policy_origin,
+        policy_revision: request.policy_revision,
+        policy_used_cache: request.policy_used_cache,
         restarted: request.restart_service,
         service,
     })
@@ -810,6 +869,9 @@ fn configured_download_base_urls(
 ) -> Vec<String> {
     let mut sources = Vec::new();
     push_download_base_values(&mut sources, &request.download_base_url);
+    if request.policy_revision.is_some() {
+        return dedupe_download_sources(sources);
+    }
     if let Ok(value) = std::env::var("AWIKI_DAEMON_DOWNLOAD_BASE_URLS") {
         push_download_base_values(&mut sources, &value);
     }
@@ -865,6 +927,18 @@ fn manifest_url(base: &str) -> String {
     } else {
         format!("{}/releases/manifest.json", base.trim_end_matches('/'))
     }
+}
+
+fn download_base_from_manifest_url(value: &str) -> Result<String> {
+    let suffix = "/releases/manifest.json";
+    let value = value.trim();
+    let base = value
+        .strip_suffix(suffix)
+        .context("Daemon artifact manifest URL must end with /releases/manifest.json")?;
+    if base.is_empty() {
+        bail!("Daemon artifact manifest URL has no download base");
+    }
+    Ok(base.to_string())
 }
 
 fn package_url(base: &str, package_path: &str) -> Result<String> {
@@ -1642,32 +1716,6 @@ where
     progress(event);
 }
 
-fn read_release_manifest_status_from_sources(
-    sources: &[String],
-) -> Result<ReleaseManifestSelection> {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let sources = sources.to_vec();
-        let join = std::thread::Builder::new()
-            .name("awiki-daemon-release-status".to_string())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("create daemon release status runtime")?;
-                runtime.block_on(read_release_manifest_from_sources(&sources, &mut |_| {}))
-            })
-            .context("spawn daemon release status runtime thread")?;
-        return join
-            .join()
-            .map_err(|_| anyhow::anyhow!("daemon release status runtime thread panicked"))?;
-    }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("create daemon release status runtime")?;
-    runtime.block_on(read_release_manifest_from_sources(sources, &mut |_| {}))
-}
-
 async fn read_release_manifest_async(url: &str) -> Result<DaemonReleaseManifest> {
     let manifest_bytes = read_url_bytes_with_timeout(url, RELEASE_MANIFEST_HTTP_TIMEOUT).await?;
     serde_json::from_slice(&manifest_bytes).context("parse daemon release manifest")
@@ -2081,22 +2129,6 @@ mod tests {
         manifest
     }
 
-    fn write_status_manifest(root: &Path, latest: &str) -> PathBuf {
-        let releases = root.join("releases");
-        std::fs::create_dir_all(&releases).unwrap();
-        let manifest = releases.join("manifest.json");
-        std::fs::write(
-            &manifest,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "latest": latest,
-                "packages": []
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        manifest
-    }
-
     struct TestHttpResponse {
         status: u16,
         headers: Vec<(String, String)>,
@@ -2165,8 +2197,13 @@ mod tests {
 
     impl TestHttpServer {
         fn new(responses: Vec<TestHttpResponse>) -> Self {
+            Self::new_with(|_| responses)
+        }
+
+        fn new_with(build: impl FnOnce(&str) -> Vec<TestHttpResponse>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind test HTTP server");
             let address = format!("http://{}", listener.local_addr().expect("local addr"));
+            let responses = build(&address);
             let requests = Arc::new(Mutex::new(Vec::new()));
             let server_requests = Arc::clone(&requests);
             let handle = thread::spawn(move || {
@@ -2291,24 +2328,55 @@ mod tests {
     }
 
     #[test]
-    fn release_status_is_latest_version_driven() {
-        let (root, mut config) = fixture();
-        write_status_manifest(root.path(), "0.10.0");
-        config.download_base_url = format!("file://{}", root.path().display());
+    fn release_status_is_tenant_server_info_policy_driven() {
+        let server = TestHttpServer::new_with(|origin| {
+            vec![TestHttpResponse::ok(
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 1,
+                    "client_versions": {
+                        "schema_version": 1,
+                        "channel": "stable",
+                        "policy_origin": origin,
+                        "policy_revision": 4,
+                        "published_at": "2026-09-04T00:00:00Z",
+                        "products": {
+                            "daemon": {
+                                "enabled": true,
+                                "recommended_version": "0.10.0",
+                                "minimum_supported_version": "0.1.0",
+                                "upgrade_url": format!("{origin}/daemon/install.sh"),
+                                "artifact_manifest_url": format!("{origin}/daemon/releases/manifest.json")
+                            }
+                        }
+                    }
+                }))
+                .unwrap(),
+            )]
+        });
+        let (_root, mut config) = fixture();
+        config.user_service_base_url = server.address.clone();
+        config.download_base_url = format!("{}/daemon", server.address);
 
         let status = check_release_status(&config);
 
         assert_eq!(status.current_version, CURRENT_DAEMON_VERSION);
         assert_eq!(status.latest_version.as_deref(), Some("0.10.0"));
+        assert_eq!(status.minimum_supported_version.as_deref(), Some("0.1.0"));
         assert!(status.needs_upgrade);
         assert!(status.error.is_none());
-        assert_eq!(status.manifest_url, "<local-release-manifest>");
+        assert_eq!(
+            status.policy_url,
+            format!(
+                "{}/user-service/v1/server-info?client_platform=daemon",
+                server.address
+            )
+        );
     }
 
     #[test]
     fn release_status_is_unavailable_without_forcing_upgrade() {
         let (_root, mut config) = fixture();
-        config.download_base_url = "file:///missing-awiki-daemon-download-root".to_string();
+        config.user_service_base_url = "http://127.0.0.1:1".to_string();
 
         let status = check_release_status(&config);
 
@@ -2316,6 +2384,65 @@ mod tests {
         assert!(status.latest_version.is_none());
         assert!(!status.needs_upgrade);
         assert!(status.error.is_some());
+    }
+
+    #[test]
+    fn tenant_policy_rejects_an_unapproved_explicit_upgrade_target() {
+        let (_root, config) = fixture();
+        let release = DaemonReleaseStatus {
+            current_version: CURRENT_DAEMON_VERSION.to_string(),
+            latest_version: Some("0.2.0".to_string()),
+            minimum_supported_version: Some("0.1.0".to_string()),
+            needs_upgrade: true,
+            manifest_url: "https://tenant.example/daemon/releases/manifest.json".to_string(),
+            policy_url: "https://tenant.example/user-service/v1/server-info?client_platform=daemon"
+                .to_string(),
+            policy_origin: Some("https://tenant.example".to_string()),
+            policy_revision: Some(7),
+            policy_source: Some("network".to_string()),
+            error: None,
+        };
+
+        let error =
+            DaemonUpgradeRequest::from_release_status(&config, "0.3.0", &release).unwrap_err();
+
+        assert!(error.to_string().contains("not approved"));
+    }
+
+    #[test]
+    fn tenant_policy_keeps_manifest_and_package_paths_under_one_download_root() {
+        let (_root, config) = fixture();
+        let release = DaemonReleaseStatus {
+            current_version: CURRENT_DAEMON_VERSION.to_string(),
+            latest_version: Some("0.2.0".to_string()),
+            minimum_supported_version: Some("0.1.0".to_string()),
+            needs_upgrade: true,
+            manifest_url: "https://tenant.example/daemon/releases/manifest.json".to_string(),
+            policy_url: "https://tenant.example/user-service/v1/server-info?client_platform=daemon"
+                .to_string(),
+            policy_origin: Some("https://tenant.example".to_string()),
+            policy_revision: Some(7),
+            policy_source: Some("network".to_string()),
+            error: None,
+        };
+
+        let request = DaemonUpgradeRequest::from_release_status(&config, "latest", &release)
+            .expect("tenant policy should resolve an exact upgrade request");
+
+        assert_eq!(request.target_version, "0.2.0");
+        assert_eq!(request.download_base_url, "https://tenant.example/daemon");
+        assert_eq!(
+            manifest_url(&request.download_base_url),
+            release.manifest_url
+        );
+        assert_eq!(
+            package_url(
+                &request.download_base_url,
+                "releases/0.2.0/awiki-deamon-linux-amd64.tar.gz"
+            )
+            .unwrap(),
+            "https://tenant.example/daemon/releases/0.2.0/awiki-deamon-linux-amd64.tar.gz"
+        );
     }
 
     #[test]
@@ -2601,10 +2728,14 @@ mod tests {
         let report = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
-                target_version: "latest".to_string(),
+                target_version: CURRENT_DAEMON_VERSION.to_string(),
                 download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
+                minimum_supported_version: Some("0.1.0".to_string()),
+                policy_origin: None,
+                policy_revision: None,
+                policy_used_cache: false,
             },
         )
         .unwrap();
@@ -2624,7 +2755,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn upgrade_downloads_verifies_extracts_and_swaps_current_symlinks() {
+    fn upgrade_uses_policy_target_when_artifact_manifest_latest_differs() {
         let (root, config) = fixture();
         let bin_root = root.path().join("bin");
         let old_dir = bin_root.join("0.1.0");
@@ -2652,15 +2783,27 @@ mod tests {
         )
         .unwrap();
         let (archive, sha) = create_package(root.path(), "0.2.0");
-        write_manifest(root.path(), "0.2.0", &archive, &sha);
+        let manifest_path = write_manifest(root.path(), "0.2.0", &archive, &sha);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["latest"] = serde_json::Value::String("9.0.0".to_string());
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
 
         let report = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
-                target_version: "latest".to_string(),
+                target_version: "0.2.0".to_string(),
                 download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
+                minimum_supported_version: Some("0.1.0".to_string()),
+                policy_origin: None,
+                policy_revision: None,
+                policy_used_cache: false,
             },
         )
         .unwrap();
@@ -2728,10 +2871,14 @@ mod tests {
         let report = upgrade_daemon_with_progress(
             &config,
             DaemonUpgradeRequest {
-                target_version: "latest".to_string(),
+                target_version: "0.2.0".to_string(),
                 download_base_url: format!("file://{}", manifest_root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
+                minimum_supported_version: Some("0.1.0".to_string()),
+                policy_origin: None,
+                policy_revision: None,
+                policy_used_cache: false,
             },
             |event| progress_events.push(event),
         )
@@ -2772,10 +2919,14 @@ mod tests {
         let error = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
-                target_version: "latest".to_string(),
+                target_version: "0.2.0".to_string(),
                 download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
+                minimum_supported_version: Some("0.1.0".to_string()),
+                policy_origin: None,
+                policy_revision: None,
+                policy_used_cache: false,
             },
         )
         .unwrap_err();
@@ -2827,10 +2978,14 @@ mod tests {
         let error = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
-                target_version: "latest".to_string(),
+                target_version: "0.2.0".to_string(),
                 download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
+                minimum_supported_version: Some("0.1.0".to_string()),
+                policy_origin: None,
+                policy_revision: None,
+                policy_used_cache: false,
             },
         )
         .unwrap_err();

@@ -42,9 +42,20 @@ function writeServerConfig(filePath, root) {
 }
 
 function writeArtifacts(directory, version) {
+  const tenantConfig = fs.readFileSync(
+    path.join(rootDir, 'config', 'builtin-tenants.default.json'),
+  );
   for (const target of ['darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64']) {
     const extension = target.startsWith('windows-') ? 'zip' : 'tar.gz';
-    fs.writeFileSync(path.join(directory, `awiki-cli-${version}-${target}.${extension}`), `artifact:${target}\n`);
+    const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-artifact-'));
+    const configPath = path.join(stage, 'BUILTIN-TENANTS.json');
+    fs.writeFileSync(configPath, tenantConfig);
+    const archive = path.join(directory, `awiki-cli-${version}-${target}.${extension}`);
+    const result = target.startsWith('windows-')
+      ? run('zip', ['-q', '-j', archive, configPath])
+      : run('tar', ['-C', stage, '-czf', archive, 'BUILTIN-TENANTS.json']);
+    fs.rmSync(stage, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr);
   }
 }
 
@@ -92,8 +103,10 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     const releaseMetadata = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/awiki-release.json']);
     assert.equal(releaseMetadata.status, 0, releaseMetadata.stderr);
     const metadata = JSON.parse(releaseMetadata.stdout);
-    assert.equal(metadata.default_tenant.backend_base_url, 'https://awiki.info');
-    assert.equal(metadata.default_tenant.did_host, 'awiki.info');
+    assert.equal(metadata.builtin_tenants.default_slot, 'primary');
+    assert.equal(metadata.builtin_tenants.tenants.primary.backend_origin, 'https://awiki.me');
+    assert.match(metadata.builtin_tenants_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(manifest.builtin_tenants_sha256, metadata.builtin_tenants_sha256);
 
     const sourceDocument = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/SOURCE.md']);
     assert.equal(sourceDocument.status, 0, sourceDocument.stderr);
@@ -163,6 +176,43 @@ test('rejects missing and unexpected workflow artifacts', () => {
     result = run(process.execPath, baseArgs, { cwd: rootDir });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /unexpected release artifacts/);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('rejects platform artifacts built with different tenant catalogs', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-stage-release-tenants-'));
+  try {
+    const artifacts = path.join(temp, 'artifacts');
+    const output = path.join(temp, 'output');
+    const serverConfig = path.join(temp, 'server.toml');
+    fs.mkdirSync(artifacts);
+    writeServerConfig(serverConfig, temp);
+    writeArtifacts(artifacts, '1.0.20-beta.1');
+
+    const changed = JSON.parse(fs.readFileSync(
+      path.join(rootDir, 'config', 'builtin-tenants.default.json'),
+      'utf8',
+    ));
+    changed.tenants.secondary.backend_origin = 'https://other.example';
+    changed.tenants.secondary.did_host = 'other.example';
+    const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-artifact-mismatch-'));
+    fs.writeFileSync(path.join(stage, 'BUILTIN-TENANTS.json'), `${JSON.stringify(changed)}\n`);
+    const archive = path.join(artifacts, 'awiki-cli-1.0.20-beta.1-linux-amd64.tar.gz');
+    const packed = run('tar', ['-C', stage, '-czf', archive, 'BUILTIN-TENANTS.json']);
+    fs.rmSync(stage, { recursive: true, force: true });
+    assert.equal(packed.status, 0, packed.stderr);
+
+    const result = run(process.execPath, [
+      path.join(scriptDir, 'stage-release.js'), '--channel', 'beta',
+      '--release-config', releaseConfig, '--server-config', serverConfig,
+      '--artifacts', artifacts, '--output', output,
+      '--source-tag', 'cli-v1.0.20-beta.1', '--source-commit', 'a'.repeat(40),
+    ], { cwd: rootDir });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /built-in tenant config differs across release artifacts/);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
