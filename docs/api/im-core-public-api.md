@@ -770,6 +770,13 @@ device principal、rootless vNext 身份和 checkpoint 原子落盘后，session
 Vault restart-safe activation、Root 流程和 P5 发布共用同一个解析边界，不能由各调用方
 或通用 verification-method decoder 另行解释。
 
+ready-admin 使用外部 identity provider 时，Core 在私有 approval journal 中持久化 provider
+document-change operation ID。远端 Join 已提交后的本地收口只续接该 exact operation，并同时
+核对 candidate document、digest 与 publication attempt 的 operation ID。旧版 journal 缺少该
+字段时，只允许在完整 document、digest 和单调 checkpoint 精确一致时兼容续接；其他 pending
+一律失败关闭且原样保留。provider document 与 checkpoint 已精确收敛时只执行严格校验并幂等
+返回，不再 resume transaction 或重复 adopt。该内部兼容信息不进入 public Join DTO。
+
 ### 5.2 Management-device root-key transfer
 
 Root transfer is an identity-scoped `ImClient::root_key_transfer()` capability

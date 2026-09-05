@@ -287,6 +287,18 @@ response-submit/process-crash boundary without persisting the display value.
 After host user-presence, approval atomically commits the DID Document, Registry
 member row, and consumed Join session.
 
+For an admin backed by an external identity provider, approval preparation also
+stores the provider document-change operation ID in the private Join journal.
+After the remote Join is consumed, local authorization resumes only that exact
+provider change and requires its candidate document, digest, and publication
+attempt to agree. A journal written by an older Core may omit the provider
+operation ID; that compatibility path is allowed only when the complete
+candidate document, digest, and monotonic checkpoint exactly match the remote
+authorization. Any other pending provider change fails closed and remains
+unchanged. If the provider document and checkpoint have already converged
+exactly, Core validates them and returns without resuming a transaction or
+adopting the document again.
+
 Remote `consumed` is not sufficient local authorization. The candidate resolves
 the DID Document independently, verifies its exact Manifest entry and keys,
 then performs a fresh device-signed User Service request and stores the returned

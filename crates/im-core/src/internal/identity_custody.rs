@@ -1790,18 +1790,50 @@ pub(crate) fn adopt_controller_document(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ControllerDocumentAdoption<'a> {
+    HandleRecovery {
+        pending_operation_id: &'a str,
+    },
+    DeviceJoin {
+        pending: DeviceJoinPendingDocumentChange<'a>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DeviceJoinPendingDocumentChange<'a> {
+    ExactOperation(&'a str),
+    LegacyDocumentDigestCheckpoint,
+}
+
 pub(crate) async fn adopt_controller_document_async(
     core: &crate::core::ImCore,
-    expected_pending_operation_id: Option<&str>,
+    adoption: ControllerDocumentAdoption<'_>,
     did: &crate::ids::Did,
     store_id: &str,
     identity_id: &str,
     document: &serde_json::Value,
     checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
 ) -> crate::ImResult<()> {
-    if let Some(operation_id) = expected_pending_operation_id {
-        crate::internal::identity_wire::handle_recovery::validate_operation_id(operation_id)?;
-    }
+    let expected_pending_operation_id = match adoption {
+        ControllerDocumentAdoption::HandleRecovery {
+            pending_operation_id,
+        } => {
+            crate::internal::identity_wire::handle_recovery::validate_operation_id(
+                pending_operation_id,
+            )?;
+            Some(pending_operation_id)
+        }
+        ControllerDocumentAdoption::DeviceJoin {
+            pending: DeviceJoinPendingDocumentChange::ExactOperation(pending_operation_id),
+        } if !pending_operation_id.trim().is_empty() => Some(pending_operation_id),
+        ControllerDocumentAdoption::DeviceJoin {
+            pending: DeviceJoinPendingDocumentChange::LegacyDocumentDigestCheckpoint,
+        } => None,
+        ControllerDocumentAdoption::DeviceJoin { .. } => {
+            return Err(crate::ImError::PermissionDenied)
+        }
+    };
     if crate::internal::identity_wire::document::document_hash(document)?
         != checkpoint.document_hash
     {
@@ -1844,6 +1876,18 @@ pub(crate) async fn adopt_controller_document_async(
         return Err(crate::ImError::PermissionDenied);
     }
     let remote = provider_verified_document(document, checkpoint);
+    let exact_checkpoint = crate::internal::identity_provider::ProviderDocumentCheckpoint {
+        document_version: checkpoint.document_version,
+        registry_version: checkpoint.registry_version,
+        document_digest: checkpoint.document_hash.clone(),
+    };
+    if before.document == *document && before_status.checkpoint.as_ref() == Some(&exact_checkpoint)
+    {
+        return validate_exact_adopted_controller_document(
+            &identity, &before, document, checkpoint,
+        )
+        .await;
+    }
     let adopted = if let Some(change) = identity
         .resume_document_change()
         .await
@@ -1857,7 +1901,9 @@ pub(crate) async fn adopt_controller_document_async(
             .document_hash
             .strip_prefix("sha256:")
             .ok_or(crate::ImError::PermissionDenied)?;
-        if Some(candidate.operation_id.as_str()) != expected_pending_operation_id
+        if candidate.operation_id.trim().is_empty()
+            || expected_pending_operation_id
+                .is_some_and(|expected| candidate.operation_id != expected)
             || candidate.candidate_digest != remote_digest
             || candidate.candidate_document != *document
         {
@@ -1881,7 +1927,7 @@ pub(crate) async fn adopt_controller_document_async(
                     .begin_publication()
                     .await
                     .map_err(crate::internal::identity_provider::map_provider_error)?;
-                if Some(attempt.operation_id.as_str()) != expected_pending_operation_id
+                if attempt.operation_id != candidate.operation_id
                     || attempt.candidate_digest != candidate.candidate_digest
                 {
                     return Err(crate::ImError::PermissionDenied);
@@ -4321,7 +4367,9 @@ mod tests {
             assert!(matches!(
                 adopt_controller_document_async(
                     &core,
-                    expected_operation_id,
+                    ControllerDocumentAdoption::HandleRecovery {
+                        pending_operation_id: expected_operation_id.unwrap(),
+                    },
                     &identity.did,
                     &identity.controller_store_id,
                     &identity.controller_identity_id,
@@ -4347,7 +4395,9 @@ mod tests {
 
         adopt_controller_document_async(
             &core,
-            Some(&operation_id),
+            ControllerDocumentAdoption::HandleRecovery {
+                pending_operation_id: &operation_id,
+            },
             &identity.did,
             &identity.controller_store_id,
             &identity.controller_identity_id,
@@ -4400,7 +4450,9 @@ mod tests {
         };
         adopt_controller_document_async(
             &core,
-            Some("recovery-without-provider-change"),
+            ControllerDocumentAdoption::HandleRecovery {
+                pending_operation_id: "recovery-without-provider-change",
+            },
             &identity.did,
             &reference.store_id,
             &reference.identity_id,
