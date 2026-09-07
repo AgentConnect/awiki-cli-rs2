@@ -1864,6 +1864,18 @@ pub(crate) async fn adopt_controller_document_async(
         .host_status()
         .await
         .map_err(crate::internal::identity_provider::map_provider_error)?;
+    let pending_change = identity
+        .resume_document_change()
+        .await
+        .map_err(crate::internal::identity_provider::map_provider_error)?;
+    // Only Recovery can present a proof refresh at the first checkpoint. The
+    // provider must still authorize it from durable unpublished state; version
+    // 1 alone is not evidence and legacy/confirmed identities remain strict.
+    let initial_recovery_proof = allow_verified_adoption_without_pending
+        && pending_change.is_none()
+        && checkpoint.document_version == 1
+        && checkpoint.registry_version == 1
+        && document_without_proof(&before.document)? == document_without_proof(document)?;
     if before_status.root_capability
         != crate::internal::identity_provider::ProviderRootCapability::Active
         || checkpoint.document_version == 0
@@ -1872,7 +1884,8 @@ pub(crate) async fn adopt_controller_document_async(
             checkpoint.document_version < current.document_version
                 || checkpoint.registry_version < current.registry_version
                 || (checkpoint.document_version == current.document_version
-                    && checkpoint.document_hash != current.document_digest)
+                    && checkpoint.document_hash != current.document_digest
+                    && !initial_recovery_proof)
         })
     {
         return Err(crate::ImError::PermissionDenied);
@@ -1883,18 +1896,16 @@ pub(crate) async fn adopt_controller_document_async(
         registry_version: checkpoint.registry_version,
         document_digest: checkpoint.document_hash.clone(),
     };
-    if before.document == *document && before_status.checkpoint.as_ref() == Some(&exact_checkpoint)
+    if before.document == *document
+        && before_status.checkpoint.as_ref() == Some(&exact_checkpoint)
+        && !allow_verified_adoption_without_pending
     {
         return validate_exact_adopted_controller_document(
             &identity, &before, document, checkpoint,
         )
         .await;
     }
-    let adopted = if let Some(change) = identity
-        .resume_document_change()
-        .await
-        .map_err(crate::internal::identity_provider::map_provider_error)?
-    {
+    let adopted = if let Some(change) = pending_change {
         let candidate = change
             .candidate()
             .await
@@ -3701,6 +3712,8 @@ pub(crate) fn native_create_spec(
 mod tests {
     use super::*;
     use anp_identity::host::IdentityStatusPort as _;
+
+    mod initial_publication;
 
     struct RootSigner {
         document: serde_json::Value,

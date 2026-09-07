@@ -132,6 +132,16 @@ device keys, operation ID, and proof-excluding intent document hash stay unchang
 confirmed, Core adopts that exact checkpointed document into ANP Identity before opening the recovered
 session. This keeps long OTP/resend delays recoverable without weakening the immutable-intent boundary.
 
+首次检查点接续：ANP Identity 新建身份的本地 `1/1` 检查点不代表已经获得远端发布确认。
+Provider 必须持久化该初始未确认状态；Core 仅允许 Recovery 的 `1/1`、正文完全相同的
+proof 刷新候选进入 Provider 验证，由 Provider 在写锁、generation/CAS 和 journal 保护下
+接入精确文档并消费初始状态。即使首次确认文档完全相同，也必须消费该状态；重启重放
+相同结果幂等，确认后同版本不同哈希仍拒绝。Device Join、待发布文档变更、回退版本、
+密钥或正文变化不获得此例外。该修复不改变服务端 wire、版本编号或 proof-excluding intent。
+旧 Identity 记录缺少初始状态标记时按已确认/未知处理，不能仅凭 `1/1` 或 Recovery 错误
+推断未发布；这类已有 pending 记录不会自动迁移，仍需单独验证其创建及首次发布来源。
+未升级的外部 Provider 可能继续拒绝此接续，必须同步升级身份存储实现再验证。
+
 Pre-attempt discard first claims `pre_commit && commit_attempted=false` in the SQLite operation
 index and only then idempotently deletes Vault material, so concurrent activation and discard cannot
 both win. When a post-attempt Grant refresh observes a changed authoritative binding, Core performs
