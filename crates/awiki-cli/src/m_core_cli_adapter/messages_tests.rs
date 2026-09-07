@@ -62,6 +62,18 @@ fn foreground_message_reads_projection_only_after_terminal_sync_success() {
     ));
 }
 
+#[test]
+fn foreground_budget_exhaustion_is_not_terminal_sync_success() {
+    for status in [MessageSyncStatus::Idle, MessageSyncStatus::Changed] {
+        let mut outcome = sync_outcome(status);
+        outcome.warnings.push("sync.budget_exhausted".to_owned());
+        assert!(
+            require_foreground_message_sync(&outcome).is_err(),
+            "an unfinished foreground sync must not authorize a complete local inbox result"
+        );
+    }
+}
+
 fn sync_outcome(status: MessageSyncStatus) -> MessageSyncOutcome {
     MessageSyncOutcome {
         status,

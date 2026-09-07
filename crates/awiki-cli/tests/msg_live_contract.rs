@@ -1322,3 +1322,6 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+#[path = "msg_live_contract/foreground_receive.rs"]
+mod foreground_receive;
