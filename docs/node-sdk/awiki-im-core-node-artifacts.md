@@ -62,6 +62,13 @@ root wrapper 是纯 ESM 包，只包含编译后的 JS、类型声明和合规�
 
 ## AGPL artifact 构建
 
+自 2026-09-07 起，CI 通过 `scripts/release/registry-build.py --prepare` 创建独立的 registry
+构建工作区，使用 `scripts/release/registry-dependencies.json` 和 `registry-Cargo.lock`
+锁定已发布的 ANP、Identity、IM Core。二进制输出仍进入原 checkout 的 target 目录，
+原 checkout 用于对应源码定位和打包审核。普通本地源码构建流程保持可用。
+Cargo 的精确约束（例如 `=1.0.1`）在 provenance 中记为实际版本 `1.0.1`。
+
+
 `.github/workflows/im-core-node-artifacts.yml` 使用 Rust 1.88、Node 22.19 和 pnpm 10.27 构建
 五个平台包，并在各自真实架构 runner 上用 Node 22.19、24、26 做以下验证：
 

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { exactDependencyVersion } from './registry-version.mjs'
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -53,7 +54,7 @@ function workspaceDependencyVersion(name) {
   const source = run('git', ['show', 'HEAD:Cargo.toml'])
   const match = source.match(new RegExp(`^${name}\\s*=\\s*\\{[^\\n]*version\\s*=\\s*"([^"]+)"`, 'm'))
   if (!match) fail(`workspace dependency version is missing for ${name}`)
-  return match[1]
+  return exactDependencyVersion(match[1])
 }
 
 function sourceRevision() {
