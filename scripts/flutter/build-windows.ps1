@@ -50,13 +50,12 @@ try {
         throw "rustup target add failed with exit code $LASTEXITCODE."
     }
 
-    & cargo "+$Toolchain" build `
-        -p im-core-dart `
-        --release `
-        --locked `
-        --target $Target `
-        --no-default-features `
-        --features $Features
+    $BuildCommand = @("+$Toolchain", "build", "-p", "im-core-dart", "--release", "--locked", "--target", $Target, "--no-default-features", "--features", $Features)
+    if ($env:AWIKI_RELEASE_REGISTRY -eq "1") {
+        & python3 (Join-Path $RootDir "scripts/release/registry-build.py") -- cargo @BuildCommand
+    } else {
+        & cargo @BuildCommand
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE."
     }

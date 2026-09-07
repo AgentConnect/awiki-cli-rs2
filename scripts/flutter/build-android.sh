@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
+release_cargo() {
+  if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
+    python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- cargo "$@"
+  else
+    cargo "$@"
+  fi
+}
+
 DRY_RUN=0
 ABI=""
 
@@ -86,7 +94,7 @@ for abi in "${ABIS[@]}"; do
   NDK_TARGET_ARGS+=(-t "${abi}")
 done
 
-cargo ndk \
+release_cargo ndk \
   "${NDK_TARGET_ARGS[@]}" \
   -o "${OUT_DIR}" \
   build \

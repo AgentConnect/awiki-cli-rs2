@@ -15,7 +15,7 @@ construct an [`ImCore`](#minimal-rust-example), bind an identity into an
 
 ## Status
 
-- Current crate version: `0.1.0`.
+- Current crate version: `0.1.1`.
 - Rust toolchain: Rust `1.88.0` or newer, matching this workspace's
   `rust-toolchain.toml`.
 - Public API is still evolving while the Awiki client stack is being split into
@@ -306,7 +306,7 @@ Path dependencies may be kept for local development only when paired with a
 published version, for example:
 
 ```toml
-anp = { version = "1.0.0", path = "../anp/anp/rust", default-features = false }
+anp = { version = "=1.0.1", path = "../anp/anp/rust", default-features = false }
 ```
 
 ## Related documentation

@@ -147,17 +147,23 @@ jobs:
           }
           NODE
 
+      - name: Prepare published SDK dependency workspace
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: python3 scripts/release/registry-build.py --prepare ../awiki-cli-registry
+
       - name: Build release addon on non-Linux targets
         if: matrix.linux_gnu == false
-        working-directory: awiki-cli-rs2
+        working-directory: awiki-cli-registry
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: '13.5'
+          CARGO_TARGET_DIR: ${{ github.workspace }}/awiki-cli-rs2/target
         run: cargo build --locked --release -p awiki-im-core-node --target "${{ matrix.rust_target }}"
 
       - name: Build Linux addon inside manylinux 2.28
         if: matrix.linux_gnu
-        working-directory: awiki-cli-rs2
+        working-directory: awiki-cli-registry
         shell: bash
         run: |
           docker run --rm \
@@ -165,7 +171,7 @@ jobs:
             -e HOME="${HOME}" \
             -e CARGO_HOME="${HOME}/.cargo" \
             -e RUSTUP_HOME="${HOME}/.rustup" \
-            -e CARGO_TARGET_DIR="${PWD}/target/manylinux-2-28" \
+            -e CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/awiki-cli-rs2/target/manylinux-2-28" \
             -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
             -v "${HOME}/.cargo:${HOME}/.cargo" \
             -v "${HOME}/.rustup:${HOME}/.rustup:ro" \

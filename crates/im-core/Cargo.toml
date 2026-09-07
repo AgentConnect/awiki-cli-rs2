@@ -1,6 +1,6 @@
 [package]
 name = "awiki-im-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Rust IM SDK for Awiki clients built on Agent Network Protocol (ANP)"
 readme = "README.md"
 edition.workspace = true

@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
+release_cargo() {
+  if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
+    python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- cargo "$@"
+  else
+    cargo "$@"
+  fi
+}
+
 DRY_RUN=0
 BUILD_IOS=1
 BUILD_MACOS=1
@@ -160,7 +168,7 @@ for target in "${IOS_TARGETS[@]}"; do
   if [[ -n "${CFLAGS:-}" ]]; then
     ios_cflags="${CFLAGS} ${ios_cflags}"
   fi
-  CFLAGS="${ios_cflags}" IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" cargo build \
+  CFLAGS="${ios_cflags}" IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" release_cargo build \
     -p im-core-dart \
     --release \
     --target "${target}" \
@@ -176,7 +184,7 @@ for target in "${MACOS_TARGETS[@]}"; do
   if [[ "${target}" == "aarch64-apple-darwin" ]]; then
     macos_deployment_target="${MACOS_ARM64_DEPLOYMENT_TARGET}"
   fi
-  MACOSX_DEPLOYMENT_TARGET="${macos_deployment_target}" cargo build \
+  MACOSX_DEPLOYMENT_TARGET="${macos_deployment_target}" release_cargo build \
     -p im-core-dart \
     --release \
     --target "${target}" \

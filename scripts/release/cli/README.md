@@ -88,3 +88,26 @@ scripts/release/cli/deploy-nginx-config.sh \
 `/cli/onboarding.md` 和 `/cli/skill.md` 由生成的 Nginx snippet 代理到 protocol-gateway。每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`；channel 根路径直接返回同一份 `manifest.json`，未发布的 channel 返回 `404`。服务器只公开当前 channel 指针，历史版本保存在 `archive_root`。
 
 Onboarding 只跟随 stable。protocol-gateway 应读取 `archive_root/channels/stable-onboarding.md`，而不是读取服务器上的活动 Git checkout。
+
+## 发布构建使用线上 SDK
+
+CLI 和 daemon 的 release builder 使用 [registry-build.py](../registry-build.py)，在临时 Git worktree
+中将 ANP、Identity 和 IM Core dependency 切换到 crates.io。版本由
+[registry-dependencies.json](../registry-dependencies.json) 固定为本次已发布版本；
+[registry-Cargo.lock](../registry-Cargo.lock) 锁定完整依赖图。普通开发工作区保留 path dependency。
+
+Flutter App 的 release worker 设置 `AWIKI_RELEASE_REGISTRY=1`，使原生构建走同一入口；
+普通 Debug/本地 SDK 开发不设置此变量，继续使用工作区源码。IM Core Node artifact workflow
+也在独立的 registry 工作区构建 addon，原始源码 checkout 仍用于 provenance 和打包审核。
+
+每次 SDK 发布后，更新三个版本，再在干净且已提交的源码工作区生成 registry lock：
+
+```bash
+python3 scripts/release/registry-build.py --refresh-lock
+# 检查并提交 registry-Cargo.lock 后，验证 registry 消费者可以构建。
+python3 scripts/release/registry-build.py -- cargo check -p awiki-cli -p awiki-deamon -p im-core-dart -p awiki-im-core-node
+```
+
+脚本核对 Cargo 实际 metadata，拒绝 path/git SDK 或不同版本，构建失败不回退到本地 SDK。
+临时 worktree 退出即删除；产物仍进入原工作区 `target/`（或显式 `CARGO_TARGET_DIR`）。
+`--prepare <new-directory>` 用于 CI 容器构建，生成的 worktree 保留到 CI 工作区清理。

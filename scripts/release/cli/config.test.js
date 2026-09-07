@@ -152,13 +152,25 @@ test('server and release configuration schemas are strict', () => {
     );
     assert.throws(() => readServerConfig(invalidDownloadRate), /positive Nginx size/);
 
-    const release = path.resolve(__dirname, 'release-config.json');
+    const release = path.join(root, 'release-config.json');
+    fs.writeFileSync(release, JSON.stringify({
+      schema_version: 1,
+      channels: {
+        beta: { version: '2.0.0-beta.1', min_supported_version: '2.0.0-beta.1' },
+        stable: { version: '1.2.3', min_supported_version: '1.2.0' },
+      },
+      anp_repository: 'agent-network-protocol/anp',
+      anp_commit: 'a'.repeat(40),
+      anp_identity_commit: 'b'.repeat(40),
+      archive_keep_versions: 10,
+      targets: ['darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64'],
+    }));
     const parsed = readReleaseConfig(release);
-    assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
-    assert.equal(parsed.channels.stable.version, '1.0.48');
-    assert.equal(parsed.channels.stable.min_supported_version, '1.0.48');
-    assert.equal(parsed.anp_commit, '45031b698e86e094dfef1f6d05fe9839a600854b');
-    assert.equal(parsed.anp_identity_commit, '8dc65ccc388af0f0622263811776a6aadcd11d18');
+    assert.equal(parsed.channels.beta.version, '2.0.0-beta.1');
+    assert.equal(parsed.channels.stable.version, '1.2.3');
+    assert.equal(parsed.channels.stable.min_supported_version, '1.2.0');
+    assert.equal(parsed.anp_commit, 'a'.repeat(40));
+    assert.equal(parsed.anp_identity_commit, 'b'.repeat(40));
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);

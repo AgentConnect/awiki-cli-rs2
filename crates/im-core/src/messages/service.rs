@@ -5292,6 +5292,15 @@ mod group_e2ee_public_send_tests {
     fn public_group_e2ee_send_uses_native_provider_and_sends_cipher_only() {
         let fixture = Fixture::vnext();
         let server = RpcTestServer::spawn(vec![
+            // Device-revocation preflight reads the local group before the policy checks.
+            json!({
+                "group_snapshot": {
+                    "group_did": fixture.group_did,
+                    "my_role": "member",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected"
+                }
+            }),
             json!({
                 "group_snapshot": {
                     "group_did": fixture.group_did,
@@ -5365,7 +5374,14 @@ mod group_e2ee_public_send_tests {
                 },
                 delegated_signing: None,
             })
-            .unwrap();
+            .unwrap_or_else(|error| {
+                let methods: Vec<_> = server
+                    .requests()
+                    .into_iter()
+                    .map(|rpc| rpc.rpc_method)
+                    .collect();
+                panic!("public send failed: {error}; RPC methods: {methods:?}");
+            });
 
         assert!(result
             .message
@@ -5378,32 +5394,33 @@ mod group_e2ee_public_send_tests {
             crate::messages::DeliveryState::Accepted
         ));
         let requests = server.requests();
-        assert_eq!(requests.len(), 5);
+        assert_eq!(requests.len(), 6);
         assert_eq!(requests[0].rpc_method, "group.get");
-        assert_eq!(requests[1].rpc_method, "group.get_info");
-        assert_eq!(requests[2].rpc_method, "group.get");
-        assert_eq!(requests[3].rpc_method, "group.get_info");
-        assert_eq!(requests[4].rpc_method, "group.e2ee.send");
+        assert_eq!(requests[1].rpc_method, "group.get");
+        assert_eq!(requests[2].rpc_method, "group.get_info");
+        assert_eq!(requests[3].rpc_method, "group.get");
+        assert_eq!(requests[4].rpc_method, "group.get_info");
+        assert_eq!(requests[5].rpc_method, "group.e2ee.send");
         assert_eq!(
-            requests[4].params["meta"]["security_profile"],
+            requests[5].params["meta"]["security_profile"],
             anp::group_e2ee::SECURITY_PROFILE
         );
         assert_eq!(
-            requests[4].params["meta"]["content_type"],
+            requests[5].params["meta"]["content_type"],
             anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
         );
         assert_eq!(
-            requests[4].params["body"]["group_state_ref"]["group_state_version"],
+            requests[5].params["body"]["group_state_ref"]["group_state_version"],
             "p4-state-1"
         );
         assert!(
-            requests[4].params["body"]["private_message_b64u"]
+            requests[5].params["body"]["private_message_b64u"]
                 .as_str()
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false),
             "group.e2ee.send must carry an MLS private message"
         );
-        let encoded_send = serde_json::to_string(&requests[4].params).unwrap();
+        let encoded_send = serde_json::to_string(&requests[5].params).unwrap();
         assert!(!encoded_send.contains("public group secret"));
         assert!(!encoded_send.contains("application_plaintext"));
         assert!(!encoded_send.contains("provider"));
@@ -5726,8 +5743,9 @@ mod group_e2ee_public_send_tests {
                             signing_key_id: generated.device_signing_key_id,
                             e2ee_key_id: generated.device_e2ee_key_id,
                             status: DeviceAuthorizationStatus::Active,
-                            role: DeviceAuthorizationRole::Admin,
-                            management_ready: true,
+                            // This fixture covers ordinary member sending, not roster management.
+                            role: DeviceAuthorizationRole::Member,
+                            management_ready: false,
                             auth_generation: 1,
                         }),
                         checkpoint: Some(IdentityInternalCheckpoint {

@@ -12,7 +12,7 @@
 
 ## 状态
 
-- 当前版本：`0.1.0`。
+- 当前版本：`0.1.1`。
 - Rust 工具链：Rust `1.88.0` 或更高版本，与工作区 `rust-toolchain.toml` 保持一致。
 - Public API 仍在演进中，目标是把 Awiki 客户端栈拆分成稳定 Rust SDK、FFI facade 和 Flutter/Dart bindings。
 - 原生 Rust 宿主可以直接使用本 crate；Flutter/Dart 应用通常应使用 [`packages/awiki_im_core`](../../packages/awiki_im_core)。
@@ -208,7 +208,7 @@ cargo publish -p awiki-im-core --dry-run
 发布到 crates.io 时，每个 non-dev dependency 都必须带 crates.io `version`。本地 path dependency 可以保留，但需要同时写上已发布版本，例如：
 
 ```toml
-anp = { version = "1.0.0", path = "../anp/anp/rust", default-features = false }
+anp = { version = "=1.0.1", path = "../anp/anp/rust", default-features = false }
 ```
 
 ## 相关文档

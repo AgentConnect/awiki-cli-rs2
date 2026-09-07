@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
+release_cargo() {
+  if [[ "${AWIKI_RELEASE_REGISTRY:-0}" == "1" ]]; then
+    python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- cargo "$@"
+  else
+    cargo "$@"
+  fi
+}
+
 DRY_RUN=0
 TARGET="${AWIKI_IM_CORE_LINUX_TARGET:-x86_64-unknown-linux-gnu}"
 
@@ -60,7 +68,7 @@ fi
 
 rustup target add "${TARGET}"
 
-cargo build \
+release_cargo build \
   -p im-core-dart \
   --release \
   --target "${TARGET}" \

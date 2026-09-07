@@ -227,6 +227,7 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
+cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
 
 anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
 const fs = require('fs');

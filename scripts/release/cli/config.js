@@ -119,7 +119,7 @@ function readAnpCandidateLock(filePath) {
     new Set(['schemaVersion', 'candidateVersion', 'sourceDateEpoch', 'anp', 'identity']),
     'ANP candidate lock',
   );
-  if (lock.schemaVersion !== 1 || lock.candidateVersion !== '1.0.0'
+  if (lock.schemaVersion !== 1 || !/^\d+\.\d+\.\d+$/.test(lock.candidateVersion || '')
       || !Number.isInteger(lock.sourceDateEpoch) || lock.sourceDateEpoch < 1) {
     throw new Error('ANP candidate lock version is invalid');
   }
@@ -144,13 +144,13 @@ function readAnpCandidateLock(filePath) {
       || !/^[a-f0-9]{40}$/.test(lock.anp.commit || '')
       || !/^[a-f0-9]{64}$/.test(lock.anp.rustTreeSha256 || '')
       || !/^[a-f0-9]{64}$/.test(lock.anp.didTransitionVectorsTreeSha256 || '')
-      || lock.anp.pythonWheel.filename !== 'anp-1.0.0-py3-none-any.whl'
+      || lock.anp.pythonWheel.filename !== `anp-${lock.candidateVersion}-py3-none-any.whl`
       || !/^[a-f0-9]{64}$/.test(lock.anp.pythonWheel.sha256 || '')) {
     throw new Error('ANP candidate SDK provenance is invalid');
   }
   if (lock.identity.repository !== 'https://github.com/agent-network-protocol/anp-identity.git'
       || !/^[a-f0-9]{40}$/.test(lock.identity.commit || '')
-      || lock.identity.version !== '0.2.0'
+      || !/^\d+\.\d+\.\d+$/.test(lock.identity.version || '')
       || !/^[a-f0-9]{64}$/.test(lock.identity.rustTreeSha256 || '')) {
     throw new Error('ANP Identity candidate provenance is invalid');
   }
@@ -191,6 +191,13 @@ function readReleaseConfig(filePath, candidateLockPath = null) {
   }
   if (candidateLockPath) {
     const candidate = readAnpCandidateLock(candidateLockPath);
+    const registry = JSON.parse(fs.readFileSync(
+      path.resolve(__dirname, '../registry-dependencies.json'), 'utf8',
+    ));
+    if (candidate.candidateVersion !== registry.packages.anp
+        || candidate.identity.version !== registry.packages['anp-identity']) {
+      throw new Error('release provenance versions do not match registry dependencies');
+    }
     if (config.anp_commit !== candidate.anp.commit
         || config.anp_identity_commit !== candidate.identity.commit) {
       throw new Error('release config does not match ANP candidate lock');

@@ -149,6 +149,7 @@ if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
 else
   cargo_cmd=("${cargo_bin}")
 fi
+cargo_cmd=(python3 "${ROOT_DIR}/scripts/release/registry-build.py" -- "${cargo_cmd[@]}")
 
 archive_path="${DIST_DIR}/awiki-deamon-${OS_NAME}-${ARCH_NAME}.tar.gz"
 build_bin="${ROOT_DIR}/target/${TARGET_TRIPLE}/release/awiki-deamon"
