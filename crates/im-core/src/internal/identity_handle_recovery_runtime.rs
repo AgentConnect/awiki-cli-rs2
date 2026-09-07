@@ -2979,6 +2979,7 @@ fn canonical_generation(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod retirement;
 
     #[test]
     fn fresh_recovery_builds_unsigned_predecessor_without_old_private_key() {

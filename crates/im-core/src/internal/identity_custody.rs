@@ -217,7 +217,7 @@ pub(crate) async fn provision_registration_identity_async(
         })??;
         let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
         let full_handle = format!("{local_part}.{domain}");
-        let historical_dids = registration_historical_dids(core, &full_handle)
+        let historical_dids = historical_handle_dids(core, &full_handle)
             .map_err(|error| registration_identity_stage_error(error, "historical_scan"))?;
         let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
         let mut matches = Vec::new();
@@ -761,7 +761,10 @@ pub(crate) async fn provision_handle_recovery_identity_async(
         message: error.to_string(),
     })??;
     let full_handle = format!("{local_part}.{domain}");
-    let historical_predecessors =
+    // Credential deletion removes Vault pending records, but completed
+    // transitions still identify published custody that must not be reused.
+    let mut historical_predecessors = historical_handle_dids(core, &full_handle)?;
+    historical_predecessors.extend(
         match crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(
             core,
         ) {
@@ -778,7 +781,8 @@ pub(crate) async fn provision_handle_recovery_identity_async(
                 std::collections::BTreeSet::new()
             }
             Err(error) => return Err(error),
-        };
+        },
+    );
     let custody = controller_custody_provider(core).await?;
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
@@ -1363,12 +1367,14 @@ fn find_unprojected_handle_identities(
         .values()
         .filter_map(|entry| entry.anp_identity_id.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
+    let historical_dids = historical_handle_dids(core, &format!("{local_part}.{domain}"))?;
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
     for descriptor in manager.list().map_err(map_facade_error)? {
         if descriptor.state != anp_identity::PublicIdentityState::Active
             || projected.contains(descriptor.reference.identity_id.as_str())
+            || historical_dids.contains(&descriptor.reference.did)
             || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
@@ -3324,7 +3330,7 @@ fn open_managed_identity(
         .map_err(map_facade_error)
 }
 
-fn registration_historical_dids(
+fn historical_handle_dids(
     core: &crate::core::ImCore,
     full_handle: &str,
 ) -> crate::ImResult<std::collections::BTreeSet<String>> {
@@ -3439,7 +3445,7 @@ fn find_unprojected_registration_identity(
         .collect::<std::collections::BTreeSet<_>>();
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let full_handle = format!("{local_part}.{domain}");
-    let historical_dids = registration_historical_dids(core, &full_handle)?;
+    let historical_dids = historical_handle_dids(core, &full_handle)?;
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
     for descriptor in manager.list().map_err(map_facade_error)? {

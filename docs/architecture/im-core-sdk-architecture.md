@@ -92,6 +92,12 @@ new P5 PreKey publication, and transport-only P4 group convergence. Dart is a ty
 projection of that state machine; it does not implement a second state machine. Core creates
 the opaque operation ID when OTP is requested, and every later call addresses that exact ID.
 
+Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完成的
+`identity_transition_pending` 中的前驱/后继，以及 exact completed retirement binding，
+都不能作为“未投影的新身份”复用。该排除依据是删除凭证后仍保留的非秘密 Core 记录，
+不能仅依赖会随凭证删除的 Vault pending；历史多设备身份不得误入单设备 genesis 校验。
+已有 Vault pending 的精确续跑保持不变，不删除历史 custody、不放宽设备数或签名校验。
+
 `request_handle_recovery_otp` accepts a full Handle and optional local identity selector. With a selector,
 Core closes it against the requested Handle. Without one, Core first matches that Handle
 against the complete local identity index; if absent, it resolves the active public WNS
