@@ -1969,3 +1969,11 @@ Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；
 设备定向由 Message Service 的投递元数据和已认证的 exact-device Inbox scope 完成，不是 P3
 协议字段；Core 不接受在 P3 `meta` 中增加 `device_id`、`recipient_device_id` 等自定义设备
 目标字段，标准 P3 `target` 仍然只绑定目标 agent DID。
+
+### 工作区迁移专用身份索引投影
+
+`compat::identity_index::read_workspace_identity_index` 仅供宿主升级与只读检测使用，
+不属于稳定 SDK 业务 API，不向 Dart/Node 导出。它复用 Core IdentityStore 的
+索引解析与版本/托管标记校验，仅返回 schema version 和 owner identity ID / DID。
+不打开 Vault、不加载身份密钥、不写回索引，宿主不能据此绕过完整身份认证。
+CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Core 负责。

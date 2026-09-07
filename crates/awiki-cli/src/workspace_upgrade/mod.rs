@@ -1,6 +1,7 @@
 mod backup;
 mod detect;
 mod fsutil;
+mod identity_index;
 mod journal;
 pub(crate) mod legacy_identity;
 pub(crate) mod legacy_sqlite;

@@ -12,6 +12,7 @@ pub mod directory;
 pub mod email;
 pub mod groups;
 pub mod identity;
+pub mod identity_index;
 pub mod local_state;
 pub mod messages;
 pub mod profile;
