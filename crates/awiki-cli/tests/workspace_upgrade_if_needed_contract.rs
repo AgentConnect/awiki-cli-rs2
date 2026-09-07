@@ -399,6 +399,20 @@ fn workspace_upgrade_if_needed_preserves_imported_k1_identity_without_online_rep
 
 #[test]
 fn workspace_upgrade_if_needed_v3_to_v4_records_did_history_and_refreshes_snapshots() {
+    assert_v3_to_v4_identity_snapshot(3, false);
+}
+
+#[test]
+fn workspace_upgrade_resumes_with_core_schema_5_without_rewriting_identity() {
+    assert_v3_to_v4_identity_snapshot(5, true);
+}
+
+#[test]
+fn workspace_upgrade_resumes_with_core_schema_6_without_rewriting_identity() {
+    assert_v3_to_v4_identity_snapshot(6, true);
+}
+
+fn assert_v3_to_v4_identity_snapshot(schema: i64, interrupted: bool) {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v3-v4").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let paths = workspace_upgrade::resolve_paths(&resolved);
@@ -421,6 +435,29 @@ fn workspace_upgrade_if_needed_v3_to_v4_records_did_history_and_refreshes_snapsh
         r#"{"schema_version":3,"default_credential_name":"current","credentials":{"current":{"credential_name":"current","dir_name":"current","did":"did:wba:example.test:user:e1_current","unique_id":"e1_current","name":"Current User","handle":"current","full_handle":"current.example.test","is_default":true}}}"#,
     )
     .expect("write identity index");
+    let index_path = Path::new(&paths.identity_dir).join("index.json");
+    let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    index["schema_version"] = json!(schema);
+    index["future_extension"] = json!({"must_survive": true});
+    if schema == 6 {
+        index["credentials"]["current"]["identity_custody_backend"] = json!("anp_identity");
+        index["credentials"]["current"]["anp_identity_store_id"] = json!("test-store");
+        index["credentials"]["current"]["anp_identity_id"] = json!("current-id");
+        index["identity_custody_cutover"] = json!({
+            "schema_version": 1, "backend": "anp_identity", "store_id": "test-store",
+            "cutover_at": "2026-09-07T00:00:00Z", "cleanup_complete": true
+        });
+    }
+    let original_index = serde_json::to_vec(&index).unwrap();
+    std::fs::write(&index_path, &original_index).unwrap();
+    let identity_dir = Path::new(&paths.identity_dir).join("current");
+    std::fs::create_dir_all(&identity_dir).unwrap();
+    let secret_path = identity_dir.join("key-1-private.pem");
+    std::fs::write(
+        &secret_path,
+        b"synthetic-secret-must-not-be-read-or-rewritten",
+    )
+    .unwrap();
     let db = open_local_state(&resolved.paths).expect("open local state");
     db.execute(
         "INSERT INTO messages(msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?6, ?7)",
@@ -437,6 +474,30 @@ fn workspace_upgrade_if_needed_v3_to_v4_records_did_history_and_refreshes_snapsh
     .expect("insert stale owner_did snapshot");
     drop(db);
 
+    if interrupted {
+        let backup_dir = workspace_upgrade::create_backup(&paths, "resume-fixture").unwrap();
+        workspace_upgrade::save_journal(
+            &paths.journal_path,
+            &workspace_upgrade::Journal {
+                upgrade_id: "resume-fixture".into(),
+                from_version: 3,
+                to_version: 4,
+                current_step: "workspace_3_to_4_owner_identity_local_state".into(),
+                phase: "applying".into(),
+                backup_dir,
+                started_at: "2026-09-07T00:00:00Z".into(),
+                app_version: "1.0.50".into(),
+            },
+        )
+        .unwrap();
+    }
+    let inspection = workspace_upgrade::inspect(&resolved, "test").unwrap();
+    assert!(
+        inspection.detection.identity_index_error.is_empty(),
+        "{}",
+        inspection.detection.identity_index_error
+    );
+    assert_eq!(inspection.detection.identity_index_schema_version, schema);
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.13");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
@@ -472,6 +533,14 @@ fn workspace_upgrade_if_needed_v3_to_v4_records_did_history_and_refreshes_snapsh
         )
         .expect("query refreshed message owner_did");
     assert_eq!(owner_did, "did:wba:example.test:user:e1_current");
+    drop(db);
+    workspace_upgrade::upgrade_if_needed(&resolved, "test").unwrap();
+    assert!(!Path::new(&paths.journal_path).exists());
+    assert_eq!(std::fs::read(&index_path).unwrap(), original_index);
+    assert_eq!(
+        std::fs::read(&secret_path).unwrap(),
+        b"synthetic-secret-must-not-be-read-or-rewritten"
+    );
 }
 
 #[test]
@@ -1302,5 +1371,53 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn workspace_upgrade_rejects_invalid_core_index_before_rebuilding_old_database() {
+    for index in [
+        json!({"schema_version": 7, "credentials": {}}),
+        json!({"schema_version": 6, "credentials": {}}),
+        json!({"schema_version": 5, "credentials": {"alice": {"binding_generation": "invalid"}}}),
+    ] {
+        let workspace = TempDir::new("workspace-upgrade-invalid-index").unwrap();
+        let resolved = test_resolved(workspace.path());
+        let paths = workspace_upgrade::resolve_paths(&resolved);
+        workspace_upgrade::save_meta(
+            &paths.meta_path,
+            &workspace_upgrade::Meta {
+                workspace_schema_version: 3,
+                app_version: "test".into(),
+                updated_at: String::new(),
+                last_upgrade_id: String::new(),
+                last_backup_dir: String::new(),
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        std::fs::create_dir_all(&paths.identity_dir).unwrap();
+        let index_path = Path::new(&paths.identity_dir).join("index.json");
+        let bytes = serde_json::to_vec(&index).unwrap();
+        std::fs::write(&index_path, &bytes).unwrap();
+        std::fs::create_dir_all(Path::new(&paths.database_file).parent().unwrap()).unwrap();
+        let db = rusqlite::Connection::open(&paths.database_file).unwrap();
+        db.execute_batch("PRAGMA user_version=6; CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserve');").unwrap();
+        drop(db);
+        let error = workspace_upgrade::upgrade_if_needed(&resolved, "test").unwrap_err();
+        assert!(!error.to_string().is_empty());
+        let db = rusqlite::Connection::open(&paths.database_file).unwrap();
+        let value: String = db
+            .query_row("SELECT value FROM sentinel", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(value, "preserve");
+        assert_eq!(std::fs::read(&index_path).unwrap(), bytes);
+        assert_eq!(
+            workspace_upgrade::load_meta(&paths.meta_path)
+                .unwrap()
+                .unwrap()
+                .workspace_schema_version,
+            3
+        );
     }
 }

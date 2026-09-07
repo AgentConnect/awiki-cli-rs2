@@ -99,8 +99,7 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
             .join(identity::INDEX_FILE_NAME)
             .is_file();
     if detection.identity_index_exists {
-        let manager = Manager::new(resolved.paths.clone());
-        match manager.load_index() {
+        match super::identity_index::read(&resolved.paths) {
             Ok(index) => detection.identity_index_schema_version = index.schema_version,
             Err(err) => detection.identity_index_error = err.to_string(),
         }

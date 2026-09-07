@@ -237,3 +237,15 @@ When command shape is uncertain, use `awiki-cli --help`, `awiki-cli <domain> --h
 ```
 
 Private keys, tokens, E2EE state, runtime tokens, and local databases are sensitive. Never upload an entire workspace for troubleshooting.
+
+### 身份索引与工作区升级
+
+CLI 工作区版本与 Core 身份索引版本是两个独立版本。工作区 `v3 → v4`
+升级通过 Core 的只读兼容接口读取身份索引和 owner/DID 元数据，不再使用
+旧版 CLI 身份管理器解析新版索引。支持范围及 schema 6 的 ANP Identity
+迁移标记由 Core 统一校验；未知版本或不合法标记会在数据库变更前拒绝。
+该流程不改写身份索引、不读取密钥，也不自动迁移身份密钥托管方式。
+
+升级中断后，修复版本继续使用原升级日志和备份完成续跑；不要手动降低
+`identities/index.json` 的版本号或删除身份目录。`awiki-cli doctor` 可检查
+索引版本和升级日志。此修复尚需随下一版 CLI 发布，现有安装包不会自动改变。
