@@ -441,8 +441,9 @@ admin-side state, other identities, and sibling device IDs are preserved.
 Completed retirement tombstones repeat this exact cleanup after restart so a
 late operation admitted before host teardown cannot restore a terminal journal.
 
-The host must detach its active-session pointer before invoking deletion and
-may stop realtime/dispose runtime only as best-effort cleanup. Network shutdown
+The host clears its active-session pointer after Core accepts local deletion;
+a rejected deletion preserves the current session. Realtime shutdown remains
+best-effort cleanup. Network shutdown
 latency is therefore never part of the local deletion result, and a generic UI
 network timeout must not classify this operation.
 
@@ -462,6 +463,27 @@ are preserved, even when the Registry is empty; store-wide orphan administration
 belongs to the identity service, not tenant reset. `clearedIdentityDids` lets the
 Browser evict only corresponding presentation caches. Remote Handle/account state,
 other tenants and sibling devices are not revoked.
+
+显式删除本地身份同时结束关联的未完成 Recovery。Schema 44 在同一删除事务内写入
+`locally_deleted`，保留原提交事实；已完成的 Recovery/transition 审计不改写。
+只读影响查询按 owner/完整 Handle 返回实际未完成状态，不推进恢复，不依赖能力开关。
+同 Handle 存在多个 live owner 时仍拒绝歧义删除。
+
+清理顺序为精确 successor/predecessor custody、加密 pending、身份退役。失败保留删除
+票据及尚需收尾的引用；重启续做。Vault 写入与删除决定通过 SQLite 写事务互斥，旧操作
+不能重新激活。外部 provider 的清理由异步删除和 `open_with_options` 续做。
+
+SQLite binding 已切换而 Registry 尚未切换时，删除事务冻结对应 transition 的精确设备
+元组；只有删除票据完成后，该元组才能证明本机凭证已退役。这不表示远端恢复被撤销，
+也不放宽其他 owner、Handle 或设备的注册判断。
+
+2026-09-08 本地安全审查：删除决定只来自显式本地删除 API；沿用稳定 owner、完整 Handle
+及加密 journal 的精确 custody 引用，不扫描或删除共享 provider 的其他身份，不调用远端
+Commit／撤销。测试已覆盖当前协议 seal-before-index 的真实中断点、各恢复阶段、删除重开、
+迟到 journal 写入、已完成审计保留、其他 owner 隔离和部分切换的精确设备元组。
+Schema 44 保留既有受支持版本的迁移路径，不增加临时版本兼容；旧二进制不得打开新 schema。
+本地删除、恢复和 schema 测试及 Dart／Node 编译通过；System 删除合同与产品 E2E 已审查更新，
+本次未运行真实后端 E2E，未作发布或公网启用结论。
 
 If registration bootstrap encounters an active provider identity whose valid
 device manifest already contains more than one device while no matching local

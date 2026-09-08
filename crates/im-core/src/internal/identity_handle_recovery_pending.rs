@@ -861,6 +861,7 @@ fn is_exact_rfc3339_second_z(value: &str) -> bool {
 }
 
 pub(crate) struct PendingHandleRecoveryStore {
+    sqlite_path: std::path::PathBuf,
     workspace_id: String,
     device_id: String,
     vault: std::sync::Arc<dyn SecretVault + Send + Sync>,
@@ -883,6 +884,7 @@ impl PendingHandleRecoveryStore {
                     detail: "Handle Recovery requires an available identity SecretVault".to_owned(),
                 })?;
         Ok(Self {
+            sqlite_path: core.inner().sdk_paths().local_state.sqlite_path.clone(),
             workspace_id: context.workspace_id().to_owned(),
             device_id: context.vault_context_device_id().as_str().to_owned(),
             vault: context.vault(),
@@ -1122,6 +1124,16 @@ impl PendingHandleRecoveryStore {
     ) -> crate::ImResult<SecretRef> {
         use crate::internal::secret_vault::SealIfAbsentResult;
 
+        let mut connection = crate::internal::local_state::open_writable(&self.sqlite_path)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        crate::internal::identity_local_deletion::ensure_no_active_deletion(
+            &transaction,
+            &pending.owner_identity_id,
+            Some(&pending.full_handle),
+        )?;
+        self.require_not_deleted(&pending.operation_id)?;
         pending.validate()?;
         if pending.revision != 1
             || pending.factor_state != RecoveryFactorStateV4::AwaitingOtp
@@ -1146,6 +1158,16 @@ impl PendingHandleRecoveryStore {
         pending: &PendingHandleRecoveryV4,
         expected_revision: u64,
     ) -> crate::ImResult<SecretRef> {
+        let mut connection = crate::internal::local_state::open_writable(&self.sqlite_path)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        crate::internal::identity_local_deletion::ensure_no_active_deletion(
+            &transaction,
+            &pending.owner_identity_id,
+            Some(&pending.full_handle),
+        )?;
+        self.require_not_deleted(&pending.operation_id)?;
         pending.validate()?;
         if pending.revision != expected_revision.saturating_add(1) {
             return Err(crate::ImError::PermissionDenied);
@@ -1185,6 +1207,47 @@ impl PendingHandleRecoveryStore {
             return Err(crate::ImError::PermissionDenied);
         }
         self.vault.delete(&secret_ref)
+    }
+
+    fn require_not_deleted(&self, operation_id: &str) -> crate::ImResult<()> {
+        use crate::internal::identity_handle_recovery_operation::{
+            RecoveryKeyState, RecoveryLifecycleClass,
+        };
+        if crate::internal::identity_handle_recovery_operation::load(
+            &self.sqlite_path,
+            operation_id,
+        )?
+        .is_some_and(|record| {
+            record.lifecycle_class == RecoveryLifecycleClass::LocallyDeleted
+                || record.key_state == RecoveryKeyState::DestroyedByDeletion
+        }) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delete_v4_for_local_deletion(
+        &self,
+        sqlite_path: &std::path::Path,
+        operation_id: &str,
+        deletion_id: &str,
+    ) -> crate::ImResult<()> {
+        let record =
+            crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+        let deletion = crate::internal::identity_local_deletion::load(sqlite_path, deletion_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if deletion.phase
+            != crate::internal::identity_local_deletion::LocalIdentityDeletionPhase::RetirementReady
+            || (record.owner_identity_id != deletion.owner_identity_id
+                && deletion.full_handle.as_deref() != Some(record.full_handle.as_str()))
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some((reference, _)) = self.load_v4(operation_id)? {
+            self.vault.delete(&reference)?;
+        }
+        Ok(())
     }
 
     fn v4_metadata(&self, pending: &PendingHandleRecoveryV4) -> SecretMetadata {

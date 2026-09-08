@@ -13,6 +13,14 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<bool> hasPendingLocalIdentityRecovery({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityHasPendingLocalIdentityRecovery(
+  core: core,
+  selector: selector,
+);
+
 Future<DartLegacyRegistryEpochAdoptionAuthority?>
 legacyRegistryEpochAdoptionAuthority({
   required ArcDartImCore core,

@@ -13,7 +13,21 @@ Future<IdentityCustodyStatus> _identityCustodyStatusApiShape(
   AwikiImCore core,
 ) => core.identityCustodyStatus(const IdentitySelector.id('identity-alice'));
 
+Future<bool> _recoveryImpactApiShape(AwikiImCore core) =>
+    core.hasPendingLocalIdentityRecovery(
+      const IdentitySelector.id('identity-alice'),
+    );
+
 void main() {
+  test('local recovery impact uses the native identity boundary', () async {
+    expect(_recoveryImpactApiShape, isA<Function>());
+    await expectLater(
+      web.AwikiImCore().hasPendingLocalIdentityRecovery(
+        const IdentitySelector.id('identity-alice'),
+      ),
+      throwsA(isA<UnsupportedError>()),
+    );
+  });
   test(
     'active sync account binding exposes exactly the six stable strings',
     () {

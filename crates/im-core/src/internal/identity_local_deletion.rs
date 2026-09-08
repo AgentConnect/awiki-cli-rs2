@@ -282,6 +282,14 @@ VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'prepared',?11,?11,NULL)"#,
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
+    transaction.execute(
+        "UPDATE handle_recovery_operations_v4 SET lifecycle_class='locally_deleted',updated_at=?3 WHERE (owner_identity_id=?1 OR (?2 IS NOT NULL AND full_handle=?2)) AND lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed','local_transition_pending','quarantined_key_unavailable')",
+        rusqlite::params![snapshot.owner_identity_id, snapshot.full_handle, now],
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    transaction.execute(
+        "UPDATE identity_transition_pending SET phase='locally_deleted',updated_at=?3,metadata_json=json_set(metadata_json,'$.local_deletion_id',?4,'$.local_deletion_device_id',(SELECT b.device_id FROM identity_account_bindings b WHERE b.owner_identity_id=identity_transition_pending.owner_identity_id AND b.handle_scope=identity_transition_pending.handle AND b.current_did=identity_transition_pending.current_did)) WHERE source_kind='initiator' AND phase IN ('pending','identity_switched') AND (owner_identity_id=?1 OR (?2 IS NOT NULL AND handle=?2))",
+        rusqlite::params![snapshot.owner_identity_id, snapshot.full_handle, now, deletion_id],
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
     transaction
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -397,6 +405,7 @@ pub(crate) fn complete(
     if record.phase == LocalIdentityDeletionPhase::Completed {
         return Ok((record, Vec::new()));
     }
+    cleanup_recovery_material(core, &record)?;
     let retirement = retirement_input(&record);
     let outcome = crate::internal::identity_retirement::retire(core, retirement.clone())?;
     if !crate::internal::identity_retirement::is_completed(core, &retirement)? {
@@ -406,7 +415,216 @@ pub(crate) fn complete(
     Ok((record, outcome.warnings))
 }
 
+// The current protocol seals the pending journal before inserting its SQLite
+// index. Inspect that real crash cut too; no historical format conversion occurs.
+pub(crate) fn unindexed_recoveries(
+    core: &crate::ImCore,
+    snapshot: &LocalIdentityDeletionSnapshot,
+) -> crate::ImResult<Vec<crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4>>
+{
+    if core.inner().identity_secret_storage_policy()
+        != crate::core::IdentitySecretStoragePolicy::VaultRequired
+    {
+        return Ok(Vec::new());
+    }
+    let store =
+        crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(
+            core,
+        )?;
+    let mut pending = store.list_v4_for_owner(&snapshot.owner_identity_id)?;
+    if let Some(handle) = &snapshot.full_handle {
+        pending.extend(store.list_v4_for_handle(handle)?);
+    }
+    pending.sort_by(|a, b| a.1.operation_id.cmp(&b.1.operation_id));
+    pending.dedup_by(|a, b| a.1.operation_id == b.1.operation_id);
+    let mut unindexed = Vec::new();
+    for (_, record) in pending {
+        if crate::internal::identity_handle_recovery_operation::load(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &record.operation_id,
+        )?
+        .is_none()
+        {
+            unindexed.push(record);
+        }
+    }
+    Ok(unindexed)
+}
+
+pub(crate) fn reconcile_recovery_deletion_inputs(
+    core: &crate::ImCore,
+    snapshot: &LocalIdentityDeletionSnapshot,
+) -> crate::ImResult<()> {
+    for pending in unindexed_recoveries(core, snapshot)? {
+        let store = crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(core)?;
+        crate::internal::identity_handle_recovery_runtime::reconcile_vault_only_awaiting_factor_operation(core, &store, &pending.owner_identity_id, &pending.full_handle, &pending.local_previous_did, pending.fresh_local_state)?;
+    }
+    Ok(())
+}
+
+/// Read-only impact preview. It shares deletion's exact owner/Handle scope and
+/// includes only unfinished operations, never completed or deleted history.
+pub(crate) fn has_pending_recovery(
+    sqlite_path: &Path,
+    snapshot: &LocalIdentityDeletionSnapshot,
+) -> crate::ImResult<bool> {
+    if !sqlite_path.is_file() {
+        return Ok(false);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM handle_recovery_operations_v4 WHERE (owner_identity_id=?1 OR (?2 IS NOT NULL AND full_handle=?2)) AND lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed','local_transition_pending','quarantined_key_unavailable')",
+        rusqlite::params![snapshot.owner_identity_id, snapshot.full_handle], |row| row.get(0)
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(count > 0)
+}
+
+/// A recovery may have advanced SQLite's binding before the identity registry.
+/// Explicit deletion retires both sides of that interrupted local cutover. The
+/// exact retired device tuple is frozen at prepare and usable only after the
+/// deletion ticket completed; ordinary network failures never grant this path.
+pub(crate) fn matches_completed_binding(
+    sqlite_path: &Path,
+    identity_root_dir: &Path,
+    owner: &str,
+    did: &str,
+    device: &str,
+) -> crate::ImResult<bool> {
+    if crate::internal::identity_retirement::matches_completed_binding(
+        identity_root_dir,
+        owner,
+        did,
+        device,
+    )? {
+        return Ok(true);
+    }
+    if !sqlite_path.is_file() {
+        return Ok(false);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('local_identity_deletions','identity_transition_pending')", [], |row| row.get(0)).map_err(crate::internal::local_state::local_state_unavailable)?;
+    if tables != 2 {
+        return Ok(false);
+    }
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM identity_transition_pending t JOIN local_identity_deletions d ON d.deletion_id=json_extract(t.metadata_json,'$.local_deletion_id') WHERE t.owner_identity_id=?1 AND t.current_did=?2 AND json_extract(t.metadata_json,'$.local_deletion_device_id')=?3 AND t.source_kind='initiator' AND t.phase='locally_deleted' AND d.owner_identity_id=t.owner_identity_id AND d.full_handle=t.handle AND d.phase='completed'",
+        rusqlite::params![owner,did,device], |row| row.get(0)
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(count == 1)
+}
+
+fn recovery_cleanup_records(
+    core: &crate::ImCore,
+    deletion: &LocalIdentityDeletionRecord,
+) -> crate::ImResult<
+    Vec<crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord>,
+> {
+    use crate::internal::identity_handle_recovery_operation as operations;
+    let path = &core.inner().sdk_paths().local_state.sqlite_path;
+    let mut records = operations::list_owner(path, &deletion.owner_identity_id)?;
+    if let Some(handle) = deletion.full_handle.as_deref() {
+        records.extend(operations::list_handle(path, handle)?);
+    }
+    records.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+    records.dedup_by(|a, b| a.operation_id == b.operation_id);
+    Ok(records)
+}
+
+fn cleanup_recovery_material(
+    core: &crate::ImCore,
+    deletion: &LocalIdentityDeletionRecord,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_handle_recovery_operation::RecoveryKeyState;
+    let path = &core.inner().sdk_paths().local_state.sqlite_path;
+    let records = recovery_cleanup_records(core, deletion)?;
+    for record in records {
+        if record.key_state == RecoveryKeyState::DestroyedByDeletion {
+            continue;
+        }
+        let store = crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(core)?;
+        if let Some((_, pending)) = store.load_v4(&record.operation_id)? {
+            crate::internal::identity_custody::delete_local_recovery_custody(core, &pending)?;
+        }
+        // The encrypted record is removed last, retaining exact custody references
+        // across any partial cleanup. Retrying deletion never needs the network.
+        store.delete_v4_for_local_deletion(path, &record.operation_id, &deletion.deletion_id)?;
+        let connection = crate::internal::local_state::open_writable(path)?;
+        connection.execute("UPDATE handle_recovery_operations_v4 SET key_state='destroyed_by_deletion' WHERE operation_id=?1", [&record.operation_id])
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn has_external_custody(core: &crate::ImCore) -> bool {
+    #[cfg(feature = "provider-traits")]
+    {
+        core.inner().identity_custody_provider().is_some()
+    }
+    #[cfg(not(feature = "provider-traits"))]
+    {
+        let _ = core;
+        false
+    }
+}
+
+pub(crate) async fn complete_async(
+    core: &crate::ImCore,
+    deletion_id: &str,
+    allow_full_data_app: bool,
+) -> crate::ImResult<(LocalIdentityDeletionRecord, Vec<String>)> {
+    if has_external_custody(core) {
+        let path = &core.inner().sdk_paths().local_state.sqlite_path;
+        let deletion = advance_sqlite_phase(path, deletion_id, allow_full_data_app)?;
+        if deletion.phase == LocalIdentityDeletionPhase::Prepared {
+            return Err(deletion_error("identity.local_data_deletion_pending"));
+        }
+        if deletion.phase == LocalIdentityDeletionPhase::RetirementReady {
+            for record in recovery_cleanup_records(core, &deletion)? {
+                if record.key_state == crate::internal::identity_handle_recovery_operation::RecoveryKeyState::DestroyedByDeletion { continue; }
+                let store = crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryStore::from_core(core)?;
+                if let Some((_, pending)) = store.load_v4(&record.operation_id)? {
+                    crate::internal::identity_custody::delete_local_recovery_custody_async(
+                        core, &pending,
+                    )
+                    .await?;
+                }
+                store.delete_v4_for_local_deletion(path, &record.operation_id, deletion_id)?;
+                crate::internal::local_state::open_writable(path)?.execute("UPDATE handle_recovery_operations_v4 SET key_state='destroyed_by_deletion' WHERE operation_id=?1", [&record.operation_id])
+                    .map_err(crate::internal::local_state::local_state_unavailable)?;
+            }
+        }
+    }
+    let core = core.clone();
+    let deletion_id = deletion_id.to_owned();
+    crate::internal::runtime::worker::run_blocking(move || {
+        complete(&core, &deletion_id, allow_full_data_app)
+    })
+    .await
+    .map_err(|error| crate::ImError::Internal {
+        message: error.to_string(),
+    })?
+}
+
+pub(crate) async fn recover_external_deletions(core: &crate::ImCore) -> crate::ImResult<()> {
+    if !has_external_custody(core) {
+        return Ok(());
+    }
+    for deletion in list_incomplete(&core.inner().sdk_paths().local_state.sqlite_path)? {
+        if deletion.mode == LocalIdentityDeletionMode::FullDataApp
+            && deletion.phase == LocalIdentityDeletionPhase::Prepared
+        {
+            continue;
+        }
+        complete_async(core, &deletion.deletion_id, false).await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn recover_before_retirement(core: &crate::core::ImCore) -> crate::ImResult<()> {
+    // External custody is asynchronous and is resumed by open_with_options.
+    if has_external_custody(core) {
+        return Ok(());
+    }
     let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
     for record in list_incomplete(sqlite_path)? {
         let record = match (record.phase, record.mode) {
@@ -419,6 +637,7 @@ pub(crate) fn recover_before_retirement(core: &crate::core::ImCore) -> crate::Im
             _ => record,
         };
         if record.phase == LocalIdentityDeletionPhase::RetirementReady {
+            cleanup_recovery_material(core, &record)?;
             crate::internal::identity_retirement::ensure_prepared(
                 core,
                 &retirement_input(&record),
@@ -639,59 +858,23 @@ fn admission_blocker(
         .map_err(crate::internal::local_state::local_state_unavailable)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    for (
-        _operation_id,
-        operation_owner_identity_id,
-        lifecycle,
-        commit_attempted,
-        key_state,
-        replacement,
-    ) in rows
-    {
-        match lifecycle.as_str() {
-            "pre_commit" if !commit_attempted => {
-                blockers.push("handle_recovery.precommit_discard_required")
-            }
-            "pre_commit" | "remote_unresolved" => {
-                blockers.push("handle_recovery.operation_must_resume")
-            }
-            "remote_committed" | "local_transition_pending" => {
-                blockers.push("handle_recovery.transition_must_complete")
-            }
-            "quarantined_key_unavailable" => {
-                if key_state != "permanently_unavailable" {
-                    blockers.push("identity.local_deletion_conflict");
-                }
-                if let Some(replacement) = replacement {
-                    let replacement_lifecycle = connection
-                        .query_row(
-                            "SELECT lifecycle_class FROM handle_recovery_operations_v4 WHERE operation_id=?1 AND owner_identity_id=?2",
-                            rusqlite::params![replacement, operation_owner_identity_id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()
-                        .map_err(crate::internal::local_state::local_state_unavailable)?;
-                    match replacement_lifecycle.as_deref() {
-                        Some("pre_commit") | Some("remote_unresolved") => {
-                            blockers.push("handle_recovery.operation_must_resume")
-                        }
-                        Some("remote_committed") | Some("local_transition_pending") => {
-                            blockers.push("handle_recovery.transition_must_complete")
-                        }
-                        Some("applied")
-                        | Some("discarded_pre_attempt")
-                        | Some("superseded_by_state_change")
-                        | Some("failed_terminal")
-                        | Some("quarantined_key_unavailable") => {}
-                        _ => blockers.push("identity.local_deletion_conflict"),
-                    }
-                }
-            }
-            "applied"
-            | "discarded_pre_attempt"
-            | "superseded_by_state_change"
-            | "failed_terminal" => {}
-            _ => blockers.push("identity.local_deletion_conflict"),
+    // Explicit local deletion ends Recovery at every phase. Unknown records
+    // still fail closed; ordinary Join retains its own admission contract.
+    for (_, _, lifecycle, _, _, _) in rows {
+        if !matches!(
+            lifecycle.as_str(),
+            "pre_commit"
+                | "remote_unresolved"
+                | "remote_committed"
+                | "local_transition_pending"
+                | "applied"
+                | "discarded_pre_attempt"
+                | "quarantined_key_unavailable"
+                | "superseded_by_state_change"
+                | "failed_terminal"
+                | "locally_deleted"
+        ) {
+            blockers.push("identity.local_deletion_conflict");
         }
     }
 
@@ -712,6 +895,9 @@ fn admission_blocker(
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     for (source_kind, phase) in transition_rows {
+        if source_kind == "initiator" {
+            continue;
+        }
         blockers.push(if source_kind == "joined_device" && phase == "pending" {
             "handle_recovery.join_must_complete"
         } else {

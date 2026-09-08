@@ -77,7 +77,9 @@ impl ImCore {
         sdk_paths: crate::ImCorePaths,
         options: ImCoreOpenOptions,
     ) -> crate::ImResult<Self> {
-        Self::new_with_options(sdk_config, sdk_paths, options)
+        let core = Self::new_with_options(sdk_config, sdk_paths, options)?;
+        crate::internal::identity_local_deletion::recover_external_deletions(&core).await?;
+        Ok(core)
     }
 
     pub fn new(

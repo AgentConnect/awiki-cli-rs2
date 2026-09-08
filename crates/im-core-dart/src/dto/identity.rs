@@ -159,6 +159,7 @@ pub enum DartHandleRecoveryOperationLifecycle {
     QuarantinedKeyUnavailable,
     SupersededByStateChange,
     FailedTerminal,
+    LocallyDeleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +168,7 @@ pub enum DartHandleRecoveryKeyState {
     TemporarilyLocked,
     PermanentlyUnavailable,
     DestroyedPreAttempt,
+    DestroyedByDeletion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

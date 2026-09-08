@@ -3007,7 +3007,8 @@ fn promote_retired_registration_join_identity(
     }
     if rollover.phase
         == crate::internal::identity_registration_retired_join::RetiredJoinRolloverPhase::Prepared
-        && !crate::internal::identity_retirement::matches_completed_binding(
+        && !crate::internal::identity_local_deletion::matches_completed_binding(
+            &core.inner().sdk_paths().local_state.sqlite_path,
             &core.inner().sdk_paths().identities.identity_root_dir,
             &rollover.owner_identity_id,
             &rollover.retired_did,

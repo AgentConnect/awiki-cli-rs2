@@ -77,8 +77,9 @@ HandleRecoveryFailureCode? _handleRecoveryFailureCode(String? code) =>
       'result_absent' => HandleRecoveryFailureCode.resultAbsent,
       'outcome_unknown' => HandleRecoveryFailureCode.outcomeUnknown,
       'local_key_unavailable' => HandleRecoveryFailureCode.localKeyUnavailable,
-      'local_transition_superseded' => HandleRecoveryFailureCode.localTransitionSuperseded,
-    'local_transition_pending' =>
+      'local_transition_superseded' =>
+        HandleRecoveryFailureCode.localTransitionSuperseded,
+      'local_transition_pending' =>
         HandleRecoveryFailureCode.localTransitionPending,
       'local_migration_unsupported' =>
         HandleRecoveryFailureCode.localMigrationUnsupported,
@@ -86,7 +87,8 @@ HandleRecoveryFailureCode? _handleRecoveryFailureCode(String? code) =>
       'activation_required' => HandleRecoveryFailureCode.activationRequired,
       'recovery_in_progress' => HandleRecoveryFailureCode.recoveryInProgress,
       'action_not_allowed' => HandleRecoveryFailureCode.actionNotAllowed,
-      'state_changed_requires_new_operation' => HandleRecoveryFailureCode.stateChanged,
+      'state_changed_requires_new_operation' =>
+        HandleRecoveryFailureCode.stateChanged,
       _ => null,
     };
 
@@ -242,17 +244,21 @@ class AwikiImCore {
     IdentitySelector? selector,
   }) async {
     _ensureNotDisposed();
-    final result = await _mapNativeErrors(() => gen_identity_api.inspectHandleRecoveryContext(
-      core: _inner,
-      fullHandle: fullHandle,
-      selector: selector?._toGen(),
-    ));
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.inspectHandleRecoveryContext(
+        core: _inner,
+        fullHandle: fullHandle,
+        selector: selector?._toGen(),
+      ),
+    );
     return HandleRecoveryContext(
       fullHandle: result.fullHandle,
       localIdentityId: result.localIdentityId,
       operation: result.operation?._toModel(),
       progress: result.progress?._toModel(),
-      allowedActions: result.allowedActions.map((action) => action._toModel()).toList(growable: false),
+      allowedActions: result.allowedActions
+          .map((action) => action._toModel())
+          .toList(growable: false),
       blockedReason: result.blockedReason?._toModel(),
     );
   }
@@ -698,6 +704,18 @@ class AwikiImCore {
     return report._toModel();
   }
 
+  Future<bool> hasPendingLocalIdentityRecovery(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_identity_api.hasPendingLocalIdentityRecovery(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+  }
+
   Future<DeleteLocalIdentityResult> deleteLocalIdentity(
     IdentitySelector selector,
   ) async {
@@ -1099,12 +1117,17 @@ class DirectoryApi {
 
   /// Refresh display data without creating a contact or Direct conversation.
   Future<List<DisplayProfile>> refreshDisplayProfiles(
-    List<String> peers, {bool force = false}
-  ) async {
+    List<String> peers, {
+    bool force = false,
+  }) async {
     _client._ensureNotDisposed();
-    final profiles = await _mapNativeErrors(() => gen_directory.refreshDisplayProfiles(
-      client: _client._inner, peers: peers, force: force,
-    ));
+    final profiles = await _mapNativeErrors(
+      () => gen_directory.refreshDisplayProfiles(
+        client: _client._inner,
+        peers: peers,
+        force: force,
+      ),
+    );
     return profiles.map((profile) => profile._toModel()).toList();
   }
 
@@ -2918,37 +2941,58 @@ extension on gen_identity.DartHandleRecoveryProgress {
     impact: impact._toModel(),
     registryEpochReset: resetReference?._toModel(),
     failureCode: failureCode?._toModel(),
-    allowedActions: allowedActions.map((action) => action._toModel()).toList(growable: false),
+    allowedActions: allowedActions
+        .map((action) => action._toModel())
+        .toList(growable: false),
   );
 }
 
 extension on gen_identity.DartHandleRecoveryErrorCode {
   HandleRecoveryFailureCode _toModel() => switch (this) {
-    gen_identity.DartHandleRecoveryErrorCode.factorRetryRequired => HandleRecoveryFailureCode.factorRetryRequired,
-    gen_identity.DartHandleRecoveryErrorCode.resultAbsent => HandleRecoveryFailureCode.resultAbsent,
-    gen_identity.DartHandleRecoveryErrorCode.outcomeUnknown => HandleRecoveryFailureCode.outcomeUnknown,
-    gen_identity.DartHandleRecoveryErrorCode.localKeyUnavailable => HandleRecoveryFailureCode.localKeyUnavailable,
-    gen_identity.DartHandleRecoveryErrorCode.localTransitionSuperseded => HandleRecoveryFailureCode.localTransitionSuperseded,
-    gen_identity.DartHandleRecoveryErrorCode.localTransitionPending => HandleRecoveryFailureCode.localTransitionPending,
-    gen_identity.DartHandleRecoveryErrorCode.localMigrationUnsupported => HandleRecoveryFailureCode.localMigrationUnsupported,
-    gen_identity.DartHandleRecoveryErrorCode.unknownEpoch => HandleRecoveryFailureCode.unknownEpoch,
-    gen_identity.DartHandleRecoveryErrorCode.activationRequired => HandleRecoveryFailureCode.activationRequired,
-    gen_identity.DartHandleRecoveryErrorCode.recoveryInProgress => HandleRecoveryFailureCode.recoveryInProgress,
-    gen_identity.DartHandleRecoveryErrorCode.actionNotAllowed => HandleRecoveryFailureCode.actionNotAllowed,
-    gen_identity.DartHandleRecoveryErrorCode.stateChanged => HandleRecoveryFailureCode.stateChanged,
+    gen_identity.DartHandleRecoveryErrorCode.factorRetryRequired =>
+      HandleRecoveryFailureCode.factorRetryRequired,
+    gen_identity.DartHandleRecoveryErrorCode.resultAbsent =>
+      HandleRecoveryFailureCode.resultAbsent,
+    gen_identity.DartHandleRecoveryErrorCode.outcomeUnknown =>
+      HandleRecoveryFailureCode.outcomeUnknown,
+    gen_identity.DartHandleRecoveryErrorCode.localKeyUnavailable =>
+      HandleRecoveryFailureCode.localKeyUnavailable,
+    gen_identity.DartHandleRecoveryErrorCode.localTransitionSuperseded =>
+      HandleRecoveryFailureCode.localTransitionSuperseded,
+    gen_identity.DartHandleRecoveryErrorCode.localTransitionPending =>
+      HandleRecoveryFailureCode.localTransitionPending,
+    gen_identity.DartHandleRecoveryErrorCode.localMigrationUnsupported =>
+      HandleRecoveryFailureCode.localMigrationUnsupported,
+    gen_identity.DartHandleRecoveryErrorCode.unknownEpoch =>
+      HandleRecoveryFailureCode.unknownEpoch,
+    gen_identity.DartHandleRecoveryErrorCode.activationRequired =>
+      HandleRecoveryFailureCode.activationRequired,
+    gen_identity.DartHandleRecoveryErrorCode.recoveryInProgress =>
+      HandleRecoveryFailureCode.recoveryInProgress,
+    gen_identity.DartHandleRecoveryErrorCode.actionNotAllowed =>
+      HandleRecoveryFailureCode.actionNotAllowed,
+    gen_identity.DartHandleRecoveryErrorCode.stateChanged =>
+      HandleRecoveryFailureCode.stateChanged,
   };
 }
 
 extension on gen_identity.DartHandleRecoveryAction {
   HandleRecoveryAction _toModel() => switch (this) {
-    gen_identity.DartHandleRecoveryAction.startNew => HandleRecoveryAction.startNew,
-    gen_identity.DartHandleRecoveryAction.requestOtp => HandleRecoveryAction.requestOtp,
-    gen_identity.DartHandleRecoveryAction.prepare => HandleRecoveryAction.prepare,
-    gen_identity.DartHandleRecoveryAction.activate => HandleRecoveryAction.activate,
+    gen_identity.DartHandleRecoveryAction.startNew =>
+      HandleRecoveryAction.startNew,
+    gen_identity.DartHandleRecoveryAction.requestOtp =>
+      HandleRecoveryAction.requestOtp,
+    gen_identity.DartHandleRecoveryAction.prepare =>
+      HandleRecoveryAction.prepare,
+    gen_identity.DartHandleRecoveryAction.activate =>
+      HandleRecoveryAction.activate,
     gen_identity.DartHandleRecoveryAction.resume => HandleRecoveryAction.resume,
-    gen_identity.DartHandleRecoveryAction.discardPreAttempt => HandleRecoveryAction.discardPreAttempt,
-    gen_identity.DartHandleRecoveryAction.quarantineKeyUnavailable => HandleRecoveryAction.quarantineKeyUnavailable,
-    gen_identity.DartHandleRecoveryAction.activateIdentity => HandleRecoveryAction.activateIdentity,
+    gen_identity.DartHandleRecoveryAction.discardPreAttempt =>
+      HandleRecoveryAction.discardPreAttempt,
+    gen_identity.DartHandleRecoveryAction.quarantineKeyUnavailable =>
+      HandleRecoveryAction.quarantineKeyUnavailable,
+    gen_identity.DartHandleRecoveryAction.activateIdentity =>
+      HandleRecoveryAction.activateIdentity,
   };
 }
 
@@ -2981,6 +3025,8 @@ extension on gen_identity.DartHandleRecoveryOperationSummary {
           .DartHandleRecoveryOperationLifecycle
           .supersededByStateChange =>
         HandleRecoveryOperationLifecycle.supersededByStateChange,
+      gen_identity.DartHandleRecoveryOperationLifecycle.locallyDeleted =>
+        HandleRecoveryOperationLifecycle.locallyDeleted,
       gen_identity.DartHandleRecoveryOperationLifecycle.failedTerminal =>
         HandleRecoveryOperationLifecycle.failedTerminal,
     },
@@ -2992,6 +3038,8 @@ extension on gen_identity.DartHandleRecoveryOperationSummary {
         HandleRecoveryKeyState.temporarilyLocked,
       gen_identity.DartHandleRecoveryKeyState.permanentlyUnavailable =>
         HandleRecoveryKeyState.permanentlyUnavailable,
+      gen_identity.DartHandleRecoveryKeyState.destroyedByDeletion =>
+        HandleRecoveryKeyState.destroyedByDeletion,
       gen_identity.DartHandleRecoveryKeyState.destroyedPreAttempt =>
         HandleRecoveryKeyState.destroyedPreAttempt,
     },

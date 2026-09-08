@@ -717,6 +717,7 @@ enum DartHandleRecoveryKeyState {
   temporarilyLocked,
   permanentlyUnavailable,
   destroyedPreAttempt,
+  destroyedByDeletion,
 }
 
 enum DartHandleRecoveryOperationLifecycle {
@@ -729,6 +730,7 @@ enum DartHandleRecoveryOperationLifecycle {
   quarantinedKeyUnavailable,
   supersededByStateChange,
   failedTerminal,
+  locallyDeleted,
 }
 
 class DartHandleRecoveryOperationSummary {

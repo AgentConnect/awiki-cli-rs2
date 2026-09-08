@@ -267,6 +267,7 @@ enum HandleRecoveryOperationLifecycle {
   quarantinedKeyUnavailable,
   supersededByStateChange,
   failedTerminal,
+  locallyDeleted,
 }
 
 enum HandleRecoveryKeyState {
@@ -274,6 +275,7 @@ enum HandleRecoveryKeyState {
   temporarilyLocked,
   permanentlyUnavailable,
   destroyedPreAttempt,
+  destroyedByDeletion,
 }
 
 class HandleRecoveryOperationSummary {

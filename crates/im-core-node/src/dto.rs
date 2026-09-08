@@ -1733,6 +1733,7 @@ fn recovery_lifecycle(value: im_core::identity::HandleRecoveryOperationLifecycle
         QuarantinedKeyUnavailable => "quarantined_key_unavailable",
         SupersededByStateChange => "superseded_by_state_change",
         FailedTerminal => "failed_terminal",
+        LocallyDeleted => "locally_deleted",
     }
 }
 
@@ -1743,6 +1744,7 @@ fn recovery_key_state(value: im_core::identity::HandleRecoveryKeyState) -> &'sta
         TemporarilyLocked => "temporarily_locked",
         PermanentlyUnavailable => "permanently_unavailable",
         DestroyedPreAttempt => "destroyed_pre_attempt",
+        DestroyedByDeletion => "destroyed_by_deletion",
     }
 }
 

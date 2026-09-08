@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 43;
+pub(crate) const SCHEMA_VERSION: i64 = 44;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -1208,6 +1208,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .map_err(super::local_state_unavailable)?;
         ensure_terminal_transition_phase_schema(&transaction)?;
         super::display_profile_cache::create_schema(&transaction)?;
+        ensure_local_deletion_terminal_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1221,11 +1222,26 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .unchecked_transaction()
             .map_err(super::local_state_unavailable)?;
         super::display_profile_cache::create_schema(&transaction)?;
+        ensure_local_deletion_terminal_schema(&transaction)?;
         if !current_schema_shape_is_complete(&transaction)? {
             return Err(crate::ImError::LocalStateUnavailable {
                 detail: "incomplete display cache schema".to_owned(),
             });
         }
+        ensure_local_deletion_terminal_schema(&transaction)?;
+        set_schema_version(&transaction, SCHEMA_VERSION)?;
+        return transaction.commit().map_err(super::local_state_unavailable);
+    }
+    if version == 43 {
+        if !schema_v43_shape_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "incomplete schema 43 before local deletion upgrade".to_owned(),
+            });
+        }
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(super::local_state_unavailable)?;
+        ensure_local_deletion_terminal_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1276,6 +1292,7 @@ fn migrate_release_predecessor_to_v34(
     create_schema(&transaction, false)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1337,6 +1354,7 @@ fn converge_divergent_schema_to_v34(connection: &Connection, version: i64) -> cr
     create_schema(&transaction, false)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1422,6 +1440,7 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1444,6 +1463,7 @@ fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1466,6 +1486,7 @@ fn migrate_v37_to_v38(connection: &Connection) -> crate::ImResult<()> {
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1487,6 +1508,7 @@ fn migrate_v38_to_v39(connection: &Connection) -> crate::ImResult<()> {
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1513,6 +1535,7 @@ fn migrate_v39_to_current(connection: &Connection) -> crate::ImResult<()> {
     }
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1538,6 +1561,7 @@ fn migrate_v40_to_current(connection: &Connection) -> crate::ImResult<()> {
     }
     ensure_terminal_transition_phase_schema(&transaction)?;
     super::display_profile_cache::create_schema(&transaction)?;
+    ensure_local_deletion_terminal_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1791,6 +1815,90 @@ fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
 }
 
 fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(schema_v43_shape_is_complete(connection)? && local_deletion_terminal_shape(connection)?)
+}
+
+fn local_deletion_terminal_shape(connection: &Connection) -> crate::ImResult<bool> {
+    for table in [
+        "identity_transition_pending",
+        "handle_recovery_operations_v4",
+    ] {
+        let sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(super::local_state_unavailable)?;
+        if !sql.contains("'locally_deleted'")
+            || (table == "handle_recovery_operations_v4"
+                && !sql.contains("'destroyed_by_deletion'"))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+// Expand only the two closed state sets. Preserve every row and public index;
+// an older binary rejects schema 44 instead of resuming a deleted operation.
+fn ensure_local_deletion_terminal_schema(connection: &Connection) -> crate::ImResult<()> {
+    for (table, ddl, indexes) in [
+        (
+            "handle_recovery_operations_v4",
+            crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL,
+            &[
+                "idx_handle_recovery_operations_owner_lifecycle",
+                "idx_handle_recovery_operations_handle_lifecycle",
+                "idx_handle_recovery_operations_account_lifecycle",
+                "idx_handle_recovery_operations_superseded_by",
+                "idx_handle_recovery_operations_active_owner",
+            ][..],
+        ),
+        (
+            "identity_transition_pending",
+            crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL,
+            &[
+                "idx_identity_transition_source",
+                "idx_identity_transition_active_owner",
+                "idx_identity_transition_owner_phase",
+                "idx_identity_transition_account_generation",
+                "idx_identity_transition_handle_epoch",
+            ][..],
+        ),
+    ] {
+        let sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(super::local_state_unavailable)?;
+        if sql.contains("'locally_deleted'")
+            && (table != "handle_recovery_operations_v4" || sql.contains("'destroyed_by_deletion'"))
+        {
+            continue;
+        }
+        connection
+            .execute_batch(&format!(
+                "ALTER TABLE {table} RENAME TO {table}_before_local_deletion;"
+            ))
+            .map_err(super::local_state_unavailable)?;
+        for index in indexes {
+            connection
+                .execute_batch(&format!("DROP INDEX {index};"))
+                .map_err(super::local_state_unavailable)?;
+        }
+        connection
+            .execute_batch(ddl)
+            .map_err(super::local_state_unavailable)?;
+        connection.execute_batch(&format!("INSERT INTO {table} SELECT * FROM {table}_before_local_deletion; DROP TABLE {table}_before_local_deletion;"))
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+fn schema_v43_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     Ok(schema_v42_shape_is_complete(connection)?
         && table_has_columns(
             connection,

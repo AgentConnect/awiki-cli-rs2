@@ -1310,6 +1310,78 @@ pub(crate) async fn discard_unpublished_handle_recovery_async(
         .map_err(crate::internal::identity_provider::map_provider_error)
 }
 
+pub(crate) async fn delete_local_recovery_custody_async(
+    core: &crate::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    let provider = controller_custody_provider(core).await?;
+    let mut references = vec![crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: pending.identity.store_id.clone(),
+        identity_id: pending.identity.identity_id.clone(),
+        did: pending.identity.did.as_str().to_owned(),
+    }];
+    if let Some(previous) = &pending.previous_custody {
+        references.push(previous.clone());
+    }
+    for reference in references {
+        match provider.delete_identity(&reference).await {
+            Ok(()) => {},
+            Err(error) if error.code == crate::internal::identity_provider::IdentityProviderErrorCode::IdentityNotFound => {},
+            Err(error) => return Err(crate::internal::identity_provider::map_provider_error(error)),
+        }
+    }
+    Ok(())
+}
+
+/// Called only after the local deletion transaction has ended this operation.
+/// Exact encrypted references identify both successor and retained predecessor;
+/// no shared-provider scan or remote publication is involved.
+#[cfg(feature = "identity-native-anp")]
+pub(crate) fn delete_local_recovery_custody(
+    core: &crate::ImCore,
+    pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    if crate::internal::identity_local_deletion::has_external_custody(core) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut references = vec![anp_identity::IdentityRef {
+        store_id: pending.identity.store_id.clone(),
+        identity_id: pending.identity.identity_id.clone(),
+        did: pending.identity.did.as_str().to_owned(),
+    }];
+    if let Some(previous) = &pending.previous_custody {
+        references.push(anp_identity::IdentityRef {
+            store_id: previous.store_id.clone(),
+            identity_id: previous.identity_id.clone(),
+            did: previous.did.clone(),
+        });
+    }
+    let mut manager = open_controller_manager(core)?;
+    for reference in references {
+        match manager.get(&reference) {
+            Ok(_) => manager
+                .delete(
+                    &reference,
+                    anp_identity::DeleteIdentityRequest {
+                        discard_pending_changes: true,
+                    },
+                )
+                .map_err(map_facade_error)?,
+            Err(anp_identity::IdentityError::IdentityNotFound) => {}
+            Err(error) => return Err(map_facade_error(error)),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "identity-native-anp"))]
+pub(crate) fn delete_local_recovery_custody(
+    _core: &crate::ImCore,
+    _pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::PermissionDenied)
+}
+
 #[cfg(feature = "identity-native-anp")]
 pub(crate) fn handle_recovery_identity(
     core: &crate::core::ImCore,
@@ -3370,7 +3442,7 @@ fn historical_handle_dids(
     let mut transitions = connection
         .prepare(
             "SELECT previous_did,current_did FROM identity_transition_pending \
-             WHERE handle=?1 AND phase='completed' ORDER BY recovery_id",
+             WHERE handle=?1 AND phase IN ('completed','locally_deleted') ORDER BY recovery_id",
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     let transition_dids = transitions
@@ -3403,7 +3475,8 @@ fn historical_handle_dids(
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     for (owner_identity_id, did, protocol_device_id) in retired_bindings {
-        if crate::internal::identity_retirement::matches_completed_binding(
+        if crate::internal::identity_local_deletion::matches_completed_binding(
+            &core.inner().sdk_paths().local_state.sqlite_path,
             &core.inner().sdk_paths().identities.identity_root_dir,
             &owner_identity_id,
             &did,
@@ -3448,7 +3521,8 @@ fn did_has_exact_completed_retirement(
     if bindings.len() != 1 {
         return Ok(false);
     }
-    crate::internal::identity_retirement::matches_completed_binding(
+    crate::internal::identity_local_deletion::matches_completed_binding(
+        &core.inner().sdk_paths().local_state.sqlite_path,
         &core.inner().sdk_paths().identities.identity_root_dir,
         &bindings[0].0,
         did.as_str(),

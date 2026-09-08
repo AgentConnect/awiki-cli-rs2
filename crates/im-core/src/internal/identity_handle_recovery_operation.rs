@@ -2,7 +2,8 @@
 //!
 //! Private keys and grants stay in SecretVault. This SQLite index is the
 //! authoritative guard for destructive cleanup: once `commit_attempted` is
-//! true, an operation can only be reconciled or moved forward.
+//! true, recovery may only move forward. Explicit local identity deletion is a
+//! separate terminal decision; it does not assert or roll back the remote outcome.
 
 use rusqlite::OptionalExtension as _;
 use serde::{Deserialize, Serialize};
@@ -23,14 +24,16 @@ CREATE TABLE IF NOT EXISTS handle_recovery_operations_v4 (
         'discarded_pre_attempt',
         'quarantined_key_unavailable',
         'superseded_by_state_change',
-        'failed_terminal'
+        'failed_terminal',
+        'locally_deleted'
     )),
     commit_attempted INTEGER NOT NULL CHECK(commit_attempted IN (0,1)),
     key_state TEXT NOT NULL CHECK(key_state IN (
         'available',
         'temporarily_locked',
         'permanently_unavailable',
-        'destroyed_pre_attempt'
+        'destroyed_pre_attempt',
+        'destroyed_by_deletion'
     )),
     intent_hash TEXT,
     vault_key_id TEXT NOT NULL,
@@ -73,6 +76,7 @@ pub(crate) enum RecoveryLifecycleClass {
     QuarantinedKeyUnavailable,
     SupersededByStateChange,
     FailedTerminal,
+    LocallyDeleted,
 }
 
 impl RecoveryLifecycleClass {
@@ -87,6 +91,7 @@ impl RecoveryLifecycleClass {
             Self::QuarantinedKeyUnavailable => "quarantined_key_unavailable",
             Self::SupersededByStateChange => "superseded_by_state_change",
             Self::FailedTerminal => "failed_terminal",
+            Self::LocallyDeleted => "locally_deleted",
         }
     }
 
@@ -101,6 +106,7 @@ impl RecoveryLifecycleClass {
             "quarantined_key_unavailable" => Ok(Self::QuarantinedKeyUnavailable),
             "superseded_by_state_change" => Ok(Self::SupersededByStateChange),
             "failed_terminal" => Ok(Self::FailedTerminal),
+            "locally_deleted" => Ok(Self::LocallyDeleted),
             _ => Err(rusqlite::Error::InvalidQuery),
         }
     }
@@ -113,6 +119,7 @@ pub(crate) enum RecoveryKeyState {
     TemporarilyLocked,
     PermanentlyUnavailable,
     DestroyedPreAttempt,
+    DestroyedByDeletion,
 }
 
 impl RecoveryKeyState {
@@ -122,6 +129,7 @@ impl RecoveryKeyState {
             Self::TemporarilyLocked => "temporarily_locked",
             Self::PermanentlyUnavailable => "permanently_unavailable",
             Self::DestroyedPreAttempt => "destroyed_pre_attempt",
+            Self::DestroyedByDeletion => "destroyed_by_deletion",
         }
     }
 
@@ -131,6 +139,7 @@ impl RecoveryKeyState {
             "temporarily_locked" => Ok(Self::TemporarilyLocked),
             "permanently_unavailable" => Ok(Self::PermanentlyUnavailable),
             "destroyed_pre_attempt" => Ok(Self::DestroyedPreAttempt),
+            "destroyed_by_deletion" => Ok(Self::DestroyedByDeletion),
             _ => Err(rusqlite::Error::InvalidQuery),
         }
     }
@@ -316,7 +325,9 @@ pub(crate) fn mark_commit_attempted(
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if changed == 0 {
         let record = load(sqlite_path, operation_id)?.ok_or(crate::ImError::PermissionDenied)?;
-        if !record.commit_attempted {
+        if record.lifecycle_class == RecoveryLifecycleClass::LocallyDeleted
+            || !record.commit_attempted
+        {
             return Err(crate::ImError::PermissionDenied);
         }
     }
@@ -540,7 +551,8 @@ WHERE quarantined.owner_identity_id=?1
   AND (
     quarantined.superseded_by_operation_id IS NULL
     OR previous_replacement.lifecycle_class IN (
-      'discarded_pre_attempt','superseded_by_state_change','failed_terminal'
+      'discarded_pre_attempt','superseded_by_state_change','failed_terminal',
+        'locally_deleted'
     )
   )
 ORDER BY quarantined.updated_at DESC,quarantined.operation_id DESC

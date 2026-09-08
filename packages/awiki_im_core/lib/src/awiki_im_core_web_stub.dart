@@ -285,6 +285,10 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<bool> hasPendingLocalIdentityRecovery(
+    IdentitySelector selector,
+  ) async => throw UnsupportedError('identity deletion is unavailable on web');
+
   Future<DeleteLocalIdentityResult> deleteLocalIdentity(
     IdentitySelector selector,
   ) async {
