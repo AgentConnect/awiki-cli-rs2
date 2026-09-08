@@ -375,6 +375,13 @@ fn test_paths(root: &Path) -> crate::ImCorePaths {
 }
 
 fn open_ready_admin_core(root: &Path) -> (crate::ImCore, serde_json::Value, crate::ids::Did) {
+    open_ready_admin_core_with_config(root, test_config())
+}
+
+fn open_ready_admin_core_with_config(
+    root: &Path,
+    config: crate::ImCoreConfig,
+) -> (crate::ImCore, serde_json::Value, crate::ids::Did) {
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
         IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
@@ -449,7 +456,7 @@ fn open_ready_admin_core(root: &Path) -> (crate::ImCore, serde_json::Value, crat
     let did = generated.did;
     let document = generated.did_document;
     let core = crate::ImCore::new_with_options(
-        test_config(),
+        config,
         paths,
         crate::ImCoreOpenOptions::default().with_identity_secret_vault(
             crate::IdentitySecretStoragePolicy::VaultRequired,
@@ -1460,4 +1467,148 @@ async fn cancelled_new_device_runtime_does_not_reopen_deleted_remote_token() {
         cancelled.phase,
         crate::identity::DeviceJoinLocalPhase::Cancelled
     );
+}
+
+struct BindingAssertingPrekeyPublisher {
+    calls: usize,
+}
+impl DeviceJoinPrekeyPublisher for BindingAssertingPrekeyPublisher {
+    async fn publish(
+        &mut self,
+        core: &crate::ImCore,
+        _client: &crate::core::ImClient,
+    ) -> crate::ImResult<()> {
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM identity_account_bindings WHERE identity_generation='7'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "Join must persist its binding before publication/success"
+        );
+        self.calls += 1;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn joined_identity_persists_binding_before_success_and_replay_without_sync() {
+    check_join_binding_materialization(false).await;
+}
+
+#[tokio::test]
+async fn joined_identity_rejects_changed_wns_without_inventing_old_generation() {
+    check_join_binding_materialization(true).await;
+}
+
+async fn check_join_binding_materialization(changed_did: bool) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = test_config();
+    config.user_service_endpoint = Some(
+        crate::ServiceEndpoint::parse(format!("http://{}", listener.local_addr().unwrap()))
+            .unwrap(),
+    );
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, did) = open_ready_admin_core_with_config(root.path(), config);
+    let session = crate::identity::DeviceJoinSessionSummary {
+        join_session_id: "join-binding-first-use".to_owned(),
+        did: did.clone(),
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(
+            document["deviceManifest"]["devices"][0]["device_id"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap(),
+        side: crate::identity::DeviceJoinSide::NewDevice,
+        phase: crate::identity::DeviceJoinLocalPhase::Authorized,
+        join_request_hash: "fixture".to_owned(),
+        challenge_id: None,
+        expires_at: "2099-01-01T00:00:00Z".to_owned(),
+    };
+    let remote_did = if changed_did {
+        "did:wba:awiki.test:user:alice:e1_other".to_owned()
+    } else {
+        did.as_str().to_owned()
+    };
+    let body = json!({"handle":"alice.awiki.test", "did":remote_did,"status":"active","binding_generation":"7"}).to_string();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let mut bytes = [0; 8192];
+                    let size = stream.read(&mut bytes).unwrap();
+                    assert!(String::from_utf8_lossy(&bytes[..size])
+                        .starts_with("GET /.well-known/handle/alice "));
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(),body).unwrap();
+                    return true;
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(_) => return false,
+            }
+        }
+    });
+    let mut publisher = BindingAssertingPrekeyPublisher { calls: 0 };
+    let result =
+        publish_v2_prekeys_after_activation_with_publisher(&core, &session, &mut publisher).await;
+    assert!(
+        server.join().unwrap(),
+        "Join completion did not request authoritative binding"
+    );
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()
+            .unwrap();
+    if changed_did {
+        assert!(matches!(
+            result,
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert_eq!(publisher.calls, 0);
+        assert!(index.credentials["alice"].binding_generation.is_none());
+    } else {
+        result.unwrap();
+        assert_eq!(
+            index.credentials["alice"].binding_generation.as_deref(),
+            Some("7")
+        );
+        publish_v2_prekeys_after_activation_with_publisher(&core, &session, &mut publisher)
+            .await
+            .unwrap();
+        assert_eq!(publisher.calls, 2);
+        let matched = crate::internal::identity_local_owner_matcher::match_stable_owner(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &index,
+            crate::internal::identity_local_owner_matcher::StableOwnerAuthority {
+                account_user_id: "user-1",
+                full_handle: "alice.awiki.test",
+                previous_did: did.as_str(),
+                binding_generation: "8",
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            matched,
+            crate::internal::identity_local_owner_matcher::StableOwnerMatch::Exact(_)
+        ));
+    }
 }

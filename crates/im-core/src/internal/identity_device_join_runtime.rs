@@ -1290,6 +1290,9 @@ where
     let client = core
         .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
         .await?;
+    // Join success must not depend on a later App login or first message sync
+    // to retain the authoritative predecessor generation needed by re-Join.
+    client.active_sync_account_binding().await?;
     publisher.publish(core, &client).await
 }
 

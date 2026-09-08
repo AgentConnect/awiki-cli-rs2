@@ -485,6 +485,12 @@ identity_generation   <- Handle binding_generation
 device_auth_generation <- current device authorization generation
 ```
 
+普通新设备 Join 在向调用方报告 activation 完成前，也必须调用同一 binding materialization
+边界。不能等首次消息同步/App 登录才记录 Handle generation：否则设备刚 Join 后另一设备
+立即 Recovery 时，本地会缺失 direct-predecessor 证据。首次完成和 Authorized session 重试
+使用同一入口；WNS/DID 不匹配或查询失败时不报告完成、不猜 generation，后续可精确重试。
+已缺失旧代次且 Handle 已变化的历史记录仍 fail closed，不从新代次减一伪造本地历史。
+
 `ImClient::active_sync_account_binding()` is the only public boundary that
 materializes these six values together. It does not use
 `IdentitySummary.device_id`, a vault-context device id, a DID-derived account
