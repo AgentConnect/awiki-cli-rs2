@@ -1,0 +1,117 @@
+{
+  "content_hash": "a2912dd9aae21483b6537951298a22a63151a7255a1f90a15848cbb69b0c1475",
+  "description": "Public deterministic test keys only: Ed25519 seeds [17;32] and [23;32]. Never use for real accounts.",
+  "did_documents": [
+    {
+      "@context": [
+        "https://www.w3.org/ns/did/v1",
+        "https://w3id.org/security/data-integrity/v2",
+        "https://w3id.org/security/multikey/v1"
+      ],
+      "assertionMethod": [
+        "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#key-1"
+      ],
+      "authentication": [
+        "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#key-1"
+      ],
+      "id": "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+      "proof": {
+        "created": "2026-09-08T00:00:00Z",
+        "cryptosuite": "eddsa-jcs-2022",
+        "proofPurpose": "assertionMethod",
+        "proofValue": "JfDs4t-6la6W5D_5dBPz7eoy6G1DHjKPc9HWuZ60m1ug_JeSPAWJGOQ2Pw58aV6hcxiqHPlNNGFjUuxyxleuAg",
+        "type": "DataIntegrityProof",
+        "verificationMethod": "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#key-1"
+      },
+      "verificationMethod": [
+        {
+          "controller": "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+          "id": "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#key-1",
+          "publicKeyMultibase": "z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "type": "Multikey"
+        }
+      ]
+    },
+    {
+      "@context": [
+        "https://www.w3.org/ns/did/v1",
+        "https://w3id.org/security/data-integrity/v2",
+        "https://w3id.org/security/multikey/v1"
+      ],
+      "assertionMethod": [
+        "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo#key-1"
+      ],
+      "authentication": [
+        "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo#key-1"
+      ],
+      "id": "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo",
+      "proof": {
+        "created": "2026-09-08T00:00:00Z",
+        "cryptosuite": "eddsa-jcs-2022",
+        "proofPurpose": "assertionMethod",
+        "proofValue": "WcfIwFcU1Fmb1vQQKzph2Eg9qUEOBa-HSYHUkQuNetMwvt_WtS9H6u6QeFXi_jF6E_u2d5VEp-Dzuf74t46YAQ",
+        "type": "DataIntegrityProof",
+        "verificationMethod": "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo#key-1"
+      },
+      "verificationMethod": [
+        {
+          "controller": "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo",
+          "id": "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo#key-1",
+          "publicKeyMultibase": "z6Mkhow21JWUi49xXiMVnHL18JjZf5dYMSmSwPoHfWU4VN5q",
+          "type": "Multikey"
+        }
+      ]
+    }
+  ],
+  "intent_hash": "524961427898f51097aea7ece6fbdaeeaf417b724935d7fa8bcba97223f68e0d",
+  "markdown_utf8_base64": "77u/IyDmtLvliqgg8J+OiQ0K5q2j5paHICANCg==",
+  "proofs": [
+    {
+      "created": "2026-09-08T08:00:00Z",
+      "cryptosuite": "eddsa-jcs-2022",
+      "proofPurpose": "assertionMethod",
+      "proofValue": "z5JoZthmNeuQevUZM9T1dRSotzPd9f9nTx9z6yEa4PGCySxdevYMHqrcYJMRf8JwG8CuqcDwVCJfrLSYKLdmHBita",
+      "type": "DataIntegrityProof",
+      "verificationMethod": "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E#key-1"
+    },
+    {
+      "created": "2026-09-08T08:00:00Z",
+      "cryptosuite": "eddsa-jcs-2022",
+      "proofPurpose": "assertionMethod",
+      "proofValue": "z3reZaHHesctU7AMaHXhYWbzLi5Z8cWJ8tFL7eCGwxpCKRJrySMK46gyXjCaQYKA7RKCe3LFeCQ8KLuFZP6fkPNJN",
+      "type": "DataIntegrityProof",
+      "verificationMethod": "did:wba:example.org:user:admin:e1_eacC8rNObjGhapqk6dtBwKPsEFbhktLinsfzQSSXMZo#key-1"
+    }
+  ],
+  "signing_inputs_base64": [
+    "rFMUMbdywZLy87AZ6DVO4Jhj5cQFL9GIYIHLEIuIx5BSSWFCeJj1EJeup+zm+9rur0F7ckk11/qLy6lyI/aODQ==",
+    "O65tDwp1HaiENCLz9z6YU4l4Zfkl+D1oO0eY20IW+4tSSWFCeJj1EJeup+zm+9rur0F7ckk11/qLy6lyI/aODQ=="
+  ],
+  "snapshot": {
+    "content": {
+      "acceptResponses": true,
+      "mediaType": "text/markdown",
+      "path": "/pages/event.md",
+      "sha256": "a2912dd9aae21483b6537951298a22a63151a7255a1f90a15848cbb69b0c1475",
+      "title": "活动通知"
+    },
+    "expiresAt": "2026-09-08T09:00:00Z",
+    "informationId": "00000000-0000-0000-0000-0000000000c8",
+    "issuedAt": "2026-09-08T08:00:00Z",
+    "operation": "information.publish",
+    "operationId": "00000000-0000-0000-0000-00000000012c",
+    "policyRevision": 1,
+    "profile": "awiki-information-publish-v1",
+    "publicationRound": 1,
+    "publisher": {
+      "did": "did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E",
+      "handle": "editor.example.org",
+      "memberId": "00000000-0000-0000-0000-000000000011"
+    },
+    "targetServiceId": "urn:uuid:42006117-3767-4a73-a2a8-d58f83da5f38",
+    "tenantId": "00000000-0000-0000-0000-000000000064",
+    "type": "InformationPublication",
+    "version": 1
+  },
+  "snapshot_jcs_utf8": "{\"content\":{\"acceptResponses\":true,\"mediaType\":\"text/markdown\",\"path\":\"/pages/event.md\",\"sha256\":\"a2912dd9aae21483b6537951298a22a63151a7255a1f90a15848cbb69b0c1475\",\"title\":\"活动通知\"},\"expiresAt\":\"2026-09-08T09:00:00Z\",\"informationId\":\"00000000-0000-0000-0000-0000000000c8\",\"issuedAt\":\"2026-09-08T08:00:00Z\",\"operation\":\"information.publish\",\"operationId\":\"00000000-0000-0000-0000-00000000012c\",\"policyRevision\":1,\"profile\":\"awiki-information-publish-v1\",\"publicationRound\":1,\"publisher\":{\"did\":\"did:wba:example.org:user:editor:e1_vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E\",\"handle\":\"editor.example.org\",\"memberId\":\"00000000-0000-0000-0000-000000000011\"},\"targetServiceId\":\"urn:uuid:42006117-3767-4a73-a2a8-d58f83da5f38\",\"tenantId\":\"00000000-0000-0000-0000-000000000064\",\"type\":\"InformationPublication\",\"version\":1}"
+}

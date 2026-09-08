@@ -389,7 +389,7 @@ pub fn cutover_status(raw: &str) -> CutoverStatus {
 pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "onboarding") {
+    if has_any_command_prefix(name, &["onboarding", "node-publication"]) {
         return Some(CutoverStatus::ImCore);
     }
     if is_one_of(
@@ -606,6 +606,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "node-publication") {
+        return CommandAudience::AdvancedUser;
+    }
     if has_command_prefix(name, "id.device") {
         return CommandAudience::AdvancedUser;
     }
@@ -708,6 +711,13 @@ pub fn command_audience(raw: &str) -> CommandAudience {
 pub fn primary_owner(raw: &str) -> CommandOwner {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "node-publication") {
+        return match name {
+            "node-publication.request" => CommandOwner::ImCoreAuth,
+            "node-publication.notify" => CommandOwner::ImCoreMessages,
+            _ => CommandOwner::ImCoreIdentity,
+        };
+    }
     if has_command_prefix(name, "onboarding") {
         return CommandOwner::ImCoreOnboarding;
     }
@@ -796,6 +806,9 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "node-publication") {
+        return CliShellRole::ParsesInputOnly;
+    }
     if matches!(
         name,
         "id.device.join.approve"
@@ -1274,6 +1287,10 @@ macro_rules! cmd {
 
 fn default_specs() -> &'static [CommandSpec] {
     &[
+        CommandSpec { name: "node-publication", use_: "node-publication", short: "Node publication bridge", long: "The bridge reads one bounded closed JSON object from stdin. Signing requires an interactive terminal confirmation of the exact intent hash.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "node-publication.sign", use_: "sign", short: "Review and sign a fixed Node publication snapshot from stdin", long: "The bridge reads one bounded closed JSON object from stdin. Signing requires an interactive terminal confirmation of the exact intent hash.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "node-publication.sign", side_effect: true, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "node-publication.request", use_: "request", short: "Send one authenticated Node management request from stdin", long: "The bridge reads one bounded closed JSON object from stdin. Signing requires an interactive terminal confirmation of the exact intent hash.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "node-publication.request", side_effect: true, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "node-publication.notify", use_: "notify", short: "Send a fixed publication review notification from stdin", long: "Requires exact sender DID, full recipient Handle and persisted message/event IDs. Only the closed review notification payload is accepted.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "node-publication.notify", side_effect: true, outputs: &["json"], flags: &[] },
         cmd!("status", "status", "Show the current CLI, workspace, and identity status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
