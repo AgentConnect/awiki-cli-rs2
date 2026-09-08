@@ -25,7 +25,6 @@ ImClient                  # identity-bound product client
         +-- realtime()
         +-- email()
         +-- content() / site()
-        +-- information_publication() # fixed Node publication profile; device signing only
 ```
 
 ## 2. Crate Boundaries

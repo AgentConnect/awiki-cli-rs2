@@ -22,6 +22,7 @@ system-test-probe = [
     "dep:awiki-deamon",
     "dep:bs58",
     "dep:futures-util",
+    "dep:reqwest",
     "dep:serde_json_canonicalizer",
     "dep:tokio-tungstenite",
     "dep:x25519-dalek",
@@ -38,7 +39,7 @@ bs58 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 im-core = { package = "awiki-im-core", version = "=0.1.1", path = "../im-core", features = ["secure-direct", "group-e2ee", "blocking"] }
 rand.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

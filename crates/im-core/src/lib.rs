@@ -15,7 +15,6 @@ pub mod external_http_auth;
 pub mod groups;
 pub mod identity;
 pub mod ids;
-pub mod information_publication;
 #[cfg(feature = "sqlite")]
 pub mod local_state_upgrade;
 pub mod messages;

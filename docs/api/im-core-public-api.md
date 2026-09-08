@@ -1100,33 +1100,6 @@ redirects manual, submit only response status and headers, and avoid logging
 the patch. Production hosts must not expose this service through browser RPC,
 model tools or an untrusted signing endpoint.
 
-### 7.2 Node Markdown 发布业务签名
-
-`ImClient::information_publication()` 返回 `InformationPublicationService`。它只签署
-`awiki-information-publish-v1`，不提供任意 JSON 签名或私钥导出。
-
-- `InformationPublicationReview::parse(snapshot_json, markdown, trusted_target, tenant_id, operation_id, expected_intent_hash)`
-  接收原始闭合快照 JSON，拒绝嵌套重复字段、未知字段、非安全整数、非规范 UUID/时间和不匹配的目标。
-  对原始 UTF-8 Markdown 计算 SHA-256，并对固定快照计算 JCS 哈希。返回不可反序列化的 review。
-- Host 使用 `presentation()` 安全展示原文和完整快照，取得用户对 `intent_hash()` 的明确确认。
-  可信 Origin、service ID、租户和 operation 来自本地选择；消息内容不能代替该选择或确认。
-- `inspect_capability_async()` 在确认前核对可签设备，返回公开的 profile / DID / verificationMethod；
-  `sign_reviewed_async(review, confirmed_intent_hash)` 在确认后重新读取当前身份的 Device Registry 和公开 DID 文档，
-  核对 registry checkpoint 文档摘要、active 设备、Manifest 中的 signing/e2ee key、assertionMethod 和 e1 绑定。
-  Root key、撤销设备、非当前签名键、超过 5 秒的观测或过期快照均拒绝。通过现有 identity provider
-  的 `DeviceAssertion` 或对应本地设备 signer 签名，再以实时文档自验，仅返回该 Proof。
-- HTTP 仍使用 `external_http_auth()`；业务签名不代替请求认证。IM 仍使用 `messages().send_async()`。
-  本 facade 不提交 Node 请求、不创建成员、不注册身份、不发送消息。
-
-实际 CLI 桥接为 `awiki-cli --identity <local-alias> --format json node-publication sign|request|notify`：
-闭合 JSON 经 stdin 输入，sign 在控制终端展示并要求键入完整哈希；不接受 `confirmed:true`。
-request 只允许显式 HTTPS Origin 的指定租户管理路径，禁用重定向，最多采用 SDK 的一次 401 认证重试；
-成功只输出 HTTP status、content-type 和 base64 body，不输出任何认证 Header。
-notify 接受固定 review 引用、准确发送方 DID、完整收件 Handle 和预先保存的消息 ID，保留 SDK delivery 状态。
-三项命令拒绝 dry-run 伪成功。Node CLI 负责不可变恢复文件、回执对账和业务 ID；这些不进入 SDK 密钥存储。
-
-本轮只完成 Rust/CLI 入口，不增加 Dart/App facade。单元验证不代表真实 Node/User Service/Message Service 联调通过。
-
 ## 8. messages
 
 P1 API：
