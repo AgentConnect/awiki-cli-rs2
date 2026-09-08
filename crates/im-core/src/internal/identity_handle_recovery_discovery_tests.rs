@@ -45,15 +45,11 @@ fn pending_discovery_includes_all_unfinished_lifecycles_and_excludes_history() {
     // Discovery neither publishes fresh owners nor advances/deletes their journals.
     assert_eq!(list_pending(&path).unwrap().len(), actual.len());
     for index in 0..9 {
-        assert!(
-            load(&path, &format!("op_discovery_{index:08}"))
-                .unwrap()
-                .is_some()
-        );
-    }
-    assert!(
-        list_pending(&root.path().join("another-scope.sqlite"))
+        assert!(load(&path, &format!("op_discovery_{index:08}"))
             .unwrap()
-            .is_empty()
-    );
+            .is_some());
+    }
+    assert!(list_pending(&root.path().join("another-scope.sqlite"))
+        .unwrap()
+        .is_empty());
 }
