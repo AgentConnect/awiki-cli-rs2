@@ -89,6 +89,12 @@ pub struct DisplayProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DisplayProfileRefreshRequest {
+    pub peers: Vec<crate::ids::PeerRef>,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DisplayProfileBatchRequest {
     pub peers: Vec<crate::ids::PeerRef>,
 }

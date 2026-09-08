@@ -1,5 +1,5 @@
 pub struct DirectoryService<'a> {
-    client: &'a crate::core::ImClient,
+    pub(super) client: &'a crate::core::ImClient,
 }
 
 impl<'a> DirectoryService<'a> {

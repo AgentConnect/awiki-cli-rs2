@@ -46,6 +46,27 @@ pub async fn lookup_handle(
     })
 }
 
+pub async fn refresh_display_profiles(
+    client: &Arc<crate::api::client::DartImClient>,
+    peers: Vec<String>,
+    force: bool,
+) -> Result<Vec<DartDisplayProfile>, DartImError> {
+    let inner = client.clone_inner()?;
+    let peers = peers
+        .into_iter()
+        .map(|peer| im_core::ids::PeerRef::parse(peer, "").map_err(DartImError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+    inner
+        .directory()
+        .refresh_display_profiles_async(im_core::directory::DisplayProfileRefreshRequest {
+            peers,
+            force,
+        })
+        .await
+        .map(|profiles| profiles.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
 pub async fn hydrate_display_profiles(
     client: &Arc<crate::api::client::DartImClient>,
     peers: Vec<String>,

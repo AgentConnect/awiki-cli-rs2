@@ -431,6 +431,18 @@ fn parse_otp_send_boundary(raw: &Value) -> crate::ImResult<(bool, u32, String)> 
     Ok((accepted, seconds, retry_at))
 }
 
+pub(crate) fn list_pending_operations(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
+    require_enabled(core)?;
+    crate::internal::identity_handle_recovery_operation::list_pending(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?
+    .into_iter()
+    .map(operation_summary)
+    .collect()
+}
+
 pub(crate) async fn list_operations(
     core: &crate::core::ImCore,
     identity: crate::identity::IdentitySelector,

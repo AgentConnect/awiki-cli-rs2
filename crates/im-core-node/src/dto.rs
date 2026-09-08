@@ -116,6 +116,7 @@ pub(crate) fn external_http_response(
 #[napi(object)]
 pub struct NodeClearLocalDataResult {
     pub cleared: bool,
+    pub cleared_identity_dids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

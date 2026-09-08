@@ -365,6 +365,14 @@ impl<'a> HandleRecoveryService<'a> {
         crate::internal::identity_handle_recovery_runtime::status(self.core, operation_id)
     }
 
+    /// Read unfinished operations in this local state root, including fresh recovery
+    /// owners that have not yet become public identities. Does not advance recovery.
+    pub fn list_pending_handle_recovery_operations(
+        &self,
+    ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
+        crate::internal::identity_handle_recovery_runtime::list_pending_operations(self.core)
+    }
+
     pub async fn list_handle_recovery_operations(
         &self,
         identity: super::IdentitySelector,

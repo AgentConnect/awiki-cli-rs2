@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 42;
+pub(crate) const SCHEMA_VERSION: i64 = 43;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -1178,7 +1178,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
     }
     if version == LOCAL_IDENTITY_DELETION_SCHEMA_VERSION {
         if schema_v39_shape_is_complete(connection)? {
-            return migrate_v39_to_v41(connection);
+            return migrate_v39_to_current(connection);
         }
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
@@ -1188,7 +1188,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
     }
     if version == SYNC_V1A_RELIABILITY_SCHEMA_VERSION {
         if schema_v40_shape_is_complete(connection)? {
-            return migrate_v40_to_v41(connection);
+            return migrate_v40_to_current(connection);
         }
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
@@ -1207,6 +1207,25 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .unchecked_transaction()
             .map_err(super::local_state_unavailable)?;
         ensure_terminal_transition_phase_schema(&transaction)?;
+        super::display_profile_cache::create_schema(&transaction)?;
+        set_schema_version(&transaction, SCHEMA_VERSION)?;
+        return transaction.commit().map_err(super::local_state_unavailable);
+    }
+    if version == 42 {
+        if !schema_v42_shape_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "schema 42 is incomplete before display cache upgrade".to_owned(),
+            });
+        }
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(super::local_state_unavailable)?;
+        super::display_profile_cache::create_schema(&transaction)?;
+        if !current_schema_shape_is_complete(&transaction)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "incomplete display cache schema".to_owned(),
+            });
+        }
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1222,7 +1241,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         }
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
-                "sqlite schema version {version} has an incomplete sync v1b durable lane shape"
+                "sqlite schema version {version} has an incomplete current schema shape"
             ),
         });
     }
@@ -1256,6 +1275,7 @@ fn migrate_release_predecessor_to_v34(
     super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
     create_schema(&transaction, false)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1316,6 +1336,7 @@ fn converge_divergent_schema_to_v34(connection: &Connection, version: i64) -> cr
     super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
     create_schema(&transaction, false)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1400,6 +1421,7 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1421,6 +1443,7 @@ fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1442,6 +1465,7 @@ fn migrate_v37_to_v38(connection: &Connection) -> crate::ImResult<()> {
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1462,11 +1486,12 @@ fn migrate_v38_to_v39(connection: &Connection) -> crate::ImResult<()> {
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
-fn migrate_v39_to_v41(connection: &Connection) -> crate::ImResult<()> {
+fn migrate_v39_to_current(connection: &Connection) -> crate::ImResult<()> {
     if current_schema_version(connection)? != LOCAL_IDENTITY_DELETION_SCHEMA_VERSION
         || !schema_v39_shape_is_complete(connection)?
     {
@@ -1487,11 +1512,12 @@ fn migrate_v39_to_v41(connection: &Connection) -> crate::ImResult<()> {
         });
     }
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
-fn migrate_v40_to_v41(connection: &Connection) -> crate::ImResult<()> {
+fn migrate_v40_to_current(connection: &Connection) -> crate::ImResult<()> {
     if current_schema_version(connection)? != SYNC_V1A_RELIABILITY_SCHEMA_VERSION
         || !schema_v40_shape_is_complete(connection)?
     {
@@ -1511,6 +1537,7 @@ fn migrate_v40_to_v41(connection: &Connection) -> crate::ImResult<()> {
         });
     }
     ensure_terminal_transition_phase_schema(&transaction)?;
+    super::display_profile_cache::create_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1764,6 +1791,22 @@ fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
 }
 
 fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(schema_v42_shape_is_complete(connection)?
+        && table_has_columns(
+            connection,
+            "display_profile_cache",
+            &[
+                "owner_identity_id",
+                "did",
+                "profile_json",
+                "expires_at",
+                "retry_at",
+                "generation",
+            ],
+        )?)
+}
+
+fn schema_v42_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     if !schema_v41_shape_is_complete(connection)? {
         return Ok(false);
     }
@@ -1956,6 +1999,7 @@ pub(super) fn create_schema(
     super::peer_personas::create_schema(connection)?;
     super::peer_identifiers::create_schema(connection)?;
     super::peer_profiles::create_schema(connection)?;
+    super::display_profile_cache::create_schema(connection)?;
     super::conversation_aliases::create_schema(connection)?;
     super::inbound_resolution_backlog::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {

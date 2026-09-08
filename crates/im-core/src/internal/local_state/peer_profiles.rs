@@ -75,7 +75,16 @@ LIMIT 1"#,
         .map_err(super::local_state_unavailable)?;
     let Some((full_handle, display_name, avatar_uri, subject_type, current_did, expires_at)) = row
     else {
-        return Ok(None);
+        return if is_did {
+            super::display_profile_cache::read(
+                connection,
+                owner_identity_id,
+                &crate::ids::Did::parse(peer_value)?,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )
+        } else {
+            Ok(None)
+        };
     };
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let is_stale = expires_at

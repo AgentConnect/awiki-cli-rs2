@@ -112,11 +112,40 @@ test('recovery progress exposes only the current stable impact fields through th
   ])
 })
 
+test('pending recovery discovery survives reopen without publishing an identity or making remote requests', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-discovery-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const service = await startRecoveryService(t)
+  const identityProvider = await createIdentityProviderFixture(root)
+  t.after(() => identityProvider.dispose())
+  const config = { ...options(root), serviceBaseUrl: service.baseUrl, didDomain: 'awiki.test',
+    multiDeviceHandleRecoveryEnabled: true, multiDeviceAudience: 'awiki-user-service', identityProvider }
+  let client = await openImCoreNodeClient(config)
+  t.after(() => client.close())
+  assert.deepEqual(await client.listPendingHandleRecoveryOperations(), [])
+  const challenge = await client.requestHandleRecoveryOtp({ fullHandle: 'alice.awiki.test', phone: '+8613800000000' })
+  await client.close()
+  client = await openImCoreNodeClient(config)
+  assert.equal(await client.getDefaultIdentity(), null)
+  const requests = service.requests.length
+  const pending = await client.listPendingHandleRecoveryOperations()
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].operationId, challenge.operationId)
+  assert.equal(pending[0].fullHandle, 'alice.awiki.test')
+  assert.equal(pending[0].lifecycle, 'pre_commit')
+  assert.doesNotMatch(JSON.stringify(pending), /phone|vaultKey|privateKey|recoveryGrant|123456/)
+  assert.deepEqual(await client.listPendingHandleRecoveryOperations(), pending)
+  assert.equal(service.requests.length, requests)
+  await client.discardHandleRecovery({ operationId: challenge.operationId })
+  assert.deepEqual(await client.listPendingHandleRecoveryOperations(), [])
+})
+
 test('opens an empty Rust state, closes idempotently, and rejects later work', async t => {
   const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
   assert.equal(await client.getDefaultIdentity(), null)
+  await assert.rejects(client.listPendingHandleRecoveryOperations(), error => error.code === 'unsupported_capability')
   await assert.rejects(
     client.prepareExternalHttpRequest({
       url: 'https://api.example.test/orders',
@@ -194,8 +223,8 @@ test('realtime facade requires an identity and returns only the stable redacted 
   )
 })
 
-test('loads native v12 candidate Join, device-management, Root Transfer, and device rejoin methods', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v12-'))
+test('loads native v14 candidate Join, device-management, Root Transfer, and device rejoin methods', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v14-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
   t.after(() => client.close())
@@ -260,10 +289,10 @@ test('clears SDK-owned local data and keeps the client usable', async t => {
   t.after(() => client.close())
   await writeFile(join(root, 'cache', 'owned.bin'), 'private', { mode: 0o600 })
 
-  assert.deepEqual(await client.clearLocalData(), { cleared: true })
+  assert.deepEqual(await client.clearLocalData(), { cleared: true, clearedIdentityDids: [] })
   await assert.rejects(readFile(join(root, 'cache', 'owned.bin')), { code: 'ENOENT' })
   assert.equal(await client.getDefaultIdentity(), null)
-  assert.deepEqual(await client.clearLocalData(), { cleared: true })
+  assert.deepEqual(await client.clearLocalData(), { cleared: true, clearedIdentityDids: [] })
 })
 
 test('routes group, profile, and payload operations through native v10 with structured identity errors', async t => {
@@ -280,6 +309,7 @@ test('routes group, profile, and payload operations through native v10 with stru
   )
   const identityOperations = [
     () => client.getProfile(),
+    () => client.refreshDisplayProfiles({ peers: ['did:wba:example.test:user:alice'] }),
     () => client.getGroup({ groupDid: 'did:wba:example.test:group:release-crew' }),
     () => client.listGroups(),
     () => client.joinGroup({ groupDid: 'did:wba:example.test:group:release-crew' }),

@@ -1,10 +1,11 @@
 mod dto;
+mod refresh;
 mod service;
 
 pub use self::dto::{
     Contact, ContactListQuery, DirectoryResolution, DisplayProfile, DisplayProfileBatchRequest,
-    FollowRequest, FollowResult, HandleLookupResult, IdentitySubject, PublicProfile,
-    RelationStatus, RelationshipListItem, RelationshipListQuery, RelationshipStatus,
+    DisplayProfileRefreshRequest, FollowRequest, FollowResult, HandleLookupResult, IdentitySubject,
+    PublicProfile, RelationStatus, RelationshipListItem, RelationshipListQuery, RelationshipStatus,
     SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
 pub use self::service::DirectoryService;

@@ -446,14 +446,19 @@ may stop realtime/dispose runtime only as best-effort cleanup. Network shutdown
 latency is therefore never part of the local deletion result, and a generic UI
 network timeout must not classify this operation.
 
-The Node host's destructive `clearLocalData()` additionally owns its configured
-external identity-provider store. It must stop realtime, enumerate and delete
-every active or enrolling identity in that profile-scoped provider, and only
-then erase the Core-owned state root. This ordering also removes an unpublished
-or orphaned provider identity when the Core Registry is already empty. Provider
-cleanup failure aborts the Core wipe and remains retryable through the same
-explicit destructive action; remote Handle/account state and sibling devices
-are not revoked.
+The Node host's destructive `clearLocalData()` is scoped to its Core state root,
+not the entire external identity-provider store, which may serve multiple tenants.
+After quiescing local mutations and realtime, Core's
+`identities().local_provider_identity_references()` builds an exact deletion plan
+from the local Registry and validated registration, Join, Recovery and Legacy-upgrade
+journals. The complete plan is validated before any provider deletion. Missing
+identities are treated as already cleared; mismatched bindings or corrupt ownership
+evidence stop the operation. Only after provider cleanup succeeds may Node erase
+the Core-owned root. Unknown provider identities without local ownership evidence
+are preserved, even when the Registry is empty; store-wide orphan administration
+belongs to the identity service, not tenant reset. `clearedIdentityDids` lets the
+Browser evict only corresponding presentation caches. Remote Handle/account state,
+other tenants and sibling devices are not revoked.
 
 If registration bootstrap encounters an active provider identity whose valid
 device manifest already contains more than one device while no matching local
@@ -974,6 +979,8 @@ profile to gain canonical identity authority. Current-owner Account State
 snapshots may update the local identity registry only through an
 owner-ID-scoped display projection operation; display projection never changes
 identity, routing, auth, or device facts.
+
+群成员首次出现的展示资料由 Core Directory 的显式 display-only refresh 获取。宿主负责需求与后台调度，Core 负责 owner 隔离的缓存、租约、时效和提交围栏。未绑定 DID 使用可丢弃展示缓存，既有 Persona 使用同一 peer_profiles；此入口不注册 Direct、联系人或身份绑定，不参与消息同步提交。
 
 Inbound Direct v2 sync first filters wire peer DIDs against the local verified
 Persona projection and performs an authoritative DID-to-Handle lookup only for

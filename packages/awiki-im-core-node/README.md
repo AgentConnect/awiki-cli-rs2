@@ -100,6 +100,8 @@ shared secret 交给 JavaScript。
   credential，保留普通消息、会话和附件数据；之后须完成标准设备 Join 才能恢复 identity-bound API。
 - `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
   兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
+  外部身份只删除 Core 本地 Registry 和已验证 pending journal 所绑定的精确引用；共享 Provider
+  中其他租户及无归属证据的身份保留。返回的 `clearedIdentityDids` 供 Host 限定 Browser 缓存清除。
 - JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
 
 ## state root
@@ -180,3 +182,10 @@ Tier 1 平台使用独立 optional package；wrapper 会显式区分 glibc 与 m
 job；正式 registry 发布仍是独立 release 动作。
 
 Recovery progress includes Core-derived `allowedActions`. `resumeHandleRecovery` rejects an unattempted operation with `activation_required`; only explicit `activateHandleRecovery` admits the first Commit. `local_transition_superseded` preserves the committed result while refusing obsolete local finalization. Hosts must not infer activation or cleanup permission from a phase or error message.
+### 群成员展示资料
+
+`hydrateDisplayProfiles({ peers })` 只读本地；宿主在首帧之后调用
+`refreshDisplayProfiles({ peers }, force = false)` 补齐展示资料，每批最多 100 个 DID。
+Core 拥有去重、并发上限、TTL、失败保留和 owner 隔离；调用不建立联系人、Direct 会话或身份绑定。
+成功但没有昵称的 `cacheHit: true` 结果应清除旧昵称并回退到 Handle/DID；失败保留缓存。
+本接口需要 native API v14，JS 与 native addon 必须一起构建升级；加载旧 addon 会明确拒绝。

@@ -18,6 +18,8 @@ pub(crate) mod conversations;
 pub(crate) mod did_transition_edges;
 #[cfg(feature = "sqlite")]
 pub(crate) mod direct_peer_routes;
+#[cfg(feature = "sqlite")]
+pub(crate) mod display_profile_cache;
 pub(crate) mod email;
 pub(crate) mod groups;
 pub(crate) mod inbound_resolution_backlog;

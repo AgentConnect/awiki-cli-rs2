@@ -15,9 +15,9 @@ pub use crate::core::{
 };
 pub use crate::directory::{
     Contact, ContactListQuery, DirectoryResolution, DirectoryService, DisplayProfile,
-    DisplayProfileBatchRequest, FollowRequest, FollowResult, HandleLookupResult, IdentitySubject,
-    PublicProfile, RelationStatus, RelationshipListItem, RelationshipListQuery, RelationshipStatus,
-    SaveContactRequest, UnfollowRequest, UnfollowResult,
+    DisplayProfileBatchRequest, DisplayProfileRefreshRequest, FollowRequest, FollowResult,
+    HandleLookupResult, IdentitySubject, PublicProfile, RelationStatus, RelationshipListItem,
+    RelationshipListQuery, RelationshipStatus, SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
 pub use crate::email::{
     EmailAccount, EmailAddress, EmailAttachmentContent, EmailAttachmentDownloadRequest,

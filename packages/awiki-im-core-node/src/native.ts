@@ -131,6 +131,7 @@ export interface NativeImCoreNodeClient {
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<NodeDisplayProfile[]>
+  refreshDisplayProfiles(input: DisplayProfileBatchInput, force?: boolean): Promise<NodeDisplayProfile[]>
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   getGroup(input: GroupInput): Promise<NodeGroup>
@@ -157,11 +158,12 @@ export interface NativeImCoreNodeClient {
   requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult>
   prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<NativeHandleRecoveryProgress>
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
+  listPendingHandleRecoveryOperations(): Promise<readonly HandleRecoveryOperationSummary[]>
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<NativeHandleRecoveryProgress>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   retireDefaultIdentityForRejoin(): Promise<void>
-  clearLocalData(): Promise<{ readonly cleared: boolean }>
+  clearLocalData(): Promise<{ readonly cleared: boolean; readonly clearedIdentityDids?: readonly string[] }>
   close(): Promise<void>
 }
 

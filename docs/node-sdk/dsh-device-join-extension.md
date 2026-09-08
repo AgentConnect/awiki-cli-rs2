@@ -325,3 +325,11 @@ pnpm --filter @awiki/im-core-node run test
 完整 workspace、required 平台制品、RWiki.cn System Test 和三端 UI 属于后续独立测试/发布任务；
 当前开发计划只做产品代码与单元测试。本文状态表示源码合同已实现，不代表 `0.2.2` 正式版本或
 完整 Darwin prerelease 已发布。
+
+## 刷新与恢复发现（2026-09-08）
+
+Node v14 增加 `listPendingHandleRecoveryOperations()`，只读返回当前 Core state root
+内未完成的恢复摘要，包括尚未投影为可见身份的 Fresh Root 操作。已完成、已丢弃、
+被替代和终止记录不作为启动续接入口；隔离的 key-unavailable 状态仍必须显示。
+Host 按当前租户筛选，多个未完成操作必须明确选择，不能静默取最新一条。
+该查询不发送 OTP、不提交恢复、不读取或暴露 grant/key，也不新增 Host 恢复日志。

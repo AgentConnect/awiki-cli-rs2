@@ -795,6 +795,102 @@ async fn directory_resolution_ignores_wns_profile_without_subject_and_falls_back
 }
 
 #[tokio::test]
+async fn group_first_display_refresh_persists_without_contacts_or_direct_conversations() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
+        "/user-service/v1/did/profile/rpc",
+        "get_public_profile",
+        json!({"did":"did:example:guest"}),
+        json!({"did":"did:example:guest", "handle":"guest.awiki.test", "nick_name":"AWiki Guest 7K3M"}),
+    )]);
+    let client = fixture
+        .client_async_with_base_url("alice", server.base_url())
+        .await;
+    let peers = vec![PeerRef::parse("did:example:guest", "").unwrap(); 2];
+    let result = client
+        .directory()
+        .refresh_display_profiles_async(awiki_im_core::directory::DisplayProfileRefreshRequest {
+            peers: peers.clone(),
+            force: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2);
+    assert!(result
+        .iter()
+        .all(|p| p.display_name.as_deref() == Some("AWiki Guest 7K3M")));
+    assert_eq!(server.join().len(), 1);
+    // A new client can display the guest with no live service and no prior Direct.
+    drop(client);
+    let client = fixture
+        .client_async_with_base_url("alice", "http://127.0.0.1:1")
+        .await;
+    let result = client
+        .directory()
+        .refresh_display_profiles_async(awiki_im_core::directory::DisplayProfileRefreshRequest {
+            peers,
+            force: false,
+        })
+        .await
+        .unwrap();
+    assert!(result.iter().all(|p| p.cache_hit && p.warnings.is_empty()));
+    assert!(client
+        .directory()
+        .contacts_async(Default::default())
+        .await
+        .unwrap()
+        .items
+        .is_empty());
+    let failed = client
+        .directory()
+        .refresh_display_profiles_async(awiki_im_core::directory::DisplayProfileRefreshRequest {
+            peers: vec![
+                PeerRef::parse("did:example:guest", "").unwrap(),
+                PeerRef::parse("did:example:unknown", "").unwrap(),
+            ],
+            force: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(failed[0].display_name.as_deref(), Some("AWiki Guest 7K3M"));
+    assert!(failed[0].cache_hit);
+    assert!(!failed[1].cache_hit);
+    assert!(failed.iter().all(|p| p
+        .warnings
+        .iter()
+        .any(|warning| warning == "display_profile_refresh_failed")));
+    for peers in [
+        vec![PeerRef::parse("guest.awiki.test", "").unwrap()],
+        vec![PeerRef::parse("did:example:guest", "").unwrap(); 101],
+    ] {
+        assert!(matches!(
+            client
+                .directory()
+                .refresh_display_profiles_async(
+                    awiki_im_core::directory::DisplayProfileRefreshRequest {
+                        peers,
+                        force: false
+                    }
+                )
+                .await,
+            Err(awiki_im_core::ImError::InvalidInput { .. })
+        ));
+    }
+    let db = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    for table in [
+        "conversation_registry",
+        "peer_personas",
+        "direct_peer_routes",
+        "contacts",
+    ] {
+        let count: i64 = db
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "display lookup mutated {table}");
+    }
+}
+
+#[tokio::test]
 async fn directory_display_profile_hydration_reads_local_cache_only() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
