@@ -64,3 +64,9 @@ packages/*/macos/Frameworks/*.artifact.json
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 scripts/release/cli/publish-server.toml
+
+# Personal dependency paths; PR source manifests and source locks are committed.
+dependencies.local.json
+
+# Isolated dependency build evidence and caches.
+.artifacts/dependencies/

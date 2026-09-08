@@ -94,7 +94,8 @@ Onboarding 只跟随 stable。protocol-gateway 应读取 `archive_root/channels/
 CLI 和 daemon 的 release builder 使用 [registry-build.py](../registry-build.py)，在临时 Git worktree
 中将 ANP、Identity 和 IM Core dependency 切换到 crates.io。版本由
 [registry-dependencies.json](../registry-dependencies.json) 固定为本次已发布版本；
-[registry-Cargo.lock](../registry-Cargo.lock) 锁定完整依赖图。普通开发工作区保留 path dependency。
+[registry-Cargo.lock](../registry-Cargo.lock) 锁定完整依赖图。底层 Cargo 开发工作区保留 path dependency；团队默认 Debug 的 registry/local/source 选择使用
+[统一依赖入口](../../dependencies/README.md)，不依靠修改原工作区 manifest 切换。
 
 Flutter App 的 release worker 设置 `AWIKI_RELEASE_REGISTRY=1`，使原生构建走同一入口；
 普通 Debug/本地 SDK 开发不设置此变量，继续使用工作区源码。IM Core Node artifact workflow

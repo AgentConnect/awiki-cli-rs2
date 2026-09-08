@@ -113,6 +113,8 @@ def main(argv=None):
     cargo = [os.environ.get('CARGO', 'cargo')]
     if command:
         cargo = command[:2] if len(command) > 1 and command[1].startswith('+') else command[:1]
+    if (ROOT / 'dependencies.source.json').exists():
+        raise ValueError('Resolve and remove dependencies.source.json before a registry release build')
     versions = load_versions(ROOT)
     if args.prepare:
         prepare(ROOT, args.prepare.resolve(), versions, cargo)

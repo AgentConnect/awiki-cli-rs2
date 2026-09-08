@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "dependencies": {
+    "awiki-im-core": { "path": "." },
+    "anp-identity": { "path": "../anp/anp-identity" }
+  }
+}

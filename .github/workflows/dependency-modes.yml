@@ -1,0 +1,26 @@
+name: Dependency modes
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  registry-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 -m unittest discover -s scripts/dependencies -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s scripts/release -p 'test_registry_build.py' -v
+      - run: python3 scripts/dependencies/build.py --check --package awiki-cli
+  source-integration-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - if: hashFiles('dependencies.source.json') != ''
+        run: python3 scripts/dependencies/build.py --deps source --source-manifest dependencies.source.json --check --package awiki-cli
