@@ -917,6 +917,11 @@ Recovery Commit 收到 HTTP 2xx 零字节响应时按传输结果不确定处理
 `outcome_unknown`，pending phase 保持 `remote_outcome_unknown`；进程重开后的 resume 先用
 Vault 中持久化的 bootstrap key 对 `handle_recovery_result_get_v4` 签名。已提交结果继续本地
 transition；`result_absent` 才允许同一冻结 intent 重试 Commit，不生成新 operation ID 或身份材料。
+prepared 授权过期时，status 只读投影 `factor_retry_required`；同 operation 的 OTP/prepare
+允许在 `pre_commit && !commit_attempted` 的过期 prepared 上刷新 Grant。刷新必须保持
+authoritative binding、owner、DID、冻结 intent/hash 不变；binding 改变拒绝刷新并报告
+`unknown_epoch`。已尝试提交的操作继续遵守先 Result Get 再刷新授权的规则，禁止新 operation。
+
 pre-attempt discard 必须先在 SQLite operation index 中原子占有
 `pre_commit && commit_attempted=false`，再幂等删除 Vault key。post-attempt 刷新 Grant 时如果
 fresh binding 已变化，Core 会再次 Result Get；只有仍为 `result_absent` 才将旧 operation 标为
@@ -1977,3 +1982,18 @@ Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；
 索引解析与版本/托管标记校验，仅返回 schema version 和 owner identity ID / DID。
 不打开 Vault、不加载身份密钥、不写回索引，宿主不能据此绕过完整身份认证。
 CLI 的工作区升级和检测共用此入口，身份格式演进继续由 Core 负责。
+
+### Handle Recovery 的本地连续性
+
+`handle_recovery().list_operations(IdentitySelector::Handle(...))` 从持久化操作索引按完整
+Handle 查询，限定当前 `did_domain`，不要求恢复 owner 已有公开身份投影。默认身份选择器
+仍不支持。已完成本地凭证删除的 applied owner 在 Handle 查询中按精确 DID/device 退役
+凭据排除；按 owner ID 的历史审计查询保留原行为。
+
+注册同一 Handle 时，未完成 Recovery 在创建/复用注册候选前返回 Service 错误
+`handle_recovery.resume_required`（409）。Host 应读取恢复操作并继续原 operation；
+不能把 DID already registered 当成注册成功或以新恢复替换未知提交结果。
+
+本轮恢复修复只承诺正式 Release 0714 数据的既有升级路径，以及新版本自身的正常中断续跑。
+临时版本遗留的缺失首次发布标记或未完成 proof 草稿不提供特殊接管接口；此类测试状态
+按显式人工清理处理。新身份继续使用已有首次发布确认机制，普通 adopt 的冲突校验不放宽。

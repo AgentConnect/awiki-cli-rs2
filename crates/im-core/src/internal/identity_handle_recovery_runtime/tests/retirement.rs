@@ -111,6 +111,15 @@ async fn deleted_recovered_owner_does_not_block_a_fresh_recovery_operation() {
     )
     .unwrap();
     assert!(store.load_v4(operation_id).unwrap().is_none());
+    assert!(list_operations(
+        &core,
+        crate::identity::IdentitySelector::Handle(
+            crate::ids::Handle::parse(&pending.full_handle, "").unwrap()
+        )
+    )
+    .await
+    .unwrap()
+    .is_empty());
 
     let error = request_otp(
         &core,

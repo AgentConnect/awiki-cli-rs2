@@ -186,6 +186,7 @@ where
             &self.core.inner().sdk_config().did_domain,
         )?;
         ensure_registration_domain(self.core, &target)?;
+        require_no_pending_handle_recovery(self.core, target.full_handle.as_str())?;
         let method = registration_method(&request.verification);
         match &request.verification {
             crate::identity::VerificationInput::Phone { phone, otp } => {
@@ -354,6 +355,7 @@ where
             &self.core.inner().sdk_config().did_domain,
         )?;
         ensure_registration_domain(self.core, &target)?;
+        require_no_pending_handle_recovery(self.core, target.full_handle.as_str())?;
         let method = registration_method(&request.verification);
         match &request.verification {
             crate::identity::VerificationInput::Phone { phone, otp } => {
@@ -658,6 +660,33 @@ where
             tokio::time::sleep(DEFAULT_EMAIL_POLL_INTERVAL).await;
         }
     }
+}
+
+fn require_no_pending_handle_recovery(
+    core: &crate::core::ImCore,
+    handle: &str,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_handle_recovery_operation::{
+        list_handle, RecoveryLifecycleClass,
+    };
+    let operations = list_handle(&core.inner().sdk_paths().local_state.sqlite_path, handle)?;
+    if operations.iter().any(|operation| {
+        matches!(
+            operation.lifecycle_class,
+            RecoveryLifecycleClass::PreCommit
+                | RecoveryLifecycleClass::RemoteUnresolved
+                | RecoveryLifecycleClass::RemoteCommitted
+                | RecoveryLifecycleClass::LocalTransitionPending
+        )
+    }) {
+        return Err(crate::ImError::Service {
+            code: Some("handle_recovery.resume_required".to_owned()),
+            message: "A local Handle recovery must be resumed before registration.".to_owned(),
+            status_code: Some(409),
+            data: None,
+        });
+    }
+    Ok(())
 }
 
 fn ensure_registration_domain(
