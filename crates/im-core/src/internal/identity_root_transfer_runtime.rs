@@ -900,6 +900,12 @@ fn map_prepare_remote_error(error: crate::ImError) -> RootTransferError {
 
 fn map_preflight_error(error: crate::ImError) -> RootTransferError {
     match error {
+        // An approved device may not have published its first bundle yet.
+        crate::ImError::Service {
+            code: Some(code), ..
+        } if matches!(code.as_str(), "4000" | "anp.direct.e2ee.bundle_not_found") => {
+            root_error(RootTransferErrorCode::PrekeyUnavailable)
+        }
         crate::ImError::TransportUnavailable { .. }
         | crate::ImError::Io { .. }
         | crate::ImError::Service {
@@ -1262,6 +1268,10 @@ fn same_did_binding(
         peer_e2ee_key_id: recipient.e2ee_key_id.clone(),
     }
 }
+
+#[cfg(test)]
+#[path = "identity_root_transfer_error_tests.rs"]
+mod error_tests;
 
 #[cfg(test)]
 mod tests {

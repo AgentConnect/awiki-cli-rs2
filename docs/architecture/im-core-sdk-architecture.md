@@ -571,6 +571,14 @@ passes `user_presence_confirmed=true` does Core call ANP Identity's public Rust
 root export and construct that envelope in zeroizing memory. Core never sends
 an empty Init and never asks for a second confirmation.
 
+Join approval can precede recipient activation and the first PreKey publication.
+The exact PreKey service `4000` response (normalized by RPC as
+`anp.direct.e2ee.bundle_not_found`) therefore maps to
+retryable `root_transfer.prekey_unavailable`, not `prekey_invalid`. Retrying
+performs fresh preparation and still requires explicit confirmation before root
+export or send. Invalid bundles, signatures, bindings and authentication remain
+fail-closed non-retryable errors; message text is never used to classify absence.
+
 If an earlier confirmed attempt committed standard P5 pending bytes but its
 acceptance outcome is unknown, Core does not resend them at startup or while
 `prepare` is running. A later `prepare` performs the same fresh
