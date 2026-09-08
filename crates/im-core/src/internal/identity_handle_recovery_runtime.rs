@@ -3366,7 +3366,7 @@ mod tests {
         crate::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse(endpoint).unwrap(),
-                did_domain: "fixture.invalid".to_owned(),
+                did_domain: "invalid".to_owned(),
                 client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
@@ -3815,10 +3815,25 @@ mod tests {
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut methods = Vec::new();
-            let mut remote_result = None;
-            for request_index in 0..6 {
+            let mut remote_result: Option<Value> = None;
+            for request_index in 0..7 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let raw = read_http_request(&mut stream);
+                if request_index == 4 {
+                    assert!(raw.starts_with("GET /.well-known/handle/fixture "));
+                    methods.push("wns.current_binding".to_owned());
+                    let result = remote_result.as_ref().unwrap();
+                    write_json_response(
+                        &mut stream,
+                        &json!({
+                            "handle": "fixture.invalid",
+                            "did": result["current_did"],
+                            "status": "active",
+                            "binding_generation": result["binding_generation"]
+                        }),
+                    );
+                    continue;
+                }
                 let body = http_request_json(&raw);
                 if request_index == 0 {
                     methods.push(body["method"].as_str().unwrap().to_owned());
@@ -3901,7 +3916,7 @@ mod tests {
                             "result": {"state": "committed", "result": public_result}
                         }),
                     );
-                } else if request_index == 4 {
+                } else if request_index == 5 {
                     methods.push(body["method"].as_str().unwrap().to_owned());
                     let result = remote_result.as_ref().unwrap();
                     let did = result["current_did"].as_str().unwrap();
@@ -4159,6 +4174,7 @@ mod tests {
                 "handle_recovery_exchange_v4",
                 "handle_recovery_commit_v4",
                 "handle_recovery_result_get_v4",
+                "wns.current_binding",
                 "get_me",
                 "direct.e2ee.publish_prekey_bundle",
             ]

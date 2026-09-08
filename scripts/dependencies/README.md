@@ -63,3 +63,20 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 截至本轮验证，当前 CLI 需要的 `im_core::compat::identity_index` 尚不在固定的线上
 `awiki-im-core 0.1.1` 中。默认 registry 编译会明确报接口缺失；本地 Core 可联调。
 需要先发布包含该接口的 Core 版本，再更新 registry pin/lock。不要以本地替换绕过发布门禁。
+
+### 2026-09-08 Recovery 选择性吸收
+
+源码来源锁与 CLI 配置的 Identity 输入统一为已合入的 `a0af4e1`；App 打包的 ANP 输入
+与本仓 `246d69e2` 一致。Identity 的独立测试路径修复不构成新的运行时兼容接口。
+这些 Git 来源修正不改变正式 registry 规则，也不表示已发布 SDK 自动包含工作区的新 API。
+如固定 registry SDK 不提供当前消费者所需能力，应先发布新版本、更新 registry pin/lock
+并重跑来源检查；不得使用源码替换或同版本覆盖发布绕过该门禁。
+
+0714 合成恢复测试的本地 DID domain 与 Handle 保持一致，模拟远端同时提供新增的权威
+Handle binding 查询。它保留正式 fixture 摘要、普通数据守恒、旧 E2EE 退役及 exact operation
+续跑断言，不通过跳过权威读取或放宽 publication 校验兼容旧测试。
+
+本轮只读核对 crates.io：最新 `awiki-im-core` 仍为 `0.1.1`，该已发布源码不含
+`inspect_handle_recovery_context`。因此没有把 registry pin 改成不存在的版本，也没有关闭
+正式来源门禁。本机显式 local 构建可验证本次修改，但正式打包仍须先完成 SDK 发布与 pin/lock
+更新；当前任务不执行该发布。
