@@ -204,6 +204,8 @@ pub(crate) struct PendingHandleRecoveryV4 {
     pub(crate) full_handle: String,
     pub(crate) local_previous_did: String,
     pub(crate) identity: HandleRecoveryIdentityRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) previous_custody: Option<crate::internal::identity_provider::ProviderIdentityRef>,
     pub(crate) factor_state: RecoveryFactorStateV4,
     pub(crate) authoritative_binding: Option<RecoveryAuthoritativeBindingV4>,
     pub(crate) intent: Option<RecoveryIntentV4>,
@@ -361,6 +363,7 @@ impl PendingHandleRecoveryV4 {
             full_handle,
             local_previous_did,
             identity,
+            previous_custody: None,
             factor_state: RecoveryFactorStateV4::AwaitingOtp,
             authoritative_binding: None,
             intent: None,
@@ -660,6 +663,14 @@ impl PendingHandleRecoveryV4 {
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
         self.identity.validate()?;
+        if self.previous_custody.as_ref().is_some_and(|reference| {
+            self.fresh_local_state
+                || reference.did != self.local_previous_did
+                || reference.store_id.trim().is_empty()
+                || reference.identity_id.trim().is_empty()
+        }) {
+            return Err(crate::ImError::PermissionDenied);
+        }
         if self.schema_version != V4_SCHEMA_VERSION
             || self.contract_version != V4_CONTRACT_VERSION
             || self.contract_hash != V4_CONTRACT_HASH
@@ -1007,6 +1018,7 @@ impl PendingHandleRecoveryStore {
             fresh_local_state: legacy.fresh_local_state,
             full_handle: legacy.full_handle,
             local_previous_did: legacy.local_previous_did,
+            previous_custody: None,
             identity: HandleRecoveryIdentityRef {
                 store_id: public.reference.store_id,
                 identity_id: public.reference.identity_id,
@@ -1331,6 +1343,27 @@ mod tests {
             identity,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn predecessor_custody_requires_the_exact_local_previous_did() {
+        let mut pending = v4_pending();
+        pending.previous_custody = Some(crate::internal::identity_provider::ProviderIdentityRef {
+            store_id: "shared-provider".to_owned(),
+            identity_id: "old-custody".to_owned(),
+            did: pending.local_previous_did.clone(),
+        });
+        pending.validate().unwrap();
+        pending.previous_custody.as_mut().unwrap().did = pending.identity.did.as_str().to_owned();
+        assert!(pending.validate().is_err());
+        pending.previous_custody.as_mut().unwrap().did = pending.local_previous_did.clone();
+        pending
+            .previous_custody
+            .as_mut()
+            .unwrap()
+            .identity_id
+            .clear();
+        assert!(pending.validate().is_err());
     }
 
     #[test]

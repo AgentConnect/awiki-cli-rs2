@@ -217,7 +217,7 @@ fn superseded_close_requires_monotonic_binding_and_exact_local_authority() {
 }
 
 #[test]
-fn schema_42_preserves_same_development_pending_records() {
+fn schema_43_preserves_same_development_pending_records() {
     let root = tempfile::tempdir().unwrap();
     let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [109; 32]);
     let (pending, marker) = local_pending(&core, "recover-v4-schema-42-pending");
@@ -234,7 +234,7 @@ fn schema_42_preserves_same_development_pending_records() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 42);
+    assert_eq!(version, 43);
     assert_eq!(
         transitions::load(path, &pending.operation_id)
             .unwrap()
@@ -524,4 +524,61 @@ async fn inspection_repairs_committed_and_applied_half_indexes_without_business_
         HandleRecoveryPhase::Applied
     );
     assert!(store.load_v4(&pending.operation_id).unwrap().unwrap().1 == pending);
+}
+
+#[test]
+fn local_reset_retains_predecessor_custody_after_registry_replacement_and_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [117; 32]);
+    let (mut pending, _) = local_pending(&core, "recover-v4-custody-history");
+    let previous = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: "shared-provider".to_owned(),
+        identity_id: "old-custody".to_owned(),
+        did: pending.local_previous_did.clone(),
+    };
+    let next = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: pending.identity.store_id.clone(),
+        identity_id: pending.identity.identity_id.clone(),
+        did: pending.identity.did.as_str().to_owned(),
+    };
+    let index_path = &core.inner().sdk_paths().identities.registry_path;
+    let write_registry = |reference: &crate::internal::identity_provider::ProviderIdentityRef| {
+        std::fs::write(index_path, serde_json::to_vec(&json!({
+            "schema_version": 5, "default_credential_name": pending.local_alias,
+            "credentials": { pending.local_alias.clone(): {
+                "credential_name": pending.local_alias, "dir_name": pending.owner_identity_id,
+                "unique_id": pending.owner_identity_id, "did": reference.did, "user_id": "account",
+                "name": "Alice", "handle": "alice", "full_handle": pending.full_handle, "is_default": true,
+                "identity_custody_backend": "anp_identity", "anp_identity_store_id": reference.store_id,
+                "anp_identity_id": reference.identity_id
+            }}
+        })).unwrap()).unwrap();
+    };
+    write_registry(&previous);
+    // Capture before replacing the sole Registry entry, then simulate the durable replacement.
+    let store = PendingHandleRecoveryStore::from_core(&core).unwrap();
+    let mut captured = pending.clone();
+    retain_local_predecessor_custody(&core, &store, &mut captured).unwrap();
+    write_registry(&next);
+    pending = captured;
+    let revision = pending.revision;
+    retain_local_predecessor_custody(&core, &store, &mut pending).unwrap();
+    assert_eq!(pending.revision, revision);
+    drop(store);
+    drop(core);
+    let reopened = recovery_test_core(root.path(), "http://127.0.0.1:1", [117; 32]);
+    let (_, saved) = PendingHandleRecoveryStore::from_core(&reopened)
+        .unwrap()
+        .load_v4(&pending.operation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.previous_custody, Some(previous.clone()));
+    let mut expected = vec![previous, next];
+    expected.sort();
+    let mut actual = reopened
+        .identities()
+        .local_provider_identity_references()
+        .unwrap();
+    actual.sort();
+    assert_eq!(actual, expected);
 }

@@ -2031,6 +2031,47 @@ fn project_terminal_server_error_v4(
     )
 }
 
+fn retain_local_predecessor_custody(
+    core: &crate::ImCore,
+    store: &PendingHandleRecoveryStore,
+    pending: &mut PendingHandleRecoveryV4,
+) -> crate::ImResult<()> {
+    if pending.fresh_local_state || pending.previous_custody.is_some() {
+        return Ok(());
+    }
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    let Some(entry) = index.credentials.values().find(|entry| {
+        entry.unique_id == pending.owner_identity_id
+            && entry.did == pending.local_previous_did
+            && entry.full_handle == pending.full_handle
+    }) else {
+        return Ok(()); // An older completed transition may no longer prove predecessor custody.
+    };
+    if entry.identity_custody_backend.as_deref() != Some("anp_identity") {
+        return Ok(());
+    }
+    let reference = crate::internal::identity_provider::ProviderIdentityRef {
+        store_id: entry
+            .anp_identity_store_id
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?,
+        identity_id: entry
+            .anp_identity_id
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?,
+        did: entry.did.clone(),
+    };
+    let revision = pending.revision;
+    pending.previous_custody = Some(reference);
+    pending.revision = revision
+        .checked_add(1)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    pending.validate()?;
+    store.save_v4_cas(pending, revision).map(|_| ())
+}
+
 async fn apply_local_transition_v4(
     core: &crate::core::ImCore,
     store: &PendingHandleRecoveryStore,
@@ -2055,6 +2096,9 @@ async fn apply_local_transition_v4(
         .await?;
     }
     if marker.phase == crate::internal::identity_transition_pending::TransitionPhase::Pending {
+        // Keep exact root-owned custody before the Registry is replaced. A shared provider
+        // cannot safely be enumerated later to rediscover the predecessor during local reset.
+        retain_local_predecessor_custody(core, store, pending)?;
         // The immutable committed result is already durable and current WNS
         // authority was checked before any fallible local custody finalization.
         if !pending.fresh_local_state {

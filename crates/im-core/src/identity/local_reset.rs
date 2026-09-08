@@ -82,6 +82,7 @@ impl IdentityRegistry<'_> {
                             identity_id: pending.identity.identity_id,
                             did: pending.identity.did.as_str().to_owned(),
                         });
+                        references.extend(pending.previous_custody);
                     }
                     SecretKind::IdentityJoinActivationPending => {
                         let plaintext = vault.open(&secret)?;

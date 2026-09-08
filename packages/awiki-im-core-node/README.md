@@ -101,7 +101,9 @@ shared secret 交给 JavaScript。
 - `clearLocalData()` 在持有 state-root 锁时删除 SDK-owned 身份、本地数据库、缓存、临时文件和
   兼容元数据，再重新初始化空 Core；client 保持可用。它不删除远端账号或 Handle。
   外部身份只删除 Core 本地 Registry 和已验证 pending journal 所绑定的精确引用；共享 Provider
-  中其他租户及无归属证据的身份保留。返回的 `clearedIdentityDids` 供 Host 限定 Browser 缓存清除。
+  中其他租户及无归属证据的身份保留。Recovery 在替换 Registry 前把原身份的精确 custody 引用
+  写入同一 Vault journal，重启后仍可清理原身份与新身份；旧 journal 若未保留该引用，不能
+  通过枚举 Provider 猜测归属。返回的 `clearedIdentityDids` 供 Host 限定 Browser 缓存清除。
 - JS GC 只作为异常退出兜底，Host teardown 必须显式等待 `close()`。
 
 ## state root

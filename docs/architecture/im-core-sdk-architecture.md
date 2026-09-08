@@ -451,7 +451,10 @@ not the entire external identity-provider store, which may serve multiple tenant
 After quiescing local mutations and realtime, Core's
 `identities().local_provider_identity_references()` builds an exact deletion plan
 from the local Registry and validated registration, Join, Recovery and Legacy-upgrade
-journals. The complete plan is validated before any provider deletion. Missing
+journals. Recovery persists the exact predecessor custody reference in its existing Vault
+journal before replacing the Registry binding, so reset retains that ownership across restart.
+An older journal without that reference does not authorize guessing from a provider-wide list.
+The complete plan is validated before any provider deletion. Missing
 identities are treated as already cleared; mismatched bindings or corrupt ownership
 evidence stop the operation. Only after provider cleanup succeeds may Node erase
 the Core-owned root. Unknown provider identities without local ownership evidence
