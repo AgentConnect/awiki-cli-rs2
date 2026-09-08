@@ -88,6 +88,17 @@ cargo run -p awiki-cli -- id register \
 
 Never include example phone numbers or OTPs in real screenshots or logs.
 
+CLI 在注册完成后，会先为本次注册的身份建立消息同步基线，再返回成功；
+之后到达的普通消息可以直接通过 `msg inbox` / `msg history` 的 HTTP 同步接收，
+无需先启动 WebSocket listener。仅发送验证码、等待邮箱验证或进入设备 Join
+准备阶段不会执行此同步。
+
+如果返回 `registration_receive_pending`，身份注册已经提交，接收初始化尚未完成。
+保留工作区，运行 `--identity <registered-identity> msg inbox` 重试，成功后再开始收消息；
+不要重新注册或删除本地状态。该重试不承诺补回首次基线建立之前的消息。
+收件箱或历史查询若因时间/分页预算耗尽而未同步完成，会返回包含
+`sync.budget_exhausted` 的错误；再次查询会从已提交的同步进度继续。
+
 ### 5.3 Recover an identity
 
 ```bash

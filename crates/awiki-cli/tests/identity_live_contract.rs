@@ -770,7 +770,7 @@ fn write_service_config(workspace: &Path, base_url: &str) {
     write_default_tenant_registry(workspace, base_url, "awiki.ai");
     write_tenant_config(
         workspace,
-        "services:\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n",
+        &format!("services:\n  anp_service_endpoint: {base_url}/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"),
     );
 }
 
@@ -1143,6 +1143,22 @@ impl TestServer {
                         break;
                     };
                     handle_connection(stream, &server_requests, TestResponse::prekey_publication());
+                    // Registration now completes its receive baseline before success.
+                    let readiness_requests = Arc::new(Mutex::new(Vec::new()));
+                    loop {
+                        let stream =
+                            accept_with_timeout(&listener).expect("initial receive request");
+                        handle_connection(
+                            stream,
+                            &readiness_requests,
+                            TestResponse::ok(support::registration_receive::MARKER),
+                        );
+                        if support::registration_receive::completed(
+                            readiness_requests.lock().unwrap().last().unwrap(),
+                        ) {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -1200,7 +1216,9 @@ fn handle_connection(
     response: TestResponse,
 ) {
     let request = read_http_request(&mut stream);
-    let body = if response.body == "__DYNAMIC_REGISTRATION_RESPONSE__" {
+    let body = if response.body == support::registration_receive::MARKER {
+        support::registration_receive::response(&request)
+    } else if response.body == "__DYNAMIC_REGISTRATION_RESPONSE__" {
         registration_response(&request)
     } else if response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" {
         prekey_publication_response(&request)

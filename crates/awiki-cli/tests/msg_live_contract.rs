@@ -125,10 +125,6 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
         TestResponse::directory_lookup(),
@@ -254,10 +250,6 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert!(methods.starts_with(&[
         "register".to_owned(),
         "direct.e2ee.publish_prekey_bundle".to_owned(),
-        "anp.get_capabilities".to_owned(),
-        "sync.bootstrap".to_owned(),
-        "anp.get_capabilities".to_owned(),
-        "sync.bootstrap".to_owned(),
         "sync.delta".to_owned(),
         "message.get_batch".to_owned(),
     ]));
@@ -311,8 +303,6 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -398,8 +388,6 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
-            "anp.get_capabilities",
-            "sync.bootstrap",
             "sync.delta"
         ]
     );
@@ -413,8 +401,6 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -817,14 +803,6 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn sync_bootstrap() -> Self {
-        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
-    }
-
-    fn capabilities() -> Self {
-        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
-    }
-
     fn sync_delta_direct() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__")
     }
@@ -863,11 +841,30 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let initializes_receive =
+                    response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__";
                 let stream = accept_with_timeout(&listener);
                 let Some(stream) = stream else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if initializes_receive {
+                    let readiness_requests = Arc::new(Mutex::new(Vec::new()));
+                    loop {
+                        let stream =
+                            accept_with_timeout(&listener).expect("initial receive request");
+                        handle_connection(
+                            stream,
+                            &readiness_requests,
+                            TestResponse::ok(support::registration_receive::MARKER),
+                        );
+                        if support::registration_receive::completed(
+                            readiness_requests.lock().unwrap().last().unwrap(),
+                        ) {
+                            break;
+                        }
+                    }
+                }
             }
         });
         Self {
@@ -918,6 +915,7 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
 
 fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
+        support::registration_receive::MARKER => support::registration_receive::response(request),
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
         "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(

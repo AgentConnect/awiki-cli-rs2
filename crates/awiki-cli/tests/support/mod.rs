@@ -386,3 +386,5 @@ fn public_key(bundle: &anp::authentication::DidDocumentBundle, fragment: &str) -
         .unwrap_or_else(|| panic!("{fragment} public key"))
         .to_string()
 }
+
+pub mod registration_receive;

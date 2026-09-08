@@ -576,9 +576,21 @@ fn secure_lane_drain_warning(error: &im_core::ImError) -> &'static str {
     }
 }
 
-fn require_foreground_message_sync(
+pub(super) fn require_foreground_message_sync(
     outcome: &MessageSyncOutcome,
 ) -> Result<(), MessageAdapterError> {
+    if matches!(
+        outcome.status,
+        MessageSyncStatus::Idle | MessageSyncStatus::Changed
+    ) && outcome
+        .warnings
+        .iter()
+        .any(|warning| warning == "sync.budget_exhausted")
+    {
+        return Err(MessageAdapterError::TransportUnavailable(
+            "foreground message reconciliation is incomplete (sync.budget_exhausted); retry the query to resume durable synchronization".to_owned(),
+        ));
+    }
     match outcome.status {
         MessageSyncStatus::Idle | MessageSyncStatus::Changed => Ok(()),
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(

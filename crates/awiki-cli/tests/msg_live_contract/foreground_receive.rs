@@ -8,6 +8,7 @@ struct ReceiveState {
     tail: u64,
     messages: Vec<u64>,
     sparse_pages: bool,
+    fail_bootstrap: bool,
     methods: Vec<String>,
     websocket_requests: usize,
 }
@@ -87,6 +88,7 @@ fn receive_response(request: &str, state: &Arc<Mutex<ReceiveState>>) -> String {
         "register" => registration_response(request),
         "direct.e2ee.publish_prekey_bundle" => prekey_publication_response(request),
         "anp.get_capabilities" => dynamic_response_body(request, "__DYNAMIC_CAPABILITIES_RESPONSE__"),
+        "sync.bootstrap" if state.fail_bootstrap => rpc_result_for_request(request, json!({"invalid":true})),
         "sync.bootstrap" => {
             let tail = state.tail;
             let anchor = *state.anchor.get_or_insert(tail);
@@ -154,8 +156,14 @@ fn receive_workspace(server: &ReceiveServer) -> TempDir {
     write_msg_config(workspace.path(), &server.address);
     // Exercise WebSocket-preferred mode with no listener/bridge present.
     write_tenant_config(workspace.path(), "runtime:\n  mode: websocket\n");
-    let registered = receive_command(
-        workspace.path(),
+    let registered = register_receiver(workspace.path());
+    assert_success(&registered);
+    workspace
+}
+
+fn register_receiver(workspace: &Path) -> Output {
+    receive_command(
+        workspace,
         &[
             "id",
             "register",
@@ -166,9 +174,7 @@ fn receive_workspace(server: &ReceiveServer) -> TempDir {
             "--otp",
             "123456",
         ],
-    );
-    assert_success(&registered);
-    workspace
+    )
 }
 
 fn receive_inbox(workspace: &Path) -> Value {
@@ -217,7 +223,12 @@ fn foreground_pending_pagination_must_not_be_reported_as_empty_success() {
         workspace.path(),
         &["--identity", "bob", "msg", "inbox", "--scope", "direct"],
     );
-    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let envelope: Value = serde_json::from_slice(if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    })
+    .unwrap();
     let pending = query_rows(
         workspace.path(),
         "SELECT sync_pending, last_result_json FROM message_sync_run_state",
@@ -234,6 +245,10 @@ fn foreground_pending_pagination_must_not_be_reported_as_empty_success() {
             .to_string()
             .contains("sync.budget_exhausted");
     assert!(signals_incomplete, "CLI reported an empty success while an incoming message remained beyond its sync page budget");
+    assert!(envelope.to_string().contains("sync.budget_exhausted"));
+    let resumed = receive_inbox(workspace.path());
+    assert_eq!(resumed["data"]["total"], 1);
+    assert_eq!(resumed["data"]["messages"][0]["id"], "msg-direct-21");
 }
 
 #[test]
@@ -255,5 +270,40 @@ fn foreground_registration_must_not_lose_messages_before_first_inbox() {
     assert_eq!(
         inbox["data"]["total"], 2,
         "registration reported success before the receiving installation anchor existed"
+    );
+}
+
+#[test]
+fn foreground_registration_sync_failure_keeps_identity_and_inbox_can_resume() {
+    let server = ReceiveServer::new();
+    server.state.lock().unwrap().fail_bootstrap = true;
+    let workspace = TempDir::new("registration-receive-pending").unwrap();
+    write_msg_config(workspace.path(), &server.address);
+    let output = register_receiver(workspace.path());
+    assert!(!output.status.success());
+    let envelope: Value = serde_json::from_slice(if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    })
+    .unwrap();
+    assert!(envelope
+        .to_string()
+        .contains("registration_receive_pending"));
+    assert!(envelope.to_string().contains("committed"));
+    server.state.lock().unwrap().fail_bootstrap = false;
+    assert_eq!(receive_inbox(workspace.path())["data"]["total"], 0);
+    server.enqueue(1);
+    assert_eq!(receive_inbox(workspace.path())["data"]["total"], 1);
+    assert_eq!(
+        server
+            .state
+            .lock()
+            .unwrap()
+            .methods
+            .iter()
+            .filter(|method| method.as_str() == "register")
+            .count(),
+        1
     );
 }

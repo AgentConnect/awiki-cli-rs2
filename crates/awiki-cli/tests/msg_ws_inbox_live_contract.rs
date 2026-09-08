@@ -98,10 +98,6 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_group(),
         TestResponse::message_batch(),
     ]);
@@ -155,7 +151,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert_no_legacy_websocket_fallback_warning(&envelope);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 4);
     let bodies = requests
         .iter()
         .map(|request| {
@@ -166,8 +162,8 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
         .iter()
         .filter_map(|body| body["method"].as_str())
         .collect::<Vec<_>>();
-    assert!(methods.contains(&"sync.bootstrap"));
-    assert!(methods.contains(&"anp.get_capabilities"));
+    assert!(!methods.contains(&"sync.bootstrap"));
+    assert!(!methods.contains(&"anp.get_capabilities"));
     assert!(methods.contains(&"sync.delta"));
     assert!(methods.contains(&"message.get_batch"));
     assert!(!methods.contains(&"inbox.get"));
@@ -188,10 +184,6 @@ fn msg_inbox_hydrates_exact_device_controls_before_reopened_foreground_sync() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::empty_sync_delta(),
     ]);
     write_msg_ws_config(
@@ -246,16 +238,7 @@ fn msg_inbox_hydrates_exact_device_controls_before_reopened_foreground_sync() {
         })
         .filter_map(|body| body["method"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
-    assert_eq!(
-        methods,
-        vec![
-            "anp.get_capabilities",
-            "sync.bootstrap",
-            "anp.get_capabilities",
-            "sync.bootstrap",
-            "sync.delta"
-        ]
-    );
+    assert_eq!(methods, vec!["sync.delta"]);
 }
 
 #[test]
@@ -600,14 +583,6 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn sync_bootstrap() -> Self {
-        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
-    }
-
-    fn capabilities() -> Self {
-        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
-    }
-
     fn sync_delta_group() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_GROUP_RESPONSE__")
     }
@@ -638,11 +613,30 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let initializes_receive =
+                    response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__";
                 let stream = accept_with_timeout(&listener);
                 let Some(stream) = stream else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if initializes_receive {
+                    let readiness_requests = Arc::new(Mutex::new(Vec::new()));
+                    loop {
+                        let stream =
+                            accept_with_timeout(&listener).expect("initial receive request");
+                        handle_connection(
+                            stream,
+                            &readiness_requests,
+                            TestResponse::ok(support::registration_receive::MARKER),
+                        );
+                        if support::registration_receive::completed(
+                            readiness_requests.lock().unwrap().last().unwrap(),
+                        ) {
+                            break;
+                        }
+                    }
+                }
             }
         });
         Self {
@@ -711,6 +705,7 @@ fn handle_connection(
 
 fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
+        support::registration_receive::MARKER => support::registration_receive::response(request),
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
         "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(

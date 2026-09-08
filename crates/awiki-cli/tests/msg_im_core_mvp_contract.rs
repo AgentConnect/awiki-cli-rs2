@@ -158,10 +158,6 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
         TestResponse::sync_delta_empty(),
@@ -276,10 +272,6 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
-            "anp.get_capabilities",
-            "sync.bootstrap",
-            "anp.get_capabilities",
-            "sync.bootstrap",
             "sync.delta",
             "message.get_batch",
             "sync.delta",
@@ -300,10 +292,6 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -352,10 +340,6 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
-            "anp.get_capabilities",
-            "sync.bootstrap",
-            "anp.get_capabilities",
-            "sync.bootstrap",
             "sync.delta"
         ]
     );
@@ -380,10 +364,6 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
         TestResponse::mark_read_state(),
@@ -497,8 +477,6 @@ fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![
         TestResponse::registration(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -588,8 +566,6 @@ fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
-            "anp.get_capabilities",
-            "sync.bootstrap",
             "sync.delta",
         ]
     );
@@ -602,8 +578,6 @@ fn msg_history_default_cutover_group_reconciles_sync_v2_and_reads_local_history(
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![
         TestResponse::registration(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -676,8 +650,6 @@ fn msg_history_default_cutover_group_reconciles_sync_v2_and_reads_local_history(
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
-            "anp.get_capabilities",
-            "sync.bootstrap",
             "sync.delta",
         ]
     );
@@ -1009,14 +981,6 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn sync_bootstrap() -> Self {
-        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
-    }
-
-    fn capabilities() -> Self {
-        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
-    }
-
     fn sync_delta_message() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_MESSAGE_RESPONSE__")
     }
@@ -1061,6 +1025,22 @@ impl TestServer {
                         break;
                     };
                     handle_connection(stream, &server_requests, TestResponse::prekey_publication());
+                    // Registration now completes its receive baseline before success.
+                    let readiness_requests = Arc::new(Mutex::new(Vec::new()));
+                    loop {
+                        let stream =
+                            accept_with_timeout(&listener).expect("initial receive request");
+                        handle_connection(
+                            stream,
+                            &readiness_requests,
+                            TestResponse::ok(support::registration_receive::MARKER),
+                        );
+                        if support::registration_receive::completed(
+                            readiness_requests.lock().unwrap().last().unwrap(),
+                        ) {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -1112,6 +1092,7 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
 
 fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
+        support::registration_receive::MARKER => support::registration_receive::response(request),
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
         "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(

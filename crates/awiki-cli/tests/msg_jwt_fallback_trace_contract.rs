@@ -84,16 +84,13 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
 }
 
 #[test]
-fn inbox_preflight_http_1401_refreshes_inside_im_core_transport() {
+fn inbox_sync_http_1401_refreshes_inside_im_core_transport() {
     let workspace = TempDir::new("msg-jwt-fallback-inbox").expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::ok(&json_rpc_error(1401, "expired capability discovery jwt")),
-        TestResponse::capabilities().with_dynamic_access_token(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
+        TestResponse::ok(&json_rpc_error(1401, "expired foreground sync jwt")),
+        TestResponse::sync_delta_empty().with_dynamic_access_token(),
         TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -143,24 +140,26 @@ fn inbox_preflight_http_1401_refreshes_inside_im_core_transport() {
     assert_text_contains(&trace, "远端 RPC / sync v2 foreground reconcile");
     assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
+    // The signed retry receives the replacement token; a subsequent request uses it.
+    assert_success(&awiki_cmd(
+        &["--identity", "bob", "msg", "inbox", "--scope", "direct"],
+        workspace.path(),
+    ));
     let requests = server.requests();
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 5);
     assert_eq!(json_body(&requests[0])["method"], "register");
     assert_eq!(
         json_body(&requests[1])["method"],
         "direct.e2ee.publish_prekey_bundle"
     );
-    assert_eq!(json_body(&requests[2])["method"], "anp.get_capabilities");
+    assert_eq!(json_body(&requests[2])["method"], "sync.delta");
     assert!(!bearer_token(&requests[2]).is_empty());
-    assert_eq!(json_body(&requests[3])["method"], "anp.get_capabilities");
+    assert_eq!(json_body(&requests[3])["method"], "sync.delta");
     assert_contains_text(&requests[3], "signature-input:");
-    assert_eq!(json_body(&requests[4])["method"], "sync.bootstrap");
-    assert_eq!(json_body(&requests[5])["method"], "anp.get_capabilities");
-    assert_eq!(json_body(&requests[6])["method"], "sync.bootstrap");
-    assert_eq!(json_body(&requests[7])["method"], "sync.delta");
-    let refreshed_token = bearer_token(&requests[7]);
+    assert_eq!(json_body(&requests[4])["method"], "sync.delta");
+    let refreshed_token = bearer_token(&requests[4]);
     assert_eq!(
-        json_body(&requests[7])["params"]["body"]["reason"],
+        json_body(&requests[3])["params"]["body"]["reason"],
         "foreground_reconcile"
     );
 
@@ -512,14 +511,6 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn sync_bootstrap() -> Self {
-        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
-    }
-
-    fn capabilities() -> Self {
-        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
-    }
-
     fn sync_delta_empty() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__")
     }
@@ -542,11 +533,30 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let initializes_receive =
+                    response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__";
                 let stream = accept_with_timeout(&listener);
                 let Some(stream) = stream else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if initializes_receive {
+                    let readiness_requests = Arc::new(Mutex::new(Vec::new()));
+                    loop {
+                        let stream =
+                            accept_with_timeout(&listener).expect("initial receive request");
+                        handle_connection(
+                            stream,
+                            &readiness_requests,
+                            TestResponse::ok(support::registration_receive::MARKER),
+                        );
+                        if support::registration_receive::completed(
+                            readiness_requests.lock().unwrap().last().unwrap(),
+                        ) {
+                            break;
+                        }
+                    }
+                }
             }
         });
         Self {
@@ -597,6 +607,7 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
 
 fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
+        support::registration_receive::MARKER => support::registration_receive::response(request),
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
         "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(

@@ -249,6 +249,15 @@ committed identity into a registration failure. The registration pending record
 is cleaned up at that boundary; cleanup failure is separately reported as
 `registration_pending_cleanup_required`.
 
+CLI 的注册命令在上述身份事务提交后，以返回的精确 local identity ID 打开
+Core client，并完成一次 `foreground_reconcile` 后才报告命令成功，确保接收基线
+先于用户的后续消息交互建立。此宿主就绪步骤不改变 Core 注册事务或新副本的
+tail-only 历史边界，也不适用于验证码/邮箱等待/Join 准备结果。失败返回
+`registration_receive_pending`，明确身份已提交，保留身份和同步进度，指引用户以
+该身份执行 `msg inbox` 恢复；不得重注册、清库或伪造早期游标。
+CLI 收件箱/历史查询将带有 `sync.budget_exhausted` 的 Idle/Changed 结果视为
+未完成错误，不以成功的空投影掩盖仍待处理的分页或超时。
+
 Legacy identities keep `device_state` absent until an explicit one-time upgrade.
 Only the original device that still has the usable Legacy `key-1` is supported:
 Core treats that key as the existing DID root, creates new independent device

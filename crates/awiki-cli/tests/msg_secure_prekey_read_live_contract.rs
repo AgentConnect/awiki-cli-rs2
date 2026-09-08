@@ -41,8 +41,6 @@ fn msg_history_live_reads_without_legacy_secure_prekey_publish_side_effect() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
         TestResponse::directory_lookup(),
@@ -90,8 +88,6 @@ fn msg_history_live_keeps_read_success_without_legacy_secure_prekey_warning() {
     let server = TestServer::new(vec![
         TestResponse::registration(),
         TestResponse::prekey_publication(),
-        TestResponse::capabilities(),
-        TestResponse::sync_bootstrap(),
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
         TestResponse::directory_lookup(),
@@ -142,21 +138,12 @@ fn register_sync_v2_identity(workspace: &Path, handle: &str) {
 
 fn assert_sync_v2_history_without_legacy_secure_side_effects(bodies: &[Value]) {
     let methods = rpc_methods(bodies);
-    assert_eq!(
-        methods,
-        vec![
-            "anp.get_capabilities",
-            "sync.bootstrap",
-            "sync.delta",
-            "message.get_batch",
-            "lookup",
-        ]
-    );
+    assert_eq!(methods, vec!["sync.delta", "message.get_batch", "lookup",]);
     assert!(!methods.contains(&"direct.get_history"));
     assert!(!methods.contains(&"direct.e2ee.publish_prekey_bundle"));
     assert!(!methods.iter().any(|method| method.contains("prekey")));
     assert_eq!(
-        bodies[2]["params"]["body"]["reason"],
+        bodies[0]["params"]["body"]["reason"],
         "foreground_reconcile"
     );
 }
@@ -278,14 +265,6 @@ impl TestResponse {
         Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 
-    fn sync_bootstrap() -> Self {
-        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
-    }
-
-    fn capabilities() -> Self {
-        Self::ok("__DYNAMIC_CAPABILITIES_RESPONSE__")
-    }
-
     fn sync_delta_direct() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__")
     }
@@ -316,11 +295,30 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let initializes_receive =
+                    response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__";
                 let stream = accept_with_timeout(&listener);
                 let Some(stream) = stream else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if initializes_receive {
+                    let readiness_requests = Arc::new(Mutex::new(Vec::new()));
+                    loop {
+                        let stream =
+                            accept_with_timeout(&listener).expect("initial receive request");
+                        handle_connection(
+                            stream,
+                            &readiness_requests,
+                            TestResponse::ok(support::registration_receive::MARKER),
+                        );
+                        if support::registration_receive::completed(
+                            readiness_requests.lock().unwrap().last().unwrap(),
+                        ) {
+                            break;
+                        }
+                    }
+                }
             }
         });
         Self {
@@ -389,6 +387,7 @@ fn handle_connection(
 
 fn dynamic_response_body(request: &str, marker: &str) -> String {
     match marker {
+        support::registration_receive::MARKER => support::registration_receive::response(request),
         "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
         "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
         "__DYNAMIC_CAPABILITIES_RESPONSE__" => rpc_result_for_request(

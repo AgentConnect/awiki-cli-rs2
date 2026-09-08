@@ -213,6 +213,14 @@ pub fn register_handle_via_im_core(
         .identities()
         .register_handle(request.clone())
         .map_err(|err| super::map_im_error(err, "id register"))?;
+    if let Some(selector) = registration_receive_selector(&result)? {
+        let outcome = core
+            .client(selector)
+            .and_then(|client| client.messages().sync_now(registration_receive_request()))
+            .map_err(|_| registration_receive_pending())?;
+        super::messages::require_foreground_message_sync(&outcome)
+            .map_err(|_| registration_receive_pending())?;
+    }
     register_handle_command_result(result, &request)
 }
 
@@ -237,7 +245,48 @@ pub async fn register_handle_via_im_core_async(
         .register_handle_async(request.clone())
         .await
         .map_err(|err| super::map_im_error(err, "id register"))?;
+    if let Some(selector) = registration_receive_selector(&result)? {
+        let client = core
+            .client_async(selector)
+            .await
+            .map_err(|_| registration_receive_pending())?;
+        let outcome = client
+            .messages()
+            .sync_now_async(registration_receive_request())
+            .await
+            .map_err(|_| registration_receive_pending())?;
+        super::messages::require_foreground_message_sync(&outcome)
+            .map_err(|_| registration_receive_pending())?;
+    }
     register_handle_command_result(result, &request)
+}
+
+fn registration_receive_selector(
+    result: &HandleRegistrationResult,
+) -> Result<Option<IdentitySelector>, ExitError> {
+    if result.state != HandleRegistrationState::Registered {
+        return Ok(None);
+    }
+    result
+        .identity
+        .as_ref()
+        .map(|identity| Some(IdentitySelector::Id(identity.id.clone())))
+        .ok_or_else(registration_receive_pending)
+}
+
+fn registration_receive_request() -> im_core::messages::MessageSyncRequest {
+    im_core::messages::MessageSyncRequest {
+        reason: "foreground_reconcile".to_owned(),
+        limit: Some(100),
+    }
+}
+
+fn registration_receive_pending() -> ExitError {
+    ExitError::new(
+        "registration_receive_pending", 1,
+        "Identity registration is committed, but initial message synchronization did not complete.",
+        "Keep this workspace and identity. Run --identity <registered-identity> msg inbox to resume synchronization before using it to receive messages; do not register again or clear local state.",
+    )
 }
 
 fn register_handle_command_result(
@@ -2130,3 +2179,7 @@ mod tests {
             .is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "identity_receive_tests.rs"]
+mod identity_receive_tests;
