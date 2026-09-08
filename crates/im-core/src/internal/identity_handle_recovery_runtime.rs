@@ -364,7 +364,8 @@ fn reusable_awaiting_factor_operation(
     let pre_attempt = existing.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit
         && !existing.commit_attempted
-        && pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+        && (pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+            || precommit_factor_refresh_required(&pending)?)
         && !pending.commit_attempted;
     let post_attempt_refresh = existing.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteUnresolved
@@ -426,6 +427,29 @@ pub(crate) async fn list_operations(
 ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
     require_enabled(core)?;
     require_explicit_identity(&identity)?;
+    // Recovery owners can exist before the public identity projection. A Handle
+    // lookup must use the durable operation index rather than resolve_identity.
+    if let crate::identity::IdentitySelector::Handle(handle) = &identity {
+        let canonical =
+            crate::internal::identity_wire::handle_recovery::canonical_handle(handle.as_str())?;
+        if canonical.domain != core.inner().sdk_config().did_domain {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        return crate::internal::identity_handle_recovery_operation::list_handle(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &canonical.full,
+        )?
+        .into_iter()
+        .filter_map(|record| {
+            // Retired owners remain in audit history but cannot be reactivated.
+            match recovery_owner_was_retired(core, &record) {
+                Ok(true) => None,
+                Ok(false) => Some(operation_summary(record)),
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect();
+    }
     let owner_identity_id = match identity {
         crate::identity::IdentitySelector::Id(identity_id) => identity_id.as_str().to_owned(),
         selector => core
@@ -443,6 +467,33 @@ pub(crate) async fn list_operations(
     .into_iter()
     .map(operation_summary)
     .collect()
+}
+
+fn recovery_owner_was_retired(
+    core: &crate::core::ImCore,
+    record: &crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord,
+) -> crate::ImResult<bool> {
+    if record.lifecycle_class
+        != crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::Applied
+    {
+        return Ok(false);
+    }
+    let Some(marker) = crate::internal::identity_transition_pending::load(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &record.operation_id,
+    )?
+    else {
+        return Ok(false);
+    };
+    let Some(device) = marker.current_device_id.as_deref() else {
+        return Ok(false);
+    };
+    crate::internal::identity_retirement::matches_completed_binding(
+        &core.inner().sdk_paths().identities.identity_root_dir,
+        &record.owner_identity_id,
+        &marker.current_did,
+        device,
+    )
 }
 
 pub(crate) async fn discard_pre_attempt(
@@ -728,7 +779,8 @@ pub(crate) async fn prepare(
     let pre_attempt = operation.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit
         && !operation.commit_attempted
-        && pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+        && (pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+            || precommit_factor_refresh_required(&pending)?)
         && !pending.commit_attempted;
     let post_attempt_refresh = operation.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteUnresolved
@@ -825,6 +877,19 @@ pub(crate) async fn prepare(
                 return Err(recovery_error(HandleRecoveryErrorCode::OutcomeUnknown));
             }
         }
+    }
+    if pre_attempt
+        && pending.factor_state
+            == crate::internal::identity_handle_recovery_pending::RecoveryFactorStateV4::Exchanged
+        && pending.authoritative_binding.as_ref() != Some(&authoritative_binding)
+    {
+        persist_nonterminal_error_v4(
+            core,
+            &store,
+            &mut pending,
+            HandleRecoveryErrorCode::UnknownEpoch,
+        )?;
+        return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
     }
     let local_index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
@@ -942,6 +1007,7 @@ pub(crate) async fn prepare(
             pending.refresh_grant(&authoritative_binding, recovery_grant, grant.expires_at)?;
         }
     }
+    pending.last_error_code = None;
     store.save_v4_cas(&pending, expected_revision)?;
     let frozen_account_user_id = &pending
         .authoritative_binding
@@ -971,6 +1037,12 @@ pub(crate) async fn prepare(
             &now_second_z()?,
         )?;
     }
+    crate::internal::identity_handle_recovery_operation::record_nonterminal_error(
+        sqlite_path,
+        &operation_id,
+        None,
+        &now_second_z()?,
+    )?;
     progress_v4(core, &pending)
 }
 
@@ -1822,6 +1894,14 @@ async fn reconcile_result_v4(
             Ok(ReconcileV4Outcome::ResultAbsent)
         }
     }
+}
+
+fn precommit_factor_refresh_required(pending: &PendingHandleRecoveryV4) -> crate::ImResult<bool> {
+    Ok(!pending.commit_attempted
+        && pending.phase == PendingRecoveryPhaseV4::ReadyToCommit
+        && (pending.last_error_code.as_deref()
+            == Some(HandleRecoveryErrorCode::FactorRetryRequired.as_str())
+            || !grant_is_fresh(pending)?))
 }
 
 fn grant_is_fresh(pending: &PendingHandleRecoveryV4) -> crate::ImResult<bool> {
@@ -2809,7 +2889,12 @@ fn progress_v4(
         failure_code: pending
             .last_error_code
             .as_deref()
-            .and_then(public_error_code),
+            .and_then(public_error_code)
+            .or(if precommit_factor_refresh_required(pending)? {
+                Some(HandleRecoveryErrorCode::FactorRetryRequired)
+            } else {
+                None
+            }),
     })
 }
 
@@ -2979,6 +3064,8 @@ fn canonical_generation(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod continuity;
+    mod factor_refresh;
     mod retirement;
 
     #[test]
