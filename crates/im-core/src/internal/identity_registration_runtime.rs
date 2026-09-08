@@ -439,6 +439,11 @@ where
         request: crate::identity::RegisterHandleRequest,
         target: RegistrationTarget,
     ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
+        let target_lock = self
+            .core
+            .inner()
+            .handle_recovery_lock(&format!("handle:{}", target.full_handle.as_str()));
+        let _target_guard = target_lock.lock().await;
         let store =
             crate::internal::identity_registration_pending::PendingRegistrationStore::from_core(
                 self.core,
@@ -689,6 +694,10 @@ fn load_or_create_pending_registration(
     crate::internal::secret_vault::record::SecretRef,
     crate::internal::identity_registration_pending::PendingRegistration,
 )> {
+    crate::internal::identity_handle_recovery_context::require_registration_admission(
+        core,
+        target.full_handle.as_str(),
+    )?;
     if let Some(existing) = store.load(&target.local_part, &target.effective_domain)? {
         return Ok(existing);
     }
@@ -725,6 +734,10 @@ async fn load_or_create_pending_registration_async(
     crate::internal::secret_vault::record::SecretRef,
     crate::internal::identity_registration_pending::PendingRegistration,
 )> {
+    crate::internal::identity_handle_recovery_context::require_registration_admission(
+        core,
+        target.full_handle.as_str(),
+    )?;
     if let Some(existing) = store
         .load(&target.local_part, &target.effective_domain)
         .map_err(|error| registration_stage_error(error, "pending_load"))?

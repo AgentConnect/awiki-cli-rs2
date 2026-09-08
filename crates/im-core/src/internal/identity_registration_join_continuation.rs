@@ -228,7 +228,8 @@ pub(crate) fn recover_all(core: &crate::core::ImCore) -> crate::ImResult<()> {
                     | crate::internal::identity_device_join::RemoteCreateState::Bound => {}
                 }
             }
-            crate::internal::identity_transition_pending::TransitionPhase::Completed => {
+            crate::internal::identity_transition_pending::TransitionPhase::Completed
+            | crate::internal::identity_transition_pending::TransitionPhase::Superseded => {
                 return Err(crate::ImError::PermissionDenied)
             }
         }

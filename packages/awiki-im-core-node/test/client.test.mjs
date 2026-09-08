@@ -99,6 +99,8 @@ test('recovery progress exposes only the current stable impact fields through th
   })
 
   assert.equal(progress.phase, 'ready_to_commit')
+  assert.deepEqual(progress.allowedActions, ['activate', 'discard_pre_attempt'])
+  await assert.rejects(client.resumeHandleRecovery({ operationId: challenge.operationId }), error => error.code === 'activation_required' && error.retryable === false)
   assert.deepEqual(progress.impact, {
     localOrdinaryDataWillMigrate: false,
     otherDevicesMustRejoin: true,

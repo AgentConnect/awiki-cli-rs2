@@ -427,6 +427,9 @@ impl PendingHandleRecoveryV4 {
         self.grant_expires_at = Some(grant_expires_at);
         self.factor_state = RecoveryFactorStateV4::Exchanged;
         self.phase = PendingRecoveryPhaseV4::ReadyToCommit;
+        self.last_error_code = None;
+        self.retry_metadata.last_retryable_code = None;
+        self.retry_metadata.next_retry_at = None;
         self.revision = self
             .revision
             .checked_add(1)
@@ -530,6 +533,9 @@ impl PendingHandleRecoveryV4 {
         let frozen_hash = self.intent_hash.clone();
         self.recovery_grant = Some(recovery_grant);
         self.grant_expires_at = Some(grant_expires_at);
+        self.last_error_code = None;
+        self.retry_metadata.last_retryable_code = None;
+        self.retry_metadata.next_retry_at = None;
         self.revision = self
             .revision
             .checked_add(1)

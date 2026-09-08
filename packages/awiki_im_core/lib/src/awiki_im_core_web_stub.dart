@@ -66,6 +66,13 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<HandleRecoveryContext> inspectHandleRecoveryContext({
+    required String fullHandle,
+    IdentitySelector? selector,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
     IdentitySelector? selector,
     required String fullHandle,

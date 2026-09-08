@@ -54,6 +54,33 @@ fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
 }
 
 #[test]
+fn dart_recovery_context_keeps_core_actions_and_terminal_error() {
+    let mapped = awiki_im_core::dto::identity::DartHandleRecoveryContext::from(
+        im_core::identity::HandleRecoveryContext {
+            full_handle: "alice.example.invalid".to_owned(),
+            local_identity_id: None,
+            operation: None,
+            progress: None,
+            allowed_actions: vec![im_core::identity::HandleRecoveryAction::StartNew],
+            blocked_reason: Some(
+                im_core::identity::HandleRecoveryErrorCode::LocalTransitionSuperseded,
+            ),
+        },
+    );
+    assert_eq!(mapped.full_handle, "alice.example.invalid");
+    assert_eq!(
+        mapped.allowed_actions,
+        vec![awiki_im_core::dto::identity::DartHandleRecoveryAction::StartNew]
+    );
+    assert_eq!(
+        mapped.blocked_reason,
+        Some(awiki_im_core::dto::identity::DartHandleRecoveryErrorCode::LocalTransitionSuperseded)
+    );
+    assert!(mapped.operation.is_none());
+    assert!(mapped.progress.is_none());
+}
+
+#[test]
 fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() {
     let mapped = awiki_im_core::dto::identity::DartHandleRecoveryProgress::from(
         im_core::identity::HandleRecoveryProgress {
@@ -87,6 +114,9 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
                 source_id: "operation-1".to_owned(),
             }),
             failure_code: Some(im_core::identity::HandleRecoveryErrorCode::LocalKeyUnavailable),
+            allowed_actions: vec![
+                im_core::identity::HandleRecoveryAction::QuarantineKeyUnavailable,
+            ],
         },
     );
 
@@ -97,6 +127,10 @@ fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() 
     assert_eq!(
         mapped.failure_code,
         Some(awiki_im_core::dto::identity::DartHandleRecoveryErrorCode::LocalKeyUnavailable)
+    );
+    assert_eq!(
+        mapped.allowed_actions,
+        vec![awiki_im_core::dto::identity::DartHandleRecoveryAction::QuarantineKeyUnavailable]
     );
     let reset = mapped.reset_reference.unwrap();
     assert_eq!(reset.owner_identity_id, "owner-1");

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS identity_transition_pending (
     registry_version TEXT,
     applied_at TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    phase TEXT NOT NULL CHECK(phase IN ('pending','identity_switched','completed')),
+    phase TEXT NOT NULL CHECK(phase IN ('pending','identity_switched','completed','superseded')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -61,6 +61,7 @@ pub(crate) enum TransitionPhase {
     Pending,
     IdentitySwitched,
     Completed,
+    Superseded,
 }
 
 impl TransitionPhase {
@@ -69,7 +70,64 @@ impl TransitionPhase {
             Self::Pending => "pending",
             Self::IdentitySwitched => "identity_switched",
             Self::Completed => "completed",
+            Self::Superseded => "superseded",
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum SupersededTransitionEvidence {
+    HandleBinding {
+        observed_did: String,
+        observed_binding_generation: String,
+    },
+    DeviceAuthorizationRemoved {
+        observed_document_hash: String,
+        device_id: String,
+        signing_key_id: String,
+    },
+}
+
+impl SupersededTransitionEvidence {
+    pub(crate) fn validate(&self, marker: &IdentityTransitionMarker) -> crate::ImResult<()> {
+        if marker.source_kind != TransitionSourceKind::Initiator {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        match self {
+            Self::HandleBinding {
+                observed_did,
+                observed_binding_generation,
+            } => {
+                let old = &marker.binding_generation;
+                let new = observed_binding_generation;
+                if !canonical_generation(old)
+                    || !canonical_generation(new)
+                    || (new.len(), new.as_str()) <= (old.len(), old.as_str())
+                    || observed_did == &marker.current_did
+                    || crate::ids::Did::parse(observed_did).is_err()
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+            }
+            Self::DeviceAuthorizationRemoved {
+                observed_document_hash,
+                device_id,
+                signing_key_id,
+            } => {
+                if !matches!(
+                    marker.phase,
+                    TransitionPhase::IdentitySwitched | TransitionPhase::Superseded
+                ) || !observed_document_hash.starts_with("sha256:")
+                    || observed_document_hash.len() != 50
+                    || marker.current_device_id.as_deref() != Some(device_id.as_str())
+                    || !signing_key_id.starts_with(&format!("{}#", marker.current_did))
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -214,9 +272,14 @@ impl IdentityTransitionMarker {
                 &self.metadata_json,
             )
             .is_err()
-            || self.metadata_json != "{}"
+            || (self.phase != TransitionPhase::Superseded && self.metadata_json != "{}")
         {
             return Err(crate::ImError::PermissionDenied);
+        }
+        if self.phase == TransitionPhase::Superseded {
+            let evidence: SupersededTransitionEvidence = serde_json::from_str(&self.metadata_json)
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            evidence.validate(self)?;
         }
         for value in [
             self.device_auth_generation.as_deref(),
@@ -267,6 +330,7 @@ pub(crate) fn load_joined_device(
                     "pending" => TransitionPhase::Pending,
                     "identity_switched" => TransitionPhase::IdentitySwitched,
                     "completed" => TransitionPhase::Completed,
+                    "superseded" => TransitionPhase::Superseded,
                     _ => return Err(rusqlite::Error::InvalidQuery),
                 };
                 Ok(IdentityTransitionMarker {
@@ -304,6 +368,44 @@ pub(crate) fn load_joined_device(
         .transpose()
 }
 
+/// Close only the exact committed transition whose WNS binding is obsolete.
+/// The encrypted result and custody are deliberately not mutated or deleted.
+pub(crate) fn mark_superseded(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+    evidence: &SupersededTransitionEvidence,
+    intent_hash: &str,
+    now: &str,
+) -> crate::ImResult<()> {
+    marker.validate()?;
+    evidence.validate(marker)?;
+    if !matches!(
+        marker.phase,
+        TransitionPhase::Pending | TransitionPhase::IdentitySwitched
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let metadata = serde_json::to_string(evidence).map_err(|_| crate::ImError::PermissionDenied)?;
+    let changed = tx.execute(
+        "UPDATE identity_transition_pending SET phase='superseded',metadata_json=?1,updated_at=?2 WHERE recovery_id=?3 AND source_kind='initiator' AND source_id=?3 AND owner_identity_id=?4 AND account_user_id=?5 AND handle=?6 AND current_did=?7 AND binding_generation=?8 AND state_root_fingerprint=?9 AND phase=?10 AND metadata_json='{}'",
+        rusqlite::params![metadata, now, marker.recovery_id, marker.owner_identity_id, marker.account_user_id, marker.handle, marker.current_did, marker.binding_generation, marker.state_root_fingerprint, marker.phase.as_str()],
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    let indexed = tx.execute(
+        "UPDATE handle_recovery_operations_v4 SET lifecycle_class='superseded_by_state_change',last_error_code='local_transition_superseded',updated_at=?1 WHERE operation_id=?2 AND owner_identity_id=?3 AND account_user_id=?4 AND full_handle=?5 AND state_root_fingerprint=?6 AND intent_hash=?7 AND commit_attempted=1 AND lifecycle_class='local_transition_pending'",
+        rusqlite::params![now, marker.recovery_id, marker.owner_identity_id, marker.account_user_id, marker.handle, marker.state_root_fingerprint, intent_hash],
+    ).map_err(crate::internal::local_state::local_state_unavailable)?;
+    if changed != 1 || indexed != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    tx.commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)
+}
+
 pub(crate) fn load(
     sqlite_path: &Path,
     recovery_id: &str,
@@ -324,6 +426,7 @@ pub(crate) fn load(
                     "pending" => TransitionPhase::Pending,
                     "identity_switched" => TransitionPhase::IdentitySwitched,
                     "completed" => TransitionPhase::Completed,
+                    "superseded" => TransitionPhase::Superseded,
                     _ => return Err(rusqlite::Error::InvalidQuery),
                 };
                 Ok(IdentityTransitionMarker {

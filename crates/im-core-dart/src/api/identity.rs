@@ -8,7 +8,7 @@ use crate::dto::{
         DartDaemonSubkeyPublicProposal, DartDeleteLocalIdentityResult,
         DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
         DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice, DartDeviceJoinSessionSummary,
-        DartDeviceRevokeResult, DartHandleRecoveryAccountEpochReceipt,
+        DartDeviceRevokeResult, DartHandleRecoveryAccountEpochReceipt, DartHandleRecoveryContext,
         DartHandleRecoveryOperationSummary, DartHandleRecoveryOtpResult,
         DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityCustodyStatus,
         DartIdentityDeviceSummary, DartIdentitySelector, DartIdentitySummary,
@@ -29,6 +29,22 @@ pub async fn legacy_registry_epoch_adoption_authority(
         .legacy_registry_epoch_adoption_authority_async(selector.try_into()?)
         .await
         .map(|authority| authority.map(Into::into))
+        .map_err(DartImError::from)
+}
+
+pub async fn inspect_handle_recovery_context(
+    core: &Arc<crate::api::core::DartImCore>,
+    full_handle: String,
+    selector: Option<DartIdentitySelector>,
+) -> Result<DartHandleRecoveryContext, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .inspect_handle_recovery_context(im_core::identity::HandleRecoveryContextRequest {
+            full_handle,
+            identity: selector.map(TryInto::try_into).transpose()?,
+        })
+        .await
+        .map(Into::into)
         .map_err(DartImError::from)
 }
 

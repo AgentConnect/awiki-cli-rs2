@@ -356,6 +356,15 @@ raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 un
 
 ## Multi-device Handle Recovery
 
+`inspectHandleRecoveryContext(fullHandle: ..., selector: ...)` 返回当前 Core root 的目标级
+`HandleRecoveryContext`：可选 operation/progress、本地 identity ID、`allowedActions`
+及 `blockedReason`。它不发码、提交、生成密钥或清理材料；只允许 Core 既有规则修复已存在
+pre-OTP 操作的缺失索引和冻结 owner/intent 投影。App 不传入自造 owner 或直接读 Vault。
+`HandleRecoveryProgress.allowedActions` 同样由 Core 派生；空列表不是允许所有动作。
+`resumeHandleRecovery` 不能用于首次提交，准备完成但未尝试提交时返回
+`activation_required`；注册与在途 Recovery 冲突返回 `recovery_in_progress`。
+同批更新 Core、生成桥接和 Dart SDK，不增加开发版的新旧 API 双轨。
+
 Native hosts opt in with `ImCoreOpenOptions.multiDeviceHandleRecoveryEnabled`; the default is
 `false`. The generated Dart facade exposes `requestHandleRecoveryOtp`,
 `prepareHandleRecovery`, `activateHandleRecovery`, `resumeHandleRecovery`,
@@ -1347,3 +1356,5 @@ The file is copied from `target/<target>/release/libawiki_im_core.so` and is ign
 - Linux dynamic library load error: verify the app bundle contains `lib/libawiki_im_core.so` and that the Flutter Linux runner preserves `$ORIGIN/lib` in `CMAKE_INSTALL_RPATH`.
 - iOS symbols not found: verify the podspec vendored XCFramework path and `-force_load` slice path.
 - FRB generated files stale: run `scripts/flutter/codegen-check.sh`.
+
+Recovery context inspection also repairs the existing committed/applied SQLite lifecycle projection from the exact encrypted result and completed marker, without sending OTP/Commit or finalizing local custody. The journal's known committed fact must not be displayed as outcome unknown after a partial index write. `local_transition_superseded` is non-retryable for that old operation; its committed journal and audit remain available.

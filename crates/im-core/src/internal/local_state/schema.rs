@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 41;
+pub(crate) const SCHEMA_VERSION: i64 = 42;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -1196,13 +1196,27 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == SYNC_V1B_DURABLE_LANES_SCHEMA_VERSION {
+        if !schema_v41_shape_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "schema 41 is incomplete before Recovery terminal transition upgrade"
+                    .to_owned(),
+            });
+        }
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(super::local_state_unavailable)?;
+        ensure_terminal_transition_phase_schema(&transaction)?;
+        set_schema_version(&transaction, SCHEMA_VERSION)?;
+        return transaction.commit().map_err(super::local_state_unavailable);
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
             target_version: SCHEMA_VERSION,
         });
     }
-    if version == SYNC_V1B_DURABLE_LANES_SCHEMA_VERSION {
+    if version == SCHEMA_VERSION {
         if current_schema_shape_is_complete(connection)? {
             return Ok(());
         }
@@ -1241,6 +1255,7 @@ fn migrate_release_predecessor_to_v34(
     migrate_sync_state_subject_scope(&transaction)?;
     super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
     create_schema(&transaction, false)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1300,6 +1315,7 @@ fn converge_divergent_schema_to_v34(connection: &Connection, version: i64) -> cr
     migrate_sync_state_subject_scope(&transaction)?;
     super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
     create_schema(&transaction, false)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1383,6 +1399,7 @@ fn migrate_v35_to_v36(connection: &Connection) -> crate::ImResult<()> {
     create_retired_registration_join_schema(&transaction)?;
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1403,6 +1420,7 @@ fn migrate_v36_to_v37(connection: &Connection) -> crate::ImResult<()> {
     create_retired_registration_join_schema(&transaction)?;
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1423,6 +1441,7 @@ fn migrate_v37_to_v38(connection: &Connection) -> crate::ImResult<()> {
     create_retired_registration_join_schema(&transaction)?;
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1442,6 +1461,7 @@ fn migrate_v38_to_v39(connection: &Connection) -> crate::ImResult<()> {
         .map_err(super::local_state_unavailable)?;
     create_local_identity_deletion_schema(&transaction)?;
     create_sync_v1b_durable_lane_schema(&transaction)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
@@ -1466,7 +1486,8 @@ fn migrate_v39_to_v41(connection: &Connection) -> crate::ImResult<()> {
             detail: "injected schema 41 migration failure".to_owned(),
         });
     }
-    set_schema_version(&transaction, SYNC_V1B_DURABLE_LANES_SCHEMA_VERSION)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1489,7 +1510,8 @@ fn migrate_v40_to_v41(connection: &Connection) -> crate::ImResult<()> {
             detail: "injected schema 41 migration failure".to_owned(),
         });
     }
-    set_schema_version(&transaction, SYNC_V1B_DURABLE_LANES_SCHEMA_VERSION)?;
+    ensure_terminal_transition_phase_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
@@ -1736,9 +1758,41 @@ fn sync_v1b_durable_lane_shape_is_complete(connection: &Connection) -> crate::Im
     Ok(true)
 }
 
-fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     Ok(schema_v40_shape_is_complete(connection)?
         && sync_v1b_durable_lane_shape_is_complete(connection)?)
+}
+
+fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    if !schema_v41_shape_is_complete(connection)? {
+        return Ok(false);
+    }
+    let sql: String = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='identity_transition_pending'", [], |row| row.get(0))
+        .map_err(super::local_state_unavailable)?;
+    Ok(sql.contains("'superseded'"))
+}
+
+// Same-development-version data is retained, including unresolved recovery
+// materials. Only the transition CHECK expands; rows and indexes are copied.
+fn ensure_terminal_transition_phase_schema(connection: &Connection) -> crate::ImResult<()> {
+    let sql: String = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='identity_transition_pending'", [], |row| row.get(0))
+        .map_err(super::local_state_unavailable)?;
+    if sql.contains("'superseded'") {
+        return Ok(());
+    }
+    connection.execute_batch("ALTER TABLE identity_transition_pending RENAME TO identity_transition_pending_before_closed;
+        DROP INDEX idx_identity_transition_source;
+        DROP INDEX idx_identity_transition_active_owner;
+        DROP INDEX idx_identity_transition_owner_phase;
+        DROP INDEX idx_identity_transition_account_generation;
+        DROP INDEX idx_identity_transition_handle_epoch;")
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection.execute_batch("INSERT INTO identity_transition_pending (recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,current_device_id,device_auth_generation,registry_version,applied_at,metadata_json,phase,created_at,updated_at) SELECT recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,current_device_id,device_auth_generation,registry_version,applied_at,metadata_json,phase,created_at,updated_at FROM identity_transition_pending_before_closed;
+        DROP TABLE identity_transition_pending_before_closed;")
+        .map_err(super::local_state_unavailable)
 }
 
 fn sync_v1a_predecessor_shape_is_valid(connection: &Connection) -> crate::ImResult<bool> {

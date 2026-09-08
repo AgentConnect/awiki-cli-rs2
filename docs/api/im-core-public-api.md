@@ -352,6 +352,14 @@ pub struct PageLimit(pub u32);
 
 ## 6. identity
 
+恢复上下文查询：`core.handle_recovery().inspect_handle_recovery_context(HandleRecoveryContextRequest)`
+按 full Handle 和可选显式 identity selector 返回现有操作摘要、进度、本地身份及派生动作。
+不生成密钥、不发 OTP/Commit、不清理材料；已存在操作的缺失索引只按 Core 的既有一致性
+规则修复。进度和上下文通过 `HandleRecoveryAction` 表示当前合法动作，不是另一份持久化状态。
+首次 Commit 使用带 user-presence 的 activate；resume 对尚未尝试提交的准备状态返回
+`activation_required`。其他不合法动作返回 `action_not_allowed`，目标已有在途 Recovery 的
+注册尝试返回 `recovery_in_progress`；它们不是服务端注册授权或忽略冲突的依据。
+
 P1 API：
 
 ```rust
@@ -876,7 +884,7 @@ Manifest Handle Recovery V4.0 是 host-neutral、默认关闭的 Core 能力。H
 `ImCoreOpenOptions.multi_device_handle_recovery_enabled` 显式开启后，使用
 `ImCore::handle_recovery()` 的 typed 操作：`request_handle_recovery_otp`、
 `prepare_handle_recovery`、`activate_handle_recovery`、`resume_handle_recovery`、
-`handle_recovery_status`、`list_handle_recovery_operations`、
+`handle_recovery_status`、`inspect_handle_recovery_context`、`list_handle_recovery_operations`、
 `discard_handle_recovery_pre_attempt`、`quarantine_handle_recovery_key_unavailable`、
 `authorized_handle_recovery_receipt`、`activate_authorized_join` 和
 `resume_authorized_join_activation`；metrics 另有只读快照。`status` 和 list 只读；
@@ -895,7 +903,9 @@ V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
 `remote_outcome_unknown`、`remote_committed`、`identity_transition_pending`、`applied` 和
 `quarantined_key_unavailable`。公开 Recovery 错误码闭集是 `factor_retry_required`、
 `result_absent`、`outcome_unknown`、`local_key_unavailable`、`local_transition_pending`、
-`local_migration_unsupported` 和 `unknown_epoch`。V3 阶段名和 `handle_recovery_*` 兼容错误别名
+`local_transition_superseded`、`local_migration_unsupported`、`unknown_epoch`、
+`activation_required`、`recovery_in_progress`、`action_not_allowed` 和
+`state_changed_requires_new_operation`。V3 阶段名和 `handle_recovery_*` 兼容错误别名
 均不存在。
 
 本地已有目标时恢复保留稳定 `owner_identity_id` 和本地 alias；新机器则安装新的本地 owner，
@@ -913,6 +923,13 @@ service/serialization 失败时，Core 持久化稳定 `local_transition_pending
 operation ID 调用 resume；不生成新恢复任务，也不回退远端 Commit。续跑收敛为 `applied`
 后会清理该 operation 上的旧可重试错误投影。权限、Vault、本地不变式或持久化破坏仍保持原错误并
 fail closed，不得被伪装成可重试连接故障。
+上下文查询可从 exact encrypted result 与 completed marker 修复已有 SQLite committed/applied
+索引投影，不发送 OTP/Commit，也不进行本地 custody 收尾；不能因索引半写将已知 committed
+改写为 outcome unknown。`local_transition_superseded` 对旧操作不可重试：只有更高权威
+Handle binding，或 same-device 授权拒绝后的 verified E1 root-signed 当前文档证明移除
+初始 bootstrap key，才能原子关闭旧 operation/marker；一次 403、网络错误或未验证文档不够。
+关闭后保留原 committed journal、intent、密钥和审计，不伪造 applied receipt。
+
 Recovery Commit 收到 HTTP 2xx 零字节响应时按传输结果不确定处理：activate 返回稳定
 `outcome_unknown`，pending phase 保持 `remote_outcome_unknown`；进程重开后的 resume 先用
 Vault 中持久化的 bootstrap key 对 `handle_recovery_result_get_v4` 签名。已提交结果继续本地

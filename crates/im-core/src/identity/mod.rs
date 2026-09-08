@@ -37,7 +37,8 @@ pub use self::dto::{TrustedServiceRegisterHandleRequest, TrustedServiceRegistrat
 pub use self::handle_recovery::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
     BeginPreparedRegistrationDeviceJoinRequest, HandleRecoveryAccountEpochReceipt,
-    HandleRecoveryActivateRequest, HandleRecoveryDiscardRequest, HandleRecoveryErrorCode,
+    HandleRecoveryAction, HandleRecoveryActivateRequest, HandleRecoveryContext,
+    HandleRecoveryContextRequest, HandleRecoveryDiscardRequest, HandleRecoveryErrorCode,
     HandleRecoveryImpact, HandleRecoveryKeyState, HandleRecoveryMetricsSnapshot,
     HandleRecoveryOperationLifecycle, HandleRecoveryOperationSummary, HandleRecoveryOtpRequest,
     HandleRecoveryOtpResult, HandleRecoveryPhase, HandleRecoveryPrepareRequest,

@@ -258,6 +258,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_handle_recovery_error_code(dynamic raw);
 
   @protected
+  DartHandleRecoveryOperationSummary
+  dco_decode_box_autoadd_dart_handle_recovery_operation_summary(dynamic raw);
+
+  @protected
+  DartHandleRecoveryProgress
+  dco_decode_box_autoadd_dart_handle_recovery_progress(dynamic raw);
+
+  @protected
   DartHandleRecoveryResetReference
   dco_decode_box_autoadd_dart_handle_recovery_reset_reference(dynamic raw);
 
@@ -724,6 +732,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_dart_handle_recovery_account_epoch_receipt(dynamic raw);
 
   @protected
+  DartHandleRecoveryAction dco_decode_dart_handle_recovery_action(dynamic raw);
+
+  @protected
+  DartHandleRecoveryContext dco_decode_dart_handle_recovery_context(
+    dynamic raw,
+  );
+
+  @protected
   DartHandleRecoveryErrorCode dco_decode_dart_handle_recovery_error_code(
     dynamic raw,
   );
@@ -1182,6 +1198,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
 
   @protected
+  List<DartHandleRecoveryAction> dco_decode_list_dart_handle_recovery_action(
+    dynamic raw,
+  );
+
+  @protected
   List<DartHandleRecoveryOperationSummary>
   dco_decode_list_dart_handle_recovery_operation_summary(dynamic raw);
 
@@ -1285,6 +1306,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartHandleRecoveryErrorCode?
   dco_decode_opt_box_autoadd_dart_handle_recovery_error_code(dynamic raw);
+
+  @protected
+  DartHandleRecoveryOperationSummary?
+  dco_decode_opt_box_autoadd_dart_handle_recovery_operation_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryProgress?
+  dco_decode_opt_box_autoadd_dart_handle_recovery_progress(dynamic raw);
 
   @protected
   DartHandleRecoveryResetReference?
@@ -1597,6 +1628,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartHandleRecoveryErrorCode
   sse_decode_box_autoadd_dart_handle_recovery_error_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryOperationSummary
+  sse_decode_box_autoadd_dart_handle_recovery_operation_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryProgress
+  sse_decode_box_autoadd_dart_handle_recovery_progress(
     SseDeserializer deserializer,
   );
 
@@ -2179,6 +2222,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartHandleRecoveryAccountEpochReceipt
   sse_decode_dart_handle_recovery_account_epoch_receipt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryAction sse_decode_dart_handle_recovery_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryContext sse_decode_dart_handle_recovery_context(
     SseDeserializer deserializer,
   );
 
@@ -2775,6 +2828,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartHandleRecoveryAction> sse_decode_list_dart_handle_recovery_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartHandleRecoveryOperationSummary>
   sse_decode_list_dart_handle_recovery_operation_summary(
     SseDeserializer deserializer,
@@ -2900,6 +2958,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartHandleRecoveryErrorCode?
   sse_decode_opt_box_autoadd_dart_handle_recovery_error_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryOperationSummary?
+  sse_decode_opt_box_autoadd_dart_handle_recovery_operation_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryProgress?
+  sse_decode_opt_box_autoadd_dart_handle_recovery_progress(
     SseDeserializer deserializer,
   );
 
@@ -3253,6 +3323,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_handle_recovery_error_code(
     DartHandleRecoveryErrorCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_handle_recovery_operation_summary(
+    DartHandleRecoveryOperationSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_handle_recovery_progress(
+    DartHandleRecoveryProgress self,
     SseSerializer serializer,
   );
 
@@ -3950,6 +4032,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_handle_recovery_account_epoch_receipt(
     DartHandleRecoveryAccountEpochReceipt self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_action(
+    DartHandleRecoveryAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_context(
+    DartHandleRecoveryContext self,
     SseSerializer serializer,
   );
 
@@ -4677,6 +4771,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_handle_recovery_action(
+    List<DartHandleRecoveryAction> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_handle_recovery_operation_summary(
     List<DartHandleRecoveryOperationSummary> self,
     SseSerializer serializer,
@@ -4820,6 +4920,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_handle_recovery_error_code(
     DartHandleRecoveryErrorCode? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_handle_recovery_operation_summary(
+    DartHandleRecoveryOperationSummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_handle_recovery_progress(
+    DartHandleRecoveryProgress? self,
     SseSerializer serializer,
   );
 

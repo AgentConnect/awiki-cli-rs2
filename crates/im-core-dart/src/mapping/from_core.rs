@@ -21,16 +21,16 @@ use crate::dto::{
         DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
         DartDeviceJoinSessionSummary, DartDeviceJoinSide,
         DartDeviceRegistryAuthorizedDeviceSummary, DartDeviceRevokeResult, DartDeviceRevokeStatus,
-        DartHandleRecoveryAccountEpochReceipt, DartHandleRecoveryErrorCode,
-        DartHandleRecoveryImpact, DartHandleRecoveryKeyState, DartHandleRecoveryOperationLifecycle,
-        DartHandleRecoveryOperationSummary, DartHandleRecoveryOtpResult, DartHandleRecoveryPhase,
-        DartHandleRecoveryProgress, DartHandleRecoveryResetReference,
-        DartHandleRecoveryTransitionSourceKind, DartHandleRegistrationJoinMode,
-        DartHandleRegistrationJoinRequiredPreparation, DartHandleRegistrationResult,
-        DartIdentityCustodyBackend, DartIdentityCustodyState, DartIdentityCustodyStatus,
-        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
-        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
-        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartHandleRecoveryAccountEpochReceipt, DartHandleRecoveryAction, DartHandleRecoveryContext,
+        DartHandleRecoveryErrorCode, DartHandleRecoveryImpact, DartHandleRecoveryKeyState,
+        DartHandleRecoveryOperationLifecycle, DartHandleRecoveryOperationSummary,
+        DartHandleRecoveryOtpResult, DartHandleRecoveryPhase, DartHandleRecoveryProgress,
+        DartHandleRecoveryResetReference, DartHandleRecoveryTransitionSourceKind,
+        DartHandleRegistrationJoinMode, DartHandleRegistrationJoinRequiredPreparation,
+        DartHandleRegistrationResult, DartIdentityCustodyBackend, DartIdentityCustodyState,
+        DartIdentityCustodyStatus, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
+        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartLegacyRegistryEpochAdoptionAuthority,
         DartLegacyUpgradeStatus, DartRootKeyTransferError, DartRootKeyTransferPreparation,
         DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
@@ -123,6 +123,36 @@ impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgr
             impact: value.impact.into(),
             reset_reference: value.reset_reference.map(Into::into),
             failure_code: value.failure_code.map(Into::into),
+            allowed_actions: value.allowed_actions.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryAction> for DartHandleRecoveryAction {
+    fn from(value: im_core::identity::HandleRecoveryAction) -> Self {
+        use im_core::identity::HandleRecoveryAction as Action;
+        match value {
+            Action::StartNew => Self::StartNew,
+            Action::RequestOtp => Self::RequestOtp,
+            Action::Prepare => Self::Prepare,
+            Action::Activate => Self::Activate,
+            Action::Resume => Self::Resume,
+            Action::DiscardPreAttempt => Self::DiscardPreAttempt,
+            Action::QuarantineKeyUnavailable => Self::QuarantineKeyUnavailable,
+            Action::ActivateIdentity => Self::ActivateIdentity,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryContext> for DartHandleRecoveryContext {
+    fn from(value: im_core::identity::HandleRecoveryContext) -> Self {
+        Self {
+            full_handle: value.full_handle,
+            local_identity_id: value.local_identity_id.map(|id| id.as_str().to_owned()),
+            operation: value.operation.map(Into::into),
+            progress: value.progress.map(Into::into),
+            allowed_actions: value.allowed_actions.into_iter().map(Into::into).collect(),
+            blocked_reason: value.blocked_reason.map(Into::into),
         }
     }
 }
@@ -180,6 +210,9 @@ impl From<im_core::identity::HandleRecoveryErrorCode> for DartHandleRecoveryErro
             im_core::identity::HandleRecoveryErrorCode::LocalKeyUnavailable => {
                 Self::LocalKeyUnavailable
             }
+            im_core::identity::HandleRecoveryErrorCode::LocalTransitionSuperseded => {
+                Self::LocalTransitionSuperseded
+            }
             im_core::identity::HandleRecoveryErrorCode::LocalTransitionPending => {
                 Self::LocalTransitionPending
             }
@@ -187,6 +220,14 @@ impl From<im_core::identity::HandleRecoveryErrorCode> for DartHandleRecoveryErro
                 Self::LocalMigrationUnsupported
             }
             im_core::identity::HandleRecoveryErrorCode::UnknownEpoch => Self::UnknownEpoch,
+            im_core::identity::HandleRecoveryErrorCode::ActivationRequired => {
+                Self::ActivationRequired
+            }
+            im_core::identity::HandleRecoveryErrorCode::RecoveryInProgress => {
+                Self::RecoveryInProgress
+            }
+            im_core::identity::HandleRecoveryErrorCode::ActionNotAllowed => Self::ActionNotAllowed,
+            im_core::identity::HandleRecoveryErrorCode::StateChanged => Self::StateChanged,
         }
     }
 }

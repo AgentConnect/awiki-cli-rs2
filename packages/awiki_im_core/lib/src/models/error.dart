@@ -37,8 +37,13 @@ enum HandleRecoveryFailureCode {
   outcomeUnknown,
   localKeyUnavailable,
   localTransitionPending,
+  localTransitionSuperseded,
   localMigrationUnsupported,
   unknownEpoch,
+  activationRequired,
+  recoveryInProgress,
+  actionNotAllowed,
+  stateChanged,
 }
 
 extension HandleRecoveryFailureCodeRetryability on HandleRecoveryFailureCode {

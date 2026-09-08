@@ -835,6 +835,10 @@ export interface HandleRecoveryImpact {
 }
 
 /** Durable recovery status. Hosts resume uncertain states instead of repeating activation. */
+export type HandleRecoveryAction =
+  | 'start_new' | 'request_otp' | 'prepare' | 'activate' | 'resume'
+  | 'discard_pre_attempt' | 'quarantine_key_unavailable' | 'activate_identity'
+
 export interface HandleRecoveryProgress {
   readonly operationId: string
   readonly ownerIdentityId: string
@@ -844,6 +848,7 @@ export interface HandleRecoveryProgress {
   readonly phase: HandleRecoveryPhase
   readonly failureCode?: string
   readonly retryable: boolean
+  readonly allowedActions: readonly HandleRecoveryAction[]
   readonly impact: HandleRecoveryImpact
 }
 

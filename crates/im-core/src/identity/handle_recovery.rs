@@ -125,8 +125,13 @@ pub enum HandleRecoveryErrorCode {
     OutcomeUnknown,
     LocalKeyUnavailable,
     LocalTransitionPending,
+    LocalTransitionSuperseded,
     LocalMigrationUnsupported,
     UnknownEpoch,
+    ActivationRequired,
+    RecoveryInProgress,
+    ActionNotAllowed,
+    StateChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,8 +157,13 @@ impl HandleRecoveryErrorCode {
             Self::OutcomeUnknown => "outcome_unknown",
             Self::LocalKeyUnavailable => "local_key_unavailable",
             Self::LocalTransitionPending => "local_transition_pending",
+            Self::LocalTransitionSuperseded => "local_transition_superseded",
             Self::LocalMigrationUnsupported => "local_migration_unsupported",
             Self::UnknownEpoch => "unknown_epoch",
+            Self::ActivationRequired => "activation_required",
+            Self::RecoveryInProgress => "recovery_in_progress",
+            Self::ActionNotAllowed => "action_not_allowed",
+            Self::StateChanged => "state_changed_requires_new_operation",
         }
     }
 
@@ -195,6 +205,38 @@ pub struct HandleRecoveryProgress {
     pub impact: HandleRecoveryImpact,
     pub reset_reference: Option<HandleRecoveryResetReference>,
     pub failure_code: Option<HandleRecoveryErrorCode>,
+    pub allowed_actions: Vec<HandleRecoveryAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleRecoveryAction {
+    StartNew,
+    RequestOtp,
+    Prepare,
+    Activate,
+    Resume,
+    DiscardPreAttempt,
+    QuarantineKeyUnavailable,
+    ActivateIdentity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandleRecoveryContextRequest {
+    pub full_handle: String,
+    pub identity: Option<super::IdentitySelector>,
+}
+
+/// Existing durable authority projected for one target. Inspection never sends
+/// OTP/Commit, generates keys, or destroys recovery material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryContext {
+    pub full_handle: String,
+    pub local_identity_id: Option<crate::ids::IdentityId>,
+    pub operation: Option<HandleRecoveryOperationSummary>,
+    pub progress: Option<HandleRecoveryProgress>,
+    pub allowed_actions: Vec<HandleRecoveryAction>,
+    pub blocked_reason: Option<HandleRecoveryErrorCode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +321,13 @@ pub struct HandleRecoveryService<'a> {
 impl<'a> HandleRecoveryService<'a> {
     pub(crate) fn new(core: &'a crate::core::ImCore) -> Self {
         Self { core }
+    }
+
+    pub async fn inspect_handle_recovery_context(
+        &self,
+        request: HandleRecoveryContextRequest,
+    ) -> crate::ImResult<HandleRecoveryContext> {
+        crate::internal::identity_handle_recovery_context::inspect(self.core, request).await
     }
 
     pub async fn request_handle_recovery_otp(

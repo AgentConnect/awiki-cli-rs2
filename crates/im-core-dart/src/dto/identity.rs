@@ -60,8 +60,13 @@ pub enum DartHandleRecoveryErrorCode {
     OutcomeUnknown,
     LocalKeyUnavailable,
     LocalTransitionPending,
+    LocalTransitionSuperseded,
     LocalMigrationUnsupported,
     UnknownEpoch,
+    ActivationRequired,
+    RecoveryInProgress,
+    ActionNotAllowed,
+    StateChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +107,29 @@ pub struct DartHandleRecoveryProgress {
     pub impact: DartHandleRecoveryImpact,
     pub reset_reference: Option<DartHandleRecoveryResetReference>,
     pub failure_code: Option<DartHandleRecoveryErrorCode>,
+    pub allowed_actions: Vec<DartHandleRecoveryAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryAction {
+    StartNew,
+    RequestOtp,
+    Prepare,
+    Activate,
+    Resume,
+    DiscardPreAttempt,
+    QuarantineKeyUnavailable,
+    ActivateIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryContext {
+    pub full_handle: String,
+    pub local_identity_id: Option<String>,
+    pub operation: Option<DartHandleRecoveryOperationSummary>,
+    pub progress: Option<DartHandleRecoveryProgress>,
+    pub allowed_actions: Vec<DartHandleRecoveryAction>,
+    pub blocked_reason: Option<DartHandleRecoveryErrorCode>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

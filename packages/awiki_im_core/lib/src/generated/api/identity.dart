@@ -22,6 +22,16 @@ legacyRegistryEpochAdoptionAuthority({
   selector: selector,
 );
 
+Future<DartHandleRecoveryContext> inspectHandleRecoveryContext({
+  required ArcDartImCore core,
+  required String fullHandle,
+  DartIdentitySelector? selector,
+}) => RustLib.instance.api.crateApiIdentityInspectHandleRecoveryContext(
+  core: core,
+  fullHandle: fullHandle,
+  selector: selector,
+);
+
 Future<DartHandleRecoveryOtpResult> requestHandleRecoveryOtp({
   required ArcDartImCore core,
   DartIdentitySelector? selector,

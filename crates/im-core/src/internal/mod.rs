@@ -32,6 +32,8 @@ pub(crate) mod identity_device_revoke_pending;
 pub(crate) mod identity_device_state;
 pub(crate) mod identity_document_cache;
 pub(crate) mod identity_generation;
+pub(crate) mod identity_handle_recovery_authority;
+pub(crate) mod identity_handle_recovery_context;
 pub(crate) mod identity_handle_recovery_metrics;
 #[cfg(feature = "sqlite")]
 pub(crate) mod identity_handle_recovery_operation;

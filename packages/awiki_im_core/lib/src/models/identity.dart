@@ -146,6 +146,35 @@ enum HandleRecoveryPhase {
 
 enum HandleRecoveryTransitionSourceKind { initiator, joinedDevice }
 
+enum HandleRecoveryAction {
+  startNew,
+  requestOtp,
+  prepare,
+  activate,
+  resume,
+  discardPreAttempt,
+  quarantineKeyUnavailable,
+  activateIdentity,
+}
+
+class HandleRecoveryContext {
+  const HandleRecoveryContext({
+    required this.fullHandle,
+    this.localIdentityId,
+    this.operation,
+    this.progress,
+    required this.allowedActions,
+    this.blockedReason,
+  });
+
+  final String fullHandle;
+  final String? localIdentityId;
+  final HandleRecoveryOperationSummary? operation;
+  final HandleRecoveryProgress? progress;
+  final List<HandleRecoveryAction> allowedActions;
+  final HandleRecoveryFailureCode? blockedReason;
+}
+
 class HandleRecoveryImpact {
   const HandleRecoveryImpact({
     required this.localOrdinaryDataWillMigrate,
@@ -192,6 +221,7 @@ class HandleRecoveryProgress {
     required this.impact,
     this.registryEpochReset,
     this.failureCode,
+    this.allowedActions = const [],
   });
 
   final String operationId;
@@ -206,6 +236,7 @@ class HandleRecoveryProgress {
   final HandleRecoveryImpact impact;
   final HandleRecoveryRegistryEpochReset? registryEpochReset;
   final HandleRecoveryFailureCode? failureCode;
+  final List<HandleRecoveryAction> allowedActions;
 }
 
 class HandleRecoveryOtpResult {

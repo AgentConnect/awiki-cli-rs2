@@ -252,7 +252,7 @@ pub(crate) async fn request_otp(
     })
 }
 
-fn reconcile_vault_only_awaiting_factor_operation(
+pub(crate) fn reconcile_vault_only_awaiting_factor_operation(
     core: &crate::core::ImCore,
     store: &PendingHandleRecoveryStore,
     owner_identity_id: &str,
@@ -361,10 +361,21 @@ fn reusable_awaiting_factor_operation(
         .load_v4(&existing.operation_id)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
         .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+    let actions = crate::internal::identity_handle_recovery_context::operation_actions(
+        &existing,
+        &pending,
+        time::OffsetDateTime::now_utc(),
+    )?;
+    if !actions.contains(&crate::identity::HandleRecoveryAction::RequestOtp) {
+        return Err(recovery_error(HandleRecoveryErrorCode::ActionNotAllowed));
+    }
     let pre_attempt = existing.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit
         && !existing.commit_attempted
-        && pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+        && matches!(
+            pending.phase,
+            PendingRecoveryPhaseV4::AwaitingFactor | PendingRecoveryPhaseV4::ReadyToCommit
+        )
         && !pending.commit_attempted;
     let post_attempt_refresh = existing.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteUnresolved
@@ -605,7 +616,7 @@ pub(crate) async fn authorized_receipt(
     Ok(Some(receipt_projection(&marker)?))
 }
 
-fn operation_summary(
+pub(crate) fn operation_summary(
     record: crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord,
 ) -> crate::ImResult<HandleRecoveryOperationSummary> {
     use crate::internal::identity_handle_recovery_operation::{
@@ -712,6 +723,10 @@ pub(crate) async fn prepare(
     let operation =
         crate::internal::identity_handle_recovery_operation::load(sqlite_path, &operation_id)?
             .ok_or_else(operation_not_found_error)?;
+    let target_lock = core
+        .inner()
+        .handle_recovery_lock(&format!("handle:{}", operation.full_handle));
+    let _target_guard = target_lock.lock().await;
     let lock = core
         .inner()
         .handle_recovery_lock(&operation.owner_identity_id);
@@ -725,10 +740,21 @@ pub(crate) async fn prepare(
         .load_v4(&operation_id)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
         .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+    let actions = crate::internal::identity_handle_recovery_context::operation_actions(
+        &operation,
+        &pending,
+        time::OffsetDateTime::now_utc(),
+    )?;
+    if !actions.contains(&crate::identity::HandleRecoveryAction::Prepare) {
+        return Err(recovery_error(HandleRecoveryErrorCode::ActionNotAllowed));
+    }
     let pre_attempt = operation.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit
         && !operation.commit_attempted
-        && pending.phase == PendingRecoveryPhaseV4::AwaitingFactor
+        && matches!(
+            pending.phase,
+            PendingRecoveryPhaseV4::AwaitingFactor | PendingRecoveryPhaseV4::ReadyToCommit
+        )
         && !pending.commit_attempted;
     let post_attempt_refresh = operation.lifecycle_class
         == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteUnresolved
@@ -804,6 +830,19 @@ pub(crate) async fn prepare(
             current_did: grant.current_binding.current_did.clone(),
             binding_generation: grant.current_binding.binding_generation.clone(),
         };
+    if pre_attempt
+        && pending.factor_state
+            == crate::internal::identity_handle_recovery_pending::RecoveryFactorStateV4::Exchanged
+        && pending.authoritative_binding.as_ref() != Some(&authoritative_binding)
+    {
+        persist_nonterminal_error_v4(
+            core,
+            &store,
+            &mut pending,
+            HandleRecoveryErrorCode::StateChanged,
+        )?;
+        return Err(recovery_error(HandleRecoveryErrorCode::StateChanged));
+    }
     if post_attempt_refresh
         && pending.authoritative_binding.as_ref() != Some(&authoritative_binding)
     {
@@ -971,6 +1010,12 @@ pub(crate) async fn prepare(
             &now_second_z()?,
         )?;
     }
+    crate::internal::identity_handle_recovery_operation::record_nonterminal_error(
+        sqlite_path,
+        &operation_id,
+        None,
+        &now_second_z()?,
+    )?;
     progress_v4(core, &pending)
 }
 
@@ -1059,7 +1104,7 @@ pub(crate) async fn activate(
         return Err(user_presence_required_error());
     }
     require_v4_journal(core, &request.operation_id)?;
-    advance_v4(core, &request.operation_id).await
+    advance_v4(core, &request.operation_id, true).await
 }
 
 pub(crate) async fn resume(
@@ -1068,7 +1113,7 @@ pub(crate) async fn resume(
 ) -> crate::ImResult<HandleRecoveryProgress> {
     require_enabled(core)?;
     require_v4_journal(core, &request.operation_id)?;
-    advance_v4(core, &request.operation_id).await
+    advance_v4(core, &request.operation_id, false).await
 }
 
 pub(crate) fn status(
@@ -1127,6 +1172,7 @@ enum ReconcileV4Outcome {
 async fn advance_v4(
     core: &crate::core::ImCore,
     operation_id: &str,
+    first_commit_confirmed: bool,
 ) -> crate::ImResult<HandleRecoveryProgress> {
     require_enabled(core)?;
     let sqlite_path = &core.inner().sdk_paths().local_state.sqlite_path;
@@ -1136,6 +1182,10 @@ async fn advance_v4(
         .load_v4(operation_id)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
         .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+    let target_lock = core
+        .inner()
+        .handle_recovery_lock(&format!("handle:{}", before_lock.full_handle));
+    let _target_guard = target_lock.lock().await;
     let lock = core
         .inner()
         .handle_recovery_lock(&before_lock.owner_identity_id);
@@ -1147,6 +1197,13 @@ async fn advance_v4(
     let operation =
         crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
             .ok_or_else(operation_not_found_error)?;
+    if operation.last_error_code.as_deref()
+        == Some(HandleRecoveryErrorCode::LocalTransitionSuperseded.as_str())
+    {
+        return Err(recovery_error(
+            HandleRecoveryErrorCode::LocalTransitionSuperseded,
+        ));
+    }
     reconcile_frozen_intent_index(sqlite_path, &operation, &pending, &now_second_z()?)?;
     let operation =
         crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
@@ -1168,6 +1225,35 @@ async fn advance_v4(
     reconcile_v4_lifecycle_index(sqlite_path, &operation, &pending, &now_second_z()?)?;
     if pending.phase == PendingRecoveryPhaseV4::AwaitingFactor {
         return Err(recovery_error(HandleRecoveryErrorCode::FactorRetryRequired));
+    }
+    let allowed = crate::internal::identity_handle_recovery_context::operation_actions(
+        &operation,
+        &pending,
+        time::OffsetDateTime::now_utc(),
+    )?;
+    if pending.phase != PendingRecoveryPhaseV4::Applied {
+        let action = if pending.commit_attempted {
+            crate::identity::HandleRecoveryAction::Resume
+        } else {
+            if !first_commit_confirmed {
+                return Err(recovery_error(HandleRecoveryErrorCode::ActivationRequired));
+            }
+            crate::identity::HandleRecoveryAction::Activate
+        };
+        if !allowed.contains(&action) {
+            let code = if pending.last_error_code.as_deref()
+                == Some(HandleRecoveryErrorCode::StateChanged.as_str())
+            {
+                HandleRecoveryErrorCode::StateChanged
+            } else if !pending.commit_attempted
+                && allowed.contains(&crate::identity::HandleRecoveryAction::Prepare)
+            {
+                HandleRecoveryErrorCode::FactorRetryRequired
+            } else {
+                HandleRecoveryErrorCode::ActionNotAllowed
+            };
+            return Err(recovery_error(code));
+        }
     }
     if pending.phase == PendingRecoveryPhaseV4::ReadyToCommit {
         let _ = send_commit_v4(core, &store, &mut pending).await?;
@@ -1217,6 +1303,15 @@ async fn advance_v4(
     }
     if pending.phase == PendingRecoveryPhaseV4::LocalTransitionPending {
         if let Err(error) = apply_local_transition_v4(core, &store, &mut pending).await {
+            if service_code(&error)
+                == Some(HandleRecoveryErrorCode::LocalTransitionSuperseded.as_str())
+            {
+                return Err(error);
+            }
+            crate::internal::identity_handle_recovery_authority::reconcile_authorization_rejection(
+                core, &pending, &error,
+            )
+            .await?;
             let Some(code) = local_transition_retry_code(&error) else {
                 return Err(error);
             };
@@ -1248,7 +1343,7 @@ fn require_v4_local_migration_authority(
     Err(crate::ImError::PermissionDenied)
 }
 
-fn reconcile_frozen_intent_index(
+pub(crate) fn reconcile_frozen_intent_index(
     sqlite_path: &std::path::Path,
     operation: &crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord,
     pending: &PendingHandleRecoveryV4,
@@ -1331,7 +1426,7 @@ fn merge_commit_attempted_authorities(
     }
 }
 
-fn reconcile_v4_lifecycle_index(
+pub(crate) fn reconcile_v4_lifecycle_index(
     sqlite_path: &std::path::Path,
     operation: &crate::internal::identity_handle_recovery_operation::RecoveryOperationRecord,
     pending: &PendingHandleRecoveryV4,
@@ -1588,12 +1683,6 @@ async fn send_commit_v4(
             return Err(error);
         }
     };
-    if !pending.fresh_local_state {
-        crate::internal::identity_custody::confirm_handle_recovery_transition_published(
-            core, pending,
-        )
-        .await?;
-    }
     let revision = pending.revision;
     pending.record_remote_result(result)?;
     store.save_v4_cas(pending, revision)?;
@@ -1792,12 +1881,6 @@ async fn reconcile_result_v4(
     }
     match result {
         crate::internal::identity_wire::handle_recovery::RecoveryResultGetV4::Committed(result) => {
-            if !pending.fresh_local_state {
-                crate::internal::identity_custody::confirm_handle_recovery_transition_published(
-                    core, pending,
-                )
-                .await?;
-            }
             let revision = pending.revision;
             pending.record_remote_result(result)?;
             store.save_v4_cas(pending, revision)?;
@@ -1949,7 +2032,25 @@ async fn apply_local_transition_v4(
     let marker =
         crate::internal::identity_transition_pending::load(sqlite_path, &pending.operation_id)?
             .ok_or(crate::ImError::PermissionDenied)?;
+    if matches!(
+        marker.phase,
+        crate::internal::identity_transition_pending::TransitionPhase::Pending
+            | crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
+    ) {
+        crate::internal::identity_handle_recovery_authority::require_current_binding(
+            core, pending, &marker,
+        )
+        .await?;
+    }
     if marker.phase == crate::internal::identity_transition_pending::TransitionPhase::Pending {
+        // The immutable committed result is already durable and current WNS
+        // authority was checked before any fallible local custody finalization.
+        if !pending.fresh_local_state {
+            crate::internal::identity_custody::confirm_handle_recovery_transition_published(
+                core, pending,
+            )
+            .await?;
+        }
         if pending.fresh_local_state {
             crate::internal::identity_custody::adopt_controller_document_async(
                 core,
@@ -2728,7 +2829,7 @@ fn reset_reference_from_marker(
     })
 }
 
-fn progress_v4(
+pub(crate) fn progress_v4(
     core: &crate::core::ImCore,
     pending: &PendingHandleRecoveryV4,
 ) -> crate::ImResult<HandleRecoveryProgress> {
@@ -2762,6 +2863,50 @@ fn progress_v4(
         .map(reset_reference_from_marker)
         .transpose()?;
     let result = pending.remote_result.as_ref();
+    let operation = crate::internal::identity_handle_recovery_operation::load(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &pending.operation_id,
+    )?;
+    let mut allowed_actions = operation
+        .as_ref()
+        .map(|record| {
+            crate::internal::identity_handle_recovery_context::operation_actions(
+                record,
+                pending,
+                time::OffsetDateTime::now_utc(),
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if pending.phase == PendingRecoveryPhaseV4::Applied
+        && operation.as_ref().is_some_and(|record| record.lifecycle_class == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::Applied)
+    {
+        let index = crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities).load_index()?;
+        if index.credentials.values().any(|entry| entry.unique_id == pending.owner_identity_id
+            && entry.full_handle == pending.full_handle && entry.did == pending.identity.did.as_str()) {
+            allowed_actions.push(crate::identity::HandleRecoveryAction::ActivateIdentity);
+        }
+    }
+    let factor_expired = pending.phase == PendingRecoveryPhaseV4::ReadyToCommit
+        && !crate::internal::identity_handle_recovery_context::grant_fresh(
+            pending,
+            time::OffsetDateTime::now_utc(),
+        )?;
+    let terminal_code = operation
+        .as_ref()
+        .filter(|record| {
+            !crate::internal::identity_handle_recovery_context::is_actionable(
+                record.lifecycle_class,
+            )
+        })
+        .and_then(|record| record.last_error_code.as_deref())
+        .and_then(public_error_code);
+    let failure_code = terminal_code.or_else(|| pending.last_error_code.as_deref().and_then(public_error_code))
+        .or_else(|| operation.as_ref().and_then(|record| record.last_error_code.as_deref()).and_then(public_error_code))
+        .or_else(|| operation.is_none().then_some(HandleRecoveryErrorCode::UnknownEpoch))
+        .or_else(|| operation.as_ref().is_some_and(|record| record.key_state != crate::internal::identity_handle_recovery_operation::RecoveryKeyState::Available)
+            .then_some(HandleRecoveryErrorCode::LocalKeyUnavailable))
+        .or_else(|| factor_expired.then_some(HandleRecoveryErrorCode::FactorRetryRequired));
     let (unsupported_e2ee_group_count, unsupported_did_only_group_count) =
         if !pending.fresh_local_state {
             crate::internal::group_rebind_recovery::recovery_impact_counts(
@@ -2806,10 +2951,8 @@ fn progress_v4(
             unsupported_did_only_group_count,
         },
         reset_reference,
-        failure_code: pending
-            .last_error_code
-            .as_deref()
-            .and_then(public_error_code),
+        failure_code,
+        allowed_actions,
     })
 }
 
@@ -2894,8 +3037,13 @@ fn public_error_code(value: &str) -> Option<HandleRecoveryErrorCode> {
         HandleRecoveryErrorCode::OutcomeUnknown,
         HandleRecoveryErrorCode::LocalKeyUnavailable,
         HandleRecoveryErrorCode::LocalTransitionPending,
+        HandleRecoveryErrorCode::LocalTransitionSuperseded,
         HandleRecoveryErrorCode::LocalMigrationUnsupported,
         HandleRecoveryErrorCode::UnknownEpoch,
+        HandleRecoveryErrorCode::ActivationRequired,
+        HandleRecoveryErrorCode::RecoveryInProgress,
+        HandleRecoveryErrorCode::ActionNotAllowed,
+        HandleRecoveryErrorCode::StateChanged,
     ]
     .into_iter()
     .find(|code| code.as_str() == value)
@@ -2931,7 +3079,7 @@ fn format_timestamp(value: time::OffsetDateTime) -> crate::ImResult<String> {
         })
 }
 
-fn now_second_z() -> crate::ImResult<String> {
+pub(crate) fn now_second_z() -> crate::ImResult<String> {
     format_timestamp(
         time::OffsetDateTime::now_utc()
             .replace_nanosecond(0)
@@ -2979,7 +3127,9 @@ fn canonical_generation(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod postcommit_authority;
     mod retirement;
+    mod state_machine;
 
     #[test]
     fn fresh_recovery_builds_unsigned_predecessor_without_old_private_key() {
@@ -4608,7 +4758,7 @@ mod tests {
             );
         });
 
-        let progress = advance_v4(&core, operation_id).await.unwrap();
+        let progress = advance_v4(&core, operation_id, false).await.unwrap();
         server.join().unwrap();
         assert_eq!(progress.phase, HandleRecoveryPhase::RemoteOutcomeUnknown);
         assert_eq!(

@@ -83,6 +83,26 @@ pub(crate) async fn resolve_direct_handle_async(
     }
 }
 
+/// Recovery can inspect the public binding before its committed identity has
+/// been projected locally. This uses the same WNS authority and validation as
+/// an existing client, without requiring an authenticated local credential.
+pub(crate) async fn resolve_authoritative_recovery_binding_async(
+    core: &crate::core::ImCore,
+    raw_handle: &str,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let config = core.inner().sdk_config();
+    let handle = normalize_handle_with_default_domain(raw_handle, config.did_domain.as_str())?;
+    let url = authoritative_discovery_url(config, &handle);
+    let mut transport = crate::internal::transport::CorePlainTransport::new(core);
+    let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
+        &mut transport,
+        &url,
+        BTreeMap::new(),
+    )
+    .await?;
+    authoritative_lookup_from_public_document(&handle.full_handle, &raw)
+}
+
 pub(crate) async fn resolve_authoritative_handle_binding_async(
     client: &crate::core::ImClient,
     raw_handle: &str,
@@ -416,8 +436,14 @@ fn authoritative_discovery_url_for_client(
     client: &crate::core::ImClient,
     handle: &NormalizedHandle,
 ) -> String {
-    if is_local_handle(client, &handle.full_handle) {
-        let config = client.core_inner().sdk_config();
+    authoritative_discovery_url(client.core_inner().sdk_config(), handle)
+}
+
+fn authoritative_discovery_url(config: &crate::ImCoreConfig, handle: &NormalizedHandle) -> String {
+    if handle
+        .domain
+        .eq_ignore_ascii_case(config.did_domain.as_str())
+    {
         let configured_base = config
             .user_service_endpoint
             .as_ref()

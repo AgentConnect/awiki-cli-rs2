@@ -55,6 +55,10 @@ pub(crate) fn provision_registration_identity(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
+    crate::internal::identity_handle_recovery_context::require_registration_admission(
+        core,
+        &format!("{local_part}.{domain}"),
+    )?;
     let mut manager = open_controller_manager(core)
         .map_err(|error| registration_identity_stage_error(error, "native_manager_open"))?;
     remove_exact_retired_registration_identities(core, &mut manager, domain, local_part)
@@ -197,6 +201,10 @@ pub(crate) async fn provision_registration_identity_async(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
+    crate::internal::identity_handle_recovery_context::require_registration_admission(
+        core,
+        &format!("{local_part}.{domain}"),
+    )?;
     #[cfg(feature = "provider-traits")]
     if let Some(custody) = core.inner().identity_custody_provider() {
         let paths = core.inner().sdk_paths().identities.clone();
@@ -784,6 +792,7 @@ pub(crate) async fn provision_handle_recovery_identity_async(
         },
     );
     let custody = controller_custody_provider(core).await?;
+    let registration_identity = reserved_registration_identity(core, domain, local_part)?;
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
@@ -795,6 +804,7 @@ pub(crate) async fn provision_handle_recovery_identity_async(
         if descriptor.state != ProviderIdentityState::Active
             || projected.contains(&descriptor.reference.identity_id)
             || historical_predecessors.contains(&descriptor.reference.did)
+            || registration_identity.as_deref() == Some(descriptor.reference.identity_id.as_str())
             || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
@@ -1368,6 +1378,7 @@ fn find_unprojected_handle_identities(
         .filter_map(|entry| entry.anp_identity_id.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
     let historical_dids = historical_handle_dids(core, &format!("{local_part}.{domain}"))?;
+    let registration_identity = reserved_registration_identity(core, domain, local_part)?;
     let did_prefix = format!("did:wba:{domain}:user:{local_part}:e1_");
     let endpoint = format!("https://{domain}/.well-known/handle/{local_part}");
     let mut matches = Vec::new();
@@ -1375,6 +1386,7 @@ fn find_unprojected_handle_identities(
         if descriptor.state != anp_identity::PublicIdentityState::Active
             || projected.contains(descriptor.reference.identity_id.as_str())
             || historical_dids.contains(&descriptor.reference.did)
+            || registration_identity.as_deref() == Some(descriptor.reference.identity_id.as_str())
             || !descriptor.reference.did.starts_with(&did_prefix)
         {
             continue;
@@ -3328,6 +3340,22 @@ fn open_managed_identity(
             did: did.to_owned(),
         })
         .map_err(map_facade_error)
+}
+
+fn reserved_registration_identity(
+    core: &crate::ImCore,
+    domain: &str,
+    local_part: &str,
+) -> crate::ImResult<Option<String>> {
+    use crate::internal::identity_registration_pending::PendingRegistrationStore;
+    let store = match PendingRegistrationStore::from_core(core) {
+        Ok(store) => store,
+        Err(crate::ImError::LocalStateUnavailable { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(store
+        .load(local_part, domain)?
+        .map(|(_, pending)| pending.identity.controller_identity_id))
 }
 
 fn historical_handle_dids(

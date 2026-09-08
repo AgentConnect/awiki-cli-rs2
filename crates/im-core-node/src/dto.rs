@@ -1053,6 +1053,7 @@ pub struct NodeHandleRecoveryProgress {
     pub phase: String,
     pub failure_code: Option<String>,
     pub retryable: bool,
+    pub allowed_actions: Vec<String>,
     pub impact: NodeHandleRecoveryImpact,
 }
 
@@ -1664,6 +1665,11 @@ pub(crate) fn recovery_progress(
         phase: recovery_phase(value.phase).to_owned(),
         failure_code,
         retryable,
+        allowed_actions: value
+            .allowed_actions
+            .into_iter()
+            .map(|action| recovery_action(action).to_owned())
+            .collect(),
         impact: NodeHandleRecoveryImpact {
             local_ordinary_data_will_migrate: value.impact.local_ordinary_data_will_migrate,
             other_devices_must_rejoin: value.impact.other_devices_must_rejoin,
@@ -1684,6 +1690,20 @@ pub(crate) fn recovery_operation_summary(
         last_error_code: value.last_error_code,
         created_at: value.created_at,
         updated_at: value.updated_at,
+    }
+}
+
+fn recovery_action(value: im_core::identity::HandleRecoveryAction) -> &'static str {
+    use im_core::identity::HandleRecoveryAction::*;
+    match value {
+        StartNew => "start_new",
+        RequestOtp => "request_otp",
+        Prepare => "prepare",
+        Activate => "activate",
+        Resume => "resume",
+        DiscardPreAttempt => "discard_pre_attempt",
+        QuarantineKeyUnavailable => "quarantine_key_unavailable",
+        ActivateIdentity => "activate_identity",
     }
 }
 
@@ -2077,6 +2097,34 @@ fn digest_hex(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_actions_preserve_the_core_admission_names() {
+        use im_core::identity::HandleRecoveryAction::*;
+        assert_eq!(
+            [
+                StartNew,
+                RequestOtp,
+                Prepare,
+                Activate,
+                Resume,
+                DiscardPreAttempt,
+                QuarantineKeyUnavailable,
+                ActivateIdentity
+            ]
+            .map(recovery_action),
+            [
+                "start_new",
+                "request_otp",
+                "prepare",
+                "activate",
+                "resume",
+                "discard_pre_attempt",
+                "quarantine_key_unavailable",
+                "activate_identity"
+            ]
+        );
+    }
 
     #[test]
     fn identity_peer_and_sync_dtos_have_stable_golden_shapes() {

@@ -625,14 +625,69 @@ class DartHandleRecoveryAccountEpochReceipt {
           metadataJson == other.metadataJson;
 }
 
+enum DartHandleRecoveryAction {
+  startNew,
+  requestOtp,
+  prepare,
+  activate,
+  resume,
+  discardPreAttempt,
+  quarantineKeyUnavailable,
+  activateIdentity,
+}
+
+class DartHandleRecoveryContext {
+  final String fullHandle;
+  final String? localIdentityId;
+  final DartHandleRecoveryOperationSummary? operation;
+  final DartHandleRecoveryProgress? progress;
+  final List<DartHandleRecoveryAction> allowedActions;
+  final DartHandleRecoveryErrorCode? blockedReason;
+
+  const DartHandleRecoveryContext({
+    required this.fullHandle,
+    this.localIdentityId,
+    this.operation,
+    this.progress,
+    required this.allowedActions,
+    this.blockedReason,
+  });
+
+  @override
+  int get hashCode =>
+      fullHandle.hashCode ^
+      localIdentityId.hashCode ^
+      operation.hashCode ^
+      progress.hashCode ^
+      allowedActions.hashCode ^
+      blockedReason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryContext &&
+          runtimeType == other.runtimeType &&
+          fullHandle == other.fullHandle &&
+          localIdentityId == other.localIdentityId &&
+          operation == other.operation &&
+          progress == other.progress &&
+          allowedActions == other.allowedActions &&
+          blockedReason == other.blockedReason;
+}
+
 enum DartHandleRecoveryErrorCode {
   factorRetryRequired,
   resultAbsent,
   outcomeUnknown,
   localKeyUnavailable,
   localTransitionPending,
+  localTransitionSuperseded,
   localMigrationUnsupported,
   unknownEpoch,
+  activationRequired,
+  recoveryInProgress,
+  actionNotAllowed,
+  stateChanged,
 }
 
 class DartHandleRecoveryImpact {
@@ -805,6 +860,7 @@ class DartHandleRecoveryProgress {
   final DartHandleRecoveryImpact impact;
   final DartHandleRecoveryResetReference? resetReference;
   final DartHandleRecoveryErrorCode? failureCode;
+  final List<DartHandleRecoveryAction> allowedActions;
 
   const DartHandleRecoveryProgress({
     required this.operationId,
@@ -819,6 +875,7 @@ class DartHandleRecoveryProgress {
     required this.impact,
     this.resetReference,
     this.failureCode,
+    required this.allowedActions,
   });
 
   @override
@@ -834,7 +891,8 @@ class DartHandleRecoveryProgress {
       phase.hashCode ^
       impact.hashCode ^
       resetReference.hashCode ^
-      failureCode.hashCode;
+      failureCode.hashCode ^
+      allowedActions.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -852,7 +910,8 @@ class DartHandleRecoveryProgress {
           phase == other.phase &&
           impact == other.impact &&
           resetReference == other.resetReference &&
-          failureCode == other.failureCode;
+          failureCode == other.failureCode &&
+          allowedActions == other.allowedActions;
 }
 
 class DartHandleRecoveryResetReference {

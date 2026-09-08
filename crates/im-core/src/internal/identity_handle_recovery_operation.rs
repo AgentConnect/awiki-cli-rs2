@@ -422,7 +422,7 @@ pub(crate) fn record_nonterminal_error(
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     let changed = connection
         .execute(
-            "UPDATE handle_recovery_operations_v4 SET last_error_code=?2,updated_at=?3 WHERE operation_id=?1 AND lifecycle_class IN ('pre_commit','remote_unresolved')",
+            "UPDATE handle_recovery_operations_v4 SET last_error_code=?2,updated_at=?3 WHERE operation_id=?1 AND lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed','local_transition_pending')",
             rusqlite::params![operation_id, last_error_code, now],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;

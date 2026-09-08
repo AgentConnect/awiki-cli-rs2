@@ -92,6 +92,32 @@ new P5 PreKey publication, and transport-only P4 group convergence. Dart is a ty
 projection of that state machine; it does not implement a second state machine. Core creates
 the opaque operation ID when OTP is requested, and every later call addresses that exact ID.
 
+首次提交只能从带有明确 user-presence 的 `activate_handle_recovery` 进入。
+`resume_handle_recovery` 不获得首次提交权限：当两份持久化尝试依据一致为未尝试且状态为
+`ready_to_commit` 时，返回稳定码 `activation_required`，不创建发布候选、发 Commit 或改写
+尝试标记。提交尝试的半写仍按原有一致性规则收敛，不能为允许 resume 人工置真。
+
+#### 恢复上下文与动作准入
+
+`inspect_handle_recovery_context` 以当前 Core root 和 canonical full Handle 定位操作，
+可选 selector 只用于约束当前本地身份，不允许 default/alias 推断其他 owner。返回已有
+operation summary、可读取的 progress、本地身份 ID、Core 派生的 `allowed_actions` 与
+稳定原因，不增加新的业务账本或上下文 token。多个活跃 owner/目标不一致时 fail closed。
+查询不生成身份/密钥、不发送 OTP/Commit、不清理材料；可修复的缺失投影仅限既有
+经过验证的 pre-OTP Vault 操作对应的 SQLite 索引，复用原 operation ID，不创建新的业务
+操作。现有冻结 owner/intent 的索引半写只按原一致性规则补齐。
+
+`HandleRecoveryProgress.allowed_actions` 与执行侧使用同一 Core 动作规则。App 不从错误
+文案或自行维护的布尔组合推导业务权限；完成命令的幂等返回不获得新的 mutation 权限。
+准备完成但 Grant 过期时允许同操作重新发码/验证，而不是继续首次提交；成功补 factor
+清除过期提示，保持 identity/intent。提交前补 factor 若发现绑定已变化，仅允许明确
+discard，返回 `state_changed_requires_new_operation`，不静默重建或替换密钥。
+
+注册候选创建及已缓存注册 pending 的复用都先检查同 Handle 的恢复准入：存在活跃
+Recovery 或未索引恢复材料时返回 `recovery_in_progress`。Recovery 不能复用仍由
+registration pending 占用的 custody。异步注册、恢复 prepare/advance 与既有删除路径
+使用相同 Handle→owner 锁序，避免 owner 冻结期间的进程内跨流程竞争。
+
 Recovery 候选身份筛选与注册复用同一历史 DID 排除规则：已完成的
 `identity_transition_pending` 中的前驱/后继，以及 exact completed retirement binding，
 都不能作为“未投影的新身份”复用。该排除依据是删除凭证后仍保留的非秘密 Core 记录，
@@ -1558,3 +1584,11 @@ Conversation-level read state is separate from reliable sync checkpoints:
   mandatory and is never inferred from a thread key. A read-only delta or
   snapshot emits a committed conversation/thread invalidation after the read
   projection transaction succeeds.
+
+### 已提交后被新绑定取代的收敛
+
+本轮确认现有 `identity_transition_pending.phase` 仅有 pending/identity_switched/completed，不能表达“远端已提交但旧本地收尾不再合法”，若只关闭 operation 则活跃 marker 仍占 owner 槽。因此在当前开发版增加内部 `superseded` phase（SQLite 42）：仅在匹配冻结 operation/owner/Handle/committed generation 的权威 WNS 读取证明更高绑定代次且 DID 已变化后，在同一 SQLite 事务中关闭 marker 与 operation。metadata 保存最小非秘密权威观察；保留原 committed result、冻结 intent、密钥、所有旧数据，不伪造 applied receipt，不改写新 DID 的投影。41→42 只扩充该表 CHECK，逐列完整保留记录和索引，不删除开发用户数据。
+
+本地投影/后续 JWT/PreKey 前重新核对权威绑定；网络错误、相同/倒退代次、单次 401/403 都不授权关闭。可重试失败仍保留原操作，已证明旧绑定失效返回稳定 `local_transition_superseded`，不再执行旧本地写入。后续用户可从已有 Join 入口加入当前身份，或按 Core 允许的显式新 Recovery/删除流程操作；不把旧完成记录当作可登录凭证。相同 DID 的单设备撤权分支只在 exact-device 授权拒绝后进行一次有界对账，当前 root-verified E1 文档必须证明已移除本次初始 bootstrap key。原始签名文档、当前签名文档或绑定不闭合时保持 pending。该分支已具备 Core 单元证据，真实多设备撤权验收仍须单独取得，不能用更高 WNS 代次的通过冒充。
+
+已解析并按冻结 intent 校验的 Commit/Result Get 成功结果，必须先落 Vault committed journal 和 operation index，再在本地 transition 阶段确认 custody publication。WNS 代次检查位于该 custody 确认及本地迁移之前。`record_nonterminal_error` 接受四种活跃 lifecycle（含 remote_committed/local_transition_pending），不把本地可重试失败二次覆盖为索引 PermissionDenied；终态仍不允许写入普通重试错误。

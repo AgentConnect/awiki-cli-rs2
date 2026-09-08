@@ -25,6 +25,7 @@ import {
   type GroupInput,
   type GroupMemberPage,
   type GroupMembersInput,
+  type HandleRecoveryAction,
   type HandleRecoveryOperationInput,
   type HandleRecoveryOperationSummary,
   type HandleRecoveryOtpInput,
@@ -429,6 +430,7 @@ function copyHandleRecoveryProgress(value: NativeHandleRecoveryProgress): Handle
     phase: value.phase,
     ...(value.failureCode === undefined ? {} : { failureCode: value.failureCode }),
     retryable: value.retryable,
+    allowedActions: [...value.allowedActions],
     impact: {
       localOrdinaryDataWillMigrate: value.impact.localOrdinaryDataWillMigrate,
       otherDevicesMustRejoin: value.impact.otherDevicesMustRejoin,

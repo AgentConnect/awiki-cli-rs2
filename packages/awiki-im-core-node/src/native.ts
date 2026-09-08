@@ -15,6 +15,7 @@ import type {
   GroupInput,
   GroupMemberPage,
   GroupMembersInput,
+  HandleRecoveryAction,
   HandleRecoveryOperationInput,
   HandleRecoveryOperationSummary,
   HandleRecoveryOtpInput,
@@ -77,6 +78,7 @@ export interface NativeHandleRecoveryProgress {
   readonly phase: HandleRecoveryPhase
   readonly failureCode?: string
   readonly retryable: boolean
+  readonly allowedActions: readonly HandleRecoveryAction[]
   readonly impact: {
     readonly localOrdinaryDataWillMigrate: boolean
     readonly otherDevicesMustRejoin: boolean

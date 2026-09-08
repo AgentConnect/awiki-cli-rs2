@@ -204,6 +204,30 @@ impl SafeError {
 
 fn service_error(status: Option<u16>, code: Option<&str>) -> SafeError {
     let code = code.unwrap_or_default().trim().to_ascii_lowercase();
+    use im_core::identity::HandleRecoveryErrorCode as Recovery;
+    if let Some(recovery) = [
+        Recovery::FactorRetryRequired,
+        Recovery::ResultAbsent,
+        Recovery::OutcomeUnknown,
+        Recovery::LocalKeyUnavailable,
+        Recovery::LocalTransitionPending,
+        Recovery::LocalTransitionSuperseded,
+        Recovery::LocalMigrationUnsupported,
+        Recovery::UnknownEpoch,
+        Recovery::ActivationRequired,
+        Recovery::RecoveryInProgress,
+        Recovery::ActionNotAllowed,
+        Recovery::StateChanged,
+    ]
+    .into_iter()
+    .find(|candidate| candidate.as_str() == code)
+    {
+        return SafeError::new(
+            recovery.as_str(),
+            "The operation requires the current Core-authorized action.",
+            recovery.retryable(),
+        );
+    }
     if matches!(
         code.as_str(),
         "invalid_otp" | "otp_invalid" | "identity.registration_verification_invalid"
@@ -286,6 +310,26 @@ pub(crate) fn napi_result<T>(result: SafeResult<T>) -> napi::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_admission_errors_keep_their_code_without_private_text() {
+        for (code, retryable) in [
+            ("activation_required", false),
+            ("recovery_in_progress", false),
+            ("local_transition_superseded", false),
+            ("local_transition_pending", true),
+        ] {
+            let projected = SafeError::from_im(im_core::ImError::Service {
+                status_code: None,
+                code: Some(code.to_owned()),
+                message: "secret=private-payload".to_owned(),
+                data: None,
+            });
+            assert_eq!(projected.code, code);
+            assert_eq!(projected.retryable, retryable);
+            assert!(!projected.safe_message.contains("private"));
+        }
+    }
 
     #[test]
     fn sensitive_core_sources_never_reach_the_safe_payload() {

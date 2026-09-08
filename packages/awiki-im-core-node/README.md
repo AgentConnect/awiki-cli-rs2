@@ -178,3 +178,5 @@ Tier 1 平台使用独立 optional package；wrapper 会显式区分 glibc 与 m
 不回退 TypeScript SDK。第一版五平台矩阵、AGPL test channel、SBOM、checksum、provenance 和
 无源码安装验证见 `docs/node-sdk/awiki-im-core-node-artifacts.md`。仓库不包含自动 npm publish
 job；正式 registry 发布仍是独立 release 动作。
+
+Recovery progress includes Core-derived `allowedActions`. `resumeHandleRecovery` rejects an unattempted operation with `activation_required`; only explicit `activateHandleRecovery` admits the first Commit. `local_transition_superseded` preserves the committed result while refusing obsolete local finalization. Hosts must not infer activation or cleanup permission from a phase or error message.
