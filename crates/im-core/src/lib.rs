@@ -15,10 +15,10 @@ pub mod external_http_auth;
 pub mod groups;
 pub mod identity;
 pub mod ids;
-pub mod information_publication;
 #[cfg(feature = "sqlite")]
 pub mod local_state_upgrade;
 pub mod messages;
+pub mod object_proofs;
 pub mod onboarding;
 pub mod paths;
 pub mod prelude;

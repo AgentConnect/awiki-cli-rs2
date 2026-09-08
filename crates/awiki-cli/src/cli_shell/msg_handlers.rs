@@ -9,6 +9,22 @@ use crate::workspace_config::Resolved;
 use im_core::prelude::{MessageBody, MessageKind};
 use serde_json::{json, Map, Value};
 
+fn check_expected_sender(expected: &str, actual: &str) -> Result<(), ExitError> {
+    if expected.is_empty() || expected == actual {
+        return Ok(());
+    }
+    Err(ExitError::new(
+        "sender_identity_mismatch",
+        2,
+        "Selected sender identity differs from the expected DID",
+        "Select the intended local identity. No message was sent.",
+    ))
+}
+
+#[cfg(test)]
+#[path = "sender_assertion_tests.rs"]
+mod sender_assertion_tests;
+
 fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
     let requested = requested.trim();
     if requested.is_empty() {
@@ -331,6 +347,10 @@ impl App {
             &resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
+        check_expected_sender(
+            &string_flag(command, "expected-sender-did"),
+            client.did().as_str(),
+        )?;
         let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core(
             &resolved, &client, request,
         )
@@ -398,6 +418,10 @@ impl App {
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
         .await?;
+        check_expected_sender(
+            &string_flag(command, "expected-sender-did"),
+            client.did().as_str(),
+        )?;
         let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core_async(
             &resolved, &client, request,
         )
@@ -457,6 +481,10 @@ impl App {
         let client = crate::m_core_cli_adapter::build_im_client(
             resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        check_expected_sender(
+            &string_flag(command, "expected-sender-did"),
+            client.did().as_str(),
         )?;
         let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
             resolved,
@@ -522,6 +550,10 @@ impl App {
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
         .await?;
+        check_expected_sender(
+            &string_flag(command, "expected-sender-did"),
+            client.did().as_str(),
+        )?;
         let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
             resolved,
             &client,

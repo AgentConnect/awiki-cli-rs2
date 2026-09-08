@@ -284,9 +284,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
     enforce_command_policy(command)?;
 
     match command.name.as_str() {
-        "node-publication.sign" | "node-publication.request" | "node-publication.notify" => {
-            app.run_node_publication_async(command).await
-        }
+        "proof.sign-object" | "http.request" => app.run_generic_capability_async(command).await,
         "init" => app.run_init_async().await,
         "onboarding.claim" => app.run_onboarding_claim_async(command).await,
         "onboarding.resume" => app.run_onboarding_resume_async(command).await,
@@ -730,5 +728,5 @@ fn async_only_error(command: &str) -> ExitError {
 }
 
 #[cfg(test)]
-#[path = "node_publication_tests.rs"]
-mod node_publication_tests;
+#[path = "generic_capability_tests.rs"]
+mod generic_capability_tests;

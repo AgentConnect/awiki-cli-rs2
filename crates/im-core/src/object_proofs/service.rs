@@ -1,4 +1,4 @@
-use super::InformationPublicationReview;
+use super::ObjectProofReview;
 use crate::internal::identity_provider::{
     ProviderKeyAlgorithm, ProviderKeySelector, ProviderSignRequest, ProviderSigningPurpose,
 };
@@ -6,25 +6,25 @@ use crate::internal::transport::{AsyncAuthenticatedRpcTransport, CoreHttpTranspo
 use crate::{ImClient, ImError, ImResult};
 
 #[derive(Debug, serde::Serialize)]
-pub struct InformationPublicationCapability {
-    pub profile: String,
+pub struct ObjectProofCapability {
+    pub cryptosuite: String,
     pub signer_did: String,
     pub verification_method: String,
 }
-pub struct InformationPublicationService<'a> {
+pub struct ObjectProofService<'a> {
     client: &'a ImClient,
 }
 impl ImClient {
-    pub fn information_publication(&self) -> InformationPublicationService<'_> {
-        InformationPublicationService { client: self }
+    pub fn object_proofs(&self) -> ObjectProofService<'_> {
+        ObjectProofService { client: self }
     }
 }
-impl InformationPublicationService<'_> {
+impl ObjectProofService<'_> {
     /// Checks the exact active device before prompting. Signing repeats this check after review.
-    pub async fn inspect_capability_async(&self) -> ImResult<InformationPublicationCapability> {
+    pub async fn inspect_capability_async(&self) -> ImResult<ObjectProofCapability> {
         let (kid, _, _) = self.current_device().await?;
-        Ok(InformationPublicationCapability {
-            profile: "awiki-information-publish-v1".to_owned(),
+        Ok(ObjectProofCapability {
+            cryptosuite: "eddsa-jcs-2022".to_owned(),
             signer_did: self.client.did().as_str().to_owned(),
             verification_method: kid,
         })
@@ -63,25 +63,23 @@ impl InformationPublicationService<'_> {
         }
         Ok((kid, document, observed))
     }
-    /// Signs only the reviewed publication snapshot with the current active device.
+    /// Signs the fixed reviewed JSON object with the current active device.
     /// Hosts must collect confirmation themselves; an incoming message is not authorization.
-    /// This method does not submit Proofs or send notifications.
+    /// This method does not submit objects or send notifications.
     pub async fn sign_reviewed_async(
         &self,
-        review: InformationPublicationReview,
-        confirmed_intent_hash: &str,
+        review: ObjectProofReview,
+        expected_object_hash: &str,
     ) -> ImResult<serde_json::Value> {
-        if review.intent_hash() != confirmed_intent_hash {
+        if review.object_hash() != expected_object_hash {
             return Err(ImError::PermissionDenied);
         }
-        review.check_time(chrono::Utc::now().timestamp())?;
         let client = self.client;
         let signer = client.runtime().key_provider.as_ref();
         let (kid, document, observed) = self.current_device().await?;
-        review.check_time(chrono::Utc::now().timestamp())?;
         let public_key = signer.public_key(&kid)?;
         let prepared = anp::proof::prepare_object_proof(
-            &review.snapshot,
+            &review.object,
             &public_key,
             &kid,
             client.did().as_str(),
@@ -104,7 +102,6 @@ impl InformationPublicationService<'_> {
         } else {
             signer.sign_device_assertion(&kid, prepared.signing_input())?
         };
-        review.check_time(chrono::Utc::now().timestamp())?;
         if observed.elapsed().as_secs() >= 5 {
             return Err(ImError::PermissionDenied);
         }

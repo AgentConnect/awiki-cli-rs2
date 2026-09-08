@@ -389,7 +389,7 @@ pub fn cutover_status(raw: &str) -> CutoverStatus {
 pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_any_command_prefix(name, &["onboarding", "node-publication"]) {
+    if has_any_command_prefix(name, &["onboarding", "proof", "http"]) {
         return Some(CutoverStatus::ImCore);
     }
     if is_one_of(
@@ -606,7 +606,7 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "node-publication") {
+    if has_any_command_prefix(name, &["proof", "http"]) {
         return CommandAudience::AdvancedUser;
     }
     if has_command_prefix(name, "id.device") {
@@ -711,10 +711,9 @@ pub fn command_audience(raw: &str) -> CommandAudience {
 pub fn primary_owner(raw: &str) -> CommandOwner {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "node-publication") {
+    if has_any_command_prefix(name, &["proof", "http"]) {
         return match name {
-            "node-publication.request" => CommandOwner::ImCoreAuth,
-            "node-publication.notify" => CommandOwner::ImCoreMessages,
+            "http.request" => CommandOwner::ImCoreAuth,
             _ => CommandOwner::ImCoreIdentity,
         };
     }
@@ -806,7 +805,7 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
-    if has_command_prefix(name, "node-publication") {
+    if has_any_command_prefix(name, &["proof", "http"]) {
         return CliShellRole::ParsesInputOnly;
     }
     if matches!(
@@ -1287,10 +1286,11 @@ macro_rules! cmd {
 
 fn default_specs() -> &'static [CommandSpec] {
     &[
-        CommandSpec { name: "node-publication", use_: "node-publication", short: "Node publication bridge", long: "The bridge reads one bounded closed JSON object from stdin. Signing requires an interactive terminal confirmation of the exact intent hash.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json"], flags: &[] },
-        CommandSpec { name: "node-publication.sign", use_: "sign", short: "Review and sign a fixed Node publication snapshot from stdin", long: "The bridge reads one bounded closed JSON object from stdin. Signing requires an interactive terminal confirmation of the exact intent hash.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "node-publication.sign", side_effect: true, outputs: &["json"], flags: &[] },
-        CommandSpec { name: "node-publication.request", use_: "request", short: "Send one authenticated Node management request from stdin", long: "The bridge reads one bounded closed JSON object from stdin. Signing requires an interactive terminal confirmation of the exact intent hash.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "node-publication.request", side_effect: true, outputs: &["json"], flags: &[] },
-        CommandSpec { name: "node-publication.notify", use_: "notify", short: "Send a fixed publication review notification from stdin", long: "Requires exact sender DID, full recipient Handle and persisted message/event IDs. Only the closed review notification payload is accepted.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "node-publication.notify", side_effect: true, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "proof", use_: "proof", short: "Standard JSON Object Proofs", long: "Reads bounded closed JSON input. Identity and authentication remain owned by the SDK.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "proof.sign-object", use_: "sign-object", short: "Interactively sign a fixed JSON object from stdin", long: "Reads bounded closed JSON input. Identity and authentication remain owned by the SDK.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "proof.sign-object", side_effect: true, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "http", use_: "http", short: "Authenticated HTTP requests", long: "Reads bounded closed JSON input. Identity and authentication remain owned by the SDK.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &["json"], flags: &[] },
+        CommandSpec { name: "http.request", use_: "request", short: "Send one exact authenticated HTTPS request from stdin", long: "Reads bounded closed JSON input. Identity and authentication remain owned by the SDK.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "http.request", side_effect: true, outputs: &["json"], flags: &[] },
+
         cmd!("status", "status", "Show the current CLI, workspace, and identity status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
@@ -1351,7 +1351,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "id.profile.set", use_: "set", short: "Update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("display-name", "string", "Profile display name"), flag!("bio", "string", "Profile bio"), flag!("tags", "string", "Comma-separated tags"), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path"), flag!("avatar-uri", "string", "Profile avatar URI"), flag!("avatar-url", "string", "Compatibility alias for --avatar-uri", deprecated)] },
         CommandSpec { name: "id.import-v1", use_: "import-v1", short: "Import credentials from the v1 awiki-agent-id-message layout", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.import-v1", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Import one legacy identity by name"), flag!("all", "bool", "Import all detected legacy identities")] },
         CommandSpec { name: "msg", use_: "msg", short: "Messaging commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
-        CommandSpec { name: "msg.send", use_: "send", short: "Send a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("to", "string", "Direct message target"), flag!("group", "string", "Group target"), flag!("text", "string", "Inline message text or attachment caption"), flag!("text-file", "string", "Message body or attachment caption file path"), flag!("payload", "string", "Inline JSON object message payload"), flag!("payload-file", "string", "JSON object message payload file path"), flag!("file", "string", "Attachment file path"), flag!("mime-type", "string", "Attachment MIME type override"), flag!("type", "string", "Message type", default = "text"), flag!("secure", "string", "Secure mode", default = "off", choices = ["off", "required"]), flag!("client-message-id", "string", "Client message id for idempotent sends"), flag!("idempotency-key", "string", "Delivery idempotency key") ] },
+        CommandSpec { name: "msg.send", use_: "send", short: "Send a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("expected-sender-did", "string", "Refuse sending unless the selected identity has this exact DID"), flag!("to", "string", "Direct message target"), flag!("group", "string", "Group target"), flag!("text", "string", "Inline message text or attachment caption"), flag!("text-file", "string", "Message body or attachment caption file path"), flag!("payload", "string", "Inline JSON object message payload"), flag!("payload-file", "string", "JSON object message payload file path"), flag!("file", "string", "Attachment file path"), flag!("mime-type", "string", "Attachment MIME type override"), flag!("type", "string", "Message type", default = "text"), flag!("secure", "string", "Secure mode", default = "off", choices = ["off", "required"]), flag!("client-message-id", "string", "Client message id for idempotent sends"), flag!("idempotency-key", "string", "Delivery idempotency key") ] },
         CommandSpec { name: "msg.attachment", use_: "attachment", short: "Attachment commands", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "msg.attachment.download", use_: "download", short: "Download one attachment from a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.attachment.download", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("with", "string", "Direct peer DID or handle"), flag!("group", "string", "Group DID"), flag!("message-id", "string", "Visible message id or raw message_id", required), flag!("attachment-id", "string", "Attachment id when the message contains multiple attachments"), flag!("output", "string", "Output file path", required)] },
         CommandSpec { name: "msg.inbox", use_: "inbox", short: "Read inbox messages", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.inbox", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("scope", "string", "Message scope", default = "all", choices = ["all", "direct", "group"]), flag!("with", "string", "Direct peer filter"), flag!("group", "string", "Group filter"), flag!("unread", "bool", "Only unread messages"), flag!("limit", "int", "Maximum number of results", default = "20"), flag!("mark-read", "bool", "Mark returned messages as read")] },

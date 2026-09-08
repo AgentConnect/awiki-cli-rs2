@@ -25,7 +25,7 @@ ImClient                  # identity-bound product client
         +-- realtime()
         +-- email()
         +-- content() / site()
-        +-- information_publication() # fixed Node publication profile; device signing only
+        +-- object_proofs()          # standard JSON object proofs; current device assertion key
 ```
 
 ## 2. Crate Boundaries

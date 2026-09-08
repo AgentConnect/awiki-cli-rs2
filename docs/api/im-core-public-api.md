@@ -1100,32 +1100,29 @@ redirects manual, submit only response status and headers, and avoid logging
 the patch. Production hosts must not expose this service through browser RPC,
 model tools or an untrusted signing endpoint.
 
-### 7.2 Node Markdown 发布业务签名
+### 7.2 通用 JSON Object Proof
 
-`ImClient::information_publication()` 返回 `InformationPublicationService`。它只签署
-`awiki-information-publish-v1`，不提供任意 JSON 签名或私钥导出。
+`ImClient::object_proofs()` 返回 `ObjectProofService`。应用负责业务 schema、可信目标、原文、权限、业务期限和用户授权；SDK 不认识某个产品的租户、轮次、通知或正文。
 
-- `InformationPublicationReview::parse(snapshot_json, markdown, trusted_target, tenant_id, operation_id, expected_intent_hash)`
-  接收原始闭合快照 JSON，拒绝嵌套重复字段、未知字段、非安全整数、非规范 UUID/时间和不匹配的目标。
-  对原始 UTF-8 Markdown 计算 SHA-256，并对固定快照计算 JCS 哈希。返回不可反序列化的 review。
-- Host 使用 `presentation()` 安全展示原文和完整快照，取得用户对 `intent_hash()` 的明确确认。
-  可信 Origin、service ID、租户和 operation 来自本地选择；消息内容不能代替该选择或确认。
-- `inspect_capability_async()` 在确认前核对可签设备，返回公开的 profile / DID / verificationMethod；
-  `sign_reviewed_async(review, confirmed_intent_hash)` 在确认后重新读取当前身份的 Device Registry 和公开 DID 文档，
-  核对 registry checkpoint 文档摘要、active 设备、Manifest 中的 signing/e2ee key、assertionMethod 和 e1 绑定。
-  Root key、撤销设备、非当前签名键、超过 5 秒的观测或过期快照均拒绝。通过现有 identity provider
-  的 `DeviceAssertion` 或对应本地设备 signer 签名，再以实时文档自验，仅返回该 Proof。
-- HTTP 仍使用 `external_http_auth()`；业务签名不代替请求认证。IM 仍使用 `messages().send_async()`。
-  本 facade 不提交 Node 请求、不创建成员、不注册身份、不发送消息。
+- `ObjectProofReview::parse(raw_json, expected_object_hash)` 接收最多 1 MiB 的原始 JSON 对象，构造 Map 前拒绝任意深度重复键、NUL、超过 JCS 安全整数范围的整数。允许标准 JCS 可表示的有限浮点值；数值为整数时，即使使用指数/小数写法也必须在安全整数范围内，保证 canonical 输出可再次解析。应用可以有更严格的数字合同。
+- 按 ANP Object Proof 移除整个顶层 `proof`，保留嵌套业务字段，然后计算 JCS SHA-256 并核对预期摘要。得到不可反序列化、字段不可外部改写的固定 review。
+- `presentation()` 返回对象及 `object_hash()`；宿主以安全转义形式展示，授权必须绑定实际固定对象。SDK 不验证对象的业务含义，不把某个字段叫作 `expiresAt` 就解释成业务权限。
+- `inspect_capability_async()` 返回当前设备的公开 DID、verification method 和 cryptosuite。
+- `sign_reviewed_async(review, expected_object_hash)` 再核对固定摘要，读取当前 Device Registry 与公开 DID 文档，检查 checkpoint 摘要、e1 绑定、active 设备、Manifest signing/e2ee key 和 assertionMethod。仅使用当前设备 Ed25519 key，根控制 key、撤销 key 或超过 5 秒的身份观测失败关闭。
+- 签名复用 identity provider `DeviceAssertion` 与 ANP prepare/complete 原语，生成标准 `eddsa-jcs-2022` Proof 并按当前文档自验，仅返回 Proof。业务期限由宿主在调用前后及提交前检查。
 
-实际 CLI 桥接为 `awiki-cli --identity <local-alias> --format json node-publication sign|request|notify`：
-闭合 JSON 经 stdin 输入，sign 在控制终端展示并要求键入完整哈希；不接受 `confirmed:true`。
-request 只允许显式 HTTPS Origin 的指定租户管理路径，禁用重定向，最多采用 SDK 的一次 401 认证重试；
-成功只输出 HTTP status、content-type 和 base64 body，不输出任何认证 Header。
-notify 接受固定 review 引用、准确发送方 DID、完整收件 Handle 和预先保存的消息 ID，保留 SDK delivery 状态。
-三项命令拒绝 dry-run 伪成功。Node CLI 负责不可变恢复文件、回执对账和业务 ID；这些不进入 SDK 密钥存储。
+CLI 的通用本地命令如下，均使用显式 `--identity <local-alias>`：
 
-本轮只完成 Rust/CLI 入口，不增加 Dart/App facade。单元验证不代表真实 Node/User Service/Message Service 联调通过。
+| 命令 | stdin / 输出合同 |
+|---|---|
+| `proof sign-object` | 闭合信封 `{object_json: string, object_hash: string}`。确认前检查设备，在控制终端展示实际 DID、固定对象与摘要；要求键入完整 object_hash。输出 `{proof, signer_did, object_hash}`。拒绝 dry-run 和 `confirmed:true` 等未知字段。 |
+| `http request` | 闭合信封 `{origin, method, path, headers?: [{name,value}], body_base64?: string}`。Origin 必须显式 HTTPS，路径必须为同源相对绝对路径，不跟随重定向。普通 headers 保留；SDK 管理的认证/版本 Header 不可注入，运输层 Host/长度等也不可覆盖。 |
+
+`http request` 复用 `external_http_auth()`，不复制签名、Token 缓存或挑战算法。发送完全相同的普通 headers/body，最多按 SDK 合同一次 401 重试；先处理响应认证信息，再返回 `{status, content_type, body_base64}`，不导出认证 headers。`body_base64: null` 或省略表示无 body，空字符串表示显式空 body；现有 4 MiB 请求体、32 MiB 响应体上限保留。CLI 不解释 tenant 路径或业务 query，调用方负责其业务目标范围。
+
+通知/普通 JSON 消息复用 `msg send --payload-file ... --client-message-id ... --idempotency-key ...`。可选 `--expected-sender-did` 在消息和附件实际发送前核对所选身份，拒绝 alias 变化造成的误发。结果仍为既有消息投影：`data.delivery.accepted`、`delivery_state` 和 message/operation IDs。仅本地保存不等于远端接受，远端接受也不等于对方已读取。
+
+此版本没有产品专用签名/通知入口或通用私钥导出。当前只实现 Rust/CLI，不增加 Dart/App facade；真实服务互操作需要另行运行验收。
 
 ## 8. messages
 
