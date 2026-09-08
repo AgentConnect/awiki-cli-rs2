@@ -15,7 +15,7 @@ construct an [`ImCore`](#minimal-rust-example), bind an identity into an
 
 ## Status
 
-- Current crate version: `0.1.1`.
+- Current crate version: `0.1.2`.
 - Rust toolchain: Rust `1.88.0` or newer, matching this workspace's
   `rust-toolchain.toml`.
 - Public API is still evolving while the Awiki client stack is being split into

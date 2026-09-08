@@ -145,7 +145,7 @@ fn schema_41_upgrade_adds_only_disposable_display_state() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        43
+        crate::internal::local_state::schema::SCHEMA_VERSION
     );
     assert!(claim(
         &db,
@@ -266,7 +266,7 @@ fn schema_41_and_42_upgrade_preserves_recovery_rows_and_terminal_constraint() {
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         assert_eq!(
             crate::internal::local_state::schema::current_schema_version(&db).unwrap(),
-            43
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -310,14 +310,14 @@ fn schema_42_rejects_missing_terminal_constraint_without_advancing_version() {
 }
 
 #[test]
-fn schema_43_rejects_missing_cache_or_terminal_shape() {
+fn current_schema_rejects_missing_cache_or_terminal_shape() {
     for table in ["display_profile_cache", "identity_transition_pending"] {
         let (db, _) = fixture();
         db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
         assert!(crate::internal::local_state::schema::ensure_schema(&db).is_err());
         assert_eq!(
             crate::internal::local_state::schema::current_schema_version(&db).unwrap(),
-            43
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
     }
 }
