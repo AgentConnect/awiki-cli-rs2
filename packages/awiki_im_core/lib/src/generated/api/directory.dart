@@ -28,6 +28,16 @@ Future<DartDirectoryResolution> lookupHandle({
   handle: handle,
 );
 
+Future<List<DartDisplayProfile>> refreshDisplayProfiles({
+  required ArcDartImClient client,
+  required List<String> peers,
+  required bool force,
+}) => RustLib.instance.api.crateApiDirectoryRefreshDisplayProfiles(
+  client: client,
+  peers: peers,
+  force: force,
+);
+
 Future<List<DartDisplayProfile>> hydrateDisplayProfiles({
   required ArcDartImClient client,
   required List<String> peers,

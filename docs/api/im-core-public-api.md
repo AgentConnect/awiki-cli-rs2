@@ -238,8 +238,8 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 41。pre-open canonical runner 只拥有 schema 27；已经完成
-canonical cutover 的 schema 28 到 41 必须返回 `not_required`，随后由普通 Core open
+当前 target 为 schema 43。pre-open canonical runner 只拥有 schema 27；已经完成
+canonical cutover 的 schema 28 到 43 必须返回 `not_required`，随后由普通 Core open
 推进或校验。普通 open 严格识别 release/0714 schema 28-31 以及两条开发线曾产生的
 v32-v34 合法形态，并在单一事务中收敛为 hydration projection、subject-scoped checkpoint、
 可证明的旧 Direct WireIdentity 修复、v2 account/message sync、read recovery，以及
@@ -264,12 +264,15 @@ schema 38 只新增 `registration_retired_join_rollovers` 表和 owner/phase/upd
 恢复升级前完整 scope 备份，不能改写 `user_version` 或删除 journal。
 schema 40 的历史开发形态只补齐 `message_sync_run_state`，并为
 `sync_lane_capability_state` 增加可空的 `client_instance_id` 与
-`negotiated_capabilities_json`。schema 39 和 40 都在一个事务内直接收敛到 schema 41，
+`negotiated_capabilities_json`。schema 39 和 40 都在一个事务内直接收敛到 schema 43，
 既保留已有 capability 行，也不会把另一个租户或另一份数据库的状态带入当前 scope。schema 41
 在同一结构事务内补齐 V1B 的七张 durable lane 表和四个索引，并在提交后幂等搬迁可无损重建的
 旧 P6 blocker；无法无损重建的记录保留原行并写入 repair 状态。正式兼容输入仍从
 release/0714 的 schema 36 开始；schema 39/40 的专用路径用于收敛已经产生的 release 候选和
 当前开发数据库，不扩大对任意其他中间开发形态的兼容承诺。
+schema 42 保留 Recovery terminal transition 的 `superseded` 阶段；schema 43 新增 owner-scoped
+`display_profile_cache`，只保存可丢弃的展示资料。完整的 schema 41/42 在单一事务内升级到 43，
+保留 Recovery journal、身份与历史数据；当前形态同时校验 terminal transition 和展示缓存列。
 未知、残缺或混合得无法证明的同号形态必须 fail closed，不能被猜测性迁移或静默删除。
 
 P2+ API：
@@ -880,11 +883,19 @@ impl IdentityService<'_> {
 }
 ```
 
+`list_pending_handle_recovery_operations()` 在当前 Core state root 内发现未完成的恢复，
+包括尚未写入公共身份列表的 fresh owner；保留默认关闭的能力门禁。
+返回既有非秘密 operation summary，排除 applied、discarded、superseded 与 terminal 历史。
+查询不访问远端，不提交、续跑或丢弃恢复，也不改变身份绑定。Host 只投影当前租户的
+operation ID 和完整 Handle；多个操作须让用户显式选择，再查询该操作的进度。
+浏览器保存的 operation ID 仅是选中提示，不能替代 Core 的发现与校验。
+
 Manifest Handle Recovery V4.0 是 host-neutral、默认关闭的 Core 能力。Host 通过
 `ImCoreOpenOptions.multi_device_handle_recovery_enabled` 显式开启后，使用
 `ImCore::handle_recovery()` 的 typed 操作：`request_handle_recovery_otp`、
 `prepare_handle_recovery`、`activate_handle_recovery`、`resume_handle_recovery`、
 `handle_recovery_status`、`inspect_handle_recovery_context`、`list_handle_recovery_operations`、
+`list_pending_handle_recovery_operations`、
 `discard_handle_recovery_pre_attempt`、`quarantine_handle_recovery_key_unavailable`、
 `authorized_handle_recovery_receipt`、`activate_authorized_join` 和
 `resume_authorized_join_activation`；metrics 另有只读快照。`status` 和 list 只读；
@@ -1599,6 +1610,12 @@ string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私�
 旧响应只有 `versionId` 时 `profile_version` 保持 `None`。
 
 `hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，过期 Persona Profile 返回 `is_stale = true`，仅由旧 contact `name/nick_name` 补出的兼容值额外返回 `legacy_fallback = true`。调用方可以先稳定显示旧值，再合并一次显式远端刷新，并始终按 `display_name -> handle -> did` fallback。Persona Profile 一旦存在，即使其 `display_name` 为空也不得用 contact 旧名称补回；权威响应清空名称时必须回退 Handle，而不是永久保留旧值。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。`public_profile` 成功后，如果目标 DID 已绑定到 verified Persona，Core 会持久更新该 Persona 的可变展示字段，使后续 `hydrate_display_profiles` 在 Core/client 重建后仍返回最新值；该投影保留 verified Handle，且不会为 contact-only 目标创建 Persona、route 或 canonical conversation。
+
+`refresh_display_profiles_async` 是显式的展示资料刷新入口，接收最多 100 个 DID 和 `force` 标志，返回按请求顺序排列的 `DisplayProfile`。它复用公开 Profile 传输与解析，不调用会创建 Direct / contact 的业务投影。普通请求复用有效缓存；并发请求通过 owner + DID 的短期租约合并，失败保留旧资料并有界退避。每个对象的网络失败通过稳定 warning 返回，不中断同批其他对象。网络读取不持有 SQLite 事务。
+
+已绑定且仍为 current DID 的 Persona 更新既有 `peer_profiles`；未绑定 DID 的资料写入 Core 的可丢弃、owner-scoped `display_profile_cache`，不能建立 Persona、route、conversation 或 contact。后续 verified Persona 优先于 DID-only cache；权威空昵称不得被旧 contact 名称补回。刷新提交核对租约和开始时的 Persona 投影，防止晚到响应覆盖新的绑定或资料。此缓存纳入本地 schema 升级与身份清理。
+
+宿主在显示群成员、消息发送者及系统事件参与者时安排后台刷新，优先返回本地投影；完成后按 owner/session fence 更新 UI。刷新失败不得阻塞消息收发、群操作或 Reliable Sync，也不能改写其 checkpoint / patch。`hydrate_display_profiles` 继续只读本地。
 
 当前身份的账号级 Profile 快照由 User Service Account State 持有。非 Core 调用方取得该权威快照后，只能通过 identity registry 的 owner-scoped、幂等 display projection API 更新本机 `IdentitySummary.display_name`；不得直接改写 registry 文件或按 credential alias 猜测目标身份。该投影只影响本机展示 cache，不改变 DID、Handle、认证、路由、设备绑定或 SessionEpoch。
 

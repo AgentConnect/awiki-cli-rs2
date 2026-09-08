@@ -6,6 +6,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+#[cfg(feature = "provider-traits")]
+#[path = "local_reset.rs"]
+mod local_reset;
+
 pub struct IdentityRegistry<'a> {
     core: &'a crate::core::ImCore,
 }

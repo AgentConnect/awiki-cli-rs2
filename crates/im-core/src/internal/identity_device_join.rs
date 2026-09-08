@@ -45,6 +45,58 @@ const JOIN_STATE_SCHEMA_VERSION: u32 = 3;
 const JOIN_CREATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
 const JOIN_STATE_LOCK_FILE: &str = ".awiki-device-join-state.lock";
+
+/// Collect only this root's validated New Device custody, including pre-session enrollment journals.
+#[cfg(feature = "provider-traits")]
+pub(crate) fn local_provider_identity_references(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<Vec<crate::provider::ProviderIdentityRef>> {
+    let mut references = Vec::new();
+    for session in JoinStateStore::new(core).list()? {
+        if session.side != DeviceJoinSide::NewDevice {
+            continue;
+        }
+        if let Some(custody) = session.join_custody {
+            references.push(crate::provider::ProviderIdentityRef {
+                store_id: custody.store_id,
+                identity_id: custody.identity_id,
+                did: session.join_request.did.as_str().to_owned(),
+            });
+        }
+    }
+    let store = DeviceJoinCreationJournalStore::new(core);
+    let entries = match fs::read_dir(
+        core.inner()
+            .sdk_paths()
+            .identities
+            .identity_root_dir
+            .join(JOIN_STATE_DIR),
+    ) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(references),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("creation-journal") {
+            continue;
+        }
+        let journal: DeviceJoinCreationJournal = serde_json::from_slice(&fs::read(&path)?)
+            .map_err(|_| invalid_state("device Join creation journal JSON is unreadable"))?;
+        if store.path(&journal.operation_id) != path {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        journal.validate()?;
+        if let Some(custody) = journal.custody {
+            references.push(crate::provider::ProviderIdentityRef {
+                store_id: custody.store_id,
+                identity_id: custody.identity_id,
+                did: journal.did.as_str().to_owned(),
+            });
+        }
+    }
+    Ok(references)
+}
 const JOIN_CHALLENGE_LEN: usize = 32;
 const JOIN_NONCE_LEN: usize = 12;
 const JOIN_RANDOM_ID_LEN: usize = 16;

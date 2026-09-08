@@ -1302,6 +1302,41 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn refresh_display_profiles(
+        &self,
+        input: NodeDisplayProfileBatchInput,
+        force: Option<bool>,
+    ) -> napi::Result<Vec<NodeDisplayProfile>> {
+        napi_result(
+            self.refresh_display_profiles_inner(input, force.unwrap_or(false))
+                .await,
+        )
+    }
+
+    async fn refresh_display_profiles_inner(
+        &self,
+        input: NodeDisplayProfileBatchInput,
+        force: bool,
+    ) -> SafeResult<Vec<NodeDisplayProfile>> {
+        let operation = self.inner.operation().await?;
+        let client = operation.client()?;
+        let request = crate::dto::display_profile_batch_request(input, client.did_domain())?;
+        let profiles = self
+            .inner
+            .wait_im(
+                client.directory().refresh_display_profiles_async(
+                    im_core::directory::DisplayProfileRefreshRequest {
+                        peers: request.peers,
+                        force,
+                    },
+                ),
+                self.inner.operation_timeout,
+            )
+            .await?;
+        Ok(crate::dto::display_profiles(profiles))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn hydrate_display_profiles(
         &self,
         input: NodeDisplayProfileBatchInput,
@@ -2111,6 +2146,28 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn list_pending_handle_recovery_operations(
+        &self,
+    ) -> napi::Result<Vec<NodeHandleRecoveryOperationSummary>> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let environment = operation.environment()?;
+                let values = environment
+                    .core
+                    .handle_recovery()
+                    .list_pending_handle_recovery_operations()
+                    .map_err(SafeError::from_im)?;
+                Ok(values
+                    .into_iter()
+                    .map(crate::dto::recovery_operation_summary)
+                    .collect())
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn get_handle_recovery_status(
         &self,
         input: NodeHandleRecoveryOperationInput,
@@ -2266,9 +2323,40 @@ impl NativeImCoreNodeClient {
         let provider = identity_provider
             .as_ref()
             .map(|provider| provider as &dyn im_core::provider::IdentityCustody);
+        let core = self
+            .inner
+            .environment
+            .read()
+            .await
+            .as_ref()
+            .ok_or_else(SafeError::closed)?
+            .core
+            .clone();
+        let external = provider.is_some();
+        let (owned, cleared_identity_dids) =
+            tokio::task::spawn_blocking(move || -> im_core::ImResult<_> {
+                let owned = if external {
+                    core.identities().local_provider_identity_references()?
+                } else {
+                    Vec::new()
+                };
+                let dids = core
+                    .identities()
+                    .list()?
+                    .into_iter()
+                    .map(|identity| identity.did.as_str().to_owned())
+                    .chain(owned.iter().map(|reference| reference.did.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                Ok((owned, dids))
+            })
+            .await
+            .map_err(|_| SafeError::internal())?
+            .map_err(SafeError::from_im)?;
         self.inner
             .wait_safe(
-                clear_identity_provider_data(provider),
+                clear_identity_provider_data(provider, &owned),
                 self.inner.operation_timeout,
             )
             .await?;
@@ -2311,35 +2399,40 @@ impl NativeImCoreNodeClient {
             )
             .await?,
         );
-        Ok(NodeClearLocalDataResult { cleared })
+        Ok(NodeClearLocalDataResult {
+            cleared,
+            cleared_identity_dids,
+        })
     }
 }
 
 async fn clear_identity_provider_data(
     provider: Option<&dyn im_core::provider::IdentityCustody>,
+    owned: &[im_core::provider::ProviderIdentityRef],
 ) -> SafeResult<()> {
     let Some(provider) = provider else {
         return Ok(());
     };
-    let mut identities = provider
+    let identities = provider
         .list_identities()
         .await
         .map_err(crate::external_identity::safe_provider_error)?;
-    identities.sort_by(|left, right| {
-        (
-            left.reference.store_id.as_str(),
-            left.reference.identity_id.as_str(),
-            left.reference.did.as_str(),
-        )
-            .cmp(&(
-                right.reference.store_id.as_str(),
-                right.reference.identity_id.as_str(),
-                right.reference.did.as_str(),
-            ))
-    });
-    for identity in identities {
+    // Missing identities are already cleared. A changed binding must fail before any deletion.
+    let mut targets = Vec::new();
+    for reference in owned {
+        if let Some(identity) = identities.iter().find(|candidate| {
+            candidate.reference.store_id == reference.store_id
+                && candidate.reference.identity_id == reference.identity_id
+        }) {
+            if identity.reference != *reference {
+                return Err(SafeError::internal());
+            }
+            targets.push(reference);
+        }
+    }
+    for reference in targets {
         provider
-            .delete_identity(&identity.reference)
+            .delete_identity(reference)
             .await
             .map_err(crate::external_identity::safe_provider_error)?;
     }
@@ -3245,9 +3338,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_identity_provider_data_removes_active_and_pending_profile_identities() {
+    async fn clear_identity_provider_data_preserves_other_tenant_and_unowned_identities() {
+        let owned = vec![
+            provider_identity(
+                "a-enrolling",
+                im_core::provider::ProviderIdentityState::Enrolling,
+            )
+            .reference,
+            provider_identity("z-active", im_core::provider::ProviderIdentityState::Active)
+                .reference,
+        ];
         let provider = ClearingIdentityProvider {
             identities: std::sync::Mutex::new(vec![
+                provider_identity(
+                    "other-tenant",
+                    im_core::provider::ProviderIdentityState::Active,
+                ),
+                provider_identity(
+                    "unowned-pending",
+                    im_core::provider::ProviderIdentityState::Enrolling,
+                ),
                 provider_identity("z-active", im_core::provider::ProviderIdentityState::Active),
                 provider_identity(
                     "a-enrolling",
@@ -3257,14 +3367,27 @@ mod tests {
             ..Default::default()
         };
 
-        clear_identity_provider_data(Some(&provider)).await.unwrap();
-        clear_identity_provider_data(Some(&provider)).await.unwrap();
+        clear_identity_provider_data(Some(&provider), &[])
+            .await
+            .unwrap();
+        assert!(provider.deleted.lock().unwrap().is_empty());
+        clear_identity_provider_data(Some(&provider), &owned)
+            .await
+            .unwrap();
+        clear_identity_provider_data(Some(&provider), &owned)
+            .await
+            .unwrap();
 
-        assert!(provider
-            .identities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty());
+        assert_eq!(
+            provider
+                .identities
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|identity| identity.reference.identity_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["other-tenant", "unowned-pending"]
+        );
         assert_eq!(
             *provider
                 .deleted
@@ -3272,6 +3395,24 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec!["a-enrolling".to_owned(), "z-active".to_owned()]
         );
+    }
+
+    #[tokio::test]
+    async fn clear_identity_provider_data_validates_all_bindings_before_deleting_any() {
+        let first = provider_identity("first", im_core::provider::ProviderIdentityState::Active);
+        let second = provider_identity("second", im_core::provider::ProviderIdentityState::Active);
+        let mut changed = second.reference.clone();
+        changed.did = "did:wba:other.example:changed".to_owned();
+        let provider = ClearingIdentityProvider {
+            identities: std::sync::Mutex::new(vec![first.clone(), second]),
+            ..Default::default()
+        };
+        assert!(
+            clear_identity_provider_data(Some(&provider), &[first.reference, changed])
+                .await
+                .is_err()
+        );
+        assert!(provider.deleted.lock().unwrap().is_empty());
     }
 
     #[test]

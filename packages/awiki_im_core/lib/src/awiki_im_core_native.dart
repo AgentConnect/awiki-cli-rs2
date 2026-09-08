@@ -1097,6 +1097,17 @@ class DirectoryApi {
     return resolution._toModel();
   }
 
+  /// Refresh display data without creating a contact or Direct conversation.
+  Future<List<DisplayProfile>> refreshDisplayProfiles(
+    List<String> peers, {bool force = false}
+  ) async {
+    _client._ensureNotDisposed();
+    final profiles = await _mapNativeErrors(() => gen_directory.refreshDisplayProfiles(
+      client: _client._inner, peers: peers, force: force,
+    ));
+    return profiles.map((profile) => profile._toModel()).toList();
+  }
+
   Future<List<DisplayProfile>> hydrateDisplayProfiles(
     List<String> peers,
   ) async {

@@ -126,6 +126,10 @@ pub(crate) const OWNER_BUSINESS_DELETE_TABLES: &[OwnerDeleteTable] = &[
         delete_owner_dids: false,
     },
     OwnerDeleteTable {
+        table: "display_profile_cache",
+        delete_owner_dids: false,
+    },
+    OwnerDeleteTable {
         table: "peer_profiles",
         delete_owner_dids: false,
     },

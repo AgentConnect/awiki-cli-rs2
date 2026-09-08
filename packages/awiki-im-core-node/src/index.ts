@@ -242,6 +242,11 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.resolvePeer(peer))
   }
 
+  /** Explicit display-only refresh; never opens Direct conversations or adds contacts. */
+  public refreshDisplayProfiles(input: DisplayProfileBatchInput, force = false): Promise<readonly NodeDisplayProfile[]> {
+    return call(() => this.native.refreshDisplayProfiles({ peers: [...input.peers] }, force))
+  }
+
   public hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]> {
     return call(() => this.native.hydrateDisplayProfiles({ peers: [...input.peers] }))
   }
@@ -353,6 +358,11 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(async () => copyHandleRecoveryProgress(await this.native.activateHandleRecovery(input)))
   }
 
+  /** Discover Core-owned unfinished recovery after browser/Host restart. */
+  public listPendingHandleRecoveryOperations(): Promise<readonly HandleRecoveryOperationSummary[]> {
+    return call(() => this.native.listPendingHandleRecoveryOperations())
+  }
+
   public getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress> {
     return call(async () => copyHandleRecoveryProgress(await this.native.getHandleRecoveryStatus(input)))
   }
@@ -369,7 +379,7 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.retireDefaultIdentityForRejoin())
   }
 
-  public clearLocalData(): Promise<{ readonly cleared: boolean }> {
+  public clearLocalData(): Promise<{ readonly cleared: boolean; readonly clearedIdentityDids?: readonly string[] }> {
     return call(() => this.native.clearLocalData())
   }
 

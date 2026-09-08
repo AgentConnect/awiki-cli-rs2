@@ -664,6 +664,17 @@ async fn join_start_emits_mixed_profiles() {
             SecretKind::IdentityDeviceSigningPrivate | SecretKind::IdentityE2eeAgreementPrivate
         )));
     let custody = stored.join_custody.unwrap();
+    assert_eq!(
+        candidate
+            .identities()
+            .local_provider_identity_references()
+            .unwrap(),
+        vec![crate::provider::ProviderIdentityRef {
+            store_id: custody.store_id.clone(),
+            identity_id: custody.identity_id.clone(),
+            did: started.session.did.as_str().to_owned(),
+        }]
+    );
     let manager = crate::internal::identity_custody::open_controller_manager(&candidate).unwrap();
     let descriptor = manager
         .list()
@@ -710,6 +721,18 @@ async fn join_start_resumes_enrollment_after_crash_before_local_session_commit()
         .unwrap();
     let custody = journal.custody.clone().unwrap();
     assert!(journal.enrollment.is_some());
+    let owned = vec![crate::provider::ProviderIdentityRef {
+        store_id: custody.store_id.clone(),
+        identity_id: custody.identity_id.clone(),
+        did: generated.did.as_str().to_owned(),
+    }];
+    assert_eq!(
+        candidate
+            .identities()
+            .local_provider_identity_references()
+            .unwrap(),
+        owned
+    );
     let identities = crate::internal::identity_custody::open_controller_manager(&candidate)
         .unwrap()
         .list()
@@ -739,6 +762,13 @@ async fn join_start_resumes_enrollment_after_crash_before_local_session_commit()
         .load(operation_id)
         .unwrap()
         .is_none());
+    assert_eq!(
+        candidate
+            .identities()
+            .local_provider_identity_references()
+            .unwrap(),
+        owned
+    );
     let identities = crate::internal::identity_custody::open_controller_manager(&candidate)
         .unwrap()
         .list()

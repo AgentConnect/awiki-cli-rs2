@@ -1005,6 +1005,7 @@ export interface ImCoreNodeClient {
   updateProfile(input: UpdateProfileInput): Promise<NodeProfile>
   resolvePeer(peer: string): Promise<NodePeer>
   hydrateDisplayProfiles(input: DisplayProfileBatchInput): Promise<readonly NodeDisplayProfile[]>
+  refreshDisplayProfiles(input: DisplayProfileBatchInput, force?: boolean): Promise<readonly NodeDisplayProfile[]>
   createGroup(input: CreateGroupInput): Promise<NodeGroup>
   addGroupMember(input: AddGroupMemberInput): Promise<NodeGroupMember>
   getGroup(input: GroupInput): Promise<NodeGroup>
@@ -1033,13 +1034,14 @@ export interface ImCoreNodeClient {
   requestHandleRecoveryOtp(input: HandleRecoveryOtpInput): Promise<HandleRecoveryOtpResult>
   prepareHandleRecovery(input: HandleRecoveryPrepareInput): Promise<HandleRecoveryProgress>
   activateHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
+  listPendingHandleRecoveryOperations(): Promise<readonly HandleRecoveryOperationSummary[]>
   getHandleRecoveryStatus(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   resumeHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryProgress>
   discardHandleRecovery(input: HandleRecoveryOperationInput): Promise<HandleRecoveryOperationSummary>
   /** Retires only this device's default identity credential so it can rejoin without deleting ordinary local data. */
   retireDefaultIdentityForRejoin(): Promise<void>
   /** Permanently removes this state root's SDK-owned local data and keeps the client open. */
-  clearLocalData(): Promise<{ readonly cleared: boolean }>
+  clearLocalData(): Promise<{ readonly cleared: boolean; readonly clearedIdentityDids?: readonly string[] }>
   /** Rejects new work, cancels cancel-safe I/O, drains in-flight work, and releases the state lock. */
   close(): Promise<void>
 }

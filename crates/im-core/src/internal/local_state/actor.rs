@@ -344,6 +344,19 @@ enum LocalStateCommand {
         lookup: crate::directory::HandleLookupResult,
         reply: oneshot::Sender<crate::ImResult<String>>,
     },
+    ClaimDisplayProfileRefresh {
+        owner: String,
+        did: crate::ids::Did,
+        force: bool,
+        reply: oneshot::Sender<crate::ImResult<Option<super::display_profile_cache::RefreshLease>>>,
+    },
+    FinishDisplayProfileRefresh {
+        owner: String,
+        did: crate::ids::Did,
+        lease: super::display_profile_cache::RefreshLease,
+        profile: Option<crate::identity::Profile>,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     GetPersonaDisplayProfile {
         owner_identity_id: String,
         peer: crate::ids::PeerRef,
@@ -1546,6 +1559,42 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             lookup,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn claim_display_profile_refresh(
+        &self,
+        owner: String,
+        did: crate::ids::Did,
+        force: bool,
+    ) -> crate::ImResult<Option<super::display_profile_cache::RefreshLease>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ClaimDisplayProfileRefresh {
+            owner,
+            did,
+            force,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn finish_display_profile_refresh(
+        &self,
+        owner: String,
+        did: crate::ids::Did,
+        lease: super::display_profile_cache::RefreshLease,
+        profile: Option<crate::identity::Profile>,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::FinishDisplayProfileRefresh {
+            owner,
+            did,
+            lease,
+            profile,
             reply,
         })
         .await?;
@@ -2967,6 +3016,36 @@ fn run_actor(
                     &lookup,
                 );
                 let _ = reply.send(result);
+            }
+            LocalStateCommand::ClaimDisplayProfileRefresh {
+                owner,
+                did,
+                force,
+                reply,
+            } => {
+                let _ = reply.send(super::display_profile_cache::claim(
+                    &connection,
+                    &owner,
+                    &did,
+                    force,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                ));
+            }
+            LocalStateCommand::FinishDisplayProfileRefresh {
+                owner,
+                did,
+                lease,
+                profile,
+                reply,
+            } => {
+                let _ = reply.send(super::display_profile_cache::finish(
+                    &connection,
+                    &owner,
+                    &did,
+                    &lease,
+                    profile,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                ));
             }
             LocalStateCommand::GetPersonaDisplayProfile {
                 owner_identity_id,
