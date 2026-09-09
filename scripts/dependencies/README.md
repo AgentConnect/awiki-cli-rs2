@@ -53,6 +53,12 @@ python3 scripts/dependencies/build.py --profile release --package awiki-cli
 [registry-Cargo.lock](../release/registry-Cargo.lock)，删除临时 source 清单/锁，
 重新通过 registry 检查再合并消费者 PR。正式发布入口拒绝未撤销的 source 清单。
 
+上海集成分支的 `dependencies.source.json` 固定 Identity PR #6 的 `244e74ce` 和
+本仓 Core PR #30 的 `7f2ebf9e`；两个 SHA 均已推送且包含 Release 合并结果。
+Core 选择的是新增联调清单之前的同一份运行时源码，避免移动分支和自引用来源。
+`dependencies.source.Cargo.lock` 由上述 source 入口生成；配套 source check 与
+registry check 仍独立执行，不把未发布的 SDK 候选当成已发布依赖。
+
 ## 已有发布入口
 
 CLI、Daemon、Node 制品流程继续使用 [registry-build.py](../release/registry-build.py)。
