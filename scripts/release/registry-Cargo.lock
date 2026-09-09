@@ -112,9 +112,9 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d36b51444c205f42edbf7543d9f9b9d1f4b862ebb17d6f0a03625fc00a32dc6b"
+checksum = "5badb57b9c4240bcec1c61e4f290232005cb0a04f1b481ccb2731c9a1eb61e1b"
 dependencies = [
  "base64",
  "bs58",
@@ -152,9 +152,9 @@ dependencies = [
 
 [[package]]
 name = "anp-identity"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b54b4c3db120462aa58d8bb65a5e26bc00fc9ff5261d6aaf04db0e7ad74730b8"
+checksum = "e76945f16eece3d1d3057a52ae6df4cc2eadc46900b20f48b1a11cdaafa383f7"
 dependencies = [
  "anp",
  "base64",
@@ -364,6 +364,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
@@ -380,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.93"
+version = "0.1.94"
 dependencies = [
  "anp",
  "anp-identity",
@@ -411,9 +412,9 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd02f19c2c8e01bc99bb4194e2b2ee6b202a7641fdf8d58802d34ebc0df5de4"
+checksum = "7576ff768be8a2ed793f0ac06048c89534b91ce8d0e83a60458033901f3cbe6f"
 dependencies = [
  "anp",
  "anp-identity",
@@ -450,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anp",
  "async-trait",
