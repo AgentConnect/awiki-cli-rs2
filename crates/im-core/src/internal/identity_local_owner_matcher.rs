@@ -201,7 +201,8 @@ ORDER BY owner_identity_id"#,
                 None
             };
             if let Some(epoch_relation) = epoch_relation {
-                if crate::internal::identity_retirement::matches_completed_binding(
+                if crate::internal::identity_local_deletion::matches_completed_binding(
+                    sqlite_path,
                     identity_root_dir,
                     owner_identity_id,
                     retired_did,
@@ -293,7 +294,8 @@ ORDER BY owner_identity_id"#,
         return Ok(StableOwnerMatch::Conflict);
     }
     Ok(
-        if crate::internal::identity_retirement::matches_completed_binding(
+        if crate::internal::identity_local_deletion::matches_completed_binding(
+            sqlite_path,
             identity_root_dir,
             owner_identity_id,
             binding_did,

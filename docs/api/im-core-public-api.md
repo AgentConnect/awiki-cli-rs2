@@ -638,6 +638,15 @@ schema 版本提升。
 百分比灰度。host 只可通过全局配置做应急回滚；该配置不改变 cursor、replica 或 Event
 Envelope 语义，也不影响独立的 Direct/Group E2EE rollout gate。
 
+显式本地删除包含该身份关联的恢复材料清理，不要求用户先完成恢复，也不调用远端撤销或提交。
+删除确认前可只读查询 `has_pending_local_identity_recovery`，按稳定 owner 与完整 Handle 判断是否需要附加恢复清理说明。
+Schema 44 在同一删除事务内将相关未完成 Recovery 和 initiator transition 标为 `locally_deleted`；这只表示本机用户决策，不能解释成远端失败或撤销。已完成的历史保留原终态，清理后的本地密钥状态为 `destroyed_by_deletion`。
+先写删除终态，后幂等清理新旧 custody 与 Vault，最后完成身份退役；重启续做删除。已完成的其他身份、远端账号及原删除模式之外的数据不扩大清理。
+普通恢复续跑仍遵守原提交语义；被删除的操作不能续跑、重新出现在待恢复列表或由迟到任务重新激活。删除后重新验证使用新操作和新密钥。
+`quarantine_handle_recovery_key_unavailable` 同样不能改变删除或其他完成终态，也不能重写
+已销毁的密钥状态。运行时在读取 custody 前拒绝，SQLite 在实际更新时再次检查，覆盖读取期间
+发生删除的情况；已隔离操作仍可幂等确认，正常的新恢复继续使用独立 operation。
+
 `delete_local_identity` 是纯本地、crash-safe 的身份退役事务。registry/default
 pointer tombstone 是目录与 Vault 清理之前的权威状态；Core open 会恢复中断阶段，并
 通过永久 identity-ID tombstone 清理由并发尾部任务晚写的 identity-scoped Vault
@@ -650,7 +659,7 @@ records。Host 的 realtime stop、runtime dispose 和任何网络 logout 都不
 
 `delete_local_identity_data` 保留为 Core-only host 的兼容入口，但 App 的“退出并删除当前数据”
 必须使用 `prepare_local_identity_data_deletion` → App Product-store delete →
-`complete_local_identity_data_deletion`。prepare 在任何 Product mutation 前完成 Recovery/Join
+`complete_local_identity_data_deletion`。prepare 在任何 Product mutation 前完成关联 Recovery 的本地删除标记及 Join
 admission 并写入 schema 39 的 secret-free ticket；ticket 一经创建不可取消。App 重启先读取
 `pending_local_identity_data_deletions`，幂等重做 Product 删除，再 complete 同一 ticket。
 admission 同时按 stable owner ID 与 canonical full Handle 匹配 active Recovery、transition、

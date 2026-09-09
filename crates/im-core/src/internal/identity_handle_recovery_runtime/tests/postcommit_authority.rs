@@ -217,14 +217,16 @@ fn superseded_close_requires_monotonic_binding_and_exact_local_authority() {
 }
 
 #[test]
-fn schema_43_preserves_same_development_pending_records() {
+fn current_schema_preserves_supported_pending_records() {
     let root = tempfile::tempdir().unwrap();
     let core = recovery_test_core(root.path(), "http://127.0.0.1:1", [109; 32]);
     let (pending, marker) = local_pending(&core, "recover-v4-schema-42-pending");
     let path = &core.inner().sdk_paths().local_state.sqlite_path;
     let connection = crate::internal::local_state::open_writable(path).unwrap();
     // Reconstruct only the previous CHECK in this disposable fixture.
-    let old_sql = transitions::IDENTITY_TRANSITION_SQL.replace(",'superseded'", "");
+    let old_sql = transitions::IDENTITY_TRANSITION_SQL
+        .replace(",'superseded'", "")
+        .replace(",'locally_deleted'", "");
     connection.execute_batch("ALTER TABLE identity_transition_pending RENAME TO fixture_transition_saved;
         DROP INDEX idx_identity_transition_source; DROP INDEX idx_identity_transition_active_owner;
         DROP INDEX idx_identity_transition_owner_phase; DROP INDEX idx_identity_transition_account_generation; DROP INDEX idx_identity_transition_handle_epoch;").unwrap();
@@ -234,7 +236,10 @@ fn schema_43_preserves_same_development_pending_records() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 43);
+    assert_eq!(
+        version,
+        crate::internal::local_state::schema::SCHEMA_VERSION
+    );
     assert_eq!(
         transitions::load(path, &pending.operation_id)
             .unwrap()

@@ -113,6 +113,8 @@ dependencies = [
 [[package]]
 name = "anp"
 version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d36b51444c205f42edbf7543d9f9b9d1f4b862ebb17d6f0a03625fc00a32dc6b"
 dependencies = [
  "base64",
  "bs58",
@@ -433,12 +435,10 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2",
- "tempfile",
  "time",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
- "uuid",
  "webpki-roots 0.26.11",
  "windows-sys 0.52.0",
  "x25519-dalek",

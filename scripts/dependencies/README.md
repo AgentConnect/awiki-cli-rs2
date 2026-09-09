@@ -53,6 +53,12 @@ python3 scripts/dependencies/build.py --profile release --package awiki-cli
 [registry-Cargo.lock](../release/registry-Cargo.lock)，删除临时 source 清单/锁，
 重新通过 registry 检查再合并消费者 PR。正式发布入口拒绝未撤销的 source 清单。
 
+上海集成分支的 `dependencies.source.json` 固定 Identity PR #6 和本仓 Core PR #30 的
+已推送提交，具体完整 SHA 以清单为准。Core 固定包含运行时修复的提交，后续清单维护不要求
+追逐同仓元数据提交，避免移动分支和自引用来源。
+`dependencies.source.Cargo.lock` 由上述 source 入口生成；配套 source check 与
+registry check 仍独立执行，不把未发布的 SDK 候选当成已发布依赖。
+
 ## 已有发布入口
 
 CLI、Daemon、Node 制品流程继续使用 [registry-build.py](../release/registry-build.py)。
@@ -60,14 +66,22 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-截至本轮验证，当前 CLI 需要的 `im_core::compat::identity_index` 尚不在固定的线上
-`awiki-im-core 0.1.1` 中。默认 registry 编译会明确报接口缺失；本地 Core 可联调。
-需要先发布包含该接口的 Core 版本，再更新 registry pin/lock。不要以本地替换绕过发布门禁。
+当前 `registry-dependencies.json` 已声明目标候选版本：Identity `0.2.2`、Core `0.1.2`；
+`registry-Cargo.lock` 仍保存旧的正式解析结果：Identity `0.2.1`、Core `0.1.1`。
+两者尚未完成正式依赖升级，不能将此状态视为 registry 构建通过。旧 Core 不提供当前消费者
+需要的 `im_core::compat::identity_index` 与 `inspect_handle_recovery_context` 等接口，
+因此不能把目标版本退回旧版来凑过来源检查。
+
+正式交付前先合并并发布含所需 API 的 SDK，再通过现有 registry 入口重新生成匹配的锁，
+更新正式 pin/lock、撤销 source 清单并通过 registry 检查。发布前保留真实的旧锁和明确的
+阻断状态，不手写未发布包的 checksum，也不将源码联调锁冒充正式锁。
 
 ### 2026-09-08 Recovery 选择性吸收
 
-源码来源锁与 CLI 配置的 Identity 输入统一为已合入的 `a0af4e1`；App 打包的 ANP 输入
-与本仓 `246d69e2` 一致。Identity 的独立测试路径修复不构成新的运行时兼容接口。
+源码来源锁与 CLI 配置的 Identity 输入统一为 `0f19cc3e`（`0.2.2`）：保留上海候选运行时，
+同时合入 Release 的 SDK 测试路径修复；显式 fixture 目录仍可覆盖默认解析路径。源码树
+摘要由 owner 的复制/哈希规则从该提交重新计算。App 打包的 ANP 输入与本仓 `246d69e2`
+一致。Identity 的独立测试路径修复不构成新的运行时兼容接口。
 这些 Git 来源修正不改变正式 registry 规则，也不表示已发布 SDK 自动包含工作区的新 API。
 如固定 registry SDK 不提供当前消费者所需能力，应先发布新版本、更新 registry pin/lock
 并重跑来源检查；不得使用源码替换或同版本覆盖发布绕过该门禁。
@@ -76,7 +90,22 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 Handle binding 查询。它保留正式 fixture 摘要、普通数据守恒、旧 E2EE 退役及 exact operation
 续跑断言，不通过跳过权威读取或放宽 publication 校验兼容旧测试。
 
-本轮只读核对 crates.io：最新 `awiki-im-core` 仍为 `0.1.1`，该已发布源码不含
-`inspect_handle_recovery_context`。因此没有把 registry pin 改成不存在的版本，也没有关闭
-正式来源门禁。本机显式 local 构建可验证本次修改，但正式打包仍须先完成 SDK 发布与 pin/lock
-更新；当前任务不执行该发布。
+本机显式 local/source 构建验证候选源码与真实解析来源，不证明候选 SDK 已发布。
+当前任务只修复和验证源码，不执行 SDK 发布；正式打包仍须完成上面的依赖交付步骤。
+
+### 2026-09-09 Review 修复验证
+
+Recovery 的 quarantine 只接受可处理生命周期与未销毁密钥；运行时提前拒绝，SQLite 更新
+条件再次保护删除终态。保留已尝试提交的审计、正常 quarantine/替代恢复和删除后新恢复，
+不改变协议、公共 DTO、schema 44 或 custody ownership，不恢复已删除密钥，不增加远端调用。
+
+本地 `cargo test -p awiki-im-core --lib --locked 'internal::identity_'`：348 通过；新用例
+在修复前确认失败。覆盖完成删除后公开 quarantine API、删除与替代链、终态和已销毁密钥。
+System 仓 `uv run pytest tests/non_did/test_handle_recovery_v1_contract.py -q`：24 通过，
+失败 0、跳过 0；这是本地契约检查，不连接服务。CLI 发布配置 8 项、依赖入口 6 项检查通过。
+Identity fixture 修复已同步到 CLI 配置与 ANP 来源锁，摘要由既有 owner 复制/哈希规则计算。
+按本轮本地验证范围，未运行远端 Recovery 产品 E2E，也未发布 SDK；上述结果不替代正式
+registry 来源验证或真实账号恢复验收。
+更新清单后，按 `--deps source --source-manifest dependencies.source.json --refresh-lock`
+重新生成联调锁，解析结果未变化；随后同入口 `--check` 通过，实际使用清单指定的新
+Identity/Core 源码完成 CLI 检查，未使用旧 registry SDK 替代。

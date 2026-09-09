@@ -251,6 +251,7 @@ pub enum HandleRecoveryOperationLifecycle {
     QuarantinedKeyUnavailable,
     SupersededByStateChange,
     FailedTerminal,
+    LocallyDeleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +261,7 @@ pub enum HandleRecoveryKeyState {
     TemporarilyLocked,
     PermanentlyUnavailable,
     DestroyedPreAttempt,
+    DestroyedByDeletion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

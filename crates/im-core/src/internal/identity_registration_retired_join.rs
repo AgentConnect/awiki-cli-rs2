@@ -458,7 +458,8 @@ pub(crate) fn recover_all(core: &crate::core::ImCore) -> crate::ImResult<()> {
     let mut by_owner = BTreeMap::<String, Vec<RetiredJoinRollover>>::new();
     for record in records {
         if record.phase == RetiredJoinRolloverPhase::Prepared
-            && !crate::internal::identity_retirement::matches_completed_binding(
+            && !crate::internal::identity_local_deletion::matches_completed_binding(
+                &core.inner().sdk_paths().local_state.sqlite_path,
                 &core.inner().sdk_paths().identities.identity_root_dir,
                 &record.owner_identity_id,
                 &record.retired_did,
@@ -612,7 +613,8 @@ FROM identity_account_bindings WHERE owner_identity_id=?1"#,
             || handle_scope.as_deref() != Some(entry.full_handle.as_str())
             || current_did != entry.did
             || binding_generation.is_some_and(|value| identity_generation != value)
-            || !crate::internal::identity_retirement::matches_completed_binding(
+            || !crate::internal::identity_local_deletion::matches_completed_binding(
+                &paths.local_state.sqlite_path,
                 &paths.identities.identity_root_dir,
                 &entry.unique_id,
                 &current_did,

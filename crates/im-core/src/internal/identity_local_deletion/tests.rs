@@ -63,94 +63,120 @@ fn deletion_allows_owner_without_active_control_state() {
 }
 
 #[test]
-fn deletion_requires_explicit_discard_for_unattempted_precommit() {
-    let (_root, path) = path();
-    insert_operation(&path, "alice", "recover_precommit_12345678");
-
-    let error = prepare_with_id(
-        &path,
-        &snapshot("alice"),
-        LocalIdentityDeletionMode::CredentialOnly,
-        "delete_alice_12345678",
-        "2026-08-29T00:01:00Z",
-    )
-    .unwrap_err();
-
-    assert_eq!(
-        service_code(&error),
-        Some("handle_recovery.precommit_discard_required")
-    );
-    assert!(load_active_owner(&path, "alice").unwrap().is_none());
+fn quarantine_preserves_terminal_operations_and_destroyed_keys() {
+    use crate::internal::identity_handle_recovery_operation as operations;
+    for (lifecycle, key_state) in [
+        ("applied", "available"),
+        ("discarded_pre_attempt", "destroyed_pre_attempt"),
+        ("superseded_by_state_change", "available"),
+        ("failed_terminal", "available"),
+        ("locally_deleted", "available"),
+        ("locally_deleted", "destroyed_by_deletion"),
+        ("pre_commit", "destroyed_pre_attempt"),
+        ("remote_unresolved", "destroyed_by_deletion"),
+    ] {
+        let (_root, path) = path();
+        let operation_id = "recover-terminal-quarantine";
+        insert_operation(&path, "alice", operation_id);
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        connection.execute(
+            "UPDATE handle_recovery_operations_v4 SET lifecycle_class=?1,key_state=?2 WHERE operation_id=?3",
+            rusqlite::params![lifecycle, key_state, operation_id],
+        ).unwrap();
+        let before = operations::load(&path, operation_id).unwrap().unwrap();
+        assert!(
+            operations::quarantine_key_unavailable(&path, operation_id, "2026-09-09T00:01:00Z")
+                .is_err(),
+            "{lifecycle}/{key_state}"
+        );
+        assert_eq!(
+            operations::load(&path, operation_id).unwrap().unwrap(),
+            before
+        );
+    }
 }
 
 #[test]
-fn deletion_rejects_remote_unresolved() {
-    let (_root, path) = path();
-    insert_operation(&path, "alice", "recover_unresolved_12345678");
-    crate::internal::identity_handle_recovery_operation::mark_commit_attempted(
-        &path,
-        "recover_unresolved_12345678",
-        "2026-08-29T00:01:00Z",
-    )
-    .unwrap();
-
-    let error = prepare_with_id(
-        &path,
-        &snapshot("alice"),
-        LocalIdentityDeletionMode::FullDataApp,
-        "delete_alice_12345678",
-        "2026-08-29T00:02:00Z",
-    )
-    .unwrap_err();
-    assert_eq!(
-        service_code(&error),
-        Some("handle_recovery.operation_must_resume")
-    );
-}
-
-fn assert_deletion_rejects_transition_lifecycle(
-    lifecycle: crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass,
-) {
-    let (_root, path) = path();
-    let operation_id = format!("recover_transition_{}_12345678", lifecycle.as_str());
-    insert_operation(&path, "alice", &operation_id);
-    crate::internal::identity_handle_recovery_operation::update_lifecycle(
-        &path,
-        &operation_id,
-        crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit,
-        lifecycle,
-        None,
-        None,
-        "2026-08-29T00:01:00Z",
-    )
-    .unwrap();
-
-    let error = prepare_with_id(
-        &path,
-        &snapshot("alice"),
-        LocalIdentityDeletionMode::FullDataApp,
-        "delete_alice_12345678",
-        "2026-08-29T00:02:00Z",
-    )
-    .unwrap_err();
-    assert_eq!(
-        service_code(&error),
-        Some("handle_recovery.transition_must_complete")
-    );
-}
-
-#[test]
-fn deletion_rejects_remote_committed() {
-    assert_deletion_rejects_transition_lifecycle(
-        crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteCommitted,
-    );
+fn explicit_deletion_ends_recovery_at_every_phase_without_changing_commit_history() {
+    use crate::internal::identity_handle_recovery_operation as operations;
+    for (lifecycle, attempted) in [
+        ("pre_commit", 0),
+        ("remote_unresolved", 1),
+        ("remote_committed", 1),
+        ("local_transition_pending", 1),
+        ("quarantined_key_unavailable", 1),
+    ] {
+        let (_root, path) = path();
+        insert_operation(&path, "alice", "recover-alice");
+        insert_operation(&path, "bob", "recover-bob");
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        connection.execute("UPDATE handle_recovery_operations_v4 SET lifecycle_class=?1,commit_attempted=?2 WHERE operation_id='recover-alice'", rusqlite::params![lifecycle,attempted]).unwrap();
+        assert!(has_pending_recovery(&path, &snapshot("alice")).unwrap());
+        prepare_with_id(
+            &path,
+            &snapshot("alice"),
+            LocalIdentityDeletionMode::CredentialOnly,
+            "delete-alice",
+            "2026-08-29T00:01:00Z",
+        )
+        .unwrap();
+        let deleted = operations::load(&path, "recover-alice").unwrap().unwrap();
+        assert_eq!(
+            deleted.lifecycle_class,
+            operations::RecoveryLifecycleClass::LocallyDeleted
+        );
+        assert_eq!(deleted.commit_attempted, attempted != 0);
+        assert!(!has_pending_recovery(&path, &snapshot("alice")).unwrap());
+        assert!(has_pending_recovery(&path, &snapshot("bob")).unwrap());
+        assert_eq!(operations::list_pending(&path).unwrap().len(), 1);
+        assert!(
+            operations::mark_commit_attempted(&path, "recover-alice", "2026-08-29T00:02:00Z")
+                .is_err()
+        );
+        assert!(operations::update_lifecycle(
+            &path,
+            "recover-alice",
+            operations::RecoveryLifecycleClass::RemoteCommitted,
+            operations::RecoveryLifecycleClass::LocalTransitionPending,
+            None,
+            None,
+            "2026-08-29T00:02:00Z"
+        )
+        .is_err());
+        assert!(operations::quarantine_key_unavailable(
+            &path,
+            "recover-alice",
+            "2026-08-29T00:02:00Z"
+        )
+        .is_err());
+        assert_eq!(
+            operations::load(&path, "recover-alice").unwrap().unwrap(),
+            deleted
+        );
+    }
 }
 
 #[test]
-fn deletion_rejects_local_transition_pending() {
-    assert_deletion_rejects_transition_lifecycle(
-        crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::LocalTransitionPending,
-    );
+fn recovery_impact_omits_absent_and_finished_history() {
+    let (_root, path) = path();
+    assert!(!has_pending_recovery(&path, &snapshot("alice")).unwrap());
+    insert_operation(&path, "alice", "recover-completed");
+    let connection = crate::internal::local_state::open_writable(&path).unwrap();
+    for lifecycle in [
+        "applied",
+        "discarded_pre_attempt",
+        "superseded_by_state_change",
+        "failed_terminal",
+        "locally_deleted",
+    ] {
+        connection
+            .execute(
+                "UPDATE handle_recovery_operations_v4 SET lifecycle_class=?1",
+                [lifecycle],
+            )
+            .unwrap();
+        assert!(!has_pending_recovery(&path, &snapshot("alice")).unwrap());
+    }
 }
 
 #[test]
@@ -290,7 +316,7 @@ fn deletion_allows_only_confirmed_quarantined_terminal_operation() {
 }
 
 #[test]
-fn deletion_rejects_unverified_or_replaced_quarantined_operation() {
+fn explicit_deletion_ends_quarantined_operation_and_its_replacement() {
     let (_root, unverified_path) = path();
     insert_operation(
         &unverified_path,
@@ -305,18 +331,14 @@ fn deletion_rejects_unverified_or_replaced_quarantined_operation() {
         )
         .unwrap();
     drop(connection);
-    let error = prepare_with_id(
+    prepare_with_id(
         &unverified_path,
         &snapshot("alice"),
         LocalIdentityDeletionMode::FullDataApp,
         "delete_quarantine_unverified_12345678",
         "2026-08-29T00:02:00Z",
     )
-    .unwrap_err();
-    assert_eq!(
-        service_code(&error),
-        Some("identity.local_deletion_conflict")
-    );
+    .unwrap();
 
     let (_root, replaced_path) = path();
     insert_operation(
@@ -345,17 +367,31 @@ fn deletion_rejects_unverified_or_replaced_quarantined_operation() {
         )
         .unwrap()
     );
-    let error = prepare_with_id(
+    prepare_with_id(
         &replaced_path,
         &snapshot("alice"),
         LocalIdentityDeletionMode::FullDataApp,
         "delete_quarantine_replaced_12345678",
         "2026-08-29T00:03:00Z",
     )
-    .unwrap_err();
-    assert_eq!(
-        service_code(&error),
-        Some("identity.local_deletion_conflict")
+    .unwrap();
+    for operation_id in [
+        "recover_quarantine_replaced_12345678",
+        "recover_replacement_active_12345678",
+    ] {
+        assert!(
+            crate::internal::identity_handle_recovery_operation::quarantine_key_unavailable(
+                &replaced_path,
+                operation_id,
+                "2026-08-29T00:04:00Z"
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        crate::internal::identity_handle_recovery_operation::list_pending(&replaced_path)
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -424,18 +460,16 @@ fn deletion_admission_matches_active_recovery_by_handle_across_owner_ids() {
         .unwrap();
     crate::internal::identity_handle_recovery_operation::insert(&path, &operation).unwrap();
 
-    let error = prepare_with_id(
+    assert!(has_pending_recovery(&path, &snapshot("alice")).unwrap());
+    prepare_with_id(
         &path,
         &snapshot("alice"),
         LocalIdentityDeletionMode::FullDataApp,
         "delete_alice_12345678",
         "2026-08-29T00:01:00Z",
     )
-    .unwrap_err();
-    assert_eq!(
-        service_code(&error),
-        Some("handle_recovery.precommit_discard_required")
-    );
+    .unwrap();
+    assert!(!has_pending_recovery(&path, &snapshot("alice")).unwrap());
 }
 
 #[test]
@@ -558,91 +592,20 @@ fn deletion_prepare_and_recovery_insert_are_mutually_exclusive() {
     barrier.wait();
     let deletion = deletion.join().unwrap();
     let recovery = recovery.join().unwrap();
-    assert_ne!(deletion.is_ok(), recovery.is_ok());
-    if let Err(error) = deletion {
-        assert_eq!(
-            service_code(&error),
-            Some("handle_recovery.precommit_discard_required")
-        );
-    }
+    deletion.unwrap();
     if let Err(error) = recovery {
         assert_eq!(
             service_code(&error),
             Some("identity.local_deletion_conflict")
         );
     }
-    let active_deletion = load_active_owner(&path, "alice").unwrap().is_some();
-    let active_recovery = crate::internal::identity_handle_recovery_operation::load(
-        &path,
-        "recover_racing_delete_12345678",
-    )
-    .unwrap()
-    .is_some();
-    assert_ne!(active_deletion, active_recovery);
-}
-
-#[test]
-fn active_deletion_does_not_block_existing_recovery_resume_or_apply() {
-    let (_root, path) = path();
-    let operation_id = "recover-existing-during-delete-12345678";
-    insert_operation(&path, "alice", operation_id);
-    let connection = crate::internal::local_state::open_writable(&path).unwrap();
-    connection
-        .execute(
-            r#"INSERT INTO local_identity_deletions(
-deletion_id,schema_version,mode,owner_identity_id,current_did,full_handle,local_alias,
-identity_dir_name,next_default_alias,protocol_device_id,phase,created_at,updated_at,completed_at)
-VALUES ('delete_existing_recovery_12345678',1,'full_data_app','alice',
-'did:wba:example.invalid:user:alice:e1_current','alice.example.invalid','alice',
-NULL,NULL,NULL,'prepared','2026-08-29T00:00:01Z','2026-08-29T00:00:01Z',NULL)"#,
-            [],
-        )
-        .unwrap();
-    drop(connection);
-
-    crate::internal::identity_handle_recovery_operation::mark_commit_attempted(
-        &path,
-        operation_id,
-        "2026-08-29T00:00:02Z",
-    )
-    .unwrap();
-    for (expected, next, timestamp) in [
-        (
-            crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteUnresolved,
-            crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteCommitted,
-            "2026-08-29T00:00:03Z",
-        ),
-        (
-            crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::RemoteCommitted,
-            crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::LocalTransitionPending,
-            "2026-08-29T00:00:04Z",
-        ),
-        (
-            crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::LocalTransitionPending,
-            crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::Applied,
-            "2026-08-29T00:00:05Z",
-        ),
-    ] {
-        crate::internal::identity_handle_recovery_operation::update_lifecycle(
-            &path,
-            operation_id,
-            expected,
-            next,
-            None,
-            None,
-            timestamp,
-        )
-        .unwrap();
-    }
-
-    let operation = crate::internal::identity_handle_recovery_operation::load(&path, operation_id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        operation.lifecycle_class,
-        crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::Applied
-    );
+    // Whichever writer wins first, deletion wins the final local decision.
     assert!(load_active_owner(&path, "alice").unwrap().is_some());
+    assert!(
+        crate::internal::identity_handle_recovery_operation::list_pending(&path)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -944,4 +907,90 @@ fn full_data_app_waits_until_explicit_complete() {
     assert_eq!(waiting.phase, LocalIdentityDeletionPhase::Prepared);
     let advanced = advance_sqlite_phase(&path, &record.deletion_id, true).unwrap();
     assert_eq!(advanced.phase, LocalIdentityDeletionPhase::RetirementReady);
+}
+
+#[test]
+fn schema_43_upgrade_preserves_recovery_and_expands_only_terminal_states() {
+    let (_root, path) = path();
+    insert_operation(&path, "alice", "recover-before-upgrade");
+    let mut connection = crate::internal::local_state::open_writable(&path).unwrap();
+    let tx = connection.transaction().unwrap();
+    tx.execute_batch(
+        "ALTER TABLE handle_recovery_operations_v4 RENAME TO previous_operations;
+        DROP INDEX idx_handle_recovery_operations_owner_lifecycle;
+        DROP INDEX idx_handle_recovery_operations_handle_lifecycle;
+        DROP INDEX idx_handle_recovery_operations_account_lifecycle;
+        DROP INDEX idx_handle_recovery_operations_superseded_by;
+        DROP INDEX idx_handle_recovery_operations_active_owner;",
+    )
+    .unwrap();
+    let old_ddl =
+        crate::internal::identity_handle_recovery_operation::HANDLE_RECOVERY_OPERATION_SQL
+            .replace(",\n        'locally_deleted'", "")
+            .replace(",\n        'destroyed_by_deletion'", "");
+    tx.execute_batch(&old_ddl).unwrap();
+    tx.execute_batch("INSERT INTO handle_recovery_operations_v4 SELECT * FROM previous_operations; DROP TABLE previous_operations; PRAGMA user_version=43;").unwrap();
+    tx.commit().unwrap();
+    assert!(connection
+        .execute(
+            "UPDATE handle_recovery_operations_v4 SET lifecycle_class='locally_deleted'",
+            []
+        )
+        .is_err());
+    crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        44
+    );
+    let record =
+        crate::internal::identity_handle_recovery_operation::load(&path, "recover-before-upgrade")
+            .unwrap()
+            .unwrap();
+    assert_eq!(record.owner_identity_id, "alice");
+    assert!(!record.commit_attempted);
+    assert_eq!(
+        record.lifecycle_class,
+        crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::PreCommit
+    );
+    connection.execute("UPDATE handle_recovery_operations_v4 SET lifecycle_class='locally_deleted',key_state='destroyed_by_deletion'", []).unwrap();
+    crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+}
+
+#[test]
+fn deleted_partial_cutover_authorizes_only_the_frozen_binding_after_completion() {
+    let (root, path) = path();
+    let original = snapshot("alice");
+    let current_did = "did:wba:example.invalid:user:alice:e1_new";
+    let connection = crate::internal::local_state::open_writable(&path).unwrap();
+    connection.execute(
+        "INSERT INTO identity_transition_pending(recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at) VALUES ('recover-cut',1,'contract','hash','initiator','recover-cut','fingerprint','account-alice','alice','alice.example.invalid',?1,?2,'2','identity_switched','2026-08-29T00:00:00Z','2026-08-29T00:00:00Z')",
+        rusqlite::params![original.current_did, current_did],
+    ).unwrap();
+    connection.execute("INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES ('alice','account-alice','alice.example.invalid',?1,'device-new','2','1',1,1)", [current_did]).unwrap();
+    // Freeze the exact tuple which may differ from the still-old registry.
+    let ticket = prepare_with_id(
+        &path,
+        &original,
+        LocalIdentityDeletionMode::CredentialOnly,
+        "delete-cut",
+        "2026-08-29T00:01:00Z",
+    )
+    .unwrap();
+    assert!(
+        !matches_completed_binding(&path, root.path(), "alice", current_did, "device-new").unwrap()
+    );
+    advance_sqlite_phase(&path, &ticket.deletion_id, false).unwrap();
+    mark_completed(&path, &ticket.deletion_id).unwrap();
+    assert!(
+        matches_completed_binding(&path, root.path(), "alice", current_did, "device-new").unwrap()
+    );
+    for (owner, did, device) in [
+        ("bob", current_did, "device-new"),
+        ("alice", original.current_did.as_str(), "device-new"),
+        ("alice", current_did, "device-other"),
+    ] {
+        assert!(!matches_completed_binding(&path, root.path(), owner, did, device).unwrap());
+    }
 }

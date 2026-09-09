@@ -266,6 +266,9 @@ impl From<im_core::identity::HandleRecoveryOperationSummary>
                 im_core::identity::HandleRecoveryOperationLifecycle::SupersededByStateChange => {
                     DartHandleRecoveryOperationLifecycle::SupersededByStateChange
                 }
+                im_core::identity::HandleRecoveryOperationLifecycle::LocallyDeleted => {
+                    DartHandleRecoveryOperationLifecycle::LocallyDeleted
+                }
                 im_core::identity::HandleRecoveryOperationLifecycle::FailedTerminal => {
                     DartHandleRecoveryOperationLifecycle::FailedTerminal
                 }
@@ -280,6 +283,9 @@ impl From<im_core::identity::HandleRecoveryOperationSummary>
                 }
                 im_core::identity::HandleRecoveryKeyState::PermanentlyUnavailable => {
                     DartHandleRecoveryKeyState::PermanentlyUnavailable
+                }
+                im_core::identity::HandleRecoveryKeyState::DestroyedByDeletion => {
+                    DartHandleRecoveryKeyState::DestroyedByDeletion
                 }
                 im_core::identity::HandleRecoveryKeyState::DestroyedPreAttempt => {
                     DartHandleRecoveryKeyState::DestroyedPreAttempt

@@ -20,6 +20,17 @@ use crate::dto::{
     },
 };
 
+pub async fn has_pending_local_identity_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<bool, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .has_pending_local_identity_recovery_async(selector.try_into()?)
+        .await
+        .map_err(DartImError::from)
+}
+
 pub async fn legacy_registry_epoch_adoption_authority(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,

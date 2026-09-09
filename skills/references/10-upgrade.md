@@ -21,7 +21,21 @@ Recommended path:
 awiki-cli upgrade
 ```
 
-This command reads the manifest for the release server and channel used during installation. When a newer version exists, or when the current version is below the minimum supported version, it installs that channel's current tgz.
+This command reads the current tenant's version policy. When an upgrade is needed,
+it validates the declared package and installs the tenant's recommended target.
+Tenant switching changes the policy and cache used for subsequent checks.
+
+To inspect the decision without installing anything:
+
+```bash
+awiki-cli --dry-run upgrade --format json
+```
+
+Versions use SemVer release precedence: `2.1.0-rc.7 < 2.1.0-rc.8 < 2.1.0`.
+Build metadata such as `+build.7` does not change precedence. Equality with the
+minimum is allowed. A lower version blocks guarded commands while keeping help,
+version, upgrade and tenant switching available. Development builds intentionally
+do not enforce the minimum; test this gate with a versioned binary.
 
 If you want to run the global npm upgrade directly, use:
 

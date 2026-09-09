@@ -548,11 +548,22 @@ pub(crate) async fn quarantine_key_unavailable(
         &request.operation_id,
     )?
     .ok_or_else(operation_not_found_error)?;
-    if operation.lifecycle_class
-        == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::Applied
-        || operation.key_state
-            == crate::internal::identity_handle_recovery_operation::RecoveryKeyState::DestroyedPreAttempt
-    {
+    use crate::internal::identity_handle_recovery_operation::{
+        RecoveryKeyState, RecoveryLifecycleClass,
+    };
+    if !matches!(
+        operation.lifecycle_class,
+        RecoveryLifecycleClass::PreCommit
+            | RecoveryLifecycleClass::RemoteUnresolved
+            | RecoveryLifecycleClass::RemoteCommitted
+            | RecoveryLifecycleClass::LocalTransitionPending
+            | RecoveryLifecycleClass::QuarantinedKeyUnavailable
+    ) || !matches!(
+        operation.key_state,
+        RecoveryKeyState::Available
+            | RecoveryKeyState::TemporarilyLocked
+            | RecoveryKeyState::PermanentlyUnavailable
+    ) {
         return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
     }
     if operation.key_state
@@ -659,6 +670,7 @@ pub(crate) fn operation_summary(
                 HandleRecoveryOperationLifecycle::SupersededByStateChange
             }
             InternalLifecycle::FailedTerminal => HandleRecoveryOperationLifecycle::FailedTerminal,
+            InternalLifecycle::LocallyDeleted => HandleRecoveryOperationLifecycle::LocallyDeleted,
         },
         commit_attempted: record.commit_attempted,
         key_state: match record.key_state {
@@ -668,6 +680,7 @@ pub(crate) fn operation_summary(
                 HandleRecoveryKeyState::PermanentlyUnavailable
             }
             InternalKeyState::DestroyedPreAttempt => HandleRecoveryKeyState::DestroyedPreAttempt,
+            InternalKeyState::DestroyedByDeletion => HandleRecoveryKeyState::DestroyedByDeletion,
         },
         intent_hash: record.intent_hash,
         state_root_fingerprint: record.state_root_fingerprint,
@@ -1133,6 +1146,7 @@ pub(crate) fn status(
     operation_id: &str,
 ) -> crate::ImResult<HandleRecoveryProgress> {
     require_enabled(core)?;
+    require_not_locally_deleted(core, operation_id)?;
     let store = PendingHandleRecoveryStore::from_core(core)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
     if let Some((_, pending)) = store
@@ -1152,7 +1166,16 @@ pub(crate) fn status(
     Err(operation_not_found_error())
 }
 
+fn require_not_locally_deleted(core: &crate::ImCore, operation_id: &str) -> crate::ImResult<()> {
+    if crate::internal::identity_handle_recovery_operation::load(&core.inner().sdk_paths().local_state.sqlite_path, operation_id)?
+        .is_some_and(|record| record.lifecycle_class == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::LocallyDeleted) {
+        return Err(recovery_error(HandleRecoveryErrorCode::ActionNotAllowed));
+    }
+    Ok(())
+}
+
 fn require_v4_journal(core: &crate::core::ImCore, operation_id: &str) -> crate::ImResult<()> {
+    require_not_locally_deleted(core, operation_id)?;
     let store = PendingHandleRecoveryStore::from_core(core)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
     if store
@@ -1206,6 +1229,7 @@ async fn advance_v4(
         .load_v4(operation_id)
         .map_err(|_| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?
         .ok_or_else(|| recovery_error(HandleRecoveryErrorCode::LocalKeyUnavailable))?;
+    require_not_locally_deleted(core, operation_id)?;
     let operation =
         crate::internal::identity_handle_recovery_operation::load(sqlite_path, operation_id)?
             .ok_or_else(operation_not_found_error)?;

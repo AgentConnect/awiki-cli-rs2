@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS identity_transition_pending (
     registry_version TEXT,
     applied_at TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    phase TEXT NOT NULL CHECK(phase IN ('pending','identity_switched','completed','superseded')),
+    phase TEXT NOT NULL CHECK(phase IN ('pending','identity_switched','completed','superseded','locally_deleted')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -62,6 +62,7 @@ pub(crate) enum TransitionPhase {
     IdentitySwitched,
     Completed,
     Superseded,
+    LocallyDeleted,
 }
 
 impl TransitionPhase {
@@ -71,6 +72,7 @@ impl TransitionPhase {
             Self::IdentitySwitched => "identity_switched",
             Self::Completed => "completed",
             Self::Superseded => "superseded",
+            Self::LocallyDeleted => "locally_deleted",
         }
     }
 }
@@ -272,7 +274,10 @@ impl IdentityTransitionMarker {
                 &self.metadata_json,
             )
             .is_err()
-            || (self.phase != TransitionPhase::Superseded && self.metadata_json != "{}")
+            || (!matches!(
+                self.phase,
+                TransitionPhase::Superseded | TransitionPhase::LocallyDeleted
+            ) && self.metadata_json != "{}")
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -331,6 +336,7 @@ pub(crate) fn load_joined_device(
                     "identity_switched" => TransitionPhase::IdentitySwitched,
                     "completed" => TransitionPhase::Completed,
                     "superseded" => TransitionPhase::Superseded,
+                    "locally_deleted" => TransitionPhase::LocallyDeleted,
                     _ => return Err(rusqlite::Error::InvalidQuery),
                 };
                 Ok(IdentityTransitionMarker {
@@ -427,6 +433,7 @@ pub(crate) fn load(
                     "identity_switched" => TransitionPhase::IdentitySwitched,
                     "completed" => TransitionPhase::Completed,
                     "superseded" => TransitionPhase::Superseded,
+                    "locally_deleted" => TransitionPhase::LocallyDeleted,
                     _ => return Err(rusqlite::Error::InvalidQuery),
                 };
                 Ok(IdentityTransitionMarker {

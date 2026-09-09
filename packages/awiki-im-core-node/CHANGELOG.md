@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4 (release candidate)
+
+- Raise the native API contract to v14 with identity access inspection, local
+  device retirement for rejoin, and cached display profile projection.
+- Include the current Handle recovery and identity custody fixes through
+  `awiki-im-core` 0.1.2 and `anp-identity` 0.2.2.
+
 ## 0.2.3 (unreleased)
 
 - Remove the retired User Service recovery-attestation facade and its Host-only
