@@ -487,7 +487,15 @@ pub(crate) fn quarantine_key_unavailable(
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     let changed = connection
         .execute(
-            "UPDATE handle_recovery_operations_v4 SET lifecycle_class='quarantined_key_unavailable',key_state='permanently_unavailable',last_error_code='handle_recovery_key_unavailable',updated_at=?2 WHERE operation_id=?1 AND lifecycle_class<>'applied'",
+            // Recheck after the runtime's asynchronous custody lookup. Deletion
+            // and all other terminal decisions must remain irreversible.
+            "UPDATE handle_recovery_operations_v4
+             SET lifecycle_class='quarantined_key_unavailable',key_state='permanently_unavailable',
+                 last_error_code='handle_recovery_key_unavailable',updated_at=?2
+             WHERE operation_id=?1
+               AND lifecycle_class IN ('pre_commit','remote_unresolved','remote_committed',
+                                       'local_transition_pending','quarantined_key_unavailable')
+               AND key_state IN ('available','temporarily_locked','permanently_unavailable')",
             rusqlite::params![operation_id, now],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;

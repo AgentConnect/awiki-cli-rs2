@@ -300,6 +300,23 @@ async fn local_deletion_cleans_unfinished_recovery_keys_and_allows_a_new_operati
             operations::RecoveryKeyState::DestroyedByDeletion
         );
         assert!(operations::list_pending(path).unwrap().is_empty());
+        let error = core
+            .handle_recovery()
+            .quarantine_handle_recovery_key_unavailable(HandleRecoveryQuarantineRequest {
+                operation_id: operation_id.clone(),
+                user_presence_confirmed: true,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::ImError::Service { code: Some(code), .. }
+            if code == HandleRecoveryErrorCode::UnknownEpoch.as_str())
+        );
+        assert_eq!(
+            operations::load(path, &operation_id).unwrap().unwrap(),
+            retired
+        );
+        assert!(operations::list_pending(path).unwrap().is_empty());
         let reference = anp_identity::IdentityRef {
             store_id: pending.identity.store_id.clone(),
             identity_id: pending.identity.identity_id.clone(),

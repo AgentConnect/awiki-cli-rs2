@@ -548,11 +548,22 @@ pub(crate) async fn quarantine_key_unavailable(
         &request.operation_id,
     )?
     .ok_or_else(operation_not_found_error)?;
-    if operation.lifecycle_class
-        == crate::internal::identity_handle_recovery_operation::RecoveryLifecycleClass::Applied
-        || operation.key_state
-            == crate::internal::identity_handle_recovery_operation::RecoveryKeyState::DestroyedPreAttempt
-    {
+    use crate::internal::identity_handle_recovery_operation::{
+        RecoveryKeyState, RecoveryLifecycleClass,
+    };
+    if !matches!(
+        operation.lifecycle_class,
+        RecoveryLifecycleClass::PreCommit
+            | RecoveryLifecycleClass::RemoteUnresolved
+            | RecoveryLifecycleClass::RemoteCommitted
+            | RecoveryLifecycleClass::LocalTransitionPending
+            | RecoveryLifecycleClass::QuarantinedKeyUnavailable
+    ) || !matches!(
+        operation.key_state,
+        RecoveryKeyState::Available
+            | RecoveryKeyState::TemporarilyLocked
+            | RecoveryKeyState::PermanentlyUnavailable
+    ) {
         return Err(recovery_error(HandleRecoveryErrorCode::UnknownEpoch));
     }
     if operation.key_state

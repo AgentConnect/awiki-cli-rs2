@@ -63,6 +63,40 @@ fn deletion_allows_owner_without_active_control_state() {
 }
 
 #[test]
+fn quarantine_preserves_terminal_operations_and_destroyed_keys() {
+    use crate::internal::identity_handle_recovery_operation as operations;
+    for (lifecycle, key_state) in [
+        ("applied", "available"),
+        ("discarded_pre_attempt", "destroyed_pre_attempt"),
+        ("superseded_by_state_change", "available"),
+        ("failed_terminal", "available"),
+        ("locally_deleted", "available"),
+        ("locally_deleted", "destroyed_by_deletion"),
+        ("pre_commit", "destroyed_pre_attempt"),
+        ("remote_unresolved", "destroyed_by_deletion"),
+    ] {
+        let (_root, path) = path();
+        let operation_id = "recover-terminal-quarantine";
+        insert_operation(&path, "alice", operation_id);
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        connection.execute(
+            "UPDATE handle_recovery_operations_v4 SET lifecycle_class=?1,key_state=?2 WHERE operation_id=?3",
+            rusqlite::params![lifecycle, key_state, operation_id],
+        ).unwrap();
+        let before = operations::load(&path, operation_id).unwrap().unwrap();
+        assert!(
+            operations::quarantine_key_unavailable(&path, operation_id, "2026-09-09T00:01:00Z")
+                .is_err(),
+            "{lifecycle}/{key_state}"
+        );
+        assert_eq!(
+            operations::load(&path, operation_id).unwrap().unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
 fn explicit_deletion_ends_recovery_at_every_phase_without_changing_commit_history() {
     use crate::internal::identity_handle_recovery_operation as operations;
     for (lifecycle, attempted) in [
@@ -109,6 +143,16 @@ fn explicit_deletion_ends_recovery_at_every_phase_without_changing_commit_histor
             "2026-08-29T00:02:00Z"
         )
         .is_err());
+        assert!(operations::quarantine_key_unavailable(
+            &path,
+            "recover-alice",
+            "2026-08-29T00:02:00Z"
+        )
+        .is_err());
+        assert_eq!(
+            operations::load(&path, "recover-alice").unwrap().unwrap(),
+            deleted
+        );
     }
 }
 
@@ -331,6 +375,24 @@ fn explicit_deletion_ends_quarantined_operation_and_its_replacement() {
         "2026-08-29T00:03:00Z",
     )
     .unwrap();
+    for operation_id in [
+        "recover_quarantine_replaced_12345678",
+        "recover_replacement_active_12345678",
+    ] {
+        assert!(
+            crate::internal::identity_handle_recovery_operation::quarantine_key_unavailable(
+                &replaced_path,
+                operation_id,
+                "2026-08-29T00:04:00Z"
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        crate::internal::identity_handle_recovery_operation::list_pending(&replaced_path)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
