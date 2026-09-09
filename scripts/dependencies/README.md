@@ -106,3 +106,6 @@ System 仓 `uv run pytest tests/non_did/test_handle_recovery_v1_contract.py -q`�
 Identity fixture 修复已同步到 CLI 配置与 ANP 来源锁，摘要由既有 owner 复制/哈希规则计算。
 按本轮本地验证范围，未运行远端 Recovery 产品 E2E，也未发布 SDK；上述结果不替代正式
 registry 来源验证或真实账号恢复验收。
+更新清单后，按 `--deps source --source-manifest dependencies.source.json --refresh-lock`
+重新生成联调锁，解析结果未变化；随后同入口 `--check` 通过，实际使用清单指定的新
+Identity/Core 源码完成 CLI 检查，未使用旧 registry SDK 替代。
