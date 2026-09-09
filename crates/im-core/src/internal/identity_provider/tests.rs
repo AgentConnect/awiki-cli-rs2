@@ -12,6 +12,63 @@ fn create_spec() -> ProviderCreateIdentityRequest {
 }
 
 #[tokio::test]
+async fn completion_waiter_refreshes_same_identity_before_http_signing() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = anp_identity::IdentityManager::initialize(anp_identity::IdentityManagerConfig {
+        state_root: root.path().to_path_buf(),
+        root_key: anp_identity::RootKeySource::Injected(anp_identity::InjectedStoreKey::new(
+            "completion-waiter",
+            [0x62; 32],
+        )),
+    })
+    .unwrap();
+    let custody = direct::DirectAnpIdentityCustody::new(manager);
+    let waiter = custody.create_identity(create_spec()).await.unwrap();
+    let before = waiter.public_identity().await.unwrap();
+    let writer = custody.open_identity(&before.reference).await.unwrap();
+    let request = ProviderExactHttpRequest {
+        key: ProviderKeySelector::Default,
+        url: "https://example.com/user-service/did-auth/rpc".to_owned(),
+        method: "POST".to_owned(),
+        headers: vec![],
+        body: Some(b"{}".to_vec()),
+        options: ProviderHttpSigningOptions::default(),
+    };
+    let signed_before = waiter
+        .prepare_http_signature(request.clone())
+        .await
+        .unwrap();
+    let change = writer
+        .prepare_document_change(serde_json::json!({
+            "changes": [{"change": "replace_services", "services": []}]
+        }))
+        .await
+        .unwrap();
+    let attempt = change.begin_publication().await.unwrap();
+    change
+        .complete(attempt, ProviderPublicationResult::RejectedBeforeAcceptance)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        waiter
+            .prepare_http_signature(request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        IdentityProviderErrorCode::Conflict
+    );
+    waiter.recover().await.unwrap();
+    let signed_after = waiter.prepare_http_signature(request).await.unwrap();
+    assert_eq!(
+        waiter.public_identity().await.unwrap().reference,
+        before.reference
+    );
+    assert_eq!(signed_after.kid, signed_before.kid);
+    assert_eq!(signed_after.binding_digest, signed_before.binding_digest);
+}
+
+#[tokio::test]
 async fn direct_session_runs_provider_neutral_hot_paths() {
     let fixture = parity_fixture();
     let root = tempfile::tempdir().unwrap();

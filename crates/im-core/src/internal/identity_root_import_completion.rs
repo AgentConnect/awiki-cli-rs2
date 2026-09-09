@@ -374,6 +374,51 @@ fn require_canonical_root_payload(
     Ok(())
 }
 
+fn root_import_lock(
+    state_root: &str,
+    owner_identity_id: &str,
+    device_id: &str,
+    message_id: &str,
+) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    type Scope = (String, String, String, String);
+    type Locks = std::collections::HashMap<Scope, std::sync::Weak<tokio::sync::Mutex<()>>>;
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<Locks>> = std::sync::OnceLock::new();
+    let scope = (
+        state_root.to_owned(),
+        owner_identity_id.to_owned(),
+        device_id.to_owned(),
+        message_id.to_owned(),
+    );
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&scope).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(scope, std::sync::Arc::downgrade(&lock));
+    lock
+}
+
+async fn lock_root_import(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> crate::ImResult<tokio::sync::OwnedMutexGuard<()>> {
+    Ok(root_import_lock(
+        &crate::internal::identity_transition_pending::state_root_fingerprint(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        ),
+        client.current_identity().id.as_str(),
+        &client.exact_protocol_device_id()?,
+        message_id,
+    )
+    .lock_owned()
+    .await)
+}
+
 pub(crate) async fn receive_root_envelope_candidate(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
@@ -391,6 +436,7 @@ pub(crate) async fn receive_root_envelope_candidate(
     {
         return Ok(RootInboundInterceptOutcome::NotRoot);
     }
+    let guard = lock_root_import(core, client, &metadata.message_id).await?;
     delivery.validate()?;
     let local_entry = local_device_entry(core, client)?;
     let local_state = local_entry
@@ -475,7 +521,7 @@ pub(crate) async fn receive_root_envelope_candidate(
         RootProbeOutcome::NotRoot => return Ok(RootInboundInterceptOutcome::NotRoot),
         RootProbeOutcome::Replay => {
             return if import_coordinator_exists(core, client, &metadata.message_id)? {
-                drive_root_import_completion(core, client, &metadata.message_id).await?;
+                drive_root_import_completion(core, client, &metadata.message_id, &guard).await?;
                 Ok(RootInboundInterceptOutcome::Replay)
             } else {
                 Ok(RootInboundInterceptOutcome::NotRoot)
@@ -590,7 +636,7 @@ pub(crate) async fn receive_root_envelope_candidate(
             validated: RootInboundValidation::Root(_),
             ..
         }) => {
-            drive_root_import_completion(core, client, &metadata.message_id).await?;
+            drive_root_import_completion(core, client, &metadata.message_id, &guard).await?;
             Ok(RootInboundInterceptOutcome::Consumed)
         }
         Ok(V2ValidatedSecretInboundOutcome::Decrypted {
@@ -603,7 +649,7 @@ pub(crate) async fn receive_root_envelope_candidate(
         }) => Ok(RootInboundInterceptOutcome::Consumed),
         Ok(V2ValidatedSecretInboundOutcome::Replay { .. }) => {
             if import_coordinator_exists(core, client, &metadata.message_id)? {
-                drive_root_import_completion(core, client, &metadata.message_id).await?;
+                drive_root_import_completion(core, client, &metadata.message_id, &guard).await?;
                 Ok(RootInboundInterceptOutcome::Replay)
             } else {
                 Ok(RootInboundInterceptOutcome::NotRoot)
@@ -943,8 +989,20 @@ async fn drive_root_import_completion(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     message_id: &str,
+    _guard: &tokio::sync::OwnedMutexGuard<()>,
 ) -> crate::ImResult<()> {
     upgrade_legacy_root_completion(core, client, message_id).await?;
+    // A different receiver handle may have advanced ANP custody while this
+    // caller waited for the transfer lock. Refresh before signing completion
+    // proofs or the fresh device-auth request, not only after promotion.
+    if let Some(session) = client.runtime().identity_session.as_ref() {
+        session
+            .recover()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+    } else {
+        client.runtime().key_provider.reload_custody()?;
+    }
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
@@ -1202,7 +1260,8 @@ ORDER BY created_at, message_id"#,
 
     let mut recovered = 0_usize;
     for message_id in message_ids {
-        drive_root_import_completion(&core, client, &message_id).await?;
+        let guard = lock_root_import(&core, client, &message_id).await?;
+        drive_root_import_completion(&core, client, &message_id, &guard).await?;
         recovered = recovered.saturating_add(1);
     }
     Ok(recovered)
@@ -1305,38 +1364,64 @@ fn persist_completion_success(
 ) -> crate::ImResult<CompletionSuccess> {
     let success: CompletionSuccess =
         serde_json::from_value(result.clone()).map_err(redacted_serialization)?;
-    validate_completion_success(core, client, record, &success)?;
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let current = load_completion_record(&connection, client, &record.message_id)?;
+    validate_completion_success(core, client, &current, &success)?;
+    store_completion_success(
+        &connection,
+        client.current_identity().id.as_str(),
+        record,
+        request_hash,
+        &success,
+    )?;
+    Ok(success)
+}
+
+fn store_completion_success(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    record: &CompletionRecord,
+    request_hash: &str,
+    success: &CompletionSuccess,
+) -> crate::ImResult<()> {
     let result_json = String::from_utf8(
-        serde_json_canonicalizer::to_vec(&result).map_err(redacted_serialization)?,
+        serde_json_canonicalizer::to_vec(success).map_err(redacted_serialization)?,
     )
     .map_err(|_| crate::ImError::Serialization {
         detail: "completion result is not UTF-8".to_owned(),
     })?;
-    let connection = crate::internal::local_state::open_writable(
-        &core.inner().sdk_paths().local_state.sqlite_path,
-    )?;
     let changed = connection
         .execute(
             r#"UPDATE identity_root_import_completion_v1
-SET phase = 'completion_accepted', completion_result_json = ?1,
+SET phase = CASE WHEN phase IN ('proof_prepared', 'completion_pending')
+                 THEN 'completion_accepted' ELSE phase END, completion_result_json = ?1,
     updated_at = ?2, last_error_code = NULL
 WHERE owner_identity_id = ?3 AND local_device_id = ?4 AND message_id = ?5
   AND completion_request_hash = ?6
-  AND phase IN ('proof_prepared', 'completion_pending', 'completion_accepted')"#,
+  AND owner_did = ?7 AND pending_root_ref_json = ?8
+  AND ((phase IN ('proof_prepared', 'completion_pending') AND completion_result_json IS NULL)
+    OR (phase IN ('completion_accepted', 'token_refreshed', 'registry_confirmed', 'promoted')
+        AND completion_result_json = ?1))"#,
             rusqlite::params![
                 result_json,
                 format_time(OffsetDateTime::now_utc())?,
-                client.current_identity().id.as_str(),
-                client.exact_protocol_device_id()?,
+                owner_identity_id,
+                record.local_device_id,
                 record.message_id,
                 request_hash,
+                record.did,
+                serde_json::to_string(&record.pending_root_ref).map_err(redacted_serialization)?,
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if changed != 1 {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "root import completion result conflicts with the stored transfer".to_owned(),
+        });
     }
-    Ok(success)
+    Ok(())
 }
 
 async fn converge_completed_root_import(
@@ -1383,6 +1468,12 @@ async fn converge_completed_root_import(
         }
     };
 
+    let connection = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let record = load_completion_record(&connection, client, &success.completed_message_id)?;
+    drop(connection);
+    validate_completion_success(core, client, &record, success)?;
     if matches!(
         record.phase,
         RootImportCompletionPhase::CompletionAccepted | RootImportCompletionPhase::TokenRefreshed
@@ -1390,7 +1481,8 @@ async fn converge_completed_root_import(
         update_completion_phase(
             core,
             client,
-            &success.completed_message_id,
+            &record,
+            success,
             RootImportCompletionPhase::CompletionAccepted,
             RootImportCompletionPhase::TokenRefreshed,
         )?;
@@ -1403,7 +1495,8 @@ async fn converge_completed_root_import(
         update_completion_phase(
             core,
             client,
-            &success.completed_message_id,
+            &record,
+            success,
             RootImportCompletionPhase::TokenRefreshed,
             RootImportCompletionPhase::RegistryConfirmed,
         )?;
@@ -1605,31 +1698,74 @@ fn completion_error_allows_state_probe(error: &crate::ImError) -> bool {
 fn update_completion_phase(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
-    message_id: &str,
+    record: &CompletionRecord,
+    success: &CompletionSuccess,
     from: RootImportCompletionPhase,
     to: RootImportCompletionPhase,
 ) -> crate::ImResult<()> {
     let connection = crate::internal::local_state::open_writable(
         &core.inner().sdk_paths().local_state.sqlite_path,
     )?;
+    advance_completion_phase(
+        &connection,
+        client.current_identity().id.as_str(),
+        record,
+        success,
+        from,
+        to,
+    )
+}
+
+fn advance_completion_phase(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    record: &CompletionRecord,
+    success: &CompletionSuccess,
+    from: RootImportCompletionPhase,
+    to: RootImportCompletionPhase,
+) -> crate::ImResult<()> {
+    if !matches!(
+        (from, to),
+        (
+            RootImportCompletionPhase::CompletionAccepted,
+            RootImportCompletionPhase::TokenRefreshed
+        ) | (
+            RootImportCompletionPhase::TokenRefreshed,
+            RootImportCompletionPhase::RegistryConfirmed
+        )
+    ) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let result_json = String::from_utf8(
+        serde_json_canonicalizer::to_vec(success).map_err(redacted_serialization)?,
+    )
+    .map_err(redacted_serialization)?;
     let changed = connection
         .execute(
             r#"UPDATE identity_root_import_completion_v1
-SET phase = ?1, updated_at = ?2
+SET phase = CASE WHEN phase = ?6 THEN ?1 ELSE phase END, updated_at = ?2
 WHERE owner_identity_id = ?3 AND local_device_id = ?4 AND message_id = ?5
-  AND phase IN (?6, ?1)"#,
+  AND owner_did = ?7 AND completion_request_hash = ?8
+  AND completion_result_json = ?9 AND pending_root_ref_json = ?10
+  AND phase IN (?6, ?1, 'registry_confirmed', 'promoted')"#,
             rusqlite::params![
                 to.as_str(),
                 format_time(OffsetDateTime::now_utc())?,
-                client.current_identity().id.as_str(),
-                client.exact_protocol_device_id()?,
-                message_id,
+                owner_identity_id,
+                record.local_device_id,
+                record.message_id,
                 from.as_str(),
+                record.did,
+                record.completion_request_hash,
+                result_json,
+                serde_json::to_string(&record.pending_root_ref).map_err(redacted_serialization)?,
             ],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if changed != 1 {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "root import completion phase conflicts with the stored transfer".to_owned(),
+        });
     }
     Ok(())
 }
@@ -3304,3 +3440,7 @@ document_hash, registry_version, phase, created_at, updated_at
         transaction.rollback().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "identity_root_import_completion_tests.rs"]
+mod concurrency_tests;

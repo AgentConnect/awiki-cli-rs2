@@ -836,6 +836,12 @@ Core hydrates the exact authenticated Inbox row and never substitutes local
 arrival time for the service-provided `accepted_at`. Startup recovery replays
 `registry_confirmed` and `promoted` coordinators to repair local promotion and
 projection cleanup crash windows.
+Concurrent same-transfer receiver recovery is serialized within the process.
+After acquiring the guard, the receiver refreshes its pinned identity session
+before completion proof or device-auth signing, including already-promoted replay.
+Exact completion replays preserve later coordinator phases; conflicting request,
+result or pending-custody bindings fail closed as an identity binding conflict.
+App callers do not need to suppress permission errors to reconcile promotion.
 
 ### 5.3 Multi-device P5/P6 message rollout gates
 

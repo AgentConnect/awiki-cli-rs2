@@ -612,6 +612,16 @@ ready admin and increments `auth_generation`. After reading that authoritative
 state, Core promotes the pending root ref to active and obtains a management
 access token through a fresh device-signed request.
 
+Concurrent receiver work for the same state root, owner, device and transfer is
+serialized across Core instances in the process. The lock covers authenticated
+receipt processing and completion recovery. A waiting caller refreshes its pinned
+identity session before signing because another handle may have advanced ANP
+custody generation. Completion-result and phase writes
+are monotonic: an identical request/result/custody binding may replay after a
+later phase, without regressing it; mismatched bindings or terminal states remain
+conflicts. Network awaits are followed by a fresh coordinator read. A local
+completion conflict is not reported as revoked device permission.
+
 There is no root-specific delivery class, private completion sidecar, encrypted
 imported ACK, ACK-driven readiness, empty-Init phase, or root-transfer rollout
 state machine in the target architecture. P5 Reply only converges the standard
