@@ -360,6 +360,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
