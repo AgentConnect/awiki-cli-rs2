@@ -53,11 +53,8 @@ python3 scripts/dependencies/build.py --profile release --package awiki-cli
 [registry-Cargo.lock](../release/registry-Cargo.lock)，删除临时 source 清单/锁，
 重新通过 registry 检查再合并消费者 PR。正式发布入口拒绝未撤销的 source 清单。
 
-上海集成分支的 `dependencies.source.json` 固定 Identity PR #6 和本仓 Core PR #30 的
-已推送提交，具体完整 SHA 以清单为准。Core 固定包含运行时修复的提交，后续清单维护不要求
-追逐同仓元数据提交，避免移动分支和自引用来源。
-`dependencies.source.Cargo.lock` 由上述 source 入口生成；配套 source check 与
-registry check 仍独立执行，不把未发布的 SDK 候选当成已发布依赖。
+上海集成期间使用过固定 PR 提交的 source 清单和联调锁。相关 SDK 已发布后，
+本仓已撤销这两份临时文件；后续源码联调仍使用上面的显式入口，正式 Release 使用 registry。
 
 ## 已有发布入口
 
@@ -66,15 +63,13 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前 `registry-dependencies.json` 已声明目标候选版本：Identity `0.2.2`、Core `0.1.2`；
-`registry-Cargo.lock` 仍保存旧的正式解析结果：Identity `0.2.1`、Core `0.1.1`。
-两者尚未完成正式依赖升级，不能将此状态视为 registry 构建通过。旧 Core 不提供当前消费者
-需要的 `im_core::compat::identity_index` 与 `inspect_handle_recovery_context` 等接口，
-因此不能把目标版本退回旧版来凑过来源检查。
+当前正式 Release 依赖为已发布的 ANP `1.0.2`、Identity `0.2.2`、Core `0.1.2`。
+`registry-dependencies.json` 与通过既有 `--refresh-lock` 入口生成的
+`registry-Cargo.lock` 已同步；实际 Cargo metadata 已确认三者均来自 crates.io，
+没有 path/git SDK 替换。CLI、Daemon、Dart binding 与 Node binding 共用这组精确版本。
 
-正式交付前先合并并发布含所需 API 的 SDK，再通过现有 registry 入口重新生成匹配的锁，
-更新正式 pin/lock、撤销 source 清单并通过 registry 检查。发布前保留真实的旧锁和明确的
-阻断状态，不手写未发布包的 checksum，也不将源码联调锁冒充正式锁。
+2026-09-09 本次发布按用户明确要求不运行测试；完成了发布构建、包校验、上传及 registry
+版本/来源核验。以下此前执行的测试记录属于发布前的历史证据，不表示本次重新执行。
 
 ### 2026-09-08 Recovery 选择性吸收
 
@@ -91,7 +86,7 @@ Handle binding 查询。它保留正式 fixture 摘要、普通数据守恒、�
 续跑断言，不通过跳过权威读取或放宽 publication 校验兼容旧测试。
 
 本机显式 local/source 构建验证候选源码与真实解析来源，不证明候选 SDK 已发布。
-当前任务只修复和验证源码，不执行 SDK 发布；正式打包仍须完成上面的依赖交付步骤。
+当时任务只修复和验证源码，未执行 SDK 发布；后续发布状态见上面的正式依赖说明。
 
 ### 2026-09-09 Review 修复验证
 
