@@ -53,7 +53,7 @@ python3 scripts/dependencies/build.py --profile release --package awiki-cli
 [registry-Cargo.lock](../release/registry-Cargo.lock)，删除临时 source 清单/锁，
 重新通过 registry 检查再合并消费者 PR。正式发布入口拒绝未撤销的 source 清单。
 
-上海集成分支的 `dependencies.source.json` 固定 Identity PR #6 的 `244e74ce` 和
+上海集成分支的 `dependencies.source.json` 固定 Identity PR #6 的 `0f19cc3e` 和
 本仓 Core PR #30 的 `7f2ebf9e`；两个 SHA 均已推送且包含 Release 合并结果。
 Core 选择的是新增联调清单之前的同一份运行时源码，避免移动分支和自引用来源。
 `dependencies.source.Cargo.lock` 由上述 source 入口生成；配套 source check 与
@@ -72,7 +72,7 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 
 ### 2026-09-08 Recovery 选择性吸收
 
-源码来源锁与 CLI 配置的 Identity 输入统一为 `244e74ce`（`0.2.2`）：保留上海候选运行时，
+源码来源锁与 CLI 配置的 Identity 输入统一为 `0f19cc3e`（`0.2.2`）：保留上海候选运行时，
 同时合入 Release 的 SDK 测试路径修复；显式 fixture 目录仍可覆盖默认解析路径。源码树
 摘要由 owner 的复制/哈希规则从该提交重新计算。App 打包的 ANP 输入与本仓 `246d69e2`
 一致。Identity 的独立测试路径修复不构成新的运行时兼容接口。
