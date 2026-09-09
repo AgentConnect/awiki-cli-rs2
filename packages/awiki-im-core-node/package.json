@@ -2,7 +2,7 @@
   "name": "@awiki/im-core-node",
   "version": "0.2.4",
   "description": "Promise-based Node.js facade for the Awiki Rust IM SDK",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

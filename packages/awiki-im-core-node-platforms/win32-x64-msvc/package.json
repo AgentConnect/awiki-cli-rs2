@@ -3,7 +3,7 @@
   "version": "0.2.4",
   "description": "Windows x64 MSVC native addon for @awiki/im-core-node",
   "type": "commonjs",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "os": ["win32"],
   "cpu": ["x64"],
   "engines": { "node": "^22.19.0 || >=24.0.0" },

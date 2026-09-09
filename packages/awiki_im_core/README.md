@@ -20,10 +20,9 @@ external TypeScript Provider mode instead.
 
 ## License
 
-This package is available under [GNU AGPLv3](LICENSE) or a separate
-[AWiki Commercial License](COMMERCIAL-LICENSING.md). The prior Apache License
-text is retained in [LICENSE-APACHE](LICENSE-APACHE), and source location
-information is in [SOURCE.md](SOURCE.md).
+This package is licensed under the [Apache License, Version 2.0](LICENSE)
+(`Apache-2.0`). [LICENSE-APACHE](LICENSE-APACHE) carries the same license text,
+and source location information is in [SOURCE.md](SOURCE.md).
 
 Build Linux native artifacts on a Linux host before running a Flutter Linux app:
 

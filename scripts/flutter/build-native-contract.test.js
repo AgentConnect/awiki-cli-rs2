@@ -35,7 +35,7 @@ test("Flutter package carries the canonical license bundle", () => {
       path.join(packageRoot, platform, "awiki_im_core.podspec"),
       "utf8",
     );
-    assert.match(podspec, /:type => 'AGPL-3\.0-only'/);
+    assert.match(podspec, /:type => 'Apache-2\.0'/);
     assert.match(podspec, /:file => '\.\.\/LICENSE'/);
     assert.doesNotMatch(podspec, /:type => 'MIT'/);
   }

@@ -154,7 +154,7 @@ Built-in tenant config SHA-256: ${tenantConfigSha256}
 ANP source: https://github.com/agent-network-protocol/anp/tree/${releaseConfig.anp_commit}
 
 The source location above identifies the exact revision used to build this
-release. The Corresponding Source is provided under GNU AGPLv3 as described in
+release. The Corresponding Source is provided under Apache License 2.0 as described in
 the accompanying LICENSE file.
 `);
     fs.cpSync(path.join(root, 'scripts'), path.join(packageStage, 'scripts'), { recursive: true });

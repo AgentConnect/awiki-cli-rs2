@@ -373,7 +373,7 @@ jobs:
             --expect-missing
 
   publish-test-channel:
-    name: Publish approved AGPL test channel
+    name: Publish approved Apache-2.0 artifact channel
     needs: [build-platform, build-wrapper, packed-install]
     runs-on: ubuntu-22.04
     steps:
@@ -393,10 +393,10 @@ jobs:
             (cd channel && sha256sum --check "$(basename "${checksum}")")
           done < <(find channel -maxdepth 1 -name '*.tgz.sha256' -type f | sort)
 
-      - name: Upload AGPL test channel
+      - name: Upload Apache-2.0 artifact channel
         uses: actions/upload-artifact@v7
         with:
-          name: im-core-node-agpl-test-channel-${{ github.run_id }}
+          name: im-core-node-apache-artifacts-${{ github.run_id }}
           path: channel/*
           if-no-files-found: error
           retention-days: 30

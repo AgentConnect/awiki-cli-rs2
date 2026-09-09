@@ -138,10 +138,10 @@ async function writeCommonFiles(output, manifest, target, binary) {
       pnpm: run('pnpm', ['--version']),
     },
     ...(binaryDigest ? { binarySha256: binaryDigest } : {}),
-    distributionPolicy: 'agpl-3.0-only-approved-test-channel',
+    distributionPolicy: 'apache-2.0',
   }
   const sourceText = `# Corresponding Source\n\nPackage: ${manifest.name}@${manifest.version}\nTarget: ${target || 'platform-independent-wrapper'}\nRepository: https://github.com/AgentConnect/awiki-cli-rs2\nCommit: ${source.commit}\nANP commit: ${releaseConfig.anp_commit}\n\nBuild instructions: docs/node-sdk/awiki-im-core-node-artifacts.md\n`
-  const notice = `# Notices\n\nThis package is AWiki CLI S2 software distributed under AGPL-3.0-only. Corresponding source and build provenance are identified in SOURCE.md and provenance.json. Third-party components and their declared licenses are enumerated in sbom.cdx.json. The verified GitHub Actions artifact is the approved test channel; npm publication is a separate release action.\n`
+  const notice = `# Notices\n\nThis package is AWiki CLI S2 software distributed under Apache-2.0. Corresponding source and build provenance are identified in SOURCE.md and provenance.json. Third-party components and their declared licenses are enumerated in sbom.cdx.json. The verified GitHub Actions artifact is the approved test channel; npm publication is a separate release action.\n`
 
   await copyFile(join(repositoryRoot, 'LICENSE'), join(output, 'LICENSE'))
   await copyFile(join(repositoryRoot, 'COMMERCIAL-LICENSING.md'), join(output, 'COMMERCIAL-LICENSING.md'))

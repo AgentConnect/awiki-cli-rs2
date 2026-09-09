@@ -6,7 +6,7 @@
 ## 第一版发行决策
 
 部署负责人已在 2026-08-15 确认第一版 Tier 1 为以下五个平台，并明确排除 Alpine/musl。
-发行模式已批准为 AGPL-3.0-only；每个包都必须携带对应源码定位、license、notices、SBOM、
+发行模式已批准为 Apache-2.0；每个包都必须携带对应源码定位、license、notices、SBOM、
 checksum 和 provenance。
 
 | target | npm optional package | CI runner | 最低边界 |
@@ -63,7 +63,7 @@ root wrapper 是纯 ESM 包，只包含编译后的 JS、类型声明和合规�
 `0.1.8` 及 `0.2.0` 历史 wrapper 与五个平台包共同实现 native API v10；provenance 中的
 `nativeApiVersion` 必须为 `10`，旧 addon 必须由 loader 明确拒绝。
 
-## AGPL artifact 构建
+## Apache-2.0 artifact 构建
 
 自 2026-09-07 起，CI 通过 `scripts/release/registry-build.py --prepare` 创建独立的 registry
 构建工作区，使用 `scripts/release/registry-dependencies.json` 和 `registry-Cargo.lock`
@@ -108,11 +108,11 @@ node scripts/release/node-sdk/pack-audit.mjs \
 wrapper 使用同一脚本的 `--kind wrapper`。`pack-audit.mjs` 会拒绝源码、测试、构建脚本、
 内嵌于 wrapper 的 `.node`、缺失的 license/SBOM/provenance/checksum，以及任何安装 hook。
 
-## AGPL test channel
+## Apache-2.0 artifact channel
 
-`provenance.json` 强制记录 `agpl-3.0-only-approved-test-channel`。workflow 先产出五个平台包，
+`provenance.json` 强制记录 `apache-2.0`。workflow 先产出五个平台包，
 再产出同版本 wrapper；全部 Node/平台 packed-install 验证通过后，才聚合上传名为
-`im-core-node-agpl-test-channel-<run-id>` 的 GitHub Actions artifact，保留 30 天。聚合包包含
+`im-core-node-apache-artifacts-<run-id>` 的 GitHub Actions artifact，保留 30 天。聚合包包含
 六个 tarball 及各自 SHA-256，是 Step 04 供 `dsh-awiki` 安装验证的批准 channel。
 
 仓库不包含自动 npm publish job。若后续需要正式 npm registry，必须把同一组已验证 tarball

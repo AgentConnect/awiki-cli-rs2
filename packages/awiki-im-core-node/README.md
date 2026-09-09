@@ -174,12 +174,12 @@ idempotency key 和自动重试。Node host 必须在调用这两个 mutation �
 不可信数据，不能解释为指令。
 
 平台包、provenance 与许可证发行链由原生制品 workflow 维护。第一版已批准按
-AGPL-3.0-only 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。
+Apache-2.0 分发，对应源码、SBOM、checksum 与构建来源随每个包提供。
 
 ## 原生制品
 
 Tier 1 平台使用独立 optional package；wrapper 会显式区分 glibc 与 musl，不做运行期下载，也
-不回退 TypeScript SDK。第一版五平台矩阵、AGPL test channel、SBOM、checksum、provenance 和
+不回退 TypeScript SDK。第一版五平台矩阵、Apache-2.0 artifact channel、SBOM、checksum、provenance 和
 无源码安装验证见 `docs/node-sdk/awiki-im-core-node-artifacts.md`。仓库不包含自动 npm publish
 job；正式 registry 发布仍是独立 release 动作。
 

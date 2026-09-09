@@ -71,7 +71,7 @@ def create_fake_daemon_package(source_dir: pathlib.Path, os_name: str, arch: str
     (stage / "LICENSE").write_text("fake license\n", encoding="utf-8")
     (stage / "LICENSE-APACHE").write_text("fake Apache license\n", encoding="utf-8")
     (stage / "COMMERCIAL-LICENSING.md").write_text(
-        "fake commercial licensing policy\n", encoding="utf-8"
+        "fake license compatibility notice\n", encoding="utf-8"
     )
     (stage / "SOURCE.md").write_text("Commit: fake-commit\n", encoding="utf-8")
     (stage / "checksums.txt").write_text("fake inner checksums\n", encoding="utf-8")

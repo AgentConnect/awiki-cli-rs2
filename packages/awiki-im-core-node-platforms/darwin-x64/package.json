@@ -3,7 +3,7 @@
   "version": "0.2.4",
   "description": "macOS Intel native addon for @awiki/im-core-node",
   "type": "commonjs",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "os": ["darwin"],
   "cpu": ["x64"],
   "engines": { "node": "^22.19.0 || >=24.0.0" },

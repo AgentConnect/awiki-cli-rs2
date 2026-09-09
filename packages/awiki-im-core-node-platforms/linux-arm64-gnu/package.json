@@ -3,7 +3,7 @@
   "version": "0.2.4",
   "description": "Linux arm64 glibc native addon for @awiki/im-core-node",
   "type": "commonjs",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "os": ["linux"],
   "cpu": ["arm64"],
   "libc": ["glibc"],

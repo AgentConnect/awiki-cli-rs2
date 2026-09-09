@@ -243,9 +243,9 @@ printf 'installer smoke\n'
 `);
   fs.chmodSync(binary, 0o755);
   for (const [name, contents] of [
-    ['LICENSE', 'AGPL test license\n'],
+    ['LICENSE', 'Apache test license\n'],
     ['LICENSE-APACHE', 'Apache test license\n'],
-    ['COMMERCIAL-LICENSING.md', 'Commercial licensing test policy\n'],
+    ['COMMERCIAL-LICENSING.md', 'Apache license compatibility notice\n'],
     ['SOURCE.md', 'Commit: test-commit\n'],
   ]) fs.writeFileSync(path.join(archiveStage, name), contents);
   const archive = path.join(root, 'awiki-cli.tar.gz');

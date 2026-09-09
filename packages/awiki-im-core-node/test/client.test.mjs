@@ -447,7 +447,7 @@ test('Tier 1 platform manifests match the root optional dependency contract', as
     assert.equal(manifest.name, packageName)
     assert.equal(manifest.version, rootManifest.version)
     assert.equal(rootManifest.optionalDependencies[packageName], `workspace:${rootManifest.version}`)
-    assert.equal(manifest.license, 'AGPL-3.0-only')
+    assert.equal(manifest.license, 'Apache-2.0')
     assert.equal(manifest.type, 'commonjs')
     assert.equal(manifest.main, `./awiki-im-core-node.${target}.node`)
     assert.equal(manifest.scripts, undefined)

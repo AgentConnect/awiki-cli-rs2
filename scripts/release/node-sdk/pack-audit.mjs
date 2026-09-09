@@ -36,7 +36,7 @@ const packed = JSON.parse(result.stdout)[0]
 if (!packed?.filename || !Array.isArray(packed.files)) fail('npm pack did not return an auditable file list')
 
 const manifest = JSON.parse(await readFile(join(packageDirectory, 'package.json'), 'utf8'))
-if (manifest.license !== 'AGPL-3.0-only') fail('package must declare AGPL-3.0-only')
+if (manifest.license !== 'Apache-2.0') fail('package must declare Apache-2.0')
 for (const hook of ['preinstall', 'install', 'postinstall']) {
   if (manifest.scripts?.[hook]) fail(`runtime installation hook is forbidden: ${hook}`)
 }
@@ -83,8 +83,8 @@ const provenance = JSON.parse(await readFile(join(packageDirectory, 'provenance.
 if (provenance.package.name !== manifest.name || provenance.package.version !== manifest.version) {
   fail('provenance package identity mismatch')
 }
-if (provenance.distributionPolicy !== 'agpl-3.0-only-approved-test-channel') {
-  fail('artifact is missing the approved AGPL test-channel policy')
+if (provenance.distributionPolicy !== 'apache-2.0') {
+  fail('artifact is missing the approved Apache-2.0 distribution policy')
 }
 const sbom = JSON.parse(await readFile(join(packageDirectory, 'sbom.cdx.json'), 'utf8'))
 if (sbom.bomFormat !== 'CycloneDX' || sbom.specVersion !== '1.6') fail('invalid CycloneDX SBOM')
