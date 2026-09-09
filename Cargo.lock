@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anp",
  "anp-identity",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core-node"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anp",
  "async-trait",

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5
+
+- License the wrapper and all five native packages under Apache-2.0.
+- Build against the published `awiki-im-core` 0.1.3 Apache-2.0 crate.
+- Keep native API v14 unchanged.
+
+
 ## 0.2.4 (release candidate)
 
 - Raise the native API contract to v14 with identity access inspection, local

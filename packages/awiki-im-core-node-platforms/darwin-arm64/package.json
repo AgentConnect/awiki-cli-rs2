@@ -1,12 +1,18 @@
 {
   "name": "@awiki/im-core-node-darwin-arm64",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "macOS arm64 native addon for @awiki/im-core-node",
   "type": "commonjs",
   "license": "Apache-2.0",
-  "os": ["darwin"],
-  "cpu": ["arm64"],
-  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "main": "./awiki-im-core-node.darwin-arm64.node",
   "files": [
     "awiki-im-core-node.darwin-arm64.node",

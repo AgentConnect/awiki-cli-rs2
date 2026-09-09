@@ -1,13 +1,21 @@
 {
   "name": "@awiki/im-core-node-linux-arm64-gnu",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Linux arm64 glibc native addon for @awiki/im-core-node",
   "type": "commonjs",
   "license": "Apache-2.0",
-  "os": ["linux"],
-  "cpu": ["arm64"],
-  "libc": ["glibc"],
-  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "main": "./awiki-im-core-node.linux-arm64-gnu.node",
   "files": [
     "awiki-im-core-node.linux-arm64-gnu.node",

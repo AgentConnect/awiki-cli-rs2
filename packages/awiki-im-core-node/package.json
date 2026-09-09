@@ -1,6 +1,6 @@
 {
   "name": "@awiki/im-core-node",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Promise-based Node.js facade for the Awiki Rust IM SDK",
   "license": "Apache-2.0",
   "type": "module",
@@ -35,11 +35,11 @@
     "test": "node --test test/*.test.mjs"
   },
   "optionalDependencies": {
-    "@awiki/im-core-node-darwin-arm64": "workspace:0.2.4",
-    "@awiki/im-core-node-darwin-x64": "workspace:0.2.4",
-    "@awiki/im-core-node-linux-arm64-gnu": "workspace:0.2.4",
-    "@awiki/im-core-node-linux-x64-gnu": "workspace:0.2.4",
-    "@awiki/im-core-node-win32-x64-msvc": "workspace:0.2.4"
+    "@awiki/im-core-node-darwin-arm64": "workspace:0.2.5",
+    "@awiki/im-core-node-darwin-x64": "workspace:0.2.5",
+    "@awiki/im-core-node-linux-arm64-gnu": "workspace:0.2.5",
+    "@awiki/im-core-node-linux-x64-gnu": "workspace:0.2.5",
+    "@awiki/im-core-node-win32-x64-msvc": "workspace:0.2.5"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",

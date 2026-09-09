@@ -63,7 +63,7 @@ App 打包 worker 已强制 `AWIKI_RELEASE_REGISTRY=1`，Flutter 原生脚本因
 构建检查；直接运行原生 SDK 开发脚本仍允许源码构建。Dart wrapper 的仓内 path 是宿主源码，
 不能作为 Rust SDK 来源证明，必须检查实际 Cargo metadata。
 
-当前正式 Release 依赖为已发布的 ANP `1.0.2`、Identity `0.2.2`、Core `0.1.2`。
+当前正式 Release 依赖为已发布的 ANP `1.0.2`、Identity `0.2.2`、Core `0.1.3`。
 `registry-dependencies.json` 与通过既有 `--refresh-lock` 入口生成的
 `registry-Cargo.lock` 已同步；实际 Cargo metadata 已确认三者均来自 crates.io，
 没有 path/git SDK 替换。CLI、Daemon、Dart binding 与 Node binding 共用这组精确版本。
