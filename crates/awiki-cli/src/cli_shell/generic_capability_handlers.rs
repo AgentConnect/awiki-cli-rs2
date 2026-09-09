@@ -29,6 +29,8 @@ struct RequestInput {
     path: String,
     #[serde(default)]
     headers: Vec<HeaderInput>,
+    #[serde(default)]
+    include_client_metadata: bool,
     body_base64: Option<String>,
 }
 fn failure() -> ExitError {
@@ -153,9 +155,12 @@ impl App {
             return Err(failure());
         }
         let headers = ordinary_headers(input.headers)?;
-        let request =
+        let mut request =
             ExternalHttpRequest::new(url.as_str(), &input.method, headers.clone(), body.clone())
                 .map_err(|_| failure())?;
+        if input.include_client_metadata {
+            request = request.with_client_metadata();
+        }
         let client = crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await?;
         let auth = client.external_http_auth();
         let mut attempt = auth.prepare_async(request).await.map_err(|_| failure())?;

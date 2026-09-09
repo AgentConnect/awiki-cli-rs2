@@ -63,6 +63,7 @@ pub struct ExternalHttpRequest {
     pub(crate) method: String,
     pub(crate) headers: BTreeMap<String, String>,
     pub(crate) body: Option<Vec<u8>>,
+    pub(crate) include_client_metadata: bool,
 }
 
 impl ExternalHttpRequest {
@@ -97,7 +98,14 @@ impl ExternalHttpRequest {
             method,
             headers,
             body,
+            include_client_metadata: false,
         })
+    }
+    /// Explicitly disclose the configured host's real build metadata to this
+    /// external origin. Callers cannot supply an arbitrary version header.
+    pub fn with_client_metadata(mut self) -> Self {
+        self.include_client_metadata = true;
+        self
     }
 }
 

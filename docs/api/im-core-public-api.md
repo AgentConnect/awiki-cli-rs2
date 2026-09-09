@@ -1013,7 +1013,10 @@ mode.
 For configured-origin AWiki User/Message/Mail URLs, Core also injects the
 configured `X-AWiki-Client-Version` into the prepared request and returned
 header patch before signing. Callers cannot pre-populate or override this
-managed field. Unrelated external origins receive no AWiki product version.
+managed field. Unrelated external origins receive no AWiki product version by default.
+A trusted host can explicitly opt in with `request.with_client_metadata()`;
+Core then discloses only its configured build version, and fails if no version
+is configured. The host still cannot inject or impersonate another version.
 
 ```rust
 pub const EXTERNAL_HTTP_AUTH_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -1036,6 +1039,7 @@ impl ExternalHttpRequest {
         headers: Vec<ExternalHttpHeader>,
         body: Option<Vec<u8>>,
     ) -> ImResult<Self>;
+    pub fn with_client_metadata(self) -> Self;
 }
 
 impl ExternalHttpResponse {
@@ -1107,7 +1111,7 @@ model tools or an untrusted signing endpoint.
 - `ObjectProofReview::parse(raw_json, expected_object_hash)` 接收最多 1 MiB 的原始 JSON 对象，构造 Map 前拒绝任意深度重复键、NUL、超过 JCS 安全整数范围的整数。允许标准 JCS 可表示的有限浮点值；数值为整数时，即使使用指数/小数写法也必须在安全整数范围内，保证 canonical 输出可再次解析。应用可以有更严格的数字合同。
 - 按 ANP Object Proof 移除整个顶层 `proof`，保留嵌套业务字段，然后计算 JCS SHA-256 并核对预期摘要。得到不可反序列化、字段不可外部改写的固定 review。
 - `presentation()` 返回对象及 `object_hash()`；宿主以安全转义形式展示，授权必须绑定实际固定对象。SDK 不验证对象的业务含义，不把某个字段叫作 `expiresAt` 就解释成业务权限。
-- `inspect_capability_async()` 返回当前设备的公开 DID、verification method 和 cryptosuite。
+- `inspect_capability_async()` 返回当前设备的公开 DID、verification method 和 cryptosuite。能力检查及签名前先复用既有 UserProfile 会话生命周期刷新过期的设备凭据，再读取 Registry；不会重新注册或回退根密钥。checkpoint 使用标准 `sha256:<base64url>` DID 文档摘要，不能替换为裸十六进制摘要。
 - `sign_reviewed_async(review, expected_object_hash)` 再核对固定摘要，读取当前 Device Registry 与公开 DID 文档，检查 checkpoint 摘要、e1 绑定、active 设备、Manifest signing/e2ee key 和 assertionMethod。仅使用当前设备 Ed25519 key，根控制 key、撤销 key 或超过 5 秒的身份观测失败关闭。
 - 签名复用 identity provider `DeviceAssertion` 与 ANP prepare/complete 原语，生成标准 `eddsa-jcs-2022` Proof 并按当前文档自验，仅返回 Proof。业务期限由宿主在调用前后及提交前检查。
 
@@ -1116,13 +1120,17 @@ CLI 的通用本地命令如下，均使用显式 `--identity <local-alias>`：
 | 命令 | stdin / 输出合同 |
 |---|---|
 | `proof sign-object` | 闭合信封 `{object_json: string, object_hash: string}`。确认前检查设备，在控制终端展示实际 DID、固定对象与摘要；要求键入完整 object_hash。输出 `{proof, signer_did, object_hash}`。拒绝 dry-run 和 `confirmed:true` 等未知字段。 |
-| `http request` | 闭合信封 `{origin, method, path, headers?: [{name,value}], body_base64?: string}`。Origin 必须显式 HTTPS，路径必须为同源相对绝对路径，不跟随重定向。普通 headers 保留；SDK 管理的认证/版本 Header 不可注入，运输层 Host/长度等也不可覆盖。 |
+| `http request` | 闭合信封 `{origin, method, path, headers?: [{name,value}], body_base64?: string, include_client_metadata?: bool}`。Origin 必须显式 HTTPS，路径必须为同源相对绝对路径，不跟随重定向。普通 headers 保留；SDK 管理的认证/版本 Header 不可注入，运输层 Host/长度等也不可覆盖。 |
 
-`http request` 复用 `external_http_auth()`，不复制签名、Token 缓存或挑战算法。发送完全相同的普通 headers/body，最多按 SDK 合同一次 401 重试；先处理响应认证信息，再返回 `{status, content_type, body_base64}`，不导出认证 headers。`body_base64: null` 或省略表示无 body，空字符串表示显式空 body；现有 4 MiB 请求体、32 MiB 响应体上限保留。CLI 不解释 tenant 路径或业务 query，调用方负责其业务目标范围。
+`http request` 复用 `external_http_auth()`，不复制签名、Token 缓存或挑战算法。发送完全相同的普通 headers/body，最多按 SDK 合同一次 401 重试；先处理响应认证信息，再返回 `{status, content_type, body_base64}`，不导出认证 headers。`body_base64: null` 或省略表示无 body，空字符串表示显式空 body；现有 4 MiB 请求体、32 MiB 响应体上限保留。`include_client_metadata` 默认 false，true 显式选择向可信目标披露当前构建版本。CLI 不解释 tenant 路径或业务 query，调用方负责其业务目标范围。
 
 通知/普通 JSON 消息复用 `msg send --payload-file ... --client-message-id ... --idempotency-key ...`。可选 `--expected-sender-did` 在消息和附件实际发送前核对所选身份，拒绝 alias 变化造成的误发。结果仍为既有消息投影：`data.delivery.accepted`、`delivery_state` 和 message/operation IDs。仅本地保存不等于远端接受，远端接受也不等于对方已读取。
 
-此版本没有产品专用签名/通知入口或通用私钥导出。当前只实现 Rust/CLI，不增加 Dart/App facade；真实服务互操作需要另行运行验收。
+普通异步 Direct 消息在显式提供 client message ID 且没有 delegated signing 时，复用 conversation send 的发送前持久化及 wire snapshot。跨进程重试保留原 target DID 与 `meta.created_at`；已有记录缺少时间戳时返回冲突，不凭当前时间重建。此规则不改变同步、附件或 delegated 路径。收件 inbox 仍要求有效设备会话；长时间测试可先执行既有 `id refresh-token`。
+
+显式 workspace root、自定义 tenant 和 secondary tenant 不从全局 OpenClaw 自动导入身份；仅默认 workspace 的 builtin-primary 保留历史迁移发现。
+
+此版本没有产品专用签名/通知入口或通用私钥导出。当前只实现 Rust/CLI，不增加 Dart/App facade。2026-09-09 rwiki.cn 隔离 Node 已验证真实设备签名、HTTP 认证、跨秒通知重试与实际收件；完整产品跨平台验收不在该证据范围。
 
 ## 8. messages
 

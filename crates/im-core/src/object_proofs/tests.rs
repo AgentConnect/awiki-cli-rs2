@@ -73,10 +73,8 @@ fn device_validation_binds_registry_document_and_assertion_key() {
         checkpoint: IdentityInternalCheckpoint {
             document_version: 1,
             registry_version: 1,
-            document_hash: format!(
-                "{:x}",
-                Sha256::digest(serde_json_canonicalizer::to_vec(&g.did_document).unwrap())
-            ),
+            document_hash: crate::internal::identity_wire::document::document_hash(&g.did_document)
+                .unwrap(),
         },
         devices: vec![DeviceJoinRemoteDeviceSummary {
             device_id: g.protocol_device_id.as_str().to_owned(),
@@ -97,7 +95,15 @@ fn device_validation_binds_registry_document_and_assertion_key() {
             r,
         )
     };
+    assert!(registry.checkpoint.document_hash.starts_with("sha256:"));
     assert!(check(&registry, &g.device_signing_key_id).is_ok());
+    let correct = registry.checkpoint.document_hash.clone();
+    registry.checkpoint.document_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json_canonicalizer::to_vec(&g.did_document).unwrap())
+    );
+    assert!(check(&registry, &g.device_signing_key_id).is_err());
+    registry.checkpoint.document_hash = correct;
     assert!(check(&registry, &g.root_key_id).is_err());
     registry.devices[0].signing_key_id = g.root_key_id.clone();
     assert!(check(&registry, &g.device_signing_key_id).is_err());

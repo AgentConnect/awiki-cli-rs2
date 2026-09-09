@@ -201,10 +201,30 @@ impl<'a> ExternalHttpAuthService<'a> {
             None => host.to_owned(),
         };
         let mut headers = request.headers;
-        if let Some((name, value)) = crate::internal::transport::client_version_header(
-            self.client.core_inner().sdk_config(),
-            url.as_str(),
-        ) {
+        let version_header = if request.include_client_metadata {
+            let version = self
+                .client
+                .core_inner()
+                .sdk_config()
+                .client_version_info
+                .as_ref()
+                .ok_or_else(|| {
+                    crate::ImError::invalid_input(
+                        Some("client_version_info".to_owned()),
+                        "explicit client metadata requires configured build facts",
+                    )
+                })?;
+            Some((
+                crate::CLIENT_VERSION_HEADER.to_owned(),
+                version.header_value(),
+            ))
+        } else {
+            crate::internal::transport::client_version_header(
+                self.client.core_inner().sdk_config(),
+                url.as_str(),
+            )
+        };
+        if let Some((name, value)) = version_header {
             headers.insert(name.to_ascii_lowercase(), value);
         }
         Ok(PreparedRequest {

@@ -6,6 +6,7 @@ fn generic_http_target_is_explicit_and_not_tenant_specific() {
         method: "PATCH".into(),
         path: "/invoices/42?view=full".into(),
         headers: vec![],
+        include_client_metadata: false,
         body_base64: None,
     };
     assert!(target(&input).is_ok());

@@ -681,3 +681,29 @@ fn signature_metadata(
     )
     .unwrap()
 }
+
+#[test]
+fn external_client_metadata_is_explicit_and_uses_only_real_build_facts() {
+    let fixture = Fixture::with_client_version(
+        false,
+        Some(crate::ClientVersionInfo::new("awiki-cli", "0815", "1.0.50", None).unwrap()),
+    );
+    let service = fixture.client.external_http_auth();
+    let default = service
+        .prepare(get("https://external.example/invoices"))
+        .unwrap();
+    assert!(header_value(default.header_patch(), crate::CLIENT_VERSION_HEADER).is_none());
+    let explicit = service
+        .prepare(get("https://external.example/invoices").with_client_metadata())
+        .unwrap();
+    assert_eq!(
+        header_value(explicit.header_patch(), crate::CLIENT_VERSION_HEADER),
+        Some("awiki-cli/0815/1.0.50")
+    );
+    let missing = Fixture::new(false);
+    assert!(missing
+        .client
+        .external_http_auth()
+        .prepare(get("https://external.example/").with_client_metadata())
+        .is_err());
+}

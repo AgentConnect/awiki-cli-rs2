@@ -1129,6 +1129,7 @@ mod conversation_mark_read_request_tests {
 
 #[cfg(all(test, feature = "sqlite"))]
 mod conversation_read_model_tests {
+    include!("direct_retry_tests.rs");
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
@@ -2409,6 +2410,12 @@ impl<'a> MessageService<'a> {
             }
             (super::MessageTarget::Direct(_), _) => {
                 let resolved = resolve_send_request_async(self.client, request).await?;
+                if resolved.request.client_message_id.is_some()
+                    && resolved.request.delegated_signing.is_none()
+                {
+                    let durable = plain_direct_submission(self.client, resolved)?;
+                    return self.send_conversation_request_async(durable).await;
+                }
                 let direct_handle = resolved.direct_handle().map(str::to_owned);
                 let peer_scope = resolved.peer_scope.clone();
                 let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
@@ -4372,6 +4379,80 @@ pub(crate) fn normalize_direct_send_result_for_peer_scope(
         );
     }
     Ok(())
+}
+
+/// Ordinary async Direct sends with an explicit message ID need the same
+/// durable wire timestamp and pre-send projection as conversation sends.
+fn plain_direct_submission(
+    client: &crate::core::ImClient,
+    resolved: ResolvedSendRequest,
+) -> crate::ImResult<ResolvedConversationSendRequest> {
+    let target_handle = resolved.direct_handle().map(str::to_owned);
+    let target_did = resolved
+        .target_did
+        .clone()
+        .or_else(|| match &resolved.request.target {
+            super::MessageTarget::Direct(peer) if peer.as_str().starts_with("did:") => {
+                Some(peer.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("target".to_owned()),
+                "Direct target has no resolved DID",
+            )
+        })?;
+    let thread = if let Some(scope) = &resolved.peer_scope {
+        super::ThreadRef::Thread(super::direct_peer_scope_thread_id(
+            &scope.user_id,
+            &scope.full_handle,
+        )?)
+    } else {
+        super::ThreadRef::Direct(crate::ids::PeerRef::parse(&target_did, "")?)
+    };
+    let conversation_id =
+        super::ConversationIdentity::from_thread_ref_for_owner(&thread, client.did().as_str())
+            .conversation_id;
+    let mut request = resolved.request;
+    let message_id = request.client_message_id.as_ref().ok_or_else(|| {
+        crate::ImError::invalid_input(
+            Some("client_message_id".to_owned()),
+            "durable Direct send requires a message ID",
+        )
+    })?;
+    let existing = existing_conversation_wire_snapshot(client, &conversation_id, message_id)?;
+    let (wire_target_did, wire_created_at) = match existing {
+        Some(existing) => (
+            Some(existing.target_did),
+            existing
+                .created_at
+                .ok_or_else(|| crate::ImError::MessageWireIdentityConflict {
+                    message_id: message_id.as_str().to_owned(),
+                })?,
+        ),
+        None => (
+            Some(target_did.clone()),
+            crate::internal::wire::common::now_rfc3339(),
+        ),
+    };
+    if request
+        .delivery
+        .idempotency_key
+        .as_deref()
+        .is_none_or(|v| v.trim().is_empty())
+    {
+        request.delivery.idempotency_key = Some(format!("op-{}", message_id.as_str()));
+    }
+    Ok(ResolvedConversationSendRequest {
+        conversation_id,
+        request,
+        wire_target_did,
+        wire_created_at,
+        target_did: Some(target_did),
+        target_handle,
+        peer_scope: resolved.peer_scope,
+    })
 }
 
 fn conversation_send_uses_security_runtime(security: &super::MessageSecurityMode) -> bool {

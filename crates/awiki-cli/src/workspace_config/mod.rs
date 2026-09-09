@@ -2488,6 +2488,16 @@ fn resolve_workspace_home_from(
 }
 
 fn build_paths(home: Option<&Path>, workspace_home_dir: &Path) -> Paths {
+    // Global OpenClaw credentials are a legacy migration source, not defaults
+    // for every tenant. A custom workspace/tenant must start without discovery
+    // of identities or messages belonging to another environment.
+    let legacy_home = home.filter(|home| {
+        workspace_home_dir
+            == home
+                .join(format!(".{APP_NAME}"))
+                .join("tenants")
+                .join(CHINA_TENANT_NAME)
+    });
     let data_dir = workspace_home_dir.join("data");
     let state_dir = workspace_home_dir.join("runtime");
     let cache_dir = workspace_home_dir.join("cache");
@@ -2503,7 +2513,7 @@ fn build_paths(home: Option<&Path>, workspace_home_dir: &Path) -> Paths {
         config_file: path_string(&workspace_home_dir.join(CONFIG_FILE_NAME)),
         identity_dir: path_string(&workspace_home_dir.join("identities")),
         database_file: path_string(&data_dir.join(format!("{APP_NAME}.db"))),
-        legacy_credentials_dir: home
+        legacy_credentials_dir: legacy_home
             .map(|home| {
                 home.join(".openclaw")
                     .join("credentials")
@@ -2512,7 +2522,7 @@ fn build_paths(home: Option<&Path>, workspace_home_dir: &Path) -> Paths {
             .as_deref()
             .map(path_string)
             .unwrap_or_default(),
-        legacy_data_dir: home
+        legacy_data_dir: legacy_home
             .map(|home| {
                 home.join(".openclaw")
                     .join("workspace")
@@ -3037,6 +3047,24 @@ services:
             .unwrap_err()
             .downcast_ref::<HomeDirUnavailable>()
             .is_some());
+    }
+
+    #[test]
+    fn isolated_workspace_and_other_tenants_never_discover_global_legacy_data() {
+        let home = Path::new("/home/test-user");
+        let default = home.join(format!(".{APP_NAME}")).join("tenants");
+        for workspace in [
+            PathBuf::from("/srv/node-tests/tenants/node-rwiki"),
+            default.join("node-rwiki"),
+            default.join(GLOBAL_TENANT_NAME),
+        ] {
+            let paths = build_paths(Some(home), &workspace);
+            assert!(paths.legacy_credentials_dir.is_empty());
+            assert!(paths.legacy_data_dir.is_empty());
+        }
+        let legacy = build_paths(Some(home), &default.join(CHINA_TENANT_NAME));
+        assert!(!legacy.legacy_credentials_dir.is_empty());
+        assert!(!legacy.legacy_data_dir.is_empty());
     }
 
     #[test]

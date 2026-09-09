@@ -31,6 +31,12 @@ impl ObjectProofService<'_> {
     }
     async fn current_device(&self) -> ImResult<(String, serde_json::Value, std::time::Instant)> {
         let client = self.client;
+        // Registry reads require a live exact-device bearer. Use the existing
+        // auth lifecycle to renew an expired session before fetching material.
+        client
+            .auth()
+            .ensure_session_async(crate::auth::AuthScope::UserProfile)
+            .await?;
         let device_id = client.exact_protocol_device_id()?;
         let signer = client.runtime().key_provider.as_ref();
         let kid = signer.request_signing_key_id()?;
@@ -122,13 +128,9 @@ pub(super) fn validate_device(
     kid: &str,
     registry: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry,
 ) -> ImResult<()> {
-    use sha2::{Digest, Sha256};
-    let document_hash = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json_canonicalizer::to_vec(document).map_err(|_| ImError::PermissionDenied)?
-        )
-    );
+    // Registry checkpoints use the identity protocol's sha256:<base64url>
+    // encoding, distinct from an application's hexadecimal object digest.
+    let document_hash = crate::internal::identity_wire::document::document_hash(document)?;
     if registry.checkpoint.document_hash != document_hash
         || document["id"] != did
         || registry.did.as_str() != did
