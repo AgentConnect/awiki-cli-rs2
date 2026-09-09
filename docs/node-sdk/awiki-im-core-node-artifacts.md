@@ -1,5 +1,8 @@
 # `@awiki/im-core-node` 原生制品
 
+当前发布版本为 `0.2.4`，native API 为 `14`。以下旧版本记录保留历史边界，不能用旧版 addon 替代当前包。
+`workflow_dispatch` 可显式选择 `build_only=true`，仅构建和打包，不执行安装测试；默认 CI 仍保留安装测试。
+
 ## 第一版发行决策
 
 部署负责人已在 2026-08-15 确认第一版 Tier 1 为以下五个平台，并明确排除 Alpine/musl。

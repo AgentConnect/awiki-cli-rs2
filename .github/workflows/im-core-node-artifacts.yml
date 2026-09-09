@@ -2,6 +2,12 @@ name: IM Core Node Tier 1 Artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      build_only:
+        description: Build release artifacts without running install tests
+        required: false
+        default: false
+        type: boolean
   pull_request:
     paths:
       - '.github/workflows/im-core-node-artifacts.yml'
@@ -299,6 +305,7 @@ jobs:
           retention-days: 7
 
   packed-install:
+    if: ${{ !inputs.build_only }}
     name: Packed install ${{ matrix.target.name }} / Node ${{ matrix.node }}
     needs: [build-platform, build-wrapper]
     runs-on: ${{ matrix.target.runner }}
