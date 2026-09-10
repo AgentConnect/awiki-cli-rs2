@@ -914,6 +914,147 @@ class DartMessagePage {
           hasMore == other.hasMore;
 }
 
+class DartMessageProcessingOutcome {
+  final bool complete;
+  final int pendingCount;
+  final int blockedCount;
+  final int discardedCount;
+  final int eventsApplied;
+  final List<String> changedConversationIds;
+  final List<DartCommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+
+  const DartMessageProcessingOutcome({
+    required this.complete,
+    required this.pendingCount,
+    required this.blockedCount,
+    required this.discardedCount,
+    required this.eventsApplied,
+    required this.changedConversationIds,
+    required this.committedIncomingMessages,
+    this.errorCode,
+  });
+
+  @override
+  int get hashCode =>
+      complete.hashCode ^
+      pendingCount.hashCode ^
+      blockedCount.hashCode ^
+      discardedCount.hashCode ^
+      eventsApplied.hashCode ^
+      changedConversationIds.hashCode ^
+      committedIncomingMessages.hashCode ^
+      errorCode.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageProcessingOutcome &&
+          runtimeType == other.runtimeType &&
+          complete == other.complete &&
+          pendingCount == other.pendingCount &&
+          blockedCount == other.blockedCount &&
+          discardedCount == other.discardedCount &&
+          eventsApplied == other.eventsApplied &&
+          changedConversationIds == other.changedConversationIds &&
+          committedIncomingMessages == other.committedIncomingMessages &&
+          errorCode == other.errorCode;
+}
+
+enum DartMessageProcessingStatus {
+  applied,
+  retrying,
+  blocked,
+  discarded,
+  resyncRequired,
+}
+
+class DartMessageProcessingUpdate {
+  final String eventId;
+  final DartMessageProcessingStatus status;
+  final List<String> changedConversationIds;
+  final List<DartCommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+
+  const DartMessageProcessingUpdate({
+    required this.eventId,
+    required this.status,
+    required this.changedConversationIds,
+    required this.committedIncomingMessages,
+    this.errorCode,
+  });
+
+  @override
+  int get hashCode =>
+      eventId.hashCode ^
+      status.hashCode ^
+      changedConversationIds.hashCode ^
+      committedIncomingMessages.hashCode ^
+      errorCode.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageProcessingUpdate &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          status == other.status &&
+          changedConversationIds == other.changedConversationIds &&
+          committedIncomingMessages == other.committedIncomingMessages &&
+          errorCode == other.errorCode;
+}
+
+class DartMessageReceiveOutcome {
+  final DartMessageSyncStatus status;
+  final bool complete;
+  final int eventsReceived;
+  final int pagesFetched;
+  final int messagesHydrated;
+  final int duplicatesSkipped;
+  final bool olderHistoryExcluded;
+  final String? errorCode;
+  final List<String> warnings;
+
+  const DartMessageReceiveOutcome({
+    required this.status,
+    required this.complete,
+    required this.eventsReceived,
+    required this.pagesFetched,
+    required this.messagesHydrated,
+    required this.duplicatesSkipped,
+    required this.olderHistoryExcluded,
+    this.errorCode,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      status.hashCode ^
+      complete.hashCode ^
+      eventsReceived.hashCode ^
+      pagesFetched.hashCode ^
+      messagesHydrated.hashCode ^
+      duplicatesSkipped.hashCode ^
+      olderHistoryExcluded.hashCode ^
+      errorCode.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageReceiveOutcome &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          complete == other.complete &&
+          eventsReceived == other.eventsReceived &&
+          pagesFetched == other.pagesFetched &&
+          messagesHydrated == other.messagesHydrated &&
+          duplicatesSkipped == other.duplicatesSkipped &&
+          olderHistoryExcluded == other.olderHistoryExcluded &&
+          errorCode == other.errorCode &&
+          warnings == other.warnings;
+}
+
 enum DartMessageSecurityMode {
   defaultPlain,
   plain,

@@ -1271,6 +1271,25 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
     }
     if version == SCHEMA_VERSION {
         if current_schema_shape_is_complete(connection)? {
+            let inbox_ddl: String = connection
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name='sync_lane_inbox'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(super::local_state_unavailable)?;
+            if !has_column(connection, "sync_lane_inbox", "logical_event_seq")?
+                || !inbox_ddl.contains("'baseline'")
+                || !has_table(connection, "sync_input_leases")?
+            {
+                let transaction = connection
+                    .unchecked_transaction()
+                    .map_err(super::local_state_unavailable)?;
+                super::sync_inbox::ensure_schema(&transaction)?;
+                transaction
+                    .commit()
+                    .map_err(super::local_state_unavailable)?;
+            }
             return Ok(());
         }
         return Err(crate::ImError::LocalStateUnavailable {

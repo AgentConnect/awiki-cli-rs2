@@ -27,6 +27,7 @@ async fn execute_message_receive_once(
     client: crate::core::ImClient,
     request: crate::messages::MessageSyncRequest,
 ) -> crate::ImResult<crate::messages::MessageReceiveOutcome> {
+    let (client, _) = client.reload_local_authorization_async().await?;
     let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
         &client,
         crate::internal::auth::session::FileSessionProvider::new(&client),
@@ -3816,6 +3817,27 @@ impl<'a> MessageService<'a> {
         super::processing::compatibility_wait(self.client, received, updates).await
     }
 
+    pub fn receive_now(
+        &self,
+        request: super::MessageSyncRequest,
+    ) -> crate::ImResult<super::MessageReceiveOutcome> {
+        #[cfg(feature = "blocking")]
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| crate::ImError::Internal {
+                    message: format!("build message receive runtime: {error}"),
+                })?;
+            runtime.block_on(self.receive_now_async(request))
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("receive-now"))
+        }
+    }
+
     /// Completes when full inputs and their receive cursors are committed.
     /// Business failures are observable through `watch_processing_updates`.
     pub async fn receive_now_async(
@@ -3826,6 +3848,51 @@ impl<'a> MessageService<'a> {
             request,
             crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::EnsureCurrent,
         ).await
+    }
+
+    /// Inspect retained pending/blocked input identities without exposing payloads.
+    pub async fn pending_processing_async(
+        &self,
+        limit: u32,
+    ) -> crate::ImResult<Vec<super::MessageProcessingUpdate>> {
+        let owner = self.client.current_identity().id.as_str().to_owned();
+        self.client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .run_local(move |connection| {
+                crate::internal::local_state::sync_inbox::pending_updates(
+                    connection,
+                    &owner,
+                    limit,
+                    chrono::Utc::now().timestamp(),
+                )
+            })
+            .await
+    }
+
+    /// Retry a retained event after its dependency or conflict was repaired.
+    /// Active attempts and inputs already removed by retention are not revived.
+    pub async fn retry_processing_async(&self, event_id: String) -> crate::ImResult<u32> {
+        let owner = self.client.current_identity().id.as_str().to_owned();
+        let changed = self
+            .client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .run_local(move |connection| {
+                crate::internal::local_state::sync_inbox::retry_event(
+                    connection,
+                    &owner,
+                    &event_id,
+                    chrono::Utc::now().timestamp(),
+                )
+            })
+            .await?;
+        if changed > 0 {
+            crate::internal::message_runtime::sync_dispatcher::wake_client(self.client);
+        }
+        Ok(changed)
     }
 
     pub fn watch_processing_updates(&self) -> crate::ImResult<super::MessageProcessingSession> {

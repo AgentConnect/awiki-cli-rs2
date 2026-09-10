@@ -28,6 +28,7 @@ struct DispatchState {
     wake_generation: u64,
     next_owner: usize,
     clients: BTreeMap<String, crate::core::ImClient>,
+    active_by_owner: BTreeMap<String, usize>,
 }
 
 pub(crate) struct SyncDispatcher {
@@ -65,6 +66,7 @@ impl Drop for RunGuard {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.run_epoch == self.epoch {
             state.running = false;
+            state.active_by_owner.clear();
         }
     }
 }
@@ -106,6 +108,28 @@ pub(crate) fn publish_removed(client: &crate::core::ImClient, removed: &[Removed
 }
 
 impl SyncDispatcher {
+    pub(crate) fn active_for_owner(&self, owner: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active_by_owner
+            .get(owner)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn input_finished(&self, claim: Option<&InputClaim>) {
+        if let Some(claim) = claim {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(count) = state.active_by_owner.get_mut(&claim.owner_identity_id) {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<OwnedUpdate> {
         self.updates.subscribe()
     }
@@ -131,9 +155,27 @@ impl SyncDispatcher {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state
-                .clients
-                .insert(client.current_identity().id.as_str().to_owned(), client);
+            let owner = client.current_identity().id.as_str().to_owned();
+            let use_current = state.clients.get(&owner).is_some_and(|current| {
+                match (
+                    current.sync_account_context(),
+                    client.sync_account_context(),
+                ) {
+                    (Ok(current), Ok(incoming)) => {
+                        (
+                            current.device_auth_generation.len(),
+                            current.device_auth_generation.as_str(),
+                        ) > (
+                            incoming.device_auth_generation.len(),
+                            incoming.device_auth_generation.as_str(),
+                        )
+                    }
+                    _ => false,
+                }
+            });
+            if !use_current {
+                state.clients.insert(owner, client);
+            }
             state.wake_generation = state.wake_generation.wrapping_add(1);
             let start = !state.running;
             state.running = true;
@@ -183,6 +225,8 @@ impl SyncDispatcher {
         let mut jobs = JoinSet::new();
         let mut active = HashMap::<String, InputClaim>::new();
         let mut task_tokens = HashMap::new();
+        let mut maintenance_active = HashMap::<String, String>::new();
+        let mut maintenance_due = true;
         let mut maintenance = tokio::time::interval(MAINTENANCE_INTERVAL);
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -231,14 +275,89 @@ impl SyncDispatcher {
                 {
                     retained |= summary.pending > 0;
                 }
-                if active.len() >= sync_inbox::MAX_ACTIVE_INPUTS {
+                let owner = client.current_identity().id.as_str().to_owned();
+                let pending = db
+                    .run_local(move |connection| {
+                        super::sync_processing::maintenance_pending(connection, &owner)
+                    })
+                    .await
+                    .unwrap_or([false; 4]);
+                retained |= pending.into_iter().any(|pending| pending);
+                if maintenance_due {
+                    for (index, kind) in [
+                        super::sync_processing::MaintenanceKind::PeerResolution,
+                        super::sync_processing::MaintenanceKind::ReadOutbox,
+                        super::sync_processing::MaintenanceKind::P5Replies,
+                        super::sync_processing::MaintenanceKind::RootCompletion,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let token = format!(
+                            "maintenance:{index}:{}",
+                            client.current_identity().id.as_str()
+                        );
+                        if !pending[index]
+                            || maintenance_active.contains_key(&token)
+                            || jobs.len() >= sync_inbox::MAX_ACTIVE_INPUTS
+                        {
+                            continue;
+                        }
+                        let lease = match db
+                            .run_local(|connection| {
+                                sync_inbox::reserve_processing_slot(
+                                    connection,
+                                    super::sync_processing::now(),
+                                )
+                            })
+                            .await
+                        {
+                            Ok(Some(lease)) => lease,
+                            _ => continue,
+                        };
+                        maintenance_active.insert(token.clone(), lease.clone());
+                        let worker_token = token.clone();
+                        let client = client.clone();
+                        let dispatcher = Arc::clone(&self);
+                        let task = jobs.spawn(async move {
+                            // No cancel-and-replace timeout: the actual future keeps
+                            // its slot until it ends, even if a dependency is slow.
+                            if let Ok(changed) =
+                                super::sync_processing::run_maintenance(&client, kind).await
+                            {
+                                if !changed.is_empty() {
+                                    dispatcher.publish(
+                                        client.current_identity().id.as_str().to_owned(),
+                                        MessageProcessingUpdate {
+                                            event_id: "local-peer-resolution".into(),
+                                            status: MessageProcessingStatus::Applied,
+                                            changed_conversation_ids: changed,
+                                            committed_incoming_messages: vec![],
+                                            error_code: None,
+                                        },
+                                    );
+                                }
+                            }
+                            if let Ok(db) = client.core_inner().local_state_db().await {
+                                let _ = db
+                                    .run_local(move |connection| {
+                                        sync_inbox::release_processing_slot(connection, &lease)
+                                    })
+                                    .await;
+                            }
+                            worker_token
+                        });
+                        task_tokens.insert(task.id(), token);
+                    }
+                }
+                if jobs.len() >= sync_inbox::MAX_ACTIVE_INPUTS {
                     continue;
                 }
                 let Ok(binding) = client.active_sync_account_binding().await else {
                     continue;
                 };
                 let binding = super::sync_v2::stored_binding(client, &binding);
-                let limit = (sync_inbox::MAX_ACTIVE_INPUTS - active.len()) as u32;
+                let limit = (sync_inbox::MAX_ACTIVE_INPUTS - jobs.len()) as u32;
                 let claims = match db
                     .run_local(move |connection| {
                         sync_inbox::claim_inputs(
@@ -254,6 +373,13 @@ impl SyncDispatcher {
                     Err(_) => continue,
                 };
                 for claim in claims {
+                    *self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .active_by_owner
+                        .entry(claim.owner_identity_id.clone())
+                        .or_default() += 1;
                     active.insert(claim.token.clone(), claim.clone());
                     let client = client.clone();
                     let dispatcher = Arc::clone(&self);
@@ -266,7 +392,8 @@ impl SyncDispatcher {
                     task_tokens.insert(task.id(), task_token);
                 }
             }
-            if active.is_empty() && !retained && self.updates.receiver_count() == 0 {
+            maintenance_due = false;
+            if jobs.is_empty() && !retained && self.updates.receiver_count() == 0 {
                 let mut state = self
                     .state
                     .lock()
@@ -283,24 +410,37 @@ impl SyncDispatcher {
                 finished = jobs.join_next(), if !jobs.is_empty() => {
                     match finished {
                         Some(Ok(token)) => {
+                            self.input_finished(active.get(&token));
                             active.remove(&token);
+                            maintenance_active.remove(&token);
                             task_tokens.retain(|_, value| value != &token);
                         }
                         Some(Err(error)) => {
                             // A panicked worker cannot retain an in-memory slot forever.
                             // Its SQLite lease still fences writers until restart/reclaim.
                             if let Some(token) = task_tokens.remove(&error.id()) {
-                                active.remove(&token);
+                                self.input_finished(active.get(&token));
+                            active.remove(&token);
+                                maintenance_active.remove(&token);
                             }
                         }
                         None => {},
                     }
                 },
                 _ = maintenance.tick() => {
+                    maintenance_due = true;
+                    #[cfg(feature = "group-e2ee")]
+                    if let Some(client) = clients.first() {
+                        let _ = crate::internal::group_e2ee::v2_runtime::cleanup_received_results_for_client(client).await;
+                    }
                     if let Some(client) = clients.first() {
                         if let Ok(db) = client.core_inner().local_state_db().await {
                             let claims = active.values().cloned().collect::<Vec<_>>();
-                            let _ = db.run_local(move |connection| sync_inbox::renew_claims(connection, &claims, super::sync_processing::now())).await;
+                            let maintenance_tokens = maintenance_active.values().cloned().collect::<Vec<_>>();
+                            let _ = db.run_local(move |connection| {
+                                sync_inbox::renew_claims(connection, &claims, super::sync_processing::now())?;
+                                sync_inbox::renew_processing_slots(connection, &maintenance_tokens, super::sync_processing::now())
+                            }).await;
                             if let Ok(removed) = db.run_local(|connection| sync_inbox::purge_expired(connection, super::sync_processing::now(), 256)).await {
                                 self.publish_removed(&removed);
                             }
@@ -324,7 +464,7 @@ impl SyncDispatcher {
                     return executor(client.clone(), claim.clone()).await;
                 }
             }
-            if claim.lane == "ordinary" {
+            if matches!(claim.lane.as_str(), "ordinary" | "baseline") {
                 super::sync_processing::process_ordinary(
                     &client,
                     &claim,
@@ -372,7 +512,7 @@ impl SyncDispatcher {
                     late_result
                 } else {
                     let finished = claim.clone();
-                    let _ = db
+                    let released = db
                         .run_local(move |connection| {
                             sync_inbox::release_timeout(
                                 connection,
@@ -380,11 +520,19 @@ impl SyncDispatcher {
                                 super::sync_processing::now() + 2,
                             )
                         })
-                        .await;
-                    Err(sync_inbox::error(
-                        "sync.processing_timeout",
-                        "business processing exceeded its time budget",
-                    ))
+                        .await
+                        .unwrap_or(false);
+                    if released {
+                        Err(sync_inbox::error(
+                            "sync.processing_timeout",
+                            "business processing exceeded its time budget",
+                        ))
+                    } else {
+                        Err(sync_inbox::error(
+                            "SYNC_INPUT_SUPERSEDED",
+                            "timed-out input was discarded before its call ended",
+                        ))
+                    }
                 }
             }
         };
@@ -430,5 +578,11 @@ impl SyncDispatcher {
                 );
             }
         }
+        let finished_claim = claim.clone();
+        let _ = db
+            .run_local(move |connection| {
+                sync_inbox::release_claim_lease(connection, &finished_claim)
+            })
+            .await;
     }
 }

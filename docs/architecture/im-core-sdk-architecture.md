@@ -1201,11 +1201,11 @@ control whether transport moves from legacy Inbox/per-group catch-up to lanes.
 
 Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承诺完整输入已保存并与对应接收游标原子提交。普通事件、P5、P6 共用 `sync_lane_inbox`，必要正文 hydration 与账号/设备/来源校验先完成；业务归约、解密、Persona projection、通知和读状态回写不作为接收完成条件。旧 `sync_now` 保留显式兼容等待，使用同一接收表及 Core 处理器，等待发生在接收协调器之外；App、Listener 和 Daemon 主接收链路采用新入口。消息事实、逐条错误和处理后通知通过独立处理结果及现有本地投影机制交付。
 
-Core 原子领取并按类型有限并发分发，处理器只执行单条事件。不同类型、不同会话以及同一会话无真实前置依赖的事件不等待前一条成功；实际密钥/MLS 依赖保留。短事务检查当前身份与领取尝试，业务事实与完成证据一起提交。后台唤醒合并，启动及周期维护恢复未完成输入；重复 Core 实例共享同一库的处理额度。
+Core 原子领取并按类型有限并发分发，处理器只执行单条事件。 `sync_input_leases` 仅保存最多 8 个活动尝试的 token 与租期，不保存输入、身份或处理结果；即使接收载荷被淘汰，实际调用的占位仍延续到调用结束。它与独立维护共用活动上限，避免另一个 Core/连接因看不到已删除的输入而越过并发上限。不同类型、不同会话以及同一会话无真实前置依赖的事件不等待前一条成功；实际密钥/MLS 依赖保留。短事务检查当前身份与领取尝试，业务事实与完成证据一起提交。后台唤醒合并，启动及周期维护恢复未完成输入；重复 Core 实例共享同一库的处理额度。
 
 接收表每个本地数据库最多 16,384 条，覆盖最多 10,000 items 的完整 compact snapshot 及本地基线记录；加入新记录时按首次本地接收时间淘汰最老记录，腾位删除、新记录与游标一起提交。记录在首次接收 48 小时后过期，重试不续期，失败和处理中记录也适用。清理先提交则旧处理尝试不能再提交；业务先提交则清理只移除接收暂存，不删除已提交消息事实。过期/淘汰是放弃尚未完成的本地处理，不伪造业务成功、已读或 ACK。保留期内的 pending 数据在迁移、重启及 epoch/snapshot 切换后仍可恢复。
 
-普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。更早的业务缺口不能被更晚已展示消息的累计已读自动跨越。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
+普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。按用户 2026-09-10 的决定，累计已读继续按已展示并读过的后续消息推进，不等待更早输入处理成功；例如 102 处理失败、103 已读时，允许本地已读与服务端累计已读推进到 103。102 仍保留独立的处理失败状态，已读推进不构成它的业务处理成功证据。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
 
 `im-core` Rust/SQLite owns the global reliable checkpoint:
 
@@ -1497,23 +1497,11 @@ verified message fact may perform the single allowed
 `dm:<DID>` → `dm:peer-scope:v1:<hash>` canonical upgrade; canonical-to-canonical
 and all Group rebinding remain conflicts.
 
-`syncNow` closes Schema 3 compact recovery inside one call:
-delta (or existing-device bootstrap recovery) → process-local opaque token →
-manifest + opaque page-ref collection (at most 100 pages) → complete package validation → one
-snapshot atomic merge → post-anchor delta. Core keeps token, page ref, manifest, section, page count,
-cursor and boundary only in the Rust process stack; it never applies a page to formal projection.
-Snapshot application
-merges current read/Group state and recent ordinary messages without deleting
-older local messages, commits receipts/projections/cursor/recovery completion in
-one SQLite transaction, and returns only the existing high-level `changed` or
-`idle` terminal outcome after the post-anchor delta succeeds. A raw token,
-cursor, cutoff, policy limit, or returned snapshot count never crosses the Rust
-public, Dart, Flutter, CLI, or App boundary and is never persisted. The only new public product-safe
-field is `MessageSyncOutcome.older_history_excluded`; the same boolean is committed transactionally
-to `sync_history_scope`. A normal history budget boundary is success, while required-state or
-single-item overflow returns the stable capacity error codes. Startup
-changes an interrupted recovery to `retryable` while retaining the original
-cursor, so the next `syncNow` obtains a fresh process-local token.
+Schema 3 compact recovery 的接收流程为：delta（或 existing-device bootstrap recovery）→ 内存中的 opaque token → manifest/page-ref 全包下载与校验 → 一次持久接收事务 → post-anchor delta。接收事务保存每条完整普通消息/通知，以及包含原始 Group/read state 和权威替换集合的本地基线输入，同时提交新 epoch/cursor、lane negotiation、history scope 与 recovery completion。网络分页仍不直接写正式投影；token、page ref、manifest 等下载凭据不落盘、不进入公共 DTO。基线处理所必需的 cutoff 与时间属于 Core 私有接收载荷，遵循同一有限保留策略。
+
+本地基线使用同一 `sync_lane_inbox` 中的 `baseline` 内部类别；它不参与 ANP lane negotiation，也不增加服务端流。基线仅执行本地权威替换、Group/read state 提交，没有 Directory 或网络等待。普通投影领取和提交等待尚存的基线完成，避免后续已提交消息被较早 snapshot 替换；同一 owner 的多个基线按接收顺序处理。基线完成后，各条 snapshot 消息、通知和 post-anchor delta 独立领取，失败不回退已提交的接收游标。epoch 切换保留尚未过期或淘汰的旧输入。snapshot 消息可恢复本地事实，但不作为实时 incoming 通知交付；post-anchor delta 继续按现有实时条件交付。
+
+Tail-only bootstrap 同样只提交原始基线输入与游标，业务处理发生在接收事务之外。`MessageReceiveOutcome.older_history_excluded` 与兼容 `MessageSyncOutcome` 的对应字段保持产品层含义。正常 history budget 边界视为成功；完整必需状态或单项超出协议容量仍返回现有容量错误。若进程在接收事务之前中断，重启把下载 recovery 标为 `retryable` 并保留旧游标，重新取得下载 token；接收事务之后则从统一接收表恢复处理，无需重新下载已经接收的数据。
 
 Core uses one process-local single-flight coordinator per
 `state-root + owner_identity_id`. Reopened `ImCore` instances that point to the
@@ -1528,7 +1516,7 @@ process or a stale process, and genuine retryable/blocked/auth failures remain f
 The coordinator does not own a second owner-wide local-state operation mutex. Network, Directory,
 Realtime, and P5/P6 waits never hold a lock that blocks an unrelated committed local projection
 read. SQLite actor commands, atomic apply transactions, `run_generation`, and the existing
-peer/group lane-consumer scope locks remain the write-side serialization and stale-result fences.
+per-input attempt fences remain the write-side serialization and stale-result fences.
 Consequently `local_inbox_projection` and `local_history` may return the latest committed view while
 a sync run is still in flight; they do not claim that view is remotely fresh. Operations whose
 contract requires freshness still await the coordinated sync result and fail closed when it fails.

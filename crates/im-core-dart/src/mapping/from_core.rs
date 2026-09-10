@@ -1,3 +1,7 @@
+use crate::dto::message::{
+    DartMessageProcessingOutcome, DartMessageProcessingStatus, DartMessageProcessingUpdate,
+    DartMessageReceiveOutcome,
+};
 use crate::dto::{
     attachment::{
         DartAttachmentSendResult, DartDownloadedAttachment, DartDownloadedAttachmentDestination,
@@ -2729,5 +2733,65 @@ mod tests {
         });
 
         assert_eq!(mapped.conversation_id, "group:did:example:group");
+    }
+}
+
+impl From<im_core::messages::MessageReceiveOutcome> for DartMessageReceiveOutcome {
+    fn from(value: im_core::messages::MessageReceiveOutcome) -> Self {
+        Self {
+            status: value.status.into(),
+            complete: value.complete,
+            events_received: value.events_received,
+            pages_fetched: value.pages_fetched,
+            messages_hydrated: value.messages_hydrated,
+            duplicates_skipped: value.duplicates_skipped,
+            older_history_excluded: value.older_history_excluded,
+            error_code: value.error_code,
+            warnings: value.warnings,
+        }
+    }
+}
+impl From<im_core::messages::MessageProcessingStatus> for DartMessageProcessingStatus {
+    fn from(value: im_core::messages::MessageProcessingStatus) -> Self {
+        match value {
+            im_core::messages::MessageProcessingStatus::Applied => Self::Applied,
+            im_core::messages::MessageProcessingStatus::Retrying => Self::Retrying,
+            im_core::messages::MessageProcessingStatus::Blocked => Self::Blocked,
+            im_core::messages::MessageProcessingStatus::Discarded => Self::Discarded,
+            im_core::messages::MessageProcessingStatus::ResyncRequired => Self::ResyncRequired,
+        }
+    }
+}
+impl From<im_core::messages::MessageProcessingUpdate> for DartMessageProcessingUpdate {
+    fn from(value: im_core::messages::MessageProcessingUpdate) -> Self {
+        Self {
+            event_id: value.event_id,
+            status: value.status.into(),
+            changed_conversation_ids: value.changed_conversation_ids,
+            committed_incoming_messages: value
+                .committed_incoming_messages
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            error_code: value.error_code,
+        }
+    }
+}
+impl From<im_core::messages::MessageProcessingOutcome> for DartMessageProcessingOutcome {
+    fn from(value: im_core::messages::MessageProcessingOutcome) -> Self {
+        Self {
+            complete: value.complete,
+            pending_count: value.pending_count,
+            blocked_count: value.blocked_count,
+            discarded_count: value.discarded_count,
+            events_applied: value.events_applied,
+            changed_conversation_ids: value.changed_conversation_ids,
+            committed_incoming_messages: value
+                .committed_incoming_messages
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            error_code: value.error_code,
+        }
     }
 }

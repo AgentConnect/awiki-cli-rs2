@@ -79,6 +79,23 @@ impl ImClient {
         ))
     }
 
+    /// Reloads local authorization material without running Inbox hydration or
+    /// another identity workflow. Bindings use this around independent receive.
+    #[doc(hidden)]
+    pub async fn reload_local_authorization_async(&self) -> crate::ImResult<(Self, bool)> {
+        if self.current_identity().local_alias.is_none() {
+            return Ok((self.clone(), false));
+        }
+        let core = self.core_handle();
+        let runtime = core
+            .identities()
+            .load_runtime_async(crate::identity::IdentitySelector::Id(
+                self.current_identity().id.clone(),
+            ))
+            .await?;
+        self.refresh_runtime_from(Self::new(self.core.clone(), runtime))
+    }
+
     pub(crate) fn exact_protocol_device_id(&self) -> crate::ImResult<String> {
         if let Some(seed) = self.runtime.owner.sync_account.as_ref() {
             return Ok(seed.protocol_device_id.as_str().to_owned());
@@ -504,6 +521,13 @@ fn same_owner_authorization_change(
         (None, None) => Ok(false),
         (Some(current), Some(refreshed)) => {
             validate_same_device_scope(current, refreshed)?;
+            let old = &current.device_auth_generation;
+            let new = &refreshed.device_auth_generation;
+            if (new.len(), new.as_str()) < (old.len(), old.as_str()) {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "refreshed device authorization cannot move backwards".into(),
+                });
+            }
             Ok(
                 current.device_auth_generation != refreshed.device_auth_generation
                     || current.identity_generation.get() != refreshed.identity_generation.get()

@@ -337,6 +337,49 @@ pub struct DartMessageSyncOutcome {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageReceiveOutcome {
+    pub status: DartMessageSyncStatus,
+    pub complete: bool,
+    pub events_received: u32,
+    pub pages_fetched: u32,
+    pub messages_hydrated: u32,
+    pub duplicates_skipped: u32,
+    pub older_history_excluded: bool,
+    pub error_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageProcessingStatus {
+    Applied,
+    Retrying,
+    Blocked,
+    Discarded,
+    ResyncRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageProcessingUpdate {
+    pub event_id: String,
+    pub status: DartMessageProcessingStatus,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<DartCommittedIncomingMessage>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageProcessingOutcome {
+    pub complete: bool,
+    pub pending_count: u32,
+    pub blocked_count: u32,
+    pub discarded_count: u32,
+    pub events_applied: u32,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<DartCommittedIncomingMessage>,
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartMessageSyncMode {
     Uninitialized,

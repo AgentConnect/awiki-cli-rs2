@@ -2109,7 +2109,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
             .prepare(
                 r#"SELECT operation_id FROM direct_e2ee_v2_session_reply_ledger
 WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND phase = 'pending'
-ORDER BY created_at, operation_id"#,
+ORDER BY updated_at, created_at, operation_id"#,
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         let operation_ids = statement
@@ -2306,6 +2306,7 @@ pub(crate) async fn receive_for_client_scoped(
         body,
         expected_peer_did,
         delivery,
+        None,
         |_, _| Ok(()),
     )
     .await
@@ -2322,6 +2323,7 @@ pub(crate) async fn receive_for_client_scoped_with_commit<C>(
     delivery: Option<
         &crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext,
     >,
+    receive_claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
     commit: C,
 ) -> crate::ImResult<V2InboundProductOutcome>
 where
@@ -2334,7 +2336,7 @@ where
     }
     if let Some(delivery) = delivery {
         match crate::internal::identity_root_import_completion::receive_root_envelope_candidate(
-            core, client, &metadata, &body, delivery,
+            core, client, &metadata, &body, delivery, receive_claim,
         )
         .await?
         {
@@ -2434,7 +2436,6 @@ where
     host.ensure_local_prekey_published().await?;
     let local_document = host.resolve_did_document(&context.local_did).await?;
     validate_local_endpoint(context, &local_document)?;
-    let _ = retry_session_replies_with_host(context, host).await?;
     let sender_document = if metadata.sender_did == context.local_did {
         local_document.clone()
     } else {
@@ -2487,6 +2488,12 @@ where
                         validate_inbound_plaintext(plaintext, &metadata, expected_peer_did)
                     },
                     |transaction, validated| {
+                        DeliveryLedger::new(transaction, context)?.register_session_reply(
+                            &binding,
+                            &metadata.message_id,
+                            &init.session_id,
+                            &now,
+                        )?;
                         commit(transaction, &product_outcome_from_validated(validated))
                     },
                 )
@@ -2635,7 +2642,32 @@ pub(crate) async fn retry_session_replies_with_host<H>(
 where
     H: V2DirectProductHost,
 {
-    let records = context.with_ledger(|ledger| ledger.pending_session_replies())?;
+    retry_session_replies_with_host_limit(context, host, usize::MAX).await
+}
+
+pub(crate) async fn retry_one_session_reply_for_client(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<()> {
+    let core = client.core_handle();
+    let context = V2DirectProductContext::from_client(&core, client)?;
+    let mut host = CoreV2DirectProductHost {
+        core: &core,
+        client,
+    };
+    retry_session_replies_with_host_limit(&context, &mut host, 1).await?;
+    Ok(())
+}
+
+async fn retry_session_replies_with_host_limit<H>(
+    context: &V2DirectProductContext,
+    host: &mut H,
+    limit: usize,
+) -> crate::ImResult<V2SessionReplyRetrySummary>
+where
+    H: V2DirectProductHost,
+{
+    let mut records = context.with_ledger(|ledger| ledger.pending_session_replies())?;
+    records.truncate(limit);
     let mut summary = V2SessionReplyRetrySummary {
         attempted: records.len(),
         accepted: 0,
@@ -2644,6 +2676,11 @@ where
     };
     let mut documents: BTreeMap<String, Value> = BTreeMap::new();
     for record in records {
+        context.with_ledger(|ledger| {
+            ledger.connection.execute("UPDATE direct_e2ee_v2_session_reply_ledger SET updated_at=?3 WHERE owner_identity_id=?1 AND operation_id=?2 AND phase='pending'",
+                params![context.owner_identity_id, record.operation_id, now_text()]).map_err(crate::internal::local_state::local_state_unavailable)?;
+            Ok(())
+        })?;
         if !documents.contains_key(&record.binding.peer_did) {
             let document = match host.resolve_did_document(&record.binding.peer_did).await {
                 Ok(document) => document,

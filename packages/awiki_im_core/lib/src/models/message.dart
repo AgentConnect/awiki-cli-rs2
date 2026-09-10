@@ -415,6 +415,82 @@ class MessageSyncOutcome {
   final List<String> warnings;
 }
 
+/// Complete input storage and receive cursors, independently of processing.
+class MessageReceiveOutcome {
+  const MessageReceiveOutcome({
+    required this.status,
+    required this.complete,
+    required this.eventsReceived,
+    required this.pagesFetched,
+    required this.messagesHydrated,
+    required this.duplicatesSkipped,
+    this.olderHistoryExcluded = false,
+    this.errorCode,
+    this.warnings = const [],
+  });
+  final MessageSyncStatus status;
+  final bool complete;
+  final int eventsReceived;
+  final int pagesFetched;
+  final int messagesHydrated;
+  final int duplicatesSkipped;
+  final bool olderHistoryExcluded;
+  final String? errorCode;
+  final List<String> warnings;
+}
+
+enum MessageProcessingStatus {
+  applied,
+  retrying,
+  blocked,
+  discarded,
+  resyncRequired,
+}
+
+class MessageProcessingUpdate {
+  const MessageProcessingUpdate({
+    required this.eventId,
+    required this.status,
+    this.changedConversationIds = const [],
+    this.committedIncomingMessages = const [],
+    this.errorCode,
+  });
+  final String eventId;
+  final MessageProcessingStatus status;
+  final List<String> changedConversationIds;
+  final List<CommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+}
+
+class MessageProcessingOutcome {
+  const MessageProcessingOutcome({
+    required this.complete,
+    required this.pendingCount,
+    required this.blockedCount,
+    required this.discardedCount,
+    required this.eventsApplied,
+    this.changedConversationIds = const [],
+    this.committedIncomingMessages = const [],
+    this.errorCode,
+  });
+  final bool complete;
+  final int pendingCount;
+  final int blockedCount;
+  final int discardedCount;
+  final int eventsApplied;
+  final List<String> changedConversationIds;
+  final List<CommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+}
+
+/// Open before receive to observe committed results and discards. A session has
+/// one consumer: either [updates] or [waitUntilSettled]. Close it when finished.
+abstract interface class MessageProcessingSession {
+  Stream<MessageProcessingUpdate> get updates;
+  Future<MessageProcessingOutcome> waitUntilSettled();
+  Future<void> close();
+}
+
 enum MessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
 
 enum MessageSyncDirtyDomain { messages, readState }

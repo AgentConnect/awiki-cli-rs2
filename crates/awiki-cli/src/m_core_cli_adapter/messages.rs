@@ -565,15 +565,18 @@ fn foreground_message_sync_reason() -> &'static str {
     "foreground_reconcile"
 }
 
-fn secure_lane_drain_warning(error: &im_core::ImError) -> &'static str {
-    match error {
-        im_core::ImError::LocalStateUnavailable { detail }
-            if detail.contains("secure lane consumer drain timed out") =>
-        {
-            "sync.secure_lane_drain_pending"
-        }
-        _ => "sync.secure_lane_drain_failed",
+fn processing_read_warnings(outcome: &im_core::messages::MessageProcessingOutcome) -> Vec<String> {
+    if outcome.complete {
+        return Vec::new();
     }
+    vec![if outcome.discarded_count > 0 {
+        "sync.input_discarded"
+    } else if outcome.blocked_count > 0 {
+        "sync.processing_blocked"
+    } else {
+        "sync.processing_pending"
+    }
+    .to_owned()]
 }
 
 pub(super) fn require_foreground_message_sync(
@@ -615,38 +618,61 @@ pub(super) fn require_foreground_message_sync(
 fn reconcile_foreground_message_sync(
     client: &im_core::ImClient,
 ) -> Result<Vec<String>, MessageAdapterError> {
-    let outcome = client
-        .messages()
-        .sync_now(MessageSyncRequest {
-            reason: foreground_message_sync_reason().to_owned(),
-            limit: Some(100),
-        })
-        .map_err(im_error_to_message_error)?;
-    require_foreground_message_sync(&outcome)?;
-    Ok(match client.messages().drain_secure_lane_consumers() {
-        Ok(()) => Vec::new(),
-        Err(error) => vec![secure_lane_drain_warning(&error).to_owned()],
-    })
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            MessageAdapterError::LocalStateUnavailable(format!(
+                "initialize message receive runtime: {error}"
+            ))
+        })?;
+    runtime.block_on(reconcile_foreground_message_sync_async(client))
 }
 
 pub async fn reconcile_foreground_message_sync_async(
     client: &im_core::ImClient,
 ) -> Result<Vec<String>, MessageAdapterError> {
-    let outcome = client
+    let mut processing = client
         .messages()
-        .sync_now_async(MessageSyncRequest {
+        .watch_processing_updates()
+        .map_err(im_error_to_message_error)?;
+    let received = client
+        .messages()
+        .receive_now_async(MessageSyncRequest {
             reason: foreground_message_sync_reason().to_owned(),
             limit: Some(100),
         })
         .await
         .map_err(im_error_to_message_error)?;
-    require_foreground_message_sync(&outcome)?;
-    Ok(
-        match client.messages().drain_secure_lane_consumers_async().await {
-            Ok(()) => Vec::new(),
-            Err(error) => vec![secure_lane_drain_warning(&error).to_owned()],
-        },
-    )
+    let status = if !received.complete
+        && matches!(
+            received.status,
+            MessageSyncStatus::Idle | MessageSyncStatus::Changed
+        ) {
+        MessageSyncStatus::RetryableFailure
+    } else {
+        received.status
+    };
+    require_foreground_message_sync(&MessageSyncOutcome {
+        status,
+        events_applied: 0,
+        pages_fetched: received.pages_fetched,
+        messages_hydrated: received.messages_hydrated,
+        duplicates_skipped: received.duplicates_skipped,
+        older_history_excluded: received.older_history_excluded,
+        changed_conversation_ids: vec![],
+        committed_incoming_messages: vec![],
+        error_code: received.error_code,
+        warnings: received.warnings,
+    })?;
+    // A bounded freshness wait is separate from receive. One blocked event may
+    // add a warning, but cannot hide other already committed messages from CLI.
+    let outcome = processing.wait_async(client).await;
+    processing.close();
+    Ok(match outcome {
+        Ok(outcome) => processing_read_warnings(&outcome),
+        Err(_) => vec!["sync.processing_unavailable".to_owned()],
+    })
 }
 
 fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {

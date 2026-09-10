@@ -572,7 +572,12 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         let stored = self
             .store
             .load_session(binding, &body.session_id)?
-            .ok_or(crate::ImError::PermissionDenied)?;
+            .ok_or_else(|| crate::ImError::Service {
+                status_code: None,
+                code: Some("p5.session_pending".into()),
+                message: "P5 cipher awaits its authenticated session".into(),
+                data: None,
+            })?;
         let pre_state = stored.state;
         let mut next_state = pre_state.clone();
         let plaintext =
@@ -632,7 +637,12 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         let stored = self
             .store
             .load_session(binding, &body.session_id)?
-            .ok_or(crate::ImError::PermissionDenied)?;
+            .ok_or_else(|| crate::ImError::Service {
+                status_code: None,
+                code: Some("p5.session_pending".into()),
+                message: "P5 cipher awaits its authenticated session".into(),
+                data: None,
+            })?;
         let mut next_state = stored.state;
         let plaintext = V2DirectE2eeSession::decrypt_follow_up_secret_json(
             &mut next_state,
@@ -723,7 +733,12 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         let stored = self
             .store
             .load_session(binding, &body.session_id)?
-            .ok_or(crate::ImError::PermissionDenied)?;
+            .ok_or_else(|| crate::ImError::Service {
+                status_code: None,
+                code: Some("p5.session_pending".into()),
+                message: "P5 cipher awaits its authenticated session".into(),
+                data: None,
+            })?;
         let pre_state = stored.state;
         let mut next_state = pre_state.clone();
         let plaintext = V2DirectE2eeSession::decrypt_follow_up_secret_json(
@@ -1173,7 +1188,16 @@ fn serialization_error(error: serde_json::Error) -> crate::ImError {
     }
 }
 
-fn v2_error(_: anp::direct_e2ee::DirectE2eeV2Error) -> crate::ImError {
+fn v2_error(error: anp::direct_e2ee::DirectE2eeV2Error) -> crate::ImError {
+    if error.runtime_kind() == Some(anp::direct_e2ee::DirectE2eeV2RuntimeErrorKind::MaxSkipExceeded)
+    {
+        return crate::ImError::Service {
+            status_code: None,
+            code: Some("anp.direct.e2ee.max_skip_exceeded".into()),
+            message: "P5 input awaits earlier cryptographic state".into(),
+            data: None,
+        };
+    }
     crate::ImError::PermissionDenied
 }
 

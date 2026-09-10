@@ -746,6 +746,7 @@ pub enum MessageProcessingStatus {
     Retrying,
     Blocked,
     Discarded,
+    ResyncRequired,
 }
 
 /// A single event's business result. This is never a receive checkpoint.
@@ -753,6 +754,20 @@ pub enum MessageProcessingStatus {
 pub struct MessageProcessingUpdate {
     pub event_id: String,
     pub status: MessageProcessingStatus,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<CommittedIncomingMessage>,
+    pub error_code: Option<String>,
+}
+
+/// Business completion observed by a processing session opened before receive.
+/// This wait does not acquire or extend the reception slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MessageProcessingOutcome {
+    pub complete: bool,
+    pub pending_count: u32,
+    pub blocked_count: u32,
+    pub discarded_count: u32,
+    pub events_applied: u32,
     pub changed_conversation_ids: Vec<String>,
     pub committed_incoming_messages: Vec<CommittedIncomingMessage>,
     pub error_code: Option<String>,

@@ -5,6 +5,7 @@ import type {
   NativeHandleRecoveryProgress,
   NativeImCoreNodeClient,
   NativeRealtimeSession,
+  NativeProcessingSession,
 } from './native.js'
 import {
   ImCoreNodeError,
@@ -69,6 +70,10 @@ import {
   type SendPayloadInput,
   type SyncOptions,
   type SyncResult,
+  type ReceiveResult,
+  type ProcessingSession,
+  type ProcessingUpdate,
+  type ProcessingResult,
   type StartDeviceJoinVerificationInput,
   type RealtimeEvent,
   type RealtimeOptions,
@@ -283,6 +288,14 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.removeGroupMember(input))
   }
 
+  public receiveNow(input?: SyncOptions): Promise<ReceiveResult> {
+    return call(() => this.native.receiveNow(input))
+  }
+
+  public async openProcessingSession(): Promise<ProcessingSession> {
+    return new RustProcessingSession(await call(() => this.native.openProcessingSession()))
+  }
+
   public syncNow(input?: SyncOptions): Promise<SyncResult> {
     return call(() => this.native.syncNow(input))
   }
@@ -446,6 +459,13 @@ function copyHandleRecoveryProgress(value: NativeHandleRecoveryProgress): Handle
       otherDevicesMustRejoin: value.impact.otherDevicesMustRejoin,
     },
   }
+}
+
+class RustProcessingSession implements ProcessingSession {
+  public constructor(private readonly native: NativeProcessingSession) {}
+  public nextUpdate(): Promise<ProcessingUpdate | null> { return call(() => this.native.nextUpdate()) }
+  public waitUntilSettled(): Promise<ProcessingResult> { return call(() => this.native.waitUntilSettled()) }
+  public stop(): Promise<void> { return call(() => this.native.stop()) }
 }
 
 class RustRealtimeSession implements RealtimeSession {

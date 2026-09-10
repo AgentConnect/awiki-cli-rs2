@@ -69,6 +69,9 @@ pub(super) struct DaemonRealtimeEvent {
 )]
 pub(super) enum RuntimeRealtimeNotification {
     Event(DaemonRealtimeEvent),
+    ProcessingReady {
+        source: RealtimeSource,
+    },
     SessionStatus {
         source: RealtimeSource,
         status: RealtimeStatus,
@@ -732,10 +735,10 @@ impl RuntimeRealtimeSyncCoordinator {
 pub(super) async fn run_realtime_sync_now(
     client: &im_core::ImClient,
     work: &RuntimeRealtimeSyncWork,
-) -> im_core::ImResult<im_core::messages::MessageSyncOutcome> {
+) -> im_core::ImResult<im_core::messages::MessageReceiveOutcome> {
     client
         .messages()
-        .sync_now_async(MessageSyncRequest {
+        .receive_now_async(MessageSyncRequest {
             reason: sync_v2_reason_for_realtime_work(&work.reasons).to_owned(),
             limit: Some(100),
         })
@@ -833,14 +836,24 @@ fn spawn_realtime_reader(
 
 async fn run_realtime_reader(
     source: RealtimeSource,
-    _client: im_core::ImClient,
+    client: im_core::ImClient,
     mut session: RealtimeSession,
     events: RealtimeEventStream,
     status: watch::Receiver<RealtimeStatus>,
     stop: watch::Receiver<bool>,
     output: mpsc::Sender<RuntimeRealtimeNotification>,
 ) {
-    let exit = run_realtime_fan_in_loop(source.clone(), events, status, stop, output.clone()).await;
+    let processing = client.messages().watch_processing_updates().ok();
+    let exit = run_realtime_fan_in_with_processing(
+        source.clone(),
+        events,
+        status,
+        stop,
+        output.clone(),
+        Some(client),
+        processing,
+    )
+    .await;
     if matches!(
         exit,
         RealtimeReaderExit::StopRequested | RealtimeReaderExit::OutputClosed
@@ -886,12 +899,25 @@ enum RealtimeReaderExit {
     OutputClosed,
 }
 
+#[cfg(test)]
 async fn run_realtime_fan_in_loop(
+    source: RealtimeSource,
+    events: RealtimeEventStream,
+    status: watch::Receiver<RealtimeStatus>,
+    stop: watch::Receiver<bool>,
+    output: mpsc::Sender<RuntimeRealtimeNotification>,
+) -> RealtimeReaderExit {
+    run_realtime_fan_in_with_processing(source, events, status, stop, output, None, None).await
+}
+
+async fn run_realtime_fan_in_with_processing(
     source: RealtimeSource,
     mut events: RealtimeEventStream,
     mut status: watch::Receiver<RealtimeStatus>,
     mut stop: watch::Receiver<bool>,
     output: mpsc::Sender<RuntimeRealtimeNotification>,
+    client: Option<im_core::ImClient>,
+    mut processing: Option<im_core::messages::MessageProcessingSession>,
 ) -> RealtimeReaderExit {
     loop {
         tokio::select! {
@@ -917,6 +943,15 @@ async fn run_realtime_fan_in_loop(
                     {
                         return RealtimeReaderExit::OutputClosed;
                     }
+                }
+            }
+            update = async { processing.as_mut().expect("guarded processing session").next_async(client.as_ref().expect("processing client")).await }, if processing.is_some() && client.is_some() => {
+                match update {
+                    Ok(Some(update)) if matches!(update.status, im_core::messages::MessageProcessingStatus::Applied | im_core::messages::MessageProcessingStatus::ResyncRequired) => {
+                        if output.send(RuntimeRealtimeNotification::ProcessingReady {source: source.clone()}).await.is_err() { return RealtimeReaderExit::OutputClosed; }
+                    }
+                    Ok(Some(_)) => {},
+                    _ => { processing = None; }
                 }
             }
             event = events.recv() => {

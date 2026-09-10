@@ -8,20 +8,22 @@ fn foreground_message_reads_use_standard_reconcile_reason() {
 }
 
 #[test]
-fn secure_lane_drain_failure_is_a_closed_cli_warning() {
+fn incomplete_business_processing_is_a_warning_for_available_cli_projection() {
+    let mut outcome = im_core::messages::MessageProcessingOutcome::default();
+    outcome.pending_count = 1;
     assert_eq!(
-        secure_lane_drain_warning(&im_core::ImError::LocalStateUnavailable {
-            detail: "secure lane consumer drain timed out with durable domain work still pending"
-                .to_owned(),
-        }),
-        "sync.secure_lane_drain_pending"
+        processing_read_warnings(&outcome),
+        ["sync.processing_pending"]
     );
+    outcome.blocked_count = 1;
     assert_eq!(
-        secure_lane_drain_warning(&im_core::ImError::LocalStateUnavailable {
-            detail: "local database unavailable".to_owned(),
-        }),
-        "sync.secure_lane_drain_failed"
+        processing_read_warnings(&outcome),
+        ["sync.processing_blocked"]
     );
+    outcome.discarded_count = 1;
+    assert_eq!(processing_read_warnings(&outcome), ["sync.input_discarded"]);
+    outcome.complete = true;
+    assert!(processing_read_warnings(&outcome).is_empty());
 }
 
 #[test]

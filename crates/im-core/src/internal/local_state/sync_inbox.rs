@@ -69,6 +69,7 @@ pub(crate) struct InputClaim {
     pub(crate) event_type: String,
     pub(crate) payload: Value,
     pub(crate) group_did: Option<String>,
+    pub(crate) logical_event_seq: Option<String>,
     pub(crate) received_at: String,
     pub(crate) source_created_at: Option<String>,
     pub(crate) source_expires_at: Option<String>,
@@ -116,7 +117,15 @@ pub(crate) struct RemovedInput {
 /// preserved explicitly so rebuilding the constrained inbox cannot cascade
 /// away pending secure-domain responsibilities.
 pub(crate) fn ensure_schema(db: &Connection) -> crate::ImResult<()> {
-    if !has_column(db, "sync_lane_inbox", "attempt_token")? {
+    let has_attempts = has_column(db, "sync_lane_inbox", "attempt_token")?;
+    let ddl: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='sync_lane_inbox'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(local_state_unavailable)?;
+    if !has_attempts || !ddl.contains("'baseline'") {
         let table_ddl = sync_v2::SYNC_V2_SCHEMA_SQL
             .split("CREATE TABLE IF NOT EXISTS sync_lane_inbox (")
             .nth(1)
@@ -125,6 +134,13 @@ pub(crate) fn ensure_schema(db: &Connection) -> crate::ImResult<()> {
             .ok_or_else(|| error("SYNC_INBOX_SCHEMA_INVALID", "inbox DDL is missing"))?;
         db.execute_batch(&table_ddl)
             .map_err(local_state_unavailable)?;
+        if has_attempts {
+            if !has_column(db, "sync_lane_inbox", "logical_event_seq")? {
+                db.execute_batch("ALTER TABLE sync_lane_inbox ADD COLUMN logical_event_seq TEXT")
+                    .map_err(local_state_unavailable)?;
+            }
+            db.execute_batch("CREATE TEMP TABLE sync_inbox_attempts_v45 AS SELECT logical_event_seq, input_id, processing_scope, attempt_count, attempt_token, attempt_deadline, last_attempt_at, next_attempt_at, processing_error_code FROM sync_lane_inbox").map_err(local_state_unavailable)?;
+        }
         db.execute_batch(
             "INSERT INTO sync_lane_inbox_v45(
                 input_id, owner_identity_id, lane, lane_epoch, position,
@@ -164,11 +180,29 @@ pub(crate) fn ensure_schema(db: &Connection) -> crate::ImResult<()> {
         )
         .map_err(local_state_unavailable)?;
     }
+    if has_attempts && !ddl.contains("'baseline'") {
+        db.execute_batch("UPDATE sync_lane_inbox SET (logical_event_seq, processing_scope, attempt_count, attempt_token, attempt_deadline, last_attempt_at, next_attempt_at, processing_error_code) = (SELECT logical_event_seq, processing_scope, attempt_count, attempt_token, attempt_deadline, last_attempt_at, next_attempt_at, processing_error_code FROM sync_inbox_attempts_v45 WHERE input_id=sync_lane_inbox.input_id); DROP TABLE sync_inbox_attempts_v45;").map_err(local_state_unavailable)?;
+    }
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_sync_inbox_due
          ON sync_lane_inbox(owner_identity_id, closed_at, next_attempt_at, attempt_deadline);
          CREATE INDEX IF NOT EXISTS idx_sync_inbox_retention
          ON sync_lane_inbox(created_at, input_id);",
+    )
+    .map_err(local_state_unavailable)?;
+    if !has_column(db, "sync_lane_inbox", "logical_event_seq")? {
+        db.execute_batch("ALTER TABLE sync_lane_inbox ADD COLUMN logical_event_seq TEXT;
+            UPDATE sync_lane_inbox SET logical_event_seq=CAST(json_extract(raw_payload_json,'$.body.group_event_seq') AS TEXT)
+            WHERE lane='p6_group';").map_err(local_state_unavailable)?;
+    }
+    // Physical attempts can outlive eviction of their payload. Keep their
+    // bounded occupancy separately, without payload or a second task queue.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_input_leases (
+        attempt_token TEXT PRIMARY KEY, deadline INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO sync_input_leases(attempt_token,deadline)
+    SELECT attempt_token,attempt_deadline FROM sync_lane_inbox WHERE attempt_token IS NOT NULL;",
     )
     .map_err(local_state_unavailable)?;
     for table in ["sync_applied_events", "sync_lane_applied_events"] {
@@ -378,7 +412,7 @@ pub(crate) fn input_is_duplicate(
             "receive position belongs to another event",
         ));
     }
-    let stored_hash: Option<Option<String>> = if lane == "ordinary" {
+    let stored_hash: Option<Option<String>> = if matches!(lane, "ordinary" | "baseline") {
         db.query_row(
             "SELECT payload_hash FROM sync_applied_events WHERE owner_identity_id=?1 AND event_id=?2 AND stream_epoch=?3",
             params![owner, event.event_id, epoch], |row| row.get(0),
@@ -487,10 +521,16 @@ pub(crate) fn claim_inputs(
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
         .map_err(local_state_unavailable)?;
     require_binding(&transaction, binding)?;
-    let leased: usize = transaction.query_row(
-        "SELECT COUNT(*) FROM sync_lane_inbox WHERE attempt_token IS NOT NULL AND attempt_deadline>?1",
-        [now], |row| row.get(0),
-    ).map_err(local_state_unavailable)?;
+    transaction
+        .execute("DELETE FROM sync_input_leases WHERE deadline<=?1", [now])
+        .map_err(local_state_unavailable)?;
+    let leased: usize = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_input_leases WHERE deadline>?1",
+            [now],
+            |row| row.get(0),
+        )
+        .map_err(local_state_unavailable)?;
     let limit = limit.min(MAX_ACTIVE_INPUTS.saturating_sub(leased) as u32);
     if limit == 0 {
         return Ok(Vec::new());
@@ -503,11 +543,17 @@ pub(crate) fn claim_inputs(
                 PARTITION BY lane, processing_scope
                 ORDER BY attempt_count, COALESCE(last_attempt_at,0), created_at, input_id
             ) AS scope_rank
-            FROM sync_lane_inbox
+            FROM sync_lane_inbox AS candidate
             WHERE owner_identity_id=?1 AND account_id_snapshot=?2 AND device_id_snapshot=?3
               AND closed_at IS NULL AND created_at>?4
               AND next_attempt_at IS NOT NULL AND next_attempt_at<=?5
               AND (attempt_token IS NULL OR attempt_deadline<=?5)
+              AND (lane NOT IN ('ordinary','baseline') OR NOT EXISTS (
+                SELECT 1 FROM sync_lane_inbox AS baseline
+                WHERE baseline.owner_identity_id=candidate.owner_identity_id
+                  AND baseline.lane='baseline' AND baseline.closed_at IS NULL AND baseline.created_at>?4
+                  AND (candidate.lane='ordinary' OR baseline.rowid<candidate.rowid)
+              ))
          ), fair AS (
             SELECT *, ROW_NUMBER() OVER (
                 PARTITION BY lane ORDER BY scope_rank, attempt_count, COALESCE(last_attempt_at,0), created_at, input_id
@@ -515,7 +561,7 @@ pub(crate) fn claim_inputs(
          )
          SELECT input_id, lane, lane_epoch, position, event_id, event_type,
                 raw_payload_json, group_did, received_at, source_created_at,
-                source_expires_at, attempt_count
+                source_expires_at, attempt_count, logical_event_seq
          FROM fair ORDER BY lane_rank, lane LIMIT ?6",
     ).map_err(local_state_unavailable)?;
     let rows = statement
@@ -542,6 +588,7 @@ pub(crate) fn claim_inputs(
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, i64>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             },
         )
@@ -564,11 +611,18 @@ pub(crate) fn claim_inputs(
         source_created_at,
         source_expires_at,
         attempts,
+        logical_event_seq,
     ) in candidates
     {
         let payload = serde_json::from_str(&raw)
             .map_err(|_| error("SYNC_INPUT_INVALID", "stored receive payload is invalid"))?;
         let token = crate::internal::wire::common::generate_operation_id();
+        transaction
+            .execute(
+                "INSERT INTO sync_input_leases(attempt_token,deadline) VALUES(?1,?2)",
+                params![token, now.saturating_add(CLAIM_SECONDS)],
+            )
+            .map_err(local_state_unavailable)?;
         transaction
             .execute(
             "UPDATE sync_lane_inbox SET attempt_token=?2, attempt_deadline=?3,
@@ -586,6 +640,7 @@ pub(crate) fn claim_inputs(
             payload,
             group_did,
             received_at,
+            logical_event_seq,
             source_created_at,
             source_expires_at,
             token,
@@ -606,7 +661,8 @@ pub(crate) fn require_claim(db: &Connection, claim: &InputClaim, now: i64) -> cr
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_lane_inbox AS input
             JOIN identity_account_bindings AS binding USING(owner_identity_id)
-            WHERE input.input_id=?1 AND input.owner_identity_id=?2 AND input.attempt_token=?3
+            JOIN sync_input_leases AS lease ON lease.attempt_token=input.attempt_token
+            WHERE lease.deadline>?4 AND input.input_id=?1 AND input.owner_identity_id=?2 AND input.attempt_token=?3
               AND input.attempt_deadline>?4
               AND (input.processing_error_code IS NULL OR input.processing_error_code<>'sync.processing_timeout')
               AND binding.account_id=?5 AND binding.device_id=?6
@@ -650,6 +706,7 @@ pub(crate) fn fail_claim(
             params![claim.input_id, retry_at, code],
         )
         .map_err(local_state_unavailable)?;
+    release_claim_lease(&transaction, claim)?;
     transaction.commit().map_err(local_state_unavailable)
 }
 
@@ -689,6 +746,12 @@ pub(crate) fn renew_claims(
     for claim in claims {
         transaction
             .execute(
+                "UPDATE sync_input_leases SET deadline=?2 WHERE attempt_token=?1",
+                params![claim.token, now.saturating_add(CLAIM_SECONDS)],
+            )
+            .map_err(local_state_unavailable)?;
+        transaction
+            .execute(
                 "UPDATE sync_lane_inbox SET attempt_deadline=?4
              WHERE input_id=?1 AND owner_identity_id=?2 AND attempt_token=?3",
                 params![
@@ -701,6 +764,60 @@ pub(crate) fn renew_claims(
             .map_err(local_state_unavailable)?;
     }
     transaction.commit().map_err(local_state_unavailable)
+}
+
+pub(crate) fn release_claim_lease(db: &Connection, claim: &InputClaim) -> crate::ImResult<()> {
+    release_processing_slot(db, &claim.token)
+}
+
+pub(crate) fn release_processing_slot(db: &Connection, token: &str) -> crate::ImResult<()> {
+    db.execute(
+        "DELETE FROM sync_input_leases WHERE attempt_token=?1",
+        [token],
+    )
+    .map_err(local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn reserve_processing_slot(
+    db: &Connection,
+    now: i64,
+) -> crate::ImResult<Option<String>> {
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
+        .map_err(local_state_unavailable)?;
+    tx.execute("DELETE FROM sync_input_leases WHERE deadline<=?1", [now])
+        .map_err(local_state_unavailable)?;
+    let count: usize = tx
+        .query_row("SELECT COUNT(*) FROM sync_input_leases", [], |row| {
+            row.get(0)
+        })
+        .map_err(local_state_unavailable)?;
+    if count >= MAX_ACTIVE_INPUTS {
+        return Ok(None);
+    }
+    let token = crate::internal::wire::common::generate_operation_id();
+    tx.execute(
+        "INSERT INTO sync_input_leases(attempt_token,deadline) VALUES(?1,?2)",
+        params![token, now.saturating_add(CLAIM_SECONDS)],
+    )
+    .map_err(local_state_unavailable)?;
+    tx.commit().map_err(local_state_unavailable)?;
+    Ok(Some(token))
+}
+
+pub(crate) fn renew_processing_slots(
+    db: &Connection,
+    tokens: &[String],
+    now: i64,
+) -> crate::ImResult<()> {
+    for token in tokens {
+        db.execute(
+            "UPDATE sync_input_leases SET deadline=?2 WHERE attempt_token=?1",
+            params![token, now.saturating_add(CLAIM_SECONDS)],
+        )
+        .map_err(local_state_unavailable)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn processing_summary(
@@ -731,17 +848,27 @@ pub(crate) fn processing_summary(
 pub(crate) fn complete_claim(db: &Connection, claim: &InputClaim, now: i64) -> crate::ImResult<()> {
     require_claim(db, claim, now)?;
     let hash = payload_hash(&claim.lane, &claim.payload)?;
-    if claim.lane == "ordinary" {
+    if matches!(claim.lane.as_str(), "ordinary" | "baseline") {
         db.execute("UPDATE sync_applied_events SET payload_hash=?3 WHERE owner_identity_id=?1 AND event_id=?2",
             params![claim.owner_identity_id, claim.event_id, hash]).map_err(local_state_unavailable)?;
     } else {
+        let logical_sequence = claim
+            .payload
+            .pointer("/body/group_event_seq")
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| value.as_u64().map(|sequence| sequence.to_string()))
+            })
+            .or_else(|| claim.logical_event_seq.clone());
         db.execute(
             "INSERT INTO sync_lane_applied_events(owner_identity_id, lane, event_id, stream_epoch,
                 event_seq, group_did, group_event_seq, applied_at, payload_hash)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(owner_identity_id,lane,event_id) DO UPDATE SET payload_hash=excluded.payload_hash",
             params![claim.owner_identity_id, claim.lane, claim.event_id, claim.lane_epoch, claim.position,
-                claim.group_did, claim.payload.pointer("/body/group_event_seq").and_then(Value::as_str), now, hash],
+                claim.group_did, logical_sequence, now, hash],
         ).map_err(local_state_unavailable)?;
     }
     db.execute("DELETE FROM sync_lane_inbox WHERE input_id=?1 AND owner_identity_id=?2 AND attempt_token=?3",
@@ -755,6 +882,19 @@ pub(crate) fn apply_ordinary_claim(
     input: sync_v2::DeltaApplyInputV2,
     now: i64,
 ) -> crate::ImResult<sync_v2::DeltaApplyOutcomeV2> {
+    apply_ordinary_claim_with(db, claim, input, now, |_| Ok(()))
+}
+
+pub(crate) fn apply_ordinary_claim_with<C>(
+    db: &Connection,
+    claim: &InputClaim,
+    input: sync_v2::DeltaApplyInputV2,
+    now: i64,
+    commit_domain: C,
+) -> crate::ImResult<sync_v2::DeltaApplyOutcomeV2>
+where
+    C: FnOnce(&Transaction<'_>) -> crate::ImResult<()>,
+{
     if claim.lane != "ordinary"
         || input.owner_identity_id != claim.owner_identity_id
         || input.events.len() != 1
@@ -775,14 +915,24 @@ pub(crate) fn apply_ordinary_claim(
     let transaction = Transaction::new_unchecked(db, TransactionBehavior::Immediate)
         .map_err(local_state_unavailable)?;
     require_claim(&transaction, claim, now)?;
+    if claim.lane == "ordinary" {
+        let baseline_pending: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM sync_lane_inbox WHERE owner_identity_id=?1 AND lane='baseline' AND closed_at IS NULL AND created_at>?2)", params![claim.owner_identity_id, now.saturating_sub(RETENTION_SECONDS)], |row| row.get(0)).map_err(local_state_unavailable)?;
+        if baseline_pending {
+            return Err(error(
+                "sync.baseline_pending",
+                "ordinary projection awaits local baseline replacement",
+            ));
+        }
+    }
     let outcome = sync_v2::apply_delta_events_in_transaction(&transaction, input)?;
+    commit_domain(&transaction)?;
     complete_claim(&transaction, claim, now)?;
     transaction.commit().map_err(local_state_unavailable)?;
     Ok(outcome)
 }
 
 pub(crate) fn claim_was_completed(db: &Connection, claim: &InputClaim) -> crate::ImResult<bool> {
-    let hash: Option<Option<String>> = if claim.lane == "ordinary" {
+    let hash: Option<Option<String>> = if matches!(claim.lane.as_str(), "ordinary" | "baseline") {
         db.query_row("SELECT payload_hash FROM sync_applied_events WHERE owner_identity_id=?1 AND event_id=?2 AND stream_epoch=?3",
             params![claim.owner_identity_id, claim.event_id, claim.lane_epoch], |row| row.get(0))
             .optional().map_err(local_state_unavailable)?
@@ -940,4 +1090,64 @@ pub(crate) fn error(code: &str, detail: &str) -> crate::ImError {
         message: detail.to_owned(),
         data: None,
     }
+}
+
+pub(crate) fn retry_event(
+    db: &Connection,
+    owner: &str,
+    event_id: &str,
+    now: i64,
+) -> crate::ImResult<u32> {
+    if event_id.is_empty() || event_id.trim() != event_id {
+        return Err(crate::ImError::invalid_input(
+            Some("event_id".into()),
+            "processing event id must be a non-empty canonical string",
+        ));
+    }
+    let changed = db.execute("UPDATE sync_lane_inbox SET next_attempt_at=?3, processing_error_code=NULL
+        WHERE owner_identity_id=?1 AND event_id=?2 AND closed_at IS NULL AND attempt_token IS NULL AND created_at>?4",
+        params![owner, event_id, now, now.saturating_sub(RETENTION_SECONDS)]).map_err(local_state_unavailable)?;
+    Ok(changed.min(u32::MAX as usize) as u32)
+}
+
+pub(crate) fn pending_updates(
+    db: &Connection,
+    owner: &str,
+    limit: u32,
+    now: i64,
+) -> crate::ImResult<Vec<crate::messages::MessageProcessingUpdate>> {
+    if limit == 0 || limit > 256 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".into()),
+            "pending processing limit must be between 1 and 256",
+        ));
+    }
+    let mut stmt = db
+        .prepare(
+            "SELECT event_id, next_attempt_at, processing_error_code FROM sync_lane_inbox
+        WHERE owner_identity_id=?1 AND closed_at IS NULL AND created_at>?2
+        ORDER BY (next_attempt_at IS NOT NULL), created_at, input_id LIMIT ?3",
+        )
+        .map_err(local_state_unavailable)?;
+    let rows = stmt
+        .query_map(
+            params![owner, now.saturating_sub(RETENTION_SECONDS), limit],
+            |row| {
+                let retry: Option<i64> = row.get(1)?;
+                Ok(crate::messages::MessageProcessingUpdate {
+                    event_id: row.get(0)?,
+                    status: if retry.is_none() {
+                        crate::messages::MessageProcessingStatus::Blocked
+                    } else {
+                        crate::messages::MessageProcessingStatus::Retrying
+                    },
+                    changed_conversation_ids: vec![],
+                    committed_incoming_messages: vec![],
+                    error_code: row.get(2)?,
+                })
+            },
+        )
+        .map_err(local_state_unavailable)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(local_state_unavailable)
 }

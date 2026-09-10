@@ -58,6 +58,9 @@ import type {
   SendPayloadInput,
   SyncOptions,
   SyncResult,
+  ReceiveResult,
+  ProcessingUpdate,
+  ProcessingResult,
   StartDeviceJoinVerificationInput,
   UpdateProfileInput,
   RealtimeEvent,
@@ -83,6 +86,12 @@ export interface NativeHandleRecoveryProgress {
     readonly localOrdinaryDataWillMigrate: boolean
     readonly otherDevicesMustRejoin: boolean
   }
+}
+
+export interface NativeProcessingSession {
+  nextUpdate(): Promise<ProcessingUpdate | null>
+  waitUntilSettled(): Promise<ProcessingResult>
+  stop(): Promise<void>
 }
 
 export interface NativeRealtimeSession {
@@ -141,6 +150,8 @@ export interface NativeImCoreNodeClient {
   listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage>
   removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
+  receiveNow(input?: SyncOptions): Promise<ReceiveResult>
+  openProcessingSession(): Promise<NativeProcessingSession>
   startRealtime(input?: RealtimeOptions): Promise<NativeRealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>
   getHistory(input: HistoryInput): Promise<Page<NodeMessage>>

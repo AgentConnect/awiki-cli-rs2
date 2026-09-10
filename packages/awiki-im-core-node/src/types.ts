@@ -659,6 +659,47 @@ export interface SyncResult {
   readonly warnings: readonly string[]
 }
 
+/** Reception completes when full inputs and receive cursors are durable. */
+export interface ReceiveResult {
+  readonly status: SyncStatus
+  readonly complete: boolean
+  readonly eventsReceived: number
+  readonly pagesFetched: number
+  readonly messagesHydrated: number
+  readonly duplicatesSkipped: number
+  readonly olderHistoryExcluded: boolean
+  readonly errorCode?: string
+  readonly warnings: readonly string[]
+}
+export interface CommittedIncomingMessage {
+  readonly eventId: string
+  readonly logicalMessageId: string
+  readonly message: NodeMessage
+}
+export interface ProcessingUpdate {
+  readonly eventId: string
+  readonly status: 'applied' | 'retrying' | 'blocked' | 'discarded' | 'resync_required'
+  readonly changedConversationIds: readonly string[]
+  readonly committedIncomingMessages: readonly CommittedIncomingMessage[]
+  readonly errorCode?: string
+}
+export interface ProcessingResult {
+  readonly complete: boolean
+  readonly pendingCount: number
+  readonly blockedCount: number
+  readonly discardedCount: number
+  readonly eventsApplied: number
+  readonly changedConversationIds: readonly string[]
+  readonly committedIncomingMessages: readonly CommittedIncomingMessage[]
+  readonly errorCode?: string
+}
+/** Open before receive; choose updates OR the bounded completion wait. */
+export interface ProcessingSession {
+  nextUpdate(): Promise<ProcessingUpdate | null>
+  waitUntilSettled(): Promise<ProcessingResult>
+  stop(): Promise<void>
+}
+
 export type RealtimeConnectionState =
   | 'disconnected'
   | 'connecting'
@@ -1015,6 +1056,8 @@ export interface ImCoreNodeClient {
   listGroupMembers(input: GroupMembersInput): Promise<GroupMemberPage>
   removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
+  receiveNow(input?: SyncOptions): Promise<ReceiveResult>
+  openProcessingSession(): Promise<ProcessingSession>
   /** Starts the single Core-owned realtime session for this client. */
   startRealtime(input?: RealtimeOptions): Promise<RealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>

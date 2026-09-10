@@ -57,6 +57,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCorePtr;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_ArcDartMessageProcessingSessionPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSessionPtr;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSessionPtr;
 
@@ -82,6 +86,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartImCore
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
+    dynamic raw,
+  );
+
+  @protected
+  ArcDartMessageProcessingSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
     dynamic raw,
   );
 
@@ -116,6 +126,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartMessageProcessingSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    dynamic raw,
+  );
+
+  @protected
   ArcDartRealtimeSession
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     dynamic raw,
@@ -146,6 +162,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartMessageProcessingSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    dynamic raw,
+  );
+
+  @protected
   ArcDartRealtimeSession
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     dynamic raw,
@@ -160,6 +182,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RustStreamSink<DartConversationStorePatch>
   dco_decode_StreamSink_dart_conversation_store_patch_Sse(dynamic raw);
+
+  @protected
+  RustStreamSink<DartMessageProcessingUpdate>
+  dco_decode_StreamSink_dart_message_processing_update_Sse(dynamic raw);
 
   @protected
   RustStreamSink<DartRealtimeEvent>
@@ -948,6 +974,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessagePage dco_decode_dart_message_page(dynamic raw);
 
   @protected
+  DartMessageProcessingOutcome dco_decode_dart_message_processing_outcome(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageProcessingStatus dco_decode_dart_message_processing_status(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageProcessingUpdate dco_decode_dart_message_processing_update(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageReceiveOutcome dco_decode_dart_message_receive_outcome(
+    dynamic raw,
+  );
+
+  @protected
   DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw);
 
   @protected
@@ -1438,6 +1484,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartMessageProcessingSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ArcDartRealtimeSession
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     SseDeserializer deserializer,
@@ -1464,6 +1516,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartImCore
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ArcDartMessageProcessingSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
     SseDeserializer deserializer,
   );
 
@@ -1498,6 +1556,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartMessageProcessingSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ArcDartRealtimeSession
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     SseDeserializer deserializer,
@@ -1512,6 +1576,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RustStreamSink<DartConversationStorePatch>
   sse_decode_StreamSink_dart_conversation_store_patch_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RustStreamSink<DartMessageProcessingUpdate>
+  sse_decode_StreamSink_dart_message_processing_update_Sse(
     SseDeserializer deserializer,
   );
 
@@ -2496,6 +2566,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessagePage sse_decode_dart_message_page(SseDeserializer deserializer);
 
   @protected
+  DartMessageProcessingOutcome sse_decode_dart_message_processing_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageProcessingStatus sse_decode_dart_message_processing_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageProcessingUpdate sse_decode_dart_message_processing_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageReceiveOutcome sse_decode_dart_message_receive_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMessageSecurityMode sse_decode_dart_message_security_mode(
     SseDeserializer deserializer,
   );
@@ -3113,6 +3203,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    ArcDartMessageProcessingSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     ArcDartRealtimeSession self,
     SseSerializer serializer,
@@ -3143,6 +3240,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
     ArcDartImCore self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    ArcDartMessageProcessingSession self,
     SseSerializer serializer,
   );
 
@@ -3183,6 +3287,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    ArcDartMessageProcessingSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     ArcDartRealtimeSession self,
     SseSerializer serializer,
@@ -3198,6 +3309,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_StreamSink_dart_conversation_store_patch_Sse(
     RustStreamSink<DartConversationStorePatch> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_dart_message_processing_update_Sse(
+    RustStreamSink<DartMessageProcessingUpdate> self,
     SseSerializer serializer,
   );
 
@@ -4367,6 +4484,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_message_processing_outcome(
+    DartMessageProcessingOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_processing_status(
+    DartMessageProcessingStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_processing_update(
+    DartMessageProcessingUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_receive_outcome(
+    DartMessageReceiveOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_message_security_mode(
     DartMessageSecurityMode self,
     SseSerializer serializer,
@@ -5175,6 +5316,40 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCorePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_awiki_im_core_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_awiki_im_core_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSessionPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void

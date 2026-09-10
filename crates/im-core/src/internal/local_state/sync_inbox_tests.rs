@@ -4,7 +4,10 @@ use super::{schema, sync_inbox, sync_v2};
 use serde_json::json;
 
 fn database() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
+    initialized_database(Connection::open_in_memory().unwrap())
+}
+
+fn initialized_database(db: Connection) -> Connection {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     schema::ensure_schema(&db).unwrap();
     db.execute(
@@ -119,7 +122,7 @@ fn receive_batch(db: &Connection, id: &str, sequence: &str) -> sync_inbox::Ordin
         aggregate_kind: "direct".into(),
         aggregate_id: "conversation-a".into(),
         state_version: None,
-        thread_key: Some("conversation-a".into()),
+        thread_key: Some("remote-a".into()),
         occurred_at: "2026-09-10T00:00:00Z".into(),
         payload: json!({"message_id":id}),
         source: None,
@@ -136,8 +139,8 @@ fn receive_batch(db: &Connection, id: &str, sequence: &str) -> sync_inbox::Ordin
             event_id: id.into(),
             position: sequence.into(),
             event_type: "message.created".into(),
-            payload: json!({"event":event,"hydrated":{"message_id":id,"content":"complete body"}}),
-            processing_scope: "conversation-a".into(),
+            payload: json!({"event":event,"hydrated":{"message_id":id,"content":"complete body","server_seq":sequence}}),
+            processing_scope: "remote-a".into(),
             group_did: None,
         }],
     }
@@ -484,6 +487,48 @@ fn conflicting_102_does_not_block_same_conversation_103_or_roll_back_receive_cur
         sync_inbox::apply_ordinary_claim(&db, second, apply_input(second, following), 102).unwrap();
     assert_eq!(result.applied_event_ids, ["event-103"]);
     assert_eq!(cursor(&db), "103");
+    let read = sync_v2::mark_thread_read_and_update_outbox(
+        &db,
+        "owner",
+        "did:example:owner",
+        super::messages::MarkThreadReadWatermarkInput {
+            thread: crate::messages::ThreadRef::Thread(
+                crate::ids::ThreadId::parse(&conversation).unwrap(),
+            ),
+            read_watermark_message_id: Some("message-103".into()),
+            read_watermark_seq: Some("103".into()),
+            read_watermark_at: None,
+            pending_remote_ack: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(read.read_watermark_seq.as_deref(), Some("103"));
+    assert!(read.outbox_operation_id.is_some());
+    let read_send = sync_v2::claim_next_read_mutation(&db, "owner", chrono::Utc::now().timestamp())
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_send.operation_id, read.outbox_operation_id.unwrap());
+    let payload: serde_json::Value = serde_json::from_str(&read_send.payload_json).unwrap();
+    assert_eq!(payload["read_watermark_seq"], json!("103"));
+    assert_eq!(
+        db.query_row(
+            "SELECT read_watermark_seq FROM thread_read_state",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "103"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT processing_error_code FROM sync_lane_inbox WHERE event_id='event-102'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "message_wire_identity_conflict"
+    );
+
     assert_eq!(
         db.query_row(
             "SELECT content FROM messages WHERE msg_id='message-102'",
@@ -550,4 +595,102 @@ fn claims_include_other_lanes_and_do_not_queue_behind_processing_inputs() {
     let next = sync_inbox::claim_inputs(&db, &binding(&db), 130, 1).unwrap();
     assert_eq!(next.len(), 1);
     assert_ne!(next[0].input_id, claims[0].input_id);
+}
+
+#[test]
+fn baseline_fences_an_old_attempt_without_discarding_it_across_epoch_change() {
+    let db = database();
+    sync_inbox::receive_ordinary(&db, receive_batch(&db, "old-event", "10"), 100).unwrap();
+    let old = sync_inbox::claim_inputs(&db, &binding(&db), 101, 1)
+        .unwrap()
+        .remove(0);
+    insert_raw(&db, "baseline", "baseline", "sync.baseline", 102);
+    db.execute("UPDATE message_sync_state SET stream_epoch='2',scan_seq='20' WHERE owner_identity_id='owner'", []).unwrap();
+    let mut input = apply_input(&old, super::messages::MessageRecord::default());
+    input.events[0].messages.clear();
+    input.events[0].thread_bindings.clear();
+    let failure = sync_inbox::apply_ordinary_claim(&db, &old, input.clone(), 103).unwrap_err();
+    assert!(
+        matches!(failure, crate::ImError::Service { code: Some(ref code), .. } if code == "sync.baseline_pending")
+    );
+    sync_inbox::fail_claim(&db, &old, "sync.baseline_pending", Some(104), 103).unwrap();
+    let claims = sync_inbox::claim_inputs(&db, &binding(&db), 104, 8).unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].lane, "baseline");
+    let baseline = super::sync_baseline::Baseline {
+        server_time: "2026-09-10T00:00:00Z".into(),
+        server_cutoff: None,
+        groups: vec![],
+        read_states: vec![],
+        message_ids: Default::default(),
+        notification_ids: Default::default(),
+    };
+    super::sync_baseline::apply_claim(&db, &claims[0], baseline, vec![], vec![], 104).unwrap();
+    let next = sync_inbox::claim_inputs(&db, &binding(&db), 105, 8).unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].event_id, "old-event");
+    assert_eq!(next[0].lane_epoch, "1");
+    assert_eq!(next[0].attempt_count, 2);
+    assert!(sync_inbox::apply_ordinary_claim(&db, &old, input.clone(), 105).is_err());
+    sync_inbox::apply_ordinary_claim(&db, &next[0], input, 105).unwrap();
+    assert_eq!(cursor(&db), "20");
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn eviction_does_not_release_physical_attempt_capacity_for_another_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("inbox.sqlite");
+    let db = initialized_database(Connection::open(&path).unwrap());
+    for index in 0..8 {
+        insert_raw(
+            &db,
+            &format!("active-{index}"),
+            "p5_device",
+            "p5.delivery.created",
+            100,
+        );
+    }
+    let claims = sync_inbox::claim_inputs(&db, &binding(&db), 100, 8).unwrap();
+    assert_eq!(claims.len(), 8);
+    let removed = sync_inbox::make_room_with_limit(&db, 1, 101, 8).unwrap();
+    assert_eq!(removed.len(), 1);
+    insert_raw(&db, "new-message", "ordinary", "message.created", 101);
+    let other = Connection::open(&path).unwrap();
+    assert!(sync_inbox::claim_inputs(&other, &binding(&other), 101, 8)
+        .unwrap()
+        .is_empty());
+    sync_inbox::renew_claims(&db, &claims, 155).unwrap();
+    assert!(sync_inbox::claim_inputs(&other, &binding(&other), 161, 8)
+        .unwrap()
+        .is_empty());
+    let evicted = claims
+        .iter()
+        .find(|claim| claim.input_id == removed[0].input_id)
+        .unwrap();
+    assert!(sync_inbox::require_claim(&other, evicted, 161).is_err());
+    sync_inbox::release_claim_lease(&db, evicted).unwrap();
+    let next = sync_inbox::claim_inputs(&other, &binding(&other), 161, 8).unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].event_id, "new-message");
+    assert_eq!(
+        other
+            .query_row("SELECT COUNT(*) FROM sync_input_leases", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        8
+    );
+    assert_eq!(
+        other
+            .query_row("SELECT COUNT(*) FROM sync_lane_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
 }

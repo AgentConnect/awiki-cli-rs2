@@ -5971,7 +5971,7 @@ fn message_identity(message: &Value, group_did: Option<&str>) -> String {
     raw_message_identity(object)
 }
 
-fn raw_message_identity(object: &serde_json::Map<String, Value>) -> String {
+pub(super) fn raw_message_identity(object: &serde_json::Map<String, Value>) -> String {
     string_or_number_value(
         object
             .get("id")

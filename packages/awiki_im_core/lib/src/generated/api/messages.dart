@@ -9,7 +9,7 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `is_authorization_convergence_error`, `is_stopped`, `new`, `new`, `new`, `page_limit`, `read_watermark_to_core`, `spawn`, `stop`, `stop`, `stop`, `take_session`, `take_session`, `wait_for_patch_stream_cancel`
+// These functions are ignored because they are not marked as `pub`: `is_authorization_convergence_error`, `is_stopped`, `new`, `new`, `new`, `page_limit`, `read_watermark_to_core`, `spawn`, `stop`, `stop`, `stop`, `take_session`, `take_session`, `take_session`, `wait_for_patch_stream_cancel`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `PatchStreamLifecycle`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `drop`
 
@@ -131,6 +131,37 @@ Future<DartSyncDeltaResult> syncDelta({
 }) => RustLib.instance.api.crateApiMessagesSyncDelta(
   client: client,
   request: request,
+);
+
+Future<DartMessageReceiveOutcome> receiveNow({
+  required ArcDartImClient client,
+  required DartMessageSyncRequest request,
+}) => RustLib.instance.api.crateApiMessagesReceiveNow(
+  client: client,
+  request: request,
+);
+
+Future<ArcDartMessageProcessingSession> openProcessingSession({
+  required ArcDartImClient client,
+}) =>
+    RustLib.instance.api.crateApiMessagesOpenProcessingSession(client: client);
+
+Stream<DartMessageProcessingUpdate> messageProcessingStream({
+  required ArcDartMessageProcessingSession session,
+}) => RustLib.instance.api.crateApiMessagesMessageProcessingStream(
+  session: session,
+);
+
+Future<DartMessageProcessingOutcome> waitMessageProcessing({
+  required ArcDartMessageProcessingSession session,
+}) => RustLib.instance.api.crateApiMessagesWaitMessageProcessing(
+  session: session,
+);
+
+Future<void> closeProcessingSession({
+  required ArcDartMessageProcessingSession session,
+}) => RustLib.instance.api.crateApiMessagesCloseProcessingSession(
+  session: session,
 );
 
 Future<DartMessageSyncOutcome> syncNow({
@@ -293,6 +324,9 @@ Future<DartSendMessageResult> retryMessage({
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartConversationPatchSession >>>
 abstract class ArcDartConversationPatchSession implements RustOpaqueInterface {}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartMessageProcessingSession >>>
+abstract class ArcDartMessageProcessingSession implements RustOpaqueInterface {}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartThreadMessagePatchSession >>>
 abstract class ArcDartThreadMessagePatchSession

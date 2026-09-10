@@ -430,6 +430,14 @@ class MessageApi {
     throw _unsupported();
   }
 
+  Future<MessageReceiveOutcome> receiveNow(MessageSyncRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<MessageProcessingSession> openProcessingSession() async {
+    throw _unsupported();
+  }
+
   Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
     throw _unsupported();
   }

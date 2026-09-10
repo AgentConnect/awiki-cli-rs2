@@ -409,6 +409,10 @@ impl ImCore {
     ) -> crate::ImResult<ImClient> {
         let runtime = self.identities().load_runtime_async(selector).await?;
         let client = ImClient::new(self.inner.clone(), runtime);
+        #[cfg(feature = "sqlite")]
+        if client.runtime().owner.sync_account.is_some() {
+            crate::internal::message_runtime::sync_dispatcher::wake_client(&client);
+        }
         if self.inner().device_revoke_enabled() {
             let _ =
                 crate::internal::identity_device_revoke::recover_pending_for_client(self, &client)

@@ -425,6 +425,7 @@ pub(crate) async fn receive_root_envelope_candidate(
     metadata: &V2DirectMetadata,
     body: &V2DirectBody,
     delivery: &TrustedDirectDeliveryContext,
+    receive_claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
 ) -> crate::ImResult<RootInboundInterceptOutcome> {
     if metadata.profile != DIRECT_E2EE_PROFILE_V2
         || metadata.sender_did != client.did().as_str()
@@ -438,6 +439,7 @@ pub(crate) async fn receive_root_envelope_candidate(
     }
     let guard = lock_root_import(core, client, &metadata.message_id).await?;
     delivery.validate()?;
+    require_root_receive_claim(core, receive_claim)?;
     let local_entry = local_device_entry(core, client)?;
     let local_state = local_entry
         .device_state
@@ -521,6 +523,12 @@ pub(crate) async fn receive_root_envelope_candidate(
         RootProbeOutcome::NotRoot => return Ok(RootInboundInterceptOutcome::NotRoot),
         RootProbeOutcome::Replay => {
             return if import_coordinator_exists(core, client, &metadata.message_id)? {
+                complete_existing_root_receive_claim(
+                    core,
+                    client,
+                    &metadata.message_id,
+                    receive_claim,
+                )?;
                 drive_root_import_completion(core, client, &metadata.message_id, &guard).await?;
                 Ok(RootInboundInterceptOutcome::Replay)
             } else {
@@ -549,6 +557,9 @@ pub(crate) async fn receive_root_envelope_candidate(
         &registry,
         now,
     )?;
+    // Provider import only prepares private pending custody. The exact inbox
+    // attempt must still be current before we start it and at the sealed handoff.
+    require_root_receive_claim(core, receive_claim)?;
     let expected_plan = match prepared {
         RootInboundPreparation::NotRoot => {
             return Ok(RootInboundInterceptOutcome::NotRoot);
@@ -590,8 +601,12 @@ pub(crate) async fn receive_root_envelope_candidate(
                     rejected_non_root.set(true);
                     Err(crate::ImError::unsupported("p5-not-root-envelope"))
                 }
-                RootInboundValidation::Root(plan) => persist_import_sealed_tx(transaction, plan),
-                RootInboundValidation::Terminal => Ok(()),
+                RootInboundValidation::Root(plan) => {
+                    persist_received_root_handoff(transaction, Some(plan), receive_claim)
+                }
+                RootInboundValidation::Terminal => {
+                    persist_received_root_handoff(transaction, None, receive_claim)
+                }
             },
         ),
         V2DirectBody::Cipher(cipher) => direct.decrypt_inbound_secret_json_validated_with_commit(
@@ -623,8 +638,12 @@ pub(crate) async fn receive_root_envelope_candidate(
                     rejected_non_root.set(true);
                     Err(crate::ImError::unsupported("p5-not-root-envelope"))
                 }
-                RootInboundValidation::Root(plan) => persist_import_sealed_tx(transaction, plan),
-                RootInboundValidation::Terminal => Ok(()),
+                RootInboundValidation::Root(plan) => {
+                    persist_received_root_handoff(transaction, Some(plan), receive_claim)
+                }
+                RootInboundValidation::Terminal => {
+                    persist_received_root_handoff(transaction, None, receive_claim)
+                }
             },
         ),
     });
@@ -649,6 +668,12 @@ pub(crate) async fn receive_root_envelope_candidate(
         }) => Ok(RootInboundInterceptOutcome::Consumed),
         Ok(V2ValidatedSecretInboundOutcome::Replay { .. }) => {
             if import_coordinator_exists(core, client, &metadata.message_id)? {
+                complete_existing_root_receive_claim(
+                    core,
+                    client,
+                    &metadata.message_id,
+                    receive_claim,
+                )?;
                 drive_root_import_completion(core, client, &metadata.message_id, &guard).await?;
                 Ok(RootInboundInterceptOutcome::Replay)
             } else {
@@ -656,6 +681,70 @@ pub(crate) async fn receive_root_envelope_candidate(
             }
         }
     }
+}
+
+fn require_root_receive_claim(
+    core: &crate::core::ImCore,
+    claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
+) -> crate::ImResult<()> {
+    if let Some(claim) = claim {
+        let db = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        crate::internal::local_state::sync_inbox::require_claim(
+            &db,
+            claim,
+            chrono::Utc::now().timestamp(),
+        )?;
+    }
+    Ok(())
+}
+
+fn persist_received_root_handoff(
+    transaction: &rusqlite::Transaction<'_>,
+    plan: Option<&RootImportSealedPlan>,
+    claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
+) -> crate::ImResult<()> {
+    let now = chrono::Utc::now().timestamp();
+    if let Some(claim) = claim {
+        crate::internal::local_state::sync_inbox::require_claim(transaction, claim, now)?;
+        if plan.is_some_and(|plan| {
+            plan.owner_identity_id != claim.owner_identity_id
+                || plan.owner_did != claim.owner_did
+                || plan.local_device_id != claim.device_id
+        }) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    if let Some(plan) = plan {
+        persist_import_sealed_tx(transaction, plan)?;
+    }
+    if let Some(claim) = claim {
+        crate::internal::local_state::sync_inbox::complete_claim(transaction, claim, now)?;
+    }
+    Ok(())
+}
+
+fn complete_existing_root_receive_claim(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    message_id: &str,
+    claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
+) -> crate::ImResult<()> {
+    let Some(claim) = claim else {
+        return Ok(());
+    };
+    let mut db = crate::internal::local_state::open_writable(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    // Loading verifies the coordinator belongs to this exact owner/device.
+    let _ = load_completion_record(&tx, client, message_id)?;
+    persist_received_root_handoff(&tx, None, Some(claim))?;
+    tx.commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1229,6 +1318,20 @@ fn cleanup_legacy_root_pending_orphan(
 pub(crate) async fn recover_root_import_completions(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<usize> {
+    recover_root_import_completions_bounded(client, i64::MAX, true).await
+}
+
+pub(crate) async fn recover_one_root_import_completion(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<usize> {
+    recover_root_import_completions_bounded(client, 1, false).await
+}
+
+async fn recover_root_import_completions_bounded(
+    client: &crate::core::ImClient,
+    limit: i64,
+    include_promoted: bool,
+) -> crate::ImResult<usize> {
     let core = client.core_handle();
     let local_device_id = client.exact_protocol_device_id()?;
     let message_ids = {
@@ -1239,8 +1342,8 @@ pub(crate) async fn recover_root_import_completions(
             .prepare(
                 r#"SELECT message_id FROM identity_root_import_completion_v1
 WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
-  AND phase <> 'terminal_failed'
-ORDER BY created_at, message_id"#,
+  AND phase <> 'terminal_failed' AND (?4 OR phase<>'promoted')
+ORDER BY updated_at, message_id LIMIT ?5"#,
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         let rows = statement
@@ -1249,6 +1352,8 @@ ORDER BY created_at, message_id"#,
                     client.current_identity().id.as_str(),
                     client.did().as_str(),
                     local_device_id,
+                    include_promoted,
+                    limit,
                 ],
                 |row| row.get::<_, String>(0),
             )

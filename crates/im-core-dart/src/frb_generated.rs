@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 35131937;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -936611222;
 
 // Section: executor
 
@@ -1117,6 +1117,67 @@ fn wire__crate__api__core__close_core_impl(
                     let output_ok = crate::api::core::close_core(&*api_core_guard)?;
                     Ok(output_ok)
                 })())
+            }
+        },
+    )
+}
+fn wire__crate__api__messages__close_processing_session_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "close_processing_session",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                    Arc<DartMessageProcessingSession>,
+                >,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_session_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_session,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_session_guard =
+                                        Some(api_session.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_session_guard = api_session_guard.unwrap();
+                        let output_ok =
+                            crate::api::messages::close_processing_session(&*api_session_guard)
+                                .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
             }
         },
     )
@@ -4519,6 +4580,73 @@ fn wire__crate__api__messages__mark_thread_read_impl(
         },
     )
 }
+fn wire__crate__api__messages__message_processing_stream_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "message_processing_stream",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                    Arc<DartMessageProcessingSession>,
+                >,
+            >>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::dto::message::DartMessageProcessingUpdate,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_session_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_session,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_session_guard =
+                                        Some(api_session.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_session_guard = api_session_guard.unwrap();
+                        let output_ok = crate::api::messages::message_processing_stream(
+                            &*api_session_guard,
+                            api_sink,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__identity__migrate_identity_vault_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -4756,6 +4884,65 @@ fn wire__crate__api__core__open_core_with_options_impl(
                             api_options,
                         )
                         .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__messages__open_processing_session_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "open_processing_session",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_client_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_client,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_client_guard =
+                                        Some(api_client.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_client_guard = api_client_guard.unwrap();
+                        let output_ok =
+                            crate::api::messages::open_processing_session(&*api_client_guard)
+                                .await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -5714,6 +5901,67 @@ fn wire__crate__api__realtime__realtime_stop_impl(
                         let api_session_guard = api_session_guard.unwrap();
                         let output_ok =
                             crate::api::realtime::realtime_stop(&*api_session_guard).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__messages__receive_now_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "receive_now",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::dto::message::DartMessageSyncRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_client_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_client,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_client_guard =
+                                        Some(api_client.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_client_guard = api_client_guard.unwrap();
+                        let output_ok =
+                            crate::api::messages::receive_now(&*api_client_guard, api_request)
+                                .await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -8626,6 +8874,67 @@ fn wire__crate__api__identity__verify_identity_vault_impl(
         },
     )
 }
+fn wire__crate__api__messages__wait_message_processing_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "wait_message_processing",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                    Arc<DartMessageProcessingSession>,
+                >,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_session_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_session,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_session_guard =
+                                        Some(api_session.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_session_guard = api_session_guard.unwrap();
+                        let output_ok =
+                            crate::api::messages::wait_message_processing(&*api_session_guard)
+                                .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__messages__watch_conversation_patches_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -8827,6 +9136,9 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
+    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartMessageProcessingSession>>
+);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
@@ -8870,6 +9182,18 @@ impl SseDecode for Arc<DartImCore> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <RustOpaqueMoi<
             flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
+        >>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
+    }
+}
+
+impl SseDecode for Arc<DartMessageProcessingSession> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                Arc<DartMessageProcessingSession>,
+            >,
         >>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
@@ -8931,6 +9255,18 @@ impl SseDecode
 
 impl SseDecode
     for RustOpaqueMoi<
+        flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartMessageProcessingSession>>,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);
+    }
+}
+
+impl SseDecode
+    for RustOpaqueMoi<
         flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>,
     >
 {
@@ -8956,6 +9292,19 @@ impl SseDecode
 impl SseDecode
     for StreamSink<
         crate::dto::message::DartConversationStorePatch,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
+impl SseDecode
+    for StreamSink<
+        crate::dto::message::DartMessageProcessingUpdate,
         flutter_rust_bridge::for_generated::SseCodec,
     >
 {
@@ -11819,6 +12168,92 @@ impl SseDecode for crate::dto::message::DartMessagePage {
     }
 }
 
+impl SseDecode for crate::dto::message::DartMessageProcessingOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_complete = <bool>::sse_decode(deserializer);
+        let mut var_pendingCount = <u32>::sse_decode(deserializer);
+        let mut var_blockedCount = <u32>::sse_decode(deserializer);
+        let mut var_discardedCount = <u32>::sse_decode(deserializer);
+        let mut var_eventsApplied = <u32>::sse_decode(deserializer);
+        let mut var_changedConversationIds = <Vec<String>>::sse_decode(deserializer);
+        let mut var_committedIncomingMessages =
+            <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_decode(deserializer);
+        let mut var_errorCode = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageProcessingOutcome {
+            complete: var_complete,
+            pending_count: var_pendingCount,
+            blocked_count: var_blockedCount,
+            discarded_count: var_discardedCount,
+            events_applied: var_eventsApplied,
+            changed_conversation_ids: var_changedConversationIds,
+            committed_incoming_messages: var_committedIncomingMessages,
+            error_code: var_errorCode,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageProcessingStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartMessageProcessingStatus::Applied,
+            1 => crate::dto::message::DartMessageProcessingStatus::Retrying,
+            2 => crate::dto::message::DartMessageProcessingStatus::Blocked,
+            3 => crate::dto::message::DartMessageProcessingStatus::Discarded,
+            4 => crate::dto::message::DartMessageProcessingStatus::ResyncRequired,
+            _ => unreachable!("Invalid variant for DartMessageProcessingStatus: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageProcessingUpdate {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_eventId = <String>::sse_decode(deserializer);
+        let mut var_status =
+            <crate::dto::message::DartMessageProcessingStatus>::sse_decode(deserializer);
+        let mut var_changedConversationIds = <Vec<String>>::sse_decode(deserializer);
+        let mut var_committedIncomingMessages =
+            <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_decode(deserializer);
+        let mut var_errorCode = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageProcessingUpdate {
+            event_id: var_eventId,
+            status: var_status,
+            changed_conversation_ids: var_changedConversationIds,
+            committed_incoming_messages: var_committedIncomingMessages,
+            error_code: var_errorCode,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageReceiveOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_status = <crate::dto::message::DartMessageSyncStatus>::sse_decode(deserializer);
+        let mut var_complete = <bool>::sse_decode(deserializer);
+        let mut var_eventsReceived = <u32>::sse_decode(deserializer);
+        let mut var_pagesFetched = <u32>::sse_decode(deserializer);
+        let mut var_messagesHydrated = <u32>::sse_decode(deserializer);
+        let mut var_duplicatesSkipped = <u32>::sse_decode(deserializer);
+        let mut var_olderHistoryExcluded = <bool>::sse_decode(deserializer);
+        let mut var_errorCode = <Option<String>>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageReceiveOutcome {
+            status: var_status,
+            complete: var_complete,
+            events_received: var_eventsReceived,
+            pages_fetched: var_pagesFetched,
+            messages_hydrated: var_messagesHydrated,
+            duplicates_skipped: var_duplicatesSkipped,
+            older_history_excluded: var_olderHistoryExcluded,
+            error_code: var_errorCode,
+            warnings: var_warnings,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::message::DartMessageSecurityMode {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -13855,481 +14290,506 @@ fn pde_ffi_dispatcher_primary_impl(
         ),
         17 => wire__crate__api__client__close_client_impl(port, ptr, rust_vec_len, data_len),
         18 => wire__crate__api__core__close_core_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__identity__complete_local_identity_data_deletion_impl(
+        19 => wire__crate__api__messages__close_processing_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        20 => wire__crate__api__identity__confirm_and_send_root_key_transfer_impl(
+        20 => wire__crate__api__identity__complete_local_identity_data_deletion_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        21 => wire__crate__api__identity__confirm_device_join_approval_impl(
+        21 => wire__crate__api__identity__confirm_and_send_root_key_transfer_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        22 => wire__crate__api__messages__conversation_patch_stream_impl(
+        22 => wire__crate__api__identity__confirm_device_join_approval_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        23 => wire__crate__api__messages__conversations_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__client__core_client_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__groups__create_group_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__client__current_identity_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__identity__default_identity_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__identity__delete_local_identity_impl(
+        23 => wire__crate__api__messages__conversation_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        29 => wire__crate__api__identity__delete_local_identity_data_impl(
+        24 => wire__crate__api__messages__conversations_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__client__core_client_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__groups__create_group_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__client__current_identity_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__identity__default_identity_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__identity__delete_local_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        30 => wire__crate__api__identity__discard_handle_recovery_pre_attempt_impl(
+        30 => wire__crate__api__identity__delete_local_identity_data_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        31 => wire__crate__api__attachments__download_attachment_impl(
+        31 => wire__crate__api__identity__discard_handle_recovery_pre_attempt_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        32 => wire__crate__api__email__download_attachment_impl(port, ptr, rust_vec_len, data_len),
-        33 => {
+        32 => wire__crate__api__attachments__download_attachment_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        33 => wire__crate__api__email__download_attachment_impl(port, ptr, rust_vec_len, data_len),
+        34 => {
             wire__crate__api__messages__ensure_conversation_impl(port, ptr, rust_vec_len, data_len)
         }
-        34 => wire__crate__api__directory__follow_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__groups__get_group_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__groups__get_group_join_code_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__identity__handle_recovery_status_impl(
+        35 => wire__crate__api__directory__follow_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__groups__get_group_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__groups__get_group_join_code_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__identity__handle_recovery_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__api__identity__has_pending_local_identity_recovery_impl(
+        39 => wire__crate__api__identity__has_pending_local_identity_recovery_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__api__messages__history_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__directory__hydrate_display_profiles_impl(
+        40 => wire__crate__api__messages__history_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__directory__hydrate_display_profiles_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__api__identity__identity_custody_status_impl(
+        42 => wire__crate__api__identity__identity_custody_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        42 => wire__crate__api__identity__identity_device_registry_impl(
+        43 => wire__crate__api__identity__identity_device_registry_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__crate__api__identity__identity_device_summary_impl(
+        44 => wire__crate__api__identity__identity_device_summary_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => wire__crate__api__identity__identity_vault_status_impl(
+        45 => wire__crate__api__identity__identity_vault_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        45 => wire__crate__api__email__inbox_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__messages__inbox_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__identity__inspect_handle_recovery_context_impl(
+        46 => wire__crate__api__email__inbox_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__messages__inbox_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__identity__inspect_handle_recovery_context_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        48 => wire__crate__api__local_state_upgrade__inspect_local_state_upgrade_impl(
+        49 => wire__crate__api__local_state_upgrade__inspect_local_state_upgrade_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__api__groups__join_group_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__groups__join_group_with_identity_impl(
+        50 => wire__crate__api__groups__join_group_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__groups__join_group_with_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        51 => wire__crate__api__groups__leave_group_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__identity__legacy_registry_epoch_adoption_authority_impl(
+        52 => wire__crate__api__groups__leave_group_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__identity__legacy_registry_epoch_adoption_authority_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        53 => wire__crate__api__identity__legacy_upgrade_status_impl(
+        54 => wire__crate__api__identity__legacy_upgrade_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        54 => wire__crate__api__directory__list_followers_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__api__directory__list_following_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__api__groups__list_group_members_impl(port, ptr, rust_vec_len, data_len),
-        57 => wire__crate__api__groups__list_group_messages_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__api__groups__list_groups_impl(port, ptr, rust_vec_len, data_len),
-        59 => wire__crate__api__identity__list_handle_recovery_operations_impl(
+        55 => wire__crate__api__directory__list_followers_impl(port, ptr, rust_vec_len, data_len),
+        56 => wire__crate__api__directory__list_following_impl(port, ptr, rust_vec_len, data_len),
+        57 => wire__crate__api__groups__list_group_members_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__api__groups__list_group_messages_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__api__groups__list_groups_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__api__identity__list_handle_recovery_operations_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        60 => wire__crate__api__identity__list_identities_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__api__messages__load_conversation_snapshot_impl(
+        61 => wire__crate__api__identity__list_identities_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__api__messages__load_conversation_snapshot_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        62 => wire__crate__api__profile__load_my_profile_impl(port, ptr, rust_vec_len, data_len),
-        63 => {
+        63 => wire__crate__api__profile__load_my_profile_impl(port, ptr, rust_vec_len, data_len),
+        64 => {
             wire__crate__api__profile__load_public_profile_impl(port, ptr, rust_vec_len, data_len)
         }
-        64 => wire__crate__api__messages__local_conversation_timeline_impl(
+        65 => wire__crate__api__messages__local_conversation_timeline_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__api__identity__local_device_join_requests_impl(
+        66 => wire__crate__api__identity__local_device_join_requests_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__identity__local_device_join_sessions_impl(
+        67 => wire__crate__api__identity__local_device_join_sessions_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => wire__crate__api__identity__local_device_join_verification_progress_impl(
+        68 => wire__crate__api__identity__local_device_join_verification_progress_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        68 => wire__crate__api__messages__local_history_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__api__directory__lookup_handle_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__api__messages__mark_conversation_read_impl(
+        69 => wire__crate__api__messages__local_history_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__api__directory__lookup_handle_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__api__messages__mark_conversation_read_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        71 => wire__crate__api__email__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        72 => wire__crate__api__messages__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        73 => wire__crate__api__messages__mark_thread_read_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__api__identity__migrate_identity_vault_impl(
+        72 => wire__crate__api__email__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        73 => wire__crate__api__messages__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__api__messages__mark_thread_read_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__api__messages__message_processing_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        75 => wire__crate__api__email__notifications_impl(port, ptr, rust_vec_len, data_len),
-        76 => wire__crate__api__core__open_core_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__api__core__open_core_with_optional_options_impl(
+        76 => wire__crate__api__identity__migrate_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        78 => {
-            wire__crate__api__core__open_core_with_options_impl(port, ptr, rust_vec_len, data_len)
-        }
-        79 => wire__crate__api__identity__pending_local_identity_data_deletions_impl(
+        77 => wire__crate__api__email__notifications_impl(port, ptr, rust_vec_len, data_len),
+        78 => wire__crate__api__core__open_core_impl(port, ptr, rust_vec_len, data_len),
+        79 => wire__crate__api__core__open_core_with_optional_options_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
         80 => {
+            wire__crate__api__core__open_core_with_options_impl(port, ptr, rust_vec_len, data_len)
+        }
+        81 => wire__crate__api__messages__open_processing_session_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        82 => wire__crate__api__identity__pending_local_identity_data_deletions_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        83 => {
             wire__crate__api__identity__poll_new_device_join_impl(port, ptr, rust_vec_len, data_len)
         }
-        81 => wire__crate__api__identity__prepare_device_join_approval_impl(
+        84 => wire__crate__api__identity__prepare_device_join_approval_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        82 => wire__crate__api__identity__prepare_handle_recovery_impl(
+        85 => wire__crate__api__identity__prepare_handle_recovery_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        83 => wire__crate__api__identity__prepare_local_identity_data_deletion_impl(
+        86 => wire__crate__api__identity__prepare_local_identity_data_deletion_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        84 => wire__crate__api__identity__prepare_root_key_transfer_impl(
+        87 => wire__crate__api__identity__prepare_root_key_transfer_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        85 => wire__crate__api__messages__prepare_secure_inbox_for_sync_impl(
+        88 => wire__crate__api__messages__prepare_secure_inbox_for_sync_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        86 => wire__crate__api__identity__quarantine_handle_recovery_key_unavailable_impl(
+        89 => wire__crate__api__identity__quarantine_handle_recovery_key_unavailable_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        87 => wire__crate__api__email__read_impl(port, ptr, rust_vec_len, data_len),
-        88 => {
+        90 => wire__crate__api__email__read_impl(port, ptr, rust_vec_len, data_len),
+        91 => {
             wire__crate__api__realtime__realtime_capability_impl(port, ptr, rust_vec_len, data_len)
         }
-        89 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
-        90 => wire__crate__api__realtime__realtime_event_stream_impl(
+        92 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
+        93 => wire__crate__api__realtime__realtime_event_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        91 => wire__crate__api__realtime__realtime_session_status_impl(
+        94 => wire__crate__api__realtime__realtime_session_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        92 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__api__directory__refresh_display_profiles_impl(
+        95 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__api__messages__receive_now_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__api__directory__refresh_display_profiles_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        96 => wire__crate__api__groups__refresh_group_join_code_impl(
+        100 => wire__crate__api__groups__refresh_group_join_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        97 => wire__crate__api__identity__register_handle_with_email_impl(
+        101 => wire__crate__api__identity__register_handle_with_email_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        98 => wire__crate__api__identity__register_handle_with_phone_impl(
+        102 => wire__crate__api__identity__register_handle_with_phone_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        99 => wire__crate__api__identity__register_handle_without_contact_verification_impl(
+        103 => wire__crate__api__identity__register_handle_without_contact_verification_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        100 => {
+        104 => {
             wire__crate__api__identity__reject_device_join_impl(port, ptr, rust_vec_len, data_len)
         }
-        101 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
-        102 => {
+        105 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
+        106 => {
             wire__crate__api__groups__remove_group_member_impl(port, ptr, rust_vec_len, data_len)
         }
-        103 => wire__crate__api__messages__repair_conversation_store_impl(
+        107 => wire__crate__api__messages__repair_conversation_store_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        104 => wire__crate__api__messages__repair_conversation_timeline_store_impl(
+        108 => wire__crate__api__messages__repair_conversation_timeline_store_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        105 => {
+        109 => {
             wire__crate__api__messages__repair_thread_store_impl(port, ptr, rust_vec_len, data_len)
         }
-        106 => wire__crate__api__identity__request_handle_recovery_otp_impl(
+        110 => wire__crate__api__identity__request_handle_recovery_otp_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
-        108 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
-        109 => wire__crate__api__local_state_upgrade__restore_local_state_backup_impl(
+        111 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
+        112 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
+        113 => wire__crate__api__local_state_upgrade__restore_local_state_backup_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        110 => wire__crate__api__identity__resume_authorized_join_activation_impl(
+        114 => wire__crate__api__identity__resume_authorized_join_activation_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        111 => wire__crate__api__identity__resume_handle_recovery_impl(
+        115 => wire__crate__api__identity__resume_handle_recovery_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        112 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        113 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
+        116 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        117 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        114 => wire__crate__api__identity__revoke_device_impl(port, ptr, rust_vec_len, data_len),
-        115 => {
+        118 => wire__crate__api__identity__revoke_device_impl(port, ptr, rust_vec_len, data_len),
+        119 => {
             wire__crate__api__secure__secure_direct_status_impl(port, ptr, rust_vec_len, data_len)
         }
-        116 => {
+        120 => {
             wire__crate__api__secure__secure_group_prepare_impl(port, ptr, rust_vec_len, data_len)
         }
-        117 => {
+        121 => {
             wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len)
         }
-        118 => {
+        122 => {
             wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len)
         }
-        119 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
-        120 => {
+        123 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
+        124 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        121 => wire__crate__api__attachments__send_conversation_attachment_impl(
+        125 => wire__crate__api__attachments__send_conversation_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        122 => wire__crate__api__messages__send_conversation_payload_impl(
+        126 => wire__crate__api__messages__send_conversation_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        123 => wire__crate__api__messages__send_conversation_text_impl(
+        127 => wire__crate__api__messages__send_conversation_text_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        124 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
-        125 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        126 => wire__crate__api__identity__start_device_join_verification_impl(
+        128 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
+        129 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        130 => wire__crate__api__identity__start_device_join_verification_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        127 => wire__crate__api__messages__stop_conversation_patch_session_impl(
+        131 => wire__crate__api__messages__stop_conversation_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        128 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
+        132 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        129 => wire__crate__api__messages__sync_conversation_after_impl(
+        133 => wire__crate__api__messages__sync_conversation_after_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        130 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
-        131 => wire__crate__api__messages__sync_diagnostics_impl(port, ptr, rust_vec_len, data_len),
-        132 => wire__crate__api__messages__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        133 => {
+        134 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
+        135 => wire__crate__api__messages__sync_diagnostics_impl(port, ptr, rust_vec_len, data_len),
+        136 => wire__crate__api__messages__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        137 => {
             wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len)
         }
-        134 => wire__crate__api__messages__thread_message_patch_stream_impl(
+        138 => wire__crate__api__messages__thread_message_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        135 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        136 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        137 => wire__crate__api__identity__update_display_name_projection_impl(
+        139 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        140 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        141 => wire__crate__api__identity__update_display_name_projection_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        138 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        139 => wire__crate__api__identity__upgrade_legacy_identity_impl(
+        142 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        143 => wire__crate__api__identity__upgrade_legacy_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        140 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
+        144 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        141 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        142 => wire__crate__api__identity__verify_identity_vault_impl(
+        145 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        146 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        143 => wire__crate__api__messages__watch_conversation_patches_impl(
+        147 => wire__crate__api__messages__wait_message_processing_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        144 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        148 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        145 => {
+        149 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        150 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -14396,6 +14856,26 @@ impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<
 
 impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<Arc<DartImCore>>> for Arc<DartImCore> {
     fn into_into_dart(self) -> FrbWrapper<Arc<DartImCore>> {
+        self.into()
+    }
+}
+
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<Arc<DartMessageProcessingSession>> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
+            .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<Arc<DartMessageProcessingSession>>
+{
+}
+
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<Arc<DartMessageProcessingSession>>>
+    for Arc<DartMessageProcessingSession>
+{
+    fn into_into_dart(self) -> FrbWrapper<Arc<DartMessageProcessingSession>> {
         self.into()
     }
 }
@@ -17962,6 +18442,113 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessagePage>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageProcessingOutcome {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.complete.into_into_dart().into_dart(),
+            self.pending_count.into_into_dart().into_dart(),
+            self.blocked_count.into_into_dart().into_dart(),
+            self.discarded_count.into_into_dart().into_dart(),
+            self.events_applied.into_into_dart().into_dart(),
+            self.changed_conversation_ids.into_into_dart().into_dart(),
+            self.committed_incoming_messages
+                .into_into_dart()
+                .into_dart(),
+            self.error_code.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageProcessingOutcome
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageProcessingOutcome>
+    for crate::dto::message::DartMessageProcessingOutcome
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageProcessingOutcome {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageProcessingStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Applied => 0.into_dart(),
+            Self::Retrying => 1.into_dart(),
+            Self::Blocked => 2.into_dart(),
+            Self::Discarded => 3.into_dart(),
+            Self::ResyncRequired => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageProcessingStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageProcessingStatus>
+    for crate::dto::message::DartMessageProcessingStatus
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageProcessingStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageProcessingUpdate {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.event_id.into_into_dart().into_dart(),
+            self.status.into_into_dart().into_dart(),
+            self.changed_conversation_ids.into_into_dart().into_dart(),
+            self.committed_incoming_messages
+                .into_into_dart()
+                .into_dart(),
+            self.error_code.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageProcessingUpdate
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageProcessingUpdate>
+    for crate::dto::message::DartMessageProcessingUpdate
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageProcessingUpdate {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageReceiveOutcome {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.status.into_into_dart().into_dart(),
+            self.complete.into_into_dart().into_dart(),
+            self.events_received.into_into_dart().into_dart(),
+            self.pages_fetched.into_into_dart().into_dart(),
+            self.messages_hydrated.into_into_dart().into_dart(),
+            self.duplicates_skipped.into_into_dart().into_dart(),
+            self.older_history_excluded.into_into_dart().into_dart(),
+            self.error_code.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageReceiveOutcome
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageReceiveOutcome>
+    for crate::dto::message::DartMessageReceiveOutcome
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageReceiveOutcome {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSecurityMode {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -19368,6 +19955,20 @@ impl SseEncode for Arc<DartImCore> {
     }
 }
 
+impl SseEncode for Arc<DartMessageProcessingSession> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                Arc<DartMessageProcessingSession>,
+            >,
+        >>::sse_encode(
+            flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self),
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for Arc<DartRealtimeSession> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -19431,6 +20032,19 @@ impl SseEncode
 
 impl SseEncode
     for RustOpaqueMoi<
+        flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartMessageProcessingSession>>,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        let (ptr, size) = self.sse_encode_raw();
+        <usize>::sse_encode(ptr, serializer);
+        <i32>::sse_encode(size, serializer);
+    }
+}
+
+impl SseEncode
+    for RustOpaqueMoi<
         flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>,
     >
 {
@@ -19458,6 +20072,18 @@ impl SseEncode
 impl SseEncode
     for StreamSink<
         crate::dto::message::DartConversationStorePatch,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
+impl SseEncode
+    for StreamSink<
+        crate::dto::message::DartMessageProcessingUpdate,
         flutter_rust_bridge::for_generated::SseCodec,
     >
 {
@@ -21649,6 +22275,71 @@ impl SseEncode for crate::dto::message::DartMessagePage {
     }
 }
 
+impl SseEncode for crate::dto::message::DartMessageProcessingOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.complete, serializer);
+        <u32>::sse_encode(self.pending_count, serializer);
+        <u32>::sse_encode(self.blocked_count, serializer);
+        <u32>::sse_encode(self.discarded_count, serializer);
+        <u32>::sse_encode(self.events_applied, serializer);
+        <Vec<String>>::sse_encode(self.changed_conversation_ids, serializer);
+        <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_encode(
+            self.committed_incoming_messages,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.error_code, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageProcessingStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartMessageProcessingStatus::Applied => 0,
+                crate::dto::message::DartMessageProcessingStatus::Retrying => 1,
+                crate::dto::message::DartMessageProcessingStatus::Blocked => 2,
+                crate::dto::message::DartMessageProcessingStatus::Discarded => 3,
+                crate::dto::message::DartMessageProcessingStatus::ResyncRequired => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageProcessingUpdate {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.event_id, serializer);
+        <crate::dto::message::DartMessageProcessingStatus>::sse_encode(self.status, serializer);
+        <Vec<String>>::sse_encode(self.changed_conversation_ids, serializer);
+        <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_encode(
+            self.committed_incoming_messages,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.error_code, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageReceiveOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartMessageSyncStatus>::sse_encode(self.status, serializer);
+        <bool>::sse_encode(self.complete, serializer);
+        <u32>::sse_encode(self.events_received, serializer);
+        <u32>::sse_encode(self.pages_fetched, serializer);
+        <u32>::sse_encode(self.messages_hydrated, serializer);
+        <u32>::sse_encode(self.duplicates_skipped, serializer);
+        <bool>::sse_encode(self.older_history_excluded, serializer);
+        <Option<String>>::sse_encode(self.error_code, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::message::DartMessageSecurityMode {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -23296,6 +23987,28 @@ mod io {
     }
 
     #[no_mangle]
+    pub extern "C" fn frbgen_awiki_im_core_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                Arc<DartMessageProcessingSession>,
+            >,
+        >::increment_strong_count(ptr as _);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn frbgen_awiki_im_core_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                Arc<DartMessageProcessingSession>,
+            >,
+        >::decrement_strong_count(ptr as _);
+    }
+
+    #[no_mangle]
     pub extern "C" fn frbgen_awiki_im_core_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
         ptr: *const std::ffi::c_void,
     ) {
@@ -23410,6 +24123,28 @@ mod web {
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>::decrement_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                Arc<DartMessageProcessingSession>,
+            >,
+        >::increment_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartMessageProcessingSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<
+                Arc<DartMessageProcessingSession>,
+            >,
+        >::decrement_strong_count(ptr as _);
     }
 
     #[wasm_bindgen]

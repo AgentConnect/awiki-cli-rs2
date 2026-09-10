@@ -59,6 +59,7 @@ struct ClientInner {
     identity_provider: std::sync::Mutex<Option<crate::external_identity::ExternalIdentityCustody>>,
     realtime: tokio::sync::Mutex<Option<RealtimeSlot>>,
     next_realtime_id: AtomicU64,
+    processing: std::sync::Mutex<Vec<std::sync::Weak<ProcessingReader>>>,
     #[cfg(test)]
     realtime_close_error: std::sync::Mutex<Option<SafeError>>,
 }
@@ -155,6 +156,15 @@ impl ClientInner {
         ) {
             Ok(_) => {
                 self.cancellation.cancel();
+                let readers = std::mem::take(
+                    &mut *self
+                        .processing
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                for reader in readers.into_iter().filter_map(|reader| reader.upgrade()) {
+                    reader.stop().await;
+                }
                 let realtime_result = self.teardown_realtime_for_close().await;
                 self.complete_close(realtime_result).await
             }
@@ -182,6 +192,15 @@ impl ClientInner {
             .is_ok()
         {
             self.cancellation.cancel();
+            for reader in self
+                .processing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+            {
+                reader.cancel();
+            }
             if let Ok(mut realtime) = self.realtime.try_lock() {
                 realtime.take();
             }
@@ -287,6 +306,101 @@ impl NativeRealtimeSession {
     #[napi(catch_unwind)]
     pub async fn stop(&self) -> napi::Result<()> {
         napi_result(self.client.stop_realtime(Some(self.id)).await)
+    }
+}
+
+struct ProcessingReader {
+    session: tokio::sync::Mutex<Option<im_core::messages::MessageProcessingSession>>,
+    cancellation: CancellationToken,
+    mode: AtomicU8,
+}
+impl ProcessingReader {
+    fn cancel(&self) {
+        self.cancellation.cancel();
+        if let Ok(mut session) = self.session.try_lock() {
+            if let Some(mut session) = session.take() {
+                session.close();
+            }
+        }
+    }
+    async fn stop(&self) {
+        self.cancellation.cancel();
+        if let Some(mut session) = self.session.lock().await.take() {
+            session.close();
+        }
+    }
+}
+#[napi(js_name = "NativeProcessingSession")]
+pub struct NativeProcessingSession {
+    client: Arc<ClientInner>,
+    reader: Arc<ProcessingReader>,
+}
+impl Drop for NativeProcessingSession {
+    fn drop(&mut self) {
+        self.reader.cancel();
+    }
+}
+#[napi]
+impl NativeProcessingSession {
+    #[napi(catch_unwind)]
+    pub async fn next_update(&self) -> napi::Result<Option<NodeProcessingUpdate>> {
+        napi_result(
+            async {
+                if self
+                    .reader
+                    .mode
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                    && self.reader.mode.load(Ordering::Acquire) != 1
+                {
+                    return Err(SafeError::closed());
+                }
+                let client = { self.client.operation().await?.client()?.clone() };
+                let mut guard = self.reader.session.lock().await;
+                let Some(session) = guard.as_mut() else {
+                    return Ok(None);
+                };
+                let update = tokio::select! {
+                    _ = self.reader.cancellation.cancelled() => return Ok(None),
+                    update = session.next_async(&client) => update.map_err(SafeError::from_im)?,
+                };
+                update.map(crate::dto::processing_update).transpose()
+            }
+            .await,
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn wait_until_settled(&self) -> napi::Result<NodeProcessingResult> {
+        napi_result(
+            async {
+                if self
+                    .reader
+                    .mode
+                    .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return Err(SafeError::closed());
+                }
+                let client = { self.client.operation().await?.client()?.clone() };
+                let mut guard = self.reader.session.lock().await;
+                let Some(session) = guard.as_mut() else {
+                    return Err(SafeError::closed());
+                };
+                let result = tokio::select! {
+                    _ = self.reader.cancellation.cancelled() => Err(SafeError::closed()),
+                    result = session.wait_async(&client) => result.map_err(SafeError::from_im),
+                };
+                session.close();
+                guard.take();
+                crate::dto::processing_result(result?)
+            }
+            .await,
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn stop(&self) -> napi::Result<()> {
+        self.reader.stop().await;
+        Ok(())
     }
 }
 
@@ -1581,6 +1695,57 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn receive_now(
+        &self,
+        input: Option<NodeSyncOptions>,
+    ) -> napi::Result<NodeReceiveResult> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let client = operation.client()?;
+                let (request, timeout) = sync_request(input, self.inner.sync_timeout)?;
+                let result = self
+                    .inner
+                    .wait_im(client.messages().receive_now_async(request), timeout)
+                    .await?;
+                Ok(crate::dto::receive_result(result))
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn open_processing_session(&self) -> napi::Result<NativeProcessingSession> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let session = operation
+                    .client()?
+                    .messages()
+                    .watch_processing_updates()
+                    .map_err(SafeError::from_im)?;
+                let reader = Arc::new(ProcessingReader {
+                    session: tokio::sync::Mutex::new(Some(session)),
+                    cancellation: self.inner.cancellation.child_token(),
+                    mode: AtomicU8::new(0),
+                });
+                let mut readers = self
+                    .inner
+                    .processing
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                readers.retain(|reader| reader.strong_count() > 0);
+                readers.push(Arc::downgrade(&reader));
+                Ok(NativeProcessingSession {
+                    client: Arc::clone(&self.inner),
+                    reader,
+                })
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn sync_now(&self, input: Option<NodeSyncOptions>) -> napi::Result<NodeSyncResult> {
         napi_result(self.sync_now_inner(input).await)
     }
@@ -2483,6 +2648,7 @@ pub(crate) async fn open(
             identity_provider: std::sync::Mutex::new(identity_provider),
             realtime: tokio::sync::Mutex::new(None),
             next_realtime_id: AtomicU64::new(1),
+            processing: std::sync::Mutex::new(Vec::new()),
             #[cfg(test)]
             realtime_close_error: std::sync::Mutex::new(None),
         }),

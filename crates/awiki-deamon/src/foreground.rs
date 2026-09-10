@@ -133,10 +133,12 @@ impl RuntimeAgentMessageReadiness for ImCoreRuntimeAgentMessageReadiness {
             .client_for_agent(&self.config, &self.state, &outcome.agent_did)
             .context("open exact Runtime Agent client for initial message sync")?;
         let sync = block_on_runtime_agent_initial_sync(client)?;
-        if !matches!(
-            sync.status,
-            MessageSyncStatus::Idle | MessageSyncStatus::Changed
-        ) {
+        if !sync.complete
+            || !matches!(
+                sync.status,
+                MessageSyncStatus::Idle | MessageSyncStatus::Changed
+            )
+        {
             bail!(
                 "Runtime Agent initial message sync did not become ready: {:?}",
                 sync.status
@@ -152,9 +154,8 @@ impl RuntimeAgentMessageReadiness for ImCoreRuntimeAgentMessageReadiness {
             None,
             json!({
                 "pages_fetched": sync.pages_fetched,
-                "events_applied": sync.events_applied,
+                "events_received": sync.events_received,
                 "messages_hydrated": sync.messages_hydrated,
-                "committed_incoming_count": sync.committed_incoming_messages.len(),
                 "warnings": sanitize_warning_list(&sync.warnings),
             }),
         )?;
@@ -164,14 +165,14 @@ impl RuntimeAgentMessageReadiness for ImCoreRuntimeAgentMessageReadiness {
 
 fn block_on_runtime_agent_initial_sync(
     client: im_core::ImClient,
-) -> Result<im_core::messages::MessageSyncOutcome> {
-    let run = move || -> Result<im_core::messages::MessageSyncOutcome> {
+) -> Result<im_core::messages::MessageReceiveOutcome> {
+    let run = move || -> Result<im_core::messages::MessageReceiveOutcome> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("create Runtime Agent initial sync runtime")?;
         Ok(
-            runtime.block_on(client.messages().sync_now_async(MessageSyncRequest {
+            runtime.block_on(client.messages().receive_now_async(MessageSyncRequest {
                 reason: RUNTIME_AGENT_INITIAL_SYNC_REASON.to_owned(),
                 limit: Some(100),
             }))?,
@@ -474,6 +475,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
 
     let mut runtime_routes = RuntimeRouteDispatcher::new(queue_notifier.clone());
     let mut recovery_page_tokens = HashMap::new();
+    let mut processing_ready = HashMap::<String, runtime_realtime::RealtimeSource>::new();
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
@@ -497,6 +499,10 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         tokio::select! {
             notification = realtime_supervisor.recv() => {
                 if let Some(notification) = notification {
+                    if let RuntimeRealtimeNotification::ProcessingReady { source } = notification {
+                        processing_ready.insert(source.agent_did.clone(), source);
+                        continue;
+                    }
                     let newly_processed = handle_realtime_notification(
                         &state,
                         &mut realtime_supervisor,
@@ -541,12 +547,8 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     &config,
                     &state,
                     &im_core,
-                    &hermes_gateway,
-                    &registration,
                     &mut realtime_supervisor,
                     &mut realtime_sync,
-                    &mut runtime_routes,
-                    &mut recovery_page_tokens,
                 )
                 .await?;
                 if newly_processed > 0 {
@@ -555,6 +557,16 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 processed_messages += newly_processed;
                 if newly_processed > 0 {
                     queue_notifier.notify_all();
+                }
+            }
+            _ = std::future::ready(()), if !processing_ready.is_empty() => {
+                let key = processing_ready.keys().next().cloned().expect("guarded processing hint");
+                let source = processing_ready.remove(&key).expect("pending processing source");
+                if let Some(client) = realtime_supervisor.client_for_source(&source) {
+                    let count = process_hydrated_runtime_recovery(&config, &state, &im_core, &hermes_gateway, &registration,
+                        &client, &source.agent_did, &mut runtime_routes, &mut recovery_page_tokens).await?;
+                    processed_messages += count;
+                    if count > 0 { queue_notifier.notify_all(); }
                 }
             }
             _ = heartbeat_interval.tick() => {
@@ -670,6 +682,7 @@ async fn handle_realtime_notification(
     notification: RuntimeRealtimeNotification,
 ) -> Result<usize> {
     match notification {
+        RuntimeRealtimeNotification::ProcessingReady { .. } => Ok(0),
         RuntimeRealtimeNotification::Event(event) => {
             process_realtime_event(state, realtime_sync, event).await
         }
@@ -868,12 +881,8 @@ async fn process_due_realtime_sync_work(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
-    registration: &UserServiceAgentRegistrationClient,
     realtime_supervisor: &mut RuntimeRealtimeSupervisor,
     realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
-    runtime_routes: &mut RuntimeRouteDispatcher,
-    recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
 ) -> Result<usize> {
     let mut processed_count = 0usize;
     let due_work = realtime_sync.take_due_work();
@@ -882,12 +891,8 @@ async fn process_due_realtime_sync_work(
             config,
             state,
             im_core,
-            hermes_gateway,
-            registration,
             realtime_supervisor,
             realtime_sync,
-            runtime_routes,
-            recovery_page_tokens,
             work,
         )
         .await?;
@@ -899,12 +904,8 @@ async fn process_realtime_sync_work(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
-    registration: &UserServiceAgentRegistrationClient,
     realtime_supervisor: &mut RuntimeRealtimeSupervisor,
     realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
-    runtime_routes: &mut RuntimeRouteDispatcher,
-    recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
     work: RuntimeRealtimeSyncWork,
 ) -> Result<usize> {
     let client = match realtime_work_client(config, state, im_core, realtime_supervisor, &work) {
@@ -961,7 +962,7 @@ async fn process_realtime_sync_work(
                 json!({
                     "reasons": work.reasons,
                     "pages_fetched": result.pages_fetched,
-                    "events_applied": result.events_applied,
+                    "events_received": result.events_received,
                     "error_code": result.error_code,
                     "warnings": sanitize_warning_list(&result.warnings),
                 }),
@@ -969,11 +970,12 @@ async fn process_realtime_sync_work(
             Ok(0)
         }
         Ok(result)
-            if matches!(
-                result.status,
-                im_core::messages::MessageSyncStatus::RetryableFailure
-                    | im_core::messages::MessageSyncStatus::RecoveryRequired
-            ) =>
+            if !result.complete
+                || matches!(
+                    result.status,
+                    im_core::messages::MessageSyncStatus::RetryableFailure
+                        | im_core::messages::MessageSyncStatus::RecoveryRequired
+                ) =>
         {
             state.insert_audit_event_json(
                 "daemon.realtime.sync.retryable",
@@ -985,7 +987,7 @@ async fn process_realtime_sync_work(
                     "reasons": work.reasons,
                     "status": format!("{:?}", result.status).to_ascii_lowercase(),
                     "pages_fetched": result.pages_fetched,
-                    "events_applied": result.events_applied,
+                    "events_received": result.events_received,
                     "error_code": result.error_code,
                     "warnings": sanitize_warning_list(&result.warnings),
                 }),
@@ -1007,40 +1009,16 @@ async fn process_realtime_sync_work(
                 json!({
                     "reasons": work.reasons,
                     "pages_fetched": result.pages_fetched,
-                    "events_applied": result.events_applied,
+                    "events_received": result.events_received,
                     "messages_hydrated": result.messages_hydrated,
                     "duplicates_skipped": result.duplicates_skipped,
-                    "changed_conversation_count": result.changed_conversation_ids.len(),
-                    "committed_incoming_count": result.committed_incoming_messages.len(),
                     "warnings": sanitize_warning_list(&result.warnings),
                     "dirty_agent_count": realtime_sync.dirty_agent_count(),
                 }),
             )?;
-            let mut processed_count = process_committed_sync_messages(
-                config,
-                state,
-                im_core,
-                hermes_gateway,
-                registration,
-                &client,
-                &work.agent_did,
-                &result.committed_incoming_messages,
-                runtime_routes,
-            )
-            .await?;
-            processed_count += process_hydrated_runtime_recovery(
-                config,
-                state,
-                im_core,
-                hermes_gateway,
-                registration,
-                &client,
-                &work.agent_did,
-                runtime_routes,
-                recovery_page_tokens,
-            )
-            .await?;
-            Ok(processed_count)
+            // ProcessingReady and the existing periodic hydrated recovery own
+            // business delivery. This receive result never waits for them.
+            Ok(0)
         }
         Err(error) => {
             record_realtime_sync_error(state, "daemon.realtime.sync.failed", &work, &error)?;
@@ -1071,42 +1049,6 @@ fn realtime_work_client(
     im_core
         .client_for_agent(config, state, &work.agent_did)
         .map(Some)
-}
-
-async fn process_committed_sync_messages(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    im_core: &ImCoreAdapter,
-    hermes_gateway: &StdioHermesGateway,
-    registration: &UserServiceAgentRegistrationClient,
-    client: &im_core::ImClient,
-    agent_did: &str,
-    committed: &[im_core::messages::CommittedIncomingMessage],
-    runtime_routes: &mut RuntimeRouteDispatcher,
-) -> Result<usize> {
-    let mut processed_count = 0usize;
-    for incoming in committed {
-        let group_history =
-            is_group_message(&incoming.message).then(|| std::slice::from_ref(&incoming.message));
-        if process_runtime_inbox_message(
-            config,
-            state,
-            im_core,
-            hermes_gateway,
-            registration,
-            client,
-            agent_did,
-            &incoming.message,
-            runtime_routes,
-            group_history,
-        )
-        .await?
-        .unwrap_or(false)
-        {
-            processed_count += 1;
-        }
-    }
-    Ok(processed_count)
 }
 
 fn record_realtime_sync_error(

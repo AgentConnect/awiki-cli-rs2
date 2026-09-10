@@ -276,7 +276,7 @@ pub(crate) fn mark_terminal_intent_for_client(
     group_did: &str,
     signal: v2::V2TerminalSignal,
 ) -> crate::ImResult<()> {
-    let runtime = runtime_for_client(client)?;
+    let runtime = runtime_for_client(client)?.with_nonblocking_operations();
     let scope = runtime.owner_scope()?;
     match runtime.mark_terminal_intent(V2MarkTerminalIntentInput {
         owner_did: scope.owner_did,
@@ -294,6 +294,36 @@ pub(crate) fn mark_terminal_intent_for_client(
         }) if code == "group.e2ee.state_not_ready" => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// Clean private crash-recovery results after projection or explicit input
+/// discard. Both the input check and forget happen under the Core writer fence.
+pub(crate) async fn cleanup_received_results_for_client(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<()> {
+    if !client.core_inner().group_e2ee_v2_enabled() {
+        return Ok(());
+    }
+    let runtime = runtime_for_client(client)?.with_nonblocking_operations();
+    if !runtime.store.state_db_path().is_file() {
+        return Ok(());
+    }
+    let scope = runtime.owner_scope()?;
+    let owner = client.current_identity().id.as_str().to_owned();
+    let db = client.core_inner().local_state_db().await?;
+    db.run_local(move |connection| {
+        let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let keys = v2::list_received_decryption_keys_v2(&runtime.store, &scope.owner_did, &scope.device_id, 256).map_err(map_group_mls_error)?;
+        for key in keys {
+            let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_lane_inbox WHERE owner_identity_id=?1 AND lane='p6_group'
+                AND group_did=?2 AND json_extract(raw_payload_json,'$.meta.message_id')=?3)",
+                rusqlite::params![owner, key.group_did, key.message_id], |row| row.get(0))
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            if !pending { runtime.forget_received_decryption(&key.message_id, &key.group_did)?; }
+        }
+        tx.commit().map_err(crate::internal::local_state::local_state_unavailable)
+    }).await
 }
 
 pub(crate) fn runtime_for_client(

@@ -1,3 +1,7 @@
+use crate::dto::message::{
+    DartMessageProcessingOutcome, DartMessageProcessingStatus, DartMessageProcessingUpdate,
+    DartMessageReceiveOutcome,
+};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -474,6 +478,138 @@ pub async fn sync_delta(
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+pub async fn receive_now(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartMessageSyncRequest,
+) -> Result<DartMessageReceiveOutcome, DartImError> {
+    let previous = client.clone_inner()?;
+    let (refreshed, _) = previous
+        .reload_local_authorization_async()
+        .await
+        .map_err(DartImError::from)?;
+    client.replace_inner(&previous.current_identity().id, refreshed)?;
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .receive_now_async(im_core::messages::MessageSyncRequest {
+            reason: request.reason,
+            limit: request.limit,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+/// A session subscribes before reception and has exactly one consuming mode:
+/// an update stream, or an independent bounded completion wait.
+pub struct DartMessageProcessingSession {
+    client: Arc<crate::api::client::DartImClient>,
+    session: Mutex<Option<im_core::messages::MessageProcessingSession>>,
+    lifecycle: PatchStreamLifecycle,
+}
+impl DartMessageProcessingSession {
+    fn take_session(&self) -> Result<im_core::messages::MessageProcessingSession, DartImError> {
+        if self.lifecycle.is_stopped() {
+            return Err(DartImError::object_closed("message processing session"));
+        }
+        self.session
+            .lock()
+            .map_err(|_| DartImError::internal("processing session lock poisoned"))?
+            .take()
+            .ok_or_else(|| {
+                DartImError::object_closed("message processing session already consumed")
+            })
+    }
+}
+
+pub async fn open_processing_session(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<Arc<DartMessageProcessingSession>, DartImError> {
+    let inner = client.clone_inner()?;
+    let session = inner
+        .messages()
+        .watch_processing_updates()
+        .map_err(DartImError::from)?;
+    Ok(Arc::new(DartMessageProcessingSession {
+        client: Arc::clone(client),
+        session: Mutex::new(Some(session)),
+        lifecycle: PatchStreamLifecycle::new("message processing session"),
+    }))
+}
+
+pub async fn message_processing_stream(
+    session: &Arc<DartMessageProcessingSession>,
+    sink: StreamSink<DartMessageProcessingUpdate>,
+) -> Result<(), DartImError> {
+    let mut updates = session.take_session()?;
+    let client = Arc::clone(&session.client);
+    session.lifecycle.spawn(async move {
+        loop {
+            let Ok(inner) = client.clone_inner() else {
+                break;
+            };
+            match updates.next_async(&inner).await {
+                Ok(Some(update)) => {
+                    if sink.add(update.into()).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = sink.add(DartMessageProcessingUpdate {
+                        event_id: String::new(),
+                        status: DartMessageProcessingStatus::ResyncRequired,
+                        changed_conversation_ids: vec![],
+                        committed_incoming_messages: vec![],
+                        error_code: Some("sync.processing_stream_failed".into()),
+                    });
+                    break;
+                }
+            }
+        }
+        updates.close();
+    })
+}
+
+pub async fn wait_message_processing(
+    session: &Arc<DartMessageProcessingSession>,
+) -> Result<DartMessageProcessingOutcome, DartImError> {
+    let mut updates = session.take_session()?;
+    let inner = session.client.clone_inner()?;
+    let mut cancel = session.lifecycle.cancel.subscribe();
+    let result = tokio::select! {
+        biased;
+        _ = wait_for_patch_stream_cancel(&mut cancel) => Err(DartImError::object_closed("message processing session")),
+        result = updates.wait_async(&inner) => result.map(Into::into).map_err(DartImError::from),
+    };
+    if result.is_ok() {
+        let (refreshed, _) = inner
+            .reload_local_authorization_async()
+            .await
+            .map_err(DartImError::from)?;
+        session
+            .client
+            .replace_inner(&inner.current_identity().id, refreshed)?;
+    }
+    updates.close();
+    result
+}
+
+pub async fn close_processing_session(
+    session: &Arc<DartMessageProcessingSession>,
+) -> Result<(), DartImError> {
+    session.lifecycle.stop().await?;
+    if let Some(mut updates) = session
+        .session
+        .lock()
+        .map_err(|_| DartImError::internal("processing session lock poisoned"))?
+        .take()
+    {
+        updates.close();
+    }
+    Ok(())
 }
 
 pub async fn sync_now(

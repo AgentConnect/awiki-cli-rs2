@@ -656,6 +656,19 @@ async fn spawn_im_core_runner_session_async(
         let mut event_error = None;
         let mut scheduler = ListenerSyncScheduler::new();
         let mut notification_state = ListenerSystemNotificationState::default();
+        let mut processing = match client.messages().watch_processing_updates() {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = session.stop().await;
+                mark_session_disconnected(
+                    &status,
+                    &identity_name,
+                    did,
+                    Some(SessionDisconnectReason::Other(error.to_string())),
+                );
+                return;
+            }
+        };
         let mut sync_task = None;
         let mut reconcile_timer = tokio::time::interval_at(
             tokio::time::Instant::now() + RELIABLE_SYNC_RECONCILE_INTERVAL,
@@ -673,7 +686,7 @@ async fn spawn_im_core_runner_session_async(
                     sync_task = Some(tokio::spawn(async move {
                         sync_client
                             .messages()
-                            .request_sync_async(im_core::messages::MessageSyncRequest {
+                            .request_receive_async(im_core::messages::MessageSyncRequest {
                                 reason: reason.as_str().to_owned(),
                                 limit: Some(RELIABLE_SYNC_LIMIT),
                             })
@@ -760,6 +773,29 @@ async fn spawn_im_core_runner_session_async(
                         }
                     }
                 }
+                update = processing.next_async(&client) => {
+                    match update {
+                        Ok(Some(update)) => {
+                            if update.status == im_core::messages::MessageProcessingStatus::Applied {
+                                if let Err(error) = emit_committed_sync_messages(&status, &host_notify, &identity_name, &did, &update.committed_incoming_messages) {
+                                    event_error = Some(error.to_string());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            } else if update.status == im_core::messages::MessageProcessingStatus::ResyncRequired {
+                                // The host can rebuild its committed view; this is
+                                // never a reason to retract a receive checkpoint.
+                                scheduler.request(ListenerSyncReason::Timer);
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            event_error = Some(error.to_string());
+                            let _ = session.stop().await;
+                            break;
+                        }
+                    }
+                }
                 sync_result = async {
                     sync_task
                         .as_mut()
@@ -769,18 +805,10 @@ async fn spawn_im_core_runner_session_async(
                     sync_task = None;
                     match sync_result {
                         Ok(Ok(outcome)) => {
-                            if let Err(error) = emit_committed_sync_messages(
-                                &status,
-                                &host_notify,
-                                &identity_name,
-                                &did,
-                                &outcome,
-                            ) {
-                                event_error = Some(error.to_string());
-                                let _ = session.stop().await;
-                                break;
-                            }
-                            match record_reliable_sync_outcome(&status, outcome.status) {
+                            let receive_status = if !outcome.complete && matches!(outcome.status, im_core::messages::MessageSyncStatus::Idle | im_core::messages::MessageSyncStatus::Changed) {
+                                im_core::messages::MessageSyncStatus::RetryableFailure
+                            } else { outcome.status };
+                            match record_reliable_sync_outcome(&status, receive_status) {
                                 ListenerSyncDisposition::Success => {
                                     scheduler.complete_success();
                                 }
@@ -1084,9 +1112,9 @@ fn emit_committed_sync_messages(
     host_notify: &Arc<HostNotifySinkImpl>,
     identity_name: &str,
     did: &str,
-    outcome: &im_core::messages::MessageSyncOutcome,
+    messages: &[im_core::messages::CommittedIncomingMessage],
 ) -> im_core::ImResult<()> {
-    for committed in &outcome.committed_incoming_messages {
+    for committed in messages {
         let mut event_sink = CliRealtimeEventSink {
             status,
             host_notify,

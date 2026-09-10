@@ -284,3 +284,107 @@ async fn completion_lock_serializes_same_transfer_and_isolates_other_scopes() {
     drop(held);
     waiting.await.unwrap();
 }
+
+#[test]
+fn queued_root_handoff_and_receipt_commit_together_and_reject_evicted_attempts() {
+    use crate::internal::local_state::{sync_inbox, sync_v2};
+    let (mut db, record, _) = fixture();
+    db.execute("DELETE FROM identity_root_import_completion_v1", [])
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let binding = sync_v2::IdentityAccountBinding {
+        owner_identity_id: "owner-a".into(),
+        account_id: "account-a".into(),
+        handle_scope: None,
+        current_did: record.did.clone(),
+        protocol_device_id: record.local_device_id.clone(),
+        identity_generation: "1".into(),
+        device_auth_generation: "1".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    sync_v2::upsert_identity_account_binding(&db, &binding).unwrap();
+    let event = sync_inbox::InboxEvent {
+        event_id: "root-delivery".into(),
+        position: "1".into(),
+        event_type: "p5.delivery.created".into(),
+        payload: serde_json::json!({"ciphertext":"test-only-opaque-input"}),
+        processing_scope: record.did.clone(),
+        group_did: None,
+    };
+    sync_inbox::insert_input(&db, &binding, "installation", "p5_device", "1", &event, now).unwrap();
+    let claim = sync_inbox::claim_inputs(&db, &binding, now, 1)
+        .unwrap()
+        .remove(0);
+    let plan = RootImportSealedPlan {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        owner_did: record.did.clone(),
+        local_device_id: record.local_device_id.clone(),
+        message_id: record.message_id.clone(),
+        sender_device_id: record.sender_device_id,
+        recipient_device_id: record.recipient_device_id,
+        sender_e2ee_key_id: record.sender_e2ee_key_id,
+        recipient_e2ee_key_id: record.recipient_e2ee_key_id,
+        accepted_at: record.imported_at.clone(),
+        imported_at: record.imported_at.clone(),
+        envelope_expires_at: record.expires_at,
+        pending_root_ref_json: serde_json::to_string(&record.pending_root_ref).unwrap(),
+        root_key_id: record.root_key_id,
+        root_fingerprint: record.root_fingerprint,
+        document_version: record.document_version,
+        document_hash: record.document_hash,
+        registry_version: record.registry_version,
+        now: record.imported_at,
+    };
+    db.execute_batch("CREATE TRIGGER reject_root_receipt BEFORE INSERT ON sync_lane_applied_events BEGIN SELECT RAISE(ABORT,'receipt write failed'); END;").unwrap();
+    {
+        let tx = db.transaction().unwrap();
+        assert!(persist_received_root_handoff(&tx, Some(&plan), Some(&claim)).is_err());
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM identity_root_import_completion_v1",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    sync_inbox::require_claim(&db, &claim, now).unwrap();
+    db.execute_batch("DROP TRIGGER reject_root_receipt;")
+        .unwrap();
+    db.execute(
+        "DELETE FROM sync_lane_inbox WHERE input_id=?1",
+        [&claim.input_id],
+    )
+    .unwrap();
+    sync_inbox::insert_input(&db, &binding, "installation", "p5_device", "1", &event, now).unwrap();
+    let replacement = sync_inbox::claim_inputs(&db, &binding, now, 1)
+        .unwrap()
+        .remove(0);
+    {
+        let tx = db.transaction().unwrap();
+        assert!(persist_received_root_handoff(&tx, Some(&plan), Some(&claim)).is_err());
+        tx.rollback().unwrap();
+    }
+    let tx = db.transaction().unwrap();
+    persist_received_root_handoff(&tx, Some(&plan), Some(&replacement)).unwrap();
+    tx.commit().unwrap();
+    assert!(sync_inbox::claim_was_completed(&db, &replacement).unwrap());
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT phase FROM identity_root_import_completion_v1",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "import_sealed"
+    );
+}

@@ -1420,6 +1420,28 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<MessageReceiveOutcome> receiveNow(MessageSyncRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.receiveNow(
+        client: _client._inner,
+        request: gen_message.DartMessageSyncRequest(
+          reason: request.reason,
+          limit: request.limit,
+        ),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<MessageProcessingSession> openProcessingSession() async {
+    _client._ensureNotDisposed();
+    final session = await _mapNativeErrors(
+      () => gen_messages.openProcessingSession(client: _client._inner),
+    );
+    return _NativeMessageProcessingSession(session);
+  }
+
   Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
     _client._ensureNotDisposed();
     return _client._runClientLifecycle(() async {
@@ -2035,6 +2057,58 @@ class RealtimeApi {
     _client._ensureNotDisposed();
     await _client._runClientLifecycle(
       () => _client._stopNativeRealtimeUnlocked(clearLogicalSession: true),
+    );
+  }
+}
+
+class _NativeMessageProcessingSession implements MessageProcessingSession {
+  _NativeMessageProcessingSession(this._inner);
+  final gen_messages.ArcDartMessageProcessingSession _inner;
+  bool _closed = false;
+  bool _consumed = false;
+
+  void _take() {
+    if (_closed || _consumed) {
+      throw StateError('Message processing session already consumed or closed');
+    }
+    _consumed = true;
+  }
+
+  @override
+  Stream<MessageProcessingUpdate> get updates {
+    _take();
+    return _updates();
+  }
+
+  Stream<MessageProcessingUpdate> _updates() async* {
+    try {
+      yield* gen_messages
+          .messageProcessingStream(session: _inner)
+          .map((update) => update._toModel());
+    } finally {
+      await close();
+    }
+  }
+
+  @override
+  Future<MessageProcessingOutcome> waitUntilSettled() async {
+    _take();
+    try {
+      final result = await _mapNativeErrors(
+        () => gen_messages.waitMessageProcessing(session: _inner),
+      );
+      return result._toModel();
+    } finally {
+      await close();
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    await _mapNativeErrors(
+      () => gen_messages.closeProcessingSession(session: _inner),
     );
   }
 }
@@ -4065,6 +4139,62 @@ extension on gen_message.DartMessageSyncOutcome {
         .toList(),
     errorCode: errorCode,
     warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageReceiveOutcome {
+  MessageReceiveOutcome _toModel() => MessageReceiveOutcome(
+    status: status._toModel(),
+    complete: complete,
+    eventsReceived: eventsReceived,
+    pagesFetched: pagesFetched,
+    messagesHydrated: messagesHydrated,
+    duplicatesSkipped: duplicatesSkipped,
+    olderHistoryExcluded: olderHistoryExcluded,
+    errorCode: errorCode,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageProcessingStatus {
+  MessageProcessingStatus _toModel() => switch (this) {
+    gen_message.DartMessageProcessingStatus.applied =>
+      MessageProcessingStatus.applied,
+    gen_message.DartMessageProcessingStatus.retrying =>
+      MessageProcessingStatus.retrying,
+    gen_message.DartMessageProcessingStatus.blocked =>
+      MessageProcessingStatus.blocked,
+    gen_message.DartMessageProcessingStatus.discarded =>
+      MessageProcessingStatus.discarded,
+    gen_message.DartMessageProcessingStatus.resyncRequired =>
+      MessageProcessingStatus.resyncRequired,
+  };
+}
+
+extension on gen_message.DartMessageProcessingUpdate {
+  MessageProcessingUpdate _toModel() => MessageProcessingUpdate(
+    eventId: eventId,
+    status: status._toModel(),
+    changedConversationIds: changedConversationIds,
+    committedIncomingMessages: committedIncomingMessages
+        .map((value) => value._toModel())
+        .toList(),
+    errorCode: errorCode,
+  );
+}
+
+extension on gen_message.DartMessageProcessingOutcome {
+  MessageProcessingOutcome _toModel() => MessageProcessingOutcome(
+    complete: complete,
+    pendingCount: pendingCount,
+    blockedCount: blockedCount,
+    discardedCount: discardedCount,
+    eventsApplied: eventsApplied,
+    changedConversationIds: changedConversationIds,
+    committedIncomingMessages: committedIncomingMessages
+        .map((value) => value._toModel())
+        .toList(),
+    errorCode: errorCode,
   );
 }
 

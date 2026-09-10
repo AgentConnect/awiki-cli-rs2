@@ -29,6 +29,46 @@ pub(crate) async fn process_ordinary<R: AsyncRpcTransport>(
             "processing client no longer matches its claimed binding",
         ));
     }
+    if claim.lane == "baseline" {
+        let baseline: crate::internal::local_state::sync_baseline::Baseline =
+            serde_json::from_value(claim.payload.clone()).map_err(|_| {
+                sync_inbox::error("SYNC_INPUT_INVALID", "baseline cannot be decoded")
+            })?;
+        let groups = baseline
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(index, group)| {
+                super::sync_v2::baseline_group_record(client, group, &baseline.server_time, index)
+            })
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        let read_states = baseline
+            .read_states
+            .iter()
+            .map(super::sync_v2::read_state_from_snapshot)
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        let committed_claim = claim.clone();
+        let invalidation = db
+            .run_local(move |connection| {
+                crate::internal::local_state::sync_baseline::apply_claim(
+                    connection,
+                    &committed_claim,
+                    baseline,
+                    groups,
+                    read_states,
+                    now(),
+                )
+            })
+            .await?;
+        super::sync::emit_committed_sync_invalidation(client, &invalidation);
+        return Ok(MessageProcessingUpdate {
+            event_id: claim.event_id.clone(),
+            status: MessageProcessingStatus::Applied,
+            changed_conversation_ids: invalidation.conversation_ids,
+            committed_incoming_messages: vec![],
+            error_code: None,
+        });
+    }
     let event: crate::internal::wire::sync_v2::SyncEventV2 =
         serde_json::from_value(claim.payload.get("event").cloned().ok_or_else(|| {
             sync_inbox::error("SYNC_INPUT_INVALID", "ordinary envelope is missing")
@@ -107,14 +147,25 @@ pub(crate) async fn process_ordinary<R: AsyncRpcTransport>(
         events: vec![prepared],
     };
     let committed_claim = claim.clone();
+    let committing_client = client.clone();
+    let terminal_event = event.clone();
     let outcome = db
         .run_local(move |connection| {
-            sync_inbox::apply_ordinary_claim(connection, &committed_claim, input, now())
+            sync_inbox::apply_ordinary_claim_with(
+                connection,
+                &committed_claim,
+                input,
+                now(),
+                |transaction| {
+                    super::sync_v2::apply_p4_terminal_events(
+                        &committing_client,
+                        transaction,
+                        std::slice::from_ref(&terminal_event),
+                    )
+                },
+            )
         })
         .await?;
-    // This is a post-commit local terminal marker, never a receive dependency.
-    // Its authoritative Group state remains durable if a marker needs repair.
-    let _ = super::sync_v2::apply_p4_terminal_events(client, std::slice::from_ref(&event));
     for notification in outcome.committed_system_notifications {
         client.emit_committed_system_notification(notification);
     }
@@ -245,6 +296,17 @@ pub(crate) async fn process_p6(
 
 pub(crate) fn failure_code(error: &crate::ImError) -> String {
     match error {
+        crate::ImError::Internal { message } => [
+            "group.e2ee.epoch_conflict",
+            "group.e2ee.state_not_ready",
+            "group.e2ee.state_locked",
+            "state_locked",
+            "state_write_failed",
+        ]
+        .into_iter()
+        .find(|code| message.contains(&format!("({code})")))
+        .unwrap_or("sync.processing_blocked")
+        .to_owned(),
         crate::ImError::MessageWireIdentityConflict { .. } => {
             "message_wire_identity_conflict".into()
         }
@@ -280,9 +342,120 @@ pub(crate) fn retry_at(error: &crate::ImError, attempts: i64) -> Option<i64> {
     ) || matches!(
         code.as_str(),
         "sync.peer_resolution_pending"
+            | "sync.baseline_pending"
             | "sync.group_state_pending"
             | "group.e2ee.epoch_conflict"
+            | "group.e2ee.state_not_ready"
+            | "group.e2ee.state_locked"
+            | "state_locked"
+            | "state_write_failed"
+            | "p5.session_pending"
+            | "anp.direct.e2ee.max_skip_exceeded"
             | "sync.processing_timeout"
     ))
     .then(|| now().saturating_add((1_i64 << attempts.clamp(0, 6)).min(60)))
+}
+
+/// Existing domain follow-up work runs beside queued inputs, within the same
+/// process task budget. A slow Directory lookup cannot own read outbox progress.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum MaintenanceKind {
+    PeerResolution,
+    ReadOutbox,
+    P5Replies,
+    RootCompletion,
+}
+
+pub(super) fn maintenance_pending(
+    connection: &rusqlite::Connection,
+    owner: &str,
+) -> crate::ImResult<[bool; 4]> {
+    let mut pending = connection.query_row("SELECT
+        EXISTS(SELECT 1 FROM inbound_resolution_backlog WHERE owner_identity_id=?1 AND resolution_state='pending' AND peer_did<>''),
+        EXISTS(SELECT 1 FROM local_mutation_outbox WHERE owner_identity_id=?1 AND status IN ('pending','retryable','in_flight'))",
+        [owner], |row| Ok([row.get(0)?, row.get(1)?, false, false]))
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    for (index, table, condition) in [
+        (2, "direct_e2ee_v2_session_reply_ledger", "phase='pending'"),
+        (
+            3,
+            "identity_root_import_completion_v1",
+            "phase NOT IN ('terminal_failed','promoted')",
+        ),
+    ] {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if exists {
+            pending[index] = connection.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE owner_identity_id=?1 AND {condition})"), [owner], |row| row.get(0)).map_err(crate::internal::local_state::local_state_unavailable)?;
+        }
+    }
+    Ok(pending)
+}
+
+pub(super) async fn run_maintenance(
+    client: &crate::core::ImClient,
+    kind: MaintenanceKind,
+) -> crate::ImResult<Vec<String>> {
+    match kind {
+        MaintenanceKind::P5Replies => {
+            crate::internal::secure_direct::v2_product::retry_one_session_reply_for_client(client)
+                .await?;
+            Ok(vec![])
+        }
+        MaintenanceKind::RootCompletion => {
+            crate::internal::identity_root_import_completion::recover_one_root_import_completion(
+                client,
+            )
+            .await?;
+            Ok(vec![])
+        }
+
+        MaintenanceKind::ReadOutbox => {
+            super::sync_v2::process_one_read_outbox_mutation(client).await?;
+            Ok(vec![])
+        }
+        MaintenanceKind::PeerResolution => {
+            use rusqlite::OptionalExtension;
+            let binding = client.active_sync_account_binding().await?;
+            let db = client.core_inner().local_state_db().await?;
+            let owner = binding.owner_identity_id.clone();
+            let peer = db.run_local(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+                    .map_err(crate::internal::local_state::local_state_unavailable)?;
+                let peer: Option<String> = tx.query_row("SELECT peer_did FROM inbound_resolution_backlog
+                    WHERE owner_identity_id=?1 AND resolution_state='pending' AND peer_did<>'' GROUP BY peer_did
+                    ORDER BY MIN(last_attempt_at), MIN(attempt_count), peer_did LIMIT 1", [&owner], |row| row.get(0))
+                    .optional().map_err(crate::internal::local_state::local_state_unavailable)?;
+                if let Some(peer) = &peer {
+                    tx.execute("UPDATE inbound_resolution_backlog SET last_attempt_at=?3, attempt_count=attempt_count+1
+                        WHERE owner_identity_id=?1 AND peer_did=?2 AND resolution_state='pending'",
+                        rusqlite::params![owner, peer, chrono::Utc::now().to_rfc3339()])
+                        .map_err(crate::internal::local_state::local_state_unavailable)?;
+                }
+                tx.commit().map_err(crate::internal::local_state::local_state_unavailable)?;
+                Ok(peer)
+            }).await?;
+            let Some(peer) = peer else {
+                return Ok(vec![]);
+            };
+            let changed = super::sync_v2::resolve_unresolved_peers(
+                client,
+                &db,
+                &binding,
+                &mut crate::internal::transport::CoreHttpTransport::new(client),
+                vec![peer],
+                &mut vec![],
+            )
+            .await?;
+            if !changed.is_empty() {
+                client.emit_committed_local_message_projection("sync_peer_resolution");
+            }
+            Ok(changed)
+        }
+    }
 }

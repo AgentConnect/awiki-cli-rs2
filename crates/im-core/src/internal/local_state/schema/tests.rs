@@ -2763,7 +2763,7 @@ INSERT INTO p6_lane_blockers(
             row.get::<_, i64>(0)
         })
         .unwrap(),
-        1,
+        0,
     );
 
     ensure_schema(&db).unwrap();
@@ -2773,6 +2773,21 @@ INSERT INTO p6_lane_blockers(
         })
         .unwrap(),
         1,
+    );
+    assert_eq!(
+        db.query_row("SELECT logical_event_seq FROM sync_lane_inbox", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap(),
+        "1"
+    );
+    super::super::sync_inbox::purge_expired(&db, chrono::Utc::now().timestamp(), 256).unwrap();
+    ensure_schema(&db).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
 }
 

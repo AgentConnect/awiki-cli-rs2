@@ -273,6 +273,7 @@ CREATE TABLE IF NOT EXISTS sync_lane_inbox (
     auth_generation_snapshot    TEXT NOT NULL,
     client_instance_id_snapshot TEXT NOT NULL,
     group_did                   TEXT,
+    logical_event_seq           TEXT,
     received_at                 TEXT NOT NULL,
     source_created_at           TEXT,
     source_expires_at           TEXT,
@@ -288,11 +289,11 @@ CREATE TABLE IF NOT EXISTS sync_lane_inbox (
     CHECK ((attempt_token IS NULL) = (attempt_deadline IS NULL)),
     UNIQUE (owner_identity_id, lane, lane_epoch, event_id),
     UNIQUE (owner_identity_id, lane, lane_epoch, position),
-    CHECK (lane IN ('ordinary', 'p5_device', 'p6_group')),
+    CHECK (lane IN ('ordinary', 'baseline', 'p5_device', 'p6_group')),
     CHECK (length(trim(event_type)) > 0),
     CHECK (json_valid(raw_payload_json)),
     CHECK (json_type(raw_payload_json) = 'object'),
-    CHECK (payload_bytes > 0 AND payload_bytes <= 16777216),
+    CHECK (payload_bytes > 0 AND payload_bytes <= CASE WHEN lane='baseline' THEN 67108864 ELSE 16777216 END),
     CHECK (length(trim(input_id)) > 0),
     CHECK (length(trim(event_id)) > 0),
     CHECK (length(trim(received_at)) > 0),
@@ -307,7 +308,7 @@ CREATE TABLE IF NOT EXISTS sync_lane_inbox (
         AND substr(position, 1, 1) <> '0'
     ),
     CHECK (
-        (lane = 'ordinary')
+        (lane IN ('ordinary', 'baseline'))
         OR
         (lane = 'p5_device' AND event_type = 'p5.delivery.created' AND group_did IS NULL)
         OR
@@ -1371,14 +1372,22 @@ pub(crate) fn apply_bootstrap_v2(
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
-    upsert_identity_account_binding(&transaction, &input.binding)?;
+    apply_bootstrap_in_transaction(&transaction, input)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(super) fn apply_bootstrap_in_transaction(
+    connection: &Connection,
+    input: BootstrapApplyInputV2,
+) -> crate::ImResult<()> {
+    upsert_identity_account_binding(connection, &input.binding)?;
     replace_lane_sync_states_in_transaction(
-        &transaction,
+        connection,
         &input.binding.owner_identity_id,
         &input.lane_states,
     )?;
     record_sync_lane_capability_negotiation_v1a(
-        &transaction,
+        connection,
         &input.binding.owner_identity_id,
         &input.binding.device_auth_generation,
         &input.client_instance_id,
@@ -1386,19 +1395,19 @@ pub(crate) fn apply_bootstrap_v2(
     )?;
     for group in input.groups {
         validate_group_owner(&group, &input.binding.owner_identity_id)?;
-        super::groups::upsert_group(&transaction, group)?;
+        super::groups::upsert_group(connection, group)?;
     }
     for read_state in input.read_states {
         apply_remote_read_state(
-            &transaction,
+            connection,
             &input.binding.owner_identity_id,
             &input.binding.current_did,
             &read_state,
         )?;
     }
-    upsert_bootstrap_state(&transaction, &input.state)?;
-    complete_active_recovery(&transaction, &input.state)?;
-    transaction.commit().map_err(super::local_state_unavailable)
+    upsert_bootstrap_state(connection, &input.state)?;
+    complete_active_recovery(connection, &input.state)?;
+    Ok(())
 }
 
 pub(crate) fn replace_lane_sync_states(
@@ -1911,27 +1920,38 @@ ORDER BY blocker.owner_identity_id, blocker.stream_epoch, blocker.event_seq
         let transaction = connection
             .unchecked_transaction()
             .map_err(super::local_state_unavailable)?;
-        if let Some((stored_position, stored_type, stored_payload)) = transaction
-            .query_row(
-                "SELECT position, event_type, raw_payload_json
+        if let Some((stored_position, stored_type, stored_payload, stored_logical_sequence)) =
+            transaction
+                .query_row(
+                    "SELECT position, event_type, raw_payload_json, logical_event_seq
                  FROM sync_lane_inbox WHERE input_id = ?1",
-                [&input_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(super::local_state_unavailable)?
+                    [&input_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(super::local_state_unavailable)?
         {
             let stored_payload = serde_json::from_str::<serde_json::Value>(&stored_payload).ok();
             if stored_position == position
                 && stored_type == event_type
                 && stored_payload.as_ref() == Some(&raw_payload)
+                && (stored_logical_sequence.is_none() || stored_logical_sequence == group_event_seq)
             {
+                transaction.execute("UPDATE sync_lane_inbox SET logical_event_seq=COALESCE(logical_event_seq,?2) WHERE input_id=?1",
+                    params![input_id, group_event_seq]).map_err(super::local_state_unavailable)?;
+                transaction
+                    .execute(
+                        "DELETE FROM p6_lane_blockers WHERE owner_identity_id=?1 AND event_id=?2",
+                        params![owner_identity_id, event_id],
+                    )
+                    .map_err(super::local_state_unavailable)?;
                 transaction
                     .commit()
                     .map_err(super::local_state_unavailable)?;
@@ -1962,19 +1982,7 @@ ORDER BY blocker.owner_identity_id, blocker.stream_epoch, blocker.event_seq
                 |row| row.get::<_, bool>(0),
             )
             .map_err(super::local_state_unavailable)?;
-        let (pending_items, pending_bytes) = transaction
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(payload_bytes),0)
-                 FROM sync_lane_inbox
-                 WHERE owner_identity_id=?1 AND lane='p6_group' AND closed_at IS NULL",
-                [&owner_identity_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .map_err(super::local_state_unavailable)?;
-        if position_conflict
-            || pending_items.saturating_add(1) > SYNC_LANE_PENDING_ITEM_LIMIT
-            || pending_bytes.saturating_add(payload_bytes) > SYNC_LANE_PENDING_TOTAL_BYTES
-        {
+        if position_conflict {
             transaction
                 .rollback()
                 .map_err(super::local_state_unavailable)?;
@@ -1982,16 +1990,13 @@ ORDER BY blocker.owner_identity_id, blocker.stream_epoch, blocker.event_seq
                 connection,
                 &owner_identity_id,
                 &event_id,
-                if position_conflict {
-                    "legacy blocker position conflicts with an existing lane input"
-                } else {
-                    "legacy blocker migration exceeds fixed lane capacity"
-                },
+                "legacy blocker position conflicts with an existing lane input",
                 created_at,
             )?;
             report.repair_required += 1;
             continue;
         }
+        super::sync_inbox::make_room(&transaction, 1, unix_time_i64())?;
         let received_at = chrono::DateTime::<chrono::Utc>::from_timestamp(created_at, 0)
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|| format!("unix:{created_at}"));
@@ -2022,6 +2027,17 @@ INSERT INTO sync_lane_inbox(
                     received_at,
                     created_at,
                 ],
+            )
+            .map_err(super::local_state_unavailable)?;
+        transaction.execute("UPDATE sync_lane_inbox SET processing_scope=?2, logical_event_seq=?3,
+            attempt_count=COALESCE((SELECT attempt_count FROM p6_lane_blockers WHERE owner_identity_id=?4 AND event_id=?5),0),
+            processing_error_code=(SELECT last_error_code FROM p6_lane_blockers WHERE owner_identity_id=?4 AND event_id=?5)
+            WHERE input_id=?1", params![input_id,group_did,group_event_seq,owner_identity_id,event_id])
+            .map_err(super::local_state_unavailable)?;
+        transaction
+            .execute(
+                "DELETE FROM p6_lane_blockers WHERE owner_identity_id=?1 AND event_id=?2",
+                params![owner_identity_id, event_id],
             )
             .map_err(super::local_state_unavailable)?;
         transaction
@@ -3701,10 +3717,10 @@ pub(super) fn apply_delta_events_in_transaction(
     })
 }
 
-pub(crate) fn apply_snapshot_v2(
+pub(super) fn validate_snapshot_receive(
     connection: &Connection,
-    input: SnapshotApplyInputV2,
-) -> crate::ImResult<DeltaApplyOutcomeV2> {
+    input: &SnapshotApplyInputV2,
+) -> crate::ImResult<()> {
     validate_required("owner_identity_id", &input.owner_identity_id)?;
     validate_required("owner_did", &input.owner_did)?;
     validate_required("account_id", &input.account_id)?;
@@ -3719,19 +3735,19 @@ pub(crate) fn apply_snapshot_v2(
     validate_required("server_cutoff", &input.server_cutoff)?;
     validate_expected_run_generation(input.expected_run_generation)?;
 
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(super::local_state_unavailable)?;
     require_message_sync_run_generation(
-        &transaction,
+        connection,
         &input.owner_identity_id,
         input.expected_run_generation,
     )?;
-    let binding = load_identity_account_binding(&transaction, &input.owner_identity_id)?
-        .ok_or_else(|| crate::ImError::IdentityBindingConflict {
-            detail: "snapshot requires an active account binding".to_owned(),
+    let binding =
+        load_identity_account_binding(connection, &input.owner_identity_id)?.ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: "snapshot requires an active account binding".to_owned(),
+            }
         })?;
-    if binding.account_id != input.account_id
+    if binding.current_did != input.owner_did
+        || binding.account_id != input.account_id
         || binding.protocol_device_id != input.protocol_device_id
         || binding.device_auth_generation != input.device_auth_generation
     {
@@ -3739,7 +3755,7 @@ pub(crate) fn apply_snapshot_v2(
             detail: "snapshot binding does not match the active account device".to_owned(),
         });
     }
-    match load_message_sync_state_row(&transaction, &input.owner_identity_id)? {
+    match load_message_sync_state_row(connection, &input.owner_identity_id)? {
         Some(current)
             if current.stream_epoch == input.expected_stream_epoch
                 && current.scan_seq == input.expected_scan_seq => {}
@@ -3751,7 +3767,7 @@ pub(crate) fn apply_snapshot_v2(
             ))
         }
     }
-    let recovery = load_recovery_state(&transaction, &input.owner_identity_id)?
+    let recovery = load_recovery_state(connection, &input.owner_identity_id)?
         .ok_or_else(|| sync_error("SYNC_SNAPSHOT_CAS_FAILED", "snapshot recovery is missing"))?;
     if recovery.recovery_id_hash.as_deref() != Some(input.recovery_id_hash.as_str())
         || recovery.snapshot_scan_seq.as_deref() != Some(input.snapshot_scan_seq.as_str())
@@ -3765,6 +3781,18 @@ pub(crate) fn apply_snapshot_v2(
         ));
     }
 
+    Ok(())
+}
+
+pub(crate) fn apply_snapshot_v2(
+    connection: &Connection,
+    input: SnapshotApplyInputV2,
+) -> crate::ImResult<DeltaApplyOutcomeV2> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    validate_snapshot_receive(&transaction, &input)?;
+    let checkpoint = input.clone();
     let snapshot_message_ids = input
         .events
         .iter()
@@ -3954,63 +3982,7 @@ pub(crate) fn apply_snapshot_v2(
         )?;
     }
 
-    if let Some(reconcile) = &input.lane_capability_reconcile {
-        replace_lane_sync_states_in_transaction(
-            &transaction,
-            &input.owner_identity_id,
-            &reconcile.lane_states,
-        )?;
-        record_sync_lane_capability_negotiation_v1a(
-            &transaction,
-            &input.owner_identity_id,
-            &input.device_auth_generation,
-            &reconcile.client_instance_id,
-            &reconcile.negotiated_capabilities_json,
-        )?;
-    }
-
-    transaction
-        .execute(
-            r#"
-INSERT INTO sync_history_scope (
-    owner_identity_id, older_history_excluded, updated_at
-) VALUES (?1, ?2, ?3)
-ON CONFLICT(owner_identity_id) DO UPDATE SET
-    older_history_excluded = excluded.older_history_excluded,
-    updated_at = excluded.updated_at
-"#,
-            params![
-                input.owner_identity_id,
-                i64::from(input.older_history_excluded),
-                now,
-            ],
-        )
-        .map_err(super::local_state_unavailable)?;
-
-    let next_state = MessageSyncState {
-        owner_identity_id: input.owner_identity_id,
-        account_id: input.account_id,
-        protocol_device_id: input.protocol_device_id,
-        device_auth_generation: input.device_auth_generation,
-        stream_epoch: input.stream_epoch,
-        scan_seq: input.snapshot_scan_seq,
-        bootstrap_state: "active".to_owned(),
-        last_server_time: Some(input.server_time),
-        last_success_at: Some(now),
-        last_error_code: None,
-        metadata_json: Some(
-            json!({
-                "mode": "compact_recovery",
-                "older_history_excluded": input.older_history_excluded,
-            })
-            .to_string(),
-        ),
-        updated_at: now,
-    };
-    // Snapshot is the one server-authorized boundary allowed to replace an
-    // epoch/cursor while preserving existing local message rows.
-    upsert_bootstrap_state(&transaction, &next_state)?;
-    complete_active_recovery(&transaction, &next_state)?;
+    commit_snapshot_receive_state(&transaction, &checkpoint)?;
     transaction
         .commit()
         .map_err(super::local_state_unavailable)?;
@@ -4024,7 +3996,72 @@ ON CONFLICT(owner_identity_id) DO UPDATE SET
     })
 }
 
-fn replace_snapshot_ordinary_projection(
+pub(super) fn commit_snapshot_receive_state(
+    connection: &Connection,
+    input: &SnapshotApplyInputV2,
+) -> crate::ImResult<()> {
+    let now = unix_time_i64();
+    if let Some(reconcile) = &input.lane_capability_reconcile {
+        replace_lane_sync_states_in_transaction(
+            connection,
+            &input.owner_identity_id.clone(),
+            &reconcile.lane_states,
+        )?;
+        record_sync_lane_capability_negotiation_v1a(
+            connection,
+            &input.owner_identity_id.clone(),
+            &input.device_auth_generation.clone(),
+            &reconcile.client_instance_id,
+            &reconcile.negotiated_capabilities_json,
+        )?;
+    }
+
+    connection
+        .execute(
+            r#"
+INSERT INTO sync_history_scope (
+    owner_identity_id, older_history_excluded, updated_at
+) VALUES (?1, ?2, ?3)
+ON CONFLICT(owner_identity_id) DO UPDATE SET
+    older_history_excluded = excluded.older_history_excluded,
+    updated_at = excluded.updated_at
+"#,
+            params![
+                input.owner_identity_id.clone(),
+                i64::from(input.older_history_excluded),
+                now,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+
+    let next_state = MessageSyncState {
+        owner_identity_id: input.owner_identity_id.clone(),
+        account_id: input.account_id.clone(),
+        protocol_device_id: input.protocol_device_id.clone(),
+        device_auth_generation: input.device_auth_generation.clone(),
+        stream_epoch: input.stream_epoch.clone(),
+        scan_seq: input.snapshot_scan_seq.clone(),
+        bootstrap_state: "active".to_owned(),
+        last_server_time: Some(input.server_time.clone()),
+        last_success_at: Some(now),
+        last_error_code: None,
+        metadata_json: Some(
+            json!({
+                "mode": "compact_recovery",
+                "older_history_excluded": input.older_history_excluded,
+            })
+            .to_string(),
+        ),
+        updated_at: now,
+    };
+    // Snapshot is the one server-authorized boundary allowed to replace an
+    // epoch/cursor while preserving existing local message rows.
+    upsert_bootstrap_state(connection, &next_state)?;
+    complete_active_recovery(connection, &next_state)?;
+    Ok(())
+}
+
+pub(super) fn replace_snapshot_ordinary_projection(
     connection: &Connection,
     owner_identity_id: &str,
     protocol_device_id: &str,
@@ -5517,7 +5554,7 @@ fn is_direct_binding_canonical_upgrade(
         && next.1.starts_with("dm:peer-scope:v1:")
 }
 
-fn apply_remote_read_state(
+pub(super) fn apply_remote_read_state(
     connection: &Connection,
     owner_identity_id: &str,
     owner_did: &str,
@@ -6543,7 +6580,7 @@ fn canonicalize_message_event_thread_bindings(
     Ok(())
 }
 
-fn group_state_is_stale(
+pub(super) fn group_state_is_stale(
     connection: &Connection,
     group: &super::groups::GroupRecord,
 ) -> crate::ImResult<bool> {
@@ -6593,7 +6630,7 @@ fn metadata_decimal(raw: &str, key: &str) -> crate::ImResult<Option<String>> {
     Ok(Some(value.to_owned()))
 }
 
-fn v2_invalidation(
+pub(super) fn v2_invalidation(
     connection: &Connection,
     owner_identity_id: &str,
     owner_did: &str,
@@ -11173,7 +11210,7 @@ END;
                 row.get::<_, i64>(0)
             })
             .unwrap(),
-            2
+            1
         );
         assert_eq!(
             load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
@@ -11181,7 +11218,7 @@ END;
         );
 
         let second = migrate_legacy_p6_blockers_to_inbox(&db).unwrap();
-        assert_eq!(second.already_migrated, 1);
+        assert_eq!(second.already_migrated, 0);
         assert_eq!(second.repair_required, 1);
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| {
@@ -11189,6 +11226,27 @@ END;
             })
             .unwrap(),
             1
+        );
+        assert_eq!(
+            db.query_row("SELECT logical_event_seq FROM sync_lane_inbox", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "19"
+        );
+        assert_eq!(
+            super::super::sync_inbox::purge_expired(&db, unix_time_i64(), 256)
+                .unwrap()
+                .len(),
+            1
+        );
+        let after_expiry = migrate_legacy_p6_blockers_to_inbox(&db).unwrap();
+        assert_eq!(after_expiry.migrated, 0);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
         );
     }
 

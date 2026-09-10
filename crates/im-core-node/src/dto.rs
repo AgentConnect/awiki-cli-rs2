@@ -868,6 +868,48 @@ pub struct NodeSyncResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[napi(object)]
+pub struct NodeReceiveResult {
+    pub status: String,
+    pub complete: bool,
+    pub events_received: u32,
+    pub pages_fetched: u32,
+    pub messages_hydrated: u32,
+    pub duplicates_skipped: u32,
+    pub older_history_excluded: bool,
+    pub error_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeCommittedIncomingMessage {
+    pub event_id: String,
+    pub logical_message_id: String,
+    pub message: NodeMessage,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeProcessingUpdate {
+    pub event_id: String,
+    pub status: String,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<NodeCommittedIncomingMessage>,
+    pub error_code: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
+pub struct NodeProcessingResult {
+    pub complete: bool,
+    pub pending_count: u32,
+    pub blocked_count: u32,
+    pub discarded_count: u32,
+    pub events_applied: u32,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<NodeCommittedIncomingMessage>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[napi(object)]
 pub struct NodeRealtimeOptions {
     /// Bounded native event buffer. Defaults to 128.
     pub event_buffer: Option<u32>,
@@ -1760,6 +1802,67 @@ pub(crate) fn group_member(member: im_core::groups::GroupMemberResolution) -> No
         did: member.did.as_str().to_owned(),
         handle: member.handle.map(|handle| handle.as_str().to_owned()),
     }
+}
+
+pub(crate) fn receive_result(value: im_core::messages::MessageReceiveOutcome) -> NodeReceiveResult {
+    NodeReceiveResult {
+        status: sync_status(value.status).into(),
+        complete: value.complete,
+        events_received: value.events_received,
+        pages_fetched: value.pages_fetched,
+        messages_hydrated: value.messages_hydrated,
+        duplicates_skipped: value.duplicates_skipped,
+        older_history_excluded: value.older_history_excluded,
+        error_code: value.error_code,
+        warnings: value.warnings,
+    }
+}
+fn committed_incoming(
+    values: Vec<im_core::messages::CommittedIncomingMessage>,
+) -> SafeResult<Vec<NodeCommittedIncomingMessage>> {
+    values
+        .into_iter()
+        .map(|value| {
+            Ok(NodeCommittedIncomingMessage {
+                event_id: value.event_id,
+                logical_message_id: value.logical_message_id,
+                message: message(value.message, None)?,
+            })
+        })
+        .collect()
+}
+pub(crate) fn processing_update(
+    value: im_core::messages::MessageProcessingUpdate,
+) -> SafeResult<NodeProcessingUpdate> {
+    use im_core::messages::MessageProcessingStatus::*;
+    Ok(NodeProcessingUpdate {
+        event_id: value.event_id,
+        status: match value.status {
+            Applied => "applied",
+            Retrying => "retrying",
+            Blocked => "blocked",
+            Discarded => "discarded",
+            ResyncRequired => "resync_required",
+        }
+        .into(),
+        changed_conversation_ids: value.changed_conversation_ids,
+        committed_incoming_messages: committed_incoming(value.committed_incoming_messages)?,
+        error_code: value.error_code,
+    })
+}
+pub(crate) fn processing_result(
+    value: im_core::messages::MessageProcessingOutcome,
+) -> SafeResult<NodeProcessingResult> {
+    Ok(NodeProcessingResult {
+        complete: value.complete,
+        pending_count: value.pending_count,
+        blocked_count: value.blocked_count,
+        discarded_count: value.discarded_count,
+        events_applied: value.events_applied,
+        changed_conversation_ids: value.changed_conversation_ids,
+        committed_incoming_messages: committed_incoming(value.committed_incoming_messages)?,
+        error_code: value.error_code,
+    })
 }
 
 pub(crate) fn sync_result(value: im_core::messages::MessageSyncOutcome) -> NodeSyncResult {

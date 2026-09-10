@@ -105,7 +105,7 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
         "host runtime listener should call the public async realtime service API outside compat"
     );
     assert!(
-        text.contains(".request_sync_async(")
+        text.contains(".request_receive_async(")
             && text.contains("im_core::messages::MessageSyncRequest"),
         "host runtime listener should submit background changes through the public coordinated reliable-sync API"
     );
