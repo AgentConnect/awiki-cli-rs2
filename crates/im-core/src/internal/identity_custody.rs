@@ -201,6 +201,19 @@ pub(crate) async fn provision_registration_identity_async(
     domain: &str,
     local_part: &str,
 ) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity> {
+    let mut transport = crate::internal::transport::CorePlainTransport::new_no_redirect(core);
+    provision_registration_identity_with_transport(core, domain, local_part, &mut transport).await
+}
+
+pub(crate) async fn provision_registration_identity_with_transport<T>(
+    core: &crate::core::ImCore,
+    domain: &str,
+    local_part: &str,
+    transport: &mut T,
+) -> crate::ImResult<crate::internal::identity_registration_pending::PendingRegistrationIdentity>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
     crate::internal::identity_handle_recovery_context::require_registration_admission(
         core,
         &format!("{local_part}.{domain}"),
@@ -297,6 +310,13 @@ pub(crate) async fn provision_registration_identity_async(
             if historical_dids.contains(&descriptor.reference.did) {
                 continue;
             }
+            if registration_identity_is_remotely_retired(transport, &descriptor.reference.did)
+                .await?
+            {
+                // Remote retirement fences reuse, not custody ownership. Retain
+                // the old credentials and let normal registration request Join.
+                continue;
+            }
             matches.push(session);
         }
         if matches.len() > 1 {
@@ -351,6 +371,52 @@ pub(crate) async fn provision_registration_identity_async(
         identity: format!("did:wba:{domain}:user:{local_part}"),
         missing: vec!["external_identity_provider".to_owned()],
     })
+}
+
+/// Read only the exact candidate's authoritative HTTPS document. Server-owned
+/// retirement tombstones may be unsigned; they only deny reuse, never authorize
+/// a successor or an account recovery. Unknown remote state must fail closed.
+pub(crate) async fn registration_identity_is_remotely_retired<T>(
+    transport: &mut T,
+    did: &str,
+) -> crate::ImResult<bool>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
+    let url = crate::internal::discovery::did_document::did_document_url(did)?;
+    let document = match transport
+        .get_json_url(
+            &url,
+            std::collections::BTreeMap::from([(
+                "Accept".to_owned(),
+                "application/json".to_owned(),
+            )]),
+        )
+        .await
+    {
+        Ok(document) => document,
+        Err(crate::ImError::Service {
+            status_code: Some(404),
+            ..
+        }) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if document.get("id").and_then(serde_json::Value::as_str) != Some(did) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if document
+        .get("deactivated")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || document
+            .get("successorDid")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(true);
+    }
+    crate::internal::discovery::did_document::validate_resolved_did_document(did, document)?;
+    Ok(false)
 }
 
 fn registration_identity_stage_error(error: crate::ImError, stage: &'static str) -> crate::ImError {
