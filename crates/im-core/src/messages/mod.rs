@@ -1,5 +1,6 @@
 mod dto;
 mod mention;
+mod processing;
 mod service;
 mod v2_product;
 
@@ -16,15 +17,15 @@ pub use self::dto::{
     LocalHistoryQuery, MarkConversationReadRequest, MarkReadResult, MarkThreadReadRequest,
     MarkThreadReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
     MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
-    MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
-    MessageSendState, MessageSendStateKind, MessageSyncDiagnostics, MessageSyncDirtyDomain,
-    MessageSyncDomainState, MessageSyncDomainStatus, MessageSyncLane, MessageSyncLaneState,
-    MessageSyncMode, MessageSyncOutcome, MessageSyncRequest, MessageSyncRetryState,
-    MessageSyncStatus, MessageTarget, ReadWatermark, ScopedInboxToken,
-    SendConversationPayloadRequest, SendConversationTextRequest, SendMessageRequest,
-    SendMessageResult, SyncConversationAfterRequest, SyncDeltaRequest, SyncDeltaResult,
-    SyncThreadAfterRequest, SyncThreadAfterResult, ThreadMessagePatchSession,
-    ThreadMessageStorePatch, ThreadRef,
+    MessageProcessingStatus, MessageProcessingUpdate, MessageReceiveOutcome, MessageRetryAction,
+    MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy, MessageSendState,
+    MessageSendStateKind, MessageSyncDiagnostics, MessageSyncDirtyDomain, MessageSyncDomainState,
+    MessageSyncDomainStatus, MessageSyncLane, MessageSyncLaneState, MessageSyncMode,
+    MessageSyncOutcome, MessageSyncRequest, MessageSyncRetryState, MessageSyncStatus,
+    MessageTarget, ReadWatermark, ScopedInboxToken, SendConversationPayloadRequest,
+    SendConversationTextRequest, SendMessageRequest, SendMessageResult,
+    SyncConversationAfterRequest, SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest,
+    SyncThreadAfterResult, ThreadMessagePatchSession, ThreadMessageStorePatch, ThreadRef,
 };
 pub(crate) use self::service::{
     normalize_direct_send_result_for_peer_scope, resolve_conversation_send_target,
@@ -36,5 +37,6 @@ pub use self::mention::{
     MessageMention, MessageMentionPayload, MessageMentionRange, MessageMentionRangeUnit,
     MessageMentionRole, MessageMentionSelector, MessageMentionTarget,
 };
+pub use self::processing::MessageProcessingSession;
 pub use self::service::{MessageService, LOCAL_INCOMING_RECOVERY_LIMIT_MAX};
 pub use crate::attachments::AttachmentInput;

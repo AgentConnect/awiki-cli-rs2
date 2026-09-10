@@ -1,7 +1,7 @@
 use super::sync_coordinator::{
     MessageSyncCoordinatorRegistry, MessageSyncExecutor, MessageSyncRequestKind,
 };
-use crate::messages::{MessageSyncOutcome, MessageSyncRequest, MessageSyncStatus};
+use crate::messages::{MessageReceiveOutcome, MessageSyncRequest, MessageSyncStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -12,16 +12,15 @@ fn request(reason: &str) -> MessageSyncRequest {
     }
 }
 
-fn outcome(run: usize, status: MessageSyncStatus) -> MessageSyncOutcome {
-    MessageSyncOutcome {
+fn outcome(run: usize, status: MessageSyncStatus) -> MessageReceiveOutcome {
+    MessageReceiveOutcome {
         status,
-        events_applied: 0,
+        complete: matches!(status, MessageSyncStatus::Idle | MessageSyncStatus::Changed),
+        events_received: 0,
         pages_fetched: 1,
         messages_hydrated: 0,
         duplicates_skipped: 0,
         older_history_excluded: false,
-        changed_conversation_ids: Vec::new(),
-        committed_incoming_messages: Vec::new(),
         error_code: None,
         warnings: vec![format!("test.run.{run}")],
     }

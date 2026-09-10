@@ -10,3 +10,5 @@ pub(crate) mod sync_coordinator;
 #[cfg(test)]
 mod sync_coordinator_tests;
 pub(crate) mod sync_v2;
+pub(crate) mod sync_processing;
+pub(crate) mod sync_dispatcher;

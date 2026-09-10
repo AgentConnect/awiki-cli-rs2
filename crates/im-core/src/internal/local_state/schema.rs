@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 44;
+pub(crate) const SCHEMA_VERSION: i64 = 45;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -1209,6 +1209,7 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
         ensure_terminal_transition_phase_schema(&transaction)?;
         super::display_profile_cache::create_schema(&transaction)?;
         ensure_local_deletion_terminal_schema(&transaction)?;
+        super::sync_inbox::ensure_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1223,12 +1224,14 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .map_err(super::local_state_unavailable)?;
         super::display_profile_cache::create_schema(&transaction)?;
         ensure_local_deletion_terminal_schema(&transaction)?;
+        super::sync_inbox::ensure_schema(&transaction)?;
         if !current_schema_shape_is_complete(&transaction)? {
             return Err(crate::ImError::LocalStateUnavailable {
                 detail: "incomplete display cache schema".to_owned(),
             });
         }
         ensure_local_deletion_terminal_schema(&transaction)?;
+        super::sync_inbox::ensure_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1242,6 +1245,21 @@ fn ensure_schema_version(connection: &Connection) -> crate::ImResult<()> {
             .unchecked_transaction()
             .map_err(super::local_state_unavailable)?;
         ensure_local_deletion_terminal_schema(&transaction)?;
+        super::sync_inbox::ensure_schema(&transaction)?;
+        set_schema_version(&transaction, SCHEMA_VERSION)?;
+        return transaction.commit().map_err(super::local_state_unavailable);
+    }
+    if version == 44 {
+        if !schema_v43_shape_is_complete(connection)? || !local_deletion_terminal_shape(connection)?
+        {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "incomplete schema 44 before unified sync inbox upgrade".to_owned(),
+            });
+        }
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(super::local_state_unavailable)?;
+        super::sync_inbox::ensure_schema(&transaction)?;
         set_schema_version(&transaction, SCHEMA_VERSION)?;
         return transaction.commit().map_err(super::local_state_unavailable);
     }
@@ -1815,7 +1833,23 @@ fn schema_v41_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
 }
 
 fn current_schema_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
-    Ok(schema_v43_shape_is_complete(connection)? && local_deletion_terminal_shape(connection)?)
+    Ok(schema_v43_shape_is_complete(connection)?
+        && local_deletion_terminal_shape(connection)?
+        && table_has_columns(
+            connection,
+            "sync_lane_inbox",
+            &[
+                "processing_scope",
+                "attempt_count",
+                "attempt_token",
+                "attempt_deadline",
+                "last_attempt_at",
+                "next_attempt_at",
+                "processing_error_code",
+            ],
+        )?
+        && has_index(connection, "idx_sync_inbox_due")?
+        && has_index(connection, "idx_sync_inbox_retention")?)
 }
 
 fn local_deletion_terminal_shape(connection: &Connection) -> crate::ImResult<bool> {

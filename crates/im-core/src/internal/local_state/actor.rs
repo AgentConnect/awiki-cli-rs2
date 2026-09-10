@@ -10,6 +10,10 @@ pub(crate) struct LocalStateDb {
 }
 
 enum LocalStateCommand {
+    /// Bounded local operations only: external I/O must finish before enqueue.
+    RunLocal {
+        operation: Box<dyn FnOnce(&mut rusqlite::Connection) + Send>,
+    },
     PrepareDirectSend {
         record: super::messages::MessageRecord,
         reply:
@@ -674,6 +678,21 @@ enum LocalStateCommand {
 }
 
 impl LocalStateDb {
+    pub(crate) async fn run_local<T, F>(&self, operation: F) -> crate::ImResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut rusqlite::Connection) -> crate::ImResult<T> + Send + 'static,
+    {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RunLocal {
+            operation: Box::new(move |connection| {
+                let _ = reply.send(operation(connection));
+            }),
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn ensure_conversation(
         &self,
         owner_identity_id: impl Into<String>,
@@ -2411,6 +2430,7 @@ fn run_actor(
     let mut shutdown_reply = None;
     while let Some(command) = receiver.blocking_recv() {
         match command {
+            LocalStateCommand::RunLocal { operation } => operation(&mut connection),
             LocalStateCommand::CurrentSchemaVersion { reply } => {
                 let result = super::schema::current_schema_version(&connection);
                 let _ = reply.send(result);

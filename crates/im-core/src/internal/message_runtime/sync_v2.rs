@@ -20,6 +20,7 @@ pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     transport: T,
     directory_transport: R,
     run_deadline: StdDuration,
+    on_receive_committed: Option<fn(&crate::core::ImClient)>,
 }
 
 struct SnapshotAccumulatorV3 {
@@ -394,6 +395,57 @@ async fn consume_p5_lane_input(
     input: &crate::internal::local_state::sync_v2::SyncLaneInboxRecord,
     attempt_count: i64,
 ) -> crate::ImResult<crate::internal::local_state::sync_v2::SyncLaneDomainStatus> {
+    consume_p5_lane_input_inner(client, input, attempt_count, None).await
+}
+
+pub(super) async fn process_secure_claim(
+    client: &crate::core::ImClient,
+    claim: &crate::internal::local_state::sync_inbox::InputClaim,
+) -> crate::ImResult<crate::messages::MessageProcessingUpdate> {
+    use crate::internal::local_state::{sync_inbox, sync_v2};
+    let db = client.core_inner().local_state_db().await?;
+    let preparing = claim.clone();
+    db.run_local(move |connection| {
+        let transaction = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        sync_inbox::require_claim(&transaction, &preparing, unix_time_i64())?;
+        let table = match preparing.lane.as_str() { "p5_device" => "sync_p5_input_outcomes", "p6_group" => "sync_p6_input_outcomes", _ => return Err(sync_inbox::error("SYNC_INPUT_INVALID", "unknown secure lane")) };
+        transaction.execute(&format!("DELETE FROM {table} WHERE input_id=?1 AND owner_identity_id=?2 AND status<>'applied'"),
+            rusqlite::params![preparing.input_id, preparing.owner_identity_id]).map_err(crate::internal::local_state::local_state_unavailable)?;
+        transaction.commit().map_err(crate::internal::local_state::local_state_unavailable)
+    }).await?;
+    let input = claim.secure_input()?;
+    let status = match claim.lane.as_str() {
+        "p5_device" if cfg!(feature = "secure-direct") => {
+            consume_p5_lane_input_inner(client, &input, claim.attempt_count, Some(claim)).await?
+        }
+        "p6_group" if cfg!(feature = "group-e2ee") => {
+            return super::sync_processing::process_p6(client, claim).await
+        }
+        _ => return Err(crate::ImError::unsupported("secure-lane-processing")),
+    };
+    if status != sync_v2::SyncLaneDomainStatus::Applied {
+        return Err(sync_inbox::error(
+            "sync.secure_processing_blocked",
+            "secure input requires domain repair",
+        ));
+    }
+    client.emit_committed_local_message_projection("sync_input_processed");
+    Ok(crate::messages::MessageProcessingUpdate {
+        event_id: claim.event_id.clone(),
+        status: crate::messages::MessageProcessingStatus::Applied,
+        changed_conversation_ids: Vec::new(),
+        committed_incoming_messages: Vec::new(),
+        error_code: None,
+    })
+}
+
+async fn consume_p5_lane_input_inner(
+    client: &crate::core::ImClient,
+    input: &crate::internal::local_state::sync_v2::SyncLaneInboxRecord,
+    attempt_count: i64,
+    claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
+) -> crate::ImResult<crate::internal::local_state::sync_v2::SyncLaneDomainStatus> {
     use crate::internal::local_state::sync_v2::{SyncLaneDomainState, SyncLaneDomainStatus};
     use crate::internal::wire::sync_v2::SyncLaneV3;
     let lock_scope = input
@@ -404,7 +456,11 @@ async fn consume_p5_lane_input(
         .unwrap_or("invalid");
     let scope_lock =
         lane_consumer_scope_lock(&input.owner_identity_id, SyncLaneV3::P5Device, lock_scope);
-    let _scope_guard = scope_lock.lock().await;
+    let _scope_guard = if claim.is_none() {
+        Some(scope_lock.lock().await)
+    } else {
+        None
+    };
     let db = client.core_inner().local_state_db().await?;
     if let Some(status) =
         closed_lane_domain_status(&db, &input.owner_identity_id, &input.input_id).await?
@@ -517,6 +573,7 @@ async fn consume_p5_lane_input(
     let event_id = input.event_id.clone();
     let peer_for_commit = peer_scope.clone();
     let raw_payload = input.raw_payload.clone();
+    let commit_claim = claim.cloned();
     let result = crate::internal::secure_direct::v2_product::receive_for_client_scoped_with_commit(
         &client.core_handle(),
         client,
@@ -526,6 +583,10 @@ async fn consume_p5_lane_input(
         expected_peer_did.as_deref(),
         Some(&trusted_delivery),
         move |transaction, outcome| {
+            if let Some(claim) = &commit_claim {
+                crate::internal::local_state::sync_inbox::require_claim(transaction, claim, unix_time_i64())?;
+            }
+
             let own_sync_target = match outcome {
                 crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(
                     projection,
@@ -560,10 +621,44 @@ async fn consume_p5_lane_input(
                     last_error_code: None,
                 },
                 now,
-            )
+            )?;
+            if let Some(claim) = &commit_claim {
+                crate::internal::local_state::sync_inbox::complete_claim(transaction, claim, unix_time_i64())?;
+            }
+            Ok(())
         },
     )
     .await;
+    if let Some(claim) = claim {
+        use crate::internal::secure_direct::v2_product::V2InboundProductOutcome;
+        match result {
+            Err(error) => return Err(error),
+            Ok(V2InboundProductOutcome::Replay | V2InboundProductOutcome::SuppressedControl) => {
+                return Err(sync_error(
+                    "p5.replay_without_commit",
+                    "secure replay has no matching atomic input commit",
+                ));
+            }
+            Ok(_) => {
+                let claim = claim.clone();
+                let scope = peer_scope.clone();
+                db.run_local(move |connection| {
+                    if crate::internal::local_state::sync_inbox::claim_was_completed(connection, &claim)? { return Ok(()); }
+                    let transaction = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+                        .map_err(crate::internal::local_state::local_state_unavailable)?;
+                    crate::internal::local_state::sync_inbox::require_claim(&transaction, &claim, unix_time_i64())?;
+                    crate::internal::local_state::sync_v2::write_sync_lane_domain_state_in_transaction(&transaction,
+                        &SyncLaneDomainState { input_id: claim.input_id.clone(), lane: SyncLaneV3::P5Device,
+                            scope, status: SyncLaneDomainStatus::Applied, retryable: false,
+                            attempt_count: claim.attempt_count, next_retry_at: None,
+                            operation_ref: Some(claim.event_id.clone()), last_error_code: None }, unix_time_i64())?;
+                    crate::internal::local_state::sync_inbox::complete_claim(&transaction, &claim, unix_time_i64())?;
+                    transaction.commit().map_err(crate::internal::local_state::local_state_unavailable)
+                }).await?;
+                return Ok(SyncLaneDomainStatus::Applied);
+            }
+        }
+    }
     match result {
         Ok(crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Replay) => {
             let applied = db
@@ -1223,6 +1318,18 @@ impl<'a, P, T, R> MessageSyncRuntimeV2<'a, P, T, R> {
             transport,
             directory_transport,
             run_deadline: SYNC_RUN_DEADLINE,
+            on_receive_committed: None,
+        }
+    }
+
+    pub(crate) fn with_processing_wakeup(mut self, wake: fn(&crate::core::ImClient)) -> Self {
+        self.on_receive_committed = Some(wake);
+        self
+    }
+
+    fn wake_processing(&self) {
+        if let Some(wake) = self.on_receive_committed {
+            wake(self.client);
         }
     }
 
@@ -1239,8 +1346,84 @@ where
     T: AsyncAuthenticatedRpcTransport,
     R: AsyncRpcTransport,
 {
+    pub(crate) async fn receive_now(
+        mut self,
+        request: crate::messages::MessageSyncRequest,
+    ) -> crate::ImResult<crate::messages::MessageReceiveOutcome> {
+        self.receive_run(request)
+            .await
+            .map(crate::messages::MessageReceiveOutcome::from_receive_run)
+    }
+
+    // Wire-fixture tests inject their directory transport. The production
+    // facade waits on the shared dispatcher outside receive single-flight.
+    #[cfg(test)]
     pub(crate) async fn sync_now(
         mut self,
+        request: crate::messages::MessageSyncRequest,
+    ) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
+        let received = self.receive_run(request).await?;
+        let mut outcome = crate::messages::MessageReceiveOutcome::from_receive_run(received)
+            .compatibility_outcome();
+        let binding = self.client.active_sync_account_binding().await?;
+        let db = self.client.core_inner().local_state_db().await?;
+        loop {
+            let stored = stored_binding(self.client, &binding);
+            let claims = db
+                .run_local(move |connection| {
+                    crate::internal::local_state::sync_inbox::claim_inputs(
+                        connection,
+                        &stored,
+                        unix_time_i64(),
+                        8,
+                    )
+                })
+                .await?;
+            if claims.is_empty() {
+                break;
+            }
+            for claim in claims {
+                if claim.lane != "ordinary" {
+                    let claim = claim.clone();
+                    db.run_local(move |connection| {
+                        crate::internal::local_state::sync_inbox::fail_claim(
+                            connection,
+                            &claim,
+                            "sync.test_secure_deferred",
+                            None,
+                            unix_time_i64(),
+                        )
+                    })
+                    .await?;
+                    continue;
+                }
+                let processed = super::sync_processing::process_ordinary(
+                    self.client,
+                    &claim,
+                    &mut self.directory_transport,
+                )
+                .await?;
+                outcome.events_applied += 1;
+                outcome
+                    .changed_conversation_ids
+                    .extend(processed.changed_conversation_ids);
+                outcome
+                    .committed_incoming_messages
+                    .extend(processed.committed_incoming_messages);
+            }
+        }
+        if self.drain_read_outbox(&db, &binding).await.is_err() {
+            outcome
+                .warnings
+                .push("sync.read_state_writeback_deferred".into());
+        }
+        outcome.changed_conversation_ids.sort();
+        outcome.changed_conversation_ids.dedup();
+        Ok(outcome)
+    }
+
+    async fn receive_run(
+        &mut self,
         request: crate::messages::MessageSyncRequest,
     ) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
         self.session_provider
@@ -1251,7 +1434,7 @@ where
         let run = db
             .begin_message_sync_run(&binding.owner_identity_id, unix_time_i64())
             .await?;
-        wake_sync_lane_consumers(self.client);
+        self.wake_processing();
         let run_started = Instant::now();
         let run_deadline = self.run_deadline;
         let final_result = match tokio::time::timeout(run_deadline, async {
@@ -1267,20 +1450,8 @@ where
                         device_epoch_refresh_attempted = true;
                         self.refresh_session_and_lane_epoch().await?;
                     }
-                    Ok((mut outcome, Some(_error))) if !device_epoch_refresh_attempted => {
-                        self.refresh_session_and_lane_epoch().await?;
-                        let binding = self.client.active_sync_account_binding().await?;
-                        let db = self.client.core_inner().local_state_db().await?;
-                        match self.drain_read_outbox(&db, &binding).await {
-                            Ok(None) => break Ok(outcome),
-                            Ok(Some(error)) => break Err(error),
-                            Err(_) => {
-                                outcome
-                                    .warnings
-                                    .push("sync.read_state_writeback_deferred".to_owned());
-                                break Ok(outcome);
-                            }
-                        }
+                    Ok((outcome, Some(_error))) if !device_epoch_refresh_attempted => {
+                        break Ok(outcome);
                     }
                     Ok((_outcome, Some(error))) => break Err(error),
                     Ok((outcome, None)) => break Ok(outcome),
@@ -1380,22 +1551,6 @@ where
         let db = self.client.core_inner().local_state_db().await?;
         let owner_identity_id = binding.owner_identity_id.clone();
         let mut result = empty_outcome();
-        let pending_peer_dids = db
-            .list_pending_inbound_resolution_peer_dids(
-                owner_identity_id.clone(),
-                PENDING_PERSONA_RESOLUTION_LIMIT,
-            )
-            .await?;
-        let replayed_conversations = self
-            .resolve_unresolved_peer_dids(&db, &binding, pending_peer_dids, &mut result.warnings)
-            .await?;
-        if !replayed_conversations.is_empty() {
-            result
-                .changed_conversation_ids
-                .extend(replayed_conversations);
-            self.client
-                .emit_committed_local_message_projection("sync_v2_identity_replay");
-        }
         let mut state = match db
             .load_message_sync_state(owner_identity_id.clone())
             .await?
@@ -1533,7 +1688,7 @@ where
                     &mut result,
                 )
                 .await?;
-            wake_sync_lane_consumers(self.client);
+            self.wake_processing();
 
             for event in page
                 .events
@@ -1574,97 +1729,44 @@ where
                 hydrated
             };
 
-            let mut verified_system_notifications = BTreeMap::new();
-            for event in page
-                .events
-                .iter()
-                .filter(|event| event.event_type == "system.notification")
-            {
-                let hydrated_projection = hydrated.get(&event.event_id).ok_or_else(|| {
-                    sync_error(
-                        "SYNC_HYDRATION_INCOMPLETE",
-                        "system.notification has no exact hydrated projection",
-                    )
-                })?;
-                let input = prepare_system_notification(
-                    self.client,
-                    &binding,
-                    event,
-                    hydrated_projection,
-                    &mut self.directory_transport,
-                )
-                .await?;
-                verified_system_notifications.insert(event.event_id.clone(), input);
-            }
-
-            let mut public_messages = BTreeMap::new();
-            let apply_events = page
-                .events
-                .iter()
-                .map(|event| {
-                    reduce_event(
-                        self.client,
-                        event,
-                        hydrated.get(&event.event_id),
-                        verified_system_notifications.remove(&event.event_id),
-                        &mut public_messages,
+            let receive_input = crate::internal::local_state::sync_inbox::OrdinaryReceiveBatch {
+                binding: stored_binding(self.client, &binding),
+                client_instance_id: p6_client_instance_id.clone(),
+                expected_run_generation: Some(run_generation),
+                stream_epoch: page.next_cursor.stream_epoch.clone(),
+                expected_scan_seq: state.scan_seq.clone(),
+                next_scan_seq: page.next_cursor.scan_seq.clone(),
+                server_time: page.server_time.clone(),
+                events: page.events.iter().map(|event| {
+                    crate::internal::local_state::sync_inbox::InboxEvent {
+                        event_id: event.event_id.clone(), position: event.event_seq.clone(),
+                        event_type: event.event_type.clone(),
+                        payload: json!({"event": event, "hydrated": hydrated.get(&event.event_id),
+                            "server_time": page.server_time, "source": "live_delta"}),
+                        processing_scope: event.thread_key.clone().unwrap_or_else(|| event.aggregate_id.clone()),
+                        group_did: (event.aggregate_kind == "group").then(|| event.aggregate_id.clone()),
+                    }
+                }).collect(),
+            };
+            let received = db
+                .run_local(move |connection| {
+                    crate::internal::local_state::sync_inbox::receive_ordinary(
+                        connection,
+                        receive_input,
+                        unix_time_i64(),
                     )
                 })
-                .collect::<crate::ImResult<Vec<_>>>()?;
-            let direct_peer_dids = direct_peer_dids_from_events(&apply_events);
-            let resolved_conversations = self
-                .resolve_unresolved_peer_dids(&db, &binding, direct_peer_dids, &mut result.warnings)
                 .await?;
-            result
-                .changed_conversation_ids
-                .extend(resolved_conversations);
-            require_current_sync_run_generation(&db, &binding.owner_identity_id, run_generation)
-                .await?;
-            let outcome = db
-                .apply_sync_delta_v2(crate::internal::local_state::sync_v2::DeltaApplyInputV2 {
-                    owner_identity_id: binding.owner_identity_id.clone(),
-                    expected_run_generation: Some(run_generation),
-                    owner_did: binding.current_did.clone(),
-                    account_id: binding.account_id.clone(),
-                    protocol_device_id: binding.protocol_device_id.clone(),
-                    device_auth_generation: binding.device_auth_generation.clone(),
-                    stream_epoch: page.next_cursor.stream_epoch.clone(),
-                    next_scan_seq: page.next_cursor.scan_seq.clone(),
-                    server_time: page.server_time.clone(),
-                    events: apply_events,
-                })
-                .await?;
-            apply_p4_terminal_events(self.client, &page.events)?;
             result.events_applied = result
                 .events_applied
-                .saturating_add(u32::try_from(outcome.applied_event_ids.len()).unwrap_or(u32::MAX));
+                .saturating_add(received.received as u32);
             result.duplicates_skipped = result
                 .duplicates_skipped
-                .saturating_add(u32::try_from(outcome.duplicate_events).unwrap_or(u32::MAX));
-            append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
-            result
-                .changed_conversation_ids
-                .extend(outcome.invalidation.conversation_ids.clone());
-            for event_id in &outcome.projected_message_event_ids {
-                if let Some(message) = public_messages.get(event_id) {
-                    if message.direction == crate::messages::MessageDirection::Incoming {
-                        result.committed_incoming_messages.push(
-                            crate::messages::CommittedIncomingMessage {
-                                event_id: event_id.clone(),
-                                logical_message_id: message.id.as_str().to_owned(),
-                                source: "live_delta".to_owned(),
-                                direction: crate::messages::MessageDirection::Incoming,
-                                message: message.clone(),
-                            },
-                        );
-                    }
-                }
+                .saturating_add(received.duplicates as u32);
+            if self.on_receive_committed.is_some() {
+                super::sync_dispatcher::publish_removed(self.client, &received.removed);
             }
-            for notification in &outcome.committed_system_notifications {
-                self.client
-                    .emit_committed_system_notification(notification.clone());
-            }
-            super::sync::emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            self.wake_processing();
             state.scan_seq = page.next_cursor.scan_seq;
             state.stream_epoch = page.next_cursor.stream_epoch;
             state.bootstrap_state = "active".to_owned();
@@ -1701,19 +1803,7 @@ where
                     } else {
                         crate::messages::MessageSyncStatus::Changed
                     };
-                let device_epoch_rejection = match self.drain_read_outbox(&db, &binding).await {
-                    Ok(error) => error,
-                    Err(_) => {
-                        result
-                            .warnings
-                            .push("sync.read_state_writeback_deferred".to_owned());
-                        None
-                    }
-                };
-                return Ok((
-                    best_effort_cleanup(&db, &state, result).await,
-                    device_epoch_rejection,
-                ));
+                return Ok((best_effort_cleanup(&db, &state, result).await, None));
             }
         }
     }
@@ -1849,7 +1939,7 @@ where
                         match db.commit_sync_lane_handoff(input).await {
                             Ok(
                                 crate::internal::local_state::sync_v2::SyncLaneHandoffOutcome::Inserted,
-                            ) => {}
+                            ) => { result.events_applied = result.events_applied.saturating_add(1); }
                             Ok(
                                 crate::internal::local_state::sync_v2::SyncLaneHandoffOutcome::Duplicate,
                             ) => {
@@ -1940,31 +2030,15 @@ where
         dids: Vec<String>,
         warnings: &mut Vec<String>,
     ) -> crate::ImResult<Vec<String>> {
-        let dids = db
-            .filter_unresolved_peer_dids(binding.owner_identity_id.clone(), dids)
-            .await?;
-        let mut conversations = Vec::new();
-        for did in dids {
-            let did = crate::ids::Did::parse(&did)?;
-            let lookup =
-                crate::internal::directory_runtime::lookup_handle_by_did_for_projection_async(
-                    self.client,
-                    &mut self.directory_transport,
-                    &did,
-                )
-                .await;
-            let Ok(lookup) = lookup else {
-                push_identity_resolution_deferred(warnings);
-                continue;
-            };
-            match crate::directory::project_handle_lookup_async(self.client, &lookup).await {
-                Ok(()) => conversations.push(lookup.direct_conversation_id()),
-                Err(_) => push_identity_resolution_deferred(warnings),
-            }
-        }
-        conversations.sort();
-        conversations.dedup();
-        Ok(conversations)
+        resolve_unresolved_peers(
+            self.client,
+            db,
+            binding,
+            &mut self.directory_transport,
+            dids,
+            warnings,
+        )
+        .await
     }
 
     async fn drain_read_outbox(
@@ -3055,7 +3129,7 @@ fn message_conversation_id(
     .conversation_id
 }
 
-fn direct_peer_dids_from_events(
+pub(super) fn direct_peer_dids_from_events(
     events: &[crate::internal::local_state::sync_v2::DeltaApplyEventV2],
 ) -> Vec<String> {
     events
@@ -3245,7 +3319,7 @@ fn validate_system_notification_event_contract(
     Ok(())
 }
 
-async fn prepare_system_notification<R>(
+pub(super) async fn prepare_system_notification<R>(
     client: &crate::core::ImClient,
     binding: &crate::identity::ActiveSyncAccountBinding,
     event: &crate::internal::wire::sync_v2::SyncEventV2,
@@ -3357,7 +3431,7 @@ where
     )
 }
 
-fn reduce_event(
+pub(super) fn reduce_event(
     client: &crate::core::ImClient,
     event: &crate::internal::wire::sync_v2::SyncEventV2,
     hydrated_message: Option<&Value>,
@@ -4081,7 +4155,7 @@ fn validate_page_binding(
 }
 
 #[cfg(feature = "group-e2ee")]
-fn apply_p4_terminal_events(
+pub(super) fn apply_p4_terminal_events(
     client: &crate::core::ImClient,
     events: &[crate::internal::wire::sync_v2::SyncEventV2],
 ) -> crate::ImResult<()> {
@@ -4125,11 +4199,62 @@ fn apply_p4_terminal_events(
 }
 
 #[cfg(not(feature = "group-e2ee"))]
-fn apply_p4_terminal_events(
+pub(super) fn apply_p4_terminal_events(
     _client: &crate::core::ImClient,
     _events: &[crate::internal::wire::sync_v2::SyncEventV2],
 ) -> crate::ImResult<()> {
     Ok(())
+}
+
+pub(super) async fn resolve_unresolved_peers<R: AsyncRpcTransport>(
+    client: &crate::core::ImClient,
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    directory_transport: &mut R,
+    dids: Vec<String>,
+    warnings: &mut Vec<String>,
+) -> crate::ImResult<Vec<String>> {
+    let dids = db
+        .filter_unresolved_peer_dids(binding.owner_identity_id.clone(), dids)
+        .await?;
+    let mut conversations = Vec::new();
+    for did in dids {
+        let did = crate::ids::Did::parse(&did)?;
+        let lookup = crate::internal::directory_runtime::lookup_handle_by_did_for_projection_async(
+            client,
+            directory_transport,
+            &did,
+        )
+        .await;
+        let Ok(lookup) = lookup else {
+            push_identity_resolution_deferred(warnings);
+            continue;
+        };
+        match crate::directory::project_handle_lookup_async(client, &lookup).await {
+            Ok(()) => conversations.push(lookup.direct_conversation_id()),
+            Err(_) => push_identity_resolution_deferred(warnings),
+        }
+    }
+    conversations.sort();
+    conversations.dedup();
+    Ok(conversations)
+}
+
+pub(super) fn stored_binding(
+    client: &crate::core::ImClient,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+) -> crate::internal::local_state::sync_v2::IdentityAccountBinding {
+    crate::internal::local_state::sync_v2::IdentityAccountBinding {
+        owner_identity_id: binding.owner_identity_id.clone(),
+        account_id: binding.account_id.clone(),
+        handle_scope: client.handle().map(|handle| handle.as_str().to_owned()),
+        current_did: binding.current_did.clone(),
+        protocol_device_id: binding.protocol_device_id.clone(),
+        identity_generation: binding.identity_generation.clone(),
+        device_auth_generation: binding.device_auth_generation.clone(),
+        created_at: unix_time_i64(),
+        updated_at: unix_time_i64(),
+    }
 }
 
 fn wire_identity(client: &crate::core::ImClient) -> crate::internal::wire::common::WireIdentity {
@@ -4446,6 +4571,12 @@ fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
 
 #[cfg(test)]
 mod tests {
+    mod dispatcher_tests {
+        include!("sync_dispatcher_tests.rs");
+    }
+    mod receive_tests {
+        include!("sync_receive_tests.rs");
+    }
     use super::*;
 
     fn accumulator_manifest(total_pages: u64, total_items: u64) -> SnapshotAccumulatorV3 {

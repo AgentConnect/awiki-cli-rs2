@@ -935,6 +935,21 @@ where
         &self,
         input: V2IncomingApplicationInput,
     ) -> crate::ImResult<V2DecryptOutput> {
+        self.decrypt_incoming_application_inner(input, false)
+    }
+
+    pub(crate) fn decrypt_received_incoming_application(
+        &self,
+        input: V2IncomingApplicationInput,
+    ) -> crate::ImResult<V2DecryptOutput> {
+        self.decrypt_incoming_application_inner(input, true)
+    }
+
+    fn decrypt_incoming_application_inner(
+        &self,
+        input: V2IncomingApplicationInput,
+        received: bool,
+    ) -> crate::ImResult<V2DecryptOutput> {
         self.ensure_current_device(&input.recipient_did, &input.recipient_device_id)?;
         group_incoming_notification_v2(input.meta.clone(), input.body.clone(), input.auth.clone())
             .map_err(map_v2_wire_error)?;
@@ -1004,7 +1019,7 @@ where
             content_type: input.meta.content_type,
             created_at: context.created_at,
         };
-        self.runtime.decrypt(V2DecryptInput {
+        let input = V2DecryptInput {
             recipient_did: input.recipient_did,
             recipient_device_id: input.recipient_device_id,
             originating_meta,
@@ -1013,7 +1028,12 @@ where
             now: input.now,
             draft_extension_negotiated: input.draft_extension_negotiated,
             request_id: input.request_id,
-        })
+        };
+        if received {
+            self.runtime.decrypt_received(input)
+        } else {
+            self.runtime.decrypt(input)
+        }
     }
 
     fn ensure_current_device(&self, did: &str, device_id: &str) -> crate::ImResult<()> {

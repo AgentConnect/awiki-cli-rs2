@@ -2343,7 +2343,7 @@ where
                 return Ok(V2InboundProductOutcome::ConsumedControl);
             }
             crate::internal::identity_root_import_completion::RootInboundInterceptOutcome::Replay => {
-                return Ok(V2InboundProductOutcome::Replay);
+                return Ok(V2InboundProductOutcome::ConsumedControl);
             }
             crate::internal::identity_root_import_completion::RootInboundInterceptOutcome::SuppressedForHydration => {
                 return Ok(V2InboundProductOutcome::SuppressedControl);

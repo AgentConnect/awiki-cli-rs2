@@ -1307,23 +1307,20 @@ Reliable sync 补充：
   或达到 100 页上限均失败但不回滚已提交消息。该接口与服务端旧 Inbox RPC 均保留，不返回
   远端消息页、不接纳 delegated/Legacy 身份，也绝不能补齐普通消息。
 
-- `sync_now(MessageSyncRequest { reason, limit })` 是 V2/V3 ordinary、P5 与 P6 的统一可靠主链路。
+- Schema 45 引入 `receive_now_async(MessageSyncRequest)`：只返回接收结果，完整输入写入统一 `sync_lane_inbox` 与各流接收游标提交即完成；处理失败不映射为接收失败。消息处理完成由独立处理结果和本地投影交付，不能从接收结果推断 UI、通知或已读已经完成。`sync_now` 为兼容入口，在接收完成后于接收协调器之外等待有界处理结果；同一表、同一处理器，不恢复第二套旧消费者。App/Listener/Daemon 的主接收流程使用新入口。
+- 下列 `sync_now(MessageSyncRequest { reason, limit })` 的既有业务完成约束由兼容入口维持；Schema 45 的新接收边界以上述定义为准。
   account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome
   只暴露高层状态、计数、changed conversation IDs、已提交 incoming message 和诊断。
   `sync.bootstrap` 除 ordinary binding/Group baseline/cursor 外，还可协商
   `lanes.p5_device.v1` / `lanes.p6_group.v1` 及其独立 cursor。已有 V2 本地状态只在升级或 device
   auth generation 改变后补一次 capability bootstrap；随后 ordinary/P5/P6 由同一条
-  `sync.delta` 拉取，未协商 lane 时 request/response 保持旧 V2 形状。每页 ordinary receipt、
-  exact-hydrated projection/cursor 均在单个 SQLite 事务提交；必需 hydration、schema、
-  canonical identity 或 route 解析失败时整页回滚，cursor 与 receipt 不变。
+  `sync.delta` 拉取，未协商 lane 时 request/response 保持旧 V2 形状。每页完整 ordinary 输入与接收 cursor 在单个 SQLite 事务提交；必需 hydration 或接收校验失败时该接收批次回滚。业务 canonical identity、route 归约与 projection 由 Core 逐条处理，单条失败不回退已提交 cursor。
   `message.get_batch` 服务端使用 16 MiB hard response budget；Core 固定按请求顺序每 8 个
   event ID 分批，为 compact JSON 封装与转义保留余量。任一批次出现 unavailable 时整页不应用。
   bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
   的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
   device 稳定标识派生。
-  P5 `committed_seq` 只有在既有 Direct E2EE 解密/ratchet/replay 状态与消息或 durable backlog
-  均成功持久化后才推进；毒密文只停住 P5 lane，ordinary/P6 继续。P6 按
-  `group_did + group_event_seq` 幂等，单群失败进入 per-group blocker 而聚合 cursor 继续推进。
+  P5/P6 `committed_seq` 按既有 durable handoff 契约在完整输入落盘后推进；Direct E2EE 和 MLS 处理位于该事务之后。P6 继续按 `group_did + group_event_seq` 业务幂等；业务失败仅记录在相应输入上。
   lane error 仅产生 lane warning/retry，不得升级为 `AuthRevoked`；ordinary lane 对 E2EE/MLS
   discriminator 的既有拒绝不变。
   `group.member_changed` / `group.profile_updated` 在同一事务中同时提交 Group 状态和一条已读的

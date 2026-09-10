@@ -1197,22 +1197,23 @@ account allowlist, device cohort, or percentage rollout input. The P5/P6
 product gates still control cryptographic admission; bootstrap capabilities
 control whether transport moves from legacy Inbox/per-group catch-up to lanes.
 
+### 统一持久接收与逐条处理（Schema 45）
+
+Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承诺完整输入已保存并与对应接收游标原子提交。普通事件、P5、P6 共用 `sync_lane_inbox`，必要正文 hydration 与账号/设备/来源校验先完成；业务归约、解密、Persona projection、通知和读状态回写不作为接收完成条件。旧 `sync_now` 保留显式兼容等待，使用同一接收表及 Core 处理器，等待发生在接收协调器之外；App、Listener 和 Daemon 主接收链路采用新入口。消息事实、逐条错误和处理后通知通过独立处理结果及现有本地投影机制交付。
+
+Core 原子领取并按类型有限并发分发，处理器只执行单条事件。不同类型、不同会话以及同一会话无真实前置依赖的事件不等待前一条成功；实际密钥/MLS 依赖保留。短事务检查当前身份与领取尝试，业务事实与完成证据一起提交。后台唤醒合并，启动及周期维护恢复未完成输入；重复 Core 实例共享同一库的处理额度。
+
+接收表每个本地数据库最多 16,384 条，覆盖最多 10,000 items 的完整 compact snapshot 及本地基线记录；加入新记录时按首次本地接收时间淘汰最老记录，腾位删除、新记录与游标一起提交。记录在首次接收 48 小时后过期，重试不续期，失败和处理中记录也适用。清理先提交则旧处理尝试不能再提交；业务先提交则清理只移除接收暂存，不删除已提交消息事实。过期/淘汰是放弃尚未完成的本地处理，不伪造业务成功、已读或 ACK。保留期内的 pending 数据在迁移、重启及 epoch/snapshot 切换后仍可恢复。
+
+普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。更早的业务缺口不能被更晚已展示消息的累计已读自动跨越。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
+
 `im-core` Rust/SQLite owns the global reliable checkpoint:
 
-- `messages.sync_now()` / Dart `client.messages.syncNow(...)` are the unified
-  ordinary/P5/P6 main path. Rust derives account/device binding internally,
-  bootstraps a tail-only cursor and Group baseline when required, exactly
-  hydrates every required `message.created` through `message.get_batch`, and
-  commits event receipts, canonical projection changes, and the next v2 cursor
-  in one SQLite transaction. Required hydration, schema, identity, or route
-  failure rolls back the whole page and does not write a receipt or advance the
-  cursor. Durable read-state writeback is drained only after the final delta
-  page commits; its transport, decode, validation, or local ACK failure is
-  recorded for retry and cannot replace the committed delta outcome. Although
-  the wire method accepts at most 100 event IDs and the service
-  enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
-  headroom for compact-JSON framing and escaping; any unavailable item in any
-  chunk aborts the full delta page.
+- `messages.receive_now_async()` is the reception boundary described above.
+  Ordinary event envelopes and exact hydrated payloads commit to the inbox with
+  the next v2 cursor; a failed receive transaction advances neither. Independent
+  processors own per-event projection and business errors. Required hydration
+  remains ordered chunks of 8 under the service's 16 MiB response budget.
 - `sync.bootstrap` advertises `lanes.p5_device.v1` / `lanes.p6_group.v1` and a
   cursor per advertised lane. Core persists the negotiated generation even
   when the capability set is empty, so an upgraded V2 database performs one
@@ -1220,18 +1221,11 @@ control whether transport moves from legacy Inbox/per-group catch-up to lanes.
   generation change invalidates that marker and revalidates the P5 stream
   epoch. After negotiation, one `sync.delta` request carries ordinary plus all
   enabled lanes; without lanes its body remains the exact legacy V2 shape.
-- P5 applies an exact-device delivery through the existing Direct E2EE v2
-  decrypt/ratchet/replay and durable projection pipeline. Reliable lane input
-  carries its server `accepted_at` and exact route as a trusted delivery context,
-  so Root-transfer control is intercepted before ordinary message projection.
-  Only after that
-  succeeds may delta write the P5 receipt and advance both `scan_seq` and
-  `committed_seq`. A poison delivery leaves the P5 cursor unchanged for retry
-  but does not stop ordinary or P6. P6 uses aggregate per-device sequence for
-  transport and `group_did + group_event_seq` for logical idempotency; a failed
-  group is recorded as a durable per-group blocker while aggregate progress
-  and other groups continue. Lane errors remain lane-local retry/warning state
-  and never become `AuthRevoked`.
+- P5/P6 transport inputs use durable handoff before consumer execution. P5
+  retains the Direct E2EE decrypt/ratchet/replay pipeline; P6 retains MLS and
+  per-group logical idempotency. A consumer failure never retracts the durable
+  handoff or blocks unrelated ordinary/secure input. Transport and business
+  errors remain distinct from terminal account authorization revocation.
 - Lane admission is bidirectional and closed: P5 accepts only Direct E2EE v2,
   P6 accepts only Group E2EE v2 delivery/control shapes, and the ordinary event
   parser retains its existing E2EE/MLS discriminator rejection unchanged.
