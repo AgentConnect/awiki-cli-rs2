@@ -223,8 +223,8 @@ test('realtime facade requires an identity and returns only the stable redacted 
   )
 })
 
-test('loads native v14 candidate Join, device-management, Root Transfer, and device rejoin methods', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v14-'))
+test('loads native v15 candidate Join, device-management, Root Transfer, and device rejoin methods', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-device-v15-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const client = await openImCoreNodeClient(options(root))
   t.after(() => client.close())
@@ -250,6 +250,23 @@ test('loads native v14 candidate Join, device-management, Root Transfer, and dev
       && error.code === 'identity_required'
       && !error.message.includes(root),
   )
+})
+
+test('receive and processing facades enforce the native identity boundary', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'awiki-im-core-node-processing-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const client = await openImCoreNodeClient(options(root))
+  t.after(() => client.close())
+  for (const operation of [
+    () => client.receiveNow({ reason: 'unit_test' }),
+    () => client.openProcessingSession(),
+    () => client.pendingProcessing(100),
+    () => client.retryProcessing('event-test'),
+    () => client.localIncomingRecovery({ limit: 100 }),
+  ]) {
+    await assert.rejects(operation(), error => error instanceof ImCoreNodeError
+      && error.code === 'identity_required' && !error.message.includes(root))
+  }
 })
 
 test('mail facade shares the identity gate and exposes only stable redacted errors', async t => {

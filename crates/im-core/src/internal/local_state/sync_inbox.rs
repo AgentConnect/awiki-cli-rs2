@@ -546,8 +546,11 @@ pub(crate) fn claim_inputs(
             FROM sync_lane_inbox AS candidate
             WHERE owner_identity_id=?1 AND account_id_snapshot=?2 AND device_id_snapshot=?3
               AND closed_at IS NULL AND created_at>?4
-              AND next_attempt_at IS NOT NULL AND next_attempt_at<=?5
-              AND (attempt_token IS NULL OR attempt_deadline<=?5)
+              AND ((next_attempt_at IS NOT NULL AND next_attempt_at<=?5)
+                OR (processing_error_code='sync.processing_timeout' AND attempt_token IS NOT NULL
+                    AND NOT EXISTS(SELECT 1 FROM sync_input_leases lease WHERE lease.attempt_token=candidate.attempt_token)))
+              AND (attempt_token IS NULL OR attempt_deadline<=?5
+                   OR NOT EXISTS(SELECT 1 FROM sync_input_leases lease WHERE lease.attempt_token=candidate.attempt_token))
               AND (lane NOT IN ('ordinary','baseline') OR NOT EXISTS (
                 SELECT 1 FROM sync_lane_inbox AS baseline
                 WHERE baseline.owner_identity_id=candidate.owner_identity_id
@@ -626,7 +629,7 @@ pub(crate) fn claim_inputs(
         transaction
             .execute(
             "UPDATE sync_lane_inbox SET attempt_token=?2, attempt_deadline=?3,
-             attempt_count=attempt_count+1, last_attempt_at=?4, processing_error_code=NULL WHERE input_id=?1",
+             attempt_count=attempt_count+1, last_attempt_at=?4, next_attempt_at=COALESCE(next_attempt_at,?4), processing_error_code=NULL WHERE input_id=?1",
                 params![input_id, token, now.saturating_add(CLAIM_SECONDS), now],
             )
             .map_err(local_state_unavailable)?;
@@ -870,6 +873,12 @@ pub(crate) fn complete_claim(db: &Connection, claim: &InputClaim, now: i64) -> c
             params![claim.owner_identity_id, claim.lane, claim.event_id, claim.lane_epoch, claim.position,
                 claim.group_did, logical_sequence, now, hash],
         ).map_err(local_state_unavailable)?;
+    }
+    if matches!(claim.lane.as_str(), "p5_device" | "p6_group") {
+        db.execute("UPDATE sync_lane_inbox SET next_attempt_at=?3 WHERE owner_identity_id=?1 AND input_id<>?2 AND closed_at IS NULL AND attempt_token IS NULL
+            AND processing_scope=(SELECT processing_scope FROM sync_lane_inbox WHERE input_id=?2)
+            AND processing_error_code IN ('p5.session_pending','anp.direct.e2ee.max_skip_exceeded','group.e2ee.epoch_conflict','group.e2ee.state_not_ready')",
+            params![claim.owner_identity_id, claim.input_id, now]).map_err(local_state_unavailable)?;
     }
     db.execute("DELETE FROM sync_lane_inbox WHERE input_id=?1 AND owner_identity_id=?2 AND attempt_token=?3",
         params![claim.input_id, claim.owner_identity_id, claim.token]).map_err(local_state_unavailable)?;

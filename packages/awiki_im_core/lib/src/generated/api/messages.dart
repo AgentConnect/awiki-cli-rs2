@@ -133,6 +133,33 @@ Future<DartSyncDeltaResult> syncDelta({
   request: request,
 );
 
+/// Local committed facts for restart or missed-update recovery; no network receive.
+Future<DartMessagePage> localIncomingRecovery({
+  required ArcDartImClient client,
+  required int limit,
+  String? cursor,
+}) => RustLib.instance.api.crateApiMessagesLocalIncomingRecovery(
+  client: client,
+  limit: limit,
+  cursor: cursor,
+);
+
+Future<List<DartMessageProcessingUpdate>> pendingProcessing({
+  required ArcDartImClient client,
+  required int limit,
+}) => RustLib.instance.api.crateApiMessagesPendingProcessing(
+  client: client,
+  limit: limit,
+);
+
+Future<int> retryProcessing({
+  required ArcDartImClient client,
+  required String eventId,
+}) => RustLib.instance.api.crateApiMessagesRetryProcessing(
+  client: client,
+  eventId: eventId,
+);
+
 Future<DartMessageReceiveOutcome> receiveNow({
   required ArcDartImClient client,
   required DartMessageSyncRequest request,
@@ -140,6 +167,13 @@ Future<DartMessageReceiveOutcome> receiveNow({
   client: client,
   request: request,
 );
+
+/// Reload only committed local authorization; never wait for Inbox or Root work.
+/// The Dart lifecycle uses the result to restart a stale native realtime session.
+Future<bool> refreshLocalSyncAuthorization({required ArcDartImClient client}) =>
+    RustLib.instance.api.crateApiMessagesRefreshLocalSyncAuthorization(
+      client: client,
+    );
 
 Future<ArcDartMessageProcessingSession> openProcessingSession({
   required ArcDartImClient client,

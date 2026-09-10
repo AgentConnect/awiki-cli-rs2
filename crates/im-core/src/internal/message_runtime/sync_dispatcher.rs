@@ -556,6 +556,23 @@ impl SyncDispatcher {
                     .await
                     .is_ok();
                 let discarded = !recorded && code != "sync.processing_timeout";
+                if !recorded {
+                    let stale = claim.clone();
+                    let retained_or_completed = db.run_local(move |connection| {
+                        let retained: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sync_lane_inbox WHERE input_id=?1)", [&stale.input_id], |row| row.get(0))
+                            .map_err(crate::internal::local_state::local_state_unavailable)?;
+                        Ok(retained || sync_inbox::claim_was_completed(connection, &stale)?)
+                    }).await.unwrap_or(true);
+                    if retained_or_completed {
+                        let finished = claim.clone();
+                        let _ = db
+                            .run_local(move |connection| {
+                                sync_inbox::release_claim_lease(connection, &finished)
+                            })
+                            .await;
+                        return;
+                    }
+                }
                 self.publish(
                     owner,
                     MessageProcessingUpdate {

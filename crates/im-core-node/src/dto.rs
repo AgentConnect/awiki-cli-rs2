@@ -1804,6 +1804,23 @@ pub(crate) fn group_member(member: im_core::groups::GroupMemberResolution) -> No
     }
 }
 
+pub(crate) fn incoming_recovery_page(
+    page: im_core::messages::IncomingMessageRecoveryPage,
+) -> SafeResult<NodePageOfMessages> {
+    Ok(NodePageOfMessages {
+        items: page
+            .items
+            .into_iter()
+            .map(|item| message(item.message, None))
+            .collect::<SafeResult<Vec<_>>>()?,
+        next_cursor: page
+            .next_page_token
+            .map(|token| token.to_persisted_cursor().map_err(SafeError::from_im))
+            .transpose()?,
+        has_more: page.has_more,
+    })
+}
+
 pub(crate) fn receive_result(value: im_core::messages::MessageReceiveOutcome) -> NodeReceiveResult {
     NodeReceiveResult {
         status: sync_status(value.status).into(),

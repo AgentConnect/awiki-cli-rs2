@@ -182,6 +182,24 @@ fn equivalent_same_owner_refresh_does_not_report_authorization_change() {
 }
 
 #[test]
+fn a_late_pre_root_refresh_cannot_replace_newer_authorization() {
+    let fixture = ClientFixture::new();
+    let current = fixture.client(ClientSpec {
+        device_auth_generation: "10",
+        management_ready: true,
+        ..ClientSpec::default()
+    });
+    let old = fixture.client(ClientSpec {
+        device_auth_generation: "9",
+        ..ClientSpec::default()
+    });
+    assert!(matches!(
+        current.refresh_runtime_from(old),
+        Err(crate::ImError::IdentityBindingConflict { .. })
+    ));
+}
+
+#[test]
 fn refresh_rejects_different_core_owner_did_account_and_device() {
     let fixture = ClientFixture::new();
     let other_fixture = ClientFixture::new();

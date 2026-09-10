@@ -892,35 +892,32 @@ snapshot count is exposed to Dart. `syncDelta` remains a separate v1
 compatibility facade. Message edit, recall, delete, tombstone, Push, and
 E2EE/MLS multi-device synchronization remain outside this stage.
 
-`syncNow` 的 ordinary account stream 明确不包含 Direct E2EE/P5 ciphertext。Native Dart
-wrapper 会先重放已落盘的 Root 导入收尾并重载同一 stable identity；在 P5 gate
-开启时，再使用 exact-device、
-`body.security_profile=direct-e2ee` 的本域 secure hydration，再在 Core 内重新加载同一
-stable identity 的 client，最后执行 ordinary `syncNow`；这确保 Root 导入推进设备认证代次后
-普通同步不会继续使用旧 client。Rust CLI 前台 Inbox 遵循相同顺序。
-该“重新加载”在 Dart bridge 中不是无条件替换：Core 先验证同一 Core、owner、DID、账号和
-Protocol Device，再把新授权 runtime 绑定到原有 conversation/message/system-notification
-Store。由此，刷新前已建立的 Patch session 保持同一 Store 和单调版本；任何 scope 不一致都
-fail closed。
-secure hydration 在每页本地提交后只 ACK 已成功消费的 P5 raw delivery，并有 100 页硬上限；
-ACK/收敛失败保留已提交本地数据但不返回完整前台成功。
-该窄化方法不是 ordinary/Legacy Inbox fallback，也不新增独立 Dart public API；它是
-`MessageApi.syncNow` 内部的 Core-owned 前置阶段。Flutter
-不得把空 local projection 当成是否需要 E2EE hydration 的启发式判断。
+Schema 45 将 ordinary/P5/P6 完整输入汇入同一个 Core 私有 inbox。`receiveNow` 在完整输入与
+对应接收游标原子落盘后返回；Core dispatcher 在该边界之外逐条处理 canonical identity、
+Root/P5、MLS、projection 和已读发送。单条失败只影响对应输入，不能回退接收游标或占住下一轮
+接收。输入统一保留 48 小时，达到全表 16,384 条上限时淘汰最旧输入；淘汰不是业务成功。
 
-AWiki Me 默认启用 `syncNow`，并对所有合法账号/设备 binding 使用同一协议；Dart SDK 不暴露
-账号 allowlist、设备 cohort 或百分比 rollout 参数。显式关闭只用于全局应急回滚，P5/P6
-E2EE 的独立默认关闭开关不受影响。
+AWiki Me 的主接收流程使用 `receiveNow`，界面、通知与 Push 回执使用独立处理结果及已提交本地
+投影。`syncNow` 保留兼容入口：先接收，再在接收协调器之外进行最多 25 秒的业务完成等待。
+P5/P6 capability、legacy secure-Inbox fallback 及其各自业务 ACK 继续由 Core 管理。
 
-Expected public shape:
+需要观察这一轮业务结果时，必须在接收前打开 session；同一 session 选择 `updates` 或
+`waitUntilSettled()` 之一，并在结束时 `close()`。长期 UI 订阅与单轮完成等待使用各自 session。
 
 ```dart
-final outcome = await client.messages.syncNow(
-  const MessageSyncRequest(
-    limit: 100,
-    reason: 'app_resume',
-  ),
-);
+final processing = await client.messages.openProcessingSession();
+try {
+  final received = await client.messages.receiveNow(
+    const MessageSyncRequest(limit: 100, reason: 'app_resume'),
+  );
+  // received.complete 只表示接收完成。业务等待不占接收 slot。
+  if (received.complete) {
+    final processed = await processing.waitUntilSettled();
+    // 只有 processed.complete 和对应的 committed facts 能支持业务成功。
+  }
+} finally {
+  await processing.close();
+}
 
 final page = await client.messages.syncConversationAfter(
   SyncConversationAfterRequest(
@@ -935,10 +932,10 @@ final page = await client.messages.syncConversationAfter(
 final diagnostics = await client.messages.syncDiagnostics();
 ```
 
-`syncNow` semantics:
+`receiveNow` 与兼容 `syncNow` semantics:
 
-- 同一 native Core 内，同一 `ownerIdentityId` 的并发 `syncNow` 由 Core single-flight
-  coordinator 合并。第一个调用执行完整同步，后续调用等待并共享该 outcome，不创建第二个
+- 同一 native Core 内，同一 `ownerIdentityId` 的并发接收由 Core single-flight
+  coordinator 合并。第一个调用执行接收，后续调用共享接收 outcome，不创建第二个
   `runGeneration`。后台 realtime/hint 调度产生的新变化由 Rust host 的内部请求入口合并为最多一轮
   follow-up；Dart API 形态不变，也不暴露 coordinator、waiter 或 generation。一个 Dart caller
   取消等待不会取消 Core 持有的公共同步。同一进程重新打开、且绑定相同 local state root 的
@@ -955,22 +952,20 @@ final diagnostics = await client.messages.syncDiagnostics();
 - Rust exactly hydrates all required `message.created` events through
   `message.get_batch` in ordered chunks of 8, leaving compact-JSON
   framing/escaping headroom under the service's 16 MiB hard response budget,
-  then atomically commits receipts, canonical local projections, and the next
-  cursor only after all chunks are complete.
+  then atomically commits complete inbox inputs and the next receive cursor only after all chunks
+  are complete. Business receipts and canonical local projections commit per input afterwards.
 - Required `group.member_changed` and `group.profile_updated` events atomically
   commit both Group state and one read `awiki.group.system_event.v1` timeline
   message. Its canonical `<group_did>:<group_event_seq>` ID makes local,
   realtime, v1, and v2 arrival order idempotent. Flutter reads the result from
   the normal local timeline; it does not synthesize or merge a second event.
-- Required hydration, schema, owner mismatch, or non-resolution route failure
-  leaves both receipt and cursor unchanged. A peer that is only
-  `identity_unresolved` is different: Core atomically stores the message and
-  remote-thread binding in the durable resolution backlog together with the
-  receipt/cursor advance, then retries authoritative DID-to-Handle resolution
-  on later sync calls.
+- Required hydration, schema or receive-owner validation failure leaves the receive batch and
+  cursor unchanged. Canonical route or wire-identity failure happens after reception and retains
+  that input with a stable processing error. Core retries authoritative DID-to-Handle resolution
+  through its existing backlog outside reception; unrelated messages continue processing.
 - A compact-recovery response is handled inside the same call:
   delta/bootstrap → process-local opaque token → Schema 3 manifest and opaque-page collection →
-  strict complete-package validation → one atomic merge → post-anchor delta. The snapshot merges current Direct/Group
+  strict complete-package validation → atomic inbox/baseline handoff → post-anchor delta. The snapshot merges current Direct/Group
   read state, active Group state, and recent ordinary messages without deleting
   older local messages. The successful call ends in the existing
   `MessageSyncStatus.changed` or `MessageSyncStatus.idle`. A bounded ordinary-history suffix is
@@ -995,11 +990,19 @@ final diagnostics = await client.messages.syncDiagnostics();
   match in SQLite. Snapshot decoding is closed-schema, rejects missing/reordered/mixed pages,
   duplicate event IDs/sequences, page/section/manifest digest or count conflict, invalid keyset order,
   and pre-cutoff messages. Dart never chooses or recomputes the 10,000-item/64-MiB/100-page policy.
-- `committedIncomingMessages` contains only incoming messages whose projection
+- `MessageProcessingUpdate.committedIncomingMessages` (and the compatibility outcome) contains
+  only incoming ordinary/P5/P6 messages whose projection
   transaction committed, with `CommittedMessageSource.liveDelta`; realtime
   hints, snapshot hydration, and Group system timeline records never appear in
   this list.
+- `pendingProcessing(limit: 100)` 返回当前仍保留的输入处理状态，最大 256 条；
+  `retryProcessing(eventId)` 只唤醒同 owner 的现存非活动输入，不复活已淘汰输入。
+  stream 的 `resyncRequired` 表示需要重读 Core 本地投影；`localIncomingRecovery(limit: 100,
+  cursor: ...)` 按稳定顺序读取已提交 incoming facts。该 opaque cursor 仅用于本地分页，不能
+  充当服务端 sync cursor，也不能跨 owner/device 复用。普通 Push 必须核对其消息引用对应的
+  committed fact；队列为空或接收成功本身不足以 ACK。
 - Local read advancement and durable outbox enqueue are one SQLite transaction.
+  A failed older input does not pause read advancement to a later visible message.
   Unsent entries coalesce to their maximum watermark; an in-flight payload is
   immutable and a higher watermark creates a successor. Startup changes stale
   in-flight rows to retryable. A service response or authenticated remote
@@ -1216,7 +1219,8 @@ if (capability.runnerExposed) {
 WebSocket remains an `im-core` internal transport concern. Transport details such as WebSocket URLs, raw frames, ping/pong, request IDs, bearer headers, and dispatch queues are internal to `im-core` and must not become Dart public API. App code should configure only `AwikiImCoreConfig.transportPolicy` and consume `client.events` / `client.connectionStates`.
 
 `AwikiImClient` owns one serialized logical Realtime lifecycle. `start`,
-`stop`, `dispose`, and the secure-Inbox prelude of `syncNow` cannot overlap.
+`stop`, `dispose`, and the compatibility secure-Inbox prelude of `syncNow` cannot overlap.
+The new receive path does not hold this lifecycle lock while waiting for business processing.
 When Core reports a real authorization-context change, the SDK stops the old
 native session and starts one replacement with the same `RealtimeOptions`,
 while preserving the public event streams and logical `RealtimeSession`

@@ -1289,8 +1289,8 @@ impl MessageService<'_> {
 
 Reliable sync 补充：
 
-- `local_hydrated_incoming_recovery_async` 是 Daemon crash compensation 的 Rust-only
-  本地读取边界。它只接受 `limit` 和 Core 签发的 opaque typed page token；owner、account、
+- `local_hydrated_incoming_recovery_async` 是 Daemon crash compensation 及 Dart/Node missed-update recovery 共用的
+  本地读取边界。Dart/Node 分别通过 `localIncomingRecovery` 返回现有 message page DTO。它只接受 `limit` 和 Core 签发的 opaque typed page token；owner、account、
   DID、device 和 generation 全部从 exact active binding 派生，Legacy/Hosted fail closed。
   page 只含 hydrated incoming typed `Message`，按稳定 oldest-first keyset 顺序返回
   `items/next_page_token/has_more`，单页 `limit` 为 `1..=1000`。Token 对外字段私有，绑定
@@ -1308,6 +1308,13 @@ Reliable sync 补充：
   远端消息页、不接纳 delegated/Legacy 身份，也绝不能补齐普通消息。
 
 - Schema 45 引入 `receive_now_async(MessageSyncRequest)`：只返回接收结果，完整输入写入统一 `sync_lane_inbox` 与各流接收游标提交即完成；处理失败不映射为接收失败。消息处理完成由独立处理结果和本地投影交付，不能从接收结果推断 UI、通知或已读已经完成。`sync_now` 为兼容入口，在接收完成后于接收协调器之外等待有界处理结果；同一表、同一处理器，不恢复第二套旧消费者。App/Listener/Daemon 的主接收流程使用新入口。
+- `watch_processing_updates()` 创建 owner-scoped `MessageProcessingSession`。在接收前订阅，
+  选择 `next_async(client)` 的 update stream 或 `wait_async(client)` 的独立 25 秒有界等待；
+  `close()` 仅关闭观察，不取消 Core 业务处理。Update 状态为 `applied/retrying/blocked/discarded/
+  resync_required`，只在提交后包含 changed conversation IDs 和 incoming facts。
+  `pending_processing_async(limit)` 返回最多 256 条保留输入的安全状态；
+  `retry_processing_async(event_id)` 仅重试现存、非活动、同 owner 输入。它们不提供 cursor 写入、
+  原始密文或已淘汰输入恢复接口。lag/restart 后通过已有本地 projection/recovery API 重读事实。
 - 下列 `sync_now(MessageSyncRequest { reason, limit })` 的既有业务完成约束由兼容入口维持；Schema 45 的新接收边界以上述定义为准。
   account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome
   只暴露高层状态、计数、changed conversation IDs、已提交 incoming message 和诊断。
@@ -1338,7 +1345,7 @@ Reliable sync 补充：
   清理失败不改变已经返回的同步成功语义。
 - `sync_now` 在一次调用内闭合 compact recovery：
   delta（或 existing-device bootstrap）→ 只存在于 Rust 进程栈的不透明 token →
-  Schema 3 manifest/opaque pages 全量收集与严格校验 → 单次原子 snapshot merge →
+  Schema 3 manifest/opaque pages 全量收集与严格校验 → 单次原子完整输入与 baseline handoff →
   post-anchor delta。成功只返回既有 `changed` / `idle`；普通历史触及 10,000 items、64 MiB 或
   100 pages 仍是成功，并只增加产品安全的 `older_history_excluded=true`；必需状态或单 item
   超限返回稳定 capacity error code；

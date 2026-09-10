@@ -1057,6 +1057,9 @@ export interface ImCoreNodeClient {
   removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   receiveNow(input?: SyncOptions): Promise<ReceiveResult>
+  localIncomingRecovery(input?: PageInput): Promise<Page<NodeMessage>>
+  pendingProcessing(limit?: number): Promise<ProcessingUpdate[]>
+  retryProcessing(eventId: string): Promise<number>
   openProcessingSession(): Promise<ProcessingSession>
   /** Starts the single Core-owned realtime session for this client. */
   startRealtime(input?: RealtimeOptions): Promise<RealtimeSession>

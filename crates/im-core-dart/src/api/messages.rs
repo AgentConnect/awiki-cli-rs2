@@ -480,16 +480,69 @@ pub async fn sync_delta(
         .map_err(DartImError::from)
 }
 
+/// Local committed facts for restart or missed-update recovery; no network receive.
+pub async fn local_incoming_recovery(
+    client: &Arc<crate::api::client::DartImClient>,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<DartMessagePage, DartImError> {
+    let inner = client.clone_inner()?;
+    let page = inner
+        .messages()
+        .local_hydrated_incoming_recovery_async(im_core::messages::IncomingMessageRecoveryQuery {
+            limit,
+            page_token: cursor
+                .as_deref()
+                .map(im_core::messages::IncomingMessageRecoveryPageToken::from_persisted_cursor)
+                .transpose()
+                .map_err(DartImError::from)?,
+        })
+        .await
+        .map_err(DartImError::from)?;
+    Ok(DartMessagePage {
+        items: page
+            .items
+            .into_iter()
+            .map(|item| item.message.into())
+            .collect(),
+        next_cursor: page
+            .next_page_token
+            .map(|token| token.to_persisted_cursor())
+            .transpose()
+            .map_err(DartImError::from)?,
+        has_more: page.has_more,
+    })
+}
+
+pub async fn pending_processing(
+    client: &Arc<crate::api::client::DartImClient>,
+    limit: u32,
+) -> Result<Vec<DartMessageProcessingUpdate>, DartImError> {
+    client
+        .clone_inner()?
+        .messages()
+        .pending_processing_async(limit)
+        .await
+        .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
+pub async fn retry_processing(
+    client: &Arc<crate::api::client::DartImClient>,
+    event_id: String,
+) -> Result<u32, DartImError> {
+    client
+        .clone_inner()?
+        .messages()
+        .retry_processing_async(event_id)
+        .await
+        .map_err(DartImError::from)
+}
+
 pub async fn receive_now(
     client: &Arc<crate::api::client::DartImClient>,
     request: DartMessageSyncRequest,
 ) -> Result<DartMessageReceiveOutcome, DartImError> {
-    let previous = client.clone_inner()?;
-    let (refreshed, _) = previous
-        .reload_local_authorization_async()
-        .await
-        .map_err(DartImError::from)?;
-    client.replace_inner(&previous.current_identity().id, refreshed)?;
     let inner = client.clone_inner()?;
     inner
         .messages()
@@ -500,6 +553,20 @@ pub async fn receive_now(
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+/// Reload only committed local authorization; never wait for Inbox or Root work.
+/// The Dart lifecycle uses the result to restart a stale native realtime session.
+pub async fn refresh_local_sync_authorization(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<bool, DartImError> {
+    let _guard = client.lock_runtime_refresh().await;
+    let previous = client.clone_inner()?;
+    let (refreshed, _) = previous
+        .reload_local_authorization_async()
+        .await
+        .map_err(DartImError::from)?;
+    client.replace_inner(&previous.current_identity().id, refreshed)
 }
 
 /// A session subscribes before reception and has exactly one consuming mode:
@@ -584,15 +651,6 @@ pub async fn wait_message_processing(
         _ = wait_for_patch_stream_cancel(&mut cancel) => Err(DartImError::object_closed("message processing session")),
         result = updates.wait_async(&inner) => result.map(Into::into).map_err(DartImError::from),
     };
-    if result.is_ok() {
-        let (refreshed, _) = inner
-            .reload_local_authorization_async()
-            .await
-            .map_err(DartImError::from)?;
-        session
-            .client
-            .replace_inner(&inner.current_identity().id, refreshed)?;
-    }
     updates.close();
     result
 }

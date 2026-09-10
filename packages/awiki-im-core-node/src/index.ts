@@ -288,6 +288,10 @@ class RustImCoreNodeClient implements ImCoreNodeClient {
     return call(() => this.native.removeGroupMember(input))
   }
 
+  public localIncomingRecovery(input?: PageInput): Promise<Page<NodeMessage>> { return call(() => this.native.localIncomingRecovery(input)) }
+  public pendingProcessing(limit?: number): Promise<ProcessingUpdate[]> { return call(() => this.native.pendingProcessing(limit)) }
+  public retryProcessing(eventId: string): Promise<number> { return call(() => this.native.retryProcessing(eventId)) }
+
   public receiveNow(input?: SyncOptions): Promise<ReceiveResult> {
     return call(() => this.native.receiveNow(input))
   }

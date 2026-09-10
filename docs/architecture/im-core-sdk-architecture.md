@@ -1205,6 +1205,8 @@ Core 原子领取并按类型有限并发分发，处理器只执行单条事件
 
 接收表每个本地数据库最多 16,384 条，覆盖最多 10,000 items 的完整 compact snapshot 及本地基线记录；加入新记录时按首次本地接收时间淘汰最老记录，腾位删除、新记录与游标一起提交。记录在首次接收 48 小时后过期，重试不续期，失败和处理中记录也适用。清理先提交则旧处理尝试不能再提交；业务先提交则清理只移除接收暂存，不删除已提交消息事实。过期/淘汰是放弃尚未完成的本地处理，不伪造业务成功、已读或 ACK。保留期内的 pending 数据在迁移、重启及 epoch/snapshot 切换后仍可恢复。
 
+协商后的 Schema 3 WebSocket inline 输入保留为拉取提示，普通消息与 P5/P6 均通过 HTTP 统一接收表处理。WebSocket 不再先行写普通投影、绕过逐条领取或完成证据；旧的非协商 transport 兼容边界保持由既有协议门禁控制。
+
 普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。按用户 2026-09-10 的决定，累计已读继续按已展示并读过的后续消息推进，不等待更早输入处理成功；例如 102 处理失败、103 已读时，允许本地已读与服务端累计已读推进到 103。102 仍保留独立的处理失败状态，已读推进不构成它的业务处理成功证据。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
 
 `im-core` Rust/SQLite owns the global reliable checkpoint:

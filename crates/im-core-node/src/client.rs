@@ -1695,6 +1695,78 @@ impl NativeImCoreNodeClient {
     }
 
     #[napi(catch_unwind)]
+    pub async fn local_incoming_recovery(
+        &self,
+        input: Option<NodePageInput>,
+    ) -> napi::Result<NodePageOfMessages> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                let input = input.unwrap_or(NodePageInput {
+                    cursor: None,
+                    limit: None,
+                });
+                let cursor = input
+                    .cursor
+                    .as_deref()
+                    .map(im_core::messages::IncomingMessageRecoveryPageToken::from_persisted_cursor)
+                    .transpose()
+                    .map_err(SafeError::from_im)?;
+                let page = operation
+                    .client()?
+                    .messages()
+                    .local_hydrated_incoming_recovery_async(
+                        im_core::messages::IncomingMessageRecoveryQuery {
+                            limit: input.limit.unwrap_or(100),
+                            page_token: cursor,
+                        },
+                    )
+                    .await
+                    .map_err(SafeError::from_im)?;
+                crate::dto::incoming_recovery_page(page)
+            }
+            .await,
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn pending_processing(
+        &self,
+        limit: Option<u32>,
+    ) -> napi::Result<Vec<NodeProcessingUpdate>> {
+        napi_result(
+            async {
+                let operation = self.inner.operation().await?;
+                operation
+                    .client()?
+                    .messages()
+                    .pending_processing_async(limit.unwrap_or(100))
+                    .await
+                    .map_err(SafeError::from_im)?
+                    .into_iter()
+                    .map(crate::dto::processing_update)
+                    .collect()
+            }
+            .await,
+        )
+    }
+    #[napi(catch_unwind)]
+    pub async fn retry_processing(&self, event_id: String) -> napi::Result<u32> {
+        napi_result(
+            async {
+                self.inner
+                    .operation()
+                    .await?
+                    .client()?
+                    .messages()
+                    .retry_processing_async(event_id)
+                    .await
+                    .map_err(SafeError::from_im)
+            }
+            .await,
+        )
+    }
+
+    #[napi(catch_unwind)]
     pub async fn receive_now(
         &self,
         input: Option<NodeSyncOptions>,

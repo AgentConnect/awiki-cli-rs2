@@ -236,11 +236,12 @@ pub(crate) async fn process_p6(
     let db = client.core_inner().local_state_db().await?;
     let committed_claim = claim.clone();
     let committing_client = client.clone();
-    let changed_conversations = db.run_local(move |connection| {
+    let (changed_conversations, committed_messages) = db.run_local(move |connection| {
         let transaction = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         sync_inbox::require_claim(&transaction, &committed_claim, now())?;
         let mut conversations = Vec::new();
+        let mut committed = Vec::new();
         match prepared {
             Prepared::Message(message) => {
                 let mut projected = super::read::project_prepared_p6_incoming(&committing_client, message, true)?;
@@ -252,6 +253,7 @@ pub(crate) async fn process_p6(
                 for record in records {
                     let record = crate::internal::local_state::inbound_resolution_backlog::canonicalize_inbound_message(&transaction, record)?;
                     conversations.push(record.conversation_id.clone());
+                    committed.push(super::conversations::message_from_record(&record)?);
                     crate::internal::local_state::messages::upsert_message(&transaction, &record)?;
                 }
                 if let Some(manifest) = manifest {
@@ -262,7 +264,7 @@ pub(crate) async fn process_p6(
         }
         sync_inbox::complete_claim(&transaction, &committed_claim, now())?;
         transaction.commit().map_err(crate::internal::local_state::local_state_unavailable)?;
-        Ok(conversations)
+        Ok((conversations, committed))
     }).await?;
     if let (Some(runtime), Some(message_id), Some(group_did)) = (
         cleanup_runtime,
@@ -281,7 +283,17 @@ pub(crate) async fn process_p6(
         event_id: claim.event_id.clone(),
         status: MessageProcessingStatus::Applied,
         changed_conversation_ids: changed_conversations,
-        committed_incoming_messages: Vec::new(),
+        committed_incoming_messages: committed_messages
+            .into_iter()
+            .filter(|message| message.direction == crate::messages::MessageDirection::Incoming)
+            .map(|message| crate::messages::CommittedIncomingMessage {
+                event_id: claim.event_id.clone(),
+                logical_message_id: message.id.as_str().to_owned(),
+                source: "live_delta".into(),
+                direction: message.direction.clone(),
+                message,
+            })
+            .collect(),
         error_code: None,
     })
 }

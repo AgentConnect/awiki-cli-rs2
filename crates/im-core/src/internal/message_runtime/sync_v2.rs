@@ -197,10 +197,6 @@ fn require_snapshot_item_after(
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RealtimeInlineMessageApplyOutcome {
     NotApplicable,
-    Applied {
-        message: crate::messages::Message,
-        local_scan_seq: Option<String>,
-    },
     Deferred,
 }
 
@@ -209,24 +205,7 @@ pub(crate) fn apply_realtime_inline_message_v3(
     client: &crate::core::ImClient,
     notification: &Value,
 ) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
-    if crate::internal::realtime::notification::parse_inline_sync_event_v3(notification)?
-        .is_some_and(|inline| {
-            inline.lane != crate::internal::realtime::notification::InlineSyncLaneV3::Ordinary
-        })
-    {
-        return Ok(RealtimeInlineMessageApplyOutcome::Deferred);
-    }
-    let Some((message, input)) = prepare_realtime_inline_message_v3(client, notification)? else {
-        return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
-    };
-    let connection = crate::internal::local_state::open_writable(
-        &client.core_inner().sdk_paths().local_state.sqlite_path,
-    )?;
-    finish_realtime_inline_message_v3(
-        client,
-        message,
-        crate::internal::local_state::sync_v2::apply_realtime_message_v3(&connection, input)?,
-    )
+    validate_realtime_inline_hint(client, notification)
 }
 
 #[cfg(feature = "sqlite")]
@@ -234,153 +213,61 @@ pub(crate) async fn apply_realtime_inline_message_v3_async(
     client: &crate::core::ImClient,
     notification: &Value,
 ) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
+    validate_realtime_inline_hint(client, notification)
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_realtime_inline_hint(
+    client: &crate::core::ImClient,
+    notification: &Value,
+) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
     let Some(inline) =
         crate::internal::realtime::notification::parse_inline_sync_event_v3(notification)?
     else {
         return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
     };
-    if inline.lane != crate::internal::realtime::notification::InlineSyncLaneV3::Ordinary {
-        return apply_realtime_e2ee_lane_v3_async(client, inline).await;
+    if let Some(event) = inline.ordinary_event.as_ref() {
+        let context = client.sync_account_context()?;
+        if event.account_id != context.account_id
+            || event
+                .recipient_device_id
+                .as_deref()
+                .is_some_and(|device| device != context.protocol_device_id)
+        {
+            return Err(sync_error(
+                "SYNC_ACCOUNT_BINDING_MISMATCH",
+                "realtime sync event does not match the active account device",
+            ));
+        }
+        let projection_id = inline
+            .projection
+            .get("id")
+            .or_else(|| inline.projection.get("message_id"))
+            .and_then(Value::as_str);
+        if projection_id != Some(event.aggregate_id.as_str())
+            || event.payload.get("message_id").and_then(Value::as_str)
+                != Some(event.aggregate_id.as_str())
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "realtime message projection conflicts with its event aggregate",
+            ));
+        }
     }
-    let Some((message, input)) = prepare_realtime_inline_message_v3(client, notification)? else {
-        return Ok(RealtimeInlineMessageApplyOutcome::NotApplicable);
-    };
-    let outcome = client
-        .core_inner()
-        .local_state_db()
-        .await?
-        .apply_realtime_message_v3(input)
-        .await?;
-    finish_realtime_inline_message_v3(client, message, outcome)
-}
-
-#[cfg(feature = "sqlite")]
-async fn apply_realtime_e2ee_lane_v3_async(
-    client: &crate::core::ImClient,
-    inline: crate::internal::realtime::notification::InlineSyncEventV3,
-) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
-    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
-    apply_realtime_e2ee_lane_v3_with_directory_async(client, inline, &mut directory_transport).await
-}
-
-#[cfg(feature = "sqlite")]
-async fn apply_realtime_e2ee_lane_v3_with_directory_async<R>(
-    client: &crate::core::ImClient,
-    inline: crate::internal::realtime::notification::InlineSyncEventV3,
-    directory_transport: &mut R,
-) -> crate::ImResult<RealtimeInlineMessageApplyOutcome>
-where
-    R: AsyncRpcTransport,
-{
-    // V1-B keeps HTTP sync as the sole durable lane source. Inline P5/P6
-    // hydration is explicitly deferred; the notification remains only a pull
-    // hint and never advances crypto/domain state ahead of sync_lane_inbox.
-    let _ = (client, inline, directory_transport);
+    // All negotiated streams use the same durable HTTP receive boundary.
+    // An inline frame is a pull hint; it cannot race a second projection path
+    // ahead of an inbox claim and its atomic completion evidence.
     Ok(RealtimeInlineMessageApplyOutcome::Deferred)
 }
 
-#[cfg(feature = "sqlite")]
-fn prepare_realtime_inline_message_v3(
+#[cfg(all(test, feature = "sqlite"))]
+async fn apply_realtime_e2ee_lane_v3_with_directory_async<R: AsyncRpcTransport>(
     client: &crate::core::ImClient,
-    notification: &Value,
-) -> crate::ImResult<
-    Option<(
-        crate::messages::Message,
-        crate::internal::local_state::sync_v2::RealtimeMessageApplyInputV3,
-    )>,
-> {
-    let Some(inline) =
-        crate::internal::realtime::notification::parse_inline_sync_event_v3(notification)?
-    else {
-        return Ok(None);
-    };
-    if inline.lane != crate::internal::realtime::notification::InlineSyncLaneV3::Ordinary {
-        return Ok(None);
-    }
-    let event = inline
-        .ordinary_event
-        .as_ref()
-        .expect("ordinary inline event carries its frozen event");
-    let context = client.sync_account_context()?;
-    if event.account_id != context.account_id
-        || event
-            .recipient_device_id
-            .as_deref()
-            .is_some_and(|device_id| device_id != context.protocol_device_id)
-    {
-        return Err(sync_error(
-            "SYNC_ACCOUNT_BINDING_MISMATCH",
-            "realtime sync event does not match the active account device",
-        ));
-    }
-    let projection_id = inline
-        .projection
-        .get("id")
-        .or_else(|| inline.projection.get("message_id"))
-        .and_then(Value::as_str);
-    if projection_id != Some(event.aggregate_id.as_str())
-        || event.payload.get("message_id").and_then(Value::as_str)
-            != Some(event.aggregate_id.as_str())
-    {
-        return Err(sync_error(
-            "SYNC_INVALID_PAGE",
-            "realtime message projection conflicts with its event aggregate",
-        ));
-    }
-    let stream_epoch = event.stream_epoch.clone();
-    let mut public_messages = BTreeMap::new();
-    let event = reduce_event(
-        client,
-        event,
-        Some(&inline.projection),
-        None,
-        &mut public_messages,
-    )?;
-    let message = public_messages.remove(&event.event_id).ok_or_else(|| {
-        sync_error(
-            "SYNC_INVALID_PAGE",
-            "realtime message reducer did not produce a public projection",
-        )
-    })?;
-    Ok(Some((
-        message,
-        crate::internal::local_state::sync_v2::RealtimeMessageApplyInputV3 {
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            account_id: context.account_id,
-            protocol_device_id: context.protocol_device_id,
-            device_auth_generation: context.device_auth_generation,
-            stream_epoch,
-            event,
-        },
-    )))
-}
-
-#[cfg(feature = "sqlite")]
-fn finish_realtime_inline_message_v3(
-    client: &crate::core::ImClient,
-    message: crate::messages::Message,
-    outcome: crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3,
+    inline: crate::internal::realtime::notification::InlineSyncEventV3,
+    directory_transport: &mut R,
 ) -> crate::ImResult<RealtimeInlineMessageApplyOutcome> {
-    match outcome {
-        crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::Applied {
-            local_scan_seq,
-            invalidation,
-        } => {
-            super::sync::emit_committed_sync_invalidation(client, &invalidation);
-            client.emit_committed_local_message_projection("sync_v2_realtime_fast_path");
-            Ok(RealtimeInlineMessageApplyOutcome::Applied {
-                message,
-                local_scan_seq: Some(local_scan_seq),
-            })
-        }
-        crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::Duplicate {
-            ..
-        }
-        | crate::internal::local_state::sync_v2::RealtimeMessageApplyOutcomeV3::HintOnly {
-            ..
-        } => Ok(RealtimeInlineMessageApplyOutcome::Deferred),
-    }
+    let _ = (client, inline, directory_transport);
+    Ok(RealtimeInlineMessageApplyOutcome::Deferred)
 }
 
 #[cfg(test)]
@@ -397,7 +284,7 @@ async fn consume_p5_lane_input(
     input: &crate::internal::local_state::sync_v2::SyncLaneInboxRecord,
     attempt_count: i64,
 ) -> crate::ImResult<crate::internal::local_state::sync_v2::SyncLaneDomainStatus> {
-    consume_p5_lane_input_inner(client, input, attempt_count, None).await
+    consume_p5_lane_input_inner(client, input, attempt_count, None, None).await
 }
 
 pub(super) async fn process_secure_claim(
@@ -417,9 +304,18 @@ pub(super) async fn process_secure_claim(
         transaction.commit().map_err(crate::internal::local_state::local_state_unavailable)
     }).await?;
     let input = claim.secure_input()?;
+    let committed_messages =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::<crate::messages::Message>::new()));
     let status = match claim.lane.as_str() {
         "p5_device" if cfg!(feature = "secure-direct") => {
-            consume_p5_lane_input_inner(client, &input, claim.attempt_count, Some(claim)).await?
+            consume_p5_lane_input_inner(
+                client,
+                &input,
+                claim.attempt_count,
+                Some(claim),
+                Some(committed_messages.clone()),
+            )
+            .await?
         }
         "p6_group" if cfg!(feature = "group-e2ee") => {
             return super::sync_processing::process_p6(client, claim).await
@@ -432,12 +328,37 @@ pub(super) async fn process_secure_claim(
             "secure input requires domain repair",
         ));
     }
+    let messages = committed_messages
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let changed = messages
+        .iter()
+        .filter_map(|message| {
+            message
+                .metadata
+                .conversation_identity
+                .as_ref()
+                .map(|identity| identity.conversation_id.clone())
+        })
+        .collect();
+    let incoming = messages
+        .into_iter()
+        .filter(|message| message.direction == crate::messages::MessageDirection::Incoming)
+        .map(|message| crate::messages::CommittedIncomingMessage {
+            event_id: claim.event_id.clone(),
+            logical_message_id: message.id.as_str().to_owned(),
+            source: "live_delta".into(),
+            direction: message.direction.clone(),
+            message,
+        })
+        .collect();
     client.emit_committed_local_message_projection("sync_input_processed");
     Ok(crate::messages::MessageProcessingUpdate {
         event_id: claim.event_id.clone(),
         status: crate::messages::MessageProcessingStatus::Applied,
-        changed_conversation_ids: Vec::new(),
-        committed_incoming_messages: Vec::new(),
+        changed_conversation_ids: changed,
+        committed_incoming_messages: incoming,
         error_code: None,
     })
 }
@@ -447,6 +368,7 @@ async fn consume_p5_lane_input_inner(
     input: &crate::internal::local_state::sync_v2::SyncLaneInboxRecord,
     attempt_count: i64,
     claim: Option<&crate::internal::local_state::sync_inbox::InputClaim>,
+    committed_messages: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::messages::Message>>>>,
 ) -> crate::ImResult<crate::internal::local_state::sync_v2::SyncLaneDomainStatus> {
     use crate::internal::local_state::sync_v2::{SyncLaneDomainState, SyncLaneDomainStatus};
     use crate::internal::wire::sync_v2::SyncLaneV3;
@@ -613,6 +535,9 @@ async fn consume_p5_lane_input_inner(
             if let Some((record, attachment_manifest_cache)) =
                 super::read::p5_lane_projection_record(client, &raw_payload, outcome)?
             {
+                if let Some(messages) = &committed_messages {
+                    messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(super::conversations::message_from_record(&record)?);
+                }
                 crate::internal::local_state::messages::upsert_messages_with_touched(
                     transaction,
                     &[record],
@@ -7761,7 +7686,7 @@ END;
     }
 
     #[tokio::test]
-    async fn realtime_inline_v3_reuses_sync_reducer_and_commits_without_reliable_receipt() {
+    async fn realtime_inline_v3_defers_projection_to_the_unified_receive_queue() {
         let fixture = SyncSnapshotFixture::new("realtime-inline-v3");
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
@@ -7796,21 +7721,7 @@ END;
         let outcome = apply_realtime_inline_message_v3_async(&client, &notification)
             .await
             .unwrap();
-        assert!(matches!(
-            outcome,
-            RealtimeInlineMessageApplyOutcome::Applied {
-                message,
-                local_scan_seq
-            } if message.id.as_str() == "msg_realtime_11"
-                && matches!(
-                    message.body,
-                    crate::messages::MessageBodyView::Text {
-                        ref text,
-                        kind: crate::messages::MessageKind::Text,
-                    } if text == "zero RTT"
-                )
-                && local_scan_seq.as_deref() == Some("10")
-        ));
+        assert_eq!(outcome, RealtimeInlineMessageApplyOutcome::Deferred);
         let db = client.core_inner().local_state_db().await.unwrap();
         let state = db
             .load_message_sync_state(binding.owner_identity_id.clone())
@@ -7833,13 +7744,13 @@ END;
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT content FROM messages
+                    "SELECT COUNT(*) FROM messages
                      WHERE json_extract(metadata, '$.sync_event_id') = 'sev2g_realtime_11'",
                     [],
-                    |row| row.get::<_, String>(0),
+                    |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            "zero RTT"
+            0
         );
     }
 

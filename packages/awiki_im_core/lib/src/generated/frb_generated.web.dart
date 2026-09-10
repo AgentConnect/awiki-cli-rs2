@@ -1271,6 +1271,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_dart_message_metadata_attribute(dynamic raw);
 
   @protected
+  List<DartMessageProcessingUpdate>
+  dco_decode_list_dart_message_processing_update(dynamic raw);
+
+  @protected
   List<DartMessageSyncDirtyDomain>
   dco_decode_list_dart_message_sync_dirty_domain(dynamic raw);
 
@@ -2951,6 +2955,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartMessageMetadataAttribute>
   sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
+
+  @protected
+  List<DartMessageProcessingUpdate>
+  sse_decode_list_dart_message_processing_update(SseDeserializer deserializer);
 
   @protected
   List<DartMessageSyncDirtyDomain>
@@ -4950,6 +4958,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_message_metadata_attribute(
     List<DartMessageMetadataAttribute> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_message_processing_update(
+    List<DartMessageProcessingUpdate> self,
     SseSerializer serializer,
   );
 

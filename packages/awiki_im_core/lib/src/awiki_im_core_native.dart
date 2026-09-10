@@ -1420,8 +1420,45 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<MessagePage> localIncomingRecovery({
+    int limit = 100,
+    String? cursor,
+  }) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_messages.localIncomingRecovery(
+        client: _client._inner,
+        limit: limit,
+        cursor: cursor,
+      ),
+    );
+    return page._toModel();
+  }
+
+  Future<List<MessageProcessingUpdate>> pendingProcessing({
+    int limit = 100,
+  }) async {
+    _client._ensureNotDisposed();
+    final items = await _mapNativeErrors(
+      () =>
+          gen_messages.pendingProcessing(client: _client._inner, limit: limit),
+    );
+    return items.map((item) => item._toModel()).toList();
+  }
+
+  Future<int> retryProcessing(String eventId) async {
+    _client._ensureNotDisposed();
+    return _mapNativeErrors(
+      () => gen_messages.retryProcessing(
+        client: _client._inner,
+        eventId: eventId,
+      ),
+    );
+  }
+
   Future<MessageReceiveOutcome> receiveNow(MessageSyncRequest request) async {
     _client._ensureNotDisposed();
+    await _refreshLocalSyncAuthorization();
     final result = await _mapNativeErrors(
       () => gen_messages.receiveNow(
         client: _client._inner,
@@ -1434,12 +1471,27 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<void> _refreshLocalSyncAuthorization() => _client._runClientLifecycle(
+    () async {
+      final changed = await _mapNativeErrors(
+        () =>
+            gen_messages.refreshLocalSyncAuthorization(client: _client._inner),
+      );
+      if (changed) {
+        await _client._restartNativeRealtimeUnlocked();
+      }
+    },
+  );
+
   Future<MessageProcessingSession> openProcessingSession() async {
     _client._ensureNotDisposed();
     final session = await _mapNativeErrors(
       () => gen_messages.openProcessingSession(client: _client._inner),
     );
-    return _NativeMessageProcessingSession(session);
+    return _NativeMessageProcessingSession(
+      session,
+      _refreshLocalSyncAuthorization,
+    );
   }
 
   Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
@@ -2062,8 +2114,9 @@ class RealtimeApi {
 }
 
 class _NativeMessageProcessingSession implements MessageProcessingSession {
-  _NativeMessageProcessingSession(this._inner);
+  _NativeMessageProcessingSession(this._inner, this._refreshAuthorization);
   final gen_messages.ArcDartMessageProcessingSession _inner;
+  final Future<void> Function() _refreshAuthorization;
   bool _closed = false;
   bool _consumed = false;
 
@@ -2082,9 +2135,14 @@ class _NativeMessageProcessingSession implements MessageProcessingSession {
 
   Stream<MessageProcessingUpdate> _updates() async* {
     try {
-      yield* gen_messages
-          .messageProcessingStream(session: _inner)
-          .map((update) => update._toModel());
+      await for (final update in gen_messages.messageProcessingStream(
+        session: _inner,
+      )) {
+        if (update.status == gen_message.DartMessageProcessingStatus.applied) {
+          await _refreshAuthorization();
+        }
+        yield update._toModel();
+      }
     } finally {
       await close();
     }
@@ -2097,6 +2155,7 @@ class _NativeMessageProcessingSession implements MessageProcessingSession {
       final result = await _mapNativeErrors(
         () => gen_messages.waitMessageProcessing(session: _inner),
       );
+      await _refreshAuthorization();
       return result._toModel();
     } finally {
       await close();

@@ -151,6 +151,9 @@ export interface NativeImCoreNodeClient {
   removeGroupMember(input: RemoveGroupMemberInput): Promise<NodeGroupMember>
   syncNow(input?: SyncOptions): Promise<SyncResult>
   receiveNow(input?: SyncOptions): Promise<ReceiveResult>
+  localIncomingRecovery(input?: PageInput): Promise<Page<NodeMessage>>
+  pendingProcessing(limit?: number): Promise<ProcessingUpdate[]>
+  retryProcessing(eventId: string): Promise<number>
   openProcessingSession(): Promise<NativeProcessingSession>
   startRealtime(input?: RealtimeOptions): Promise<NativeRealtimeSession>
   listConversations(input?: PageInput): Promise<Page<NodeConversation>>

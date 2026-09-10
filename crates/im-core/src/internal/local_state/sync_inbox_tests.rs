@@ -694,3 +694,67 @@ fn eviction_does_not_release_physical_attempt_capacity_for_another_connection() 
         0
     );
 }
+
+#[test]
+fn parked_timeout_reclaims_after_its_process_lease_expires() {
+    let db = database();
+    insert_raw(&db, "timeout", "p5_device", "p5.delivery.created", 100);
+    let old = sync_inbox::claim_inputs(&db, &binding(&db), 100, 1)
+        .unwrap()
+        .remove(0);
+    assert!(sync_inbox::park_timeout(&db, &old, 100).unwrap());
+    assert!(sync_inbox::claim_inputs(&db, &binding(&db), 159, 1)
+        .unwrap()
+        .is_empty());
+    let next = sync_inbox::claim_inputs(&db, &binding(&db), 160, 1)
+        .unwrap()
+        .remove(0);
+    assert_ne!(next.token, old.token);
+    assert_eq!(next.attempt_count, 2);
+    assert!(sync_inbox::require_claim(&db, &old, 160).is_err());
+    sync_inbox::require_claim(&db, &next, 160).unwrap();
+    assert_eq!(
+        db.query_row("SELECT next_attempt_at FROM sync_lane_inbox", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        160
+    );
+}
+
+#[test]
+fn explicit_processing_retry_is_owner_scoped_and_never_revives_a_removed_input() {
+    let db = database();
+    sync_inbox::receive_ordinary(&db, receive_batch(&db, "blocked", "1"), 100).unwrap();
+    let claim = sync_inbox::claim_inputs(&db, &binding(&db), 101, 1)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        sync_inbox::retry_event(&db, "owner", "blocked", 101).unwrap(),
+        0
+    );
+    sync_inbox::fail_claim(&db, &claim, "message_wire_identity_conflict", None, 101).unwrap();
+    let pending = sync_inbox::pending_updates(&db, "owner", 10, 102).unwrap();
+    assert_eq!(
+        pending[0].status,
+        crate::messages::MessageProcessingStatus::Blocked
+    );
+    assert_eq!(
+        sync_inbox::retry_event(&db, "another-owner", "blocked", 102).unwrap(),
+        0
+    );
+    assert_eq!(
+        sync_inbox::retry_event(&db, "owner", "blocked", 102).unwrap(),
+        1
+    );
+    let retry = sync_inbox::claim_inputs(&db, &binding(&db), 102, 1)
+        .unwrap()
+        .remove(0);
+    assert_ne!(retry.token, claim.token);
+    sync_inbox::purge_expired(&db, 100 + sync_inbox::RETENTION_SECONDS, 10).unwrap();
+    assert_eq!(
+        sync_inbox::retry_event(&db, "owner", "blocked", 100 + sync_inbox::RETENTION_SECONDS)
+            .unwrap(),
+        0
+    );
+    assert_eq!(cursor(&db), "1");
+}

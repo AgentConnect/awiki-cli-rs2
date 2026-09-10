@@ -38,12 +38,12 @@ try {
         const event = await realtime.nextEvent()
         if (event === null) {
           await realtime.stop()
-          await client.syncNow({ reason: 'websocket_reconnect' })
+          await client.receiveNow({ reason: 'websocket_reconnect' })
           realtime = await client.startRealtime()
           continue
         }
         if (event.kind === 'sync_required') {
-          await client.syncNow({
+          await client.receiveNow({
             reason: event.cause === 'reconnected' ? 'websocket_reconnect' : 'websocket_hint',
           })
         }
@@ -118,15 +118,31 @@ import。Node facade 在 process-exclusive `stateRoot/vault` 内部生成并私�
 
 `startRealtime()` 复用 Core `RealtimeService::start_async()` 与 reconnect runner。公开事件仅有连接
 状态和 `sync_required`；后者覆盖首次 ready、reconnected、消息 hint、dirty/gap 与 stream
-recovery。Host 必须把它当作调用 `syncNow()` 的调度提示，再读取 committed history。事件不暴露
+recovery。Host 必须把它当作调用 `receiveNow()` 的调度提示，再读取 committed history。事件不暴露
 消息正文、raw frame/URL/bearer、event sequence、cursor 或 checkpoint，hint 也不具备 checkpoint
 语义。Core event buffer 满或 native stream 结束时，`nextEvent()` 返回 `null`；Host 必须把它视为
-stream recovery，按 `stop old session → syncNow({ reason: 'websocket_reconnect' }) → startRealtime()`
+stream recovery，按 `stop old session → receiveNow({ reason: 'websocket_reconnect' }) → startRealtime()`
 恢复，不得只退出监听循环，也不得跳过 canonical sync。
 
 `syncNow()` 返回的 `olderHistoryExcluded` 是 Schema 3 bounded-history 成功标记，不是容量错误。
 公开结果只包含安全计数、closed warnings 和 changed conversation IDs，不包含 cursor、page ref、
 token、manifest 或消息正文。
+
+## 接收与业务处理
+
+`receiveNow({ reason, limit })` 只等待完整输入与接收游标落盘。ordinary/P5/P6 共用 Core inbox 和
+有界 dispatcher；业务失败、慢 Root/P5 或 MLS 操作不占用下一轮接收。`syncNow()` 是兼容
+入口，在接收之外等待最多 25 秒业务完成。`ReceiveResult.complete` 不表示消息已展示或已读。
+
+长期 Host 观察应在接收前 `openProcessingSession()`，循环 `nextUpdate()`；一次性业务等待
+使用独立 session 的 `waitUntilSettled()`。同一 session 不能混用两种消费方式，结束时必须
+`stop()`；client close/clear 会取消剩余 session。通知只消费 `applied` 中已提交的 incoming
+facts。`discarded` 不能算成功，`resync_required` 需要重新读取本地 projection。
+
+`pendingProcessing(limit)` 查询当前保留输入（最多 256 条）；`retryProcessing(eventId)` 只唤醒
+现存非活动输入。`localIncomingRecovery({ limit, cursor })` 复用 Core 已提交 incoming facts
+恢复分页（最多 1000 条），cursor 绑定 owner/device，与服务端同步无关。输入保留 48 小时且
+全表上限为 16,384 条；最旧输入可能被淘汰，空队列不能证明某个 Push 消息已成功处理。
 
 ## Root Transfer 与本机认证
 
@@ -152,15 +168,10 @@ exact-device session 始终要求版本化 WebSocket：已协商 P6 lane 时使�
   OTP、路径、私钥和附件内容不会进入 JS 错误。
 - `createGroup` 固定创建 private、open-join、transport-protected 群，返回的
   `conversationId` 由 Core canonical identity 生成；`addGroupMember` 接受 Handle 或 DID。
-- 当前 `0.2.3` 源码 candidate 的 Native contract version 为 `12`，增加保留普通本地数据的
-  device rejoin retirement facade，并保留 v11 的 Root Transfer 与 Darwin
-  user-presence facade，并保留 `0.2.1` 的 Host-only External
-  Identity Provider Promise bridge，并保留 `0.1.8` 引入的新设备 Join 恢复/SAS/cancel、
-  ready-admin Registry、审批/拒绝和设备撤销；同时保留 prepared registration
-  Join、Recovery、Profile、完整群成员管理、P9 mention 与 Payload send。registry `0.1.5` 是
-  v5，包含 external HTTP auth、local timeline、群管理展示、realtime 与 mail facade；`0.1.6`
-  是上一版 v8 candidate，已发布 `0.1.7` 为 v9。`0.2.2` 必须同步发布 v11 wrapper 与全部平台 addon，wrapper 拒绝其他
-  版本的 addon。
+- 当前 `0.2.5` 源码 candidate 的 Native contract version 为 `15`，增加接收、处理观察及
+  本地事实恢复接口，保留 v14 display refresh 与既有 Join、Recovery、Root Transfer、
+  device retirement 和 External Identity Provider 功能。wrapper 拒绝其他版本的 addon；
+  本轮只是源码变更，不代表 registry 或其他平台产物已发布。
 
 ## 邮件
 

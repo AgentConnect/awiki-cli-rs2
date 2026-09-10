@@ -430,6 +430,23 @@ class MessageApi {
     throw _unsupported();
   }
 
+  Future<MessagePage> localIncomingRecovery({
+    int limit = 100,
+    String? cursor,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<List<MessageProcessingUpdate>> pendingProcessing({
+    int limit = 100,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<int> retryProcessing(String eventId) async {
+    throw _unsupported();
+  }
+
   Future<MessageReceiveOutcome> receiveNow(MessageSyncRequest request) async {
     throw _unsupported();
   }
