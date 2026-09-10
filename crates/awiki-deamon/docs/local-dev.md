@@ -70,6 +70,9 @@ anp_service_did = did:wba:<did_domain>
 macOS 服务操作先查询是否已加载，只有确认缺少目标服务时才按未加载处理；其他查询错误、
 enable、bootout、bootstrap、kickstart 的真实失败会保留失败步骤和简短诊断。首次安装不
 执行 bootout，bootstrap 后不再追加强制重启。systemd 服务命令也检查退出结果。
+Linux 卸载先通过 `systemctl show` 查询 `LoadState` 和 `ActiveState`；确认 unit 不存在且
+已停止时跳过 disable，使重复卸载和 `--no-service` 实例卸载保持幂等。注册文件已被移除
+但进程仍活跃时仍执行 stop；查询、权限、总线及 reload 的真实失败继续返回错误。
 
 安装返回结构和 `status: ready` 保持兼容（表示身份及本地安装步骤完成）。服务实际情况由
 `service.running` 与 `service.detail` 表达：注册文件存在、launchd 已加载、当前进程运行、
@@ -105,6 +108,9 @@ Codex 同时观察 stdout JSONL 和 stderr 中已识别的重连/传输回退提
 输出读取和任务执行；结束时丢弃未发送的旧状态并收束正在发送的有界 RPC。进度失败不
 改变任务结果，也不生成最终回复。保持现有 WebSocket/HTTPS 策略和任务超时；只有执行
 开始前明确的本地会话不存在诊断可沿用原新会话回退，网络失败不能触发任务重放。
+Local RPC 接收端只允许 pending/running 的 run 更新状态或完成；finished/failed 后的
+进度与完成回调按无副作用处理。条件更新在数据库中执行，避免迟到恢复事件重新打开任务
+并触发第二条 fallback final；`task.finish` 的单次完成语义对主动回调同样有效。
 
 日常测试仅使用假服务命令、假 CLI、loopback listener 和临时状态根。真实 Codex 外网
 对照另行记录 CLI 版本、模式、事件和耗时；模拟用例不证明外网延迟已解决。

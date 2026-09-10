@@ -221,6 +221,9 @@ Codex 实时观察双流，识别重连/回退并复用 App 已有延迟/恢复�
 不阻塞任务读取，失败不影响唯一最终回复。JSONL 事件形状依据
 [官方非交互模式文档](https://learn.chatgpt.com/docs/non-interactive-mode)，重连/回退文本
 同时与本地已安装 Codex 二进制字符串核对；未知事件忽略，不改变传输策略。
+接收端以数据库条件更新保护 finished/failed 终态；迟到的 `task.status` 或重复
+`task.finish` 不再更新状态或发送消息。CLI 先回调完成、后输出 `turn.completed` 时，
+恢复观察不会重新打开 run 或触发 fallback final。
 
 driver 子进程仍不会继承 daemon 完整环境，而是先 `env_clear()` 后恢复最小 PATH/locale/HOME、profile home 与 AWiki callback 变量。provider/API/base URL/model 等额外变量必须通过 `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 显式列出变量名或前缀选择器，例如 `ANTHROPIC_*,CLAUDE_CODEX_MODEL` 或 `OPENAI_API_KEY,OPENAI_BASE_URL`。敏感值不能写入 service unit、日志、E2E 报告或仓库。
 

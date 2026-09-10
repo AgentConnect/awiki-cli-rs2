@@ -524,17 +524,9 @@ WantedBy=default.target
                 )?;
             }
             ServiceAction::Uninstall => {
-                let _ = run_status(
-                    std::process::Command::new("systemctl")
-                        .args(["--user", "disable", "--now", UNIT_NAME]),
-                )?;
-                if path.exists() {
-                    std::fs::remove_file(&path)
-                        .with_context(|| format!("remove systemd unit {}", path.display()))?;
-                }
-                let _ = run_status(
-                    std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
-                )?;
+                uninstall_with(&path, &mut |args| {
+                    std::process::Command::new("systemctl").args(args).output()
+                })?;
             }
             ServiceAction::RemoveRegistration => {
                 let _ = run_status(
@@ -616,7 +608,60 @@ WantedBy=default.target
             detail,
         })
     }
+
+    pub(super) fn uninstall_with(
+        path: &Path,
+        run: &mut impl FnMut(&[&str]) -> std::io::Result<std::process::Output>,
+    ) -> Result<()> {
+        let mut checked = |args: &[&str]| -> Result<std::process::Output> {
+            let step = format!("systemctl {}", args.join(" "));
+            let output = run(args).with_context(|| format!("run {step}"))?;
+            check_service_command_result(&step, &output, false)?;
+            Ok(output)
+        };
+        let observed = checked(&[
+            "--user",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            UNIT_NAME,
+        ])?;
+        let properties = String::from_utf8_lossy(&observed.stdout);
+        let property = |name: &str| -> Result<&str> {
+            let mut values = properties.lines().filter_map(|line| {
+                line.split_once('=')
+                    .filter(|(key, _)| *key == name)
+                    .map(|(_, value)| value.trim())
+            });
+            let value = values.next().filter(|value| !value.is_empty());
+            anyhow::ensure!(value.is_some() && values.next().is_none(),
+                "systemctl show returned incomplete or ambiguous unit properties; check the user service before retrying uninstall");
+            Ok(value.unwrap())
+        };
+        let load_state = property("LoadState")?;
+        let active_state = property("ActiveState")?;
+        // Only a successful, explicit not-found result proves absence. A missing
+        // local file alone says nothing about a unit still loaded in the manager.
+        if path.try_exists()? || load_state != "not-found" {
+            checked(&["--user", "disable", "--now", UNIT_NAME])?;
+        } else if active_state != "inactive" {
+            checked(&["--user", "stop", UNIT_NAME])?;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("remove systemd unit {}", path.display()))
+            }
+        }
+        checked(&["--user", "daemon-reload"])?;
+        Ok(())
+    }
 }
+
+#[cfg(test)]
+mod linux_tests;
 
 pub fn require_service_state_root_is_product(config: &DaemonConfig) -> Result<()> {
     let product_root = DaemonConfig::default_product_state_root()?;
