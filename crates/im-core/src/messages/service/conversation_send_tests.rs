@@ -125,7 +125,7 @@ mod stale_direct_rebind_http_tests {
             MessageProjection {
                 count: 1,
                 conversation_id: conversation_id.clone(),
-                receiver_did: OLD_DID.to_owned(),
+                receiver_did: NEW_DID.to_owned(),
                 content: TEXT.to_owned(),
                 operation_id: OPERATION_ID.to_owned(),
                 delivery_state: "accepted".to_owned(),
@@ -262,6 +262,51 @@ mod stale_direct_rebind_http_tests {
         assert_eq!(requests.len(), 2);
         assert_request_sequence(&requests, &["lookup", "direct.send"]);
         assert!(requests.iter().all(|request| request.method != "GET"));
+    }
+
+    #[tokio::test]
+    async fn accepted_message_replay_never_retargets_a_new_identity() {
+        let fixture = Fixture::new("accepted-replay");
+        let server = HttpTestServer::spawn(vec![
+            ExpectedHttp::rpc_result(directory_lookup(OLD_DID)),
+            ExpectedHttp::rpc_result(accepted(OLD_DID)),
+            ExpectedHttp::stale_binding_error(),
+        ]);
+        let client = fixture.client(server.base_url()).await;
+        let initial = client
+            .directory()
+            .lookup_handle_async(crate::ids::Handle::parse(HANDLE, "").unwrap())
+            .await
+            .unwrap();
+        let request = crate::messages::SendConversationTextRequest {
+            conversation: crate::messages::ConversationReadRef::new(
+                initial.direct_conversation_id(),
+            )
+            .unwrap(),
+            text: TEXT.into(),
+            markdown: false,
+            security: crate::messages::MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(crate::ids::MessageId::parse(MESSAGE_ID).unwrap()),
+            idempotency_key: Some(OPERATION_ID.into()),
+            wait_for_final_acceptance: true,
+            delegated_signing: None,
+        };
+        client
+            .messages()
+            .send_conversation_text_async(request.clone())
+            .await
+            .unwrap();
+        assert!(client
+            .messages()
+            .send_conversation_text_async(request)
+            .await
+            .is_err());
+        let stored = message_projection(&fixture.sqlite_path(), MESSAGE_ID);
+        assert_eq!(stored.receiver_did, OLD_DID);
+        assert_eq!(stored.delivery_state, "accepted");
+        let requests = server.join();
+        assert_request_sequence(&requests, &["lookup", "direct.send", "direct.send"]);
+        assert_eq!(requests[2].params()["meta"]["target"]["did"], OLD_DID);
     }
 
     fn directory_lookup(did: &str) -> Value {

@@ -3,6 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "sqlite")]
 use rusqlite::OptionalExtension;
 
+#[cfg(feature = "sqlite")]
+#[path = "messages/direct_confirmation.rs"]
+mod direct_confirmation;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MessageHydrationState {
@@ -234,7 +238,8 @@ fn assert_existing_wire_identity_compatible(
     message_id: &str,
     record: &MessageRecord,
     wire_identity: &WireThreadIdentity,
-) -> crate::ImResult<()> {
+    conversation_id: &str,
+) -> crate::ImResult<bool> {
     let existing = connection
         .query_row(
             r#"SELECT wire_thread_kind, wire_thread_ref, sender_did, receiver_did,
@@ -258,7 +263,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         .map_err(super::local_state_unavailable)?;
     let Some((kind, reference, sender, receiver, group_id, group_did, server_seq)) = existing
     else {
-        return Ok(());
+        return Ok(false);
     };
     let text_conflict = [
         (kind.as_str(), wire_identity.kind.as_str()),
@@ -278,11 +283,23 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         .zip(record.server_seq)
         .is_some_and(|(existing, incoming)| existing != incoming);
     if text_conflict || sequence_conflict {
+        if !sequence_conflict
+            && direct_confirmation::can_confirm_target(
+                connection,
+                owner_identity_id,
+                message_id,
+                conversation_id,
+                record,
+                wire_identity,
+            )?
+        {
+            return Ok(true);
+        }
         return Err(crate::ImError::MessageWireIdentityConflict {
             message_id: message_id.to_owned(),
         });
     }
-    Ok(())
+    Ok(false)
 }
 
 #[cfg(feature = "sqlite")]
@@ -446,6 +463,7 @@ pub(crate) fn upsert_message(
 pub(crate) struct ExistingOutgoingDirectWireSnapshot {
     pub(crate) target_did: String,
     pub(crate) created_at: Option<String>,
+    pub(crate) accepted: bool,
 }
 
 #[cfg(feature = "sqlite")]
@@ -468,7 +486,10 @@ pub(crate) fn existing_outgoing_direct_wire_snapshot(
                           WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{}')) = 1
                           THEN json_extract(COALESCE(NULLIF(metadata, ''), '{}'), '$.wire_created_at')
                           ELSE NULL
-                      END
+                      END,
+                      server_seq IS NOT NULL OR CASE WHEN json_valid(COALESCE(metadata, ''))
+                          THEN json_extract(metadata, '$.delivery_state') IN ('accepted', 'sent')
+                          ELSE 0 END
 FROM messages
 WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
             (&owner_identity_id, &message_id),
@@ -483,6 +504,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
                     row.get::<_, Option<String>>(6)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(7)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                    row.get::<_, Option<bool>>(9)?.unwrap_or(false),
                 ))
             },
         )
@@ -498,6 +520,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         group_id,
         group_did,
         created_at,
+        accepted,
     )) = existing
     else {
         return Ok(None);
@@ -518,6 +541,7 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
     Ok(Some(ExistingOutgoingDirectWireSnapshot {
         target_did: receiver_did.trim().to_owned(),
         created_at: Some(created_at.trim().to_owned()).filter(|value| !value.is_empty()),
+        accepted,
     }))
 }
 
@@ -549,12 +573,13 @@ fn upsert_message_record(
     let canonical_group_msg_id = canonical_group_message_id(record, &conversation_id);
     let msg_id = canonical_group_msg_id.clone().unwrap_or(input_msg_id);
     let wire_identity = wire_identity_for_record(record)?;
-    assert_existing_wire_identity_compatible(
+    let confirm_direct_target = assert_existing_wire_identity_compatible(
         connection,
         &owner_identity_id,
         &msg_id,
         record,
         &wire_identity,
+        &conversation_id,
     )?;
     let group_aliases = group_message_aliases(record, &msg_id);
     let group_duplicate_rows = existing_group_duplicate_rows(
@@ -679,6 +704,7 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         ELSE messages.wire_thread_kind
     END,
     wire_thread_ref = CASE
+        WHEN ?27 THEN excluded.wire_thread_ref
         WHEN TRIM(COALESCE(messages.wire_thread_ref, '')) = '' THEN excluded.wire_thread_ref
         ELSE messages.wire_thread_ref
     END,
@@ -693,7 +719,8 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         ELSE excluded.direction
     END,
     sender_did = COALESCE(NULLIF(messages.sender_did, ''), excluded.sender_did),
-    receiver_did = COALESCE(NULLIF(messages.receiver_did, ''), excluded.receiver_did),
+    receiver_did = CASE WHEN ?27 THEN excluded.receiver_did
+        ELSE COALESCE(NULLIF(messages.receiver_did, ''), excluded.receiver_did) END,
     group_id = COALESCE(NULLIF(messages.group_id, ''), excluded.group_id),
     group_did = COALESCE(NULLIF(messages.group_did, ''), excluded.group_did),
     content_type = CASE
@@ -743,6 +770,12 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         ELSE excluded.sender_name
     END,
     metadata = CASE
+        WHEN messages.wire_thread_kind = 'direct' AND messages.is_e2ee = 0 AND messages.direction = 1
+         AND json_valid(COALESCE(messages.metadata, ''))
+         AND json_valid(COALESCE(excluded.metadata, ''))
+         AND json_extract(messages.metadata, '$.delivery_state') IN ('accepted', 'sent')
+         AND json_extract(excluded.metadata, '$.delivery_state') IN ('stored_locally', 'pending', 'failed')
+        THEN messages.metadata
         WHEN messages.hydration_state = 'hydrated' AND excluded.hydration_state <> 'hydrated'
         THEN COALESCE(NULLIF(messages.metadata, ''), excluded.metadata)
         WHEN excluded.content IS NULL
@@ -798,6 +831,7 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
                 nullable_text(&metadata),
                 mentions_current_user,
                 record.credential_name.trim(),
+                confirm_direct_target,
             ],
         )
         .map_err(super::local_state_unavailable)?;

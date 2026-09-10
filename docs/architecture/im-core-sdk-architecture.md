@@ -987,19 +987,15 @@ conversation projection. Each message stores `wire_thread_kind`,
 Canonical alias merge may update only `conversation_id`. It must not rewrite
 wire thread facts, sender/receiver DID snapshots, group identifiers, or
 `server_seq`. Replaying the same owner/message ID with different non-empty wire
-facts fails with `message_wire_identity_conflict`; a replay may only fill wire
-facts that were genuinely absent in a legacy row.
+facts fails with `message_wire_identity_conflict`; legacy missing facts may be
+filled, and only the narrowly verified ordinary Direct confirmation described
+in section 14 may promote an unsequenced local echo to an accepted target.
 
-A stale-route retry does not revise wire facts that are already durable. For a
-text/payload local echo written before the first network attempt, the failed
-route remains its wire receiver snapshot, while `direct_peer_routes.current_did`
-and current message metadata may advance to the new delivery route. An
-attachment row first committed after remote acceptance records that accepted
-route; once committed, it has the same immutability rule. Replaying the same
-logical message ID therefore reuses any existing wire receiver snapshot for
-local conflict validation even though the network submission uses the current
-route. This preserves auditable history without making a legitimate DID
-rotation look like `message_wire_identity_conflict`.
+普通 Direct text/payload 的 local echo 记录发送前暂存目标，不把已拒绝的旧 route
+永久当作发送事实。权威重绑后，accepted 结果与精确同步回流必须收敛到实际投递目标；
+旧版 accepted 元数据与 wire 快照不一致时，按第 14 节的严格规则恢复。
+一旦确认，普通消息重放固定使用已确认目标，不因联系人后续更新而再次重定向投递。
+正常历史消息、附件首次远端接受后建立的消息行及加密消息的不可变事实仍受保护。
 
 Verified Handle projection writes the Persona, current and historical
 identifiers, route, Persona-keyed profile, and matching contact association as
@@ -1443,6 +1439,23 @@ owner DID, and the resolved Direct registry, Persona DID identifier, and
 owner-scoped route all prove the same canonical conversation. Eligible rows are
 rewritten to `direct + peer DID`; ambiguous or conflicting rows remain untouched
 and continue to fail closed during replay.
+
+普通 Direct 发送确认与 DID 更新：发送前的 local echo 目标是暂存意图，不能
+冒充服务端最终接受的 wire identity。经过 owner-scoped 权威 Persona/路由验证的
+目标更新，在同一消息及 operation、发送者、正文和 canonical conversation 不变时，
+允许尚无 server sequence 的 `pending` / `stored_locally` 投影随 accepted 结果
+或先到达的精确远端消息一次性确认目标。
+发送回包丢失而标为 failed 的暂存消息，也只能由上述精确远端投影确认。
+accepted 消息的本地重试不得把其确认状态降回暂存状态，重放始终使用已确认目标，
+不得在 stale 错误后向新 DID 再投递；已取得服务端序号的历史消息
+始终保持原 wire identity。修复旧版“accepted 元数据已记录新目标，但 receiver/wire
+仍是旧目标”的记录，仅允许来自具有正 server sequence 的完整远端投影，并要求
+旧记录的 accepted/resolved target、operation、正文和同 owner 的权威 Persona 证据
+全部吻合。确认更新与消息 upsert、sync 页 checkpoint 同事务提交；不批量改历史，
+不跳过冲突事件，不将 Group/E2EE 或未经验证的跨 Persona 冲突纳入此例外。
+无法按上述规则确认的 `MessageWireIdentityConflict` 返回 typed `blocked` outcome
+及稳定 `message_wire_identity_conflict` code，不归类为可重试网络故障；App 复用
+已有同步暂停提示，不自动撤销身份或清空数据。
 
 `sync_state` is private local recovery state. Diagnostics should report counts,
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw

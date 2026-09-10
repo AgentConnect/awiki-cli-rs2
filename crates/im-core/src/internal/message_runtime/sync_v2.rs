@@ -4164,6 +4164,10 @@ pub(crate) fn failure_outcome(
     error: &crate::ImError,
 ) -> Option<crate::messages::MessageSyncOutcome> {
     let (status, code) = match error {
+        crate::ImError::MessageWireIdentityConflict { .. } => (
+            crate::messages::MessageSyncStatus::Blocked,
+            "message_wire_identity_conflict".to_owned(),
+        ),
         crate::ImError::AuthRequired
         | crate::ImError::SessionExpired
         | crate::ImError::PermissionDenied

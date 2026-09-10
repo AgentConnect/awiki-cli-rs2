@@ -1463,11 +1463,13 @@ Reliable sync 补充：
   `owner_identity_id + conversation_id` 合并，且新绑定必须保持 Persona / canonical
   conversation 不变、generation 单调前进并拒绝旧 DID。
 - Direct stale-route 重发保持同一 message ID、operation/idempotency ID、正文、security mode
-  和 canonical conversation。`direct_peer_routes.current_did` 是可替换路由；任何已经落盘的
-  wire receiver DID 都是不可变消息事实。text/payload 在首次网络发送前写入 local echo，因此
-  保留失败 route；attachment 若在远端接受后才首次建立消息行，则记录 accepted route。后续同一
-  logical message 调用复用已有 wire snapshot 做本地冲突校验，但网络发送使用当前 route，不能把
-  DID rotation 误判为 `message_wire_identity_conflict`。
+  和 canonical conversation。`direct_peer_routes.current_did` 是可替换路由；普通 text/payload
+  首次发送前的 local echo 是暂存目标，经过权威验证的重绑后，必须随 accepted 结果或精确远端
+  回流确认实际目标。已确认消息的重放固定使用原接受目标，不再次重定向到联系人后来的 DID。
+  Core 仅在同 owner/消息/operation/正文/canonical Persona 证据吻合、无旧 server sequence 的
+  限定情况下修复旧版目标不一致记录，不能批量改历史或放宽 Group/E2EE 身份保护。
+  不可修复的 `message_wire_identity_conflict` 通过 `syncNow` 返回 `blocked` 和稳定同名 code，
+  不当作网络重试、身份撤权或删除数据指令。普通成功与 wire/DTO 形状不变。
 - `attachments().send_conversation` / Dart `client.attachments.sendConversation(...)` 是
   conversation-surface attachment send 主路径。AWiki Me 已选中会话的附件发送和重试必须传
   `ConversationReadRef.conversation_id`，不能用 target DID、handle、display thread id 或

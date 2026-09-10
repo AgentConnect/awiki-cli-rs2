@@ -2601,6 +2601,11 @@ impl<'a> MessageService<'a> {
         resolved: &ResolvedConversationSendRequest,
         err: &crate::ImError,
     ) -> crate::ImResult<Option<ResolvedConversationSendRequest>> {
+        if resolved.wire_target_accepted {
+            // A replay of an accepted message must never create a second
+            // delivery at the contact's newer DID.
+            return Ok(None);
+        }
         let super::MessageTarget::Direct(_) = &resolved.request.target else {
             return Ok(None);
         };
@@ -2709,10 +2714,7 @@ impl<'a> MessageService<'a> {
                 #[cfg(feature = "sqlite")]
                 match crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_with_wire_target_async(
                     self.client,
-                    resolved
-                        .wire_target_did
-                        .as_deref()
-                        .unwrap_or(result.target_did.as_str()),
+                    &result.target_did,
                     &result.target_did,
                     resolved.target_handle.as_deref(),
                     resolved.peer_scope.as_ref(),
@@ -4307,6 +4309,7 @@ struct ResolvedConversationSendRequest {
     conversation_id: String,
     request: super::SendMessageRequest,
     wire_target_did: Option<String>,
+    wire_target_accepted: bool,
     wire_created_at: String,
     target_did: Option<String>,
     target_handle: Option<String>,
@@ -4414,6 +4417,15 @@ fn conversation_send_request(
         .as_ref()
         .map(|snapshot| snapshot.target_did.clone())
         .or_else(|| resolved_target.target_did.clone());
+    let wire_target_accepted = !conversation_send_uses_security_runtime(&security)
+        && existing_wire
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.accepted);
+    let target_did = if wire_target_accepted {
+        wire_target_did.clone()
+    } else {
+        resolved_target.target_did
+    };
     let wire_created_at = existing_wire
         .and_then(|snapshot| snapshot.created_at)
         .unwrap_or_else(crate::internal::wire::common::now_rfc3339);
@@ -4432,8 +4444,9 @@ fn conversation_send_request(
         conversation_id,
         request,
         wire_target_did,
+        wire_target_accepted,
         wire_created_at,
-        target_did: resolved_target.target_did,
+        target_did,
         target_handle: resolved_target.target_handle,
         peer_scope: resolved_target.peer_scope,
     })
@@ -4442,6 +4455,7 @@ fn conversation_send_request(
 struct ExistingConversationWireSnapshot {
     target_did: String,
     created_at: Option<String>,
+    accepted: bool,
 }
 
 #[cfg(feature = "sqlite")]
@@ -4464,6 +4478,7 @@ fn existing_conversation_wire_snapshot(
         snapshot.map(|snapshot| ExistingConversationWireSnapshot {
             target_did: snapshot.target_did,
             created_at: snapshot.created_at,
+            accepted: snapshot.accepted,
         })
     })
 }
