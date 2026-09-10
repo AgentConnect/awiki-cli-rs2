@@ -1115,24 +1115,14 @@ Realtime integration:
   compatibility metadata is not bridged to Dart: its `event_seq` means the
   event's own sequence for schema 1 but `account_scan_seq_hint` for schemas 2
   and 3.
-- App code may use the hint to schedule `syncDelta` after duplicate/gap/dirty
-  detection.
-- A successfully applied schema-3 inline message still has `syncDirty = true` and
-  schedules prompt reliable delta. The fast path removes the first-paint network
-  dependency; it does not remove event receipt/cursor convergence. The 300-second
-  healthy reconcile interval applies only to idle periodic fallback.
-- Receiving a realtime hint or successfully projecting a realtime notification must
-  not advance the reliable checkpoint.
-- On an exact `awiki.sync.event.v3` session, Core may validate and atomically
-  store an inline ordinary `message.created` projection before delta. This is
-  implementation-only: Dart receives the existing `MessageReceived` and patch
-  shapes. The WS transaction writes no reliable event receipt or cursor.
-- A mismatched stream epoch, unknown Group, or unresolved Direct Persona is a
-  dirty/gap hint only. Core emits no authoritative message patch and lets the
-  existing `syncNow` coordinator converge through reliable delta.
-- Successfully projecting a realtime incoming message to local SQLite does emit
-  committed conversation/thread patches for active subscribers; the hint alone
-  is never an authoritative patch source.
+- App 使用 hint 调度 `receiveNow`，不从 hint 或 inline payload 构造消息事实。
+- Schema 45 下，已协商 schema-3 inline 输入只产生 `syncDirty = true` 的拉取提示；ordinary、
+  P5、P6 都通过 HTTP 完整接收和统一处理器提交。WebSocket 不再提前生成 ordinary projection。
+  300 秒健康 reconcile 周期仅为空闲补偿，不能替代及时响应 hint。
+- 收到 hint 不推进接收 cursor、业务 receipt 或已读。epoch 不匹配、未知 Group 或未解析
+  Direct Persona 由后续 Core 处理路径收敛，App 不新建临时 conversation 或权威 patch。
+- Core 业务事务提交后才发布 conversation/thread patch 及独立 processing update。旧的未协商
+  realtime compatibility 路径仍使用其原有协议门禁和提交后 patch 规则。
 - Before reliable sync supplies a thread-local `serverSequence`, an incoming
   realtime projection uses the recipient-side receive timestamp rather than the
   sender-provided `sentAt`. Once two timeline rows both have `serverSequence`,

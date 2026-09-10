@@ -1205,6 +1205,14 @@ Core 原子领取并按类型有限并发分发，处理器只执行单条事件
 
 接收表每个本地数据库最多 16,384 条，覆盖最多 10,000 items 的完整 compact snapshot 及本地基线记录；加入新记录时按首次本地接收时间淘汰最老记录，腾位删除、新记录与游标一起提交。记录在首次接收 48 小时后过期，重试不续期，失败和处理中记录也适用。清理先提交则旧处理尝试不能再提交；业务先提交则清理只移除接收暂存，不删除已提交消息事实。过期/淘汰是放弃尚未完成的本地处理，不伪造业务成功、已读或 ACK。保留期内的 pending 数据在迁移、重启及 epoch/snapshot 切换后仍可恢复。
 
+Root 导入区分身份 Provider 的私有 Pending custody 与 Core 的 `import_sealed` 交接事实。
+Provider 准备前检查当前领取；Core 交接事务再次检查输入和尝试，再同时提交现有 Root completion
+记录及接收完成证据。若淘汰先提交，晚到的 Provider 结果不能写 Core 交接、提升设备管理权限或
+发送业务 ACK。Provider 属于独立身份存储，不能声称它与 Core SQLite 跨库原子回滚：该竞争可能
+留下该 identity 原有的单个 Pending Root custody。它不是 active Root，不形成聊天投影，不自动
+复活被淘汰输入；现有 Pending Root 互斥仍可拒绝另一次不同转移。本轮有限保留放弃的是已淘汰
+输入的未完成责任，不改写身份 Provider 的转移、晋升或恢复协议。
+
 协商后的 Schema 3 WebSocket inline 输入保留为拉取提示，普通消息与 P5/P6 均通过 HTTP 统一接收表处理。WebSocket 不再先行写普通投影、绕过逐条领取或完成证据；旧的非协商 transport 兼容边界保持由既有协议门禁控制。
 
 普通流及 lane 的接收游标、业务 applied receipt 和消息已读 watermark 是不同事实。按用户 2026-09-10 的决定，累计已读继续按已展示并读过的后续消息推进，不等待更早输入处理成功；例如 102 处理失败、103 已读时，允许本地已读与服务端累计已读推进到 103。102 仍保留独立的处理失败状态，已读推进不构成它的业务处理成功证据。后续通知/ACK 失败只能影响其自身状态，不能回退接收游标。服务端 durable handoff 依据为 `message-service/docs/api/message-sync/explicit-negotiation-v1.zh-CN.md` 第 4 节；保留现有 wire 字段，不引入服务端队列或新协议。
@@ -1238,8 +1246,8 @@ Core 原子领取并按类型有限并发分发，处理器只执行单条事件
   delta, and v2 delta converge idempotently instead of creating duplicate rows.
   These lifecycle records remain durable timeline facts but do not enter the
   ordinary committed-incoming notification list.
-- Foreground CLI/Dart first resume durable Root-import completion and obtain the
-  exact active binding. Before choosing a P5 transport they finish lane
+- 新接收入口先加载本地已提交的 exact active binding；Root-import completion 由 Core 独立
+  处理/维护，兼容 `sync_now` 可另行等待其业务结果。 Before choosing a P5 transport they finish lane
   capability negotiation for that device generation. If P5 lane is enabled,
   legacy secure hydration returns without `inbox.get`/`inbox.mark_read` and the
   following unified delta owns the delivery. If P5 lane is absent, the bounded
@@ -1321,46 +1329,22 @@ top-level WebSocket `sync` member. The hint is scheduling metadata for
 duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
 Realtime projection is allowed to keep the UI fresh, but receiving a realtime
 hint or applying a realtime projection does not advance the reliable checkpoint.
-After exact negotiation of `awiki.sync.event.v3`, a closed schema-3
-`message.created` notification may carry the same event as `sync.delta` and the
-same ordinary Direct/Group projection as `message.get_batch`. Core reuses those
-decoders and the Sync V2 reducer, then applies the message and remote-thread
-binding in one SQLite transaction. This fast transaction writes neither
-`message_sync_state` nor `sync_applied_events`. It retains `sync_event_id` in
-private message metadata so a later reliable delta can record the receipt,
-advance the cursor, and skip reapplying an already projected body. The reverse
-order is also a no-op for realtime.
+Schema 45 在协商后的 `awiki.sync.event.v3` 会话中校验闭合 schema-3 inline envelope，随后
+只产生拉取提示。ordinary、P5、P6 都经 `receive_now_async` 的 HTTP delta 完整落盘，再由统一
+逐条领取入口处理。WebSocket 不提前写消息投影、业务 receipt、ratchet 或 MLS 状态，也不推进
+任何接收 cursor。提示保持 `sync_dirty = true`，Host 应及时触发接收；300 秒健康周期只用于
+空闲补偿，不能替代通知触发的接收。
 
-The same unpublished schema 3 now has a closed `event.lane`: absent or
-`ordinary`, `p5_device`, or `p6_group`. P5/P6 accept only
-`p5.delivery.created` / `p6.delivery.created` with the corresponding Direct
-E2EE v2 / Group E2EE v2 envelope. They reuse the reliable cryptographic and
-durable projection paths. P5 dedupes by delivery ID; P6 dedupes by
-`group_did + group_event_seq`. Successful E2EE inline application writes only
-an idempotency receipt and returns no local lane scan sequence. It never updates
-`lane_sync_state`; delta remains the sole authority that converts the receipt
-into committed lane progress. Failed P5 crypto or unmet P6 order/epoch simply
-defers to delta and does not contaminate ratchet, backlog, or a lane cursor.
-
-The fast path is fenced by the current account/device binding and exact
-`stream_epoch`. A different epoch, an unknown Group, or a Direct peer without a
-verified Persona produces only a dirty/gap hint; it does not create a temporary
-conversation, write the inbound-resolution backlog, or emit an authoritative
-timeline patch. Reliable delta remains the only source of consumption receipts
-and cursor progress.
-Even when schema 3 applies the inline message and detects no gap, its internal
-hint remains `sync_dirty = true`, so the host still schedules the prompt reliable
-delta. The latency win is early committed projection, not removal of the
-notification-driven delta: that delta records the event receipt, advances the
-cursor, and converges non-inline events such as read state. The 300-second healthy
-interval below replaces only idle periodic reconciliation. Suppressing this delta
-would require a separate bounded-convergence contract and is not current behavior.
+Schema 3 的闭合 `event.lane` 为 absent/`ordinary`、`p5_device` 或 `p6_group`；P5/P6 只接纳
+对应 delivery/control envelope。epoch 不匹配、未知 Group 或未解析 Direct Persona 不形成
+临时会话或权威 timeline patch，后续归一与业务错误由统一处理器负责。未协商的旧 transport
+仍按其既有兼容协议处理；不能把旧路径用于绕过 Schema 45 的接收责任。
 
 `RealtimeSyncHint.event_seq` is compatibility scheduling metadata: schema 1 maps
 the event's own sequence, while schemas 2 and 3 map `account_scan_seq_hint`.
 Callers must not compare those meanings across schemas or treat either as a
 reliable cursor; the schema-3 inline event keeps its own `event.event_seq` inside
-the validated fast-path payload. `RealtimeSyncHint.dirty_lanes` is likewise a
+the validated private inline envelope. `RealtimeSyncHint.dirty_lanes` is likewise a
 closed scheduling set (`ordinary | p5_device | p6_group`), not checkpoint or ACK
 state.
 If a realtime incoming message cannot be projected or its local SQLite write

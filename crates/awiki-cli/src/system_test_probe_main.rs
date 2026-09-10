@@ -1502,7 +1502,15 @@ impl Probe {
                     .sync_diagnostics_async()
                     .await
                     .map_err(|_| ProbeFailure::Runtime)?;
-                Ok((message_sync_diagnostics_projection(&diagnostics), false))
+                let processing = client
+                    .messages()
+                    .pending_processing_async(256)
+                    .await
+                    .map_err(|_| ProbeFailure::Runtime)?;
+                Ok((
+                    message_sync_diagnostics_projection(&diagnostics, &processing),
+                    false,
+                ))
             }
             Action::AgentBootstrapIdentity(params) => {
                 let registry = self
@@ -3427,6 +3435,7 @@ fn daemon_bootstrap_public_key(
 
 fn message_sync_diagnostics_projection(
     diagnostics: &im_core::messages::MessageSyncDiagnostics,
+    processing: &[im_core::messages::MessageProcessingUpdate],
 ) -> Value {
     use im_core::messages::{MessageSyncDomainStatus as Domain, MessageSyncLane as Lane};
 
@@ -3473,6 +3482,9 @@ fn message_sync_diagnostics_projection(
         "domain_repair_required_count": domain_counts[5],
         "domain_upgrade_required_count": domain_counts[6],
         "domain_action_required_count": domain_counts[7],
+        // A bounded sample of retained inputs, not cumulative applied receipts.
+        "processing_sample_count": processing.len(),
+        "processing_blocked_count": processing.iter().filter(|update| update.status == im_core::messages::MessageProcessingStatus::Blocked).count(),
         "contains_raw_identifiers": false,
     })
 }
@@ -5321,13 +5333,22 @@ mod tests {
                 status: im_core::messages::MessageSyncDomainStatus::RepairRequired,
             }],
         };
-        let projection = message_sync_diagnostics_projection(&diagnostics);
+        let processing = vec![im_core::messages::MessageProcessingUpdate {
+            event_id: "must-not-leak".into(),
+            status: im_core::messages::MessageProcessingStatus::Blocked,
+            changed_conversation_ids: vec!["must-not-leak".into()],
+            committed_incoming_messages: vec![],
+            error_code: Some("must-not-leak".into()),
+        }];
+        let projection = message_sync_diagnostics_projection(&diagnostics, &processing);
         assert_eq!(projection["schema_version"], 1);
         assert_eq!(projection["p5_lane_seen"], true);
         assert_eq!(projection["p6_lane_seen"], false);
         assert_eq!(projection["pending_lane_count"], 1);
         assert_eq!(projection["degraded_lane_count"], 1);
         assert_eq!(projection["domain_repair_required_count"], 1);
+        assert_eq!(projection["processing_sample_count"], 1);
+        assert_eq!(projection["processing_blocked_count"], 1);
         assert_eq!(projection["contains_raw_identifiers"], false);
         let encoded = projection.to_string();
         for forbidden in ["must-not-leak", "cursor", "scope", "operation_ref"] {
