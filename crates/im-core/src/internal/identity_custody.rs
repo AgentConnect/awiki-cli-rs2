@@ -2130,7 +2130,17 @@ pub(crate) async fn adopt_controller_document_async(
                 .map_err(crate::internal::identity_provider::map_provider_error)?,
             _ => return Err(crate::ImError::PermissionDenied),
         }
-    } else if allow_verified_adoption_without_pending {
+    } else if allow_verified_adoption_without_pending
+        || (before.document == *document
+            && before_status.checkpoint.as_ref().is_some_and(|current| {
+                current.document_version == checkpoint.document_version
+                    && current.document_digest == checkpoint.document_hash
+                    && current.registry_version < checkpoint.registry_version
+            }))
+    {
+        // Older publication completion discarded the remote Registry version.
+        // A confirmed Join may repair only the checkpoint of the exact document
+        // already committed locally, never authorize a different document.
         identity
             .adopt_verified_document(remote)
             .await
@@ -4222,6 +4232,10 @@ mod tests {
         let (candidate, revision_id) = refresh_registration_document_async(&core, &identity)
             .await
             .unwrap();
+        assert_eq!(
+            document_without_proof(&identity.did_document).unwrap(),
+            document_without_proof(&candidate).unwrap()
+        );
         identity.did_document = candidate;
         identity.controller_revision_id = Some(revision_id);
 

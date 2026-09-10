@@ -1480,6 +1480,13 @@ where
             .collect::<std::collections::HashMap<_, _>>();
         let mut notices = Vec::with_capacity(notifications.len());
         for notification in notifications {
+            let locally_completed =
+                crate::internal::identity_device_join::recover_confirmed_admin_join_async(
+                    self.core,
+                    &client,
+                    &notification,
+                )
+                .await?;
             let local = local_admin_session(self.core, &notification.join_session_id)?;
             let claimed_by = match &notification.payload {
                 crate::internal::system_notification::wire::JoinPayload::Claimed(payload) => {
@@ -1488,6 +1495,11 @@ where
                 crate::internal::system_notification::wire::JoinPayload::ResponseVerified(
                     payload,
                 ) => Some(payload.claimed_by_device_id.as_str()),
+                crate::internal::system_notification::wire::JoinPayload::Completed(_)
+                    if locally_completed =>
+                {
+                    Some(current_device_id.as_str())
+                }
                 _ => None,
             };
             let claimed_by_current_device =
@@ -1675,20 +1687,15 @@ where
                 proof: &prepared.proof,
             })
             .await?;
-        if approved.state != DeviceJoinRemoteState::Consumed {
+        if approved.state != DeviceJoinRemoteState::Consumed
+            || approved.join_session_id != prepared.join_session_id
+        {
             return Err(crate::ImError::PermissionDenied);
         }
         let authorization = DeviceJoinRemoteAuthorization {
             checkpoint: approved.checkpoint,
             device: approved.device,
         };
-        let client = self.core.client_async(self.admin_identity.clone()).await?;
-        crate::internal::identity_device_join::complete_provider_document_change(
-            &client,
-            &prepared.new_document,
-            &authorization.checkpoint,
-        )
-        .await?;
         let session = crate::internal::identity_device_join::mark_join_authorized_async(
             self.core,
             join_session_id,

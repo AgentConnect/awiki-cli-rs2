@@ -1202,7 +1202,11 @@ async fn prepare_external_provider_admin_join(
     admin_root: &Path,
     candidate_root: &Path,
 ) -> ExternalProviderAdminJoinFixture {
-    let (admin, document, did, checkpoint) = open_external_provider_ready_admin_core(admin_root);
+    let (admin, document, did, mut checkpoint) =
+        open_external_provider_ready_admin_core(admin_root);
+    // A sibling root promotion advances only the remote Registry, not this
+    // admin's local provider checkpoint or the DID Document version.
+    checkpoint.registry_version += 1;
     let candidate = open_empty_vault_core(candidate_root);
     let started = candidate
         .device_join()
@@ -1383,6 +1387,12 @@ async fn assert_external_provider_join_missing_pending_is_rejected(legacy_approv
         .await,
         Err(crate::ImError::PermissionDenied)
     ));
+    // A valid remote receipt is retained, but authorization and custody stay unchanged.
+    state_before
+        .approval
+        .as_mut()
+        .unwrap()
+        .confirmed_authorization = Some(authorization.clone());
     assert_eq!(
         store
             .load(&started.session.join_session_id, DeviceJoinSide::Admin)
@@ -1410,6 +1420,307 @@ async fn external_provider_join_exact_operation_rejects_missing_pending_before_c
 #[tokio::test]
 async fn external_provider_join_legacy_approval_rejects_missing_pending_before_convergence() {
     assert_external_provider_join_missing_pending_is_rejected(true).await;
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn external_provider_join_repairs_legacy_registry_checkpoint_after_restart() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let mut legacy_checkpoint = fixture.authorization.checkpoint.clone();
+    legacy_checkpoint.registry_version -= 1;
+    // Reproduce the old SDK's committed document with its guessed Registry
+    // counter, before Core recorded the remote authorization.
+    complete_provider_document_change(&client, &fixture.prepared.new_document, &legacy_checkpoint)
+        .await
+        .unwrap();
+    assert!(client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .resume_document_change()
+        .await
+        .unwrap()
+        .is_none());
+    drop(client);
+    drop(fixture.admin);
+    let admin = reopen_external_provider_core(admin_root.path());
+    for _ in 0..2 {
+        let session = mark_join_authorized_async(
+            &admin,
+            &fixture.started.session.join_session_id,
+            &fixture.authorization,
+            &fixture.prepared.new_document,
+        )
+        .await
+        .unwrap();
+        assert_eq!(session.phase, DeviceJoinLocalPhase::Authorized);
+    }
+    let client = admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let checkpoint = client
+        .runtime()
+        .identity_session
+        .as_ref()
+        .unwrap()
+        .host_status()
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    assert_eq!(
+        checkpoint.document_version,
+        fixture.authorization.checkpoint.document_version
+    );
+    assert_eq!(
+        checkpoint.registry_version,
+        fixture.authorization.checkpoint.registry_version
+    );
+    assert_eq!(
+        checkpoint.document_digest,
+        fixture.authorization.checkpoint.document_hash
+    );
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&admin.inner().sdk_paths().identities)
+            .load_index()
+            .unwrap();
+    let alias = client.current_identity().local_alias.as_ref().unwrap();
+    assert_eq!(
+        index.credentials[alias]
+            .device_state
+            .as_ref()
+            .unwrap()
+            .checkpoint
+            .as_ref(),
+        Some(&fixture.authorization.checkpoint)
+    );
+}
+
+#[cfg(feature = "provider-traits")]
+fn completed_admin_notification(
+    fixture: &ExternalProviderAdminJoinFixture,
+) -> crate::internal::system_notification::wire::JoinNotification {
+    use crate::internal::system_notification::wire::{JoinNotification, JoinPayload};
+    JoinNotification {
+        kind: crate::system_notifications::SystemNotificationKind::JoinCompleted,
+        event_id: "confirmed-join-event".to_owned(),
+        did: fixture.started.join_request.did.clone(),
+        join_session_id: fixture.started.session.join_session_id.clone(),
+        state: crate::system_notifications::SystemNotificationState::Consumed,
+        session_revision: 4,
+        issued_at: format_time(OffsetDateTime::now_utc()).unwrap(),
+        expires_at: fixture.started.session.expires_at.clone(),
+        payload: JoinPayload::Completed(
+            serde_json::from_value(json!({
+                "state": "consumed",
+                "checkpoint": fixture.authorization.checkpoint,
+                "device": fixture.authorization.device,
+            }))
+            .unwrap(),
+        ),
+        initial_join_request: None,
+        canonical_value: Value::Null,
+    }
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn completed_notification_recovers_expired_admin_projection_and_grant_progress() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let notification = completed_admin_notification(&fixture);
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let mut legacy_checkpoint = fixture.authorization.checkpoint.clone();
+    legacy_checkpoint.registry_version -= 1;
+    complete_provider_document_change(&client, &fixture.prepared.new_document, &legacy_checkpoint)
+        .await
+        .unwrap();
+    let store = JoinStateStore::new(&fixture.admin);
+    let mut stored = store
+        .load(&notification.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    stored.challenge.as_mut().unwrap().challenge_expires_at = "2000-01-01T00:00:00Z".to_owned();
+    store.save(&stored).unwrap();
+    assert!(matches!(
+        ensure_not_expired(&stored),
+        Err(crate::ImError::SessionExpired)
+    ));
+    drop(client);
+    drop(fixture.admin);
+    let admin = reopen_external_provider_core(admin_root.path());
+    let client = admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    assert!(
+        recover_confirmed_admin_join_async(&admin, &client, &notification)
+            .await
+            .unwrap()
+    );
+    let restored = admin
+        .device_join()
+        .local_device_join_verification_progress_async(
+            crate::identity::IdentitySelector::Default,
+            &notification.join_session_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.session.phase, DeviceJoinLocalPhase::Authorized);
+    assert_eq!(
+        restored.remote_state,
+        crate::identity::DeviceJoinRemoteState::Consumed
+    );
+    assert!(restored.sas.is_none());
+    assert_eq!(
+        restored
+            .authorized_device
+            .unwrap()
+            .protocol_device_id
+            .as_str(),
+        fixture.started.join_request.device_id
+    );
+    assert!(
+        recover_confirmed_admin_join_async(&admin, &client, &notification)
+            .await
+            .unwrap()
+    );
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn completed_notification_rejects_mismatched_evidence_without_mutating_approval() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    let store = JoinStateStore::new(&fixture.admin);
+    let before = store
+        .load(
+            &fixture.started.session.join_session_id,
+            DeviceJoinSide::Admin,
+        )
+        .unwrap()
+        .unwrap();
+    for field in ["document_hash", "device_id", "role", "state"] {
+        let mut notification = completed_admin_notification(&fixture);
+        let crate::internal::system_notification::wire::JoinPayload::Completed(payload) =
+            &mut notification.payload
+        else {
+            unreachable!()
+        };
+        match field {
+            "document_hash" => payload.checkpoint.document_hash = "sha256:wrong".to_owned(),
+            "device_id" => payload.device.device_id = "other-device".to_owned(),
+            "role" => payload.device.role = "admin".to_owned(),
+            "state" => payload.state = "pending".to_owned(),
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            recover_confirmed_admin_join_async(&fixture.admin, &client, &notification).await,
+            Err(crate::ImError::PermissionDenied)
+        ));
+        assert_eq!(
+            store
+                .load(&notification.join_session_id, DeviceJoinSide::Admin)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+    }
+    let mut notification = completed_admin_notification(&fixture);
+    notification.did = "did:wba:wrong.test:user".to_owned();
+    assert!(
+        !recover_confirmed_admin_join_async(&fixture.admin, &client, &notification)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .load(&notification.join_session_id, DeviceJoinSide::Admin)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+}
+
+#[cfg(feature = "provider-traits")]
+#[tokio::test]
+async fn historical_completed_notification_cannot_roll_back_a_newer_provider_document() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let fixture =
+        prepare_external_provider_admin_join(admin_root.path(), candidate_root.path()).await;
+    let notification = completed_admin_notification(&fixture);
+    let client = fixture
+        .admin
+        .client_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    complete_provider_document_change(
+        &client,
+        &fixture.prepared.new_document,
+        &fixture.authorization.checkpoint,
+    )
+    .await
+    .unwrap();
+    let newer = provider_document_change_candidate(&client, json!({
+        "changes": [{"change": "remove_device", "deviceId": fixture.started.join_request.device_id}],
+    })).await.unwrap().unwrap();
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: fixture.authorization.checkpoint.document_version + 1,
+        registry_version: fixture.authorization.checkpoint.registry_version + 1,
+        document_hash: canonical_hash(&newer.document).unwrap(),
+    };
+    complete_provider_document_change(&client, &newer.document, &checkpoint)
+        .await
+        .unwrap();
+    let store = JoinStateStore::new(&fixture.admin);
+    let before = store
+        .load(&notification.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    let provider = client.runtime().identity_session.as_ref().unwrap();
+    let provider_before = provider.host_status().await.unwrap();
+    assert!(
+        !recover_confirmed_admin_join_async(&fixture.admin, &client, &notification)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .load(&notification.join_session_id, DeviceJoinSide::Admin)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    assert_eq!(provider.host_status().await.unwrap(), provider_before);
+    assert_eq!(
+        provider.public_identity().await.unwrap().document,
+        newer.document
+    );
+    assert!(provider.resume_document_change().await.unwrap().is_none());
 }
 
 #[cfg(feature = "provider-traits")]
@@ -1494,6 +1805,12 @@ async fn external_provider_completes_admin_join_signing_and_document_change() {
         .await,
         Err(crate::ImError::PermissionDenied)
     ));
+    // A valid remote receipt is retained, but authorization and custody stay unchanged.
+    wrong_operation_state
+        .approval
+        .as_mut()
+        .unwrap()
+        .confirmed_authorization = Some(authorization.clone());
     assert_eq!(
         store
             .load(&started.session.join_session_id, DeviceJoinSide::Admin)
@@ -1705,6 +2022,12 @@ async fn external_provider_join_rejects_and_preserves_a_different_pending_candid
         .await,
         Err(crate::ImError::PermissionDenied)
     ));
+    // A valid remote receipt is retained, but authorization and custody stay unchanged.
+    state_before
+        .approval
+        .as_mut()
+        .unwrap()
+        .confirmed_authorization = Some(authorization.clone());
     assert_eq!(
         store
             .load(&started.session.join_session_id, DeviceJoinSide::Admin)

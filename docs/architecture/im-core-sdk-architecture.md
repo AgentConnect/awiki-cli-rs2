@@ -350,6 +350,18 @@ unchanged. If the provider document and checkpoint have already converged
 exactly, Core validates them and returns without resuming a transaction or
 adopting the document again.
 
+Core persists the verified consumed authorization in that private approval
+journal before committing custody. ANP Identity commits the independent remote
+document/Registry versions atomically with the document and pending removal;
+Core then writes its projection, marks the Join authorized, and cleans pairing
+secrets last. The verified local completed notification can resume this closure
+after a restart or pairing deadline without polling or repeating approval.
+For older SDK records with no pending change, only the exact already-committed
+document, digest and document version may receive a forward Registry checkpoint
+repair. An unrelated document/pending operation remains rejected. Historical
+receipts behind either current projection are ignored for recovery, never used
+to roll it back. No Root transfer is implied by this local closure.
+
 Remote `consumed` is not sufficient local authorization. The candidate resolves
 the DID Document independently, verifies its exact Manifest entry and keys,
 then performs a fresh device-signed User Service request and stores the returned

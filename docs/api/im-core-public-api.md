@@ -742,6 +742,10 @@ have an admin-side cancel API.
 ResponseVerified/ApprovalPrepared 阶段的纯本地短期读取入口。它只从已验证的 admin session
 与 Vault 读取 SAS，不发 RPC、不写 System Notification projection，也不推进 Join state。SAS
 不进入 `DeviceJoinRequestNotice`、realtime event、CLI JSON 或 durable notice。
+该入口也可读取已在本机完成收口的 `Authorized/consumed` 管理端结果：返回已批准设备摘要，
+不返回 SAS、不再次批准或发送 Root。`local_device_join_requests` 处理已验证的完成通知时，
+可从本机批准记录恢复未完成的本地投影；只有本机实际批准并完成收口的通知才恢复
+`claimed_by_current_device`，供 App 重开可选管理权限步骤。
 
 新设备侧 `poll_new_device_join` 在远端保持 `response_verified` 且本地仍为
 `ResponsePrepared` 时，会从 restart-safe transcript 与 Vault pairing secret 重新派生同一
@@ -804,6 +808,10 @@ document-change operation ID。远端 Join 已提交后的本地收口只续接�
 字段时，只允许在完整 document、digest 和单调 checkpoint 精确一致时兼容续接；其他 pending
 一律失败关闭且原样保留。provider document 与 checkpoint 已精确收敛时只执行严格校验并幂等
 返回，不再 resume transaction 或重复 adopt。该内部兼容信息不进入 public Join DTO。
+确认回执先写入私有 approval journal；SDK 按回执分别原子保存 Document/Registry 版本，
+随后 Core 保存投影、标记 Authorized，最后清理配对秘密。已消费的授权不受后来的配对超时
+影响。旧 SDK 已清 pending 但遗漏 Registry 版本时，只允许同一完整文档、digest 和
+document_version 的 Registry 前进修复；过时回执不得回滚任一当前版本。
 
 ### 5.2 Management-device root-key transfer
 

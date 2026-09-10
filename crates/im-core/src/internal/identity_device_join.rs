@@ -142,6 +142,9 @@ struct StoredAdminApproval {
     input_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_document_change_operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confirmed_authorization:
+        Option<crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization>,
     expected_checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
     new_document: Value,
     pairing_confirmation:
@@ -1532,6 +1535,7 @@ pub(crate) fn prepare_admin_approval(
         operation_id,
         input_hash,
         provider_document_change_operation_id: None,
+        confirmed_authorization: None,
         expected_checkpoint: expected_checkpoint.clone(),
         new_document,
         pairing_confirmation,
@@ -1705,6 +1709,7 @@ pub(crate) async fn prepare_admin_approval_async(
         operation_id,
         input_hash,
         provider_document_change_operation_id: Some(provider_document_change_operation_id),
+        confirmed_authorization: None,
         expected_checkpoint: expected_checkpoint.clone(),
         new_document,
         pairing_confirmation,
@@ -1854,18 +1859,33 @@ pub(crate) async fn mark_join_authorized_async(
     let (snapshot, admin_identity) = {
         let _guard = lock_join_state(core)?;
         let store = JoinStateStore::new(core);
-        let stored = store
+        let mut stored = store
             .load(&join_session_id, DeviceJoinSide::Admin)?
             .ok_or_else(|| crate::ImError::IdentityNotFound {
                 selector: join_session_id.clone(),
             })?;
-        if stored.phase != DeviceJoinLocalPhase::Authorized {
-            ensure_not_expired(&stored)?;
-            if stored.phase != DeviceJoinLocalPhase::ApprovalPrepared {
-                return Err(invalid_state("admin approval is not prepared"));
-            }
+        if !matches!(
+            stored.phase,
+            DeviceJoinLocalPhase::Authorized | DeviceJoinLocalPhase::ApprovalPrepared
+        ) {
+            return Err(invalid_state("admin approval is not prepared"));
         }
         validate_remote_authorization(&stored, authorization, resolved_document)?;
+        // Remote consumption is final even if its local projection is retried
+        // after the pairing deadline. Keep the verified receipt before custody
+        // can commit and clear its pending document-change transaction.
+        let approval = stored
+            .approval
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if let Some(confirmed) = approval.confirmed_authorization.as_ref() {
+            if confirmed != authorization {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        } else {
+            approval.confirmed_authorization = Some(authorization.clone());
+            store.save(&stored)?;
+        }
         let admin_identity = stored
             .admin_identity
             .clone()
@@ -1927,6 +1947,141 @@ pub(crate) async fn mark_join_authorized_async(
     }
     cleanup_consumed_join_secrets(core, &stored)?;
     summary(&stored)
+}
+
+pub(crate) async fn recover_confirmed_admin_join_async(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    notification: &crate::internal::system_notification::wire::JoinNotification,
+) -> crate::ImResult<bool> {
+    let stored = {
+        let _guard = lock_join_state(core)?;
+        JoinStateStore::new(core).load(&notification.join_session_id, DeviceJoinSide::Admin)?
+    };
+    let Some(stored) = stored else {
+        return Ok(false);
+    };
+    let Some(approval) = stored.approval.as_ref() else {
+        return Ok(false);
+    };
+    if !owns_admin_join(client, &stored)? || notification.did != stored.join_request.did {
+        return Ok(false);
+    }
+    if stored.phase == DeviceJoinLocalPhase::Authorized {
+        if approval.confirmed_authorization.is_some() {
+            cleanup_consumed_join_secrets(core, &stored)?;
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    if stored.phase != DeviceJoinLocalPhase::ApprovalPrepared {
+        return Ok(false);
+    }
+    let authorization = match &notification.payload {
+        crate::internal::system_notification::wire::JoinPayload::Completed(payload) => {
+            if payload.state != "consumed" {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            serde_json::from_value(json!({
+                "checkpoint": payload.checkpoint,
+                "device": payload.device,
+            }))
+            .map_err(|_| crate::ImError::PermissionDenied)?
+        }
+        _ => match approval.confirmed_authorization.as_ref() {
+            Some(authorization) => authorization.clone(),
+            None => return Ok(false),
+        },
+    };
+    validate_remote_authorization(&stored, &authorization, &approval.new_document)?;
+    // Historical completed notifications must not roll a newer projection back
+    // or prevent the latest confirmed operation from being recovered.
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    let local_checkpoint = client
+        .current_identity()
+        .local_alias
+        .as_ref()
+        .and_then(|alias| index.credentials.get(alias))
+        .and_then(|entry| entry.device_state.as_ref())
+        .and_then(|state| state.checkpoint.as_ref());
+    if local_checkpoint.is_some_and(|current| {
+        current.document_version > authorization.checkpoint.document_version
+            || current.registry_version > authorization.checkpoint.registry_version
+    }) {
+        return Ok(false);
+    }
+    if let Some(identity) = client.runtime().identity_session.as_ref() {
+        let status = identity
+            .host_status()
+            .await
+            .map_err(crate::internal::identity_provider::map_provider_error)?;
+        if status.checkpoint.as_ref().is_some_and(|current| {
+            current.document_version > authorization.checkpoint.document_version
+                || current.registry_version > authorization.checkpoint.registry_version
+        }) {
+            return Ok(false);
+        }
+    }
+    mark_join_authorized_async(
+        core,
+        &notification.join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .await?;
+    Ok(true)
+}
+
+fn owns_admin_join(
+    client: &crate::core::ImClient,
+    stored: &StoredJoinSession,
+) -> crate::ImResult<bool> {
+    Ok(stored.join_request.did == client.did().as_str()
+        && stored.pairing_private_ref.identity_id.as_deref()
+            == Some(client.current_identity().id.as_str())
+        && stored.pairing_private_ref.did.as_deref() == Some(client.did().as_str())
+        && stored.approval.as_ref().is_some_and(|approval| {
+            client
+                .exact_protocol_device_id()
+                .is_ok_and(|device| device == approval.authorizing_device_id)
+        }))
+}
+
+pub(crate) fn local_authorized_admin_progress(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    join_session_id: &str,
+) -> crate::ImResult<Option<crate::internal::identity_device_join_runtime::DeviceJoinAdvanceResult>>
+{
+    let _guard = lock_join_state(core)?;
+    let Some(stored) = JoinStateStore::new(core).load(join_session_id, DeviceJoinSide::Admin)?
+    else {
+        return Ok(None);
+    };
+    if stored.phase != DeviceJoinLocalPhase::Authorized {
+        return Ok(None);
+    }
+    if !owns_admin_join(client, &stored)? {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let Some(authorization) = stored
+        .approval
+        .as_ref()
+        .and_then(|approval| approval.confirmed_authorization.clone())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        crate::internal::identity_device_join_runtime::DeviceJoinAdvanceResult {
+            session: summary(&stored)?,
+            remote_state:
+                crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Consumed,
+            authorization: Some(authorization),
+            sas: None,
+        },
+    ))
 }
 
 fn prepare_admin_projection_context(
