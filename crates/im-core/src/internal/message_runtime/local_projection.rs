@@ -233,9 +233,11 @@ pub(crate) async fn persist_remote_messages_async(
 pub(crate) fn persist_direct_outgoing_result(
     client: &crate::core::ImClient,
     target_did: &str,
+    current_target_did: &str,
     target_handle: Option<&str>,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
+    wire_created_at: Option<&str>,
 ) -> crate::ImResult<()> {
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -245,11 +247,11 @@ pub(crate) fn persist_direct_outgoing_result(
         &direct_outgoing_result_record(
             client,
             target_did,
-            target_did,
+            current_target_did,
             target_handle,
             peer_scope,
             sdk_result,
-            None,
+            wire_created_at,
         ),
     )
 }
@@ -258,31 +260,13 @@ pub(crate) fn persist_direct_outgoing_result(
 pub(crate) fn persist_direct_outgoing_result(
     _client: &crate::core::ImClient,
     _target_did: &str,
+    _current_target_did: &str,
     _target_handle: Option<&str>,
     _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _sdk_result: &crate::messages::SendMessageResult,
+    _wire_created_at: Option<&str>,
 ) -> crate::ImResult<()> {
     Err(crate::ImError::unsupported("sync-message-projection"))
-}
-
-#[cfg(feature = "sqlite")]
-pub(crate) async fn persist_direct_outgoing_result_async(
-    client: &crate::core::ImClient,
-    target_did: &str,
-    target_handle: Option<&str>,
-    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
-    sdk_result: &crate::messages::SendMessageResult,
-) -> crate::ImResult<()> {
-    persist_direct_outgoing_result_with_wire_target_async(
-        client,
-        target_did,
-        target_did,
-        target_handle,
-        peer_scope,
-        sdk_result,
-        None,
-    )
-    .await
 }
 
 #[cfg(feature = "sqlite")]
@@ -1280,7 +1264,7 @@ fn direct_outgoing_result_record(
 }
 
 #[cfg(feature = "sqlite")]
-fn send_projection_record(
+pub(crate) fn send_projection_record(
     client: &crate::core::ImClient,
     target: &crate::messages::MessageTarget,
     body: &crate::messages::MessageBody,

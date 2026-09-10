@@ -6,6 +6,12 @@ Use this reference when you are handling runtime selection and long-connection d
 
 This file is a **reference**, not an entry skill. Load it only when the task clearly involves runtime mode, listener, websocket transport, host notification, or runtime recovery.
 
+`awiki-cli status`、`id status`、`init` 和注册完成的结果增加 `data.readiness`：
+身份可用与后台实时接收就绪分别用 `identity_ready`、`realtime.ready` 表示。
+listener 未安装、未启动、当前身份未连接或可靠同步基线未完成时都会给出具体状态和下一条命令。
+`next_command_args` 保留当前租户选择。HTTP 模式是 `on_demand`，可以主动同步消息；
+初始化、注册和状态查询本身不会启动 listener。使用 `runtime listener status` 查看服务详细状态。
+
 ## Current Status
 
 - Status: **implemented**

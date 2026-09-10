@@ -1454,6 +1454,15 @@ Reliable sync 补充：
   echo 前 fail closed。target-first `send` 继续作为 CLI/daemon/legacy compatibility API。
   `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
   retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
+- 启用 SQLite 的 target-first `send` / `send_async` 对普通、非委托 Direct 文本/JSON，
+  在网络写入前事务提交发送意图，固定 message ID、operation ID、wire target 和 `created_at`。
+  显式 operation ID 未带 message ID 时，按 owner identity + operation ID 派生稳定 message ID；
+  只带 message ID 时派生稳定 operation ID。两者都省略则每次调用产生新消息。
+  重试核对同 owner/canonical conversation/正文/类型/operation；冲突或旧记录缺少原始 wire
+  时间戳时返回 `MessageWireIdentityConflict`，不能猜测时间戳、删除记录或静默生成新 ID。
+  并发准备使用 SQLite immediate transaction；发送响应丢失后仍保留原意图。后续普通消息
+  projection 更新保留原始 wire 时间戳及缺省的 operation ID；已接受消息不回退 pending。
+  Handle 后续恢复不改变已发送请求的目标。delegated、附件和 E2EE 沿用各自 runtime。
 - conversation-surface Direct 正常发送只读取 owner-scoped 本地 route，不预先请求 Directory
   或公开 WNS。只有远端明确返回 `anp.invalid_target_binding`（兼容旧 `1406` 或
   `data.json_rpc_code = 1406`）且 `reason = stale_did` 时，Core 才执行一次 Direct route
@@ -1485,6 +1494,11 @@ Reliable sync 补充：
   `MarkThreadReadResult.effective_watermark` 是本地已提交水位；`pending_remote_ack=true`
   只表示远端回执尚待收敛，不回滚本地 read-state。调用方必须保留这个结构化结果，不能把
   `remote_acknowledged=false` 直接等同于本地失败。
+- `mark_read(ids)` 先按 owner identity 解析消息。指定自己的 outgoing 消息时返回
+  `InvalidInput { field: Some("message_ids.direction"), ... }`，CLI 映射为
+  `message_not_incoming`（exit 2）。它们已在本地标记已读，不能借此改变接收方 read state。
+  未找到、其他 owner 和未 hydrated incoming 仍保持 `MessageNotFound`；批次包含 outgoing
+  时不提交部分消息已读或发送部分 read acknowledgement。
 - `load_conversation_snapshot`、`clear_conversation_snapshot`、
   `watch_conversation_patches`、`repair_conversation_store` 和
   `watch_conversation_timeline_patches`、`repair_conversation_timeline_store` 是

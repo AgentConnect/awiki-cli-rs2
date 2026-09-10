@@ -1,3 +1,5 @@
+#[cfg(feature = "sqlite")]
+pub(crate) mod direct_send_intent;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "sqlite")]
@@ -778,6 +780,16 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         THEN messages.metadata
         WHEN messages.hydration_state = 'hydrated' AND excluded.hydration_state <> 'hydrated'
         THEN COALESCE(NULLIF(messages.metadata, ''), excluded.metadata)
+        WHEN messages.wire_thread_kind = 'direct' AND messages.is_e2ee = 0 AND messages.direction = 1
+         AND excluded.wire_thread_kind = 'direct' AND excluded.is_e2ee = 0 AND excluded.direction = 1
+         AND json_valid(COALESCE(messages.metadata, ''))
+         AND json_valid(COALESCE(NULLIF(excluded.metadata, ''), '{}'))
+         AND json_type(messages.metadata, '$.wire_created_at') = 'text'
+         AND length(json_extract(messages.metadata, '$.wire_created_at')) > 0
+        THEN json_set(COALESCE(NULLIF(excluded.metadata, ''), '{}'),
+            '$.wire_created_at', json_extract(messages.metadata, '$.wire_created_at'),
+            '$.operation_id', COALESCE(json_extract(COALESCE(NULLIF(excluded.metadata, ''), '{}'), '$.operation_id'),
+                                      json_extract(messages.metadata, '$.operation_id')))
         WHEN excluded.content IS NULL
          AND messages.is_e2ee = 1
          AND json_valid(COALESCE(NULLIF(messages.metadata, ''), '{}')) = 1
@@ -2635,7 +2647,13 @@ LIMIT 1"#,
                 message_id: requested_id.to_owned(),
             })?;
         let (conversation_id, message_id, server_seq, direction, hydration_state, metadata) = row;
-        if direction != 0 || hydration_state.trim() != "hydrated" {
+        if direction != 0 {
+            return Err(crate::ImError::invalid_input(
+                Some("message_ids.direction".to_owned()),
+                "Only received messages can be marked as read. Sent messages are already read locally.",
+            ));
+        }
+        if hydration_state.trim() != "hydrated" {
             return Err(crate::ImError::MessageNotFound {
                 message_id: requested_id.to_owned(),
             });

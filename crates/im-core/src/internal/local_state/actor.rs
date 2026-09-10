@@ -10,6 +10,11 @@ pub(crate) struct LocalStateDb {
 }
 
 enum LocalStateCommand {
+    PrepareDirectSend {
+        record: super::messages::MessageRecord,
+        reply:
+            oneshot::Sender<crate::ImResult<super::messages::direct_send_intent::DirectSendIntent>>,
+    },
     CurrentSchemaVersion {
         reply: oneshot::Sender<crate::ImResult<i64>>,
     },
@@ -1018,6 +1023,16 @@ impl LocalStateDb {
             reply,
         })
         .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn prepare_direct_send(
+        &self,
+        record: super::messages::MessageRecord,
+    ) -> crate::ImResult<super::messages::direct_send_intent::DirectSendIntent> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::PrepareDirectSend { record, reply })
+            .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -2622,6 +2637,10 @@ fn run_actor(
                     &owner_did,
                     &conversation_id,
                 );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::PrepareDirectSend { record, reply } => {
+                let result = super::messages::direct_send_intent::prepare(&mut connection, record);
                 let _ = reply.send(result);
             }
             LocalStateCommand::StoreMessages { records, reply } => {

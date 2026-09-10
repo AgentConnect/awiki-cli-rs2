@@ -58,6 +58,8 @@ pub enum MessageAdapterError {
     GroupNotSupported,
     GroupE2eeSelfLeaveUnsupported,
     MessageNotFound,
+    MessageNotIncoming,
+    MessageRetryConflict,
     IdentityRequired(String),
     PermissionDenied,
     LocalStateUnavailable(String),
@@ -161,7 +163,11 @@ impl fmt::Display for MessageAdapterError {
             Self::GroupE2eeSelfLeaveUnsupported => {
                 formatter.write_str("group E2EE self-leave is not cryptographically supported yet")
             }
+            Self::MessageRetryConflict => formatter.write_str("The message ID or idempotency key conflicts with a saved send request, or its original request timestamp is unavailable."),
             Self::MessageNotFound => formatter.write_str("message not found"),
+            Self::MessageNotIncoming => formatter.write_str(
+                "Only received messages can be marked as read. Sent messages are already read locally.",
+            ),
             Self::IdentityRequired(message)
             | Self::LocalStateUnavailable(message)
             | Self::PathUnavailable(message)

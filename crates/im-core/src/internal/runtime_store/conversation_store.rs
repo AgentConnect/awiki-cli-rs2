@@ -357,9 +357,11 @@ mod tests {
         crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
             &client,
             "did:example:bob",
+            "did:example:bob",
             None,
             None,
             &send_result("canonical-live"),
+            None,
         )
         .unwrap();
         crate::internal::snapshot::conversation_snapshot::save_for_client(
@@ -685,9 +687,11 @@ mod tests {
         crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
             &client,
             "did:example:bob",
+            "did:example:bob",
             None,
             None,
             &sdk_result,
+            None,
         )
         .unwrap();
 

@@ -18,6 +18,13 @@ fn bridge_identity_name(resolved: &Resolved, requested: &str) -> String {
     }
 }
 
+fn unsupported_inbox_option(command: &str, capability: &str, hint: &str) -> ExitError {
+    let mut error = super::unsupported::unsupported_cutover_command(command, capability, "Phase 3");
+    error.detail.message = "This inbox option is not supported in this CLI version.".to_owned();
+    error.detail.hint = hint.to_owned();
+    error
+}
+
 fn listener_local_command_error(method: &str, error: &anyhow::Error) -> ExitError {
     let stage = error
         .downcast_ref::<crate::host_runtime::bridge::BridgeCallError>()
@@ -739,17 +746,17 @@ impl App {
         if !string_flag(command, "with").trim().is_empty()
             || !string_flag(command, "group").trim().is_empty()
         {
-            return Err(super::unsupported::unsupported_cutover_command(
+            return Err(unsupported_inbox_option(
                 "msg.inbox",
                 "inbox-target-filters",
-                "Phase 3",
+                "Use `awiki-cli msg history --with <peer>` or `awiki-cli msg history --group <group_did>` to read one conversation.",
             ));
         }
         if bool_flag(command, "mark-read") {
-            return Err(super::unsupported::unsupported_cutover_command(
+            return Err(unsupported_inbox_option(
                 "msg.inbox",
                 "inbox-mark-read-side-effect",
-                "Phase 3",
+                "Read the inbox first, then use `awiki-cli msg mark-read <message_id> ...` for the received messages you want to mark as read.",
             ));
         }
         self.run_msg_inbox_im_core(command)
@@ -759,17 +766,17 @@ impl App {
         if !string_flag(command, "with").trim().is_empty()
             || !string_flag(command, "group").trim().is_empty()
         {
-            return Err(super::unsupported::unsupported_cutover_command(
+            return Err(unsupported_inbox_option(
                 "msg.inbox",
                 "inbox-target-filters",
-                "Phase 3",
+                "Use `awiki-cli msg history --with <peer>` or `awiki-cli msg history --group <group_did>` to read one conversation.",
             ));
         }
         if bool_flag(command, "mark-read") {
-            return Err(super::unsupported::unsupported_cutover_command(
+            return Err(unsupported_inbox_option(
                 "msg.inbox",
                 "inbox-mark-read-side-effect",
-                "Phase 3",
+                "Read the inbox first, then use `awiki-cli msg mark-read <message_id> ...` for the received messages you want to mark as read.",
             ));
         }
         self.run_msg_inbox_im_core_async(command).await
@@ -1433,6 +1440,16 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             2,
             err.to_string(),
             "Check the message command arguments and try again.",
+        ),
+        MessageAdapterError::MessageRetryConflict => ExitError::new(
+            "message_retry_conflict", 2, err.to_string(),
+            "Retry with the original recipient, content, message ID and idempotency key. Check message history before starting a new send with new IDs; do not delete local state to retry.",
+        ),
+        MessageAdapterError::MessageNotIncoming => ExitError::new(
+            "message_not_incoming",
+            2,
+            err.to_string(),
+            "Use message IDs from `awiki-cli msg inbox` to mark received messages as read.",
         ),
         MessageAdapterError::MessageNotFound | MessageAdapterError::AttachmentNotFound => {
             ExitError::new("not_found", 5, err.to_string(), hint)

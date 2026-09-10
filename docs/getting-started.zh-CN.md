@@ -125,6 +125,14 @@ cargo run -p awiki-cli -- id list
 cargo run -p awiki-cli -- id current
 ```
 
+`init`、注册完成后的输出、`status` 和 `id status` 都包含 `data.readiness`。
+`identity_ready` 表示当前身份能否用于消息操作；`realtime.ready` 仅在当前身份已连接、
+本地 listener bridge 可用且可靠同步基线完成时为 `true`。初始化和注册本身不会安装或启动 listener。
+HTTP 模式显示 `on_demand`，可通过 `msg inbox` / `msg history` 主动同步消息。
+WebSocket 模式会区分 `not_installed`、`stopped`、`disconnected`、`synchronizing`、`ready`
+等状态，并给出 `next_command`；多租户调用可直接使用 `next_command_args`，保留租户选择。
+状态检查失败显示 `unknown`，不会当作已就绪。
+
 ## 6. Runtime
 
 ### WebSocket 模式（推荐）
@@ -179,6 +187,21 @@ cargo run -p awiki-cli -- msg send \
 cargo run -p awiki-cli -- msg inbox
 cargo run -p awiki-cli -- msg history --with <recipient-handle>
 ```
+
+普通 Direct 文本/JSON 发送可以使用 `--client-message-id` 和 `--idempotency-key` 标识同一次发送。
+网络失败后，保留工作区，使用相同目标、内容和 ID 重试；CLI 会复用发送前已落盘的原请求，
+跨进程、重新打开工作区或同步消息后也不会重新生成其时间戳。只提供其中一个 ID 也可稳定重试；
+两者都不提供时，每次调用表示新消息。相同 ID 对应不同内容、目标或幂等键时返回
+`message_retry_conflict`，应先检查 history，避免误用新 ID 重复发送。
+旧版本发送的记录如果没有保存原始时间戳，无法安全重建原请求，也会明确拒绝重放。
+这一机制适用于普通 Direct 文本/JSON；附件、加密消息和委托发送沿用各自发送机制。
+
+`msg inbox --with`、`--group` 和 `--mark-read` 当前不受支持：帮助会明确标注，
+schema 对这些参数返回 `supported: false`，补全不再推荐。查询指定会话使用
+`msg history --with <handle-or-did>` 或 `msg history --group <group>`；
+标记收到的消息使用 `msg mark-read <message-id>`。
+对自己发送的消息执行 mark-read 返回 `message_not_incoming`：它们在本地已读，
+此操作也不能改变对方的阅读状态。不存在或属于其他本地身份的消息仍返回 `not_found`。
 
 ### 7.4 附件
 

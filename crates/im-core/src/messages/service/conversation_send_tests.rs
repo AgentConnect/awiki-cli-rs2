@@ -33,6 +33,8 @@ mod stale_direct_rebind_http_tests {
 
     use serde_json::{json, Value};
 
+    include!("direct_send_retry_http_tests.rs");
+
     const HANDLE: &str = "bob.awiki.info";
     const OLD_DID: &str = "did:wba:awiki.info:user:bob:e1-old";
     const NEW_DID: &str = "did:wba:awiki.info:user:bob:e1-new";

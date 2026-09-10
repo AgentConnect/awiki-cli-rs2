@@ -48,6 +48,9 @@
 `shutdown` JSONL 动作。fixture 只使用一次性 loopback 控制面，不复制或手写身份私钥、
 Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶段不连接服务端。
 
+`cli_shell/readiness.rs` 汇总当前身份和 listener 的只读就绪状态，用于 init、注册完成、
+status 和 id status 的提示；它不安装或启动服务。相邻 `readiness_tests.rs` 覆盖各状态和身份隔离。
+
 ## 顶层文件夹
 
 | 文件夹 | 直属文件数 | 作用 |

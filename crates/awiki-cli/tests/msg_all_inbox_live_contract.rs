@@ -135,6 +135,11 @@ fn msg_inbox_target_filters_are_cutover_unsupported() {
         workspace.path(),
     );
     assert_unsupported_capability(&with_filter, "msg.inbox", "inbox-target-filters", "Phase 3");
+    let error: Value = serde_json::from_slice(&with_filter.stderr).unwrap();
+    assert!(error["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("msg history --with"));
 
     let group_filter = awiki_cmd(
         &[
@@ -249,6 +254,8 @@ fn msg_inbox_mark_read_side_effect_is_cutover_unsupported_and_leaves_local_rows_
     assert_eq!(rows[2]["is_read"], 0);
 }
 
+include!("support/msg_basic_reliability_contract.rs");
+
 struct ExactTestIdentity {
     identity_id: String,
     did: String,
@@ -272,6 +279,9 @@ fn register_exact_msg_identity(workspace: &Path) -> ExactTestIdentity {
     );
     assert_success(&register);
     let envelope: Value = serde_json::from_slice(&register.stdout).expect("registration JSON");
+    assert_eq!(envelope["data"]["readiness"]["identity_ready"], true);
+    assert_eq!(envelope["data"]["readiness"]["realtime"]["ready"], false);
+    assert!(envelope["data"]["readiness"]["realtime"]["next_command"].is_string());
     let did = envelope["data"]["identity"]["did"]
         .as_str()
         .expect("registered DID")
@@ -598,6 +608,23 @@ impl RegistrationServer {
                     prekey_publication_response(&request)
                 };
                 write_http_response(&mut stream, &body);
+                if request_index == 1 {
+                    loop {
+                        let mut stream =
+                            accept_with_timeout(&listener).expect("registration initial receive");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let request = read_http_request(&mut stream);
+                        write_http_response(
+                            &mut stream,
+                            &support::registration_receive::response(&request),
+                        );
+                        if support::registration_receive::completed(&request) {
+                            break;
+                        }
+                    }
+                }
             }
         });
         Self {
@@ -623,7 +650,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                // macOS may inherit O_NONBLOCK from the listening socket.
+                stream.set_nonblocking(false).expect("blocking accepted stream");
+                stream.set_read_timeout(Some(Duration::from_secs(5))).expect("bounded fixture read");
+                return Some(stream);
+            },
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;

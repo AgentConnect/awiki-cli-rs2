@@ -9,6 +9,7 @@ pub struct FlagSpec {
     pub required: bool,
     pub choices: &'static [&'static str],
     pub deprecated: bool,
+    pub unsupported: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1163,6 +1164,12 @@ fn parent_name(name: &str) -> String {
 }
 
 macro_rules! flag {
+    ($name:expr, $ty:expr, $usage:expr, unsupported) => {
+        FlagSpec {
+            unsupported: true,
+            ..flag!($name, $ty, $usage)
+        }
+    };
     ($name:expr, $ty:expr, $usage:expr) => {
         FlagSpec {
             name: $name,
@@ -1172,6 +1179,7 @@ macro_rules! flag {
             required: false,
             choices: &[],
             deprecated: false,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, default = $default:expr) => {
@@ -1183,6 +1191,7 @@ macro_rules! flag {
             required: false,
             choices: &[],
             deprecated: false,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, choices = [$($choice:expr),+ $(,)?]) => {
@@ -1194,6 +1203,7 @@ macro_rules! flag {
             required: false,
             choices: &[$($choice),+],
             deprecated: false,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, default = $default:expr, choices = [$($choice:expr),+ $(,)?]) => {
@@ -1205,6 +1215,7 @@ macro_rules! flag {
             required: false,
             choices: &[$($choice),+],
             deprecated: false,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, required) => {
@@ -1216,6 +1227,7 @@ macro_rules! flag {
             required: true,
             choices: &[],
             deprecated: false,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, required, choices = [$($choice:expr),+ $(,)?]) => {
@@ -1227,6 +1239,7 @@ macro_rules! flag {
             required: true,
             choices: &[$($choice),+],
             deprecated: false,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, deprecated) => {
@@ -1238,6 +1251,7 @@ macro_rules! flag {
             required: false,
             choices: &[],
             deprecated: true,
+            unsupported: false,
         }
     };
     ($name:expr, $ty:expr, $usage:expr, default = $default:expr, choices = [$($choice:expr),+ $(,)?], deprecated) => {
@@ -1249,6 +1263,7 @@ macro_rules! flag {
             required: false,
             choices: &[$($choice),+],
             deprecated: true,
+            unsupported: false,
         }
     };
 }
@@ -1337,7 +1352,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "msg.send", use_: "send", short: "Send a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("to", "string", "Direct message target"), flag!("group", "string", "Group target"), flag!("text", "string", "Inline message text or attachment caption"), flag!("text-file", "string", "Message body or attachment caption file path"), flag!("payload", "string", "Inline JSON object message payload"), flag!("payload-file", "string", "JSON object message payload file path"), flag!("file", "string", "Attachment file path"), flag!("mime-type", "string", "Attachment MIME type override"), flag!("type", "string", "Message type", default = "text"), flag!("secure", "string", "Secure mode", default = "off", choices = ["off", "required"]), flag!("client-message-id", "string", "Client message id for idempotent sends"), flag!("idempotency-key", "string", "Delivery idempotency key") ] },
         CommandSpec { name: "msg.attachment", use_: "attachment", short: "Attachment commands", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "msg.attachment.download", use_: "download", short: "Download one attachment from a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.attachment.download", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("with", "string", "Direct peer DID or handle"), flag!("group", "string", "Group DID"), flag!("message-id", "string", "Visible message id or raw message_id", required), flag!("attachment-id", "string", "Attachment id when the message contains multiple attachments"), flag!("output", "string", "Output file path", required)] },
-        CommandSpec { name: "msg.inbox", use_: "inbox", short: "Read inbox messages", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.inbox", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("scope", "string", "Message scope", default = "all", choices = ["all", "direct", "group"]), flag!("with", "string", "Direct peer filter"), flag!("group", "string", "Group filter"), flag!("unread", "bool", "Only unread messages"), flag!("limit", "int", "Maximum number of results", default = "20"), flag!("mark-read", "bool", "Mark returned messages as read")] },
+        CommandSpec { name: "msg.inbox", use_: "inbox", short: "Read inbox messages", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.inbox", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("scope", "string", "Message scope", default = "all", choices = ["all", "direct", "group"]), flag!("with", "string", "Use `msg history --with <peer>` instead.", unsupported), flag!("group", "string", "Use `msg history --group <group_did>` instead.", unsupported), flag!("unread", "bool", "Only unread messages"), flag!("limit", "int", "Maximum number of results", default = "20"), flag!("mark-read", "bool", "Use `msg mark-read <message_id> ...` instead.", unsupported)] },
         CommandSpec { name: "msg.history", use_: "history", short: "Read message history", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.history", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("with", "string", "Direct peer DID or handle"), flag!("group", "string", "Group DID"), flag!("limit", "int", "Maximum number of rows", default = "50"), flag!("cursor", "string", "Pagination cursor")] },
         CommandSpec { name: "msg.mark-read", use_: "mark-read [MESSAGE_ID...]", short: "Mark messages as read", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.mark-read", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "mail", use_: "mail", short: "Mail commands", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
@@ -1472,6 +1487,7 @@ impl Serialize for FlagSpec {
         map.serialize_entry("name", self.name)?;
         map.serialize_entry("type", self.flag_type)?;
         map.serialize_entry("usage", self.usage)?;
+        map.serialize_entry("supported", &!self.unsupported)?;
         if !self.default.is_empty() {
             map.serialize_entry("default", self.default)?;
         }

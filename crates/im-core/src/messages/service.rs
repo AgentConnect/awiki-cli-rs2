@@ -1,3 +1,6 @@
+#[cfg(feature = "sqlite")]
+mod direct_send_retry;
+
 pub struct MessageService<'a> {
     client: &'a crate::core::ImClient,
 }
@@ -2284,30 +2287,40 @@ impl<'a> MessageService<'a> {
                 self.send_plain_attachment(request)
             }
             (super::MessageTarget::Direct(_), _) => {
-                let resolved = resolve_send_request(self.client, request)?;
+                let mut resolved = resolve_send_request(self.client, request)?;
+                let current_target_did = resolved.target_did.clone();
+                #[cfg(feature = "sqlite")]
+                let wire_created_at = direct_send_retry::prepare(self.client, &mut resolved)?;
                 let direct_handle = resolved.direct_handle().map(str::to_owned);
                 let peer_scope = resolved.peer_scope.clone();
-                let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
+                let sender = crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
                     crate::internal::transport::CoreHttpTransport::new(self.client),
-                )
-                .send(
-                    crate::internal::message_runtime::direct::DirectTextSend {
+                );
+                #[cfg(feature = "sqlite")]
+                let sender = match wire_created_at.as_deref() {
+                    Some(created_at) => sender.with_wire_created_at(created_at),
+                    None => sender,
+                };
+                let mut result =
+                    sender.send(crate::internal::message_runtime::direct::DirectTextSend {
                         request: resolved.request.clone(),
                         resolved_target_did: resolved.target_did.clone(),
                         credentials: None,
-                    },
-                )?;
+                    })?;
+                resolved.target_did = current_target_did;
                 normalize_resolved_direct_send_result(&mut result.sdk_result, &resolved)?;
                 #[cfg(feature = "sqlite")]
                 match
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
                         self.client,
                         &result.target_did,
+                        resolved.target_did.as_deref().unwrap_or(&result.target_did),
                         direct_handle.as_deref(),
                         peer_scope.as_ref(),
                         &result.sdk_result,
+                        wire_created_at.as_deref(),
                     )
                 {
                     Ok(()) => self
@@ -2408,29 +2421,42 @@ impl<'a> MessageService<'a> {
                 self.send_plain_attachment_async(request).await
             }
             (super::MessageTarget::Direct(_), _) => {
-                let resolved = resolve_send_request_async(self.client, request).await?;
+                let mut resolved = resolve_send_request_async(self.client, request).await?;
+                let current_target_did = resolved.target_did.clone();
+                #[cfg(feature = "sqlite")]
+                let wire_created_at =
+                    direct_send_retry::prepare_async(self.client, &mut resolved).await?;
                 let direct_handle = resolved.direct_handle().map(str::to_owned);
                 let peer_scope = resolved.peer_scope.clone();
-                let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
+                let sender = crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
                     crate::internal::transport::CoreHttpTransport::new(self.client),
-                )
-                .send_async(crate::internal::message_runtime::direct::DirectTextSend {
-                    request: resolved.request.clone(),
-                    resolved_target_did: resolved.target_did.clone(),
-                    credentials: None,
-                })
-                .await?;
+                );
+                #[cfg(feature = "sqlite")]
+                let sender = match wire_created_at.as_deref() {
+                    Some(created_at) => sender.with_wire_created_at(created_at),
+                    None => sender,
+                };
+                let mut result = sender
+                    .send_async(crate::internal::message_runtime::direct::DirectTextSend {
+                        request: resolved.request.clone(),
+                        resolved_target_did: resolved.target_did.clone(),
+                        credentials: None,
+                    })
+                    .await?;
+                resolved.target_did = current_target_did;
                 normalize_resolved_direct_send_result(&mut result.sdk_result, &resolved)?;
                 #[cfg(feature = "sqlite")]
                 match
-                    crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
+                    crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_with_wire_target_async(
                         self.client,
                         &result.target_did,
+                        resolved.target_did.as_deref().unwrap_or(&result.target_did),
                         direct_handle.as_deref(),
                         peer_scope.as_ref(),
                         &result.sdk_result,
+                        wire_created_at.as_deref(),
                     )
                     .await
                 {
