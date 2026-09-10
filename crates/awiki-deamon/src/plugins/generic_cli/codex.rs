@@ -80,6 +80,7 @@ struct CodexCommandAttempt {
     resume_mode: CodexResumeMode,
     args: Vec<String>,
     managed_output: ManagedChildOutput,
+    progress_observation: Value,
 }
 
 impl CodexDriver {
@@ -299,6 +300,7 @@ impl GenericCliDriver for CodexDriver {
             resume_mode,
             args,
             managed_output,
+            progress_observation,
         } = attempt;
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
@@ -355,6 +357,7 @@ impl GenericCliDriver for CodexDriver {
                 "error_summary": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String(format!("Codex CLI exited with status {exit_code}")) },
                 "next_action": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String("manual_review_required".to_string()) },
                 "process": process_metadata,
+                "progress_observation": progress_observation,
                 "native_session_id": native_session_id,
                 "native_session_source": native_session_source,
                 "resume": {
@@ -424,12 +427,21 @@ impl CodexDriver {
         apply_codex_env(&mut command, invocation, socket_path, &self.config);
 
         let managed = ManagedChild::spawn(&mut command, "spawn codex exec")?;
-        let managed_output = match managed.write_stdin_and_wait_timeout(
+        let mut progress = super::codex_progress::CodexProgressReporter::new(
+            socket_path.to_path_buf(),
+            invocation.runtime_rpc_token.clone(),
+            invocation.task_id.clone(),
+        );
+        let managed_result = managed.write_stdin_and_wait_timeout_streams_observed(
             prompt.as_bytes(),
             "write codex prompt envelope to stdin",
             "wait for codex exec",
             self.config.run_timeout,
-        ) {
+            |stderr, line, _| progress.on_line(stderr, line),
+            |_| {},
+        );
+        let progress_observation = progress.finish();
+        let managed_output = match managed_result {
             Ok(output) => output,
             Err(error) => {
                 if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
@@ -441,6 +453,7 @@ impl CodexDriver {
                             "driver_id": "codex",
                             "config_home": "configured",
                             "error_code": "codex_cli_timeout",
+                            "progress_observation": progress_observation,
                             "error_summary": timeout.to_string(),
                             "next_action": "manual_review_required",
                             "process": {
@@ -458,6 +471,7 @@ impl CodexDriver {
             resume_mode,
             args,
             managed_output,
+            progress_observation,
         }))
     }
 
@@ -571,22 +585,46 @@ fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
 }
 
 fn looks_like_codex_resume_missing(stdout: &[u8], stderr: &[u8]) -> bool {
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(stdout),
-        String::from_utf8_lossy(stderr)
-    )
-    .to_ascii_lowercase();
-    let mentions_resume_or_session =
-        combined.contains("resume") || combined.contains("session") || combined.contains("thread");
-    mentions_resume_or_session
-        && (combined.contains("not found")
-            || combined.contains("no such")
-            || combined.contains("does not exist")
-            || combined.contains("unknown session")
-            || combined.contains("unknown thread")
-            || combined.contains("invalid session")
-            || combined.contains("invalid thread"))
+    // Never replay a task that has already started, or infer a missing native
+    // session from unrelated network/tool errors elsewhere in the transcript.
+    if stdout.split(|byte| *byte == b'\n').any(|line| {
+        serde_json::from_slice::<Value>(line)
+            .ok()
+            .is_some_and(|event| {
+                event["type"].as_str().is_some_and(|kind| {
+                    kind == "thread.started"
+                        || kind.starts_with("turn.")
+                        || kind.starts_with("item.")
+                })
+            })
+    }) {
+        return false;
+    }
+    stdout
+        .split(|byte| *byte == b'\n')
+        .chain(stderr.split(|byte| *byte == b'\n'))
+        .any(|line| {
+            let event = serde_json::from_slice::<Value>(line).ok();
+            let text = String::from_utf8_lossy(line);
+            let message = match event.as_ref() {
+                Some(event) if event["type"] == "error" => event["message"].as_str().unwrap_or(""),
+                Some(_) => return false,
+                None => text.as_ref(),
+            };
+            let message = message.trim().to_ascii_lowercase();
+            let message = message.strip_prefix("error: ").unwrap_or(&message);
+            [
+                "session not found",
+                "thread not found",
+                "unknown session",
+                "unknown thread",
+                "invalid session",
+                "invalid thread",
+                "no conversation found with id",
+            ]
+            .iter()
+            .any(|prefix| message.starts_with(prefix))
+        })
 }
 
 fn codex_profile_auth_ready(config_home: &Path) -> bool {
@@ -783,3 +821,7 @@ fn sanitize_path_component(input: &str) -> String {
         sanitized
     }
 }
+
+#[cfg(test)]
+#[path = "codex_tests.rs"]
+mod tests;

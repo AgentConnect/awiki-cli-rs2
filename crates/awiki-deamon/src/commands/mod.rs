@@ -37,7 +37,7 @@ use crate::upgrade::{
 use crate::workspace::WorkspaceMode;
 use crate::{DaemonConfig, ImCoreAdapter};
 
-mod latest_value_dispatcher;
+pub(crate) mod latest_value_dispatcher;
 
 use latest_value_dispatcher::LatestValueDispatcher;
 

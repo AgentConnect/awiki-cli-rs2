@@ -5061,6 +5061,13 @@ for ARG in "$@"; do
   PREV="$ARG"
 done
 cat >/dev/null
+printf 'run\n' >> codex-executions
+printf '{"type":"error","message":"Reconnecting... 1/5"}\n'
+sleep 0.1
+printf 'Falling back from WebSockets to HTTPS transport.\n' >&2
+sleep 0.1
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'
+sleep 0.1
 printf '\033[32mfallback final from codex %s\033[0m\007\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" > "$FINAL_OUTPUT"
 exit 0
 "#,
@@ -5094,6 +5101,21 @@ exit 0
     )
     .unwrap();
 
+    assert_eq!(
+        std::fs::read_to_string(
+            profile
+                .workspace_root
+                .as_ref()
+                .unwrap()
+                .join("codex-executions")
+        )
+        .unwrap(),
+        "run\n"
+    );
+    let progress = &result.launch_outcome.metadata["progress_observation"];
+    assert_eq!(progress["report_attempts"], 2);
+    assert_eq!(progress["report_failures"], 2);
+    assert_eq!(progress["delayed_at_exit"], false);
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
     assert!(result.launch_outcome.callbacks.is_empty());
@@ -5757,3 +5779,7 @@ fn captured_value<'a>(capture: &'a str, key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("missing captured value for {key} in {capture:?}"))
         .trim()
 }
+
+#[cfg(unix)]
+#[path = "generic_cli_network/mod.rs"]
+mod network_tests;

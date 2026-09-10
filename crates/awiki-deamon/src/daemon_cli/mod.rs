@@ -264,22 +264,7 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
 
     sync_one_agent_identity(&config, &state, &im_core, &agent)?;
 
-    let service = if options.foreground || options.no_service {
-        ServiceStatus {
-            platform: ServicePlatform::Foreground,
-            installed: false,
-            running: false,
-            unit_path: None,
-            detail: Some(if options.no_service {
-                "service installation skipped by --no-service".to_string()
-            } else {
-                "foreground mode requested".to_string()
-            }),
-        }
-    } else {
-        let executable = crate::service::product_current_executable_path()?;
-        manage_service(&config, &executable, ServiceAction::Install)?
-    };
+    let service = install_daemon_service(&config, options.foreground, options.no_service)?;
 
     update_daemon_latest_status(&registration_client, &config, &state, &agent, &service)
         .context("update daemon latest status")?;
@@ -292,6 +277,33 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
         service,
     })
 }
+
+fn install_daemon_service(
+    config: &DaemonConfig,
+    foreground: bool,
+    no_service: bool,
+) -> Result<ServiceStatus> {
+    Ok(if foreground || no_service {
+        ServiceStatus {
+            platform: ServicePlatform::Foreground,
+            installed: false,
+            running: false,
+            unit_path: None,
+            detail: Some(if no_service {
+                "service installation skipped by --no-service".to_string()
+            } else {
+                "foreground mode requested".to_string()
+            }),
+        }
+    } else {
+        let executable = crate::service::product_current_executable_path()?;
+        manage_service(config, &executable, ServiceAction::Install)?
+    })
+}
+
+#[cfg(test)]
+#[path = "service_tests.rs"]
+mod service_tests;
 
 fn ensure_install_environment_matches_existing_state(config: &DaemonConfig) -> Result<()> {
     let existing = DaemonPersistentConfig::read_optional(&config.config_file_path)?;

@@ -211,6 +211,17 @@ service install 还会写入通用 CLI runtime 环境注入入口：
 - macOS LaunchAgent 使用 `/bin/sh -c` wrapper 只 source 同一路径下的 `agent-cli.env`，再 `exec awiki-deamon foreground`。
 - 该文件缺失不影响 daemon 启动；存在时用于把用户已配置好的 provider/base URL/model 等 CLI 环境显式注入 daemon 进程。
 
+智能体代理现由 `src/agent_network.rs` 共用解析：显式地址整组优先；默认 `auto` 仅在
+macOS 无显式配置时读取系统代理，`inherit` 保留原环境和系统路由。代理与排除变量不依赖
+provider allowlist，Codex 检查/启动、Claude Code 检查/启动、Hermes 检查/网关启动共用规则。
+自动值只注入智能体子进程，不持久化、不修改 Daemon 自身网络；具体排除规则、慢启动状态
+和兼容性边界见 [本地开发](../local-dev.md#智能体代理与等待反馈)。
+
+Codex 实时观察双流，识别重连/回退并复用 App 已有延迟/恢复状态。后台合并队列使进度
+不阻塞任务读取，失败不影响唯一最终回复。JSONL 事件形状依据
+[官方非交互模式文档](https://learn.chatgpt.com/docs/non-interactive-mode)，重连/回退文本
+同时与本地已安装 Codex 二进制字符串核对；未知事件忽略，不改变传输策略。
+
 driver 子进程仍不会继承 daemon 完整环境，而是先 `env_clear()` 后恢复最小 PATH/locale/HOME、profile home 与 AWiki callback 变量。provider/API/base URL/model 等额外变量必须通过 `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 显式列出变量名或前缀选择器，例如 `ANTHROPIC_*,CLAUDE_CODEX_MODEL` 或 `OPENAI_API_KEY,OPENAI_BASE_URL`。敏感值不能写入 service unit、日志、E2E 报告或仓库。
 
 首轮新 route 或无可恢复 native id：
