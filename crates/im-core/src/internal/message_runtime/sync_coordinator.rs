@@ -6,7 +6,11 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::oneshot;
 
 pub(crate) type MessageSyncFuture = Pin<
-    Box<dyn Future<Output = crate::ImResult<crate::messages::MessageSyncOutcome>> + Send + 'static>,
+    Box<
+        dyn Future<Output = crate::ImResult<crate::messages::MessageReceiveOutcome>>
+            + Send
+            + 'static,
+    >,
 >;
 pub(crate) type MessageSyncExecutor =
     Arc<dyn Fn(crate::messages::MessageSyncRequest) -> MessageSyncFuture + Send + Sync + 'static>;
@@ -58,11 +62,11 @@ struct PendingSyncRun {
 
 struct SyncWaiter {
     target_run_id: u64,
-    sender: oneshot::Sender<crate::ImResult<crate::messages::MessageSyncOutcome>>,
+    sender: oneshot::Sender<crate::ImResult<crate::messages::MessageReceiveOutcome>>,
 }
 
 pub(crate) struct MessageSyncRegistration {
-    pub(crate) receiver: oneshot::Receiver<crate::ImResult<crate::messages::MessageSyncOutcome>>,
+    pub(crate) receiver: oneshot::Receiver<crate::ImResult<crate::messages::MessageReceiveOutcome>>,
     pub(crate) leader: Option<MessageSyncLeaderRun>,
 }
 
@@ -132,7 +136,7 @@ impl MessageSyncCoordinator {
         request: crate::messages::MessageSyncRequest,
         kind: MessageSyncRequestKind,
         executor: MessageSyncExecutor,
-    ) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
+    ) -> crate::ImResult<crate::messages::MessageReceiveOutcome> {
         let registration = self.register(request, kind, executor)?;
         if let Some(leader) = registration.leader {
             let coordinator = Arc::clone(self);
@@ -165,7 +169,7 @@ impl MessageSyncCoordinator {
     fn complete_run(
         &self,
         run_id: u64,
-        result: crate::ImResult<crate::messages::MessageSyncOutcome>,
+        result: crate::ImResult<crate::messages::MessageReceiveOutcome>,
     ) -> Option<MessageSyncLeaderRun> {
         let mut state = self
             .state
@@ -281,7 +285,9 @@ fn merge_pending_request(
     pending.executor = executor;
 }
 
-fn shared_result_succeeded(result: &crate::ImResult<crate::messages::MessageSyncOutcome>) -> bool {
+fn shared_result_succeeded(
+    result: &crate::ImResult<crate::messages::MessageReceiveOutcome>,
+) -> bool {
     result.as_ref().is_ok_and(|outcome| {
         matches!(
             outcome.status,
@@ -293,7 +299,7 @@ fn shared_result_succeeded(result: &crate::ImResult<crate::messages::MessageSync
 fn publish_waiters_through(
     state: &mut MessageSyncCoordinatorState,
     run_id: u64,
-    result: &crate::ImResult<crate::messages::MessageSyncOutcome>,
+    result: &crate::ImResult<crate::messages::MessageReceiveOutcome>,
 ) {
     let mut pending = Vec::new();
     for waiter in state.waiters.drain(..) {
@@ -308,7 +314,7 @@ fn publish_waiters_through(
 
 fn publish_all_waiters(
     state: &mut MessageSyncCoordinatorState,
-    result: &crate::ImResult<crate::messages::MessageSyncOutcome>,
+    result: &crate::ImResult<crate::messages::MessageReceiveOutcome>,
 ) {
     for waiter in state.waiters.drain(..) {
         let _ = waiter.sender.send(result.clone());

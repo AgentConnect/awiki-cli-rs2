@@ -85,10 +85,10 @@ pub(crate) fn consume_for_client(
     )
 }
 
-pub(crate) async fn consume_for_client_async(
+pub(crate) async fn prepare_for_client_async(
     client: &crate::core::ImClient,
     value: &Value,
-) -> crate::ImResult<V2ProcessNoticeOutput> {
+) -> crate::ImResult<PreparedP6Notice> {
     let (meta, notice) = parse_notice(value)?;
     let context = runtime_context_for_notice(client, &meta)?;
     let member_documents = match resolve_member_documents_async(
@@ -106,17 +106,47 @@ pub(crate) async fn consume_for_client_async(
         }
         Err(error) => return Err(error),
     };
-    consume_with_runtime(
-        &context.runtime,
+    Ok(PreparedP6Notice {
+        runtime: context.runtime,
         meta,
         notice,
         member_documents,
-        crate::internal::wire::common::now_rfc3339(),
-        format!(
-            "p6-v2-notice-{}",
-            crate::internal::wire::common::generate_operation_id()
-        ),
-    )
+    })
+}
+
+pub(crate) struct PreparedP6Notice {
+    runtime: GroupE2eeV2Runtime,
+    meta: V2GroupNoticeMetadata,
+    notice: V2E2eeNotice,
+    member_documents: Vec<V2DidDocument>,
+}
+
+impl PreparedP6Notice {
+    pub(crate) fn apply(self, nonblocking: bool) -> crate::ImResult<V2ProcessNoticeOutput> {
+        let runtime = if nonblocking {
+            self.runtime.with_nonblocking_operations()
+        } else {
+            self.runtime
+        };
+        consume_with_runtime(
+            &runtime,
+            self.meta,
+            self.notice,
+            self.member_documents,
+            crate::internal::wire::common::now_rfc3339(),
+            format!(
+                "p6-v2-notice-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+        )
+    }
+}
+
+pub(crate) async fn consume_for_client_async(
+    client: &crate::core::ImClient,
+    value: &Value,
+) -> crate::ImResult<V2ProcessNoticeOutput> {
+    prepare_for_client_async(client, value).await?.apply(false)
 }
 
 pub(crate) fn consume_with_runtime(

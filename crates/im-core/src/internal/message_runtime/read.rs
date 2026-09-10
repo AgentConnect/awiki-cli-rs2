@@ -766,7 +766,7 @@ pub(crate) async fn persist_projection_async(
 }
 
 #[cfg(feature = "sqlite")]
-fn remote_projection_records(
+pub(crate) fn remote_projection_records(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
     p5_provenance: &DirectP5ProjectionProvenance,
@@ -4921,47 +4921,31 @@ fn p6_projection_error_code(error: &crate::ImError) -> &'static str {
 }
 
 #[cfg(feature = "group-e2ee")]
-pub(crate) async fn project_p6_v2_incoming_message(
+pub(crate) struct PreparedP6Incoming {
+    pub(crate) runtime: crate::internal::group_e2ee::v2_runtime::GroupE2eeV2Runtime,
+    input: crate::internal::group_e2ee::v2_product::V2IncomingApplicationInput,
+    message: Value,
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn prepare_p6_v2_incoming_message(
     client: &crate::core::ImClient,
-    message: &mut Value,
-) -> crate::ImResult<()> {
-    let wrapper_shape = message.get("params").is_some();
+    message: &Value,
+) -> crate::ImResult<PreparedP6Incoming> {
     let (meta, body, auth) = parse_p6_v2_incoming_notification(message)?;
     let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
     let scope = runtime.owner_scope()?;
-    let recipient_device_id = p6_recipient_device_id(
-        client.did().as_str(),
-        scope.owner_did.as_str(),
-        scope.device_id.as_str(),
-    )?;
+    let recipient_device_id =
+        p6_recipient_device_id(client.did().as_str(), &scope.owner_did, &scope.device_id)?;
     let sender_document = resolve_direct_sender_document_async(
         client,
         &mut crate::internal::transport::CoreHttpTransport::new(client),
         &meta.sender_did,
     )
     .await?;
-    // The Host is not consulted by decrypt_incoming_application; using the
-    // production adapter here keeps one product type without adding a second
-    // wire implementation.
-    let host = crate::internal::group_e2ee::v2_product::RpcGroupE2eeV2Host::new(
-        crate::internal::transport::CoreHttpTransport::new(client),
-        crate::internal::proof::origin::OriginProofIdentity {
-            identity_name: client.current_identity().id.as_str().to_owned(),
-            did_document: None,
-            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(String::new()),
-            verification_method: None,
-        },
-    );
-    let product = crate::internal::group_e2ee::v2_product::GroupE2eeV2Product::new(runtime, host);
-    let group_did = body.group_did.clone();
-    let group_state_version = body.group_state_version.clone();
-    let group_event_seq = body.group_event_seq.clone();
-    let accepted_at = body.accepted_at.clone();
-    let raw_message_id = meta.message_id.clone();
-    let sender_did = meta.sender_did.clone();
-    let sender_device_id = meta.sender_device_id.clone();
-    let output = product.decrypt_incoming_application(
-        crate::internal::group_e2ee::v2_product::V2IncomingApplicationInput {
+    Ok(PreparedP6Incoming {
+        runtime,
+        input: crate::internal::group_e2ee::v2_product::V2IncomingApplicationInput {
             recipient_did: client.did().as_str().to_owned(),
             recipient_device_id,
             meta,
@@ -4975,12 +4959,62 @@ pub(crate) async fn project_p6_v2_incoming_message(
                 crate::internal::wire::common::generate_operation_id()
             ),
         },
-    )?;
+        message: message.clone(),
+    })
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn project_p6_v2_incoming_message(
+    client: &crate::core::ImClient,
+    message: &mut Value,
+) -> crate::ImResult<()> {
+    let prepared = prepare_p6_v2_incoming_message(client, message).await?;
+    *message = project_prepared_p6_incoming(client, prepared, false)?;
+    Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) fn project_prepared_p6_incoming(
+    client: &crate::core::ImClient,
+    prepared: PreparedP6Incoming,
+    received: bool,
+) -> crate::ImResult<Value> {
+    let mut message = prepared.message;
+    let wrapper_shape = message.get("params").is_some();
+    let group_did = prepared.input.body.group_did.clone();
+    let group_state_version = prepared.input.body.group_state_version.clone();
+    let group_event_seq = prepared.input.body.group_event_seq.clone();
+    let accepted_at = prepared.input.body.accepted_at.clone();
+    let raw_message_id = prepared.input.meta.message_id.clone();
+    let sender_did = prepared.input.meta.sender_did.clone();
+    let sender_device_id = prepared.input.meta.sender_device_id.clone();
+    // Decryption is local; the host is never consulted here. Network preparation
+    // happened before the receive-queue business transaction was opened.
+    let host = crate::internal::group_e2ee::v2_product::RpcGroupE2eeV2Host::new(
+        crate::internal::transport::CoreHttpTransport::new(client),
+        crate::internal::proof::origin::OriginProofIdentity {
+            identity_name: client.current_identity().id.as_str().to_owned(),
+            did_document: None,
+            signer: crate::internal::proof::origin::OriginProofSigner::PrivateKeyPem(String::new()),
+            verification_method: None,
+        },
+    );
+    let runtime = if received {
+        prepared.runtime.with_nonblocking_operations()
+    } else {
+        prepared.runtime
+    };
+    let product = crate::internal::group_e2ee::v2_product::GroupE2eeV2Product::new(runtime, host);
+    let output = if received {
+        product.decrypt_received_incoming_application(prepared.input)?
+    } else {
+        product.decrypt_incoming_application(prepared.input)?
+    };
     let plaintext = output.application_plaintext;
     if wrapper_shape {
-        *message = Value::Object(Map::new());
+        message = Value::Object(Map::new());
     }
-    strip_p6_v2_wire_fields(message);
+    strip_p6_v2_wire_fields(&mut message);
     let object = message
         .as_object_mut()
         .ok_or(crate::ImError::PermissionDenied)?;
@@ -5034,7 +5068,7 @@ pub(crate) async fn project_p6_v2_incoming_message(
     } else {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    Ok(message)
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -5508,7 +5542,7 @@ fn attachment_manifest_cache_records(
 }
 
 #[cfg(feature = "sqlite")]
-fn attachment_manifest_cache_record(
+pub(crate) fn attachment_manifest_cache_record(
     client: &crate::core::ImClient,
     message: &Value,
 ) -> Option<crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord>
@@ -5650,7 +5684,7 @@ fn redact_attachment_manifest_content(content: Value) -> Value {
     }
 }
 
-fn message_from_value(
+pub(crate) fn message_from_value(
     client: &crate::core::ImClient,
     value: &Value,
     fallback_group: Option<&crate::ids::GroupRef>,

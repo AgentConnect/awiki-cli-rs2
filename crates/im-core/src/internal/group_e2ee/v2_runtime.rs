@@ -241,6 +241,34 @@ impl GroupE2eeV2Runtime {
     pub(crate) fn decrypt(&self, input: V2DecryptInput) -> crate::ImResult<V2DecryptOutput> {
         v2::decrypt_v2(&self.store, input).map_err(map_group_mls_error)
     }
+
+    pub(crate) fn decrypt_received(
+        &self,
+        input: V2DecryptInput,
+    ) -> crate::ImResult<V2DecryptOutput> {
+        v2::decrypt_received_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn with_nonblocking_operations(mut self) -> Self {
+        self.store = self.store.with_nonblocking_lock();
+        self
+    }
+
+    pub(crate) fn forget_received_decryption(
+        &self,
+        message_id: &str,
+        group_did: &str,
+    ) -> crate::ImResult<()> {
+        let scope = self.owner_scope()?;
+        v2::forget_received_decryption_v2(
+            &self.store,
+            &scope.owner_did,
+            &scope.device_id,
+            message_id,
+            group_did,
+        )
+        .map_err(map_group_mls_error)
+    }
 }
 
 pub(crate) fn mark_terminal_intent_for_client(

@@ -278,15 +278,21 @@ CREATE TABLE IF NOT EXISTS sync_lane_inbox (
     source_expires_at           TEXT,
     closed_at                   INTEGER,
     created_at                  INTEGER NOT NULL,
+    processing_scope            TEXT NOT NULL DEFAULT '',
+    attempt_count               INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    attempt_token               TEXT,
+    attempt_deadline            INTEGER,
+    last_attempt_at             INTEGER,
+    next_attempt_at             INTEGER DEFAULT 0,
+    processing_error_code       TEXT,
+    CHECK ((attempt_token IS NULL) = (attempt_deadline IS NULL)),
     UNIQUE (owner_identity_id, lane, lane_epoch, event_id),
     UNIQUE (owner_identity_id, lane, lane_epoch, position),
-    CHECK (lane IN ('p5_device', 'p6_group')),
-    CHECK (event_type IN (
-        'p5.delivery.created', 'p6.delivery.created', 'p6.control.notice'
-    )),
+    CHECK (lane IN ('ordinary', 'p5_device', 'p6_group')),
+    CHECK (length(trim(event_type)) > 0),
     CHECK (json_valid(raw_payload_json)),
     CHECK (json_type(raw_payload_json) = 'object'),
-    CHECK (payload_bytes > 0 AND payload_bytes <= 1048576),
+    CHECK (payload_bytes > 0 AND payload_bytes <= 16777216),
     CHECK (length(trim(input_id)) > 0),
     CHECK (length(trim(event_id)) > 0),
     CHECK (length(trim(received_at)) > 0),
@@ -301,6 +307,8 @@ CREATE TABLE IF NOT EXISTS sync_lane_inbox (
         AND substr(position, 1, 1) <> '0'
     ),
     CHECK (
+        (lane = 'ordinary')
+        OR
         (lane = 'p5_device' AND event_type = 'p5.delivery.created' AND group_did IS NULL)
         OR
         (lane = 'p6_group' AND event_type IN (
@@ -1001,6 +1009,7 @@ pub(crate) fn create_schema_objects(connection: &Connection) -> crate::ImResult<
         .map_err(super::local_state_unavailable)?;
     create_v1a_reliability_schema(connection)?;
     create_installation_schema(connection)?;
+    super::sync_inbox::ensure_schema(connection)?;
     Ok(())
 }
 
@@ -2187,33 +2196,7 @@ pub(crate) fn commit_sync_lane_handoff(
         ));
     }
 
-    let (pending_items, pending_bytes) = transaction
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0)
-             FROM sync_lane_inbox
-             WHERE owner_identity_id = ?1 AND lane = ?2 AND closed_at IS NULL",
-            params![input.owner_identity_id, input.lane.as_str()],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .map_err(super::local_state_unavailable)?;
-    if pending_items.saturating_add(1) > SYNC_LANE_PENDING_ITEM_LIMIT
-        || pending_bytes.saturating_add(payload_bytes) > SYNC_LANE_PENDING_TOTAL_BYTES
-    {
-        transaction
-            .rollback()
-            .map_err(super::local_state_unavailable)?;
-        record_lane_transport_error(
-            connection,
-            &input.owner_identity_id,
-            input.lane,
-            Some("lane_storage_pressure"),
-            unix_time_i64(),
-        )?;
-        return Err(sync_error(
-            "LANE_STORAGE_PRESSURE",
-            "lane inbox reached its fixed pending capacity",
-        ));
-    }
+    super::sync_inbox::make_room(&transaction, 1, unix_time_i64())?;
 
     transaction
         .execute(
@@ -2251,6 +2234,22 @@ INSERT INTO sync_lane_inbox(
                 input.source_created_at,
                 input.source_expires_at,
                 unix_time_i64(),
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .execute(
+            "UPDATE sync_lane_inbox SET processing_scope=?2 WHERE input_id=?1",
+            params![
+                input_id,
+                input
+                    .group_did
+                    .as_deref()
+                    .or_else(|| input
+                        .raw_payload
+                        .pointer("/meta/sender_did")
+                        .and_then(serde_json::Value::as_str))
+                    .unwrap_or(&input.event_id)
             ],
         )
         .map_err(super::local_state_unavailable)?;
@@ -2707,19 +2706,7 @@ pub(crate) fn purge_closed_sync_lane_inputs(
             "lane inbox cleanup limit must be between 1 and 1024",
         ));
     }
-    connection
-        .execute(
-            "DELETE FROM sync_lane_inbox WHERE input_id IN (
-                 SELECT input_id FROM sync_lane_inbox
-                 WHERE closed_at IS NOT NULL AND closed_at <= ?1
-                 ORDER BY closed_at, input_id LIMIT ?2
-             )",
-            params![
-                now.saturating_sub(SYNC_LANE_CLOSED_RETENTION_SECONDS),
-                i64::from(limit),
-            ],
-        )
-        .map_err(super::local_state_unavailable)
+    super::sync_inbox::purge_expired(connection, now, limit).map(|removed| removed.len())
 }
 
 fn validate_sync_lane_handoff_input(input: &SyncLaneHandoffInput) -> crate::ImResult<()> {
@@ -3502,6 +3489,44 @@ pub(crate) fn apply_delta_v2(
         ));
     }
 
+    let outcome = apply_delta_events_in_transaction(&transaction, input.clone())?;
+
+    let now = unix_time_i64();
+    let next_state = MessageSyncState {
+        owner_identity_id: input.owner_identity_id.clone(),
+        account_id: input.account_id,
+        protocol_device_id: input.protocol_device_id,
+        device_auth_generation: input.device_auth_generation,
+        stream_epoch: input.stream_epoch,
+        scan_seq: input.next_scan_seq,
+        bootstrap_state: "active".to_owned(),
+        last_server_time: Some(input.server_time),
+        last_success_at: Some(now),
+        last_error_code: None,
+        metadata_json: None,
+        updated_at: now,
+    };
+    match advance_message_sync_state(&transaction, &next_state)? {
+        MessageSyncStateAccess::Ready(_) => {}
+        MessageSyncStateAccess::BootstrapRequired(_) => {
+            return Err(sync_error(
+                "SYNC_BOOTSTRAP_REQUIRED",
+                "v2 cursor was fenced while applying the page",
+            ));
+        }
+    }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(outcome)
+}
+
+/// Applies domain facts without touching the receive cursor. The caller owns
+/// the SQLite transaction and, for queued input, its exact attempt fence.
+pub(super) fn apply_delta_events_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    input: DeltaApplyInputV2,
+) -> crate::ImResult<DeltaApplyOutcomeV2> {
     let mut events = input.events;
     events.sort_by(|left, right| {
         decimal_order(&left.event_seq, &right.event_seq)
@@ -3666,32 +3691,6 @@ pub(crate) fn apply_delta_v2(
         )?;
     }
 
-    let next_state = MessageSyncState {
-        owner_identity_id: input.owner_identity_id.clone(),
-        account_id: input.account_id,
-        protocol_device_id: input.protocol_device_id,
-        device_auth_generation: input.device_auth_generation,
-        stream_epoch: input.stream_epoch,
-        scan_seq: input.next_scan_seq,
-        bootstrap_state: "active".to_owned(),
-        last_server_time: Some(input.server_time),
-        last_success_at: Some(now),
-        last_error_code: None,
-        metadata_json: None,
-        updated_at: now,
-    };
-    match advance_message_sync_state(&transaction, &next_state)? {
-        MessageSyncStateAccess::Ready(_) => {}
-        MessageSyncStateAccess::BootstrapRequired(_) => {
-            return Err(sync_error(
-                "SYNC_BOOTSTRAP_REQUIRED",
-                "v2 cursor was fenced while applying the page",
-            ));
-        }
-    }
-    transaction
-        .commit()
-        .map_err(super::local_state_unavailable)?;
     Ok(DeltaApplyOutcomeV2 {
         applied_event_ids,
         projected_message_event_ids,
@@ -4266,7 +4265,7 @@ fn validate_expected_run_generation(expected: Option<i64>) -> crate::ImResult<()
     Ok(())
 }
 
-fn require_message_sync_run_generation(
+pub(super) fn require_message_sync_run_generation(
     connection: &Connection,
     owner_identity_id: &str,
     expected: Option<i64>,
@@ -10862,12 +10861,17 @@ END;
             load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
             "1"
         );
-        assert_eq!(purge_closed_sync_lane_inputs(&db, 10, 10).unwrap(), 0);
+        let received_at: i64 = db
+            .query_row("SELECT created_at FROM sync_lane_inbox", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let expiry = received_at + crate::internal::local_state::sync_inbox::RETENTION_SECONDS;
         assert_eq!(
-            purge_closed_sync_lane_inputs(&db, 10 + SYNC_LANE_CLOSED_RETENTION_SECONDS, 10,)
-                .unwrap(),
-            1
+            purge_closed_sync_lane_inputs(&db, expiry - 1, 10).unwrap(),
+            0
         );
+        assert_eq!(purge_closed_sync_lane_inputs(&db, expiry, 10).unwrap(), 1);
     }
 
     #[test]
@@ -10923,7 +10927,7 @@ END;
     }
 
     #[test]
-    fn v1b_handoff_capacity_limits_fail_closed_without_cursor_advance() {
+    fn v45_handoff_evicts_oldest_at_item_limit_without_blocking_cursor() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         create_schema(&db).unwrap();
@@ -10941,7 +10945,7 @@ END;
         replace_lane_sync_states(&db, &binding.owner_identity_id, &[initial.clone()]).unwrap();
 
         let transaction = db.unchecked_transaction().unwrap();
-        for index in 0..(SYNC_LANE_PENDING_ITEM_LIMIT - 1) {
+        for index in 0..(crate::internal::local_state::sync_inbox::MAX_INBOX_RECORDS - 1) {
             transaction
                 .execute(
                     "INSERT INTO sync_lane_inbox(
@@ -10966,11 +10970,16 @@ END;
                 .unwrap();
         }
         transaction.commit().unwrap();
+        db.execute(
+            "UPDATE sync_lane_inbox SET created_at=?1",
+            [unix_time_i64() - 1],
+        )
+        .unwrap();
         let exact_item_limit = v1b_p5_handoff_input(
             &binding,
             &client_instance_id,
             "item-limit-exact",
-            "5000",
+            "20000",
             serde_json::json!({}),
         );
         assert_eq!(
@@ -10981,22 +10990,37 @@ END;
             &binding,
             &client_instance_id,
             "item-limit-overflow",
-            "5001",
+            "20001",
             serde_json::json!({}),
         );
-        assert!(matches!(
-            commit_sync_lane_handoff(&db, &item_overflow),
-            Err(crate::ImError::Service { code: Some(code), .. }) if code == "LANE_STORAGE_PRESSURE"
-        ));
+        assert_eq!(
+            commit_sync_lane_handoff(&db, &item_overflow).unwrap(),
+            SyncLaneHandoffOutcome::Inserted
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_lane_inbox", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            crate::internal::local_state::sync_inbox::MAX_INBOX_RECORDS
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_lane_inbox WHERE input_id='seed-item-0'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
         assert_eq!(
             load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
-            "5000"
+            "20001"
         );
         assert_eq!(
             load_lane_transport_states(&db, &binding.owner_identity_id).unwrap()[0]
                 .last_transport_error
                 .as_deref(),
-            Some("lane_storage_pressure")
+            None
         );
 
         db.execute("DELETE FROM sync_lane_inbox", []).unwrap();
@@ -11038,11 +11062,16 @@ END;
                 .unwrap();
         }
         transaction.commit().unwrap();
+        db.execute(
+            "UPDATE sync_lane_inbox SET created_at=?1",
+            [unix_time_i64() - 1],
+        )
+        .unwrap();
         let exact_byte_limit = v1b_p5_handoff_input(
             &binding,
             &client_instance_id,
             "byte-limit-exact",
-            "5000",
+            "20000",
             serde_json::json!({}),
         );
         assert_eq!(
@@ -11058,16 +11087,18 @@ END;
             &binding,
             &client_instance_id,
             "byte-limit-overflow",
-            "5001",
+            "20001",
             serde_json::json!({}),
         );
-        assert!(matches!(
-            commit_sync_lane_handoff(&db, &byte_overflow),
-            Err(crate::ImError::Service { code: Some(code), .. }) if code == "LANE_STORAGE_PRESSURE"
-        ));
+        // The former per-lane byte aggregate is no longer a stop condition.
+        // Individual payload validation and actual storage failures still fail closed.
+        assert_eq!(
+            commit_sync_lane_handoff(&db, &byte_overflow).unwrap(),
+            SyncLaneHandoffOutcome::Inserted
+        );
         assert_eq!(
             load_lane_sync_states(&db, &binding.owner_identity_id).unwrap()[0].scan_seq,
-            "5000"
+            "20001"
         );
     }
 

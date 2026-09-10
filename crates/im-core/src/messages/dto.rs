@@ -686,6 +686,78 @@ pub struct MessageSyncOutcome {
     pub warnings: Vec<String>,
 }
 
+/// Durable reception only. Business processing and presentation are reported
+/// independently and cannot change a successfully committed receive cursor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageReceiveOutcome {
+    pub status: MessageSyncStatus,
+    /// False when a receive lane failed or this run yielded with more pages.
+    /// Previously committed inputs remain received in either case.
+    pub complete: bool,
+    pub events_received: u32,
+    pub pages_fetched: u32,
+    pub messages_hydrated: u32,
+    pub duplicates_skipped: u32,
+    pub older_history_excluded: bool,
+    pub error_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+impl MessageReceiveOutcome {
+    pub(crate) fn from_receive_run(value: MessageSyncOutcome) -> Self {
+        Self {
+            status: value.status,
+            complete: matches!(
+                value.status,
+                MessageSyncStatus::Idle | MessageSyncStatus::Changed
+            ) && !value.warnings.iter().any(|warning| {
+                warning == "sync.budget_exhausted" || warning.starts_with("sync.lane.")
+            }),
+            events_received: value.events_applied,
+            pages_fetched: value.pages_fetched,
+            messages_hydrated: value.messages_hydrated,
+            duplicates_skipped: value.duplicates_skipped,
+            older_history_excluded: value.older_history_excluded,
+            error_code: value.error_code,
+            warnings: value.warnings,
+        }
+    }
+
+    pub(crate) fn compatibility_outcome(&self) -> MessageSyncOutcome {
+        MessageSyncOutcome {
+            status: self.status,
+            events_applied: 0,
+            pages_fetched: self.pages_fetched,
+            messages_hydrated: self.messages_hydrated,
+            duplicates_skipped: self.duplicates_skipped,
+            older_history_excluded: self.older_history_excluded,
+            changed_conversation_ids: Vec::new(),
+            committed_incoming_messages: Vec::new(),
+            error_code: self.error_code.clone(),
+            warnings: self.warnings.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageProcessingStatus {
+    Applied,
+    Retrying,
+    Blocked,
+    Discarded,
+}
+
+/// A single event's business result. This is never a receive checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageProcessingUpdate {
+    pub event_id: String,
+    pub status: MessageProcessingStatus,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<CommittedIncomingMessage>,
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageSyncMode {

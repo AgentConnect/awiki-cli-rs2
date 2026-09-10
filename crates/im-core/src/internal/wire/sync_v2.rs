@@ -214,7 +214,7 @@ pub(crate) struct SnapshotSystemNotificationV2 {
     pub(crate) message: Value,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SyncEventV2 {
     pub(crate) event_id: String,
     pub(crate) stream_epoch: String,

@@ -23,17 +23,18 @@ where
     }
 }
 
-async fn execute_message_sync_once(
+async fn execute_message_receive_once(
     client: crate::core::ImClient,
     request: crate::messages::MessageSyncRequest,
-) -> crate::ImResult<crate::messages::MessageSyncOutcome> {
+) -> crate::ImResult<crate::messages::MessageReceiveOutcome> {
     let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
         &client,
         crate::internal::auth::session::FileSessionProvider::new(&client),
         crate::internal::transport::CoreHttpTransport::new(&client),
         crate::internal::transport::CoreHttpTransport::new(&client),
     )
-    .sync_now(request)
+    .with_processing_wakeup(crate::internal::message_runtime::sync_dispatcher::wake_client)
+    .receive_now(request)
     .await;
     match result {
         Ok(outcome) => Ok(outcome),
@@ -41,7 +42,9 @@ async fn execute_message_sync_once(
             if let Some(outcome) =
                 crate::internal::message_runtime::sync_v2::failure_outcome(&error)
             {
-                Ok(outcome)
+                Ok(crate::messages::MessageReceiveOutcome::from_receive_run(
+                    outcome,
+                ))
             } else {
                 Err(error)
             }
@@ -3802,15 +3805,31 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    /// Compatibility entrypoint: reception finishes before this independent,
+    /// bounded business wait. New receive loops use `receive_now_async`.
     pub async fn sync_now_async(
         &self,
         request: super::MessageSyncRequest,
     ) -> crate::ImResult<super::MessageSyncOutcome> {
-        self.coordinated_sync_now_async(
+        let updates = self.watch_processing_updates()?;
+        let received = self.receive_now_async(request).await?;
+        super::processing::compatibility_wait(self.client, received, updates).await
+    }
+
+    /// Completes when full inputs and their receive cursors are committed.
+    /// Business failures are observable through `watch_processing_updates`.
+    pub async fn receive_now_async(
+        &self,
+        request: super::MessageSyncRequest,
+    ) -> crate::ImResult<super::MessageReceiveOutcome> {
+        self.coordinated_receive_now_async(
             request,
             crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::EnsureCurrent,
-        )
-        .await
+        ).await
+    }
+
+    pub fn watch_processing_updates(&self) -> crate::ImResult<super::MessageProcessingSession> {
+        Ok(super::MessageProcessingSession::new(self.client))
     }
 
     /// Schedules reliable sync for a newly observed background change.
@@ -3824,18 +3843,25 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MessageSyncRequest,
     ) -> crate::ImResult<super::MessageSyncOutcome> {
-        self.coordinated_sync_now_async(
-            request,
-            crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::DirtyAfterCurrent,
-        )
-        .await
+        let updates = self.watch_processing_updates()?;
+        let received = self.request_receive_async(request).await?;
+        super::processing::compatibility_wait(self.client, received, updates).await
     }
 
-    async fn coordinated_sync_now_async(
+    #[doc(hidden)]
+    pub async fn request_receive_async(
+        &self,
+        request: super::MessageSyncRequest,
+    ) -> crate::ImResult<super::MessageReceiveOutcome> {
+        self.coordinated_receive_now_async(request,
+            crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind::DirtyAfterCurrent).await
+    }
+
+    async fn coordinated_receive_now_async(
         &self,
         request: super::MessageSyncRequest,
         kind: crate::internal::message_runtime::sync_coordinator::MessageSyncRequestKind,
-    ) -> crate::ImResult<super::MessageSyncOutcome> {
+    ) -> crate::ImResult<super::MessageReceiveOutcome> {
         let coordinator = self
             .client
             .core_inner()
@@ -3844,7 +3870,7 @@ impl<'a> MessageService<'a> {
         let executor: crate::internal::message_runtime::sync_coordinator::MessageSyncExecutor =
             std::sync::Arc::new(move |request| {
                 let client = client.clone();
-                Box::pin(async move { execute_message_sync_once(client, request).await })
+                Box::pin(async move { execute_message_receive_once(client, request).await })
             });
         coordinator.execute(request, kind, executor).await
     }
