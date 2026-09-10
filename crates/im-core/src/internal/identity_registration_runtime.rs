@@ -734,23 +734,61 @@ async fn load_or_create_pending_registration_async(
     crate::internal::secret_vault::record::SecretRef,
     crate::internal::identity_registration_pending::PendingRegistration,
 )> {
+    let mut transport = crate::internal::transport::CorePlainTransport::new_no_redirect(core);
+    load_or_create_pending_registration_with_transport(core, store, request, target, &mut transport)
+        .await
+}
+
+async fn load_or_create_pending_registration_with_transport<T>(
+    core: &crate::core::ImCore,
+    store: &crate::internal::identity_registration_pending::PendingRegistrationStore,
+    request: &crate::identity::RegisterHandleRequest,
+    target: &RegistrationTarget,
+    transport: &mut T,
+) -> crate::ImResult<(
+    crate::internal::secret_vault::record::SecretRef,
+    crate::internal::identity_registration_pending::PendingRegistration,
+)>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
     crate::internal::identity_handle_recovery_context::require_registration_admission(
         core,
         target.full_handle.as_str(),
     )?;
+    let mut retired_pending_ref = None;
     if let Some(existing) = store
         .load(&target.local_part, &target.effective_domain)
         .map_err(|error| registration_stage_error(error, "pending_load"))?
     {
-        return Ok(existing);
+        verify_pending_matches_request(&existing.1, request, target)?;
+        #[cfg(feature = "provider-traits")]
+        let external_custody = core.inner().identity_custody_provider().is_some();
+        #[cfg(not(feature = "provider-traits"))]
+        let external_custody = false;
+        if !external_custody
+            || existing.1.remote_result.is_some()
+            || !crate::internal::identity_custody::registration_identity_is_remotely_retired(
+                transport,
+                existing.1.identity.did.as_str(),
+            )
+            .await?
+        {
+            return Ok(existing);
+        }
+        // Only retire the obsolete registration attempt. Keep its custody
+        // identity and never discard a known committed registration result.
+        retired_pending_ref = Some(existing.0);
     }
-    let identity = crate::internal::identity_custody::provision_registration_identity_async(
-        core,
-        &target.effective_domain,
-        &target.local_part,
-    )
-    .await
-    .map_err(|error| registration_stage_error(error, "pending_identity"))?;
+    let identity =
+        crate::internal::identity_custody::provision_registration_identity_with_transport(
+            core,
+            &target.effective_domain,
+            &target.local_part,
+            transport,
+        )
+        .await
+        .map_err(|error| registration_stage_error(error, "pending_identity"))?;
     let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
         target.local_part.clone(),
         target.effective_domain.clone(),
@@ -767,6 +805,9 @@ async fn load_or_create_pending_registration_async(
         identity,
     )
     .map_err(|error| registration_stage_error(error, "pending_shape"))?;
+    if let Some(retired_ref) = retired_pending_ref {
+        store.delete(&retired_ref)?;
+    }
     let secret_ref = store
         .save(&pending)
         .map_err(|error| registration_stage_error(error, "pending_save"))?;
@@ -2878,3 +2919,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "identity-native-anp"))]
+#[path = "identity_registration_retired_tests.rs"]
+mod retired_tests;

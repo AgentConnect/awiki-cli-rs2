@@ -687,6 +687,14 @@ pending 记录固定保存同一组 device ID/keys 和目标文档；重试时�
 若明确仍是 Legacy 才允许保留原 device keys 刷新 root proof，任何其他 Manifest 或无法确认的远端
 状态都失败关闭。
 
+External custody 注册复用边界：本地 ANP provider 的 `Active` 仅代表本地凭据状态。
+异步注册在复用未投影候选及未确认提交的 pending 前，通过候选 DID 的精确 HTTPS 地址
+读取远端文档（不跟随重定向）。精确 DID 地址返回 HTTP 410，或文档明确包含
+`deactivated` / `successorDid` 时，候选不能继续注册；410 的错误正文不作为 DID 文档解析。
+Core 保留旧 custody 凭据，使用新临时候选进入现有 `register` / `join_required` 协议，
+不触发 Recovery、不替换远端身份。未发布的 404 候选仍可原样重试，网络或文档校验失败
+则保留状态并返回错误；已记录远端提交结果的 pending 继续原有提交收敛，不能被此路径替换。
+
 `register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
 兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
