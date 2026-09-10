@@ -41,6 +41,7 @@ mod msg_handlers;
 mod onboarding_handlers;
 mod page_handlers;
 mod people_handlers;
+mod readiness;
 mod root_key_transfer_handlers;
 mod runtime_handlers;
 mod runtime_hermes_handlers;
@@ -201,7 +202,11 @@ impl App {
                 }),
             );
         }
+        let readiness = readiness::inspect(&resolved, identity_state_data.get("active_identity"));
+        let mut warnings = identity_state.warnings;
+        readiness::append_warning(&readiness, &mut warnings);
         let data = json!({
+            "readiness": readiness,
             "cli": {
                 "phase": "phase1-shell",
                 "version": BuildInfo::current(),
@@ -220,7 +225,7 @@ impl App {
             &resolved,
             data,
             "Identity status loaded",
-            identity_state.warnings,
+            warnings,
         )
     }
 
@@ -590,10 +595,15 @@ impl App {
         ensure_sqlite_schema(&resolved)
             .await
             .map_err(internal_anyhow)?;
+        let identity = crate::m_core_cli_adapter::identity::identity_status_via_im_core(&resolved)?;
+        let readiness = readiness::inspect(&resolved, identity.data.get("active_identity"));
+        let mut warnings = Vec::new();
+        readiness::append_warning(&readiness, &mut warnings);
         self.render_success(
             "awiki-cli init",
             &resolved,
             json!({
+                "readiness": readiness,
                 "workspace": {
                     "root_dir": resolved.paths.workspace_home_dir,
                     "root_source": resolved.sources.get("workspace_home_dir"),
@@ -610,7 +620,7 @@ impl App {
                 }
             }),
             "Workspace initialized",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -1170,8 +1180,21 @@ impl App {
         &self,
         command: &str,
         resolved: &Resolved,
-        result: CommandResult,
+        mut result: CommandResult,
     ) -> Result<(), ExitError> {
+        if !self.globals.dry_run
+            && (command == "awiki-cli id status"
+                || (command == "awiki-cli id register"
+                    && result.data["verification_state"] == "completed"))
+        {
+            let identity = result
+                .data
+                .get("active_identity")
+                .or_else(|| result.data.get("identity"));
+            let readiness = readiness::inspect(resolved, identity);
+            readiness::append_warning(&readiness, &mut result.warnings);
+            result.data["readiness"] = readiness;
+        }
         self.render_success(
             command,
             resolved,
@@ -1552,9 +1575,15 @@ fn append_flag_rows(lines: &mut Vec<String>, flags: &[command_catalog::FlagSpec]
             value => format!(" <{value}>"),
         };
         let required = if flag.required { " (required)" } else { "" };
+        let availability = if flag.unsupported {
+            "[not supported] "
+        } else {
+            ""
+        };
         lines.push(format!(
-            "  --{:<22} {}{}",
+            "  --{:<22} {}{}{}",
             format!("{}{}", flag.name, value_hint),
+            availability,
             flag.usage,
             required
         ));

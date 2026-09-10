@@ -1966,6 +1966,14 @@ fn group_send_message_id(group_did: &str, result: &GroupSendResult) -> String {
 
 fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
     match err {
+        im_core::ImError::MessageWireIdentityConflict { .. } => {
+            MessageAdapterError::MessageRetryConflict
+        }
+        im_core::ImError::InvalidInput { field, .. }
+            if field.as_deref() == Some("message_ids.direction") =>
+        {
+            MessageAdapterError::MessageNotIncoming
+        }
         im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("text") => {
             MessageAdapterError::TextRequired
         }

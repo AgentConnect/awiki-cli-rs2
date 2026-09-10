@@ -1454,6 +1454,15 @@ Reliable sync 补充：
   echo 前 fail closed。target-first `send` 继续作为 CLI/daemon/legacy compatibility API。
   `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
   retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
+- 启用 SQLite 的 target-first `send` / `send_async` 对普通、非委托 Direct 文本/JSON，
+  在网络写入前事务提交发送意图，固定 message ID、operation ID、wire target 和 `created_at`。
+  显式 operation ID 未带 message ID 时，按 owner identity + operation ID 派生稳定 message ID；
+  只带 message ID 时派生稳定 operation ID。两者都省略则每次调用产生新消息。
+  重试核对同 owner/canonical conversation/正文/类型/operation；冲突或旧记录缺少原始 wire
+  时间戳时返回 `MessageWireIdentityConflict`，不能猜测时间戳、删除记录或静默生成新 ID。
+  并发准备使用 SQLite immediate transaction；发送响应丢失后仍保留原意图。后续普通消息
+  projection 更新保留原始 wire 时间戳及缺省的 operation ID；已接受消息不回退 pending。
+  Handle 后续恢复不改变已发送请求的目标。delegated、附件和 E2EE 沿用各自 runtime。
 - conversation-surface Direct 正常发送只读取 owner-scoped 本地 route，不预先请求 Directory
   或公开 WNS。只有远端明确返回 `anp.invalid_target_binding`（兼容旧 `1406` 或
   `data.json_rpc_code = 1406`）且 `reason = stale_did` 时，Core 才执行一次 Direct route
@@ -1463,11 +1472,13 @@ Reliable sync 补充：
   `owner_identity_id + conversation_id` 合并，且新绑定必须保持 Persona / canonical
   conversation 不变、generation 单调前进并拒绝旧 DID。
 - Direct stale-route 重发保持同一 message ID、operation/idempotency ID、正文、security mode
-  和 canonical conversation。`direct_peer_routes.current_did` 是可替换路由；任何已经落盘的
-  wire receiver DID 都是不可变消息事实。text/payload 在首次网络发送前写入 local echo，因此
-  保留失败 route；attachment 若在远端接受后才首次建立消息行，则记录 accepted route。后续同一
-  logical message 调用复用已有 wire snapshot 做本地冲突校验，但网络发送使用当前 route，不能把
-  DID rotation 误判为 `message_wire_identity_conflict`。
+  和 canonical conversation。`direct_peer_routes.current_did` 是可替换路由；普通 text/payload
+  首次发送前的 local echo 是暂存目标，经过权威验证的重绑后，必须随 accepted 结果或精确远端
+  回流确认实际目标。已确认消息的重放固定使用原接受目标，不再次重定向到联系人后来的 DID。
+  Core 仅在同 owner/消息/operation/正文/canonical Persona 证据吻合、无旧 server sequence 的
+  限定情况下修复旧版目标不一致记录，不能批量改历史或放宽 Group/E2EE 身份保护。
+  不可修复的 `message_wire_identity_conflict` 通过 `syncNow` 返回 `blocked` 和稳定同名 code，
+  不当作网络重试、身份撤权或删除数据指令。普通成功与 wire/DTO 形状不变。
 - `attachments().send_conversation` / Dart `client.attachments.sendConversation(...)` 是
   conversation-surface attachment send 主路径。AWiki Me 已选中会话的附件发送和重试必须传
   `ConversationReadRef.conversation_id`，不能用 target DID、handle、display thread id 或
@@ -1483,6 +1494,11 @@ Reliable sync 补充：
   `MarkThreadReadResult.effective_watermark` 是本地已提交水位；`pending_remote_ack=true`
   只表示远端回执尚待收敛，不回滚本地 read-state。调用方必须保留这个结构化结果，不能把
   `remote_acknowledged=false` 直接等同于本地失败。
+- `mark_read(ids)` 先按 owner identity 解析消息。指定自己的 outgoing 消息时返回
+  `InvalidInput { field: Some("message_ids.direction"), ... }`，CLI 映射为
+  `message_not_incoming`（exit 2）。它们已在本地标记已读，不能借此改变接收方 read state。
+  未找到、其他 owner 和未 hydrated incoming 仍保持 `MessageNotFound`；批次包含 outgoing
+  时不提交部分消息已读或发送部分 read acknowledgement。
 - `load_conversation_snapshot`、`clear_conversation_snapshot`、
   `watch_conversation_patches`、`repair_conversation_store` 和
   `watch_conversation_timeline_patches`、`repair_conversation_timeline_store` 是

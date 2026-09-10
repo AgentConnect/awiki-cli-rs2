@@ -420,3 +420,26 @@ fn secure_attachment_unsupported_maps_to_specific_adapter_error() {
 
     assert_eq!(err, MessageAdapterError::SecureAttachmentNotSupported);
 }
+
+#[test]
+fn send_retry_and_outgoing_read_errors_keep_actionable_classification() {
+    assert!(matches!(
+        im_error_to_message_error(im_core::ImError::MessageWireIdentityConflict {
+            message_id: "msg-1".into()
+        }),
+        MessageAdapterError::MessageRetryConflict
+    ));
+    assert!(matches!(
+        im_error_to_message_error(im_core::ImError::invalid_input(
+            Some("message_ids.direction".into()),
+            "received only"
+        )),
+        MessageAdapterError::MessageNotIncoming
+    ));
+    assert!(matches!(
+        im_error_to_message_error(im_core::ImError::MessageNotFound {
+            message_id: "foreign".into()
+        }),
+        MessageAdapterError::MessageNotFound
+    ));
+}

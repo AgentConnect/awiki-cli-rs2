@@ -927,6 +927,13 @@ fn init_creates_real_sqlite_schema() {
     let init_output = awiki_cmd_with_workspace(&["init"], workspace.path().to_str().unwrap());
     assert_success(&init_output);
     let envelope = success_json(&init_output);
+    assert_eq!(envelope["data"]["readiness"]["workspace_initialized"], true);
+    assert_eq!(envelope["data"]["readiness"]["identity_ready"], false);
+    assert_eq!(envelope["data"]["readiness"]["realtime"]["ready"], false);
+    let next_args = &envelope["data"]["readiness"]["realtime"]["next_command_args"];
+    assert_eq!(next_args[1], "--tenant");
+    assert_eq!(next_args[2], "builtin-primary");
+
     assert_eq!(
         envelope["data"]["listener"]["managed_by"],
         "awiki-cli runtime listener"
@@ -1472,5 +1479,50 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn inbox_schema_help_and_completion_agree_about_unsupported_options() {
+    let schema = schema_for(&["msg", "inbox"]);
+    let command = schema_command(&schema);
+    for flag in ["with", "group", "mark-read"] {
+        assert_eq!(schema_flag(command, flag)["supported"], false);
+    }
+    assert_eq!(schema_flag(command, "unread")["supported"], true);
+    let help = awiki_cmd(&["msg", "inbox", "--help"]);
+    assert_success(&help);
+    let text = String::from_utf8_lossy(&help.stdout);
+    for flag in ["--with", "--group", "--mark-read"] {
+        let row = text
+            .lines()
+            .find(|line| line.contains(flag))
+            .expect("flag row");
+        assert!(row.contains("[not supported]"), "{row}");
+    }
+    let completion = awiki_cmd(&["completion", "bash"]);
+    assert_success(&completion);
+    let text = String::from_utf8_lossy(&completion.stdout);
+    let inbox = text
+        .lines()
+        .find(|line| line.contains("msg inbox"))
+        .expect("inbox completion");
+    for flag in ["--with", "--group", "--mark-read"] {
+        assert!(!inbox.contains(flag), "{inbox}");
+    }
+    assert!(inbox.contains("--unread"));
+}
+
+#[test]
+fn status_readiness_probe_does_not_create_runtime_or_log_directories() {
+    let workspace = TempDir::new().expect("workspace");
+    let root = workspace.path().join("not-initialized");
+    let output = awiki_cmd_with_workspace(&["status"], root.to_str().unwrap());
+    assert_success(&output);
+    let data = success_json(&output)["data"].clone();
+    assert_eq!(data["readiness"]["identity_ready"], false);
+    assert_eq!(data["readiness"]["realtime"]["ready"], false);
+    for key in ["state_dir", "logs_dir"] {
+        assert!(!Path::new(data["paths"][key].as_str().unwrap()).exists());
     }
 }

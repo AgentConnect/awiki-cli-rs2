@@ -94,6 +94,7 @@ function validateImCoreNodeCiWorkflow(workflow) {
       'cargo clippy -p awiki-im-core --all-targets --all-features -- -D warnings',
       'cargo clippy -p awiki-im-core-node --all-targets --all-features -- -D warnings',
       'cargo test -p awiki-im-core',
+      'cargo test -p awiki-im-core --features blocking --lib target_first_direct',
       'cargo test -p awiki-im-core-node',
     ],
   );

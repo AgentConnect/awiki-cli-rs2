@@ -89,7 +89,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - `awiki-cli msg send --to <target> --file ./secret.bin --secure required [--text "attachment caption"] [--mime-type application/octet-stream]`
 - `awiki-cli msg send --group <group_did> --file ./secret.bin --secure required [--text "attachment caption"] [--mime-type application/octet-stream]`
 - `awiki-cli msg attachment download (--with <target> | --group <group_did>) --message-id <message_id> [--attachment-id <attachment_id>] --output ./downloads/file.bin`
-- `awiki-cli msg inbox [--scope all|direct|group] [--with <target>] [--group <group_did>] [--unread] [--limit <n>] [--mark-read]`
+- `awiki-cli msg inbox [--scope all|direct|group] [--unread] [--limit <n>]`
 - `awiki-cli msg history --with <target> [--limit <n>] [--cursor <cursor>]`
 - `awiki-cli msg mark-read <MESSAGE_ID...>`
 
@@ -135,13 +135,25 @@ For group attachment downloads, use `awiki-cli group messages --group <group_did
 
 `awiki-cli msg inbox --scope direct --unread --limit 20`
 
+### 普通 Direct 重试与已读边界
+
+普通 Direct 文本/JSON 发送时，重复调用必须保留相同目标、内容、`--client-message-id`
+和 `--idempotency-key`。只指定其中一个 ID 也可以稳定重试；都不指定表示新消息。
+原请求在网络发送前落盘，跨进程、网络中断及后续同步均复用原始时间戳。
+`message_retry_conflict` 表示 ID 与已存请求冲突，或旧版记录缺少原始时间戳；
+先检查 history，不能通过删除数据或随意换 ID 来绕过。
+
+Inbox 不支持 `--with`、`--group`、`--mark-read`；schema 会返回 `supported: false`，
+帮助会标注不支持，补全不推荐。按会话查询使用 `msg history --with <peer>` /
+`msg history --group <group>`；标记收到的消息使用 `msg mark-read <id>`。
+对自己发送的消息标记已读返回 `message_not_incoming`，不改变接收方阅读状态。
+
 ## Side Effects and Confirmation
 
 - Require explicit confirmation:
   - `msg send`
   - `msg attachment download`
   - `msg mark-read`
-  - `msg inbox --mark-read`
 - Prefer `--dry-run` before sending a message or downloading an attachment
 
 ## Error Handling

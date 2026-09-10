@@ -62,7 +62,11 @@ fn candidates(spec: Option<&CommandSpec>, children: &[CommandSpec]) -> Vec<Strin
         }
     }
     if let Some(spec) = spec {
-        for flag in spec.flags.iter().filter(|flag| !flag.deprecated) {
+        for flag in spec
+            .flags
+            .iter()
+            .filter(|flag| !flag.deprecated && !flag.unsupported)
+        {
             values.insert(format!("--{}", flag.name));
         }
     }

@@ -105,12 +105,19 @@ pub fn paths(resolved: &Resolved) -> anyhow::Result<RuntimePaths> {
         .map_err(|err| anyhow::anyhow!("create runtime state dir: {err}"))?;
     let log_dir = log_root(resolved, &state_root);
     fs::create_dir_all(&log_dir).map_err(|err| anyhow::anyhow!("create runtime log dir: {err}"))?;
-    Ok(RuntimePaths {
+    Ok(status_paths(resolved))
+}
+
+// Status probes must not create runtime directories or change installation state.
+fn status_paths(resolved: &Resolved) -> RuntimePaths {
+    let state_root = state_root(resolved);
+    let log_dir = log_root(resolved, &state_root);
+    RuntimePaths {
         pid_file: path_string(&state_root.join("listener.pid")),
         log_file: path_string(&log_dir.join("listener.log")),
         status_file: path_string(&state_root.join("listener.status.json")),
         socket_path: super::bridge::resolved_bridge_endpoint(resolved),
-    })
+    }
 }
 
 pub fn boot_id_path(resolved: &Resolved) -> anyhow::Result<String> {
@@ -186,7 +193,7 @@ pub fn status_for(
     running: bool,
     service_platform: &str,
 ) -> anyhow::Result<Status> {
-    let runtime_paths = paths(resolved)?;
+    let runtime_paths = status_paths(resolved);
     let runtime = super::resolve(resolved);
     let mut status = Status {
         mode: runtime.mode.clone(),
