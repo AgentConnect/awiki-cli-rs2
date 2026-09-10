@@ -3,7 +3,7 @@
   "dependencies": {
     "anp-identity": {
       "repository": "https://github.com/agent-network-protocol/anp-identity.git",
-      "commit": "1eae1662cb0d1285433c6f9e1619f5b6bdab064a",
+      "commit": "74b5989cc9a150eb232601c727e5ba050d61b11f",
       "pull_request": "https://github.com/agent-network-protocol/anp-identity/pull/7"
     }
   }
