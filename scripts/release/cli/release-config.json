@@ -12,7 +12,7 @@
   },
   "anp_repository": "agent-network-protocol/anp",
   "anp_commit": "c28f5046dc7eaca506748eab587ec5027c8be5fd",
-  "anp_identity_commit": "74b5989cc9a150eb232601c727e5ba050d61b11f",
+  "anp_identity_commit": "0d99df14d59cbedbf6982dab387fecba77329312",
   "archive_keep_versions": 10,
   "targets": [
     "darwin-amd64",
