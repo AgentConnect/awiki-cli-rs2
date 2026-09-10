@@ -20,44 +20,60 @@ fn target_first_request() -> crate::messages::SendMessageRequest {
 
 #[tokio::test]
 async fn target_first_direct_retry_after_reopen_preserves_wire_payload() {
-    for blocking in [false, true] {
-        let fixture = Fixture::new("target-first-reopen");
-        let server = HttpTestServer::spawn(vec![
-            ExpectedHttp::rpc_result(accepted(OLD_DID)),
-            ExpectedHttp::rpc_result(accepted(OLD_DID)),
-        ]);
-        for attempt in 0..2 {
-            let client = fixture.client(server.base_url()).await;
-            let result = if blocking {
+    assert_retry_after_reopen(RetrySendMode::Async).await;
+}
+
+#[cfg(feature = "blocking")]
+#[tokio::test]
+async fn target_first_direct_blocking_retry_after_reopen_preserves_wire_payload() {
+    assert_retry_after_reopen(RetrySendMode::Blocking).await;
+}
+
+enum RetrySendMode {
+    Async,
+    #[cfg(feature = "blocking")]
+    Blocking,
+}
+
+async fn assert_retry_after_reopen(mode: RetrySendMode) {
+    let fixture = Fixture::new("target-first-reopen");
+    let server = HttpTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(accepted(OLD_DID)),
+        ExpectedHttp::rpc_result(accepted(OLD_DID)),
+    ]);
+    for attempt in 0..2 {
+        let client = fixture.client(server.base_url()).await;
+        let result = match mode {
+            #[cfg(feature = "blocking")]
+            RetrySendMode::Blocking => {
                 tokio::task::spawn_blocking(move || client.messages().send(target_first_request()))
                     .await
                     .unwrap()
-            } else {
-                client.messages().send_async(target_first_request()).await
             }
-            .unwrap();
-            assert_eq!(result.message.id.as_str(), MESSAGE_ID);
-            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-            if attempt == 0 {
-                tokio::time::sleep(Duration::from_millis(1100)).await;
-            }
+            RetrySendMode::Async => client.messages().send_async(target_first_request()).await,
         }
-        let requests = server.join();
-        assert_request_sequence(&requests, &["direct.send", "direct.send"]);
-        assert_eq!(requests[0].params()["meta"], requests[1].params()["meta"]);
-        assert_eq!(requests[0].params()["body"], requests[1].params()["body"]);
-        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-        let count: i64 = db
-            .query_row(
-                "SELECT count(*) FROM messages WHERE msg_id = ?1",
-                [MESSAGE_ID],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-        drop(db);
-        fs::remove_dir_all(&fixture.root).unwrap();
+        .unwrap();
+        assert_eq!(result.message.id.as_str(), MESSAGE_ID);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        if attempt == 0 {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+        }
     }
+    let requests = server.join();
+    assert_request_sequence(&requests, &["direct.send", "direct.send"]);
+    assert_eq!(requests[0].params()["meta"], requests[1].params()["meta"]);
+    assert_eq!(requests[0].params()["body"], requests[1].params()["body"]);
+    let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM messages WHERE msg_id = ?1",
+            [MESSAGE_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    drop(db);
+    fs::remove_dir_all(&fixture.root).unwrap();
 }
 
 #[tokio::test]

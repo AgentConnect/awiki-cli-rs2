@@ -652,10 +652,14 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
         match listener.accept() {
             Ok((stream, _)) => {
                 // macOS may inherit O_NONBLOCK from the listening socket.
-                stream.set_nonblocking(false).expect("blocking accepted stream");
-                stream.set_read_timeout(Some(Duration::from_secs(5))).expect("bounded fixture read");
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking accepted stream");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("bounded fixture read");
                 return Some(stream);
-            },
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
