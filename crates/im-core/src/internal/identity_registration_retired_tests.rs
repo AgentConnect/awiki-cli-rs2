@@ -92,6 +92,7 @@ impl Fixture {
 #[derive(Default)]
 struct Directory {
     documents: BTreeMap<String, Value>,
+    gone: std::collections::BTreeSet<String>,
     failure: Option<crate::ImError>,
     reads: Vec<String>,
 }
@@ -115,6 +116,16 @@ impl crate::internal::transport::AsyncRawJsonTransport for Directory {
         self.reads.push(url.into());
         if let Some(failure) = &self.failure {
             return Err(failure.clone());
+        }
+        for did in &self.gone {
+            if crate::internal::discovery::did_document::did_document_url(did).unwrap() == url {
+                return Err(crate::ImError::Service {
+                    status_code: Some(410),
+                    code: None,
+                    message: r#"{"detail":"DID document is deactivated"}"#.into(),
+                    data: None,
+                });
+            }
         }
         for (did, document) in &self.documents {
             if crate::internal::discovery::did_document::did_document_url(did).unwrap() == url {
@@ -145,6 +156,15 @@ fn request() -> crate::identity::RegisterHandleRequest {
 
 #[tokio::test]
 async fn retired_candidate_is_replaced_without_deleting_custody_or_projecting_an_owner() {
+    assert_retired_candidate_replacement(false).await;
+}
+
+#[tokio::test]
+async fn http_410_retired_candidate_is_replaced_without_deleting_custody_or_projecting_an_owner() {
+    assert_retired_candidate_replacement(true).await;
+}
+
+async fn assert_retired_candidate_replacement(gone: bool) {
     let fixture = Fixture::new();
     let mut directory = Directory::default();
     let old = fixture.provision(&mut directory).await;
@@ -152,7 +172,11 @@ async fn retired_candidate_is_replaced_without_deleting_custody_or_projecting_an
         directory.reads.is_empty(),
         "fresh registration needs no DID lookup"
     );
-    directory.retire(old.did.as_str());
+    if gone {
+        directory.gone.insert(old.did.as_str().into());
+    } else {
+        directory.retire(old.did.as_str());
+    }
     let replacement = fixture.provision(&mut directory).await;
     assert_ne!(old.did, replacement.did);
     let identities = fixture.provider.list_identities().await.unwrap();
@@ -237,6 +261,15 @@ async fn unavailable_or_invalid_directory_preserves_custody_and_blocks_selection
 
 #[tokio::test]
 async fn retired_attempted_pending_restarts_with_fresh_candidate_and_retries_exactly() {
+    assert_retired_pending_replacement(false).await;
+}
+
+#[tokio::test]
+async fn http_410_retired_attempted_pending_restarts_with_fresh_candidate_and_retries_exactly() {
+    assert_retired_pending_replacement(true).await;
+}
+
+async fn assert_retired_pending_replacement(gone: bool) {
     let fixture = Fixture::new();
     let store = PendingRegistrationStore::from_core(&fixture.core).unwrap();
     let target = registration_target("alice.example.test", "example.test").unwrap();
@@ -258,7 +291,11 @@ async fn retired_attempted_pending_restarts_with_fresh_candidate_and_retries_exa
     .unwrap();
     old.remote_attempted = true;
     store.save(&old).unwrap();
-    directory.retire(old.identity.did.as_str());
+    if gone {
+        directory.gone.insert(old.identity.did.as_str().into());
+    } else {
+        directory.retire(old.identity.did.as_str());
+    }
     let (_, replacement) = load_or_create_pending_registration_with_transport(
         &fixture.core,
         &store,

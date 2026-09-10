@@ -395,6 +395,12 @@ where
         .await
     {
         Ok(document) => document,
+        // The authoritative directory isolates revoked DIDs with Gone rather
+        // than returning a DID document. Its error body is not a tombstone.
+        Err(crate::ImError::Service {
+            status_code: Some(410),
+            ..
+        }) => return Ok(true),
         Err(crate::ImError::Service {
             status_code: Some(404),
             ..
