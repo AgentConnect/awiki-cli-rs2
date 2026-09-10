@@ -1,4 +1,5 @@
 pub mod agent;
+mod agent_network;
 #[allow(
     clippy::too_many_arguments,
     reason = "status assembly keeps each reported dimension explicit"

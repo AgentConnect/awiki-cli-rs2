@@ -1043,6 +1043,65 @@ fn task_status_accepts_only_typed_progress_metadata() {
 }
 
 #[test]
+fn terminal_runs_ignore_late_status_and_finish_callbacks() {
+    for terminal in [RuntimeRunStatus::Finished, RuntimeRunStatus::Failed] {
+        let (_root, state) = fixture();
+        insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
+        let issued = issue(
+            &state,
+            vec![RpcMethod::TaskStatus, RpcMethod::TaskFinish],
+            None,
+        );
+        let outbox = MemoryRuntimeOutbox::default();
+        let finish =
+            CliWrapperRequest::task_finish(issued.token.as_str(), "task_attachment", "done")
+                .into_rpc_request();
+        if terminal == RuntimeRunStatus::Finished {
+            execute_runtime_rpc_request_with_outbox(&state, &outbox, finish.clone()).unwrap();
+        } else {
+            state.fail_active_runtime_run("run_1").unwrap();
+        }
+        let records_before = outbox.records();
+        let progress = CliWrapperRequest::task_status_with_progress(
+            issued.token.as_str(),
+            "task_attachment",
+            "Codex resumed after completion",
+            RuntimeProgressUpdate {
+                code: RuntimeProgressCode::ExternalServiceResumed,
+                phase: RuntimeProgressPhase::ExternalTool,
+                state: RuntimeProgressState::Resumed,
+                tool: Some("codex".to_string()),
+                retryable: false,
+            },
+        )
+        .into_rpc_request();
+        let mut callbacks = vec![progress];
+        for status in ["pending", "running", "finished", "failed"] {
+            callbacks.push(RuntimeRpcRequest {
+                runtime_rpc_token: issued.token.as_str().to_string(),
+                method: "task.status".to_string(),
+                params: json!({"state": status}),
+                debug: None,
+            });
+        }
+        callbacks.push(finish);
+        for callback in callbacks {
+            assert!(
+                execute_runtime_rpc_request_with_outbox(&state, &outbox, callback)
+                    .unwrap()
+                    .ok
+            );
+            assert_eq!(state.load_runtime_run("run_1").unwrap().status, terminal);
+            assert_eq!(
+                outbox.records(),
+                records_before,
+                "late callbacks must have no visible effect"
+            );
+        }
+    }
+}
+
+#[test]
 fn product_wrapper_normalizes_direct_handle_and_preserves_did_recipient() {
     assert_eq!(
         awiki_deamon::cli_wrapper::normalize_direct_recipient("@alice").unwrap(),

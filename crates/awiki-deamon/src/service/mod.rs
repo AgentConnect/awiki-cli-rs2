@@ -197,16 +197,46 @@ fn write_if_changed(path: &Path, content: &str) -> Result<()> {
 }
 
 fn run_status(command: &mut std::process::Command) -> Result<bool> {
-    Ok(command
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false))
+    let step = format!(
+        "{} {}",
+        command.get_program().to_string_lossy(),
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let output = command.output().with_context(|| format!("run {step}"))?;
+    check_service_command_result(
+        &step,
+        &output,
+        command.get_args().any(|arg| arg == "is-active"),
+    )
+}
+
+fn check_service_command_result(
+    step: &str,
+    output: &std::process::Output,
+    status_query: bool,
+) -> Result<bool> {
+    if output.status.success() {
+        return Ok(true);
+    }
+    // systemctl is-active distinguishes inactive (3) and unknown (4) from command failures.
+    if status_query && matches!(output.status.code(), Some(3 | 4)) {
+        return Ok(false);
+    }
+    bail!("{}; check the user service and daemon logs, then retry this service action. Identity and installation files are retained",
+        compact_command_error(step, output))
 }
 
 fn compact_command_error(command: &str, output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // launchctl appends generic root advice; use the first diagnostic and our
+    // user-service remedy instead of forwarding that misleading suggestion.
     let message = if !stderr.is_empty() { stderr } else { stdout };
+    let message = message.lines().next().unwrap_or_default();
     let base = if message.is_empty() {
         format!("{command} exited with {}", output.status)
     } else {
@@ -286,200 +316,7 @@ fn shell_single_quote_path(value: &Path) -> String {
     format!("'{escaped}'")
 }
 
-pub(crate) mod macos {
-    use super::*;
-
-    pub const LABEL: &str = "ai.awiki.deamon";
-
-    pub fn launch_agent_path() -> Result<PathBuf> {
-        Ok(home_dir()?
-            .join("Library")
-            .join("LaunchAgents")
-            .join(format!("{LABEL}.plist")))
-    }
-
-    pub fn plist_content(config: &DaemonConfig, executable: &Path) -> String {
-        plist_content_with_env_file(config, executable, &runtime_env_file_path(config))
-    }
-
-    pub(super) fn plist_content_with_env_file(
-        config: &DaemonConfig,
-        executable: &Path,
-        env_file: &Path,
-    ) -> String {
-        let stdout = config.state_root.join("logs").join("daemon.stdout.log");
-        let stderr = config.state_root.join("logs").join("daemon.stderr.log");
-        let command = format!(
-            "set -a; [ ! -f {env_file} ] || . {env_file}; set +a; exec {exe} foreground --state-root {state_root} --ready-file {ready_file}",
-            env_file = shell_single_quote_path(env_file),
-            exe = shell_single_quote_path(executable),
-            state_root = shell_single_quote_path(&config.state_root),
-            ready_file = shell_single_quote_path(&ready_file(config)),
-        );
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/sh</string>
-    <string>-c</string>
-    <string>{command}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{stdout}</string>
-  <key>StandardErrorPath</key>
-  <string>{stderr}</string>
-</dict>
-</plist>
-"#,
-            label = LABEL,
-            command = xml_escape(&command),
-            stdout = xml_escape(&stdout.display().to_string()),
-            stderr = xml_escape(&stderr.display().to_string()),
-        )
-    }
-
-    pub fn manage(
-        config: &DaemonConfig,
-        executable: &Path,
-        action: ServiceAction,
-    ) -> Result<ServiceStatus> {
-        let path = launch_agent_path()?;
-        let domain = format!("gui/{}", unsafe { libc::getuid() });
-        match action {
-            ServiceAction::Install => {
-                ensure_runtime_env_dir(config)?;
-                write_if_changed(&path, &plist_content(config, executable))?;
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("bootout")
-                        .arg(&domain)
-                        .arg(&path),
-                )?;
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("enable")
-                        .arg(format!("{domain}/{LABEL}")),
-                )?;
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("bootstrap")
-                        .arg(&domain)
-                        .arg(&path),
-                )?;
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("kickstart")
-                        .arg("-k")
-                        .arg(format!("{domain}/{LABEL}")),
-                )?;
-            }
-            ServiceAction::Start | ServiceAction::Restart => {
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("kickstart")
-                        .arg("-k")
-                        .arg(format!("{domain}/{LABEL}")),
-                )?;
-            }
-            ServiceAction::Stop => {
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("bootout")
-                        .arg(&domain)
-                        .arg(&path),
-                )?;
-            }
-            ServiceAction::Uninstall => {
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("bootout")
-                        .arg(&domain)
-                        .arg(&path),
-                )?;
-                if path.exists() {
-                    std::fs::remove_file(&path)
-                        .with_context(|| format!("remove LaunchAgent {}", path.display()))?;
-                }
-            }
-            ServiceAction::RemoveRegistration => {
-                let _ = run_status(
-                    std::process::Command::new("launchctl")
-                        .arg("disable")
-                        .arg(format!("{domain}/{LABEL}")),
-                )?;
-                if path.exists() {
-                    std::fs::remove_file(&path)
-                        .with_context(|| format!("remove LaunchAgent {}", path.display()))?;
-                }
-            }
-            ServiceAction::Status => {}
-        }
-        let running = run_status(
-            std::process::Command::new("launchctl")
-                .arg("print")
-                .arg(format!("{domain}/{LABEL}")),
-        )?;
-        Ok(ServiceStatus {
-            platform: ServicePlatform::LaunchAgent,
-            installed: path.exists(),
-            running,
-            unit_path: Some(path),
-            detail: None,
-        })
-    }
-
-    pub fn restart_after_upgrade(
-        config: &DaemonConfig,
-        executable: &Path,
-    ) -> Result<ServiceStatus> {
-        let path = launch_agent_path()?;
-        let domain = format!("gui/{}", unsafe { libc::getuid() });
-        write_if_changed(&path, &plist_content(config, executable))?;
-
-        let service = format!("{domain}/{LABEL}");
-        let loaded = run_status(
-            std::process::Command::new("launchctl")
-                .arg("print")
-                .arg(&service),
-        )?;
-        if !loaded {
-            let _ = run_status(
-                std::process::Command::new("launchctl")
-                    .arg("bootstrap")
-                    .arg(&domain)
-                    .arg(&path),
-            )?;
-        }
-        let _ = run_status(
-            std::process::Command::new("launchctl")
-                .arg("kickstart")
-                .arg("-k")
-                .arg(&service),
-        )?;
-
-        let running = run_status(
-            std::process::Command::new("launchctl")
-                .arg("print")
-                .arg(&service),
-        )?;
-        Ok(ServiceStatus {
-            platform: ServicePlatform::LaunchAgent,
-            installed: path.exists(),
-            running,
-            unit_path: Some(path),
-            detail: None,
-        })
-    }
-}
+pub(crate) mod macos;
 
 pub(crate) mod linux {
     use super::*;
@@ -687,17 +524,9 @@ WantedBy=default.target
                 )?;
             }
             ServiceAction::Uninstall => {
-                let _ = run_status(
-                    std::process::Command::new("systemctl")
-                        .args(["--user", "disable", "--now", UNIT_NAME]),
-                )?;
-                if path.exists() {
-                    std::fs::remove_file(&path)
-                        .with_context(|| format!("remove systemd unit {}", path.display()))?;
-                }
-                let _ = run_status(
-                    std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
-                )?;
+                uninstall_with(&path, &mut |args| {
+                    std::process::Command::new("systemctl").args(args).output()
+                })?;
             }
             ServiceAction::RemoveRegistration => {
                 let _ = run_status(
@@ -779,7 +608,60 @@ WantedBy=default.target
             detail,
         })
     }
+
+    pub(super) fn uninstall_with(
+        path: &Path,
+        run: &mut impl FnMut(&[&str]) -> std::io::Result<std::process::Output>,
+    ) -> Result<()> {
+        let mut checked = |args: &[&str]| -> Result<std::process::Output> {
+            let step = format!("systemctl {}", args.join(" "));
+            let output = run(args).with_context(|| format!("run {step}"))?;
+            check_service_command_result(&step, &output, false)?;
+            Ok(output)
+        };
+        let observed = checked(&[
+            "--user",
+            "show",
+            "--property=LoadState",
+            "--property=ActiveState",
+            UNIT_NAME,
+        ])?;
+        let properties = String::from_utf8_lossy(&observed.stdout);
+        let property = |name: &str| -> Result<&str> {
+            let mut values = properties.lines().filter_map(|line| {
+                line.split_once('=')
+                    .filter(|(key, _)| *key == name)
+                    .map(|(_, value)| value.trim())
+            });
+            let value = values.next().filter(|value| !value.is_empty());
+            anyhow::ensure!(value.is_some() && values.next().is_none(),
+                "systemctl show returned incomplete or ambiguous unit properties; check the user service before retrying uninstall");
+            Ok(value.unwrap())
+        };
+        let load_state = property("LoadState")?;
+        let active_state = property("ActiveState")?;
+        // Only a successful, explicit not-found result proves absence. A missing
+        // local file alone says nothing about a unit still loaded in the manager.
+        if path.try_exists()? || load_state != "not-found" {
+            checked(&["--user", "disable", "--now", UNIT_NAME])?;
+        } else if active_state != "inactive" {
+            checked(&["--user", "stop", UNIT_NAME])?;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("remove systemd unit {}", path.display()))
+            }
+        }
+        checked(&["--user", "daemon-reload"])?;
+        Ok(())
+    }
 }
+
+#[cfg(test)]
+mod linux_tests;
 
 pub fn require_service_state_root_is_product(config: &DaemonConfig) -> Result<()> {
     let product_root = DaemonConfig::default_product_state_root()?;

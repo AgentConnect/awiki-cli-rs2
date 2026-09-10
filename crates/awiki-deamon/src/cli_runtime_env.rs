@@ -12,6 +12,7 @@ use crate::DaemonConfig;
 pub const CLI_ENV_PASSTHROUGH_KEY: &str = "AWIKI_DAEMON_CLI_ENV_PASSTHROUGH";
 
 pub const DEFAULT_CLI_ENV_PASSTHROUGH_SELECTORS: &[&str] = &[
+    crate::agent_network::PROXY_MODE_KEY,
     "ANTHROPIC_*",
     "CLAUDE_*",
     "OPENAI_*",
@@ -53,7 +54,8 @@ impl RuntimeEnvSelector {
 
 pub fn capture_and_write(config: &DaemonConfig) -> Result<CliRuntimeEnvCaptureReport> {
     let env_file_path = runtime_env_file_path(config);
-    let capture = capture_current_process_env();
+    let mut capture = capture_current_process_env();
+    preserve_proxy_configuration(&env_file_path, &mut capture.values)?;
     let content = render_env_file(&capture);
     write_private_env_file(&env_file_path, &content)?;
     Ok(CliRuntimeEnvCaptureReport {
@@ -62,6 +64,86 @@ pub fn capture_and_write(config: &DaemonConfig) -> Result<CliRuntimeEnvCaptureRe
         passthrough_selectors: capture.passthrough_selectors.clone(),
         path_entry_count: capture.path_entry_count,
     })
+}
+
+fn preserve_proxy_configuration(path: &Path, values: &mut BTreeMap<String, String>) -> Result<()> {
+    use crate::agent_network::{PROXY_ADDRESS_KEYS, PROXY_EXCLUSION_KEYS, PROXY_MODE_KEY};
+    let previous = match std::fs::read_to_string(path) {
+        Ok(raw) => read_saved_proxy_configuration(&raw)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => {
+            return Err(error).context("read saved agent proxy configuration before reinstall")
+        }
+    };
+    // A new address replaces the entire address group; omission preserves the old group.
+    for keys in [PROXY_ADDRESS_KEYS, PROXY_EXCLUSION_KEYS, &[PROXY_MODE_KEY]] {
+        if !keys.iter().any(|key| values.contains_key(*key)) {
+            for &key in keys {
+                if let Some(value) = previous.get(key) {
+                    values.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
+    if let Some(mode) = values.get(PROXY_MODE_KEY) {
+        if !matches!(mode.as_str(), "auto" | "inherit") {
+            bail!("{PROXY_MODE_KEY} must be auto or inherit");
+        }
+    }
+    Ok(())
+}
+
+fn read_saved_proxy_configuration(raw: &str) -> Result<BTreeMap<String, String>> {
+    use crate::agent_network::{PROXY_ADDRESS_KEYS, PROXY_EXCLUSION_KEYS, PROXY_MODE_KEY};
+    let mut saved = BTreeMap::new();
+    for line in raw.lines().map(str::trim) {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !PROXY_ADDRESS_KEYS.contains(&key)
+            && !PROXY_EXCLUSION_KEYS.contains(&key)
+            && key != PROXY_MODE_KEY
+        {
+            continue;
+        }
+        let decoded = decode_saved_env_value(value).with_context(|| {
+            format!("cannot preserve {key} from agent-cli.env; use a literal quoted value")
+        })?;
+        saved.insert(key.to_string(), decoded);
+    }
+    Ok(saved)
+}
+
+// Decode our shell/systemd literal format without sourcing or evaluating the file.
+fn decode_saved_env_value(raw: &str) -> Option<String> {
+    if let Some(value) = raw.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        return (!value.contains('\'')).then(|| value.to_string());
+    }
+    let quoted = raw.starts_with('"');
+    let value = if quoted {
+        raw.strip_prefix('"')?.strip_suffix('"')?
+    } else {
+        raw
+    };
+    let mut decoded = String::new();
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let escaped = chars.next()?;
+            if !matches!(escaped, '\\' | '"' | '$' | '`') {
+                return None;
+            }
+            decoded.push(escaped);
+        } else if matches!(ch, '$' | '`' | '"')
+            || !quoted
+                && (ch.is_whitespace() || matches!(ch, ';' | '&' | '|' | '<' | '>' | '(' | ')'))
+        {
+            return None;
+        } else {
+            decoded.push(ch);
+        }
+    }
+    Some(decoded)
 }
 
 pub fn cli_child_path() -> Option<OsString> {
@@ -341,6 +423,10 @@ impl CapturedCliRuntimeEnv {
         self.values.keys().cloned().collect()
     }
 }
+
+#[cfg(test)]
+#[path = "cli_runtime_env_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

@@ -296,6 +296,7 @@ pub(super) fn write_ready_file(path: &Path, status: &crate::DaemonStatus) -> Res
         path,
         serde_json::to_vec_pretty(&json!({
             "ready": true,
+            "process_id": std::process::id(),
             "state_root": status.state_root,
             "local_socket_path": status.local_socket_path,
             "daemon_schema_version": status.daemon_schema_version,

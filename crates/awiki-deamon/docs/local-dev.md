@@ -65,6 +65,56 @@ anp_service_did = did:wba:<did_domain>
 
 ## CLI Runtime 环境文件
 
+### 安装与服务状态
+
+macOS 服务操作先查询是否已加载，只有确认缺少目标服务时才按未加载处理；其他查询错误、
+enable、bootout、bootstrap、kickstart 的真实失败会保留失败步骤和简短诊断。首次安装不
+执行 bootout，bootstrap 后不再追加强制重启。systemd 服务命令也检查退出结果。
+Linux 卸载先通过 `systemctl show` 查询 `LoadState` 和 `ActiveState`；确认 unit 不存在且
+已停止时跳过 disable，使重复卸载和 `--no-service` 实例卸载保持幂等。注册文件已被移除
+但进程仍活跃时仍执行 stop；查询、权限、总线及 reload 的真实失败继续返回错误。
+
+安装返回结构和 `status: ready` 保持兼容（表示身份及本地安装步骤完成）。服务实际情况由
+`service.running` 与 `service.detail` 表达：注册文件存在、launchd 已加载、当前进程运行、
+初始化完成分别观察。ready 文件新增 `process_id`，必须与 launchd 当前 PID 和 state-root
+一致；旧 ready 文件或旧进程的 marker 不证明当前进程已初始化。安装不等待固定 30 秒后
+失败：尚在启动或初始化时如实返回状态，保留身份和安装，不要求重新注册或提权。
+`--no-service` 与 `--foreground` 仍跳过服务管理，沿用原返回值。
+
+### 智能体代理与等待反馈
+
+- `AWIKI_DAEMON_AGENT_PROXY_MODE=auto|inherit`，默认 `auto`；没有新增 UI 或代理服务。
+  `inherit` 关闭系统发现，保留显式代理和操作系统路由。
+- 显式 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写版本按整组优先；包括显式空值，
+  不用系统地址补齐缺失项。Codex、Claude Code 的检查/启动和 Hermes 检查/网关启动共用
+  解析器；Codex 的 provider/API token 仍由原 allowlist 控制。
+- 无显式代理时，macOS 使用 `scutil --proxy` 的实际 HTTP/HTTPS/SOCKS 主机与合法端口，
+  支持 IPv4/IPv6。Linux 不做系统代理发现。无代理、VPN/TUN 保持系统路由。
+- 自动发现的本机代理只做一次有界连接检查（所有本机地址合计 250 ms，不探测其他端口）；
+  未监听则整组放弃自动注入并记录不含地址/凭证的原因。显式本机代理不可达仍保留配置并
+  记录提示。远端代理不主动探测，连接失败由 CLI 报告，不更换出口、不重放任务。
+- 合并保留大小写 `NO_PROXY` 的用户排除项及系统例外，并保护 localhost、loopback 和本机
+  接口地址。系统 `*.example` 转为 `.example` 后缀；PAC/WPAD、ExcludeSimpleHostnames
+  和无法用 NO_PROXY 表达的其他通配规则暂不自动注入，保留原路由并记录原因。
+- 自动值不写入 env file、不改变 Daemon 自身的 AWiki 网络环境。每个新智能体进程读取
+  当前系统设置；正在运行的任务和 Hermes 常驻网关不切换网络，下次进程启动时更新。
+- 重新安装/`cli-env-capture` 未提供新代理地址时保留旧整组；提供任何新地址时替换全部
+  旧地址，避免新旧混搭。未提供新 NO_PROXY 或模式时分别保留；配置只按字面值解析，
+  不执行环境文件。已有显式代理仍沿用 service 加载环境的兼容路径。
+
+Codex 同时观察 stdout JSONL 和 stderr 中已识别的重连/传输回退提示，通过原有
+`external_service_delayed` / `external_service_resumed` 状态供 App 展示。未知事件安全
+忽略；恢复只由后续正常模型输出或 turn 完成确认。进度经后台合并队列发送，不阻塞
+输出读取和任务执行；结束时丢弃未发送的旧状态并收束正在发送的有界 RPC。进度失败不
+改变任务结果，也不生成最终回复。保持现有 WebSocket/HTTPS 策略和任务超时；只有执行
+开始前明确的本地会话不存在诊断可沿用原新会话回退，网络失败不能触发任务重放。
+Local RPC 接收端只允许 pending/running 的 run 更新状态或完成；finished/failed 后的
+进度与完成回调按无副作用处理。条件更新在数据库中执行，避免迟到恢复事件重新打开任务
+并触发第二条 fallback final；`task.finish` 的单次完成语义对主动回调同样有效。
+
+日常测试仅使用假服务命令、假 CLI、loopback listener 和临时状态根。真实 Codex 外网
+对照另行记录 CLI 版本、模式、事件和耗时；模拟用例不证明外网延迟已解决。
+
 产品安装模式下，daemon service 会引用一个通用的 CLI runtime 环境文件：
 
 ```text
@@ -73,13 +123,14 @@ anp_service_did = did:wba:<did_domain>
 
 该文件用于把用户已经配置好的本机 CLI 环境显式注入到 `awiki-deamon` 进程中，供
 Codex CLI、Claude Code CLI、Hermes gateway 或后续 generic-cli driver 复用。它不是
-Claude Code 专用配置，也不是登录流程；daemon 不解析其中变量的业务含义，只在 service
-启动时加载它。generic-cli driver 启动子进程时仍会先 `env_clear()`，再恢复最小运行环境和
+Claude Code 专用配置，也不是登录流程；service 启动时加载显式环境，智能体代理在子进程
+启动时按上述规则解析。generic-cli driver 仍先 `env_clear()`，再恢复最小运行环境和
 driver 允许透传的变量，避免把 daemon 的完整环境无差别交给外部 CLI。
 
 安全约束：
 
-- 文件不存在时 service 仍能启动；安装只会创建 `env/` 目录，不会创建或覆盖 secret 文件。
+- 文件不存在时 service 仍能启动；服务管理创建 `env/` 目录，产品安装/`cli-env-capture`
+  根据当前允许变量写入环境文件，代理地址、排除项和模式按上述重复安装规则保留或替换。
 - 该文件可能包含 token、API key、base URL 等敏感值，权限应保持为 `0600`，目录权限应为
   `0700`。
 - 不要把该文件提交到仓库，不要在日志、E2E 报告或 UI 中打印变量值。

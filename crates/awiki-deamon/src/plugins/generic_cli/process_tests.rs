@@ -5,6 +5,51 @@ use std::time::Duration;
 use super::ManagedChild;
 
 #[test]
+fn observed_wait_reads_both_streams_before_exit_and_preserves_output() {
+    let root = tempfile::tempdir().unwrap();
+    let finished = root.path().join("finished");
+    let mut command = Command::new("sh");
+    command
+        .args([
+            "-c",
+            "printf 'reconnect\\n' >&2; sleep 0.1; printf 'recovered\\n'; sleep 0.1; touch \"$1\"",
+            "sh",
+        ])
+        .arg(&finished)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut observed = Vec::new();
+    let output = ManagedChild::spawn(&mut command, "spawn two-stream child")
+        .unwrap()
+        .write_stdin_and_wait_timeout_streams_observed(
+            b"",
+            "write input",
+            "wait for two-stream child",
+            Duration::from_secs(2),
+            |stderr, line, _| {
+                assert!(
+                    !finished.exists(),
+                    "progress must arrive while the task is still running"
+                );
+                observed.push((stderr, line.to_vec()));
+            },
+            |_| {},
+        )
+        .unwrap();
+    assert!(output.output.status.success());
+    assert_eq!(
+        observed,
+        [
+            (true, b"reconnect\n".to_vec()),
+            (false, b"recovered\n".to_vec())
+        ]
+    );
+    assert_eq!(output.output.stdout, b"recovered\n");
+    assert_eq!(output.output.stderr, b"reconnect\n");
+}
+
+#[test]
 fn observed_wait_streams_lines_and_preserves_complete_output() {
     let mut command = Command::new("sh");
     command

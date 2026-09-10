@@ -349,8 +349,15 @@ fn apply_runtime_rpc_side_effects(
             let is_redundant_start = state_value == "running"
                 && current.status == RuntimeRunStatus::Running
                 && progress.is_none();
-            if !is_redundant_start {
-                state.update_runtime_run_status(&context.run_id, status)?;
+            // A delayed observer or CLI callback must never reopen a terminal run.
+            // Compare in the database as completion may race the read above.
+            if !is_redundant_start
+                && state.update_runtime_run_status_if_status_in(
+                    &context.run_id,
+                    &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+                    status,
+                )?
+            {
                 let metadata = progress.map(|progress| json!({ "progress": progress }));
                 outbox.send_status_with_metadata(
                     context,
@@ -363,12 +370,9 @@ fn apply_runtime_rpc_side_effects(
             }
         }
         RpcMethod::TaskFinish => {
-            let run = state.load_runtime_run(&context.run_id)?;
-            if run.status == RuntimeRunStatus::Finished {
-                return Ok(());
+            if state.finish_active_runtime_run(&context.run_id)? {
+                outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
             }
-            state.update_runtime_run_status(&context.run_id, RuntimeRunStatus::Finished)?;
-            outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
         }
         RpcMethod::AppActionRequest => {
             queue_runtime_app_action_request(state, context, params)?;

@@ -8,7 +8,7 @@ struct LatestValueState<T> {
 
 /// Keeps slow side effects off a hot producer path and retains only the newest
 /// value that has not started delivery yet.
-pub(super) struct LatestValueDispatcher<T: Send + 'static> {
+pub(crate) struct LatestValueDispatcher<T: Send + 'static> {
     shared: Arc<(Mutex<LatestValueState<T>>, Condvar)>,
     worker: Option<JoinHandle<()>>,
 }
@@ -17,7 +17,7 @@ impl<T> LatestValueDispatcher<T>
 where
     T: Send + 'static,
 {
-    pub(super) fn spawn<F>(thread_name: &str, mut deliver: F) -> std::io::Result<Self>
+    pub(crate) fn spawn<F>(thread_name: &str, mut deliver: F) -> std::io::Result<Self>
     where
         F: FnMut(T) + Send + 'static,
     {
@@ -57,7 +57,7 @@ where
         })
     }
 
-    pub(super) fn publish(&self, value: T) {
+    pub(crate) fn publish(&self, value: T) {
         let (lock, ready) = &*self.shared;
         let mut state = lock.lock().expect("latest value dispatcher poisoned");
         if state.closed {
@@ -69,7 +69,7 @@ where
 
     /// Drops queued stale progress and waits only for delivery that has
     /// already started, so no progress can arrive after a terminal result.
-    pub(super) fn close(mut self) {
+    pub(crate) fn close(mut self) {
         self.close_inner();
     }
 

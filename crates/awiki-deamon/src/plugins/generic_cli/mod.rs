@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 
 pub mod claude_code;
 pub mod codex;
-mod process;
+mod codex_progress;
+pub(crate) mod process;
 
 use crate::cli_runtime_env::{
     runtime_env_key_allowed, runtime_env_selectors, CLI_ENV_PASSTHROUGH_KEY,
@@ -125,9 +126,6 @@ pub fn sanitize_cli_output_file(
 pub fn apply_runtime_env_passthrough(command: &mut Command, default_selectors: &[&str]) {
     let extra = std::env::var(CLI_ENV_PASSTHROUGH_KEY).ok();
     let selectors = runtime_env_selectors(default_selectors, extra.as_deref());
-    if selectors.is_empty() {
-        return;
-    }
     for (key, value) in std::env::vars_os() {
         let Some(key_str) = key.to_str() else {
             continue;
@@ -139,6 +137,7 @@ pub fn apply_runtime_env_passthrough(command: &mut Command, default_selectors: &
             command.env(key, value);
         }
     }
+    crate::agent_network::apply_agent_network(command);
 }
 
 fn truncate_utf8_to_bytes(text: String, max_text_bytes: usize) -> (String, bool) {

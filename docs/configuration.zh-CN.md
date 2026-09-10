@@ -66,10 +66,18 @@
 | `AWIKI_DAEMON_BASE_URL` | 环境变量 | 覆盖 base_url | 已安装读取持久化文件；全新安装为 `https://awiki.me` |
 | `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` | 环境变量 | daemon vault 根密钥 | vault 模式必填 |
 | `AWIKI_HERMES_TUI_TOOLSETS` | 环境变量 | TUI toolset | `terminal,skills` |
+| `AWIKI_DAEMON_AGENT_PROXY_MODE` | 环境变量 / `agent-cli.env` | 智能体子进程代理发现：`auto` 或 `inherit` | `auto` |
 | `AWIKI_CLI_ENABLE_DIAGNOSTIC` | 环境变量 | diagnostic 命令闸（`=1`） | 关闭 |
 | `AWIKI_CLI_ENABLE_MIGRATION` | 环境变量 | migration 命令闸（`=1`） | 关闭 |
 
 超时、代理、更新缓存等其余环境变量见源码 `cli_http.rs` / `self_update`；未列出的超时默认与 2026-08-23 盘点一致。
+
+Codex、Claude Code 和 Hermes 共用智能体代理解析。显式 `HTTP_PROXY` / `HTTPS_PROXY` /
+`ALL_PROXY` 及小写版本按整组优先；没有显式地址时，`auto` 在 macOS 读取当前启用的
+HTTP/HTTPS/SOCKS 系统代理，不假设端口。`inherit` 关闭自动发现；Linux 保留显式环境和
+系统路由。自动值只注入新智能体进程，不保存、不修改 Daemon 自身 AWiki 通信环境。
+排除规则、本机回调保护、重复安装和 PAC 限制见
+[Daemon 本地开发](../crates/awiki-deamon/docs/local-dev.md#智能体代理与等待反馈)。
 
 ## 测试 / 探针
 

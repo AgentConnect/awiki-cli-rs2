@@ -474,6 +474,7 @@ impl Default for StdioHermesGateway {
 
 impl HermesGateway for StdioHermesGateway {
     fn check_installation(&self) -> Result<RuntimeInstallStatus> {
+        let network = crate::agent_network::AgentNetworkEnv::current();
         if let Some(command) = self.current_gateway_cmd() {
             let parts = split_gateway_command(&command)?;
             let executable = parts
@@ -482,7 +483,11 @@ impl HermesGateway for StdioHermesGateway {
                 .context("AWIKI_HERMES_GATEWAY_CMD is empty")?;
             return Ok(RuntimeInstallStatus {
                 installed: executable_is_available(executable),
-                detail: Some(sanitize_gateway_command(&command)),
+                detail: Some(format!(
+                    "{}; {}",
+                    sanitize_gateway_command(&command),
+                    network.detail
+                )),
             });
         }
         let Some(path) = self.hermes_bin.as_ref() else {
@@ -493,7 +498,7 @@ impl HermesGateway for StdioHermesGateway {
         };
         Ok(RuntimeInstallStatus {
             installed: path.exists(),
-            detail: Some(path.display().to_string()),
+            detail: Some(format!("{}; {}", path.display(), network.detail)),
         })
     }
 
@@ -963,6 +968,7 @@ fn spawn_gateway_process(
     let executable = parts.first().context("AWIKI_HERMES_GATEWAY_CMD is empty")?;
     let path = path_with_launcher_dir(launcher_dir)?;
     let mut command = Command::new(executable);
+    crate::agent_network::apply_agent_network(&mut command);
     command
         .args(parts.iter().skip(1))
         .current_dir(&profile.hermes_home)

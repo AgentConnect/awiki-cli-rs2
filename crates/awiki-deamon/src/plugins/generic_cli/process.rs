@@ -72,39 +72,44 @@ impl ManagedChild {
         })
     }
 
-    pub fn write_stdin_and_wait_timeout(
-        mut self,
-        input: &[u8],
-        stdin_context: &'static str,
-        wait_context: &'static str,
-        timeout: Duration,
-    ) -> Result<ManagedChildOutput> {
-        if let Some(child) = self.child.as_mut() {
-            let write_result = child
-                .stdin
-                .as_mut()
-                .context("open managed child stdin")
-                .and_then(|stdin| stdin.write_all(input).context(stdin_context));
-            if let Err(error) = write_result {
-                self.kill_process_tree_best_effort();
-                return Err(error);
-            }
-            drop(child.stdin.take());
-        }
-        self.wait_timeout(wait_context, timeout)
-    }
-
     pub fn write_stdin_and_wait_timeout_observed<OnStdoutLine, OnTick>(
-        mut self,
+        self,
         input: &[u8],
         stdin_context: &'static str,
         wait_context: &'static str,
         timeout: Duration,
-        on_stdout_line: OnStdoutLine,
+        mut on_stdout_line: OnStdoutLine,
         on_tick: OnTick,
     ) -> Result<ManagedChildOutput>
     where
         OnStdoutLine: FnMut(&[u8], Duration),
+        OnTick: FnMut(Duration),
+    {
+        self.write_stdin_and_wait_timeout_streams_observed(
+            input,
+            stdin_context,
+            wait_context,
+            timeout,
+            |stderr, line, elapsed| {
+                if !stderr {
+                    on_stdout_line(line, elapsed);
+                }
+            },
+            on_tick,
+        )
+    }
+
+    pub fn write_stdin_and_wait_timeout_streams_observed<OnLine, OnTick>(
+        mut self,
+        input: &[u8],
+        stdin_context: &'static str,
+        wait_context: &'static str,
+        timeout: Duration,
+        on_line: OnLine,
+        on_tick: OnTick,
+    ) -> Result<ManagedChildOutput>
+    where
+        OnLine: FnMut(bool, &[u8], Duration),
         OnTick: FnMut(Duration),
     {
         if let Some(child) = self.child.as_mut() {
@@ -119,7 +124,7 @@ impl ManagedChild {
             }
             drop(child.stdin.take());
         }
-        self.wait_timeout_observed(wait_context, timeout, on_stdout_line, on_tick)
+        self.wait_timeout_observed(wait_context, timeout, on_line, on_tick)
     }
 
     pub fn wait_timeout(
@@ -127,7 +132,7 @@ impl ManagedChild {
         wait_context: &'static str,
         timeout: Duration,
     ) -> Result<ManagedChildOutput> {
-        self.wait_timeout_observed(wait_context, timeout, |_, _| {}, |_| {})
+        self.wait_timeout_observed(wait_context, timeout, |_, _, _| {}, |_| {})
     }
 
     fn wait_timeout_observed<OnStdoutLine, OnTick>(
@@ -138,15 +143,16 @@ impl ManagedChild {
         mut on_tick: OnTick,
     ) -> Result<ManagedChildOutput>
     where
-        OnStdoutLine: FnMut(&[u8], Duration),
+        OnStdoutLine: FnMut(bool, &[u8], Duration),
         OnTick: FnMut(Duration),
     {
         let stdout_reader = self.child.as_mut().and_then(|child| child.stdout.take());
         let stderr_reader = self.child.as_mut().and_then(|child| child.stderr.take());
         let (stdout_line_tx, stdout_line_rx) = mpsc::channel();
-        let stdout_handle =
-            stdout_reader.map(|reader| spawn_observed_stdout_reader(reader, stdout_line_tx));
-        let stderr_handle = stderr_reader.map(spawn_pipe_reader);
+        let stdout_handle = stdout_reader
+            .map(|reader| spawn_observed_pipe_reader(reader, stdout_line_tx.clone(), false));
+        let stderr_handle =
+            stderr_reader.map(|reader| spawn_observed_pipe_reader(reader, stdout_line_tx, true));
         let started_at = Instant::now();
         let mut next_tick_at = started_at + MANAGED_CHILD_OBSERVER_TICK_INTERVAL;
         let deadline = Instant::now() + timeout;
@@ -167,6 +173,7 @@ impl ManagedChild {
                 let stdout = join_pipe_reader(stdout_handle, "join managed child stdout reader")?;
                 drain_stdout_lines(&stdout_line_rx, started_at.elapsed(), &mut on_stdout_line);
                 let stderr = join_pipe_reader(stderr_handle, "join managed child stderr reader")?;
+                drain_stdout_lines(&stdout_line_rx, started_at.elapsed(), &mut on_stdout_line);
                 self.child.take();
                 return Ok(ManagedChildOutput {
                     output: Output {
@@ -228,20 +235,10 @@ fn process_metadata_json(metadata: ProcessManagementMetadata) -> Value {
     })
 }
 
-fn spawn_pipe_reader<R>(mut reader: R) -> JoinHandle<std::io::Result<Vec<u8>>>
-where
-    R: Read + Send + 'static,
-{
-    std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)?;
-        Ok(buffer)
-    })
-}
-
-fn spawn_observed_stdout_reader<R>(
+fn spawn_observed_pipe_reader<R>(
     reader: R,
-    line_sender: mpsc::Sender<Vec<u8>>,
+    line_sender: mpsc::Sender<(bool, Vec<u8>)>,
+    stderr: bool,
 ) -> JoinHandle<std::io::Result<Vec<u8>>>
 where
     R: Read + Send + 'static,
@@ -256,21 +253,21 @@ where
                 break;
             }
             output.extend_from_slice(&line);
-            let _ = line_sender.send(line);
+            let _ = line_sender.send((stderr, line));
         }
         Ok(output)
     })
 }
 
 fn drain_stdout_lines<OnStdoutLine>(
-    receiver: &mpsc::Receiver<Vec<u8>>,
+    receiver: &mpsc::Receiver<(bool, Vec<u8>)>,
     elapsed: Duration,
     on_stdout_line: &mut OnStdoutLine,
 ) where
-    OnStdoutLine: FnMut(&[u8], Duration),
+    OnStdoutLine: FnMut(bool, &[u8], Duration),
 {
-    while let Ok(line) = receiver.try_recv() {
-        on_stdout_line(&line, elapsed);
+    while let Ok((stderr, line)) = receiver.try_recv() {
+        on_stdout_line(stderr, &line, elapsed);
     }
 }
 
