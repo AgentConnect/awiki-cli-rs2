@@ -682,12 +682,27 @@ impl<'a> DeviceJoinService<'a> {
     /// This method performs no RPC, does not update the durable notification
     /// projection, and does not advance the Join state machine. The SAS is
     /// available only while the local phase is `ResponseVerified` or
-    /// `ApprovalPrepared`.
+    /// `ApprovalPrepared`. An already finalized local admin Join instead returns
+    /// its authorized device with no SAS, approval RPC, or Root transfer.
     pub fn local_device_join_verification_progress(
         &self,
         admin_identity: super::IdentitySelector,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        let (client, _, _) = crate::internal::identity_device_join::ready_admin_context(
+            self.core,
+            &admin_identity,
+            None,
+        )?;
+        if let Some(progress) =
+            crate::internal::identity_device_join::local_authorized_admin_progress(
+                self.core,
+                &client,
+                join_session_id,
+            )?
+        {
+            return public_progress(progress);
+        }
         let (session, sas) =
             crate::internal::identity_device_join::local_admin_verification_progress(
                 self.core,
@@ -707,6 +722,21 @@ impl<'a> DeviceJoinService<'a> {
         admin_identity: super::IdentitySelector,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinProgress> {
+        let (client, _, _) = crate::internal::identity_device_join::ready_admin_context_async(
+            self.core,
+            &admin_identity,
+            None,
+        )
+        .await?;
+        if let Some(progress) =
+            crate::internal::identity_device_join::local_authorized_admin_progress(
+                self.core,
+                &client,
+                join_session_id,
+            )?
+        {
+            return public_progress(progress);
+        }
         let (session, sas) =
             crate::internal::identity_device_join::local_admin_verification_progress_async(
                 self.core,
