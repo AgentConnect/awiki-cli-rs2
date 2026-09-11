@@ -1215,6 +1215,11 @@ control whether transport moves from legacy Inbox/per-group catch-up to lanes.
 
 Core 的接收入口 `messages.receive_now_async()`（Dart `receiveNow`）只承诺完整输入已保存并与对应接收游标原子提交。普通事件、P5、P6 共用 `sync_lane_inbox`，必要正文 hydration 与账号/设备/来源校验先完成；业务归约、解密、Persona projection、通知和读状态回写不作为接收完成条件。旧 `sync_now` 保留显式兼容等待，使用同一接收表及 Core 处理器，等待发生在接收协调器之外；App、Listener 和 Daemon 主接收链路采用新入口。消息事实、逐条错误和处理后通知通过独立处理结果及现有本地投影机制交付。
 
+`system.notification` 的 hydration 封装必须严格匹配固定字段，消息标识、来源 DID 与目标 DID
+必须和接收 envelope／当前账号绑定一致；普通 delta 和 compact snapshot 均在持久化输入及
+游标之前完成这些本地校验。完整签名验证和通知业务应用仍由独立处理器执行，不能用已接收
+状态代替业务验证通过。
+
 同一 SQLite 数据库、同一 owner 的 HTTP 接收轮次使用跨进程文件锁协调，锁等待计入原有接收时间预算；进程退出或任务取消时由操作系统释放。进程内请求仍由现有 coordinator 合并。后到的 CLI/Core 等待当前接收提交，再从持久游标继续；`run_generation` 和当前身份检查仍作为旧结果写入的最后一道校验。该锁只覆盖接收，不覆盖独立的逐条处理、Root completion 或 App 本地读取。
 
 设备授权代次变化仍要求使用新认证重新 bootstrap 并验证 exact account/device 与 lane 协商结果。同一 owner/account/device 的普通 stream epoch 未变时，重新协商保留已经接收的游标，再拉取其后的事件，不能把期间已经投递的 Join 通知当成尾部初始化前的历史而越过；lane 的同 epoch 本地接收位置也不能退回较早的服务端 ACK。新身份/设备的首次初始化、DID transition 清除旧接收状态和 stream epoch 变化继续走各自既有初始化或恢复路径。

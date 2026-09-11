@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "anp"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base64",
  "bs58",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "anp-identity"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anp",
  "base64",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-im-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anp",
  "anp-identity",

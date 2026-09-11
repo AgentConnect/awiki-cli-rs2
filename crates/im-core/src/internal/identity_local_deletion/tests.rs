@@ -942,7 +942,7 @@ fn schema_43_upgrade_preserves_recovery_and_expands_only_terminal_states() {
         connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        44
+        crate::internal::local_state::schema::SCHEMA_VERSION
     );
     let record =
         crate::internal::identity_handle_recovery_operation::load(&path, "recover-before-upgrade")

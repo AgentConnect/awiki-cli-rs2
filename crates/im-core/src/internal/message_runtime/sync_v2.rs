@@ -1751,6 +1751,13 @@ where
                 hydrated
             };
 
+            for event in page.events.iter().filter(|event| event.event_type == "system.notification") {
+                let projection = hydrated.get(&event.event_id).ok_or_else(|| {
+                    sync_error("SYNC_HYDRATION_INCOMPLETE", "system notification hydration is missing")
+                })?;
+                validate_system_notification_hydration(&binding, event, projection)?;
+            }
+
             let receive_input = crate::internal::local_state::sync_inbox::OrdinaryReceiveBatch {
                 binding: stored_binding(self.client, &binding),
                 client_instance_id: p6_client_instance_id.clone(),
@@ -2396,6 +2403,7 @@ where
 
         for item in &snapshot.unexpired_system_notifications {
             validate_system_notification_event_contract(self.client, binding, &item.event)?;
+            validate_system_notification_hydration(binding, &item.event, &item.message)?;
         }
         let events = snapshot.recent_plain_messages.iter().map(|item| (&item.event, &item.message))
             .chain(snapshot.unexpired_system_notifications.iter().map(|item| (&item.event, &item.message)))
@@ -3372,38 +3380,13 @@ fn validate_system_notification_event_contract(
     Ok(())
 }
 
-pub(super) async fn prepare_system_notification<R>(
-    client: &crate::core::ImClient,
+// Closed hydration shape and exact envelope binding belong to reception;
+// cryptographic verification and business application remain in processing.
+fn validate_system_notification_hydration<'a>(
     binding: &crate::identity::ActiveSyncAccountBinding,
-    event: &crate::internal::wire::sync_v2::SyncEventV2,
+    event: &'a crate::internal::wire::sync_v2::SyncEventV2,
     hydrated_projection: &Value,
-    directory_transport: &mut R,
-) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyInput>
-where
-    R: AsyncRpcTransport,
-{
-    prepare_system_notification_at(
-        client,
-        binding,
-        event,
-        hydrated_projection,
-        directory_transport,
-        chrono::Utc::now(),
-    )
-    .await
-}
-
-async fn prepare_system_notification_at<R>(
-    client: &crate::core::ImClient,
-    binding: &crate::identity::ActiveSyncAccountBinding,
-    event: &crate::internal::wire::sync_v2::SyncEventV2,
-    hydrated_projection: &Value,
-    directory_transport: &mut R,
-    received_at: chrono::DateTime<chrono::Utc>,
-) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyInput>
-where
-    R: AsyncRpcTransport,
-{
+) -> crate::ImResult<(&'a str, &'a str)> {
     let wrapper = hydrated_projection.as_object().ok_or_else(|| {
         sync_error(
             "SYNC_HYDRATION_INCOMPLETE",
@@ -3454,6 +3437,43 @@ where
             "system.notification hydrated projection conflicts with its sync envelope",
         ));
     }
+    Ok((notification_event_id, message_id))
+}
+
+pub(super) async fn prepare_system_notification<R>(
+    client: &crate::core::ImClient,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    event: &crate::internal::wire::sync_v2::SyncEventV2,
+    hydrated_projection: &Value,
+    directory_transport: &mut R,
+) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyInput>
+where
+    R: AsyncRpcTransport,
+{
+    prepare_system_notification_at(
+        client,
+        binding,
+        event,
+        hydrated_projection,
+        directory_transport,
+        chrono::Utc::now(),
+    )
+    .await
+}
+
+async fn prepare_system_notification_at<R>(
+    client: &crate::core::ImClient,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    event: &crate::internal::wire::sync_v2::SyncEventV2,
+    hydrated_projection: &Value,
+    directory_transport: &mut R,
+    received_at: chrono::DateTime<chrono::Utc>,
+) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyInput>
+where
+    R: AsyncRpcTransport,
+{
+    let (notification_event_id, message_id) =
+        validate_system_notification_hydration(binding, event, hydrated_projection)?;
     let normalized =
         crate::internal::system_notification::dispatch::normalize_delivery(hydrated_projection);
     let verified = crate::internal::system_notification::verify::verify_with_transport_async(
@@ -8445,13 +8465,60 @@ END;
             ),
             FailingDirectoryTransport,
         )
-        .sync_now(sync_snapshot_request())
+        .receive_now(sync_snapshot_request())
         .await
         .unwrap();
-        assert!(first
-            .warnings
-            .iter()
-            .any(|warning| warning == "identity_unresolved_backlog:1"));
+        // This ordinary-only fixture does not return negotiated secure lanes;
+        // assert its durable ordinary receipt rather than global lane readiness.
+        assert_eq!(first.status, crate::messages::MessageSyncStatus::Changed);
+        assert!(first.error_code.is_none());
+        assert_eq!(first.events_received, 1);
+        let db_actor = client.core_inner().local_state_db().await.unwrap();
+        let stored = stored_binding(&client, &binding);
+        let mut claims = db_actor
+            .run_local(move |connection| {
+                crate::internal::local_state::sync_inbox::claim_inputs(
+                    connection,
+                    &stored,
+                    unix_time_i64(),
+                    1,
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(claims.len(), 1);
+        let claim = claims.remove(0);
+        let unresolved = super::super::sync_processing::process_ordinary(
+            &client,
+            &claim,
+            &mut FailingDirectoryTransport,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(unresolved, crate::ImError::Service { code: Some(code), .. }
+            if code == "sync.peer_resolution_pending")
+        );
+        assert_eq!(
+            load_sync_snapshot_state(&client, &binding.owner_identity_id)
+                .await
+                .scan_seq,
+            "1"
+        );
+        // The dispatcher persists a failed attempt separately from the receive
+        // cursor. Make this deterministic fixture due at its current clock.
+        db_actor
+            .run_local(move |connection| {
+                crate::internal::local_state::sync_inbox::fail_claim(
+                    connection,
+                    &claim,
+                    "sync.peer_resolution_pending",
+                    Some(unix_time_i64()),
+                    unix_time_i64(),
+                )
+            })
+            .await
+            .unwrap();
         assert!(!fixture.has_message_content("deferred direct body"));
 
         let directory_calls = Rc::new(RefCell::new(0_u32));
@@ -8495,6 +8562,15 @@ END;
             )
             .unwrap(),
             expected_conversation_id
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_lane_inbox WHERE owner_identity_id=?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
         );
         assert_eq!(
             crate::internal::local_state::inbound_resolution_backlog::pending_count(
